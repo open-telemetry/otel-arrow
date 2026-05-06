@@ -1,9 +1,9 @@
 # Demonstrates the distributed stopwatch feature.
 #
-# Five attribute processors form a sequential processing chain. A stopwatch
-# measures aggregate synchronous compute duration across the full chain:
+# Five attribute processors form a sequential processing chain, with a 1-in-3
+# log sampler in the middle so that produced < consumed:
 #
-#   stopwatch "ingest_pipeline" - covers attr1 through attr5 (full chain)
+#   stopwatch "ingest_pipeline" - covers attr1 through attr4 (full chain)
 #
 # Stopwatches sum per-processor wall-clock compute time across each node in the
 # range. The engine arms an Instant send-marker before each `process()` call
@@ -12,8 +12,15 @@
 # captures synchronous compute plus any await/I/O that occurs inside
 # `process()` between sends; it excludes time the message spends queued in
 # inbound channels.
-# Metrics appear as stopwatch.compute.duration (MMSC histograms in
-# nanoseconds).
+#
+# Metrics emitted on the `stopwatch` metric set:
+#   - stopwatch.compute.duration (MMSC histogram, nanoseconds)
+#   - stopwatch.signals.incoming   (MMSC, items observed at the start node)
+#   - stopwatch.signals.outgoing   (MMSC, items observed at the stop node)
+#
+# With the sampler in place, `signals.incoming` (at attr1) reflects the full
+# input volume while `signals.outgoing` (at attr4) reflects roughly 1/3 of it,
+# so the difference is directly visible.
 #
 # Note: only non-overlapping stopwatch ranges are supported. A message can be
 # inside at most one stopwatch range at a time.
@@ -38,8 +45,8 @@ groups:
             runtime_metrics: normal
             stopwatches:
               - name: ingest_pipeline
-                start_node: attr1
-                stop_node: attr5
+                start_node: sampler
+                stop_node: attr4
 
         nodes:
           receiver:
@@ -50,6 +57,18 @@ groups:
                 signals_per_second: 10
                 log_weight: 100
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+
+          # Drops ~2 of every 3 log records so that signals.outgoing
+          # at attr4 is visibly smaller than signals.incoming at sampler.
+          # Used as beginning of stopwatch range to prove that signals.incoming
+          # is reported before start node's process() begins.
+          sampler:
+            type: processor:log_sampling
+            config:
+              policy:
+                ratio:
+                  emit: 1
+                  out_of: 3
 
           attr1:
             type: processor:attribute
@@ -83,20 +102,14 @@ groups:
                   key: pipeline.stage4
                   value: "4"
 
-          attr5:
-            type: processor:attribute
-            config:
-              actions:
-                - action: insert
-                  key: pipeline.stage5
-                  value: "5"
-
           noop:
             type: exporter:noop
             config:
 
         connections:
           - from: receiver
+            to: sampler
+          - from: sampler
             to: attr1
           - from: attr1
             to: attr2
@@ -105,6 +118,4 @@ groups:
           - from: attr3
             to: attr4
           - from: attr4
-            to: attr5
-          - from: attr5
             to: noop

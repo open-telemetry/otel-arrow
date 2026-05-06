@@ -23,7 +23,8 @@ use crate::pipeline_ctrl::{
     NodeMetricHandles, PipelineCompletionMsgDispatcher, RuntimeCtrlMsgManager,
     report_node_metrics_with_handles,
 };
-use crate::stopwatch::{StopwatchMetrics, build_stopwatch_state};
+use crate::processor::FlowMeasurementHook;
+use crate::stopwatch::{StopwatchStartMetrics, StopwatchStopMetrics, build_stopwatch_state};
 use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
@@ -174,7 +175,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     }
 }
 
-impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeline<PData> {
+impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMeasurementHook>
+    RuntimePipeline<PData>
+{
     /// Runs the pipeline forever, starting all nodes and handling their tasks.
     /// Returns an error if any node fails to start or if any task encounters an error.
     pub fn run_forever(
@@ -237,7 +240,6 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             &telemetry_policy,
             &node_name_to_index,
             &processor_indices,
-            node_interests,
             &pipeline_context,
         )?;
 
@@ -327,11 +329,15 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let metrics_reporter = metrics_reporter.clone();
             // Extract stopwatch roles for this processor node.
-            let sw_is_start = stopwatch_state.start_nodes.contains(&node_id.index);
-            let sw_stop_metric: Option<MetricSet<StopwatchMetrics>> = stopwatch_state
+            let sw_is_start = stopwatch_state.start_nodes.contains_key(&node_id.index);
+            let sw_start_metric: Option<MetricSet<StopwatchStartMetrics>> = stopwatch_state
+                .start_nodes
+                .get(&node_id.index)
+                .map(|&id| stopwatch_state.start_metrics[id].clone());
+            let sw_stop_metric: Option<MetricSet<StopwatchStopMetrics>> = stopwatch_state
                 .stop_nodes
                 .get(&node_id.index)
-                .map(|&id| stopwatch_state.metrics[id].clone());
+                .map(|&id| stopwatch_state.stop_metrics[id].clone());
             let sw_active = !stopwatch_state.start_nodes.is_empty();
             let fut = async move {
                 let result = processor
@@ -342,6 +348,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                         node_interests,
                         completion_emission_metrics,
                         sw_is_start,
+                        sw_start_metric,
                         sw_stop_metric,
                         sw_active,
                     )

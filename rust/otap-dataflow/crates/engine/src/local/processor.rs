@@ -45,7 +45,10 @@ use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::process_duration::ComputeDuration;
 use crate::processor::ProcessorRuntimeRequirements;
-use crate::stopwatch::{LocalStopwatchState, StopMeasurements, StopwatchMetrics, nanos_u64};
+use crate::stopwatch::{
+    LocalStopwatchState, StartMeasurements, StopMeasurements, StopwatchStartMetrics,
+    StopwatchStopMetrics, nanos_u64,
+};
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
 use otap_df_config::PortName;
@@ -223,14 +226,20 @@ impl<PData> EffectHandler<PData> {
     pub(crate) fn set_stopwatch_roles(
         &mut self,
         is_start: bool,
-        stop_metric: Option<MetricSet<StopwatchMetrics>>,
+        start_metric: Option<MetricSet<StopwatchStartMetrics>>,
+        stop_metric: Option<MetricSet<StopwatchStopMetrics>>,
         stopwatches_active: bool,
     ) {
         self.stopwatch.is_start = is_start;
         self.stopwatch.active = stopwatches_active;
+        self.stopwatch.start = start_metric.map(|metrics| StartMeasurements {
+            metrics,
+            signals_incoming_acc: Cell::new(Mmsc::default()),
+        });
         self.stopwatch.stop = stop_metric.map(|metrics| StopMeasurements {
             metrics,
             duration_acc: Cell::new(Mmsc::default()),
+            signals_outgoing_acc: Cell::new(Mmsc::default()),
         });
     }
 
@@ -261,15 +270,42 @@ impl<PData> EffectHandler<PData> {
         stop.duration_acc.set(acc);
     }
 
+    /// Record signal-item count into the local start-side stopwatch accumulator.
+    pub fn record_stopwatch_start_signals(&self, signals: u64) {
+        let Some(start) = self.stopwatch.start.as_ref() else {
+            return;
+        };
+        let mut acc = start.signals_incoming_acc.get();
+        acc.record(signals as f64);
+        start.signals_incoming_acc.set(acc);
+    }
+
+    /// Record signal-item count into the local stop-side stopwatch accumulator.
+    pub fn record_stopwatch_stop_signals(&self, signals: u64) {
+        let Some(stop) = self.stopwatch.stop.as_ref() else {
+            return;
+        };
+        let mut acc = stop.signals_outgoing_acc.get();
+        acc.record(signals as f64);
+        stop.signals_outgoing_acc.set(acc);
+    }
+
     /// Drain accumulated stopwatch observations into the MetricSet and
     /// report to the telemetry collector.
     ///
     /// Called by the engine on periodic `CollectTelemetry` and at
     /// shutdown — the same cadence as `ComputeDuration::report`.
     pub(crate) fn report_stopwatch(&mut self) {
+        if let Some(start) = self.stopwatch.start.as_mut() {
+            let acc = start.signals_incoming_acc.replace(Mmsc::default());
+            start.metrics.signals_incoming.merge(acc);
+            let _ = self.core.metrics_reporter.report(&mut start.metrics);
+        }
         if let Some(stop) = self.stopwatch.stop.as_mut() {
-            let acc = stop.duration_acc.replace(Mmsc::default());
-            stop.metrics.compute_duration.merge(acc);
+            let duration_acc = stop.duration_acc.replace(Mmsc::default());
+            stop.metrics.compute_duration.merge(duration_acc);
+            let signals_acc = stop.signals_outgoing_acc.replace(Mmsc::default());
+            stop.metrics.signals_outgoing.merge(signals_acc);
             let _ = self.core.metrics_reporter.report(&mut stop.metrics);
         }
     }
@@ -307,7 +343,7 @@ impl<PData> EffectHandler<PData> {
     #[inline]
     pub async fn send_message(&self, mut data: PData) -> Result<(), TypedError<PData>>
     where
-        PData: crate::processor::ProcessorSendHook,
+        PData: crate::processor::FlowMeasurementHook,
     {
         data.before_processor_send(self);
         self.router.send_default(data).await
@@ -326,7 +362,7 @@ impl<PData> EffectHandler<PData> {
     #[inline]
     pub fn try_send_message(&self, mut data: PData) -> Result<(), TypedError<PData>>
     where
-        PData: crate::processor::ProcessorSendHook,
+        PData: crate::processor::FlowMeasurementHook,
     {
         data.before_processor_send(self);
         self.router.try_send_default(data)
@@ -346,7 +382,7 @@ impl<PData> EffectHandler<PData> {
     ) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
-        PData: crate::processor::ProcessorSendHook,
+        PData: crate::processor::FlowMeasurementHook,
     {
         data.before_processor_send(self);
         self.router.send_to(port, data).await
@@ -366,7 +402,7 @@ impl<PData> EffectHandler<PData> {
     pub fn try_send_message_to<P>(&self, port: P, mut data: PData) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
-        PData: crate::processor::ProcessorSendHook,
+        PData: crate::processor::FlowMeasurementHook,
     {
         data.before_processor_send(self);
         self.router.try_send_to(port, data)
@@ -492,6 +528,14 @@ impl<PData> crate::processor::StopwatchEffectHandler for EffectHandler<PData> {
     fn record_stopwatch_stop(&self, total: u64) {
         EffectHandler::record_stopwatch_stop(self, total);
     }
+    #[inline]
+    fn record_stopwatch_start_signals(&self, signals: u64) {
+        EffectHandler::record_stopwatch_start_signals(self, signals);
+    }
+    #[inline]
+    fn record_stopwatch_stop_signals(&self, signals: u64) {
+        EffectHandler::record_stopwatch_stop_signals(self, signals);
+    }
 }
 
 #[async_trait(?Send)]
@@ -532,7 +576,7 @@ mod tests {
         mpsc::Channel::new(capacity)
     }
 
-    impl crate::processor::ProcessorSendHook for u64 {}
+    impl crate::processor::FlowMeasurementHook for u64 {}
 
     #[derive(Clone, Debug)]
     struct TestPData {
@@ -932,12 +976,14 @@ mod tests {
         assert_eq!(counts, (0, 0));
     }
 
-    /// Verify that record_stopwatch_stop accumulates into the local Mmsc
-    /// and report_stopwatch drains into the MetricSet and reports.
+    /// Verify that stopwatch duration and item counts accumulate into local Mmsc
+    /// values and report_stopwatch drains into MetricSets.
     #[test]
     fn stopwatch_accumulate_then_report() {
         use crate::context::ControllerContext;
-        use crate::stopwatch::{StopwatchAttributeSet, StopwatchMetrics};
+        use crate::stopwatch::{
+            StopwatchAttributeSet, StopwatchStartMetrics, StopwatchStopMetrics,
+        };
         use otap_df_config::node::NodeKind;
         use otap_df_telemetry::registry::TelemetryRegistryHandle;
 
@@ -955,11 +1001,14 @@ mod tests {
         let entity_key = pipeline_ctx
             .metrics_registry()
             .register_entity(StopwatchAttributeSet::default());
-        let metric_set = pipeline_ctx
+        let start_metric_set = pipeline_ctx
             .metrics_registry()
-            .register_metric_set_for_entity::<StopwatchMetrics>(entity_key);
+            .register_metric_set_for_entity::<StopwatchStartMetrics>(entity_key);
+        let stop_metric_set = pipeline_ctx
+            .metrics_registry()
+            .register_metric_set_for_entity::<StopwatchStopMetrics>(entity_key);
 
-        // Create an EffectHandler with the stopwatch stop role.
+        // Create an EffectHandler with both stopwatch roles.
         let (_snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
         let mut eh = EffectHandler::<u64>::new(
             test_node("stop_node"),
@@ -967,16 +1016,47 @@ mod tests {
             None,
             metrics_reporter,
         );
-        eh.set_stopwatch_roles(false, Some(metric_set), true);
+        eh.set_stopwatch_roles(true, Some(start_metric_set), Some(stop_metric_set), true);
 
         // Record two observations — should accumulate in the local Mmsc,
         // not touch the MetricSet yet.
+        eh.record_stopwatch_start_signals(10);
+        eh.record_stopwatch_start_signals(20);
         eh.record_stopwatch_stop(1000);
         eh.record_stopwatch_stop(2000);
+        eh.record_stopwatch_stop_signals(7);
+        eh.record_stopwatch_stop_signals(8);
+
+        let start_acc = eh
+            .stopwatch
+            .start
+            .as_ref()
+            .unwrap()
+            .signals_incoming_acc
+            .get()
+            .get();
+        assert_eq!(
+            start_acc.count, 2,
+            "start item Mmsc should have 2 observations"
+        );
+        assert!((start_acc.sum - 30.0).abs() < f64::EPSILON);
 
         let acc = eh.stopwatch.stop.as_ref().unwrap().duration_acc.get().get();
         assert_eq!(acc.count, 2, "local Mmsc should have 2 observations");
         assert!((acc.sum - 3000.0).abs() < f64::EPSILON);
+        let produced_acc = eh
+            .stopwatch
+            .stop
+            .as_ref()
+            .unwrap()
+            .signals_outgoing_acc
+            .get()
+            .get();
+        assert_eq!(
+            produced_acc.count, 2,
+            "stop item Mmsc should have 2 observations"
+        );
+        assert!((produced_acc.sum - 15.0).abs() < f64::EPSILON);
 
         // MetricSet should still be empty before report.
         let ms_snap = eh
@@ -992,9 +1072,33 @@ mod tests {
         // report_stopwatch drains the accumulator into the MetricSet.
         eh.report_stopwatch();
 
-        // Accumulator should be drained.
+        // Accumulators should be drained.
+        let start_acc_after = eh
+            .stopwatch
+            .start
+            .as_ref()
+            .unwrap()
+            .signals_incoming_acc
+            .get()
+            .get();
+        assert_eq!(
+            start_acc_after.count, 0,
+            "start accumulator should be drained"
+        );
         let acc_after = eh.stopwatch.stop.as_ref().unwrap().duration_acc.get().get();
-        assert_eq!(acc_after.count, 0, "accumulator should be drained");
+        assert_eq!(acc_after.count, 0, "duration accumulator should be drained");
+        let produced_acc_after = eh
+            .stopwatch
+            .stop
+            .as_ref()
+            .unwrap()
+            .signals_outgoing_acc
+            .get()
+            .get();
+        assert_eq!(
+            produced_acc_after.count, 0,
+            "stop item accumulator should be drained"
+        );
 
         // Another record + report cycle should work independently.
         eh.record_stopwatch_stop(500);
@@ -1013,7 +1117,7 @@ mod tests {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
-        eh.set_stopwatch_roles(true, None, true);
+        eh.set_stopwatch_roles(true, None, None, true);
         assert!(eh.stopwatch.active);
 
         eh.begin_process_timing();
@@ -1040,7 +1144,7 @@ mod tests {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
-        eh.set_stopwatch_roles(true, None, true);
+        eh.set_stopwatch_roles(true, None, None, true);
         assert_eq!(eh.take_elapsed_since_send_marker_ns(), 0);
     }
 }

@@ -10,8 +10,16 @@
 
 use super::*;
 
-impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
-    ControllerRuntime<PData>
+impl<
+    PData: 'static
+        + Clone
+        + Send
+        + Sync
+        + std::fmt::Debug
+        + ReceivedAtNode
+        + Unwindable
+        + FlowMeasurementHook,
+> ControllerRuntime<PData>
 {
     /// Emits the internal telemetry event for a rollout/shutdown worker panic.
     pub(super) fn report_controller_worker_panic(

@@ -21,8 +21,16 @@ fn deployed_instance_label(deployed_key: &DeployedPipelineKey) -> String {
     )
 }
 
-impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
-    ControllerRuntime<PData>
+impl<
+    PData: 'static
+        + Clone
+        + Send
+        + Sync
+        + std::fmt::Debug
+        + ReceivedAtNode
+        + Unwindable
+        + FlowMeasurementHook,
+> ControllerRuntime<PData>
 {
     /// Launches one regular pipeline instance on a specific core and generation.
     pub(super) fn launch_regular_pipeline_instance(

@@ -44,7 +44,10 @@ use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::processor::ProcessorRuntimeRequirements;
 use crate::shared::message::SharedSender;
-use crate::stopwatch::{SharedStopwatchState, StopMeasurements, StopwatchMetrics, nanos_u64};
+use crate::stopwatch::{
+    SharedStopwatchState, StartMeasurements, StopMeasurements, StopwatchStartMetrics,
+    StopwatchStopMetrics, nanos_u64,
+};
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
 use otap_df_config::PortName;
@@ -195,14 +198,20 @@ impl<PData> EffectHandler<PData> {
     pub(crate) fn set_stopwatch_roles(
         &mut self,
         is_start: bool,
-        stop_metric: Option<MetricSet<StopwatchMetrics>>,
+        start_metric: Option<MetricSet<StopwatchStartMetrics>>,
+        stop_metric: Option<MetricSet<StopwatchStopMetrics>>,
         stopwatches_active: bool,
     ) {
         self.stopwatch.is_start = is_start;
         self.stopwatch.active = stopwatches_active;
+        self.stopwatch.start = start_metric.map(|metrics| StartMeasurements {
+            metrics,
+            signals_incoming_acc: Arc::new(Mutex::new(Mmsc::default())),
+        });
         self.stopwatch.stop = stop_metric.map(|metrics| StopMeasurements {
             metrics,
             duration_acc: Arc::new(Mutex::new(Mmsc::default())),
+            signals_outgoing_acc: Arc::new(Mutex::new(Mmsc::default())),
         });
     }
 
@@ -271,17 +280,60 @@ impl<PData> EffectHandler<PData> {
         acc.record(total as f64);
     }
 
+    /// Record signal-item count into the shared start-side stopwatch accumulator.
+    pub fn record_stopwatch_start_signals(&self, signals: u64) {
+        let Some(start) = self.stopwatch.start.as_ref() else {
+            return;
+        };
+        let mut acc = start
+            .signals_incoming_acc
+            .lock()
+            .expect("stopwatch signals_incoming_acc poisoned");
+        acc.record(signals as f64);
+    }
+
+    /// Record signal-item count into the shared stop-side stopwatch accumulator.
+    pub fn record_stopwatch_stop_signals(&self, signals: u64) {
+        let Some(stop) = self.stopwatch.stop.as_ref() else {
+            return;
+        };
+        let mut acc = stop
+            .signals_outgoing_acc
+            .lock()
+            .expect("stopwatch signals_outgoing_acc poisoned");
+        acc.record(signals as f64);
+    }
+
     /// Drain accumulated stopwatch observations into the MetricSet and report.
     pub(crate) fn report_stopwatch(&mut self) {
-        if let Some(stop) = self.stopwatch.stop.as_mut() {
+        if let Some(start) = self.stopwatch.start.as_mut() {
             let drained = {
+                let mut guard = start
+                    .signals_incoming_acc
+                    .lock()
+                    .expect("stopwatch signals_incoming_acc poisoned");
+                std::mem::take(&mut *guard)
+            };
+            start.metrics.signals_incoming.merge(drained);
+            let _ = self.core.metrics_reporter.report(&mut start.metrics);
+        }
+        if let Some(stop) = self.stopwatch.stop.as_mut() {
+            let duration_drained = {
                 let mut guard = stop
                     .duration_acc
                     .lock()
                     .expect("stopwatch duration_acc poisoned");
                 std::mem::take(&mut *guard)
             };
-            stop.metrics.compute_duration.merge(drained);
+            stop.metrics.compute_duration.merge(duration_drained);
+            let signals_drained = {
+                let mut guard = stop
+                    .signals_outgoing_acc
+                    .lock()
+                    .expect("stopwatch signals_outgoing_acc poisoned");
+                std::mem::take(&mut *guard)
+            };
+            stop.metrics.signals_outgoing.merge(signals_drained);
             let _ = self.core.metrics_reporter.report(&mut stop.metrics);
         }
     }
@@ -294,7 +346,7 @@ impl<PData> EffectHandler<PData> {
     #[inline]
     pub async fn send_message(&self, mut data: PData) -> Result<(), TypedError<PData>>
     where
-        PData: crate::processor::ProcessorSendHook + Send,
+        PData: crate::processor::FlowMeasurementHook + Send,
     {
         data.before_processor_send(self);
         self.router.send_default(data).await
@@ -313,7 +365,7 @@ impl<PData> EffectHandler<PData> {
     #[inline]
     pub fn try_send_message(&self, mut data: PData) -> Result<(), TypedError<PData>>
     where
-        PData: crate::processor::ProcessorSendHook + Send,
+        PData: crate::processor::FlowMeasurementHook + Send,
     {
         data.before_processor_send(self);
         self.router.try_send_default(data)
@@ -328,7 +380,7 @@ impl<PData> EffectHandler<PData> {
     ) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
-        PData: crate::processor::ProcessorSendHook + Send,
+        PData: crate::processor::FlowMeasurementHook + Send,
     {
         data.before_processor_send(self);
         self.router.send_to(port, data).await
@@ -348,7 +400,7 @@ impl<PData> EffectHandler<PData> {
     pub fn try_send_message_to<P>(&self, port: P, mut data: PData) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
-        PData: crate::processor::ProcessorSendHook + Send,
+        PData: crate::processor::FlowMeasurementHook + Send,
     {
         data.before_processor_send(self);
         self.router.try_send_to(port, data)
@@ -474,6 +526,14 @@ impl<PData> crate::processor::StopwatchEffectHandler for EffectHandler<PData> {
     fn record_stopwatch_stop(&self, total: u64) {
         EffectHandler::record_stopwatch_stop(self, total);
     }
+    #[inline]
+    fn record_stopwatch_start_signals(&self, signals: u64) {
+        EffectHandler::record_stopwatch_start_signals(self, signals);
+    }
+    #[inline]
+    fn record_stopwatch_stop_signals(&self, signals: u64) {
+        EffectHandler::record_stopwatch_stop_signals(self, signals);
+    }
 }
 
 #[async_trait(?Send)]
@@ -499,7 +559,7 @@ mod tests {
     use otap_df_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
 
-    // Note: `impl ProcessorSendHook for u64` lives in `crate::local::processor`
+    // Note: `impl FlowMeasurementHook for u64` lives in `crate::local::processor`
     // tests; trait impls are crate-wide so we share it across test modules.
 
     #[test]
@@ -622,7 +682,7 @@ mod tests {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
-        eh.set_stopwatch_roles(true, None, true);
+        eh.set_stopwatch_roles(true, None, None, true);
         assert!(eh.is_stopwatch_start());
         assert!(eh.stopwatches_active());
 
@@ -647,19 +707,39 @@ mod tests {
         let entity_key = ctx
             .metrics_registry()
             .register_entity(StopwatchAttributeSet::default());
-        let metric_set = ctx
+        let start_metric_set = ctx
             .metrics_registry()
-            .register_metric_set_for_entity::<StopwatchMetrics>(entity_key);
+            .register_metric_set_for_entity::<StopwatchStartMetrics>(entity_key);
+        let stop_metric_set = ctx
+            .metrics_registry()
+            .register_metric_set_for_entity::<StopwatchStopMetrics>(entity_key);
 
-        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(2);
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
-        eh.set_stopwatch_roles(false, Some(metric_set), true);
+        eh.set_stopwatch_roles(true, Some(start_metric_set), Some(stop_metric_set), true);
+        assert!(eh.is_stopwatch_start());
         assert!(eh.is_stopwatch_stop());
 
+        eh.record_stopwatch_start_signals(10);
+        eh.record_stopwatch_start_signals(20);
         for ns in [1000, 2000, 3000] {
             eh.record_stopwatch_stop(ns);
         }
+        eh.record_stopwatch_stop_signals(7);
+        eh.record_stopwatch_stop_signals(8);
+
+        let start_before_report = eh
+            .stopwatch
+            .start
+            .as_ref()
+            .unwrap()
+            .signals_incoming_acc
+            .lock()
+            .unwrap()
+            .get();
+        assert_eq!(start_before_report.count, 2);
+        assert!((start_before_report.sum - 30.0).abs() < f64::EPSILON);
 
         let before_report = eh
             .stopwatch
@@ -672,8 +752,33 @@ mod tests {
             .get();
         assert_eq!(before_report.count, 3);
         assert!((before_report.sum - 6000.0).abs() < f64::EPSILON);
+        let produced_before_report = eh
+            .stopwatch
+            .stop
+            .as_ref()
+            .unwrap()
+            .signals_outgoing_acc
+            .lock()
+            .unwrap()
+            .get();
+        assert_eq!(produced_before_report.count, 2);
+        assert!((produced_before_report.sum - 15.0).abs() < f64::EPSILON);
 
         eh.report_stopwatch();
+
+        let start_drained = eh
+            .stopwatch
+            .start
+            .as_ref()
+            .unwrap()
+            .signals_incoming_acc
+            .lock()
+            .unwrap()
+            .get();
+        assert_eq!(
+            start_drained.count, 0,
+            "start accumulator should be drained"
+        );
 
         let drained = eh
             .stopwatch
@@ -684,18 +789,43 @@ mod tests {
             .lock()
             .unwrap()
             .get();
-        assert_eq!(drained.count, 0, "stop accumulator should be drained");
+        assert_eq!(drained.count, 0, "duration accumulator should be drained");
+        let produced_drained = eh
+            .stopwatch
+            .stop
+            .as_ref()
+            .unwrap()
+            .signals_outgoing_acc
+            .lock()
+            .unwrap()
+            .get();
+        assert_eq!(
+            produced_drained.count, 0,
+            "stop item accumulator should be drained"
+        );
 
         let snapshot = metrics_rx
             .try_recv()
-            .expect("stopwatch metric should be reported");
-        let [MetricValue::Mmsc(metric_snapshot)] = snapshot.get_metrics() else {
-            panic!("expected one stopwatch MMSC metric");
+            .expect("start stopwatch metric should be reported");
+        let [MetricValue::Mmsc(consumed_snapshot)] = snapshot.get_metrics() else {
+            panic!("expected one start stopwatch MMSC metric");
         };
-        assert!(
-            metric_snapshot.count >= 1,
-            "reported metric set should contain at least one observation"
-        );
-        assert!((metric_snapshot.sum - 6000.0).abs() < f64::EPSILON);
+        assert_eq!(consumed_snapshot.count, 2);
+        assert!((consumed_snapshot.sum - 30.0).abs() < f64::EPSILON);
+
+        let snapshot = metrics_rx
+            .try_recv()
+            .expect("stop stopwatch metric should be reported");
+        let [
+            MetricValue::Mmsc(duration_snapshot),
+            MetricValue::Mmsc(produced_snapshot),
+        ] = snapshot.get_metrics()
+        else {
+            panic!("expected stopwatch duration and outgoing MMSC metrics");
+        };
+        assert_eq!(duration_snapshot.count, 3);
+        assert!((duration_snapshot.sum - 6000.0).abs() < f64::EPSILON);
+        assert_eq!(produced_snapshot.count, 2);
+        assert!((produced_snapshot.sum - 15.0).abs() < f64::EPSILON);
     }
 }
