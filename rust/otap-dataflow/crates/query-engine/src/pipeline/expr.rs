@@ -61,7 +61,7 @@ use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::crypto::sha256;
 use datafusion::functions::encoding::encode;
-use datafusion::functions::string::{concat, concat_ws, lower, replace, uuid, upper};
+use datafusion::functions::string::{concat, concat_ws, lower, replace, upper, uuid};
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{
     BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit,
@@ -78,7 +78,7 @@ use otap_df_pdata::schema::consts;
 
 use crate::consts::{
     ENCODE_FUNC_NAME, LOWER_CASE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME,
-    UUID_FUNC_NAME, UUIDV7_FUNC_NAME, UPPER_CASE_FUNC_NAME,
+    UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME, UUIDV7_FUNC_NAME,
 };
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::{join, multi_join};
