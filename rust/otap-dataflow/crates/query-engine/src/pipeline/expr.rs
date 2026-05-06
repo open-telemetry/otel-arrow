@@ -62,6 +62,8 @@ use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::crypto::sha256;
 use datafusion::functions::datetime::to_char;
 use datafusion::functions::encoding::encode;
+
+use datafusion::functions::math::log10;
 use datafusion::functions::string::{concat, concat_ws, lower, ltrim, replace, rtrim, upper, uuid};
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{
@@ -78,9 +80,9 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
 use crate::consts::{
-    ENCODE_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME,
-    REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME, SHA256_FUNC_NAME, UPPER_CASE_FUNC_NAME,
-    UUID_FUNC_NAME, UUIDV7_FUNC_NAME,
+    ENCODE_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOG_FUNC_NAME, LOWER_CASE_FUNC_NAME,
+    LTRIM_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME, SHA256_FUNC_NAME,
+    UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME, UUIDV7_FUNC_NAME,
 };
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::{join, multi_join};
@@ -832,6 +834,7 @@ impl DataFusionFunctionDef {
         // upstream in datafusion_functions)
         Some(match func_name {
             ENCODE_FUNC_NAME => Self::new(encode(), ExprLogicalType::String, false, None),
+            LOG_FUNC_NAME => Self::new(log10(), ExprLogicalType::Float64, true, None),
             LTRIM_FUNC_NAME => Self::new(ltrim(), ExprLogicalType::String, true, None),
             REGEXP_SUBSTR_FUNC_NAME => {
                 Self::new(regexp_substr(), ExprLogicalType::String, false, None)
