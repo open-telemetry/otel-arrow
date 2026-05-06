@@ -819,7 +819,7 @@ mod test {
         // Wait for the server to be ready to accept connections. Without this,
         // the exporter may attempt to connect before the server has bound,
         // leading to a retryable NACK and the test hanging in validation.
-        wait_for_port_ready(tokio_rt, endpoint_addr);
+        wait_for_port_ready(endpoint_addr);
 
         (pdata_rx, server_cancellation_token2)
     }
@@ -929,7 +929,7 @@ mod test {
     }
 
     /// Polls a TCP port until it accepts connections, or panics after 5 seconds.
-    fn wait_for_port_ready(tokio_rt: &Runtime, addr: &str) {
+    fn wait_for_port_ready(addr: &str) {
         let addr: std::net::SocketAddr = addr.parse().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -997,7 +997,7 @@ mod test {
         // Wait for the server to be ready to accept connections. Without this,
         // the exporter may attempt to connect before the server has bound,
         // leading to a retryable NACK and the test hanging in validation.
-        wait_for_port_ready(tokio_rt, endpoint_addr);
+        wait_for_port_ready(endpoint_addr);
 
         (pdata_rx, server_cancellation_token2)
     }
@@ -2108,15 +2108,14 @@ mod test {
 
                     let num_expected_pdatas = 1;
                     let mut pdatas_received = Vec::new();
-                    let recv_deadline =
-                        tokio::time::timeout(Duration::from_secs(10), async {
-                            while let Some(pdata) = pdata_rx.recv().await {
-                                pdatas_received.push(pdata);
-                                if pdatas_received.len() >= num_expected_pdatas {
-                                    break;
-                                }
+                    let recv_deadline = tokio::time::timeout(Duration::from_secs(10), async {
+                        while let Some(pdata) = pdata_rx.recv().await {
+                            pdatas_received.push(pdata);
+                            if pdatas_received.len() >= num_expected_pdatas {
+                                break;
                             }
-                        });
+                        }
+                    });
                     recv_deadline.await.expect(
                         "timed out waiting for server to receive pdata; \
                          server may not have been ready in time",
