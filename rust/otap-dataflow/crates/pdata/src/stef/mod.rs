@@ -2409,18 +2409,18 @@ fn append_uvarint(mut value: u64, dst: &mut Vec<u8>) {
 }
 
 #[derive(Default)]
-struct MetricsOtapStreamDecoder {
-    state: DirectDecoderState,
-    builder: DirectOtapMetricsBuilder,
-    current_resource: DirectDecResource,
-    current_scope: DirectDecScope,
-    current_metric: DirectDecMetric,
-    current_attrs: Vec<DirectAttribute>,
+struct MetricsOtapStreamDecoder<'a> {
+    state: DirectDecoderState<'a>,
+    builder: DirectOtapMetricsBuilder<'a>,
+    current_resource: DirectDecResource<'a>,
+    current_scope: DirectDecScope<'a>,
+    current_metric: DirectDecMetric<'a>,
+    current_attrs: Vec<DecodedAttribute<'a>>,
     current_point: DecPoint,
 }
 
-impl MetricsOtapStreamDecoder {
-    fn decode(bytes: &[u8]) -> Result<(OtapArrowRecords, u64), Error> {
+impl<'a> MetricsOtapStreamDecoder<'a> {
+    fn decode(bytes: &'a [u8]) -> Result<(OtapArrowRecords, u64), Error> {
         let mut input = SliceReader::new(bytes);
         read_fixed_header(&mut input)?;
         let (_, var_header) = read_frame(&mut input)?;
@@ -2446,7 +2446,7 @@ impl MetricsOtapStreamDecoder {
         Ok((records, record_count))
     }
 
-    fn decode_data_frame(&mut self, frame: &[u8]) -> Result<u64, Error> {
+    fn decode_data_frame(&mut self, frame: &'a [u8]) -> Result<u64, Error> {
         let mut reader = SliceReader::new(frame);
         let record_count = reader.read_uvarint()?;
         let size_len = usize::try_from(reader.read_uvarint()?)
@@ -2480,11 +2480,11 @@ impl MetricsOtapStreamDecoder {
     }
 }
 
-struct DirectOtapMetricsBuilder {
+struct DirectOtapMetricsBuilder<'a> {
     resource_attrs: AttributesRecordBatchBuilder<u16>,
     scope_attrs: AttributesRecordBatchBuilder<u16>,
     metric_attrs: AttributesRecordBatchBuilder<u16>,
-    ndp_attrs: DirectNumberDpAttrsRecordBatchBuilder,
+    ndp_attrs: DirectNumberDpAttrsRecordBatchBuilder<'a>,
     metrics: MetricsRecordBatchBuilder,
     ndp: DirectNumberDataPointsRecordBatchBuilder,
     next_resource_id: u16,
@@ -2496,7 +2496,7 @@ struct DirectOtapMetricsBuilder {
     current_metric_id: Option<u16>,
 }
 
-impl Default for DirectOtapMetricsBuilder {
+impl<'a> Default for DirectOtapMetricsBuilder<'a> {
     fn default() -> Self {
         Self {
             resource_attrs: AttributesRecordBatchBuilder::<u16>::new(),
@@ -2516,7 +2516,7 @@ impl Default for DirectOtapMetricsBuilder {
     }
 }
 
-impl DirectOtapMetricsBuilder {
+impl<'a> DirectOtapMetricsBuilder<'a> {
     fn reserve_number_points(&mut self, additional: usize) {
         self.ndp.reserve(additional);
         self.ndp_attrs.begin_frame(additional);
@@ -2525,9 +2525,9 @@ impl DirectOtapMetricsBuilder {
     fn prepare_record(
         &mut self,
         modified: RootModified,
-        resource: &DirectDecResource,
-        scope: &DirectDecScope,
-        metric: &DirectDecMetric,
+        resource: &DirectDecResource<'a>,
+        scope: &DirectDecScope<'a>,
+        metric: &DirectDecMetric<'a>,
     ) -> Result<u16, Error> {
         if self.current_resource_id.is_none() || modified.resource {
             self.start_resource(resource)?;
@@ -2568,38 +2568,38 @@ impl DirectOtapMetricsBuilder {
         }
     }
 
-    fn append_number_point_attrs(&mut self, point_id: u32, attrs: &[DirectAttribute]) {
+    fn append_number_point_attrs(&mut self, point_id: u32, attrs: &[DecodedAttribute<'a>]) {
         self.ndp_attrs.append_all(point_id, attrs);
     }
 
-    fn start_resource(&mut self, resource: &DirectDecResource) -> Result<(), Error> {
+    fn start_resource(&mut self, resource: &DirectDecResource<'a>) -> Result<(), Error> {
         let resource_id = self.allocate_resource_id()?;
         self.current_resource_id = Some(resource_id);
         self.current_scope_id = None;
         self.current_metric_id = None;
 
         for kv in &resource.attributes {
-            append_direct_attribute_with_parent(&mut self.resource_attrs, &resource_id, kv);
+            append_decoded_attribute_with_parent(&mut self.resource_attrs, &resource_id, kv);
         }
         Ok(())
     }
 
-    fn start_scope(&mut self, scope: &DirectDecScope) -> Result<(), Error> {
+    fn start_scope(&mut self, scope: &DirectDecScope<'a>) -> Result<(), Error> {
         let scope_id = self.allocate_scope_id()?;
         self.current_scope_id = Some(scope_id);
         self.current_metric_id = None;
 
         for kv in &scope.attributes {
-            append_direct_attribute_with_parent(&mut self.scope_attrs, &scope_id, kv);
+            append_decoded_attribute_with_parent(&mut self.scope_attrs, &scope_id, kv);
         }
         Ok(())
     }
 
     fn start_metric(
         &mut self,
-        resource: &DirectDecResource,
-        scope: &DirectDecScope,
-        metric: &DirectDecMetric,
+        resource: &DirectDecResource<'a>,
+        scope: &DirectDecScope<'a>,
+        metric: &DirectDecMetric<'a>,
     ) -> Result<(), Error> {
         let metric_id = self.allocate_metric_id()?;
         let resource_id = self
@@ -2648,7 +2648,7 @@ impl DirectOtapMetricsBuilder {
         }
 
         for kv in &metric.metadata {
-            append_direct_attribute_with_parent(&mut self.metric_attrs, &metric_id, kv);
+            append_decoded_attribute_with_parent(&mut self.metric_attrs, &metric_id, kv);
         }
 
         self.current_metric_id = Some(metric_id);
@@ -2860,20 +2860,21 @@ impl DirectNumberDataPointsRecordBatchBuilder {
 }
 
 #[derive(Default)]
-struct DirectNumberDpAttrsRecordBatchBuilder {
+struct DirectNumberDpAttrsRecordBatchBuilder<'a> {
     parent_id: Vec<u32>,
-    key: Vec<Rc<str>>,
+    key: Vec<&'a str>,
     attr_type: Vec<u8>,
-    str_value: Vec<Option<Rc<str>>>,
+    str_value: Vec<Option<&'a str>>,
     int_value: Vec<Option<i64>>,
     double_value: Vec<Option<f64>>,
     bool_value: Vec<Option<bool>>,
-    bytes_value: Vec<Option<Vec<u8>>>,
+    bytes_value: Vec<Option<&'a [u8]>>,
     pending_frame_points: Option<usize>,
     reserved_row_capacity: usize,
+    repeated_plan: DirectNumberDpAttrsAppendPlan<'a>,
 }
 
-impl DirectNumberDpAttrsRecordBatchBuilder {
+impl<'a> DirectNumberDpAttrsRecordBatchBuilder<'a> {
     fn begin_frame(&mut self, point_count: usize) {
         self.pending_frame_points = Some(point_count);
         self.reserve_additional_rows(point_count);
@@ -2911,32 +2912,45 @@ impl DirectNumberDpAttrsRecordBatchBuilder {
         }
     }
 
-    fn append_all(&mut self, parent_id: u32, attrs: &[DirectAttribute]) {
+    fn append_all(&mut self, parent_id: u32, attrs: &[DecodedAttribute<'a>]) {
         self.reserve_frame_rows_for_attr_count(attrs.len());
-        for kv in attrs {
-            self.append(parent_id, kv);
+        if self.repeated_plan.key.len() != attrs.len() {
+            self.repeated_plan.rebuild(attrs);
         }
+        self.append_repeated_plan(parent_id);
     }
 
-    fn append(&mut self, parent_id: u32, kv: &DirectAttribute) {
+    fn rebuild_repeated_plan(&mut self, attrs: &[DecodedAttribute<'a>]) {
+        self.repeated_plan.rebuild(attrs);
+    }
+
+    fn repeated_plan_len(&self) -> usize {
+        self.repeated_plan.key.len()
+    }
+
+    fn update_repeated_plan_value(&mut self, index: usize, attr: &DecodedAttribute<'a>) {
+        self.repeated_plan.update_value(index, attr);
+    }
+
+    fn append(&mut self, parent_id: u32, kv: &DecodedAttribute<'a>) {
         let row_index = self.parent_id.len();
         self.parent_id.push(parent_id);
-        self.key.push(kv.key.clone());
+        self.key.push(kv.key);
 
         match &kv.value {
-            DirectAnyValue::Empty => {
+            DecodedAnyValue::Empty => {
                 self.attr_type.push(AttributeValueType::Empty as u8);
                 self.push_null_existing_values();
             }
-            DirectAnyValue::String(value) => {
+            DecodedAnyValue::String(value) => {
                 self.attr_type.push(AttributeValueType::Str as u8);
-                self.push_str_value(row_index, value.clone());
+                self.push_str_value(row_index, value);
                 self.push_null_int_value();
                 self.push_null_double_value();
                 self.push_null_bool_value();
                 self.push_null_bytes_value();
             }
-            DirectAnyValue::Bool(value) => {
+            DecodedAnyValue::Bool(value) => {
                 self.attr_type.push(AttributeValueType::Bool as u8);
                 self.push_null_str_value();
                 self.push_null_int_value();
@@ -2944,7 +2958,7 @@ impl DirectNumberDpAttrsRecordBatchBuilder {
                 self.push_bool_value(row_index, *value);
                 self.push_null_bytes_value();
             }
-            DirectAnyValue::Int(value) => {
+            DecodedAnyValue::Int(value) => {
                 self.attr_type.push(AttributeValueType::Int as u8);
                 self.push_null_str_value();
                 self.push_int_value(row_index, *value);
@@ -2952,7 +2966,7 @@ impl DirectNumberDpAttrsRecordBatchBuilder {
                 self.push_null_bool_value();
                 self.push_null_bytes_value();
             }
-            DirectAnyValue::Double(value) => {
+            DecodedAnyValue::Double(value) => {
                 self.attr_type.push(AttributeValueType::Double as u8);
                 self.push_null_str_value();
                 self.push_null_int_value();
@@ -2960,15 +2974,64 @@ impl DirectNumberDpAttrsRecordBatchBuilder {
                 self.push_null_bool_value();
                 self.push_null_bytes_value();
             }
-            DirectAnyValue::Bytes(value) => {
+            DecodedAnyValue::Bytes(value) => {
                 self.attr_type.push(AttributeValueType::Bytes as u8);
                 self.push_null_str_value();
                 self.push_null_int_value();
                 self.push_null_double_value();
                 self.push_null_bool_value();
-                self.push_bytes_value(row_index, value.clone());
+                self.push_bytes_value(row_index, value);
             }
         }
+    }
+
+    fn append_repeated_plan(&mut self, parent_id: u32) {
+        let row_count = self.repeated_plan.key.len();
+        if row_count == 0 {
+            return;
+        }
+
+        let row_index = self.parent_id.len();
+        self.parent_id
+            .extend(std::iter::repeat_n(parent_id, row_count));
+        self.key.extend_from_slice(&self.repeated_plan.key);
+        self.attr_type
+            .extend_from_slice(&self.repeated_plan.attr_type);
+        extend_optional_values(
+            &mut self.str_value,
+            row_index,
+            &self.repeated_plan.str_value,
+            self.reserved_row_capacity,
+            self.repeated_plan.has_str_value,
+        );
+        extend_optional_values(
+            &mut self.int_value,
+            row_index,
+            &self.repeated_plan.int_value,
+            self.reserved_row_capacity,
+            self.repeated_plan.has_int_value,
+        );
+        extend_optional_values(
+            &mut self.double_value,
+            row_index,
+            &self.repeated_plan.double_value,
+            self.reserved_row_capacity,
+            self.repeated_plan.has_double_value,
+        );
+        extend_optional_values(
+            &mut self.bool_value,
+            row_index,
+            &self.repeated_plan.bool_value,
+            self.reserved_row_capacity,
+            self.repeated_plan.has_bool_value,
+        );
+        extend_optional_values(
+            &mut self.bytes_value,
+            row_index,
+            &self.repeated_plan.bytes_value,
+            self.reserved_row_capacity,
+            self.repeated_plan.has_bytes_value,
+        );
     }
 
     fn push_null_existing_values(&mut self) {
@@ -2979,7 +3042,7 @@ impl DirectNumberDpAttrsRecordBatchBuilder {
         self.push_null_bytes_value();
     }
 
-    fn push_str_value(&mut self, row_index: usize, value: Rc<str>) {
+    fn push_str_value(&mut self, row_index: usize, value: &'a str) {
         if self.str_value.is_empty() {
             self.str_value.resize(row_index, None);
             reserve_vec_to(&mut self.str_value, self.reserved_row_capacity);
@@ -3035,7 +3098,7 @@ impl DirectNumberDpAttrsRecordBatchBuilder {
         }
     }
 
-    fn push_bytes_value(&mut self, row_index: usize, value: Vec<u8>) {
+    fn push_bytes_value(&mut self, row_index: usize, value: &'a [u8]) {
         if self.bytes_value.is_empty() {
             self.bytes_value.resize(row_index, None);
             reserve_vec_to(&mut self.bytes_value, self.reserved_row_capacity);
@@ -3063,9 +3126,7 @@ impl DirectNumberDpAttrsRecordBatchBuilder {
         );
         columns.push(array);
 
-        let array = Arc::new(StringArray::from_iter_values(
-            self.key.iter().map(Rc::as_ref),
-        )) as ArrayRef;
+        let array = Arc::new(StringArray::from_iter_values(self.key.iter().copied())) as ArrayRef;
         self.key.clear();
         fields.push(Field::new(
             consts::ATTRIBUTE_KEY,
@@ -3083,9 +3144,8 @@ impl DirectNumberDpAttrsRecordBatchBuilder {
         columns.push(array);
 
         if !self.str_value.is_empty() {
-            let array = Arc::new(StringArray::from_iter(
-                self.str_value.iter().map(Option::as_deref),
-            )) as ArrayRef;
+            let array =
+                Arc::new(StringArray::from_iter(self.str_value.iter().copied())) as ArrayRef;
             self.str_value.clear();
             fields.push(Field::new(
                 consts::ATTRIBUTE_STR,
@@ -3128,9 +3188,8 @@ impl DirectNumberDpAttrsRecordBatchBuilder {
         }
 
         if !self.bytes_value.is_empty() {
-            let array = Arc::new(BinaryArray::from_iter(
-                self.bytes_value.iter().map(Option::as_deref),
-            )) as ArrayRef;
+            let array =
+                Arc::new(BinaryArray::from_iter(self.bytes_value.iter().copied())) as ArrayRef;
             self.bytes_value.clear();
             fields.push(Field::new(
                 consts::ATTRIBUTE_BYTES,
@@ -3144,47 +3203,233 @@ impl DirectNumberDpAttrsRecordBatchBuilder {
     }
 }
 
+#[derive(Default)]
+struct DirectNumberDpAttrsAppendPlan<'a> {
+    key: Vec<&'a str>,
+    attr_type: Vec<u8>,
+    str_value: Vec<Option<&'a str>>,
+    int_value: Vec<Option<i64>>,
+    double_value: Vec<Option<f64>>,
+    bool_value: Vec<Option<bool>>,
+    bytes_value: Vec<Option<&'a [u8]>>,
+    has_str_value: bool,
+    has_int_value: bool,
+    has_double_value: bool,
+    has_bool_value: bool,
+    has_bytes_value: bool,
+}
+
+impl<'a> DirectNumberDpAttrsAppendPlan<'a> {
+    fn rebuild(&mut self, attrs: &[DecodedAttribute<'a>]) {
+        self.key.clear();
+        self.attr_type.clear();
+        self.str_value.clear();
+        self.int_value.clear();
+        self.double_value.clear();
+        self.bool_value.clear();
+        self.bytes_value.clear();
+        self.has_str_value = false;
+        self.has_int_value = false;
+        self.has_double_value = false;
+        self.has_bool_value = false;
+        self.has_bytes_value = false;
+
+        self.key.reserve(attrs.len());
+        self.attr_type.reserve(attrs.len());
+        self.str_value.reserve(attrs.len());
+        self.int_value.reserve(attrs.len());
+        self.double_value.reserve(attrs.len());
+        self.bool_value.reserve(attrs.len());
+        self.bytes_value.reserve(attrs.len());
+
+        for kv in attrs {
+            self.key.push(kv.key);
+            match kv.value {
+                DecodedAnyValue::Empty => {
+                    self.attr_type.push(AttributeValueType::Empty as u8);
+                    self.push_null_values();
+                }
+                DecodedAnyValue::String(value) => {
+                    self.attr_type.push(AttributeValueType::Str as u8);
+                    self.str_value.push(Some(value));
+                    self.int_value.push(None);
+                    self.double_value.push(None);
+                    self.bool_value.push(None);
+                    self.bytes_value.push(None);
+                    self.has_str_value = true;
+                }
+                DecodedAnyValue::Bool(value) => {
+                    self.attr_type.push(AttributeValueType::Bool as u8);
+                    self.str_value.push(None);
+                    self.int_value.push(None);
+                    self.double_value.push(None);
+                    self.bool_value.push(Some(value));
+                    self.bytes_value.push(None);
+                    self.has_bool_value = true;
+                }
+                DecodedAnyValue::Int(value) => {
+                    self.attr_type.push(AttributeValueType::Int as u8);
+                    self.str_value.push(None);
+                    self.int_value.push(Some(value));
+                    self.double_value.push(None);
+                    self.bool_value.push(None);
+                    self.bytes_value.push(None);
+                    self.has_int_value = true;
+                }
+                DecodedAnyValue::Double(value) => {
+                    self.attr_type.push(AttributeValueType::Double as u8);
+                    self.str_value.push(None);
+                    self.int_value.push(None);
+                    self.double_value.push(Some(value));
+                    self.bool_value.push(None);
+                    self.bytes_value.push(None);
+                    self.has_double_value = true;
+                }
+                DecodedAnyValue::Bytes(value) => {
+                    self.attr_type.push(AttributeValueType::Bytes as u8);
+                    self.str_value.push(None);
+                    self.int_value.push(None);
+                    self.double_value.push(None);
+                    self.bool_value.push(None);
+                    self.bytes_value.push(Some(value));
+                    self.has_bytes_value = true;
+                }
+            }
+        }
+    }
+
+    fn update_value(&mut self, index: usize, attr: &DecodedAttribute<'a>) {
+        self.key[index] = attr.key;
+        match attr.value {
+            DecodedAnyValue::Empty => {
+                self.attr_type[index] = AttributeValueType::Empty as u8;
+                self.set_null_values(index);
+            }
+            DecodedAnyValue::String(value) => {
+                self.attr_type[index] = AttributeValueType::Str as u8;
+                self.str_value[index] = Some(value);
+                self.int_value[index] = None;
+                self.double_value[index] = None;
+                self.bool_value[index] = None;
+                self.bytes_value[index] = None;
+                self.has_str_value = true;
+            }
+            DecodedAnyValue::Bool(value) => {
+                self.attr_type[index] = AttributeValueType::Bool as u8;
+                self.str_value[index] = None;
+                self.int_value[index] = None;
+                self.double_value[index] = None;
+                self.bool_value[index] = Some(value);
+                self.bytes_value[index] = None;
+                self.has_bool_value = true;
+            }
+            DecodedAnyValue::Int(value) => {
+                self.attr_type[index] = AttributeValueType::Int as u8;
+                self.str_value[index] = None;
+                self.int_value[index] = Some(value);
+                self.double_value[index] = None;
+                self.bool_value[index] = None;
+                self.bytes_value[index] = None;
+                self.has_int_value = true;
+            }
+            DecodedAnyValue::Double(value) => {
+                self.attr_type[index] = AttributeValueType::Double as u8;
+                self.str_value[index] = None;
+                self.int_value[index] = None;
+                self.double_value[index] = Some(value);
+                self.bool_value[index] = None;
+                self.bytes_value[index] = None;
+                self.has_double_value = true;
+            }
+            DecodedAnyValue::Bytes(value) => {
+                self.attr_type[index] = AttributeValueType::Bytes as u8;
+                self.str_value[index] = None;
+                self.int_value[index] = None;
+                self.double_value[index] = None;
+                self.bool_value[index] = None;
+                self.bytes_value[index] = Some(value);
+                self.has_bytes_value = true;
+            }
+        }
+    }
+
+    fn push_null_values(&mut self) {
+        self.str_value.push(None);
+        self.int_value.push(None);
+        self.double_value.push(None);
+        self.bool_value.push(None);
+        self.bytes_value.push(None);
+    }
+
+    fn set_null_values(&mut self, index: usize) {
+        self.str_value[index] = None;
+        self.int_value[index] = None;
+        self.double_value[index] = None;
+        self.bool_value[index] = None;
+        self.bytes_value[index] = None;
+    }
+}
+
 fn reserve_vec_to<T>(values: &mut Vec<T>, target_capacity: usize) {
     if values.capacity() < target_capacity {
         values.reserve(target_capacity - values.capacity());
     }
 }
 
-fn append_direct_attribute_with_parent<T>(
+fn extend_optional_values<T: Copy>(
+    values: &mut Vec<Option<T>>,
+    row_index: usize,
+    rows: &[Option<T>],
+    target_capacity: usize,
+    has_values: bool,
+) {
+    if rows.is_empty() {
+        return;
+    }
+    if values.is_empty() && has_values {
+        values.resize(row_index, None);
+        reserve_vec_to(values, target_capacity);
+    }
+    if !values.is_empty() {
+        values.extend_from_slice(rows);
+    }
+}
+
+fn append_decoded_attribute_with_parent<T>(
     attribute_rb_builder: &mut AttributesRecordBatchBuilder<T>,
     parent_id: &<<T as crate::otlp::attributes::parent_id::ParentId>::ArrayType as ArrowPrimitiveType>::Native,
-    kv: &DirectAttribute,
+    kv: &DecodedAttribute<'_>,
 ) where
     T: crate::otlp::attributes::parent_id::ParentId + AttributesRecordBatchBuilderConstructorHelper,
 {
     attribute_rb_builder.append_parent_id(parent_id);
-    append_direct_attribute_value(attribute_rb_builder, kv);
+    append_decoded_attribute_value(attribute_rb_builder, kv);
 }
 
-fn append_direct_attribute_value<T>(
+fn append_decoded_attribute_value<T>(
     attribute_rb_builder: &mut AttributesRecordBatchBuilder<T>,
-    kv: &DirectAttribute,
+    kv: &DecodedAttribute<'_>,
 ) where
     T: crate::otlp::attributes::parent_id::ParentId + AttributesRecordBatchBuilderConstructorHelper,
 {
     attribute_rb_builder.append_key(kv.key.as_bytes());
     match &kv.value {
-        DirectAnyValue::Empty => attribute_rb_builder.any_values_builder.append_empty(),
-        DirectAnyValue::String(value) => attribute_rb_builder
+        DecodedAnyValue::Empty => attribute_rb_builder.any_values_builder.append_empty(),
+        DecodedAnyValue::String(value) => attribute_rb_builder
             .any_values_builder
             .append_str(value.as_bytes()),
-        DirectAnyValue::Bool(value) => {
+        DecodedAnyValue::Bool(value) => {
             attribute_rb_builder.any_values_builder.append_bool(*value);
         }
-        DirectAnyValue::Int(value) => {
+        DecodedAnyValue::Int(value) => {
             attribute_rb_builder.any_values_builder.append_int(*value);
         }
-        DirectAnyValue::Double(value) => {
+        DecodedAnyValue::Double(value) => {
             attribute_rb_builder
                 .any_values_builder
                 .append_double(*value);
         }
-        DirectAnyValue::Bytes(value) => {
+        DecodedAnyValue::Bytes(value) => {
             attribute_rb_builder.any_values_builder.append_bytes(value);
         }
     }
@@ -3201,7 +3446,7 @@ struct DirectMetricsFrameDecoder<'a> {
 }
 
 impl<'a> DirectMetricsFrameDecoder<'a> {
-    fn new(columns: &'a DecodeColumn<'a>) -> Self {
+    fn new(columns: &DecodeColumn<'a>) -> Self {
         Self {
             root: BitReader::new(columns.data),
             metric: DirectMetricDecoder::new(&columns.children[1]),
@@ -3215,13 +3460,13 @@ impl<'a> DirectMetricsFrameDecoder<'a> {
     #[allow(clippy::too_many_arguments)]
     fn decode_record(
         &mut self,
-        builder: &mut DirectOtapMetricsBuilder,
-        resource: &mut DirectDecResource,
-        scope: &mut DirectDecScope,
-        metric: &mut DirectDecMetric,
-        attrs: &mut Vec<DirectAttribute>,
+        builder: &mut DirectOtapMetricsBuilder<'a>,
+        resource: &mut DirectDecResource<'a>,
+        scope: &mut DirectDecScope<'a>,
+        metric: &mut DirectDecMetric<'a>,
+        attrs: &mut Vec<DecodedAttribute<'a>>,
         point: &mut DecPoint,
-        state: &mut DirectDecoderState,
+        state: &mut DirectDecoderState<'a>,
     ) -> Result<(), Error> {
         let mask = self.root.read_bits(6)?;
         let modified = RootModified {
@@ -3266,21 +3511,21 @@ struct RootModified {
     scope: bool,
 }
 
-struct DirectDecoderState {
-    schema_url: DirectStringDict,
-    metric_name: DirectStringDict,
-    metric_description: DirectStringDict,
-    metric_unit: DirectStringDict,
-    scope_name: DirectStringDict,
-    scope_version: DirectStringDict,
-    attribute_key: DirectStringDict,
-    any_value_string: DirectStringDict,
-    resources: Vec<DirectDecResource>,
-    scopes: Vec<DirectDecScope>,
-    metrics: Vec<DirectDecMetric>,
+struct DirectDecoderState<'a> {
+    schema_url: DirectStringDict<'a>,
+    metric_name: DirectStringDict<'a>,
+    metric_description: DirectStringDict<'a>,
+    metric_unit: DirectStringDict<'a>,
+    scope_name: DirectStringDict<'a>,
+    scope_version: DirectStringDict<'a>,
+    attribute_key: DirectStringDict<'a>,
+    any_value_string: DirectStringDict<'a>,
+    resources: Vec<DirectDecResource<'a>>,
+    scopes: Vec<DirectDecScope<'a>>,
+    metrics: Vec<DirectDecMetric<'a>>,
 }
 
-impl Default for DirectDecoderState {
+impl<'a> Default for DirectDecoderState<'a> {
     fn default() -> Self {
         let mut state = Self {
             schema_url: DirectStringDict::default(),
@@ -3300,7 +3545,7 @@ impl Default for DirectDecoderState {
     }
 }
 
-impl DirectDecoderState {
+impl<'a> DirectDecoderState<'a> {
     fn reset_dictionaries(&mut self) {
         self.schema_url.reset();
         self.metric_name.reset();
@@ -3336,67 +3581,48 @@ enum DecPointValue {
     Float64(f64),
 }
 
-#[derive(Clone)]
-struct DirectDecResource {
-    schema_url: Rc<str>,
-    attributes: Vec<DirectAttribute>,
+#[derive(Clone, Default)]
+struct DirectDecResource<'a> {
+    schema_url: &'a str,
+    attributes: Vec<DecodedAttribute<'a>>,
     dropped_attributes_count: u32,
 }
 
-impl Default for DirectDecResource {
-    fn default() -> Self {
-        Self {
-            schema_url: empty_rc_str(),
-            attributes: Vec::new(),
-            dropped_attributes_count: 0,
-        }
-    }
-}
-
-#[derive(Clone)]
-struct DirectDecScope {
-    name: Rc<str>,
-    version: Rc<str>,
-    schema_url: Rc<str>,
-    attributes: Vec<DirectAttribute>,
+#[derive(Clone, Default)]
+struct DirectDecScope<'a> {
+    name: &'a str,
+    version: &'a str,
+    schema_url: &'a str,
+    attributes: Vec<DecodedAttribute<'a>>,
     dropped_attributes_count: u32,
 }
 
-impl Default for DirectDecScope {
-    fn default() -> Self {
-        Self {
-            name: empty_rc_str(),
-            version: empty_rc_str(),
-            schema_url: empty_rc_str(),
-            attributes: Vec::new(),
-            dropped_attributes_count: 0,
-        }
-    }
-}
-
-#[derive(Clone)]
-struct DirectDecMetric {
-    name: Rc<str>,
-    description: Rc<str>,
-    unit: Rc<str>,
+#[derive(Clone, Default)]
+struct DirectDecMetric<'a> {
+    name: &'a str,
+    description: &'a str,
+    unit: &'a str,
     r#type: u64,
-    metadata: Vec<DirectAttribute>,
+    metadata: Vec<DecodedAttribute<'a>>,
     aggregation_temporality: u64,
     monotonic: bool,
 }
 
-impl Default for DirectDecMetric {
-    fn default() -> Self {
-        Self {
-            name: empty_rc_str(),
-            description: empty_rc_str(),
-            unit: empty_rc_str(),
-            r#type: 0,
-            metadata: Vec::new(),
-            aggregation_temporality: 0,
-            monotonic: false,
-        }
-    }
+#[derive(Clone, Copy, Default, PartialEq)]
+struct DecodedAttribute<'a> {
+    key: &'a str,
+    value: DecodedAnyValue<'a>,
+}
+
+#[derive(Clone, Copy, Default, PartialEq)]
+enum DecodedAnyValue<'a> {
+    #[default]
+    Empty,
+    String(&'a str),
+    Bool(bool),
+    Int(i64),
+    Double(f64),
+    Bytes(&'a [u8]),
 }
 
 #[derive(Clone, PartialEq)]
@@ -3443,7 +3669,7 @@ struct DirectMetricDecoder<'a> {
 }
 
 impl<'a> DirectMetricDecoder<'a> {
-    fn new(column: &'a DecodeColumn<'a>) -> Self {
+    fn new(column: &DecodeColumn<'a>) -> Self {
         Self {
             bits: BitReader::new(column.data),
             name: BytesReader::new(column.children[0].data),
@@ -3459,8 +3685,8 @@ impl<'a> DirectMetricDecoder<'a> {
 
     fn decode(
         &mut self,
-        target: &mut DirectDecMetric,
-        state: &mut DirectDecoderState,
+        target: &mut DirectDecMetric<'a>,
+        state: &mut DirectDecoderState<'a>,
     ) -> Result<(), Error> {
         if !self.bits.read_bit()? {
             let ref_num = usize::try_from(self.bits.read_uvarint_compact()?)
@@ -3517,7 +3743,7 @@ struct DirectResourceDecoder<'a> {
 }
 
 impl<'a> DirectResourceDecoder<'a> {
-    fn new(column: &'a DecodeColumn<'a>) -> Self {
+    fn new(column: &DecodeColumn<'a>) -> Self {
         Self {
             bits: BitReader::new(column.data),
             schema_url: BytesReader::new(column.children[0].data),
@@ -3528,8 +3754,8 @@ impl<'a> DirectResourceDecoder<'a> {
 
     fn decode(
         &mut self,
-        target: &mut DirectDecResource,
-        state: &mut DirectDecoderState,
+        target: &mut DirectDecResource<'a>,
+        state: &mut DirectDecoderState<'a>,
     ) -> Result<(), Error> {
         if !self.bits.read_bit()? {
             let ref_num = usize::try_from(self.bits.read_uvarint_compact()?)
@@ -3575,7 +3801,7 @@ struct DirectScopeDecoder<'a> {
 }
 
 impl<'a> DirectScopeDecoder<'a> {
-    fn new(column: &'a DecodeColumn<'a>) -> Self {
+    fn new(column: &DecodeColumn<'a>) -> Self {
         Self {
             bits: BitReader::new(column.data),
             name: BytesReader::new(column.children[0].data),
@@ -3588,8 +3814,8 @@ impl<'a> DirectScopeDecoder<'a> {
 
     fn decode(
         &mut self,
-        target: &mut DirectDecScope,
-        state: &mut DirectDecoderState,
+        target: &mut DirectDecScope<'a>,
+        state: &mut DirectDecoderState<'a>,
     ) -> Result<(), Error> {
         if !self.bits.read_bit()? {
             let ref_num = usize::try_from(self.bits.read_uvarint_compact()?)
@@ -3642,7 +3868,7 @@ struct PointDecoder<'a> {
 }
 
 impl<'a> PointDecoder<'a> {
-    fn new(column: &'a DecodeColumn<'a>) -> Self {
+    fn new(column: &DecodeColumn<'a>) -> Self {
         Self {
             bits: BitReader::new(column.data),
             start_timestamp: U64Decoder::new(column.children[0].data),
@@ -3678,7 +3904,7 @@ struct PointValueDecoder<'a> {
 }
 
 impl<'a> PointValueDecoder<'a> {
-    fn new(column: &'a DecodeColumn<'a>) -> Self {
+    fn new(column: &DecodeColumn<'a>) -> Self {
         Self {
             bits: BitReader::new(column.data),
             int64: I64Decoder::new(column.children[0].data),
@@ -3704,7 +3930,7 @@ struct AttributesDecoder<'a> {
 }
 
 impl<'a> AttributesDecoder<'a> {
-    fn new(column: &'a DecodeColumn<'a>) -> Self {
+    fn new(column: &DecodeColumn<'a>) -> Self {
         Self {
             header: BytesReader::new(column.data),
             key: BytesReader::new(column.children[0].data),
@@ -3714,8 +3940,8 @@ impl<'a> AttributesDecoder<'a> {
 
     fn decode_direct(
         &mut self,
-        target: &mut Vec<DirectAttribute>,
-        state: &mut DirectDecoderState,
+        target: &mut Vec<DecodedAttribute<'a>>,
+        state: &mut DirectDecoderState<'a>,
     ) -> Result<(), Error> {
         let count_or_changed = self.header.read_uvarint()?;
         if count_or_changed == 0 {
@@ -3738,17 +3964,17 @@ impl<'a> AttributesDecoder<'a> {
         for _ in 0..count {
             let key = self.key.read_direct_dict_string(&mut state.attribute_key)?;
             let value = self.value.decode_direct(state)?;
-            target.push(DirectAttribute { key, value });
+            target.push(DecodedAttribute { key, value });
         }
         Ok(())
     }
 
     fn decode_direct_number_point_attrs(
         &mut self,
-        target: &mut Vec<DirectAttribute>,
-        state: &mut DirectDecoderState,
+        target: &mut Vec<DecodedAttribute<'a>>,
+        state: &mut DirectDecoderState<'a>,
         point_id: u32,
-        attribute_rb_builder: &mut DirectNumberDpAttrsRecordBatchBuilder,
+        attribute_rb_builder: &mut DirectNumberDpAttrsRecordBatchBuilder<'a>,
     ) -> Result<(), Error> {
         let count_or_changed = self.header.read_uvarint()?;
         if count_or_changed == 0 {
@@ -3758,10 +3984,17 @@ impl<'a> AttributesDecoder<'a> {
 
         if count_or_changed & 1 == 0 {
             let changed = count_or_changed >> 1;
+            let update_plan = attribute_rb_builder.repeated_plan_len() == target.len();
             for (index, item) in target.iter_mut().enumerate() {
                 if changed & (1 << index) != 0 {
                     item.value = self.value.decode_direct(state)?;
+                    if update_plan {
+                        attribute_rb_builder.update_repeated_plan_value(index, item);
+                    }
                 }
+            }
+            if !update_plan {
+                attribute_rb_builder.rebuild_repeated_plan(target);
             }
             attribute_rb_builder.append_all(point_id, target);
             return Ok(());
@@ -3775,10 +4008,11 @@ impl<'a> AttributesDecoder<'a> {
         for _ in 0..count {
             let key = self.key.read_direct_dict_string(&mut state.attribute_key)?;
             let value = self.value.decode_direct(state)?;
-            let attribute = DirectAttribute { key, value };
+            let attribute = DecodedAttribute { key, value };
             attribute_rb_builder.append(point_id, &attribute);
             target.push(attribute);
         }
+        attribute_rb_builder.rebuild_repeated_plan(target);
         Ok(())
     }
 }
@@ -3794,7 +4028,7 @@ struct AnyValueDecoder<'a> {
 }
 
 impl<'a> AnyValueDecoder<'a> {
-    fn new(column: &'a DecodeColumn<'a>) -> Self {
+    fn new(column: &DecodeColumn<'a>) -> Self {
         Self {
             bits: BitReader::new(column.data),
             string: BytesReader::new(column.children[0].data),
@@ -3805,19 +4039,22 @@ impl<'a> AnyValueDecoder<'a> {
         }
     }
 
-    fn decode_direct(&mut self, state: &mut DirectDecoderState) -> Result<DirectAnyValue, Error> {
+    fn decode_direct(
+        &mut self,
+        state: &mut DirectDecoderState<'a>,
+    ) -> Result<DecodedAnyValue<'a>, Error> {
         match self.bits.read_bits(4)? {
-            0 => Ok(DirectAnyValue::Empty),
-            1 => Ok(DirectAnyValue::String(
+            0 => Ok(DecodedAnyValue::Empty),
+            1 => Ok(DecodedAnyValue::String(
                 self.string
                     .read_direct_dict_string(&mut state.any_value_string)?,
             )),
-            2 => Ok(DirectAnyValue::Bool(self.bool_.decode()?)),
-            3 => Ok(DirectAnyValue::Int(self.int64.decode()?)),
-            4 => Ok(DirectAnyValue::Double(self.float64.decode()?)),
+            2 => Ok(DecodedAnyValue::Bool(self.bool_.decode()?)),
+            3 => Ok(DecodedAnyValue::Int(self.int64.decode()?)),
+            4 => Ok(DecodedAnyValue::Double(self.float64.decode()?)),
             5 => Err(Error::UnsupportedStefValue("array attribute")),
             6 => Err(Error::UnsupportedStefValue("kvlist attribute")),
-            7 => Ok(DirectAnyValue::Bytes(self.bytes.read_plain_bytes()?)),
+            7 => Ok(DecodedAnyValue::Bytes(self.bytes.read_plain_bytes()?)),
             _ => Err(Error::UnsupportedStefValue("attribute value")),
         }
     }
@@ -3829,7 +4066,7 @@ struct ArrayDecoder<'a> {
 }
 
 impl<'a> ArrayDecoder<'a> {
-    fn new(column: &'a DecodeColumn<'a>) -> Self {
+    fn new(column: &DecodeColumn<'a>) -> Self {
         Self {
             bits: BitReader::new(column.data),
         }
@@ -3846,28 +4083,28 @@ impl<'a> ArrayDecoder<'a> {
 }
 
 #[derive(Default)]
-struct DirectStringDict {
-    values: Vec<Rc<str>>,
+struct DirectStringDict<'a> {
+    values: Vec<&'a str>,
 }
 
-impl DirectStringDict {
+impl<'a> DirectStringDict<'a> {
     fn reset(&mut self) {
         self.values.clear();
     }
 
-    fn decode(&mut self, value: i64, reader: &mut BytesReader<'_>) -> Result<Rc<str>, Error> {
+    fn decode(&mut self, value: i64, reader: &mut BytesReader<'a>) -> Result<&'a str, Error> {
         if value >= 0 {
             let len = usize::try_from(value).map_err(|_| Error::ValueOutOfRange("string"))?;
             let value = reader.read_shared_utf8_string(len)?;
             if len > 1 {
-                self.values.push(value.clone());
+                self.values.push(value);
             }
             return Ok(value);
         }
         let ref_num = usize::try_from(-value - 1).map_err(|_| Error::InvalidRefNum)?;
         self.values
             .get(ref_num)
-            .cloned()
+            .copied()
             .ok_or(Error::InvalidRefNum)
     }
 }
@@ -3892,22 +4129,23 @@ impl<'a> BytesReader<'a> {
         Ok(((value >> 1) as i64) ^ (-((value & 1) as i64)))
     }
 
-    fn read_direct_dict_string(&mut self, dict: &mut DirectStringDict) -> Result<Rc<str>, Error> {
+    fn read_direct_dict_string(
+        &mut self,
+        dict: &mut DirectStringDict<'a>,
+    ) -> Result<&'a str, Error> {
         let value = self.read_varint()?;
         dict.decode(value, self)
     }
 
-    fn read_plain_bytes(&mut self) -> Result<Vec<u8>, Error> {
+    fn read_plain_bytes(&mut self) -> Result<&'a [u8], Error> {
         let len = usize::try_from(self.read_varint()?)
             .map_err(|_| Error::ValueOutOfRange("bytes length"))?;
-        Ok(self.read_bytes(len)?.to_vec())
+        self.read_bytes(len)
     }
 
-    fn read_shared_utf8_string(&mut self, len: usize) -> Result<Rc<str>, Error> {
+    fn read_shared_utf8_string(&mut self, len: usize) -> Result<&'a str, Error> {
         let bytes = self.read_bytes(len)?;
-        std::str::from_utf8(bytes)
-            .map(Rc::<str>::from)
-            .map_err(|_| Error::InvalidFrame("invalid utf8 string"))
+        std::str::from_utf8(bytes).map_err(|_| Error::InvalidFrame("invalid utf8 string"))
     }
 
     fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], Error> {
