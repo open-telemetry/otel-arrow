@@ -49,6 +49,7 @@ use datafusion::scalar::ScalarValue;
 use otap_df_config::SignalType;
 use otap_df_pdata::arrays::MaybeDictArrayAccessor;
 use otap_df_pdata::otap::filter::{ChildBatchFilterIdHelper, IdBitmap, IdBitmapPool};
+use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 use otap_df_pdata::{OtapArrowRecords, OtapPayloadHelpers};
@@ -565,7 +566,35 @@ impl FilterPlan {
                     ValueType::Integer => ExprLogicalType::AnyInt,
                     ValueType::String => ExprLogicalType::String,
                     ValueType::TimeSpan => ExprLogicalType::DurationNanoSecond,
-                    ValueType::Array | ValueType::Map | ValueType::Null | ValueType::Regex => {
+                    // `Array`, `Map`, and `Null` have no standalone Arrow representation in
+                    // our system -- they only appear as subtypes inside an `AnyValue` struct
+                    // column. If the source isn't an `AnyValue`, the answer is constantly
+                    // false. Otherwise, build an `is_type` UDF that checks the `AnyValue`
+                    // discriminator directly.
+                    ValueType::Array | ValueType::Map | ValueType::Null => {
+                        if !matches!(
+                            expr_source.expr_type,
+                            ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumeric
+                        ) {
+                            return Ok(Some(FilterPlan::from(lit(false))));
+                        }
+                        let subtype = match value_type {
+                            ValueType::Array => AttributeValueType::Slice,
+                            ValueType::Map => AttributeValueType::Map,
+                            ValueType::Null => AttributeValueType::Empty,
+                            _ => unreachable!(),
+                        };
+                        expr_source.logical_expr = Expr::ScalarFunction(ScalarFunction::new_udf(
+                            Arc::new(ScalarUDF::new_from_shared_impl(Arc::new(
+                                IsTypeFunc::for_any_value_subtype(subtype),
+                            ))),
+                            vec![expr_source.logical_expr],
+                        ));
+                        return Ok(Some(FilterPlan::from_expr(ExprFilterPlan::Unary(
+                            expr_source,
+                        ))));
+                    }
+                    ValueType::Regex => {
                         return Err(Error::NotYetSupportedError {
                             message: "type check logical expression using type \
                                 {value_type} not yet supported"
@@ -6649,6 +6678,47 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &expected
         );
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attr_array_map_null_type() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes([KeyValue::new(
+                    "complex",
+                    AnyValue::new_array(vec![AnyValue::new_int(1), AnyValue::new_int(2)]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("nested", AnyValue::new_bool(true))]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new("complex", AnyValue::default())])
+                .finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new("complex", AnyValue::new_string("hello"))])
+                .finish(),
+        ];
+
+        let cases = [
+            ("Array", log_records[0].clone()),
+            ("Map", log_records[1].clone()),
+            ("Null", log_records[2].clone()),
+        ];
+
+        for (value_type, expected_record) in cases {
+            let query = format!("logs | where attributes[\"complex\"] is {value_type}");
+            let result =
+                exec_logs_pipeline::<OplParser>(&query, to_logs_data(log_records.clone())).await;
+            assert_eq!(
+                &result.resource_logs[0].scope_logs[0].log_records,
+                &[expected_record],
+                "value_type={value_type}"
+            );
+        }
     }
 
     #[tokio::test]
