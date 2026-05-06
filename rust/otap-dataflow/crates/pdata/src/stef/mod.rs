@@ -9,18 +9,25 @@
 //! gauge and sum number data points plus simple OTLP attribute values.
 
 use crate::OtapArrowRecords;
+use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use crate::encode::record::{
     attributes::{AttributesRecordBatchBuilder, AttributesRecordBatchBuilderConstructorHelper},
     metrics::MetricsRecordBatchBuilder,
 };
 use crate::otap::Metrics;
-use crate::otlp::attributes::AttributeValueType;
+use crate::otlp::attributes::{
+    Attribute16Arrays, Attribute32Arrays, AttributeArrays, AttributeValueType,
+};
+use crate::otlp::common::{
+    AnyValueArrays, BatchSorter, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,
+};
+use crate::otlp::metrics::{MetricType, MetricsArrays, data_points::number::NumberDpArrays};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::{FieldExt, consts};
 use arrow::{
     array::{
-        Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch,
-        StringArray, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
+        Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, Float64Array, Int64Array,
+        RecordBatch, StringArray, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
     },
     datatypes::{Field, Schema},
     error::ArrowError,
@@ -140,9 +147,11 @@ pub fn encode_metrics_otap(records: &OtapArrowRecords) -> Result<Vec<u8>, Error>
 
 /// Encodes OTAP metrics Arrow records directly into STEF and returns the encoded record count.
 pub fn encode_metrics_otap_with_count(records: &OtapArrowRecords) -> Result<(Vec<u8>, u64), Error> {
-    let view = crate::views::otap::metrics::OtapMetricsView::try_from(records)
-        .map_err(|e| Error::OtapView(e.to_string()))?;
-    encode_metrics_view_with_count(&view)
+    let mut encoder = MetricsStreamEncoder::default();
+    encoder.encode_metrics_otap(records)?;
+    let record_count = encoder.record_count;
+    let bytes = encoder.finish()?;
+    Ok((bytes, record_count))
 }
 
 /// Decodes a complete STEF metrics byte stream directly into OTAP metrics Arrow records.
@@ -337,6 +346,230 @@ impl MetricsStreamEncoder {
         Ok(wrote)
     }
 
+    fn encode_metrics_otap(&mut self, records: &OtapArrowRecords) -> Result<(), Error> {
+        let arrays = OtapMetricsDirectArrays::try_from(records)?;
+        let mut cursors = OtapMetricsDirectCursors::new();
+        cursors.init(&arrays)?;
+
+        while !cursors.root.finished() {
+            self.encode_otap_resource_metrics(&arrays, &mut cursors)?;
+        }
+
+        Ok(())
+    }
+
+    fn encode_otap_resource_metrics(
+        &mut self,
+        arrays: &OtapMetricsDirectArrays<'_>,
+        cursors: &mut OtapMetricsDirectCursors,
+    ) -> Result<(), Error> {
+        let first_row = match cursors.root.curr_index() {
+            Some(row) => row,
+            None => return Ok(()),
+        };
+        let resource_id = arrays.resource.id.value_at(first_row);
+        let mut wrote_resource = false;
+
+        loop {
+            self.encode_otap_scope_metrics(arrays, cursors, resource_id, &mut wrote_resource)?;
+
+            if cursors.root.finished() {
+                break;
+            }
+
+            let next_row = cursors.root.curr_index().expect("cursor not finished");
+            if arrays.resource.id.value_at(next_row) != resource_id {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn encode_otap_scope_metrics(
+        &mut self,
+        arrays: &OtapMetricsDirectArrays<'_>,
+        cursors: &mut OtapMetricsDirectCursors,
+        resource_id: Option<u16>,
+        wrote_resource: &mut bool,
+    ) -> Result<(), Error> {
+        let first_row = match cursors.root.curr_index() {
+            Some(row) => row,
+            None => return Ok(()),
+        };
+        let scope_id = arrays.scope.id.value_at(first_row);
+        let mut wrote_scope = false;
+
+        loop {
+            let wrote = self.encode_otap_metric(arrays, cursors, !*wrote_resource, !wrote_scope)?;
+            if wrote {
+                *wrote_resource = true;
+                wrote_scope = true;
+            }
+
+            if cursors.root.finished() {
+                break;
+            }
+
+            let next_row = cursors.root.curr_index().expect("cursor not finished");
+            if arrays.resource.id.value_at(next_row) != resource_id
+                || arrays.scope.id.value_at(next_row) != scope_id
+            {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn encode_otap_metric(
+        &mut self,
+        arrays: &OtapMetricsDirectArrays<'_>,
+        cursors: &mut OtapMetricsDirectCursors,
+        encode_resource: bool,
+        encode_scope: bool,
+    ) -> Result<bool, Error> {
+        let metric_row = cursors
+            .root
+            .curr_index()
+            .ok_or(Error::UnsupportedMetricType("empty"))?;
+        let metric_type = otap_metric_type(arrays, metric_row)?;
+        let metric_id = arrays
+            .metrics
+            .id
+            .value_at(metric_row)
+            .ok_or(Error::UnsupportedMetricType("empty"))?;
+
+        let wrote = match metric_type {
+            MetricType::Gauge => self.encode_otap_number_points(
+                arrays,
+                cursors,
+                metric_row,
+                metric_id,
+                0,
+                0,
+                false,
+                encode_resource,
+                encode_scope,
+            )?,
+            MetricType::Sum => self.encode_otap_number_points(
+                arrays,
+                cursors,
+                metric_row,
+                metric_id,
+                1,
+                otap_aggregation_temporality(arrays, metric_row),
+                otap_is_monotonic(arrays, metric_row),
+                encode_resource,
+                encode_scope,
+            )?,
+            MetricType::Empty => return Err(Error::UnsupportedMetricType("empty")),
+            MetricType::Histogram => return Err(Error::UnsupportedMetricType("histogram")),
+            MetricType::ExponentialHistogram => {
+                return Err(Error::UnsupportedMetricType("exponential_histogram"));
+            }
+            MetricType::Summary => return Err(Error::UnsupportedMetricType("summary")),
+        };
+
+        cursors.root.advance();
+        Ok(wrote)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode_otap_number_points(
+        &mut self,
+        arrays: &OtapMetricsDirectArrays<'_>,
+        cursors: &mut OtapMetricsDirectCursors,
+        metric_row: usize,
+        metric_id: u16,
+        metric_type: u64,
+        aggregation_temporality: u64,
+        monotonic: bool,
+        mut encode_resource: bool,
+        mut encode_scope: bool,
+    ) -> Result<bool, Error> {
+        let Some(number_dp) = arrays.number_dp.as_ref() else {
+            return Ok(false);
+        };
+
+        let parent_ids = MaybeDictArrayAccessor::Native(number_dp.parent_id);
+        let mut wrote = false;
+        let mut encode_metric = true;
+
+        loop {
+            let dp_row = ChildIndexIter::new(metric_id, &parent_ids, &mut cursors.number_dp).next();
+            let Some(dp_row) = dp_row else {
+                break;
+            };
+
+            let point_value = otap_number_point_value(number_dp, dp_row)?;
+            let mut root_mask = ROOT_ATTRIBUTES_FIELD | ROOT_POINT_FIELD;
+            if encode_metric {
+                root_mask |= ROOT_METRIC_FIELD;
+            }
+            if encode_resource {
+                root_mask |= ROOT_RESOURCE_FIELD;
+            }
+            if encode_scope {
+                root_mask |= ROOT_SCOPE_FIELD;
+            }
+
+            self.root_bits.write_bits(root_mask, 6);
+            if encode_metric {
+                self.metric.encode_otap(
+                    metric_row,
+                    &arrays.metrics,
+                    arrays.metric_attrs.as_ref(),
+                    &mut cursors.metric_attrs,
+                    metric_type,
+                    aggregation_temporality,
+                    monotonic,
+                )?;
+            }
+            if encode_resource {
+                self.resource.encode_otap(
+                    metric_row,
+                    &arrays.resource,
+                    arrays.resource_attrs.as_ref(),
+                    &mut cursors.resource_attrs,
+                )?;
+            }
+            if encode_scope {
+                self.scope.encode_otap(
+                    metric_row,
+                    &arrays.scope,
+                    otap_scope_schema_url(arrays, metric_row),
+                    arrays.scope_attrs.as_ref(),
+                    &mut cursors.scope_attrs,
+                )?;
+            }
+
+            self.attributes.encode_otap_attributes(
+                arrays.number_dp_attrs.as_ref(),
+                number_dp.id.value_at(dp_row),
+                &mut cursors.number_dp_attrs,
+            )?;
+            self.point.encode(&StefPoint {
+                start_timestamp: number_dp
+                    .start_time_unix_nano
+                    .and_then(|col| col.value_at(dp_row).map(|v| v as u64))
+                    .unwrap_or(0),
+                timestamp: number_dp
+                    .time_unix_nano
+                    .and_then(|col| col.value_at(dp_row).map(|v| v as u64))
+                    .unwrap_or(0),
+                value: point_value,
+            })?;
+            self.record_count += 1;
+            wrote = true;
+            encode_metric = false;
+            encode_resource = false;
+            encode_scope = false;
+        }
+
+        Ok(wrote)
+    }
+
     fn finish(mut self) -> Result<Vec<u8>, Error> {
         let mut stream = Vec::with_capacity(16 * 1024);
         write_fixed_header(&mut stream);
@@ -364,6 +597,173 @@ impl MetricsStreamEncoder {
         root.children[4] = self.attributes.take_column();
         root.children[5] = self.point.take_column();
         root
+    }
+}
+
+struct OtapMetricsDirectArrays<'a> {
+    root: &'a RecordBatch,
+    metrics: MetricsArrays<'a>,
+    resource: ResourceArrays<'a>,
+    scope: ScopeArrays<'a>,
+    resource_attrs: Option<Attribute16Arrays<'a>>,
+    scope_attrs: Option<Attribute16Arrays<'a>>,
+    metric_attrs: Option<Attribute16Arrays<'a>>,
+    number_dp: Option<NumberDpArrays<'a>>,
+    number_dp_attrs: Option<Attribute32Arrays<'a>>,
+}
+
+impl<'a> TryFrom<&'a OtapArrowRecords> for OtapMetricsDirectArrays<'a> {
+    type Error = Error;
+
+    fn try_from(records: &'a OtapArrowRecords) -> Result<Self, Self::Error> {
+        let root = records
+            .get(ArrowPayloadType::UnivariateMetrics)
+            .or_else(|| records.get(ArrowPayloadType::MultivariateMetrics))
+            .ok_or_else(|| Error::OtapView("metric record not found".to_owned()))?;
+
+        Ok(Self {
+            root,
+            metrics: MetricsArrays::try_from(root).map_err(map_otap_view_error)?,
+            resource: ResourceArrays::try_from(root).map_err(map_otap_view_error)?,
+            scope: ScopeArrays::try_from(root).map_err(map_otap_view_error)?,
+            resource_attrs: records
+                .get(ArrowPayloadType::ResourceAttrs)
+                .map(Attribute16Arrays::try_from)
+                .transpose()
+                .map_err(map_otap_view_error)?,
+            scope_attrs: records
+                .get(ArrowPayloadType::ScopeAttrs)
+                .map(Attribute16Arrays::try_from)
+                .transpose()
+                .map_err(map_otap_view_error)?,
+            metric_attrs: records
+                .get(ArrowPayloadType::MetricAttrs)
+                .map(Attribute16Arrays::try_from)
+                .transpose()
+                .map_err(map_otap_view_error)?,
+            number_dp: records
+                .get(ArrowPayloadType::NumberDataPoints)
+                .map(NumberDpArrays::try_from)
+                .transpose()
+                .map_err(map_otap_view_error)?,
+            number_dp_attrs: records
+                .get(ArrowPayloadType::NumberDpAttrs)
+                .map(Attribute32Arrays::try_from)
+                .transpose()
+                .map_err(map_otap_view_error)?,
+        })
+    }
+}
+
+struct OtapMetricsDirectCursors {
+    batch_sorter: BatchSorter,
+    root: SortedBatchCursor,
+    resource_attrs: SortedBatchCursor,
+    scope_attrs: SortedBatchCursor,
+    metric_attrs: SortedBatchCursor,
+    number_dp: SortedBatchCursor,
+    number_dp_attrs: SortedBatchCursor,
+}
+
+impl OtapMetricsDirectCursors {
+    fn new() -> Self {
+        Self {
+            batch_sorter: BatchSorter::new(),
+            root: SortedBatchCursor::new(),
+            resource_attrs: SortedBatchCursor::new(),
+            scope_attrs: SortedBatchCursor::new(),
+            metric_attrs: SortedBatchCursor::new(),
+            number_dp: SortedBatchCursor::new(),
+            number_dp_attrs: SortedBatchCursor::new(),
+        }
+    }
+
+    fn init(&mut self, arrays: &OtapMetricsDirectArrays<'_>) -> Result<(), Error> {
+        self.batch_sorter
+            .init_cursor_for_root_batch(arrays.root, &mut self.root)
+            .map_err(map_otap_view_error)?;
+
+        if let Some(attrs) = arrays.resource_attrs.as_ref() {
+            self.batch_sorter
+                .init_cursor_for_u16_id_column(&attrs.parent_id, &mut self.resource_attrs);
+        }
+        if let Some(attrs) = arrays.scope_attrs.as_ref() {
+            self.batch_sorter
+                .init_cursor_for_u16_id_column(&attrs.parent_id, &mut self.scope_attrs);
+        }
+        if let Some(attrs) = arrays.metric_attrs.as_ref() {
+            self.batch_sorter
+                .init_cursor_for_u16_id_column(&attrs.parent_id, &mut self.metric_attrs);
+        }
+        if let Some(number_dp) = arrays.number_dp.as_ref() {
+            let parent_ids = MaybeDictArrayAccessor::Native(number_dp.parent_id);
+            self.batch_sorter
+                .init_cursor_for_u16_id_column(&parent_ids, &mut self.number_dp);
+        }
+        if let Some(attrs) = arrays.number_dp_attrs.as_ref() {
+            self.batch_sorter
+                .init_cursor_for_u32_id_column(&attrs.parent_id, &mut self.number_dp_attrs);
+        }
+
+        Ok(())
+    }
+}
+
+fn map_otap_view_error(error: crate::error::Error) -> Error {
+    Error::OtapView(error.to_string())
+}
+
+fn otap_metric_type(arrays: &OtapMetricsDirectArrays<'_>, row: usize) -> Result<MetricType, Error> {
+    let value = arrays
+        .metrics
+        .metric_type
+        .value_at(row)
+        .ok_or(Error::UnsupportedMetricType("empty"))?;
+    MetricType::try_from(value).map_err(|_| Error::UnsupportedMetricType("unknown"))
+}
+
+fn otap_aggregation_temporality(arrays: &OtapMetricsDirectArrays<'_>, row: usize) -> u64 {
+    match arrays
+        .metrics
+        .aggregation_temporality
+        .as_ref()
+        .and_then(|col| col.value_at(row))
+    {
+        Some(1) => 1,
+        Some(2) => 2,
+        _ => 0,
+    }
+}
+
+fn otap_is_monotonic(arrays: &OtapMetricsDirectArrays<'_>, row: usize) -> bool {
+    arrays.metrics.is_monotonic.value_at(row).unwrap_or(false)
+}
+
+fn otap_scope_schema_url<'a>(arrays: &'a OtapMetricsDirectArrays<'a>, row: usize) -> &'a [u8] {
+    arrays
+        .metrics
+        .schema_url
+        .as_ref()
+        .and_then(|col| col.str_at(row).map(|value| value.as_bytes()))
+        .unwrap_or(b"")
+}
+
+fn otap_number_point_value(
+    arrays: &NumberDpArrays<'_>,
+    row: usize,
+) -> Result<StefPointValue, Error> {
+    if let Some(value) = arrays.double_value.and_then(|col| col.value_at(row)) {
+        return Ok(StefPointValue::Float64(value));
+    }
+    if let Some(value) = arrays.int_value.and_then(|col| col.value_at(row)) {
+        return Ok(StefPointValue::Int64(value));
+    }
+
+    let flags = arrays.flags.and_then(|col| col.value_at(row)).unwrap_or(0);
+    if flags & 1 != 0 {
+        Ok(StefPointValue::None)
+    } else {
+        Err(Error::UnsupportedDataPointValue)
     }
 }
 
@@ -439,6 +839,55 @@ impl MetricEncoder {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn encode_otap(
+        &mut self,
+        row: usize,
+        metrics: &MetricsArrays<'_>,
+        metadata: Option<&Attribute16Arrays<'_>>,
+        metadata_cursor: &mut SortedBatchCursor,
+        metric_type: u64,
+        aggregation_temporality: u64,
+        monotonic: bool,
+    ) -> Result<(), Error> {
+        self.bits.write_bit(true);
+        self.bits.write_bits(METRIC_FIELD_MASK, 8);
+        self.name.encode_bytes(
+            metrics
+                .name
+                .str_at(row)
+                .map(|value| value.as_bytes())
+                .unwrap_or(b""),
+            "metric.name",
+        )?;
+        self.description.encode_bytes(
+            metrics
+                .description
+                .as_ref()
+                .and_then(|col| col.str_at(row).map(|value| value.as_bytes()))
+                .unwrap_or(b""),
+            "metric.description",
+        )?;
+        self.unit.encode_bytes(
+            metrics
+                .unit
+                .as_ref()
+                .and_then(|col| col.str_at(row).map(|value| value.as_bytes()))
+                .unwrap_or(b""),
+            "metric.unit",
+        )?;
+        self.r#type.encode(metric_type);
+        self.metadata.encode_otap_attributes(
+            metadata,
+            metrics.id.value_at(row),
+            metadata_cursor,
+        )?;
+        self.histogram_bounds.encode_empty();
+        self.aggregation_temporality.encode(aggregation_temporality);
+        self.monotonic.encode(monotonic);
+        Ok(())
+    }
+
     fn take_column(&mut self) -> Column {
         let mut column = metric_column_tree();
         column.data = self.bits.take_bytes();
@@ -495,6 +944,35 @@ impl ResourceEncoder {
             self.attributes.encode_empty();
             self.dropped_attributes_count.encode(0);
         }
+        Ok(())
+    }
+
+    fn encode_otap(
+        &mut self,
+        row: usize,
+        resource: &ResourceArrays<'_>,
+        attrs: Option<&Attribute16Arrays<'_>>,
+        attrs_cursor: &mut SortedBatchCursor,
+    ) -> Result<(), Error> {
+        self.bits.write_bit(true);
+        self.bits.write_bits(RESOURCE_FIELD_MASK, 3);
+        self.schema_url.encode_bytes(
+            resource
+                .schema_url
+                .as_ref()
+                .and_then(|col| col.str_at(row).map(|value| value.as_bytes()))
+                .unwrap_or(b""),
+            "resource.schema_url",
+        )?;
+        self.attributes
+            .encode_otap_attributes(attrs, resource.id.value_at(row), attrs_cursor)?;
+        self.dropped_attributes_count.encode(
+            resource
+                .dropped_attributes_count
+                .value_at(row)
+                .map(u64::from)
+                .unwrap_or(0),
+        );
         Ok(())
     }
 
@@ -559,6 +1037,46 @@ impl ScopeEncoder {
             self.attributes.encode_empty();
             self.dropped_attributes_count.encode(0);
         }
+        Ok(())
+    }
+
+    fn encode_otap(
+        &mut self,
+        row: usize,
+        scope: &ScopeArrays<'_>,
+        schema_url: Str<'_>,
+        attrs: Option<&Attribute16Arrays<'_>>,
+        attrs_cursor: &mut SortedBatchCursor,
+    ) -> Result<(), Error> {
+        self.bits.write_bit(true);
+        self.bits.write_bits(SCOPE_FIELD_MASK, 5);
+        self.name.encode_bytes(
+            scope
+                .name
+                .as_ref()
+                .and_then(|col| col.str_at(row).map(|value| value.as_bytes()))
+                .unwrap_or(b""),
+            "scope.name",
+        )?;
+        self.version.encode_bytes(
+            scope
+                .version
+                .as_ref()
+                .and_then(|col| col.str_at(row).map(|value| value.as_bytes()))
+                .unwrap_or(b""),
+            "scope.version",
+        )?;
+        self.schema_url
+            .encode_bytes(schema_url, "scope.schema_url")?;
+        self.attributes
+            .encode_otap_attributes(attrs, scope.id.value_at(row), attrs_cursor)?;
+        self.dropped_attributes_count.encode(
+            scope
+                .dropped_attributes_count
+                .value_at(row)
+                .map(u64::from)
+                .unwrap_or(0),
+        );
         Ok(())
     }
 
@@ -660,6 +1178,7 @@ struct AttributesEncoder {
     key: StringEncoder,
     value: AnyValueEncoder,
     last: Vec<DirectAttribute>,
+    changed_values: Vec<(usize, DirectAnyValue)>,
 }
 
 impl AttributesEncoder {
@@ -671,59 +1190,273 @@ impl AttributesEncoder {
         }
     }
 
-    fn encode(&mut self, attributes: &[DirectAttribute]) -> Result<(), Error> {
-        if self.can_encode_values_only(attributes) {
-            let mut changed = 0_u64;
-            for (index, attribute) in attributes.iter().enumerate() {
-                if self.last[index].value != attribute.value {
-                    changed |= 1 << index;
-                }
-            }
-            self.header.write_uvarint(changed << 1);
-            for (index, attribute) in attributes.iter().enumerate() {
-                if changed & (1 << index) != 0 {
-                    self.value.encode(&attribute.value)?;
-                    self.last[index].value = attribute.value.clone();
-                }
-            }
-            return Ok(());
-        }
-
-        self.header
-            .write_uvarint((attributes.len() as u64) << 1 | 0b1);
-        for attribute in attributes {
-            self.key.encode(attribute.key.as_ref());
-            self.value.encode(&attribute.value)?;
-        }
-        self.last.clear();
-        self.last.extend_from_slice(attributes);
-        Ok(())
-    }
-
     fn encode_empty(&mut self) {
         self.header.write_uvarint(0b1);
         self.last.clear();
+        self.changed_values.clear();
     }
 
-    fn encode_view<A>(&mut self, attributes: impl Iterator<Item = A>) -> Result<(), Error>
+    fn encode_view<A>(&mut self, mut attributes: impl Iterator<Item = A>) -> Result<(), Error>
     where
         A: AttributeView,
     {
-        let attributes = attributes
-            .map(attribute_from_view)
-            .collect::<Result<Vec<_>, _>>()?;
-        self.encode(&attributes)
+        if self.last.is_empty() || self.last.len() >= 63 {
+            return self.encode_full_view(attributes);
+        }
+
+        let last_len = self.last.len();
+        let mut changed = 0_u64;
+        let mut seen = 0_usize;
+        self.changed_values.clear();
+
+        while let Some(attribute) = attributes.next() {
+            if seen >= last_len {
+                return self.encode_full_view_from_seen(seen, Some(attribute), attributes);
+            }
+
+            let last = &self.last[seen];
+            if attribute.key() != last.key.as_ref().as_bytes() {
+                return self.encode_full_view_from_seen(seen, Some(attribute), attributes);
+            }
+
+            if let Some(value) =
+                direct_any_value_from_view_if_changed(attribute.value(), &last.value)?
+            {
+                changed |= 1 << seen;
+                self.changed_values.push((seen, value));
+            }
+            seen += 1;
+        }
+
+        if seen != last_len {
+            return self.encode_full_view_from_seen(seen, None, std::iter::empty::<A>());
+        }
+
+        self.header.write_uvarint(changed << 1);
+        let mut changed_values = std::mem::take(&mut self.changed_values);
+        for (index, value) in changed_values.drain(..) {
+            self.value.encode(&value)?;
+            self.last[index].value = value;
+        }
+        self.changed_values = changed_values;
+        Ok(())
     }
 
-    fn can_encode_values_only(&self, attributes: &[DirectAttribute]) -> bool {
-        !attributes.is_empty()
-            && attributes.len() < 63
-            && self.last.len() == attributes.len()
-            && self
-                .last
-                .iter()
-                .zip(attributes)
-                .all(|(left, right)| left.key == right.key)
+    fn encode_full_view<A>(&mut self, attributes: impl Iterator<Item = A>) -> Result<(), Error>
+    where
+        A: AttributeView,
+    {
+        self.last.clear();
+        for attribute in attributes {
+            self.encode_full_attribute(attribute)?;
+        }
+        self.header
+            .write_uvarint((self.last.len() as u64) << 1 | 0b1);
+        Ok(())
+    }
+
+    fn encode_full_view_from_seen<A>(
+        &mut self,
+        seen: usize,
+        current: Option<A>,
+        remaining: impl Iterator<Item = A>,
+    ) -> Result<(), Error>
+    where
+        A: AttributeView,
+    {
+        let old_last = std::mem::take(&mut self.last);
+        let changed_values = std::mem::take(&mut self.changed_values);
+        let mut changed_values = changed_values.into_iter().peekable();
+
+        self.last.reserve(seen + usize::from(current.is_some()));
+        for (index, previous) in old_last.into_iter().take(seen).enumerate() {
+            let mut value = previous.value;
+            if changed_values
+                .peek()
+                .is_some_and(|(changed_index, _)| *changed_index == index)
+            {
+                value = changed_values.next().expect("peeked changed value").1;
+            }
+
+            self.key.encode(previous.key.as_ref());
+            self.value.encode(&value)?;
+            self.last.push(DirectAttribute {
+                key: previous.key,
+                value,
+            });
+        }
+
+        if let Some(attribute) = current {
+            self.encode_full_attribute(attribute)?;
+        }
+        for attribute in remaining {
+            self.encode_full_attribute(attribute)?;
+        }
+
+        self.header
+            .write_uvarint((self.last.len() as u64) << 1 | 0b1);
+        Ok(())
+    }
+
+    fn encode_full_attribute<A>(&mut self, attribute: A) -> Result<(), Error>
+    where
+        A: AttributeView,
+    {
+        let key = std::str::from_utf8(attribute.key())
+            .map_err(|_| Error::InvalidUtf8("attribute.key"))?;
+        self.key.encode(key);
+        let value = self.value.encode_view(attribute.value())?;
+        self.last.push(DirectAttribute {
+            key: key.into(),
+            value,
+        });
+        Ok(())
+    }
+
+    fn encode_otap_attributes<T>(
+        &mut self,
+        attrs: Option<&AttributeArrays<'_, T>>,
+        parent_id: Option<T::Native>,
+        cursor: &mut SortedBatchCursor,
+    ) -> Result<(), Error>
+    where
+        T: ArrowPrimitiveType,
+    {
+        let (Some(attrs), Some(parent_id)) = (attrs, parent_id) else {
+            self.encode_empty();
+            return Ok(());
+        };
+
+        let mut rows = ChildIndexIter::new(parent_id, &attrs.parent_id, cursor);
+        if self.last.is_empty() || self.last.len() >= 63 {
+            return self.encode_full_otap_attributes(attrs, rows);
+        }
+
+        let last_len = self.last.len();
+        let mut changed = 0_u64;
+        let mut seen = 0_usize;
+        self.changed_values.clear();
+
+        while let Some(row) = rows.next() {
+            let Some(key) = attrs.attr_key.str_at(row) else {
+                continue;
+            };
+            if seen >= last_len {
+                return self.encode_full_otap_attributes_from_seen(attrs, seen, Some(row), rows);
+            }
+
+            let last = &self.last[seen];
+            if key.as_bytes() != last.key.as_ref().as_bytes() {
+                return self.encode_full_otap_attributes_from_seen(attrs, seen, Some(row), rows);
+            }
+
+            if let Some(value) =
+                direct_any_value_from_otap_if_changed(&attrs.anyval_arrays, row, &last.value)
+            {
+                changed |= 1 << seen;
+                self.changed_values.push((seen, value));
+            }
+            seen += 1;
+        }
+
+        if seen != last_len {
+            return self.encode_full_otap_attributes_from_seen(
+                attrs,
+                seen,
+                None,
+                std::iter::empty(),
+            );
+        }
+
+        self.header.write_uvarint(changed << 1);
+        let mut changed_values = std::mem::take(&mut self.changed_values);
+        for (index, value) in changed_values.drain(..) {
+            self.value.encode(&value)?;
+            self.last[index].value = value;
+        }
+        self.changed_values = changed_values;
+        Ok(())
+    }
+
+    fn encode_full_otap_attributes<T>(
+        &mut self,
+        attrs: &AttributeArrays<'_, T>,
+        rows: impl Iterator<Item = usize>,
+    ) -> Result<(), Error>
+    where
+        T: ArrowPrimitiveType,
+    {
+        self.last.clear();
+        for row in rows {
+            self.encode_full_otap_attribute(attrs, row)?;
+        }
+        self.header
+            .write_uvarint((self.last.len() as u64) << 1 | 0b1);
+        Ok(())
+    }
+
+    fn encode_full_otap_attributes_from_seen<T>(
+        &mut self,
+        attrs: &AttributeArrays<'_, T>,
+        seen: usize,
+        current: Option<usize>,
+        remaining: impl Iterator<Item = usize>,
+    ) -> Result<(), Error>
+    where
+        T: ArrowPrimitiveType,
+    {
+        let old_last = std::mem::take(&mut self.last);
+        let changed_values = std::mem::take(&mut self.changed_values);
+        let mut changed_values = changed_values.into_iter().peekable();
+
+        self.last.reserve(seen + usize::from(current.is_some()));
+        for (index, previous) in old_last.into_iter().take(seen).enumerate() {
+            let mut value = previous.value;
+            if changed_values
+                .peek()
+                .is_some_and(|(changed_index, _)| *changed_index == index)
+            {
+                value = changed_values.next().expect("peeked changed value").1;
+            }
+
+            self.key.encode(previous.key.as_ref());
+            self.value.encode(&value)?;
+            self.last.push(DirectAttribute {
+                key: previous.key,
+                value,
+            });
+        }
+
+        if let Some(row) = current {
+            self.encode_full_otap_attribute(attrs, row)?;
+        }
+        for row in remaining {
+            self.encode_full_otap_attribute(attrs, row)?;
+        }
+
+        self.header
+            .write_uvarint((self.last.len() as u64) << 1 | 0b1);
+        Ok(())
+    }
+
+    fn encode_full_otap_attribute<T>(
+        &mut self,
+        attrs: &AttributeArrays<'_, T>,
+        row: usize,
+    ) -> Result<(), Error>
+    where
+        T: ArrowPrimitiveType,
+    {
+        let Some(key) = attrs.attr_key.str_at(row) else {
+            return Ok(());
+        };
+        self.key.encode(key);
+        let value = self.value.encode_otap(&attrs.anyval_arrays, row)?;
+        self.last.push(DirectAttribute {
+            key: key.into(),
+            value,
+        });
+        Ok(())
     }
 
     fn take_column(&mut self) -> Column {
@@ -733,17 +1466,6 @@ impl AttributesEncoder {
         column.children[1] = self.value.take_column();
         column
     }
-}
-
-fn attribute_from_view<A>(attribute: A) -> Result<DirectAttribute, Error>
-where
-    A: AttributeView,
-{
-    let key = std::str::from_utf8(attribute.key())
-        .map_err(|_| Error::InvalidUtf8("attribute.key"))?
-        .into();
-    let value = direct_any_value_from_view(attribute.value())?;
-    Ok(DirectAttribute { key, value })
 }
 
 fn direct_any_value_from_view<'v, V>(value: Option<V>) -> Result<DirectAnyValue, Error>
@@ -791,6 +1513,197 @@ where
     Ok(value)
 }
 
+fn direct_any_value_from_otap(anyval: &AnyValueArrays<'_>, row: usize) -> DirectAnyValue {
+    match otap_attribute_value_type(anyval, row) {
+        AttributeValueType::Empty => DirectAnyValue::Empty,
+        AttributeValueType::Str => anyval
+            .attr_str
+            .as_ref()
+            .and_then(|accessor| accessor.str_at(row))
+            .map_or(DirectAnyValue::Empty, |value| {
+                DirectAnyValue::String(value.into())
+            }),
+        AttributeValueType::Int => anyval
+            .attr_int
+            .as_ref()
+            .and_then(|accessor| accessor.value_at(row))
+            .map_or(DirectAnyValue::Empty, DirectAnyValue::Int),
+        AttributeValueType::Double => anyval
+            .attr_double
+            .and_then(|arr| {
+                arr.is_valid(row)
+                    .then(|| DirectAnyValue::Double(arr.value(row)))
+            })
+            .unwrap_or(DirectAnyValue::Empty),
+        AttributeValueType::Bool => anyval
+            .attr_bool
+            .and_then(|arr| {
+                arr.is_valid(row)
+                    .then(|| DirectAnyValue::Bool(arr.value(row)))
+            })
+            .unwrap_or(DirectAnyValue::Empty),
+        AttributeValueType::Bytes => anyval
+            .attr_bytes
+            .as_ref()
+            .and_then(|accessor| accessor.slice_at(row))
+            .map_or(DirectAnyValue::Empty, |value| {
+                DirectAnyValue::Bytes(value.to_vec())
+            }),
+        AttributeValueType::Map | AttributeValueType::Slice => DirectAnyValue::Empty,
+    }
+}
+
+fn direct_any_value_from_otap_if_changed(
+    anyval: &AnyValueArrays<'_>,
+    row: usize,
+    last: &DirectAnyValue,
+) -> Option<DirectAnyValue> {
+    match otap_attribute_value_type(anyval, row) {
+        AttributeValueType::Empty => {
+            (last != &DirectAnyValue::Empty).then_some(DirectAnyValue::Empty)
+        }
+        AttributeValueType::Str => {
+            let value = anyval
+                .attr_str
+                .as_ref()
+                .and_then(|accessor| accessor.str_at(row));
+            match value {
+                Some(value)
+                    if matches!(
+                        last,
+                        DirectAnyValue::String(last) if last.as_ref() == value
+                    ) =>
+                {
+                    None
+                }
+                Some(value) => Some(DirectAnyValue::String(value.into())),
+                None => (last != &DirectAnyValue::Empty).then_some(DirectAnyValue::Empty),
+            }
+        }
+        AttributeValueType::Int => {
+            let value = anyval
+                .attr_int
+                .as_ref()
+                .and_then(|accessor| accessor.value_at(row));
+            match value {
+                Some(value) if matches!(last, DirectAnyValue::Int(last) if *last == value) => None,
+                Some(value) => Some(DirectAnyValue::Int(value)),
+                None => (last != &DirectAnyValue::Empty).then_some(DirectAnyValue::Empty),
+            }
+        }
+        AttributeValueType::Double => {
+            let value = anyval
+                .attr_double
+                .and_then(|arr| arr.is_valid(row).then(|| arr.value(row)));
+            match value {
+                Some(value) if matches!(last, DirectAnyValue::Double(last) if *last == value) => {
+                    None
+                }
+                Some(value) => Some(DirectAnyValue::Double(value)),
+                None => (last != &DirectAnyValue::Empty).then_some(DirectAnyValue::Empty),
+            }
+        }
+        AttributeValueType::Bool => {
+            let value = anyval
+                .attr_bool
+                .and_then(|arr| arr.is_valid(row).then(|| arr.value(row)));
+            match value {
+                Some(value) if matches!(last, DirectAnyValue::Bool(last) if *last == value) => None,
+                Some(value) => Some(DirectAnyValue::Bool(value)),
+                None => (last != &DirectAnyValue::Empty).then_some(DirectAnyValue::Empty),
+            }
+        }
+        AttributeValueType::Bytes => {
+            let value = anyval
+                .attr_bytes
+                .as_ref()
+                .and_then(|accessor| accessor.slice_at(row));
+            match value {
+                Some(value) if matches!(last, DirectAnyValue::Bytes(last) if last == value) => None,
+                Some(value) => Some(DirectAnyValue::Bytes(value.to_vec())),
+                None => (last != &DirectAnyValue::Empty).then_some(DirectAnyValue::Empty),
+            }
+        }
+        AttributeValueType::Map | AttributeValueType::Slice => {
+            (last != &DirectAnyValue::Empty).then_some(DirectAnyValue::Empty)
+        }
+    }
+}
+
+fn otap_attribute_value_type(anyval: &AnyValueArrays<'_>, row: usize) -> AttributeValueType {
+    if !anyval.attr_type.is_valid(row) {
+        return AttributeValueType::Empty;
+    }
+    AttributeValueType::try_from(anyval.attr_type.value(row)).unwrap_or(AttributeValueType::Empty)
+}
+
+fn direct_any_value_from_view_if_changed<'v, V>(
+    value: Option<V>,
+    last: &DirectAnyValue,
+) -> Result<Option<DirectAnyValue>, Error>
+where
+    V: AnyValueView<'v>,
+{
+    let Some(value) = value else {
+        return Ok((last != &DirectAnyValue::Empty).then_some(DirectAnyValue::Empty));
+    };
+
+    match value.value_type() {
+        ValueType::Empty => Ok((last != &DirectAnyValue::Empty).then_some(DirectAnyValue::Empty)),
+        ValueType::String => {
+            let value = value
+                .as_string()
+                .ok_or(Error::UnsupportedAttributeValue("string"))?;
+            let value = std::str::from_utf8(value)
+                .map_err(|_| Error::InvalidUtf8("attribute.value.string"))?;
+            if matches!(last, DirectAnyValue::String(last) if last.as_ref() == value) {
+                Ok(None)
+            } else {
+                Ok(Some(DirectAnyValue::String(value.into())))
+            }
+        }
+        ValueType::Bool => {
+            let value = value
+                .as_bool()
+                .ok_or(Error::UnsupportedAttributeValue("bool"))?;
+            Ok(
+                (!matches!(last, DirectAnyValue::Bool(last) if *last == value))
+                    .then_some(DirectAnyValue::Bool(value)),
+            )
+        }
+        ValueType::Int64 => {
+            let value = value
+                .as_int64()
+                .ok_or(Error::UnsupportedAttributeValue("int"))?;
+            Ok(
+                (!matches!(last, DirectAnyValue::Int(last) if *last == value))
+                    .then_some(DirectAnyValue::Int(value)),
+            )
+        }
+        ValueType::Double => {
+            let value = value
+                .as_double()
+                .ok_or(Error::UnsupportedAttributeValue("double"))?;
+            Ok(
+                (!matches!(last, DirectAnyValue::Double(last) if *last == value))
+                    .then_some(DirectAnyValue::Double(value)),
+            )
+        }
+        ValueType::Array => Err(Error::UnsupportedAttributeValue("array")),
+        ValueType::KeyValueList => Err(Error::UnsupportedAttributeValue("kvlist")),
+        ValueType::Bytes => {
+            let value = value
+                .as_bytes()
+                .ok_or(Error::UnsupportedAttributeValue("bytes"))?;
+            if matches!(last, DirectAnyValue::Bytes(last) if last == value) {
+                Ok(None)
+            } else {
+                Ok(Some(DirectAnyValue::Bytes(value.to_vec())))
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct AnyValueEncoder {
     bits: BitWriter,
@@ -834,6 +1747,25 @@ impl AnyValueEncoder {
             }
         }
         Ok(())
+    }
+
+    fn encode_view<'v, V>(&mut self, value: Option<V>) -> Result<DirectAnyValue, Error>
+    where
+        V: AnyValueView<'v>,
+    {
+        let value = direct_any_value_from_view(value)?;
+        self.encode(&value)?;
+        Ok(value)
+    }
+
+    fn encode_otap(
+        &mut self,
+        anyval: &AnyValueArrays<'_>,
+        row: usize,
+    ) -> Result<DirectAnyValue, Error> {
+        let value = direct_any_value_from_otap(anyval, row);
+        self.encode(&value)?;
+        Ok(value)
     }
 
     fn take_column(&mut self) -> Column {
@@ -1082,8 +2014,25 @@ impl BitWriter {
     }
 
     fn write_bits(&mut self, value: u64, bit_count: u32) {
-        for shift in (0..bit_count).rev() {
-            self.write_bit(((value >> shift) & 1) == 1);
+        debug_assert!(bit_count <= 64);
+
+        let mut remaining = bit_count;
+        while remaining > 0 {
+            let available = u32::from(8 - self.used);
+            let take = remaining.min(available);
+            let shift = remaining - take;
+            let mask = (1_u64 << take) - 1;
+            let bits = ((value >> shift) & mask) as u8;
+
+            self.current |= bits << (available - take);
+            self.used += take as u8;
+            remaining -= take;
+
+            if self.used == 8 {
+                self.bytes.push(self.current);
+                self.current = 0;
+                self.used = 0;
+            }
         }
     }
 
@@ -2130,7 +3079,7 @@ fn reserve_vec_to<T>(values: &mut Vec<T>, target_capacity: usize) {
 
 fn append_direct_attribute_with_parent<T>(
     attribute_rb_builder: &mut AttributesRecordBatchBuilder<T>,
-    parent_id: &<<T as crate::otlp::attributes::parent_id::ParentId>::ArrayType as arrow::array::ArrowPrimitiveType>::Native,
+    parent_id: &<<T as crate::otlp::attributes::parent_id::ParentId>::ArrayType as ArrowPrimitiveType>::Native,
     kv: &DirectAttribute,
 ) where
     T: crate::otlp::attributes::parent_id::ParentId + AttributesRecordBatchBuilderConstructorHelper,
@@ -3282,6 +4231,15 @@ mod tests {
         bytes
     }
 
+    fn string_kv(key: &str, value: &str) -> KeyValue {
+        KeyValue {
+            key: key.to_owned(),
+            value: Some(AnyValue {
+                value: Some(otlp_any_value::Value::StringValue(value.to_owned())),
+            }),
+        }
+    }
+
     fn encode_request_direct(request: &ExportMetricsServiceRequest) -> (Vec<u8>, u64) {
         let bytes = otlp_bytes(request);
         let view = RawMetricsData::new(&bytes);
@@ -3302,6 +4260,24 @@ mod tests {
         assert_eq!(point.start_time_unix_nano(), 10);
         assert_eq!(point.time_unix_nano(), 20);
         assert_eq!(point.value(), Some(metrics_view::Value::Integer(7)));
+    }
+
+    fn string_attrs<P>(point: &P) -> Vec<(String, String)>
+    where
+        P: NumberDataPointView,
+    {
+        point
+            .attributes()
+            .map(|attribute| {
+                let key = std::str::from_utf8(attribute.key()).unwrap().to_owned();
+                let value = attribute.value().unwrap();
+                assert_eq!(value.value_type(), ValueType::String);
+                let value = std::str::from_utf8(value.as_string().unwrap())
+                    .unwrap()
+                    .to_owned();
+                (key, value)
+            })
+            .collect()
     }
 
     #[test]
@@ -3365,5 +4341,54 @@ mod tests {
         let (records, decoded_count) = decode_metrics_otap_with_count(&encoded).unwrap();
         assert_eq!(decoded_count, 1);
         assert_single_gauge_value(&records);
+    }
+
+    #[test]
+    fn encodes_attribute_layout_change_after_repeated_prefix() {
+        let mut request = example_gauge_request();
+        let metric = &mut request.resource_metrics[0].scope_metrics[0].metrics[0];
+        let metric::Data::Gauge(gauge) = metric.data.as_mut().unwrap() else {
+            panic!("example metric must be a gauge");
+        };
+        gauge.data_points = vec![
+            NumberDataPoint {
+                attributes: vec![string_kv("stable", "one"), string_kv("first", "old")],
+                start_time_unix_nano: 10,
+                time_unix_nano: 20,
+                exemplars: Vec::new(),
+                flags: 0,
+                value: Some(number_data_point::Value::AsInt(7)),
+            },
+            NumberDataPoint {
+                attributes: vec![string_kv("stable", "one"), string_kv("second", "new")],
+                start_time_unix_nano: 10,
+                time_unix_nano: 21,
+                exemplars: Vec::new(),
+                flags: 0,
+                value: Some(number_data_point::Value::AsInt(8)),
+            },
+        ];
+
+        let (encoded, encoded_count) = encode_request_direct(&request);
+        assert_eq!(encoded_count, 2);
+
+        let (records, decoded_count) = decode_metrics_otap_with_count(&encoded).unwrap();
+        assert_eq!(decoded_count, 2);
+        let view = crate::views::otap::metrics::OtapMetricsView::try_from(&records).unwrap();
+        let resource_metrics = view.resources().next().unwrap();
+        let scope_metrics = resource_metrics.scopes().next().unwrap();
+        let metric = scope_metrics.metrics().next().unwrap();
+        let data = metric.data().unwrap();
+        let gauge = data.as_gauge().unwrap();
+        let point = gauge.data_points().nth(1).unwrap();
+
+        assert_eq!(point.value(), Some(metrics_view::Value::Integer(8)));
+        assert_eq!(
+            string_attrs(&point),
+            vec![
+                ("stable".to_owned(), "one".to_owned()),
+                ("second".to_owned(), "new".to_owned()),
+            ]
+        );
     }
 }
