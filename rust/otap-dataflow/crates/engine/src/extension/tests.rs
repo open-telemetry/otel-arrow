@@ -32,7 +32,7 @@ fn ext_config(name: &'static str) -> (ExtensionId, Arc<ExtensionUserConfig>, Ext
     (
         name.into(),
         Arc::new(ExtensionUserConfig::new(
-            "urn:otap:test".into(),
+            "urn:otap:extension:test".into(),
             Value::Null,
         )),
         ExtensionConfig::new(name),
@@ -229,7 +229,7 @@ fn test_name_and_config_accessors() {
         .unwrap();
     let w = set.take_shared().unwrap();
     assert_eq!(w.name().as_ref(), "acc");
-    assert_eq!(w.user_config().r#type.as_ref(), "urn:otap:test");
+    assert_eq!(w.user_config().r#type.as_ref(), "urn:otap:extension:test");
 }
 
 #[test]

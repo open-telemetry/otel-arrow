@@ -209,11 +209,11 @@ const PROBE_RECEIVER_URN: &str = "urn:test:receiver:probe";
 const PROBE_PROCESSOR_URN: &str = "urn:test:processor:probe";
 const PROBE_EXPORTER_URN: &str = "urn:test:exporter:probe";
 const NOOP_EXPORTER_URN: &str = "urn:test:exporter:noop";
-const PASSIVE_EXTENSION_URN: &str = "urn:test:passive_extension";
-const DUAL_EXTENSION_URN: &str = "urn:test:dual_extension";
-const ACTIVE_EXTENSION_URN: &str = "urn:test:active_extension";
-const FAILING_EXTENSION_URN: &str = "urn:test:failing_extension";
-const SHUTDOWN_RECORDING_EXTENSION_URN: &str = "urn:test:shutdown_recording_extension";
+const PASSIVE_EXTENSION_URN: &str = "urn:test:extension:passive_extension";
+const DUAL_EXTENSION_URN: &str = "urn:test:extension:dual_extension";
+const ACTIVE_EXTENSION_URN: &str = "urn:test:extension:active_extension";
+const FAILING_EXTENSION_URN: &str = "urn:test:extension:failing_extension";
+const SHUTDOWN_RECORDING_EXTENSION_URN: &str = "urn:test:extension:shutdown_recording_extension";
 
 // ─────────────────────────────────────────────────────────────────────
 // Probe receiver — exercises Capabilities API in create()
@@ -793,7 +793,8 @@ impl otap_df_engine::shared::extension::Extension for ActiveSharedCounterImpl {
     }
 }
 
-const ACTIVE_SHARED_COUNTER_EXTENSION_URN: &str = "urn:test:active_shared_counter_extension";
+const ACTIVE_SHARED_COUNTER_EXTENSION_URN: &str =
+    "urn:test:extension:active_shared_counter_extension";
 
 fn active_shared_counter_extension_create(
     _pipeline_ctx: PipelineContext,
@@ -1063,7 +1064,7 @@ impl otap_df_engine::local::extension::Extension for ActiveLocalExtImpl {
     }
 }
 
-const DUAL_ACTIVE_EXTENSION_URN: &str = "urn:test:dual_active_extension";
+const DUAL_ACTIVE_EXTENSION_URN: &str = "urn:test:extension:dual_active_extension";
 
 fn dual_active_extension_create(
     _pipeline_ctx: PipelineContext,
@@ -1146,7 +1147,7 @@ impl otap_df_engine::shared::extension::Extension for BackgroundExtImpl {
     }
 }
 
-const BACKGROUND_EXTENSION_URN: &str = "urn:test:background_extension";
+const BACKGROUND_EXTENSION_URN: &str = "urn:test:extension:background_extension";
 
 #[derive(Clone)]
 struct BackgroundProbe {
@@ -1267,7 +1268,7 @@ impl LocalNoOpStateful for SharedCounterImpl {
     }
 }
 
-const SHARED_COUNTER_EXTENSION_URN: &str = "urn:test:shared_counter_extension";
+const SHARED_COUNTER_EXTENSION_URN: &str = "urn:test:extension:shared_counter_extension";
 
 #[derive(Clone)]
 struct SharedCounterProbe {
@@ -1345,7 +1346,8 @@ const SHARED_COUNTER_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
 // `&mut self` on the `Send` shared trait variant).
 // ─────────────────────────────────────────────────────────────────────
 
-const SHARED_COUNTER_SHARED_EXTENSION_URN: &str = "urn:test:shared_counter_shared_extension";
+const SHARED_COUNTER_SHARED_EXTENSION_URN: &str =
+    "urn:test:extension:shared_counter_shared_extension";
 
 fn shared_counter_shared_extension_create(
     _pipeline_ctx: PipelineContext,
@@ -1408,7 +1410,7 @@ impl LocalNoOpStateless for ConstructedNoOpImpl {
     }
 }
 
-const CONSTRUCTED_EXTENSION_URN: &str = "urn:test:constructed_extension";
+const CONSTRUCTED_EXTENSION_URN: &str = "urn:test:extension:constructed_extension";
 
 #[derive(Clone)]
 struct ConstructedProbe {
@@ -1516,7 +1518,7 @@ impl LocalNoOpStateful for RcCounterImpl {
     }
 }
 
-const RC_COUNTER_EXTENSION_URN: &str = "urn:test:rc_counter_extension";
+const RC_COUNTER_EXTENSION_URN: &str = "urn:test:extension:rc_counter_extension";
 
 fn rc_counter_extension_create(
     _pipeline_ctx: PipelineContext,

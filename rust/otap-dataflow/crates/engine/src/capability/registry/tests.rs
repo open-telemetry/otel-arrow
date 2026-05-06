@@ -785,7 +785,7 @@ fn test_end_to_end_shared_only_via_bundle() {
     // 1. Build a passive-cloned shared bundle around SharedImpl.
     let name: ExtensionId = "azure-auth".into();
     let user_config = Arc::new(ExtensionUserConfig::new(
-        "urn:test:azure".into(),
+        "urn:test:extension:azure".into(),
         serde_json::Value::Null,
     ));
     let runtime_config = ExtensionConfig::new("azure-auth");
@@ -856,7 +856,7 @@ fn test_end_to_end_local_only_via_bundle() {
 
     let name: ExtensionId = "kv".into();
     let user_config = Arc::new(ExtensionUserConfig::new(
-        "urn:test:kv".into(),
+        "urn:test:extension:kv".into(),
         serde_json::Value::Null,
     ));
     let runtime_config = ExtensionConfig::new("kv");
@@ -913,7 +913,7 @@ fn test_end_to_end_shared_constructed_policy_mints_independent_instances() {
 
     let name: ExtensionId = "counter".into();
     let user_config = Arc::new(ExtensionUserConfig::new(
-        "urn:test:counter".into(),
+        "urn:test:extension:counter".into(),
         serde_json::Value::Null,
     ));
     let runtime_config = ExtensionConfig::new("counter");
@@ -1012,7 +1012,7 @@ fn test_register_into_rejects_metadata_vs_bundle_mismatch() {
 
     let name: ExtensionId = "drifty".into();
     let user_config = Arc::new(ExtensionUserConfig::new(
-        "urn:test:drifty".into(),
+        "urn:test:extension:drifty".into(),
         serde_json::Value::Null,
     ));
     let runtime_config = ExtensionConfig::new("drifty");
@@ -1058,7 +1058,7 @@ fn test_register_into_rejects_metadata_vs_bundle_mismatch() {
     // Symmetric direction: shared advertised, bundle is local-only.
     let local_only_name: ExtensionId = "drifty-local".into();
     let local_only_user_config = Arc::new(ExtensionUserConfig::new(
-        "urn:test:drifty-local".into(),
+        "urn:test:extension:drifty-local".into(),
         serde_json::Value::Null,
     ));
     let local_only_runtime_config = ExtensionConfig::new("drifty-local");
@@ -1352,7 +1352,7 @@ fn test_register_into_background_no_op() {
 
     let name: ExtensionId = "bg".into();
     let user_config = Arc::new(ExtensionUserConfig::new(
-        "urn:test:bg".into(),
+        "urn:test:extension:bg".into(),
         serde_json::Value::Null,
     ));
     let runtime_config = ExtensionConfig::new("bg");

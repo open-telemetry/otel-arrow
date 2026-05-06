@@ -332,13 +332,6 @@ pub enum Error {
         plugin_urn: NodeUrn,
     },
 
-    /// An extension was placed in the `nodes` section instead of `extensions`.
-    #[error("Extension `{node}` was placed in `nodes` but belongs in the `extensions` section")]
-    ExtensionInNodesSection {
-        /// The node name that was misconfigured.
-        node: NodeName,
-    },
-
     /// The specified extension already exists in the pipeline.
     #[error("The extension `{extension}` already exists")]
     ExtensionAlreadyExists {
@@ -583,7 +576,6 @@ impl Error {
             Error::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
             Error::TooManyNodes {} => "TooManyNodes",
             Error::UnknownExporter { .. } => "UnknownExporter",
-            Error::ExtensionInNodesSection { .. } => "ExtensionInNodesSection",
             Error::ExtensionAlreadyExists { .. } => "ExtensionAlreadyExists",
             Error::UnknownExtension { .. } => "UnknownExtension",
             Error::CapabilityRegistrationFailed { .. } => "CapabilityRegistrationFailed",

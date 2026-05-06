@@ -169,8 +169,6 @@ pub enum NodeKind {
     Processor,
     /// A sink of signals
     Exporter,
-    /// A provider of shared capabilities (e.g., auth, service discovery).
-    Extension,
 
     // ToDo(LQ) : Add more node kinds as needed.
     // A connector between two pipelines
@@ -185,7 +183,6 @@ impl From<NodeKind> for Cow<'static, str> {
             NodeKind::Receiver => "receiver".into(),
             NodeKind::Processor => "processor".into(),
             NodeKind::Exporter => "exporter".into(),
-            NodeKind::Extension => "extension".into(),
             NodeKind::ProcessorChain => "processor_chain".into(),
         }
     }
@@ -292,7 +289,6 @@ impl NodeUserConfig {
                         NodeKind::Processor => "processor",
                         NodeKind::Exporter => "exporter",
                         NodeKind::ProcessorChain => "processor_chain",
-                        NodeKind::Extension => "extension",
                         NodeKind::Receiver => unreachable!(),
                     }
                 ),
@@ -308,7 +304,6 @@ impl NodeUserConfig {
                         NodeKind::Receiver => "receiver",
                         NodeKind::Processor => "processor",
                         NodeKind::ProcessorChain => "processor_chain",
-                        NodeKind::Extension => "extension",
                         NodeKind::Exporter => unreachable!(),
                     }
                 ),
