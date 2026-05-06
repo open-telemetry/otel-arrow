@@ -8,6 +8,7 @@ pub(crate) const SCOPE_FIELD_NAME: &str = "instrumentation_scope";
 pub(crate) const VALUE_FIELD_NAME: &str = "value";
 
 pub(crate) const ENCODE_FUNC_NAME: &str = "encode";
+pub(crate) const FORMAT_DATETIME_FUNC_NAME: &str = "format_datetime";
 pub(crate) const REGEXP_SUBSTR_FUNC_NAME: &str = "regexp_substr";
 pub(crate) const SHA256_FUNC_NAME: &str = "sha256";
 pub(crate) const UUID_FUNC_NAME: &str = "uuid";
