@@ -4895,6 +4895,49 @@ mod test {
         test_update_attr_to_fnv_hash_function_call_result::<KqlParser>().await
     }
 
+    async fn test_update_attr_to_murmur3_hash_function_call_result<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "str_attr",
+                    AnyValue::new_string("hello"),
+                )])
+                .finish(),
+        ]);
+
+        // murmur3 returns an Int64 directly - no encode() wrapper needed
+        let query = r#"logs | extend attributes["str_attr"] = murmur3(attributes["str_attr"])"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new(
+                "str_attr",
+                // MurmurHash3 32-bit of "hello" with seed=0
+                AnyValue::new_int(613_153_351_i64)
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_murmur3_hash_function_call_result_opl_parser() {
+        test_update_attr_to_murmur3_hash_function_call_result::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_murmur3_hash_function_call_result_kql_parser() {
+        test_update_attr_to_murmur3_hash_function_call_result::<KqlParser>().await
+    }
+
     async fn test_update_attr_to_substring_function_call_result<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()

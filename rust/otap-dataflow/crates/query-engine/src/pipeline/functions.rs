@@ -15,11 +15,13 @@ use datafusion::logical_expr_common::signature::Arity;
 mod contains;
 mod fnv;
 pub(crate) mod is_type;
+mod murmur3;
 mod regexp_substr;
 mod substring;
 
 make_udf_function!(contains::ExtendedContainsFunc, contains);
 make_udf_function!(fnv::FnvHashFunc, fnv_hash);
+make_udf_function!(murmur3::Murmur3HashFunc, murmur3_hash);
 make_udf_function!(substring::SubstringFunc, substring);
 make_udf_function!(regexp_substr::RegexpSubstrFunc, regexp_substr);
 
