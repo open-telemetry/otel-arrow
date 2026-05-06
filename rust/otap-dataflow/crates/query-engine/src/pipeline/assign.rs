@@ -4805,6 +4805,53 @@ mod test {
         test_update_attr_to_hash_function_call_result_all_supported_types::<KqlParser>().await
     }
 
+    async fn test_update_attr_to_md5_function_call_result<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("str_attr", AnyValue::new_string("y")),
+                    KeyValue::new("binary_attr", AnyValue::new_bytes(b"418")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"logs | extend
+          attributes["str_attr"] = encode(md5(attributes["str_attr"]), "hex"),
+          attributes["binary_attr"] = encode(md5(attributes["binary_attr"]), "hex")
+      "#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new(
+                    "str_attr",
+                    AnyValue::new_string("a6105c0a611b41b08f1209506350279e")
+                ),
+                KeyValue::new(
+                    "binary_attr",
+                    AnyValue::new_string("0ffe9bcd5a3d234d4e99e9a1fb9a5d2c")
+                )
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_md5_function_call_result_opl_parser() {
+        test_update_attr_to_md5_function_call_result::<OplParser>().await
+    }
+    #[tokio::test]
+    async fn test_update_attr_to_md5_function_call_result_kql_parser() {
+        test_update_attr_to_md5_function_call_result::<KqlParser>().await
+    }
+
     async fn test_update_attr_to_substring_function_call_result<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()

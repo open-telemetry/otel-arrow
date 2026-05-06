@@ -59,7 +59,7 @@ use data_engine_expressions::{
 };
 use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::functions::crypto::sha256;
+use datafusion::functions::crypto::{md5, sha256};
 use datafusion::functions::encoding::encode;
 use datafusion::functions::string::{concat, concat_ws, replace};
 use datafusion::logical_expr::expr::ScalarFunction;
@@ -76,7 +76,7 @@ use otap_df_pdata::arrays::{
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
-use crate::consts::{ENCODE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
+use crate::consts::{ENCODE_FUNC_NAME, MD5_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::{join, multi_join};
 use crate::pipeline::expr::types::{
@@ -827,6 +827,7 @@ impl DataFusionFunctionDef {
                 Self::new(regexp_substr(), ExprLogicalType::String, false, None)
             }
             SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
+            MD5_FUNC_NAME => Self::new(md5(), ExprLogicalType::Binary, true, None),
             _ => return None,
         })
     }
