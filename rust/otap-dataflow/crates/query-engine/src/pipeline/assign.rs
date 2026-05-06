@@ -5549,11 +5549,12 @@ mod test {
     async fn test_set_attr_to_format_datetime_result<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
-                .timestamp(1_000_000_000_000_000_000) // 2001-09-09 01:46:40 UTC
+                .time_unix_nano(1_000_000_000_000_000_000u64) // 2001-09-09 01:46:40 UTC
                 .finish(),
         ]);
 
-        let query = r#"logs | extend attributes["date"] = format_datetime(timestamp_unix_nano, "%Y-%m-%d")"#;
+        let query =
+            r#"logs | extend attributes["date"] = format_datetime(time_unix_nano, "%Y-%m-%d")"#;
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
