@@ -23,9 +23,9 @@ OTAP Dataflow Engine instances:
   the admin API
 
 For the full design principles, see
-[docs/admin/enginectl.md](../../docs/admin/enginectl.md#design-principles).
+[docs/admin/dfctl.md](../../docs/admin/dfctl.md#design-principles).
 For security and privacy behavior, see
-[docs/admin/enginectl.md](../../docs/admin/enginectl.md#security-and-privacy).
+[docs/admin/dfctl.md](../../docs/admin/dfctl.md#security-and-privacy).
 
 ## Before You Start
 
@@ -493,6 +493,6 @@ Exit codes:
 ## More Details
 
 - CLI reference and command overview:
-  [docs/admin/enginectl.md](../../docs/admin/enginectl.md)
+  [docs/admin/dfctl.md](../../docs/admin/dfctl.md)
 - Live rollout and shutdown behavior:
   [docs/admin/live-reconfiguration.md](../../docs/admin/live-reconfiguration.md)

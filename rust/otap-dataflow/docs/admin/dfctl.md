@@ -112,7 +112,7 @@ the following scenarios:
 - Unix private bundle file permissions are implemented, but there is no direct
   regression test for the `0600` file mode and no equivalent Windows ACL
   hardening guarantee.
-- Enginectl tests cover TLS option resolution, but not end-to-end TLS or mTLS
+- dfctl tests cover TLS option resolution, but not end-to-end TLS or mTLS
   handshake behavior.
 - Errors and diagnostics may include server-provided messages; there is no
   centralized secret scanner or redactor for arbitrary remote error text.
