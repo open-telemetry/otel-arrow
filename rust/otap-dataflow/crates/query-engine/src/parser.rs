@@ -10,7 +10,10 @@ use data_engine_expressions::{
 };
 use data_engine_parser_abstractions::ParserOptions;
 
-use crate::consts::{ENCODE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
+use crate::consts::{
+    ENCODE_FUNC_NAME, LOWER_CASE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME,
+    UPPER_CASE_FUNC_NAME,
+};
 
 /// Create parser options that can be used when parsing an expression that will be executed with
 /// this query engine
@@ -32,6 +35,8 @@ pub fn default_parser_options() -> ParserOptions {
         //
         .with_external_function(SHA256_FUNC_NAME, param_placeholders(1), None)
         .with_external_function(ENCODE_FUNC_NAME, param_placeholders(2), None)
+        .with_external_function(UPPER_CASE_FUNC_NAME, param_placeholders(1), None)
+        .with_external_function(LOWER_CASE_FUNC_NAME, param_placeholders(1), None)
         .with_external_function(
             REGEXP_SUBSTR_FUNC_NAME,
             vec![

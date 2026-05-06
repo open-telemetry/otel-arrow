@@ -38,6 +38,7 @@ use otap_df_otap::{
     accessory::slots::Key,
     pdata::{Context, OtapPdata},
 };
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::{
     OtapArrowRecords, OtapPayload, otap::transform::sanitize::sanitize_otap_batch,
 };
@@ -411,7 +412,7 @@ impl Processor<OtapPdata> for TransformProcessor {
                         .send_message_with_source_node(OtapPdata::new(context, payload))
                         .await?;
                 } else {
-                    let mut otap_batch: OtapArrowRecords = payload.try_into()?;
+                    let mut otap_batch: OtapArrowRecords = payload.try_into_with_default()?;
                     otap_batch.decode_transport_optimized_ids()?;
                     let result = self
                         .pipeline
@@ -465,6 +466,7 @@ mod test {
         },
     };
     use otap_df_pdata::{
+        TryFromWithOptions,
         otap::Logs,
         proto::{
             OtlpProtoMessage,
@@ -631,7 +633,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let otap_batch = out.into_iter().next().unwrap();
 
@@ -729,7 +731,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let otap_batch = out.into_iter().next().unwrap();
                 let result = otap_to_otlp(&otap_batch);
@@ -810,7 +812,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let otap_batch = out.into_iter().next().unwrap();
                 let result = otap_to_otlp(&otap_batch);
@@ -904,7 +906,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let traces_batch = processed_pdata.next().expect("sent traces batch");
                 let metrics_batch = processed_pdata.next().expect("sent metrics batch");
@@ -939,7 +941,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let traces_batch = processed_pdata.next().expect("sent traces batch");
                 let metrics_batch = processed_pdata.next().expect("sent metrics batch");
@@ -1011,7 +1013,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let result = out.into_iter().next().expect("one result");
 
@@ -1112,7 +1114,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap)
                     .map(|otap_batch| otap_to_otlp(&otap_batch));
 
@@ -1213,7 +1215,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let default_result = out.into_iter().next().expect("one result");
                 assert_logs_records_equal(default_result, other_log_record);
@@ -2010,7 +2012,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let default_result = out.into_iter().next().expect("one result");
                 // check we skipped the sanitization on the default output

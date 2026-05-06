@@ -85,6 +85,7 @@ use otap_df_engine::{
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
+use otap_df_pdata::TryFromWithOptions;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
@@ -533,7 +534,7 @@ impl ContentRouter {
                     SignalType::Logs => self.resolve_arrow_logs_route(arrow_records),
                     // Metrics/Traces Arrow views not yet available — convert to OTLP.
                     // TODO: Use OtapMetricsView/OtapTracesView when available.
-                    _ => match OtlpProtoBytes::try_from(arrow_records.clone()) {
+                    _ => match OtlpProtoBytes::try_from_with_default(arrow_records.clone()) {
                         Ok(OtlpProtoBytes::ExportMetricsRequest(bytes)) => {
                             let data = RawMetricsData::new(bytes.as_ref());
                             self.resolve_metrics_route(&data)

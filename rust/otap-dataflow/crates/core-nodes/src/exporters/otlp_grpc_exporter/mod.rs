@@ -821,6 +821,7 @@ impl GrpcClientPool {
         let mut client = LogsServiceClient::new(self.base_channel.clone());
         if let Some(encoding) = self.compression {
             client = client.send_compressed(encoding);
+            client = client.accept_compressed(encoding);
         }
         client
     }
@@ -829,6 +830,7 @@ impl GrpcClientPool {
         let mut client = MetricsServiceClient::new(self.base_channel.clone());
         if let Some(encoding) = self.compression {
             client = client.send_compressed(encoding);
+            client = client.accept_compressed(encoding);
         }
         client
     }
@@ -837,6 +839,7 @@ impl GrpcClientPool {
         let mut client = TraceServiceClient::new(self.base_channel.clone());
         if let Some(encoding) = self.compression {
             client = client.send_compressed(encoding);
+            client = client.accept_compressed(encoding);
         }
         client
     }

@@ -72,6 +72,7 @@ mod control_plane_metrics;
 pub mod effect_handler;
 pub mod engine_metrics;
 pub mod entity_context;
+pub mod flow_metric;
 pub(crate) mod indexed_min_heap;
 pub mod local;
 pub mod memory_limiter;
@@ -394,6 +395,13 @@ impl ReceivedAtNode for () {
 impl ReceivedAtNode for String {
     fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
 }
+// `FlowMetricHook` is a bound on the `PData` generic of `ProcessorWrapper::start*`,
+// `RuntimePipeline`, and the controller. Test code uses `()` and `String` as stand-in PData
+// types (e.g. `Controller<()>`); these blanket no-op impls let those tests compile without
+// requiring every test PData type to define hook behavior. Real PData types (e.g. `OtapPdata`)
+// override these methods to drive flow_metric signal counting and compute-duration accumulation.
+impl processor::FlowMetricHook for () {}
+impl processor::FlowMetricHook for String {}
 
 /// Trait for setting exit information in the Context, for PData consumers.
 pub trait StampOutputPort {
@@ -407,6 +415,23 @@ impl StampOutputPort for () {
 
 impl StampOutputPort for String {
     fn stamp_output_port_index(&mut self, _index: u16) {}
+}
+
+/// Trait for forward-path flow_metric compute accumulation on PData.
+///
+/// At most one flow_metric range can be active on a given message at a
+/// time (non-overlapping ranges).
+pub trait FlowMetricAccumulation {
+    /// Initialise a fresh flow_metric accumulator (set to 0).
+    /// Called at the start node.
+    fn start_flow_metric(&mut self);
+
+    /// Add `ns` nanoseconds to the active flow_metric accumulator, if any.
+    fn add_flow_compute(&mut self, ns: u64);
+
+    /// Remove and return the accumulated total.
+    /// Returns `None` if no accumulator was active.
+    fn take_flow_compute(&mut self) -> Option<u64>;
 }
 
 /// Effect handler extensions for producers specific to data type.

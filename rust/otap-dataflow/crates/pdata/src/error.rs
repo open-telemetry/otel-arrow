@@ -139,6 +139,10 @@ pub enum Error {
 
     #[error("RecordBatch not found: {:?}", payload_type)]
     RecordBatchNotFound { payload_type: ArrowPayloadType },
+
+    #[error("Invalid protobuf wire format")]
+    InvalidProtobufWireFormat,
+
     #[error("Log record not found")]
     LogRecordNotFound,
 

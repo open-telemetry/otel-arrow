@@ -4606,8 +4606,11 @@ mod tests {
             );
         }
 
-        // Backdate old segment files so they appear 2 seconds old
-        backdate_segment_files(dir.path(), Duration::from_secs(2));
+        // Backdate old segment files far into the past so they are unambiguously
+        // older than `max_age` below, regardless of CI timing jitter
+        // (may take >1s between phases, which previously caused fresh
+        // segments to also appear expired and made this test flaky).
+        backdate_segment_files(dir.path(), Duration::from_secs(3600));
 
         // Phase 2: Create fresh segments
         let total_segments;
@@ -4636,13 +4639,14 @@ mod tests {
             );
         }
 
-        // Phase 3: Reopen with max_age that expires old segments but not fresh ones
-        // Use 1 second - old segments (2s+ old) will expire, fresh ones won't
+        // Phase 3: Reopen with a max_age large enough that fresh segments
+        // written in Phase 2 cannot appear expired due to CI timing jitter,
+        // but small enough that the backdated old segments (1 hour old) do.
         let config_with_max_age = QuiverConfig::builder()
             .data_dir(dir.path())
             .segment(segment_config)
             .retention(RetentionConfig {
-                max_age: Some(Duration::from_secs(1)),
+                max_age: Some(Duration::from_secs(60)),
             })
             .build()
             .expect("config");

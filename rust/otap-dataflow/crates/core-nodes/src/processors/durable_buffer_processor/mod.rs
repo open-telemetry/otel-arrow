@@ -93,6 +93,7 @@ use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_pdata::TryIntoWithOptions;
 
 use bundle_adapter::{
     OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata, signal_type_from_slot_id,
@@ -1108,7 +1109,7 @@ impl DurableBuffer {
                         // Clone bytes for NACK on conversion failure (conversion consumes the input).
                         let bytes_for_nack = otlp_bytes.clone();
                         let conversion_result: Result<OtapArrowRecords, _> =
-                            OtapPayload::OtlpBytes(otlp_bytes).try_into();
+                            OtapPayload::OtlpBytes(otlp_bytes).try_into_with_default();
                         match conversion_result {
                             Ok(records) => {
                                 // Count items from Arrow data (cheap - just num_rows)
