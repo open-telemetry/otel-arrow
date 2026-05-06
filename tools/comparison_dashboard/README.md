@@ -1,8 +1,8 @@
 # Comparison Dashboard
 
 Static site for comparing telemetry engines and protocols across various
-scenarios. Benchmark execution is delegated to the 
-[orchestrator](../pipeline_perf_test/orchestrator) -- this tool wraps the 
+scenarios. Benchmark execution is delegated to the
+[orchestrator](../pipeline_perf_test/orchestrator) -- this tool wraps the
 orchestrator with a manifest-driven workflow and a static viewer.
 
 ## Concepts
