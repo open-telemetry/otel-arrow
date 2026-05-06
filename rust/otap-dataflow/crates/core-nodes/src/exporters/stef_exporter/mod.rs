@@ -28,15 +28,14 @@ use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataMetrics;
 use otap_df_otap::otap_grpc::client_settings::GrpcClientSettings;
 use otap_df_otap::pdata::{Context, OtapPdata};
-use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
-use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
-use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-use otap_df_pdata::proto::opentelemetry::metrics::v1::metric;
-use otap_df_pdata::stef::{METRICS_ROOT_STRUCT_NAME, METRICS_WIRE_SCHEMA, encode_metrics_request};
+use otap_df_pdata::stef::{
+    METRICS_ROOT_STRUCT_NAME, METRICS_WIRE_SCHEMA, encode_metrics_otap_with_count,
+    encode_metrics_view_with_count,
+};
+use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
-use prost::Message as ProstMessage;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -136,9 +135,6 @@ impl Exporter<OtapPdata> for StefExporter {
             })?;
         let compression = self.config.grpc.compression_encoding();
 
-        let mut metrics_proto_encoder = MetricsProtoBytesEncoder::new();
-        let mut metrics_proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
-
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
@@ -156,13 +152,7 @@ impl Exporter<OtapPdata> for StefExporter {
                     let (context, payload) = pdata.into_parts();
                     self.pdata_metrics.inc_consumed(signal_type);
 
-                    let prepared = prepare_metrics_export(
-                        payload,
-                        context,
-                        signal_type,
-                        &mut metrics_proto_buffer,
-                        &mut metrics_proto_encoder,
-                    );
+                    let prepared = prepare_metrics_export(payload, context, signal_type);
 
                     match prepared {
                         Ok(export) => {
@@ -206,8 +196,6 @@ fn prepare_metrics_export(
     payload: OtapPayload,
     context: Context,
     signal_type: SignalType,
-    proto_buffer: &mut ProtoBuffer,
-    encoder: &mut MetricsProtoBytesEncoder,
 ) -> Result<PreparedStefExport, Box<PrepareFailure>> {
     if signal_type != SignalType::Metrics {
         return Err(Box::new(PrepareFailure {
@@ -217,79 +205,67 @@ fn prepare_metrics_export(
         }));
     }
 
-    let (request, saved_payload) = match payload {
+    match payload {
         OtapPayload::OtlpBytes(OtlpProtoBytes::ExportMetricsRequest(bytes)) => {
-            let request = ExportMetricsServiceRequest::decode(bytes.as_ref()).map_err(|e| {
-                Box::new(PrepareFailure {
-                    reason: format!("metrics protobuf decode error: {e}"),
-                    saved_payload: if context.may_return_payload() {
+            let encoded = {
+                let view = RawMetricsData::new(bytes.as_ref());
+                encode_metrics_view_with_count(&view)
+            };
+            let (stef_bytes, record_count) = match encoded {
+                Ok(result) => result,
+                Err(e) => {
+                    let saved_payload = if context.may_return_payload() {
                         OtlpProtoBytes::ExportMetricsRequest(bytes.clone()).into()
                     } else {
                         OtlpProtoBytes::ExportMetricsRequest(Bytes::new()).into()
-                    },
-                    context: context.clone(),
-                })
-            })?;
+                    };
+                    return Err(Box::new(PrepareFailure {
+                        reason: format!("STEF metrics encode error: {e}"),
+                        context,
+                        saved_payload,
+                    }));
+                }
+            };
             let saved_payload = if context.may_return_payload() {
                 OtlpProtoBytes::ExportMetricsRequest(bytes).into()
             } else {
                 OtlpProtoBytes::ExportMetricsRequest(Bytes::new()).into()
             };
-            (request, saved_payload)
-        }
-        OtapPayload::OtapArrowRecords(mut otap_batch) => {
-            proto_buffer.clear();
-            if let Err(e) = encoder.encode(&mut otap_batch, proto_buffer) {
-                let saved_payload = save_otap_batch(&context, otap_batch);
-                return Err(Box::new(PrepareFailure {
-                    reason: format!("metrics OTAP encode error: {e}"),
-                    context,
-                    saved_payload,
-                }));
-            }
-            let (bytes, next_capacity) = proto_buffer.take_into_bytes();
-            proto_buffer.ensure_capacity(next_capacity);
-            let request = match ExportMetricsServiceRequest::decode(bytes.as_ref()) {
-                Ok(request) => request,
-                Err(e) => {
-                    let saved_payload = save_otap_batch(&context, otap_batch);
-                    return Err(Box::new(PrepareFailure {
-                        reason: format!("metrics protobuf decode error: {e}"),
-                        context: context.clone(),
-                        saved_payload,
-                    }));
-                }
-            };
-            let saved_payload = save_otap_batch(&context, otap_batch);
-            (request, saved_payload)
-        }
-        other => {
-            return Err(Box::new(PrepareFailure {
-                reason: "STEF exporter received non-metrics OTLP payload".to_owned(),
-                saved_payload: save_payload(&context, signal_type, other),
-                context,
-            }));
-        }
-    };
-
-    let record_count = count_metric_points(&request);
-    let bytes = match encode_metrics_request(&request) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            return Err(Box::new(PrepareFailure {
-                reason: format!("STEF metrics encode error: {e}"),
+            Ok(PreparedStefExport {
+                bytes: stef_bytes,
+                record_count,
                 context,
                 saved_payload,
-            }));
+            })
         }
-    };
-
-    Ok(PreparedStefExport {
-        bytes,
-        record_count,
-        context,
-        saved_payload,
-    })
+        OtapPayload::OtapArrowRecords(otap_batch) => {
+            let encoded = encode_metrics_otap_with_count(&otap_batch);
+            match encoded {
+                Ok((stef_bytes, record_count)) => {
+                    let saved_payload = save_otap_batch(&context, otap_batch);
+                    Ok(PreparedStefExport {
+                        bytes: stef_bytes,
+                        record_count,
+                        context,
+                        saved_payload,
+                    })
+                }
+                Err(e) => {
+                    let saved_payload = save_otap_batch(&context, otap_batch);
+                    Err(Box::new(PrepareFailure {
+                        reason: format!("STEF metrics encode error: {e}"),
+                        context,
+                        saved_payload,
+                    }))
+                }
+            }
+        }
+        other => Err(Box::new(PrepareFailure {
+            reason: "STEF exporter received non-metrics OTLP payload".to_owned(),
+            saved_payload: save_payload(&context, signal_type, other),
+            context,
+        })),
+    }
 }
 
 async fn export_stef_metrics(
@@ -435,23 +411,4 @@ fn save_otap_batch(context: &Context, mut otap_batch: OtapArrowRecords) -> OtapP
         let _drop = otap_batch.take_payload();
     }
     otap_batch.into()
-}
-
-fn count_metric_points(request: &ExportMetricsServiceRequest) -> u64 {
-    request
-        .resource_metrics
-        .iter()
-        .flat_map(|resource| &resource.scope_metrics)
-        .flat_map(|scope| &scope.metrics)
-        .map(|metric| match metric.data.as_ref() {
-            Some(metric::Data::Gauge(gauge)) => gauge.data_points.len() as u64,
-            Some(metric::Data::Sum(sum)) => sum.data_points.len() as u64,
-            Some(metric::Data::Histogram(histogram)) => histogram.data_points.len() as u64,
-            Some(metric::Data::ExponentialHistogram(histogram)) => {
-                histogram.data_points.len() as u64
-            }
-            Some(metric::Data::Summary(summary)) => summary.data_points.len() as u64,
-            None => 0,
-        })
-        .sum()
 }

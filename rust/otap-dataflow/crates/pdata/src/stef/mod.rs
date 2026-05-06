@@ -8,17 +8,36 @@
 //! frames, and the generated `otel.stef` metrics wire schema. The encoder currently supports
 //! gauge and sum number data points plus simple OTLP attribute values.
 
-use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-use crate::proto::opentelemetry::common::v1::{
-    AnyValue, InstrumentationScope, KeyValue, any_value as otlp_any_value,
+use crate::OtapArrowRecords;
+use crate::encode::record::{
+    attributes::{AttributesRecordBatchBuilder, AttributesRecordBatchBuilderConstructorHelper},
+    metrics::MetricsRecordBatchBuilder,
 };
-use crate::proto::opentelemetry::metrics::v1::{
-    AggregationTemporality, Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
-    metric, number_data_point,
+use crate::otap::Metrics;
+use crate::otlp::attributes::AttributeValueType;
+use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use crate::schema::{FieldExt, consts};
+use arrow::{
+    array::{
+        Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch,
+        StringArray, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
+    },
+    datatypes::{Field, Schema},
+    error::ArrowError,
 };
-use crate::proto::opentelemetry::resource::v1::Resource;
+use otap_df_pdata_views::views::{
+    common::{AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType},
+    metrics::{
+        self as metrics_view, DataView, GaugeView, MetricView, MetricsView, NumberDataPointView,
+        ResourceMetricsView, ScopeMetricsView, SumView,
+    },
+    resource::ResourceView,
+};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::rc::Rc;
+use std::sync::Arc;
 
 /// Root struct name used by the STEF metrics schema.
 pub const METRICS_ROOT_STRUCT_NAME: &str = "Metrics";
@@ -33,11 +52,14 @@ const HDR_FORMAT_VERSION: u8 = 0;
 const COMPRESSION_NONE: u8 = 0;
 const FRAME_FLAG_NONE: u8 = 0;
 
-const ROOT_FIELD_MASK: u64 = 0b111110;
 const METRIC_FIELD_MASK: u64 = 0b11111111;
 const RESOURCE_FIELD_MASK: u64 = 0b111;
 const SCOPE_FIELD_MASK: u64 = 0b11111;
-const POINT_FIELD_MASK: u64 = 0b1111;
+const ROOT_METRIC_FIELD: u64 = 1 << 1;
+const ROOT_RESOURCE_FIELD: u64 = 1 << 2;
+const ROOT_SCOPE_FIELD: u64 = 1 << 3;
+const ROOT_ATTRIBUTES_FIELD: u64 = 1 << 4;
+const ROOT_POINT_FIELD: u64 = 1 << 5;
 
 /// Errors returned by the STEF metrics codec.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +82,12 @@ pub enum Error {
     UnsupportedStefValue(&'static str),
     /// A STEF frame or integer exceeded the supported range.
     ValueOutOfRange(&'static str),
+    /// An OTAP Arrow view could not be built from the supplied payload.
+    OtapView(String),
+    /// OTAP Arrow encoding failed while building a direct decoded payload.
+    OtapEncode(String),
+    /// A view exposed non-UTF-8 bytes for a STEF string field.
+    InvalidUtf8(&'static str),
 }
 
 impl fmt::Display for Error {
@@ -76,25 +104,57 @@ impl fmt::Display for Error {
             Self::InvalidRefNum => write!(f, "invalid STEF dictionary reference"),
             Self::UnsupportedStefValue(kind) => write!(f, "unsupported STEF value: {kind}"),
             Self::ValueOutOfRange(name) => write!(f, "STEF value out of range: {name}"),
+            Self::OtapView(reason) => write!(f, "OTAP view error: {reason}"),
+            Self::OtapEncode(reason) => write!(f, "OTAP encode error: {reason}"),
+            Self::InvalidUtf8(field) => write!(f, "invalid UTF-8 in STEF string field: {field}"),
         }
     }
 }
 
 impl std::error::Error for Error {}
 
-/// Encodes an OTLP metrics request into a complete STEF metrics byte stream.
-pub fn encode_metrics_request(request: &ExportMetricsServiceRequest) -> Result<Vec<u8>, Error> {
+/// Encodes a metrics view directly into a complete STEF metrics byte stream.
+pub fn encode_metrics_view<T>(metrics: &T) -> Result<Vec<u8>, Error>
+where
+    T: MetricsView,
+{
+    encode_metrics_view_with_count(metrics).map(|(bytes, _)| bytes)
+}
+
+/// Encodes a metrics view directly into STEF and returns the encoded STEF record count.
+pub fn encode_metrics_view_with_count<T>(metrics: &T) -> Result<(Vec<u8>, u64), Error>
+where
+    T: MetricsView,
+{
     let mut encoder = MetricsStreamEncoder::default();
-    encoder.encode_request(request)?;
-    encoder.finish()
+    encoder.encode_metrics_view(metrics)?;
+    let record_count = encoder.record_count;
+    let bytes = encoder.finish()?;
+    Ok((bytes, record_count))
 }
 
-/// Decodes a complete STEF metrics byte stream into an OTLP metrics request.
-pub fn decode_metrics_request(bytes: &[u8]) -> Result<ExportMetricsServiceRequest, Error> {
-    MetricsStreamDecoder::decode(bytes)
+/// Encodes OTAP metrics Arrow records directly into a complete STEF metrics byte stream.
+pub fn encode_metrics_otap(records: &OtapArrowRecords) -> Result<Vec<u8>, Error> {
+    encode_metrics_otap_with_count(records).map(|(bytes, _)| bytes)
 }
 
-#[derive(Default)]
+/// Encodes OTAP metrics Arrow records directly into STEF and returns the encoded record count.
+pub fn encode_metrics_otap_with_count(records: &OtapArrowRecords) -> Result<(Vec<u8>, u64), Error> {
+    let view = crate::views::otap::metrics::OtapMetricsView::try_from(records)
+        .map_err(|e| Error::OtapView(e.to_string()))?;
+    encode_metrics_view_with_count(&view)
+}
+
+/// Decodes a complete STEF metrics byte stream directly into OTAP metrics Arrow records.
+pub fn decode_metrics_otap(bytes: &[u8]) -> Result<OtapArrowRecords, Error> {
+    decode_metrics_otap_with_count(bytes).map(|(records, _)| records)
+}
+
+/// Decodes a complete STEF metrics byte stream directly into OTAP records and a STEF record count.
+pub fn decode_metrics_otap_with_count(bytes: &[u8]) -> Result<(OtapArrowRecords, u64), Error> {
+    MetricsOtapStreamDecoder::decode(bytes)
+}
+
 struct MetricsStreamEncoder {
     record_count: u64,
     root_bits: BitWriter,
@@ -105,44 +165,109 @@ struct MetricsStreamEncoder {
     point: PointEncoder,
 }
 
+impl Default for MetricsStreamEncoder {
+    fn default() -> Self {
+        let schema_url = SharedStringDict::default();
+        let attribute_key = SharedStringDict::default();
+        let any_value_string = SharedStringDict::default();
+
+        Self {
+            record_count: 0,
+            root_bits: BitWriter::default(),
+            metric: MetricEncoder::new(
+                SharedStringDict::default(),
+                SharedStringDict::default(),
+                SharedStringDict::default(),
+                attribute_key.clone(),
+                any_value_string.clone(),
+            ),
+            resource: ResourceEncoder::new(
+                schema_url.clone(),
+                attribute_key.clone(),
+                any_value_string.clone(),
+            ),
+            scope: ScopeEncoder::new(
+                SharedStringDict::default(),
+                SharedStringDict::default(),
+                schema_url,
+                attribute_key.clone(),
+                any_value_string.clone(),
+            ),
+            attributes: AttributesEncoder::new(attribute_key, any_value_string),
+            point: PointEncoder::default(),
+        }
+    }
+}
+
 impl MetricsStreamEncoder {
-    fn encode_request(&mut self, request: &ExportMetricsServiceRequest) -> Result<(), Error> {
-        for resource_metrics in &request.resource_metrics {
-            let resource = StefResource::from_resource_metrics(resource_metrics);
-            for scope_metrics in &resource_metrics.scope_metrics {
-                let scope = StefScope::from_scope_metrics(scope_metrics);
-                for metric in &scope_metrics.metrics {
-                    let base_metric = StefMetric::from_metric(metric)?;
-                    match metric.data.as_ref() {
-                        Some(metric::Data::Gauge(gauge)) => {
-                            self.encode_number_points(
-                                &resource,
-                                &scope,
-                                &base_metric,
-                                &gauge.data_points,
+    fn encode_metrics_view<T>(&mut self, metrics: &T) -> Result<(), Error>
+    where
+        T: MetricsView,
+    {
+        for resource_metrics in metrics.resources() {
+            let resource_schema_url = resource_metrics.schema_url();
+            let resource = resource_metrics.resource();
+            let mut wrote_resource = false;
+            for scope_metrics in resource_metrics.scopes() {
+                let scope_schema_url = scope_metrics.schema_url();
+                let scope = scope_metrics.scope();
+                let mut wrote_scope = false;
+                for metric in scope_metrics.metrics() {
+                    let data = metric.data().ok_or(Error::UnsupportedMetricType("empty"))?;
+                    match data.value_type() {
+                        metrics_view::DataType::Gauge => {
+                            let gauge = data
+                                .as_gauge()
+                                .ok_or(Error::UnsupportedMetricType("gauge"))?;
+                            let metric = ViewMetric {
+                                metric: &metric,
+                                r#type: 0,
+                                aggregation_temporality: 0,
+                                monotonic: false,
+                            };
+                            let wrote = self.encode_number_points_view(
+                                resource_schema_url,
+                                resource.as_ref(),
+                                scope_schema_url,
+                                scope.as_ref(),
+                                &metric,
+                                gauge.data_points(),
+                                !wrote_resource,
+                                !wrote_scope,
                             )?;
+                            wrote_resource |= wrote;
+                            wrote_scope |= wrote;
                         }
-                        Some(metric::Data::Sum(sum)) => {
-                            let mut sum_metric = base_metric;
-                            sum_metric.aggregation_temporality = sum.aggregation_temporality as u64;
-                            sum_metric.monotonic = sum.is_monotonic;
-                            self.encode_number_points(
-                                &resource,
-                                &scope,
-                                &sum_metric,
-                                &sum.data_points,
+                        metrics_view::DataType::Sum => {
+                            let sum = data.as_sum().ok_or(Error::UnsupportedMetricType("sum"))?;
+                            let metric = ViewMetric {
+                                metric: &metric,
+                                r#type: 1,
+                                aggregation_temporality: sum.aggregation_temporality() as u64,
+                                monotonic: sum.is_monotonic(),
+                            };
+                            let wrote = self.encode_number_points_view(
+                                resource_schema_url,
+                                resource.as_ref(),
+                                scope_schema_url,
+                                scope.as_ref(),
+                                &metric,
+                                sum.data_points(),
+                                !wrote_resource,
+                                !wrote_scope,
                             )?;
+                            wrote_resource |= wrote;
+                            wrote_scope |= wrote;
                         }
-                        Some(metric::Data::Histogram(_)) => {
+                        metrics_view::DataType::Histogram => {
                             return Err(Error::UnsupportedMetricType("histogram"));
                         }
-                        Some(metric::Data::ExponentialHistogram(_)) => {
+                        metrics_view::DataType::ExponentialHistogram => {
                             return Err(Error::UnsupportedMetricType("exponential_histogram"));
                         }
-                        Some(metric::Data::Summary(_)) => {
+                        metrics_view::DataType::Summary => {
                             return Err(Error::UnsupportedMetricType("summary"));
                         }
-                        None => return Err(Error::UnsupportedMetricType("empty")),
                     }
                 }
             }
@@ -150,33 +275,66 @@ impl MetricsStreamEncoder {
         Ok(())
     }
 
-    fn encode_number_points(
+    fn encode_number_points_view<R, S, M, P>(
         &mut self,
-        resource: &StefResource<'_>,
-        scope: &StefScope<'_>,
-        metric: &StefMetric<'_>,
-        points: &[NumberDataPoint],
-    ) -> Result<(), Error> {
+        resource_schema_url: Option<Str<'_>>,
+        resource: Option<&R>,
+        scope_schema_url: Str<'_>,
+        scope: Option<&S>,
+        metric: &ViewMetric<'_, M>,
+        points: impl Iterator<Item = P>,
+        mut encode_resource: bool,
+        mut encode_scope: bool,
+    ) -> Result<bool, Error>
+    where
+        R: ResourceView,
+        S: InstrumentationScopeView,
+        M: MetricView,
+        P: NumberDataPointView,
+    {
+        let mut wrote = false;
+        let mut encode_metric = true;
         for point in points {
-            let point_value = match point.value {
-                Some(number_data_point::Value::AsInt(value)) => StefPointValue::Int64(value),
-                Some(number_data_point::Value::AsDouble(value)) => StefPointValue::Float64(value),
-                None if point.flags & 0x01 == 0x01 => StefPointValue::None,
+            let point_value = match point.value() {
+                Some(metrics_view::Value::Integer(value)) => StefPointValue::Int64(value),
+                Some(metrics_view::Value::Double(value)) => StefPointValue::Float64(value),
+                None if point.flags().no_recorded_value() => StefPointValue::None,
                 None => return Err(Error::UnsupportedDataPointValue),
             };
-            self.root_bits.write_bits(ROOT_FIELD_MASK, 6);
-            self.metric.encode(metric)?;
-            self.resource.encode(resource)?;
-            self.scope.encode(scope)?;
-            self.attributes.encode(&point.attributes)?;
+            let mut root_mask = ROOT_ATTRIBUTES_FIELD | ROOT_POINT_FIELD;
+            if encode_metric {
+                root_mask |= ROOT_METRIC_FIELD;
+            }
+            if encode_resource {
+                root_mask |= ROOT_RESOURCE_FIELD;
+            }
+            if encode_scope {
+                root_mask |= ROOT_SCOPE_FIELD;
+            }
+
+            self.root_bits.write_bits(root_mask, 6);
+            if encode_metric {
+                self.metric.encode_view(metric)?;
+            }
+            if encode_resource {
+                self.resource.encode_view(resource_schema_url, resource)?;
+            }
+            if encode_scope {
+                self.scope.encode_view(scope_schema_url, scope)?;
+            }
+            self.attributes.encode_view(point.attributes())?;
             self.point.encode(&StefPoint {
-                start_timestamp: point.start_time_unix_nano,
-                timestamp: point.time_unix_nano,
+                start_timestamp: point.start_time_unix_nano(),
+                timestamp: point.time_unix_nano(),
                 value: point_value,
             })?;
             self.record_count += 1;
+            wrote = true;
+            encode_metric = false;
+            encode_resource = false;
+            encode_scope = false;
         }
-        Ok(())
+        Ok(wrote)
     }
 
     fn finish(mut self) -> Result<Vec<u8>, Error> {
@@ -209,89 +367,21 @@ impl MetricsStreamEncoder {
     }
 }
 
-#[derive(Clone, Copy)]
-struct StefResource<'a> {
-    schema_url: &'a str,
-    attributes: &'a [KeyValue],
-    dropped_attributes_count: u64,
-}
-
-impl<'a> StefResource<'a> {
-    fn from_resource_metrics(resource_metrics: &'a ResourceMetrics) -> Self {
-        let resource = resource_metrics.resource.as_ref();
-        Self {
-            schema_url: resource_metrics.schema_url.as_str(),
-            attributes: resource.map_or(&[], |resource| resource.attributes.as_slice()),
-            dropped_attributes_count: resource
-                .map(|resource| u64::from(resource.dropped_attributes_count))
-                .unwrap_or(0),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct StefScope<'a> {
-    name: &'a str,
-    version: &'a str,
-    schema_url: &'a str,
-    attributes: &'a [KeyValue],
-    dropped_attributes_count: u64,
-}
-
-impl<'a> StefScope<'a> {
-    fn from_scope_metrics(scope_metrics: &'a ScopeMetrics) -> Self {
-        let scope = scope_metrics.scope.as_ref();
-        Self {
-            name: scope.map_or("", |scope| scope.name.as_str()),
-            version: scope.map_or("", |scope| scope.version.as_str()),
-            schema_url: scope_metrics.schema_url.as_str(),
-            attributes: scope.map_or(&[], |scope| scope.attributes.as_slice()),
-            dropped_attributes_count: scope
-                .map(|scope| u64::from(scope.dropped_attributes_count))
-                .unwrap_or(0),
-        }
-    }
-}
-
-#[derive(Clone)]
-struct StefMetric<'a> {
-    name: &'a str,
-    description: &'a str,
-    unit: &'a str,
+struct ViewMetric<'a, M> {
+    metric: &'a M,
     r#type: u64,
-    metadata: &'a [KeyValue],
     aggregation_temporality: u64,
     monotonic: bool,
 }
 
-impl<'a> StefMetric<'a> {
-    fn from_metric(metric: &'a Metric) -> Result<Self, Error> {
-        let r#type = match metric.data.as_ref() {
-            Some(metric::Data::Gauge(_)) => 0,
-            Some(metric::Data::Sum(_)) => 1,
-            Some(metric::Data::Histogram(_)) => 2,
-            Some(metric::Data::ExponentialHistogram(_)) => 3,
-            Some(metric::Data::Summary(_)) => 4,
-            None => return Err(Error::UnsupportedMetricType("empty")),
-        };
-        Ok(Self {
-            name: metric.name.as_str(),
-            description: metric.description.as_str(),
-            unit: metric.unit.as_str(),
-            r#type,
-            metadata: &metric.metadata,
-            aggregation_temporality: 0,
-            monotonic: false,
-        })
-    }
-}
-
+#[derive(Clone, Copy, PartialEq)]
 struct StefPoint {
     start_timestamp: u64,
     timestamp: u64,
     value: StefPointValue,
 }
 
+#[derive(Clone, Copy, PartialEq)]
 enum StefPointValue {
     None,
     Int64(i64),
@@ -312,14 +402,36 @@ struct MetricEncoder {
 }
 
 impl MetricEncoder {
-    fn encode(&mut self, metric: &StefMetric<'_>) -> Result<(), Error> {
+    fn new(
+        name: SharedStringDict,
+        description: SharedStringDict,
+        unit: SharedStringDict,
+        attribute_key: SharedStringDict,
+        any_value_string: SharedStringDict,
+    ) -> Self {
+        Self {
+            name: StringEncoder::with_dict(name),
+            description: StringEncoder::with_dict(description),
+            unit: StringEncoder::with_dict(unit),
+            metadata: AttributesEncoder::new(attribute_key, any_value_string),
+            ..Self::default()
+        }
+    }
+
+    fn encode_view<M>(&mut self, metric: &ViewMetric<'_, M>) -> Result<(), Error>
+    where
+        M: MetricView,
+    {
         self.bits.write_bit(true);
         self.bits.write_bits(METRIC_FIELD_MASK, 8);
-        self.name.encode(metric.name);
-        self.description.encode(metric.description);
-        self.unit.encode(metric.unit);
+        self.name
+            .encode_bytes(metric.metric.name(), "metric.name")?;
+        self.description
+            .encode_bytes(metric.metric.description(), "metric.description")?;
+        self.unit
+            .encode_bytes(metric.metric.unit(), "metric.unit")?;
         self.r#type.encode(metric.r#type);
-        self.metadata.encode(metric.metadata)?;
+        self.metadata.encode_view(metric.metric.metadata())?;
         self.histogram_bounds.encode_empty();
         self.aggregation_temporality
             .encode(metric.aggregation_temporality);
@@ -351,13 +463,38 @@ struct ResourceEncoder {
 }
 
 impl ResourceEncoder {
-    fn encode(&mut self, resource: &StefResource<'_>) -> Result<(), Error> {
+    fn new(
+        schema_url: SharedStringDict,
+        attribute_key: SharedStringDict,
+        any_value_string: SharedStringDict,
+    ) -> Self {
+        Self {
+            schema_url: StringEncoder::with_dict(schema_url),
+            attributes: AttributesEncoder::new(attribute_key, any_value_string),
+            ..Self::default()
+        }
+    }
+
+    fn encode_view<R>(
+        &mut self,
+        schema_url: Option<Str<'_>>,
+        resource: Option<&R>,
+    ) -> Result<(), Error>
+    where
+        R: ResourceView,
+    {
         self.bits.write_bit(true);
         self.bits.write_bits(RESOURCE_FIELD_MASK, 3);
-        self.schema_url.encode(resource.schema_url);
-        self.attributes.encode(resource.attributes)?;
-        self.dropped_attributes_count
-            .encode(resource.dropped_attributes_count);
+        self.schema_url
+            .encode_bytes(schema_url.unwrap_or(b""), "resource.schema_url")?;
+        if let Some(resource) = resource {
+            self.attributes.encode_view(resource.attributes())?;
+            self.dropped_attributes_count
+                .encode(u64::from(resource.dropped_attributes_count()));
+        } else {
+            self.attributes.encode_empty();
+            self.dropped_attributes_count.encode(0);
+        }
         Ok(())
     }
 
@@ -382,15 +519,46 @@ struct ScopeEncoder {
 }
 
 impl ScopeEncoder {
-    fn encode(&mut self, scope: &StefScope<'_>) -> Result<(), Error> {
+    fn new(
+        name: SharedStringDict,
+        version: SharedStringDict,
+        schema_url: SharedStringDict,
+        attribute_key: SharedStringDict,
+        any_value_string: SharedStringDict,
+    ) -> Self {
+        Self {
+            name: StringEncoder::with_dict(name),
+            version: StringEncoder::with_dict(version),
+            schema_url: StringEncoder::with_dict(schema_url),
+            attributes: AttributesEncoder::new(attribute_key, any_value_string),
+            ..Self::default()
+        }
+    }
+
+    fn encode_view<S>(&mut self, schema_url: Str<'_>, scope: Option<&S>) -> Result<(), Error>
+    where
+        S: InstrumentationScopeView,
+    {
         self.bits.write_bit(true);
         self.bits.write_bits(SCOPE_FIELD_MASK, 5);
-        self.name.encode(scope.name);
-        self.version.encode(scope.version);
-        self.schema_url.encode(scope.schema_url);
-        self.attributes.encode(scope.attributes)?;
-        self.dropped_attributes_count
-            .encode(scope.dropped_attributes_count);
+        if let Some(scope) = scope {
+            self.name
+                .encode_bytes(scope.name().unwrap_or(b""), "scope.name")?;
+            self.version
+                .encode_bytes(scope.version().unwrap_or(b""), "scope.version")?;
+            self.schema_url
+                .encode_bytes(schema_url, "scope.schema_url")?;
+            self.attributes.encode_view(scope.attributes())?;
+            self.dropped_attributes_count
+                .encode(u64::from(scope.dropped_attributes_count()));
+        } else {
+            self.name.encode("");
+            self.version.encode("");
+            self.schema_url
+                .encode_bytes(schema_url, "scope.schema_url")?;
+            self.attributes.encode_empty();
+            self.dropped_attributes_count.encode(0);
+        }
         Ok(())
     }
 
@@ -413,15 +581,34 @@ struct PointEncoder {
     timestamp: U64Encoder,
     value: PointValueEncoder,
     exemplars: ExemplarArrayEncoder,
+    last: Option<StefPoint>,
 }
 
 impl PointEncoder {
     fn encode(&mut self, point: &StefPoint) -> Result<(), Error> {
-        self.bits.write_bits(POINT_FIELD_MASK, 4);
-        self.start_timestamp.encode(point.start_timestamp);
-        self.timestamp.encode(point.timestamp);
-        self.value.encode(&point.value);
-        self.exemplars.encode_empty();
+        let last = self.last.as_ref();
+        let mut mask = 0;
+        if last.is_none_or(|last| last.start_timestamp != point.start_timestamp) {
+            mask |= 1 << 0;
+        }
+        if last.is_none_or(|last| last.timestamp != point.timestamp) {
+            mask |= 1 << 1;
+        }
+        if last.is_none_or(|last| last.value != point.value) {
+            mask |= 1 << 2;
+        }
+
+        self.bits.write_bits(mask, 4);
+        if mask & (1 << 0) != 0 {
+            self.start_timestamp.encode(point.start_timestamp);
+        }
+        if mask & (1 << 1) != 0 {
+            self.timestamp.encode(point.timestamp);
+        }
+        if mask & (1 << 2) != 0 {
+            self.value.encode(&point.value);
+        }
+        self.last = Some(*point);
         Ok(())
     }
 
@@ -472,17 +659,71 @@ struct AttributesEncoder {
     header: BytesWriter,
     key: StringEncoder,
     value: AnyValueEncoder,
+    last: Vec<DirectAttribute>,
 }
 
 impl AttributesEncoder {
-    fn encode(&mut self, attributes: &[KeyValue]) -> Result<(), Error> {
+    fn new(attribute_key: SharedStringDict, any_value_string: SharedStringDict) -> Self {
+        Self {
+            key: StringEncoder::with_dict(attribute_key),
+            value: AnyValueEncoder::new(any_value_string),
+            ..Self::default()
+        }
+    }
+
+    fn encode(&mut self, attributes: &[DirectAttribute]) -> Result<(), Error> {
+        if self.can_encode_values_only(attributes) {
+            let mut changed = 0_u64;
+            for (index, attribute) in attributes.iter().enumerate() {
+                if self.last[index].value != attribute.value {
+                    changed |= 1 << index;
+                }
+            }
+            self.header.write_uvarint(changed << 1);
+            for (index, attribute) in attributes.iter().enumerate() {
+                if changed & (1 << index) != 0 {
+                    self.value.encode(&attribute.value)?;
+                    self.last[index].value = attribute.value.clone();
+                }
+            }
+            return Ok(());
+        }
+
         self.header
             .write_uvarint((attributes.len() as u64) << 1 | 0b1);
         for attribute in attributes {
-            self.key.encode(&attribute.key);
-            self.value.encode(attribute.value.as_ref())?;
+            self.key.encode(attribute.key.as_ref());
+            self.value.encode(&attribute.value)?;
         }
+        self.last.clear();
+        self.last.extend_from_slice(attributes);
         Ok(())
+    }
+
+    fn encode_empty(&mut self) {
+        self.header.write_uvarint(0b1);
+        self.last.clear();
+    }
+
+    fn encode_view<A>(&mut self, attributes: impl Iterator<Item = A>) -> Result<(), Error>
+    where
+        A: AttributeView,
+    {
+        let attributes = attributes
+            .map(attribute_from_view)
+            .collect::<Result<Vec<_>, _>>()?;
+        self.encode(&attributes)
+    }
+
+    fn can_encode_values_only(&self, attributes: &[DirectAttribute]) -> bool {
+        !attributes.is_empty()
+            && attributes.len() < 63
+            && self.last.len() == attributes.len()
+            && self
+                .last
+                .iter()
+                .zip(attributes)
+                .all(|(left, right)| left.key == right.key)
     }
 
     fn take_column(&mut self) -> Column {
@@ -492,6 +733,62 @@ impl AttributesEncoder {
         column.children[1] = self.value.take_column();
         column
     }
+}
+
+fn attribute_from_view<A>(attribute: A) -> Result<DirectAttribute, Error>
+where
+    A: AttributeView,
+{
+    let key = std::str::from_utf8(attribute.key())
+        .map_err(|_| Error::InvalidUtf8("attribute.key"))?
+        .into();
+    let value = direct_any_value_from_view(attribute.value())?;
+    Ok(DirectAttribute { key, value })
+}
+
+fn direct_any_value_from_view<'v, V>(value: Option<V>) -> Result<DirectAnyValue, Error>
+where
+    V: AnyValueView<'v>,
+{
+    let Some(value) = value else {
+        return Ok(DirectAnyValue::Empty);
+    };
+    let value = match value.value_type() {
+        ValueType::Empty => DirectAnyValue::Empty,
+        ValueType::String => DirectAnyValue::String(
+            std::str::from_utf8(
+                value
+                    .as_string()
+                    .ok_or(Error::UnsupportedAttributeValue("string"))?,
+            )
+            .map_err(|_| Error::InvalidUtf8("attribute.value.string"))?
+            .into(),
+        ),
+        ValueType::Bool => DirectAnyValue::Bool(
+            value
+                .as_bool()
+                .ok_or(Error::UnsupportedAttributeValue("bool"))?,
+        ),
+        ValueType::Int64 => DirectAnyValue::Int(
+            value
+                .as_int64()
+                .ok_or(Error::UnsupportedAttributeValue("int"))?,
+        ),
+        ValueType::Double => DirectAnyValue::Double(
+            value
+                .as_double()
+                .ok_or(Error::UnsupportedAttributeValue("double"))?,
+        ),
+        ValueType::Array => return Err(Error::UnsupportedAttributeValue("array")),
+        ValueType::KeyValueList => return Err(Error::UnsupportedAttributeValue("kvlist")),
+        ValueType::Bytes => DirectAnyValue::Bytes(
+            value
+                .as_bytes()
+                .ok_or(Error::UnsupportedAttributeValue("bytes"))?
+                .to_vec(),
+        ),
+    };
+    Ok(value)
 }
 
 #[derive(Default)]
@@ -505,32 +802,33 @@ struct AnyValueEncoder {
 }
 
 impl AnyValueEncoder {
-    fn encode(&mut self, value: Option<&AnyValue>) -> Result<(), Error> {
-        match value.and_then(|value| value.value.as_ref()) {
-            None => self.bits.write_bits(0, 4),
-            Some(otlp_any_value::Value::StringValue(value)) => {
+    fn new(string_dict: SharedStringDict) -> Self {
+        Self {
+            string: StringEncoder::with_dict(string_dict),
+            ..Self::default()
+        }
+    }
+
+    fn encode(&mut self, value: &DirectAnyValue) -> Result<(), Error> {
+        match value {
+            DirectAnyValue::Empty => self.bits.write_bits(0, 4),
+            DirectAnyValue::String(value) => {
                 self.bits.write_bits(1, 4);
-                self.string.encode(value);
+                self.string.encode(value.as_ref());
             }
-            Some(otlp_any_value::Value::BoolValue(value)) => {
+            DirectAnyValue::Bool(value) => {
                 self.bits.write_bits(2, 4);
                 self.bool_.encode(*value);
             }
-            Some(otlp_any_value::Value::IntValue(value)) => {
+            DirectAnyValue::Int(value) => {
                 self.bits.write_bits(3, 4);
                 self.int64.encode(*value);
             }
-            Some(otlp_any_value::Value::DoubleValue(value)) => {
+            DirectAnyValue::Double(value) => {
                 self.bits.write_bits(4, 4);
                 self.float64.encode(*value);
             }
-            Some(otlp_any_value::Value::ArrayValue(_)) => {
-                return Err(Error::UnsupportedAttributeValue("array"));
-            }
-            Some(otlp_any_value::Value::KvlistValue(_)) => {
-                return Err(Error::UnsupportedAttributeValue("kvlist"));
-            }
-            Some(otlp_any_value::Value::BytesValue(value)) => {
+            DirectAnyValue::Bytes(value) => {
                 self.bits.write_bits(7, 4);
                 self.bytes.encode(value);
             }
@@ -573,10 +871,6 @@ struct ExemplarArrayEncoder {
 }
 
 impl ExemplarArrayEncoder {
-    fn encode_empty(&mut self) {
-        self.bits.write_uvarint_compact(0);
-    }
-
     fn take_column(&mut self) -> Column {
         let mut column = array_column_tree(Column::default());
         column.data = self.bits.take_bytes();
@@ -584,23 +878,42 @@ impl ExemplarArrayEncoder {
     }
 }
 
+#[derive(Clone, Default)]
+struct SharedStringDict(Rc<RefCell<HashMap<String, usize>>>);
+
 #[derive(Default)]
 struct StringEncoder {
     bytes: BytesWriter,
-    dict: HashMap<String, usize>,
+    dict: SharedStringDict,
 }
 
 impl StringEncoder {
+    fn with_dict(dict: SharedStringDict) -> Self {
+        Self {
+            bytes: BytesWriter::default(),
+            dict,
+        }
+    }
+
     fn encode(&mut self, value: &str) {
-        if let Some(ref_num) = self.dict.get(value) {
+        let mut dict = self.dict.0.borrow_mut();
+        if let Some(ref_num) = dict.get(value) {
             self.bytes.write_varint(-(*ref_num as i64) - 1);
             return;
         }
         if value.len() > 1 {
-            let _ = self.dict.insert(value.to_owned(), self.dict.len());
+            let ref_num = dict.len();
+            let _ = dict.insert(value.to_owned(), ref_num);
         }
+        drop(dict);
         self.bytes.write_varint(value.len() as i64);
         self.bytes.write_bytes(value.as_bytes());
+    }
+
+    fn encode_bytes(&mut self, value: &[u8], field: &'static str) -> Result<(), Error> {
+        let value = std::str::from_utf8(value).map_err(|_| Error::InvalidUtf8(field))?;
+        self.encode(value);
+        Ok(())
     }
 
     fn take_bytes(&mut self) -> Vec<u8> {
@@ -826,6 +1139,23 @@ impl Column {
     }
 }
 
+#[derive(Default)]
+struct DecodeColumn<'a> {
+    data: &'a [u8],
+    byte_len: usize,
+    children: Vec<DecodeColumn<'a>>,
+}
+
+impl<'a> DecodeColumn<'a> {
+    fn with_children(children: Vec<DecodeColumn<'a>>) -> Self {
+        Self {
+            data: &[],
+            byte_len: 0,
+            children,
+        }
+    }
+}
+
 fn metrics_column_tree() -> Column {
     Column::with_children(vec![
         Column::default(),
@@ -907,6 +1237,90 @@ fn array_column_tree(element: Column) -> Column {
     Column::with_children(vec![element])
 }
 
+fn decode_metrics_column_tree<'a>() -> DecodeColumn<'a> {
+    DecodeColumn::with_children(vec![
+        DecodeColumn::default(),
+        decode_metric_column_tree(),
+        decode_resource_column_tree(),
+        decode_scope_column_tree(),
+        decode_attributes_column_tree(),
+        decode_point_column_tree(),
+    ])
+}
+
+fn decode_metric_column_tree<'a>() -> DecodeColumn<'a> {
+    DecodeColumn::with_children(vec![
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+        decode_attributes_column_tree(),
+        decode_array_column_tree(DecodeColumn::default()),
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+    ])
+}
+
+fn decode_resource_column_tree<'a>() -> DecodeColumn<'a> {
+    DecodeColumn::with_children(vec![
+        DecodeColumn::default(),
+        decode_attributes_column_tree(),
+        DecodeColumn::default(),
+    ])
+}
+
+fn decode_scope_column_tree<'a>() -> DecodeColumn<'a> {
+    DecodeColumn::with_children(vec![
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+        decode_attributes_column_tree(),
+        DecodeColumn::default(),
+    ])
+}
+
+fn decode_attributes_column_tree<'a>() -> DecodeColumn<'a> {
+    DecodeColumn::with_children(vec![
+        DecodeColumn::default(),
+        decode_any_value_column_tree(),
+    ])
+}
+
+fn decode_any_value_column_tree<'a>() -> DecodeColumn<'a> {
+    DecodeColumn::with_children(vec![
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+    ])
+}
+
+fn decode_point_column_tree<'a>() -> DecodeColumn<'a> {
+    DecodeColumn::with_children(vec![
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+        decode_point_value_column_tree(),
+        decode_array_column_tree(DecodeColumn::default()),
+    ])
+}
+
+fn decode_point_value_column_tree<'a>() -> DecodeColumn<'a> {
+    DecodeColumn::with_children(vec![
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+        DecodeColumn::default(),
+    ])
+}
+
+fn decode_array_column_tree(element: DecodeColumn<'_>) -> DecodeColumn<'_> {
+    DecodeColumn::with_children(vec![element])
+}
+
 fn write_columns(columns: &Column, dst: &mut Vec<u8>) -> Result<(), Error> {
     let mut sizes = BitWriter::default();
     write_column_sizes(columns, &mut sizes)?;
@@ -973,27 +1387,25 @@ fn append_uvarint(mut value: u64, dst: &mut Vec<u8>) {
 }
 
 #[derive(Default)]
-struct MetricsStreamDecoder {
-    state: DecoderState,
-    metrics: ExportMetricsServiceRequest,
-    current_resource: DecResource,
-    current_scope: DecScope,
-    current_metric: DecMetric,
-    current_attrs: Vec<KeyValue>,
+struct MetricsOtapStreamDecoder {
+    state: DirectDecoderState,
+    builder: DirectOtapMetricsBuilder,
+    current_resource: DirectDecResource,
+    current_scope: DirectDecScope,
+    current_metric: DirectDecMetric,
+    current_attrs: Vec<DirectAttribute>,
     current_point: DecPoint,
-    resource_index: Option<usize>,
-    scope_index: Option<usize>,
-    metric_index: Option<usize>,
 }
 
-impl MetricsStreamDecoder {
-    fn decode(bytes: &[u8]) -> Result<ExportMetricsServiceRequest, Error> {
+impl MetricsOtapStreamDecoder {
+    fn decode(bytes: &[u8]) -> Result<(OtapArrowRecords, u64), Error> {
         let mut input = SliceReader::new(bytes);
         read_fixed_header(&mut input)?;
         let (_, var_header) = read_frame(&mut input)?;
         read_var_header(var_header)?;
 
         let mut decoder = Self::default();
+        let mut record_count = 0_u64;
         while !input.is_empty() {
             let (flags, frame) = read_frame(&mut input)?;
             if flags & !0b111 != 0 {
@@ -1005,29 +1417,35 @@ impl MetricsStreamDecoder {
             if flags & 0b100 != 0 {
                 decoder.state.reset_codecs();
             }
-            decoder.decode_data_frame(frame)?;
+            record_count = record_count.saturating_add(decoder.decode_data_frame(frame)?);
         }
-        Ok(decoder.metrics)
+
+        let records = decoder.builder.finish()?;
+        Ok((records, record_count))
     }
 
-    fn decode_data_frame(&mut self, frame: &[u8]) -> Result<(), Error> {
+    fn decode_data_frame(&mut self, frame: &[u8]) -> Result<u64, Error> {
         let mut reader = SliceReader::new(frame);
         let record_count = reader.read_uvarint()?;
         let size_len = usize::try_from(reader.read_uvarint()?)
             .map_err(|_| Error::ValueOutOfRange("column size buffer"))?;
         let size_bytes = reader.read_bytes(size_len)?;
-        let mut columns = metrics_column_tree();
+        let mut columns = decode_metrics_column_tree();
         let mut size_reader = BitReader::new(size_bytes);
-        read_column_sizes(
+        read_decode_column_sizes(
             &mut columns,
             &mut size_reader,
             reader.remaining_len() as u64,
         )?;
-        read_column_data(&mut columns, &mut reader)?;
+        read_decode_column_data(&mut columns, &mut reader)?;
+        self.builder.reserve_number_points(
+            usize::try_from(record_count).map_err(|_| Error::ValueOutOfRange("record count"))?,
+        );
 
-        let mut frame_decoder = MetricsFrameDecoder::new(&columns);
+        let mut frame_decoder = DirectMetricsFrameDecoder::new(&columns);
         for _ in 0..record_count {
-            let modified = frame_decoder.decode_record(
+            frame_decoder.decode_record(
+                &mut self.builder,
                 &mut self.current_resource,
                 &mut self.current_scope,
                 &mut self.current_metric,
@@ -1035,100 +1453,738 @@ impl MetricsStreamDecoder {
                 &mut self.current_point,
                 &mut self.state,
             )?;
-            self.append_record(modified)?;
+        }
+        Ok(record_count)
+    }
+}
+
+struct DirectOtapMetricsBuilder {
+    resource_attrs: AttributesRecordBatchBuilder<u16>,
+    scope_attrs: AttributesRecordBatchBuilder<u16>,
+    metric_attrs: AttributesRecordBatchBuilder<u16>,
+    ndp_attrs: DirectNumberDpAttrsRecordBatchBuilder,
+    metrics: MetricsRecordBatchBuilder,
+    ndp: DirectNumberDataPointsRecordBatchBuilder,
+    next_resource_id: u16,
+    next_scope_id: u16,
+    next_metric_id: u16,
+    next_ndp_id: u32,
+    current_resource_id: Option<u16>,
+    current_scope_id: Option<u16>,
+    current_metric_id: Option<u16>,
+}
+
+impl Default for DirectOtapMetricsBuilder {
+    fn default() -> Self {
+        Self {
+            resource_attrs: AttributesRecordBatchBuilder::<u16>::new(),
+            scope_attrs: AttributesRecordBatchBuilder::<u16>::new(),
+            metric_attrs: AttributesRecordBatchBuilder::<u16>::new(),
+            ndp_attrs: DirectNumberDpAttrsRecordBatchBuilder::default(),
+            metrics: MetricsRecordBatchBuilder::new(),
+            ndp: DirectNumberDataPointsRecordBatchBuilder::default(),
+            next_resource_id: 0,
+            next_scope_id: 0,
+            next_metric_id: 0,
+            next_ndp_id: 0,
+            current_resource_id: None,
+            current_scope_id: None,
+            current_metric_id: None,
+        }
+    }
+}
+
+impl DirectOtapMetricsBuilder {
+    fn reserve_number_points(&mut self, additional: usize) {
+        self.ndp.reserve(additional);
+        self.ndp_attrs.begin_frame(additional);
+    }
+
+    fn prepare_record(
+        &mut self,
+        modified: RootModified,
+        resource: &DirectDecResource,
+        scope: &DirectDecScope,
+        metric: &DirectDecMetric,
+    ) -> Result<u16, Error> {
+        if self.current_resource_id.is_none() || modified.resource {
+            self.start_resource(resource)?;
+        }
+        if self.current_scope_id.is_none() || modified.scope {
+            self.start_scope(scope)?;
+        }
+        if self.current_metric_id.is_none() || modified.metric {
+            self.start_metric(resource, scope, metric)?;
+        }
+
+        self.current_metric_id
+            .ok_or(Error::InvalidFrame("metric id is initialized"))
+    }
+
+    fn append_number_point_row(&mut self, metric_id: u16, point_id: u32, point: &DecPoint) {
+        self.ndp.append_id(point_id);
+        self.ndp.append_parent_id(metric_id);
+        self.ndp
+            .append_start_time_unix_nano(point.start_timestamp as i64);
+        self.ndp.append_time_unix_nano(point.timestamp as i64);
+        match point.value {
+            DecPointValue::None => {
+                self.ndp.append_double_value(None);
+                self.ndp.append_int_value(None);
+                self.ndp.append_flags(1);
+            }
+            DecPointValue::Int64(value) => {
+                self.ndp.append_double_value(None);
+                self.ndp.append_int_value(Some(value));
+                self.ndp.append_flags(0);
+            }
+            DecPointValue::Float64(value) => {
+                self.ndp.append_double_value(Some(value));
+                self.ndp.append_int_value(None);
+                self.ndp.append_flags(0);
+            }
+        }
+    }
+
+    fn append_number_point_attrs(&mut self, point_id: u32, attrs: &[DirectAttribute]) {
+        self.ndp_attrs.append_all(point_id, attrs);
+    }
+
+    fn start_resource(&mut self, resource: &DirectDecResource) -> Result<(), Error> {
+        let resource_id = self.allocate_resource_id()?;
+        self.current_resource_id = Some(resource_id);
+        self.current_scope_id = None;
+        self.current_metric_id = None;
+
+        for kv in &resource.attributes {
+            append_direct_attribute_with_parent(&mut self.resource_attrs, &resource_id, kv);
         }
         Ok(())
     }
 
-    fn append_record(&mut self, modified: RootModified) -> Result<(), Error> {
-        if self.resource_index.is_none() || modified.resource {
-            self.metrics.resource_metrics.push(ResourceMetrics {
-                resource: Some(Resource {
-                    attributes: self.current_resource.attributes.clone(),
-                    dropped_attributes_count: self.current_resource.dropped_attributes_count,
-                    entity_refs: Vec::new(),
-                }),
-                scope_metrics: Vec::new(),
-                schema_url: self.current_resource.schema_url.clone(),
-            });
-            self.resource_index = Some(self.metrics.resource_metrics.len() - 1);
-            self.scope_index = None;
-            self.metric_index = None;
-        }
+    fn start_scope(&mut self, scope: &DirectDecScope) -> Result<(), Error> {
+        let scope_id = self.allocate_scope_id()?;
+        self.current_scope_id = Some(scope_id);
+        self.current_metric_id = None;
 
-        if self.scope_index.is_none() || modified.scope {
-            let resource_index = self
-                .resource_index
-                .expect("resource index is initialized above");
-            self.metrics.resource_metrics[resource_index]
-                .scope_metrics
-                .push(ScopeMetrics {
-                    scope: Some(InstrumentationScope {
-                        name: self.current_scope.name.clone(),
-                        version: self.current_scope.version.clone(),
-                        attributes: self.current_scope.attributes.clone(),
-                        dropped_attributes_count: self.current_scope.dropped_attributes_count,
-                    }),
-                    metrics: Vec::new(),
-                    schema_url: self.current_scope.schema_url.clone(),
-                });
-            self.scope_index = Some(
-                self.metrics.resource_metrics[resource_index]
-                    .scope_metrics
-                    .len()
-                    - 1,
-            );
-            self.metric_index = None;
+        for kv in &scope.attributes {
+            append_direct_attribute_with_parent(&mut self.scope_attrs, &scope_id, kv);
         }
-
-        if self.metric_index.is_none() || modified.metric {
-            let resource_index = self
-                .resource_index
-                .expect("resource index is initialized above");
-            let scope_index = self.scope_index.expect("scope index is initialized above");
-            self.metrics.resource_metrics[resource_index].scope_metrics[scope_index]
-                .metrics
-                .push(self.current_metric.to_otlp()?);
-            self.metric_index = Some(
-                self.metrics.resource_metrics[resource_index].scope_metrics[scope_index]
-                    .metrics
-                    .len()
-                    - 1,
-            );
-        }
-
-        let resource_index = self
-            .resource_index
-            .expect("resource index is initialized above");
-        let scope_index = self.scope_index.expect("scope index is initialized above");
-        let metric_index = self
-            .metric_index
-            .expect("metric index is initialized above");
-        let metric = &mut self.metrics.resource_metrics[resource_index].scope_metrics[scope_index]
-            .metrics[metric_index];
-        self.current_point
-            .append_to(metric, self.current_attrs.clone())?;
         Ok(())
+    }
+
+    fn start_metric(
+        &mut self,
+        resource: &DirectDecResource,
+        scope: &DirectDecScope,
+        metric: &DirectDecMetric,
+    ) -> Result<(), Error> {
+        let metric_id = self.allocate_metric_id()?;
+        let resource_id = self
+            .current_resource_id
+            .expect("resource id is initialized before metric");
+        let scope_id = self
+            .current_scope_id
+            .expect("scope id is initialized before metric");
+
+        self.metrics.append_id(metric_id);
+        self.metrics.resource.append_id(Some(resource_id));
+        self.metrics.resource.append_schema_url(
+            (!resource.schema_url.is_empty()).then_some(resource.schema_url.as_bytes()),
+        );
+        self.metrics
+            .resource
+            .append_dropped_attributes_count(resource.dropped_attributes_count);
+        self.metrics.scope.append_id(Some(scope_id));
+        self.metrics
+            .scope
+            .append_name((!scope.name.is_empty()).then_some(scope.name.as_bytes()));
+        self.metrics
+            .scope
+            .append_version((!scope.version.is_empty()).then_some(scope.version.as_bytes()));
+        self.metrics
+            .scope
+            .append_dropped_attributes_count(scope.dropped_attributes_count);
+        self.metrics
+            .append_scope_schema_url(scope.schema_url.as_bytes());
+        self.metrics.append_metric_type(match metric.r#type {
+            0 => metrics_view::DataType::Gauge as u8,
+            1 => metrics_view::DataType::Sum as u8,
+            _ => return Err(Error::UnsupportedStefValue("metric type")),
+        });
+        self.metrics.append_name(metric.name.as_bytes());
+        self.metrics
+            .append_description(metric.description.as_bytes());
+        self.metrics.append_unit(metric.unit.as_bytes());
+        if metric.r#type == 1 {
+            self.metrics
+                .append_aggregation_temporality(Some(metric.aggregation_temporality as i32));
+            self.metrics.append_is_monotonic(Some(metric.monotonic));
+        } else {
+            self.metrics.append_aggregation_temporality(None);
+            self.metrics.append_is_monotonic(None);
+        }
+
+        for kv in &metric.metadata {
+            append_direct_attribute_with_parent(&mut self.metric_attrs, &metric_id, kv);
+        }
+
+        self.current_metric_id = Some(metric_id);
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<OtapArrowRecords, Error> {
+        if self.next_metric_id == 0 {
+            return Ok(OtapArrowRecords::Metrics(Metrics::default()));
+        }
+
+        let mut otap_batch = OtapArrowRecords::Metrics(Metrics::default());
+        let pairs = [
+            (
+                self.metrics
+                    .finish()
+                    .map_err(|e| Error::OtapEncode(e.to_string()))?,
+                ArrowPayloadType::UnivariateMetrics,
+            ),
+            (
+                self.metric_attrs
+                    .finish()
+                    .map_err(|e| Error::OtapEncode(e.to_string()))?,
+                ArrowPayloadType::MetricAttrs,
+            ),
+            (
+                self.resource_attrs
+                    .finish()
+                    .map_err(|e| Error::OtapEncode(e.to_string()))?,
+                ArrowPayloadType::ResourceAttrs,
+            ),
+            (
+                self.scope_attrs
+                    .finish()
+                    .map_err(|e| Error::OtapEncode(e.to_string()))?,
+                ArrowPayloadType::ScopeAttrs,
+            ),
+            (
+                self.ndp
+                    .finish()
+                    .map_err(|e| Error::OtapEncode(e.to_string()))?,
+                ArrowPayloadType::NumberDataPoints,
+            ),
+            (
+                self.ndp_attrs
+                    .finish()
+                    .map_err(|e| Error::OtapEncode(e.to_string()))?,
+                ArrowPayloadType::NumberDpAttrs,
+            ),
+        ];
+        for (record_batch, payload_type) in pairs {
+            if record_batch.num_rows() > 0 {
+                otap_batch
+                    .set(payload_type, record_batch)
+                    .map_err(|e| Error::OtapEncode(e.to_string()))?;
+            }
+        }
+        Ok(otap_batch)
+    }
+
+    fn allocate_resource_id(&mut self) -> Result<u16, Error> {
+        let id = self.next_resource_id;
+        self.next_resource_id = self
+            .next_resource_id
+            .checked_add(1)
+            .ok_or(Error::ValueOutOfRange("resource id"))?;
+        Ok(id)
+    }
+
+    fn allocate_scope_id(&mut self) -> Result<u16, Error> {
+        let id = self.next_scope_id;
+        self.next_scope_id = self
+            .next_scope_id
+            .checked_add(1)
+            .ok_or(Error::ValueOutOfRange("scope id"))?;
+        Ok(id)
+    }
+
+    fn allocate_metric_id(&mut self) -> Result<u16, Error> {
+        let id = self.next_metric_id;
+        self.next_metric_id = self
+            .next_metric_id
+            .checked_add(1)
+            .ok_or(Error::ValueOutOfRange("metric id"))?;
+        Ok(id)
+    }
+
+    fn allocate_number_point_id(&mut self) -> Result<u32, Error> {
+        let id = self.next_ndp_id;
+        self.next_ndp_id = self
+            .next_ndp_id
+            .checked_add(1)
+            .ok_or(Error::ValueOutOfRange("number data point id"))?;
+        Ok(id)
     }
 }
 
 #[derive(Default)]
-struct MetricsFrameDecoder<'a> {
+struct DirectNumberDataPointsRecordBatchBuilder {
+    id: Vec<u32>,
+    parent_id: Vec<u16>,
+    start_time_unix_nano: Vec<i64>,
+    time_unix_nano: Vec<i64>,
+    int_value: Vec<Option<i64>>,
+    double_value: Vec<Option<f64>>,
+    flags: Vec<u32>,
+    has_nonzero_flags: bool,
+}
+
+impl DirectNumberDataPointsRecordBatchBuilder {
+    fn reserve(&mut self, additional: usize) {
+        self.id.reserve(additional);
+        self.parent_id.reserve(additional);
+        self.start_time_unix_nano.reserve(additional);
+        self.time_unix_nano.reserve(additional);
+        self.int_value.reserve(additional);
+        self.double_value.reserve(additional);
+        self.flags.reserve(additional);
+    }
+
+    fn append_id(&mut self, value: u32) {
+        self.id.push(value);
+    }
+
+    fn append_parent_id(&mut self, value: u16) {
+        self.parent_id.push(value);
+    }
+
+    fn append_start_time_unix_nano(&mut self, value: i64) {
+        self.start_time_unix_nano.push(value);
+    }
+
+    fn append_time_unix_nano(&mut self, value: i64) {
+        self.time_unix_nano.push(value);
+    }
+
+    fn append_int_value(&mut self, value: Option<i64>) {
+        self.int_value.push(value);
+    }
+
+    fn append_double_value(&mut self, value: Option<f64>) {
+        self.double_value.push(value);
+    }
+
+    fn append_flags(&mut self, value: u32) {
+        self.has_nonzero_flags |= value != 0;
+        self.flags.push(value);
+    }
+
+    fn finish(&mut self) -> Result<RecordBatch, ArrowError> {
+        let mut fields = Vec::with_capacity(7);
+        let mut columns = Vec::with_capacity(7);
+
+        let array = Arc::new(UInt32Array::from(std::mem::take(&mut self.id))) as ArrayRef;
+        fields.push(Field::new(consts::ID, array.data_type().clone(), false).with_plain_encoding());
+        columns.push(array);
+
+        let array = Arc::new(UInt16Array::from(std::mem::take(&mut self.parent_id))) as ArrayRef;
+        fields.push(
+            Field::new(consts::PARENT_ID, array.data_type().clone(), false).with_plain_encoding(),
+        );
+        columns.push(array);
+
+        let array = Arc::new(TimestampNanosecondArray::from(std::mem::take(
+            &mut self.start_time_unix_nano,
+        ))) as ArrayRef;
+        fields.push(Field::new(
+            consts::START_TIME_UNIX_NANO,
+            array.data_type().clone(),
+            true,
+        ));
+        columns.push(array);
+
+        let array = Arc::new(TimestampNanosecondArray::from(std::mem::take(
+            &mut self.time_unix_nano,
+        ))) as ArrayRef;
+        fields.push(Field::new(
+            consts::TIME_UNIX_NANO,
+            array.data_type().clone(),
+            false,
+        ));
+        columns.push(array);
+
+        let array = Arc::new(Int64Array::from(std::mem::take(&mut self.int_value))) as ArrayRef;
+        fields.push(Field::new(
+            consts::INT_VALUE,
+            array.data_type().clone(),
+            true,
+        ));
+        columns.push(array);
+
+        let array =
+            Arc::new(Float64Array::from(std::mem::take(&mut self.double_value))) as ArrayRef;
+        fields.push(Field::new(
+            consts::DOUBLE_VALUE,
+            array.data_type().clone(),
+            true,
+        ));
+        columns.push(array);
+
+        if self.has_nonzero_flags {
+            let array = Arc::new(UInt32Array::from(std::mem::take(&mut self.flags))) as ArrayRef;
+            fields.push(Field::new(consts::FLAGS, array.data_type().clone(), false));
+            columns.push(array);
+        }
+
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+    }
+}
+
+#[derive(Default)]
+struct DirectNumberDpAttrsRecordBatchBuilder {
+    parent_id: Vec<u32>,
+    key: Vec<Rc<str>>,
+    attr_type: Vec<u8>,
+    str_value: Vec<Option<Rc<str>>>,
+    int_value: Vec<Option<i64>>,
+    double_value: Vec<Option<f64>>,
+    bool_value: Vec<Option<bool>>,
+    bytes_value: Vec<Option<Vec<u8>>>,
+    pending_frame_points: Option<usize>,
+    reserved_row_capacity: usize,
+}
+
+impl DirectNumberDpAttrsRecordBatchBuilder {
+    fn begin_frame(&mut self, point_count: usize) {
+        self.pending_frame_points = Some(point_count);
+        self.reserve_additional_rows(point_count);
+    }
+
+    fn reserve_frame_rows_for_attr_count(&mut self, attrs_per_point: usize) {
+        let Some(point_count) = self.pending_frame_points.take() else {
+            return;
+        };
+        self.reserve_additional_rows(point_count.saturating_mul(attrs_per_point));
+    }
+
+    fn reserve_additional_rows(&mut self, additional: usize) {
+        let target = self.parent_id.len().saturating_add(additional);
+        if self.reserved_row_capacity < target {
+            self.reserved_row_capacity = target;
+        }
+        reserve_vec_to(&mut self.parent_id, target);
+        reserve_vec_to(&mut self.key, target);
+        reserve_vec_to(&mut self.attr_type, target);
+        if !self.str_value.is_empty() {
+            reserve_vec_to(&mut self.str_value, target);
+        }
+        if !self.int_value.is_empty() {
+            reserve_vec_to(&mut self.int_value, target);
+        }
+        if !self.double_value.is_empty() {
+            reserve_vec_to(&mut self.double_value, target);
+        }
+        if !self.bool_value.is_empty() {
+            reserve_vec_to(&mut self.bool_value, target);
+        }
+        if !self.bytes_value.is_empty() {
+            reserve_vec_to(&mut self.bytes_value, target);
+        }
+    }
+
+    fn append_all(&mut self, parent_id: u32, attrs: &[DirectAttribute]) {
+        self.reserve_frame_rows_for_attr_count(attrs.len());
+        for kv in attrs {
+            self.append(parent_id, kv);
+        }
+    }
+
+    fn append(&mut self, parent_id: u32, kv: &DirectAttribute) {
+        let row_index = self.parent_id.len();
+        self.parent_id.push(parent_id);
+        self.key.push(kv.key.clone());
+
+        match &kv.value {
+            DirectAnyValue::Empty => {
+                self.attr_type.push(AttributeValueType::Empty as u8);
+                self.push_null_existing_values();
+            }
+            DirectAnyValue::String(value) => {
+                self.attr_type.push(AttributeValueType::Str as u8);
+                self.push_str_value(row_index, value.clone());
+                self.push_null_int_value();
+                self.push_null_double_value();
+                self.push_null_bool_value();
+                self.push_null_bytes_value();
+            }
+            DirectAnyValue::Bool(value) => {
+                self.attr_type.push(AttributeValueType::Bool as u8);
+                self.push_null_str_value();
+                self.push_null_int_value();
+                self.push_null_double_value();
+                self.push_bool_value(row_index, *value);
+                self.push_null_bytes_value();
+            }
+            DirectAnyValue::Int(value) => {
+                self.attr_type.push(AttributeValueType::Int as u8);
+                self.push_null_str_value();
+                self.push_int_value(row_index, *value);
+                self.push_null_double_value();
+                self.push_null_bool_value();
+                self.push_null_bytes_value();
+            }
+            DirectAnyValue::Double(value) => {
+                self.attr_type.push(AttributeValueType::Double as u8);
+                self.push_null_str_value();
+                self.push_null_int_value();
+                self.push_double_value(row_index, *value);
+                self.push_null_bool_value();
+                self.push_null_bytes_value();
+            }
+            DirectAnyValue::Bytes(value) => {
+                self.attr_type.push(AttributeValueType::Bytes as u8);
+                self.push_null_str_value();
+                self.push_null_int_value();
+                self.push_null_double_value();
+                self.push_null_bool_value();
+                self.push_bytes_value(row_index, value.clone());
+            }
+        }
+    }
+
+    fn push_null_existing_values(&mut self) {
+        self.push_null_str_value();
+        self.push_null_int_value();
+        self.push_null_double_value();
+        self.push_null_bool_value();
+        self.push_null_bytes_value();
+    }
+
+    fn push_str_value(&mut self, row_index: usize, value: Rc<str>) {
+        if self.str_value.is_empty() {
+            self.str_value.resize(row_index, None);
+            reserve_vec_to(&mut self.str_value, self.reserved_row_capacity);
+        }
+        self.str_value.push(Some(value));
+    }
+
+    fn push_null_str_value(&mut self) {
+        if !self.str_value.is_empty() {
+            self.str_value.push(None);
+        }
+    }
+
+    fn push_int_value(&mut self, row_index: usize, value: i64) {
+        if self.int_value.is_empty() {
+            self.int_value.resize(row_index, None);
+            reserve_vec_to(&mut self.int_value, self.reserved_row_capacity);
+        }
+        self.int_value.push(Some(value));
+    }
+
+    fn push_null_int_value(&mut self) {
+        if !self.int_value.is_empty() {
+            self.int_value.push(None);
+        }
+    }
+
+    fn push_double_value(&mut self, row_index: usize, value: f64) {
+        if self.double_value.is_empty() {
+            self.double_value.resize(row_index, None);
+            reserve_vec_to(&mut self.double_value, self.reserved_row_capacity);
+        }
+        self.double_value.push(Some(value));
+    }
+
+    fn push_null_double_value(&mut self) {
+        if !self.double_value.is_empty() {
+            self.double_value.push(None);
+        }
+    }
+
+    fn push_bool_value(&mut self, row_index: usize, value: bool) {
+        if self.bool_value.is_empty() {
+            self.bool_value.resize(row_index, None);
+            reserve_vec_to(&mut self.bool_value, self.reserved_row_capacity);
+        }
+        self.bool_value.push(Some(value));
+    }
+
+    fn push_null_bool_value(&mut self) {
+        if !self.bool_value.is_empty() {
+            self.bool_value.push(None);
+        }
+    }
+
+    fn push_bytes_value(&mut self, row_index: usize, value: Vec<u8>) {
+        if self.bytes_value.is_empty() {
+            self.bytes_value.resize(row_index, None);
+            reserve_vec_to(&mut self.bytes_value, self.reserved_row_capacity);
+        }
+        self.bytes_value.push(Some(value));
+    }
+
+    fn push_null_bytes_value(&mut self) {
+        if !self.bytes_value.is_empty() {
+            self.bytes_value.push(None);
+        }
+    }
+
+    fn finish(&mut self) -> Result<RecordBatch, ArrowError> {
+        if self.parent_id.is_empty() {
+            return Ok(RecordBatch::new_empty(Arc::new(Schema::empty())));
+        }
+
+        let mut fields = Vec::with_capacity(8);
+        let mut columns = Vec::with_capacity(8);
+
+        let array = Arc::new(UInt32Array::from(std::mem::take(&mut self.parent_id))) as ArrayRef;
+        fields.push(
+            Field::new(consts::PARENT_ID, array.data_type().clone(), false).with_plain_encoding(),
+        );
+        columns.push(array);
+
+        let array = Arc::new(StringArray::from_iter_values(
+            self.key.iter().map(Rc::as_ref),
+        )) as ArrayRef;
+        self.key.clear();
+        fields.push(Field::new(
+            consts::ATTRIBUTE_KEY,
+            array.data_type().clone(),
+            false,
+        ));
+        columns.push(array);
+
+        let array = Arc::new(UInt8Array::from(std::mem::take(&mut self.attr_type))) as ArrayRef;
+        fields.push(Field::new(
+            consts::ATTRIBUTE_TYPE,
+            array.data_type().clone(),
+            false,
+        ));
+        columns.push(array);
+
+        if !self.str_value.is_empty() {
+            let array = Arc::new(StringArray::from_iter(
+                self.str_value.iter().map(Option::as_deref),
+            )) as ArrayRef;
+            self.str_value.clear();
+            fields.push(Field::new(
+                consts::ATTRIBUTE_STR,
+                array.data_type().clone(),
+                true,
+            ));
+            columns.push(array);
+        }
+
+        if !self.int_value.is_empty() {
+            let array = Arc::new(Int64Array::from(std::mem::take(&mut self.int_value))) as ArrayRef;
+            fields.push(Field::new(
+                consts::ATTRIBUTE_INT,
+                array.data_type().clone(),
+                true,
+            ));
+            columns.push(array);
+        }
+
+        if !self.double_value.is_empty() {
+            let array =
+                Arc::new(Float64Array::from(std::mem::take(&mut self.double_value))) as ArrayRef;
+            fields.push(Field::new(
+                consts::ATTRIBUTE_DOUBLE,
+                array.data_type().clone(),
+                true,
+            ));
+            columns.push(array);
+        }
+
+        if !self.bool_value.is_empty() {
+            let array =
+                Arc::new(BooleanArray::from(std::mem::take(&mut self.bool_value))) as ArrayRef;
+            fields.push(Field::new(
+                consts::ATTRIBUTE_BOOL,
+                array.data_type().clone(),
+                true,
+            ));
+            columns.push(array);
+        }
+
+        if !self.bytes_value.is_empty() {
+            let array = Arc::new(BinaryArray::from_iter(
+                self.bytes_value.iter().map(Option::as_deref),
+            )) as ArrayRef;
+            self.bytes_value.clear();
+            fields.push(Field::new(
+                consts::ATTRIBUTE_BYTES,
+                array.data_type().clone(),
+                true,
+            ));
+            columns.push(array);
+        }
+
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+    }
+}
+
+fn reserve_vec_to<T>(values: &mut Vec<T>, target_capacity: usize) {
+    if values.capacity() < target_capacity {
+        values.reserve(target_capacity - values.capacity());
+    }
+}
+
+fn append_direct_attribute_with_parent<T>(
+    attribute_rb_builder: &mut AttributesRecordBatchBuilder<T>,
+    parent_id: &<<T as crate::otlp::attributes::parent_id::ParentId>::ArrayType as arrow::array::ArrowPrimitiveType>::Native,
+    kv: &DirectAttribute,
+) where
+    T: crate::otlp::attributes::parent_id::ParentId + AttributesRecordBatchBuilderConstructorHelper,
+{
+    attribute_rb_builder.append_parent_id(parent_id);
+    append_direct_attribute_value(attribute_rb_builder, kv);
+}
+
+fn append_direct_attribute_value<T>(
+    attribute_rb_builder: &mut AttributesRecordBatchBuilder<T>,
+    kv: &DirectAttribute,
+) where
+    T: crate::otlp::attributes::parent_id::ParentId + AttributesRecordBatchBuilderConstructorHelper,
+{
+    attribute_rb_builder.append_key(kv.key.as_bytes());
+    match &kv.value {
+        DirectAnyValue::Empty => attribute_rb_builder.any_values_builder.append_empty(),
+        DirectAnyValue::String(value) => attribute_rb_builder
+            .any_values_builder
+            .append_str(value.as_bytes()),
+        DirectAnyValue::Bool(value) => {
+            attribute_rb_builder.any_values_builder.append_bool(*value);
+        }
+        DirectAnyValue::Int(value) => {
+            attribute_rb_builder.any_values_builder.append_int(*value);
+        }
+        DirectAnyValue::Double(value) => {
+            attribute_rb_builder
+                .any_values_builder
+                .append_double(*value);
+        }
+        DirectAnyValue::Bytes(value) => {
+            attribute_rb_builder.any_values_builder.append_bytes(value);
+        }
+    }
+}
+
+#[derive(Default)]
+struct DirectMetricsFrameDecoder<'a> {
     root: BitReader<'a>,
-    metric: MetricDecoder<'a>,
-    resource: ResourceDecoder<'a>,
-    scope: ScopeDecoder<'a>,
+    metric: DirectMetricDecoder<'a>,
+    resource: DirectResourceDecoder<'a>,
+    scope: DirectScopeDecoder<'a>,
     attributes: AttributesDecoder<'a>,
     point: PointDecoder<'a>,
 }
 
-impl<'a> MetricsFrameDecoder<'a> {
-    fn new(columns: &'a Column) -> Self {
+impl<'a> DirectMetricsFrameDecoder<'a> {
+    fn new(columns: &'a DecodeColumn<'a>) -> Self {
         Self {
-            root: BitReader::new(&columns.data),
-            metric: MetricDecoder::new(&columns.children[1]),
-            resource: ResourceDecoder::new(&columns.children[2]),
-            scope: ScopeDecoder::new(&columns.children[3]),
+            root: BitReader::new(columns.data),
+            metric: DirectMetricDecoder::new(&columns.children[1]),
+            resource: DirectResourceDecoder::new(&columns.children[2]),
+            scope: DirectScopeDecoder::new(&columns.children[3]),
             attributes: AttributesDecoder::new(&columns.children[4]),
             point: PointDecoder::new(&columns.children[5]),
         }
@@ -1137,13 +2193,14 @@ impl<'a> MetricsFrameDecoder<'a> {
     #[allow(clippy::too_many_arguments)]
     fn decode_record(
         &mut self,
-        resource: &mut DecResource,
-        scope: &mut DecScope,
-        metric: &mut DecMetric,
-        attrs: &mut Vec<KeyValue>,
+        builder: &mut DirectOtapMetricsBuilder,
+        resource: &mut DirectDecResource,
+        scope: &mut DirectDecScope,
+        metric: &mut DirectDecMetric,
+        attrs: &mut Vec<DirectAttribute>,
         point: &mut DecPoint,
-        state: &mut DecoderState,
-    ) -> Result<RootModified, Error> {
+        state: &mut DirectDecoderState,
+    ) -> Result<(), Error> {
         let mask = self.root.read_bits(6)?;
         let modified = RootModified {
             metric: mask & (1 << 1) != 0,
@@ -1160,13 +2217,23 @@ impl<'a> MetricsFrameDecoder<'a> {
         if mask & (1 << 3) != 0 {
             self.scope.decode(scope, state)?;
         }
+        let metric_id = builder.prepare_record(modified, resource, scope, metric)?;
+        let point_id = builder.allocate_number_point_id()?;
         if mask & (1 << 4) != 0 {
-            self.attributes.decode(attrs, state)?;
+            self.attributes.decode_direct_number_point_attrs(
+                attrs,
+                state,
+                point_id,
+                &mut builder.ndp_attrs,
+            )?;
+        } else {
+            builder.append_number_point_attrs(point_id, attrs);
         }
         if mask & (1 << 5) != 0 {
             self.point.decode(point)?;
         }
-        Ok(modified)
+        builder.append_number_point_row(metric_id, point_id, point);
+        Ok(())
     }
 }
 
@@ -1177,31 +2244,31 @@ struct RootModified {
     scope: bool,
 }
 
-struct DecoderState {
-    schema_url: StringDict,
-    metric_name: StringDict,
-    metric_description: StringDict,
-    metric_unit: StringDict,
-    scope_name: StringDict,
-    scope_version: StringDict,
-    attribute_key: StringDict,
-    any_value_string: StringDict,
-    resources: Vec<DecResource>,
-    scopes: Vec<DecScope>,
-    metrics: Vec<DecMetric>,
+struct DirectDecoderState {
+    schema_url: DirectStringDict,
+    metric_name: DirectStringDict,
+    metric_description: DirectStringDict,
+    metric_unit: DirectStringDict,
+    scope_name: DirectStringDict,
+    scope_version: DirectStringDict,
+    attribute_key: DirectStringDict,
+    any_value_string: DirectStringDict,
+    resources: Vec<DirectDecResource>,
+    scopes: Vec<DirectDecScope>,
+    metrics: Vec<DirectDecMetric>,
 }
 
-impl Default for DecoderState {
+impl Default for DirectDecoderState {
     fn default() -> Self {
         let mut state = Self {
-            schema_url: StringDict::default(),
-            metric_name: StringDict::default(),
-            metric_description: StringDict::default(),
-            metric_unit: StringDict::default(),
-            scope_name: StringDict::default(),
-            scope_version: StringDict::default(),
-            attribute_key: StringDict::default(),
-            any_value_string: StringDict::default(),
+            schema_url: DirectStringDict::default(),
+            metric_name: DirectStringDict::default(),
+            metric_description: DirectStringDict::default(),
+            metric_unit: DirectStringDict::default(),
+            scope_name: DirectStringDict::default(),
+            scope_version: DirectStringDict::default(),
+            attribute_key: DirectStringDict::default(),
+            any_value_string: DirectStringDict::default(),
             resources: Vec::new(),
             scopes: Vec::new(),
             metrics: Vec::new(),
@@ -1211,7 +2278,7 @@ impl Default for DecoderState {
     }
 }
 
-impl DecoderState {
+impl DirectDecoderState {
     fn reset_dictionaries(&mut self) {
         self.schema_url.reset();
         self.metric_name.reset();
@@ -1222,65 +2289,14 @@ impl DecoderState {
         self.attribute_key.reset();
         self.any_value_string.reset();
         self.resources.clear();
-        self.resources.push(DecResource::default());
+        self.resources.push(DirectDecResource::default());
         self.scopes.clear();
-        self.scopes.push(DecScope::default());
+        self.scopes.push(DirectDecScope::default());
         self.metrics.clear();
-        self.metrics.push(DecMetric::default());
+        self.metrics.push(DirectDecMetric::default());
     }
 
     fn reset_codecs(&mut self) {}
-}
-
-#[derive(Clone, Default)]
-struct DecResource {
-    schema_url: String,
-    attributes: Vec<KeyValue>,
-    dropped_attributes_count: u32,
-}
-
-#[derive(Clone, Default)]
-struct DecScope {
-    name: String,
-    version: String,
-    schema_url: String,
-    attributes: Vec<KeyValue>,
-    dropped_attributes_count: u32,
-}
-
-#[derive(Clone, Default)]
-struct DecMetric {
-    name: String,
-    description: String,
-    unit: String,
-    r#type: u64,
-    metadata: Vec<KeyValue>,
-    aggregation_temporality: u64,
-    monotonic: bool,
-}
-
-impl DecMetric {
-    fn to_otlp(&self) -> Result<Metric, Error> {
-        let data = match self.r#type {
-            0 => metric::Data::Gauge(Gauge {
-                data_points: Vec::new(),
-            }),
-            1 => metric::Data::Sum(Sum {
-                data_points: Vec::new(),
-                aggregation_temporality: i32::try_from(self.aggregation_temporality)
-                    .unwrap_or(AggregationTemporality::Unspecified as i32),
-                is_monotonic: self.monotonic,
-            }),
-            _ => return Err(Error::UnsupportedStefValue("metric type")),
-        };
-        Ok(Metric {
-            name: self.name.clone(),
-            description: self.description.clone(),
-            unit: self.unit.clone(),
-            metadata: self.metadata.clone(),
-            data: Some(data),
-        })
-    }
 }
 
 #[derive(Clone, Default)]
@@ -1288,33 +2304,6 @@ struct DecPoint {
     start_timestamp: u64,
     timestamp: u64,
     value: DecPointValue,
-}
-
-impl DecPoint {
-    fn append_to(&self, metric: &mut Metric, attributes: Vec<KeyValue>) -> Result<(), Error> {
-        let point = NumberDataPoint {
-            attributes,
-            start_time_unix_nano: self.start_timestamp,
-            time_unix_nano: self.timestamp,
-            exemplars: Vec::new(),
-            flags: if matches!(self.value, DecPointValue::None) {
-                1
-            } else {
-                0
-            },
-            value: match self.value {
-                DecPointValue::None => None,
-                DecPointValue::Int64(value) => Some(number_data_point::Value::AsInt(value)),
-                DecPointValue::Float64(value) => Some(number_data_point::Value::AsDouble(value)),
-            },
-        };
-        match metric.data.as_mut() {
-            Some(metric::Data::Gauge(Gauge { data_points })) => data_points.push(point),
-            Some(metric::Data::Sum(Sum { data_points, .. })) => data_points.push(point),
-            _ => return Err(Error::UnsupportedStefValue("metric point target")),
-        }
-        Ok(())
-    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1325,8 +2314,101 @@ enum DecPointValue {
     Float64(f64),
 }
 
+#[derive(Clone)]
+struct DirectDecResource {
+    schema_url: Rc<str>,
+    attributes: Vec<DirectAttribute>,
+    dropped_attributes_count: u32,
+}
+
+impl Default for DirectDecResource {
+    fn default() -> Self {
+        Self {
+            schema_url: empty_rc_str(),
+            attributes: Vec::new(),
+            dropped_attributes_count: 0,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DirectDecScope {
+    name: Rc<str>,
+    version: Rc<str>,
+    schema_url: Rc<str>,
+    attributes: Vec<DirectAttribute>,
+    dropped_attributes_count: u32,
+}
+
+impl Default for DirectDecScope {
+    fn default() -> Self {
+        Self {
+            name: empty_rc_str(),
+            version: empty_rc_str(),
+            schema_url: empty_rc_str(),
+            attributes: Vec::new(),
+            dropped_attributes_count: 0,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DirectDecMetric {
+    name: Rc<str>,
+    description: Rc<str>,
+    unit: Rc<str>,
+    r#type: u64,
+    metadata: Vec<DirectAttribute>,
+    aggregation_temporality: u64,
+    monotonic: bool,
+}
+
+impl Default for DirectDecMetric {
+    fn default() -> Self {
+        Self {
+            name: empty_rc_str(),
+            description: empty_rc_str(),
+            unit: empty_rc_str(),
+            r#type: 0,
+            metadata: Vec::new(),
+            aggregation_temporality: 0,
+            monotonic: false,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct DirectAttribute {
+    key: Rc<str>,
+    value: DirectAnyValue,
+}
+
+impl Default for DirectAttribute {
+    fn default() -> Self {
+        Self {
+            key: empty_rc_str(),
+            value: DirectAnyValue::Empty,
+        }
+    }
+}
+
+#[derive(Clone, Default, PartialEq)]
+enum DirectAnyValue {
+    #[default]
+    Empty,
+    String(Rc<str>),
+    Bool(bool),
+    Int(i64),
+    Double(f64),
+    Bytes(Vec<u8>),
+}
+
+fn empty_rc_str() -> Rc<str> {
+    Rc::<str>::from("")
+}
+
 #[derive(Default)]
-struct MetricDecoder<'a> {
+struct DirectMetricDecoder<'a> {
     bits: BitReader<'a>,
     name: BytesReader<'a>,
     description: BytesReader<'a>,
@@ -1338,22 +2420,26 @@ struct MetricDecoder<'a> {
     monotonic: BoolDecoder<'a>,
 }
 
-impl<'a> MetricDecoder<'a> {
-    fn new(column: &'a Column) -> Self {
+impl<'a> DirectMetricDecoder<'a> {
+    fn new(column: &'a DecodeColumn<'a>) -> Self {
         Self {
-            bits: BitReader::new(&column.data),
-            name: BytesReader::new(&column.children[0].data),
-            description: BytesReader::new(&column.children[1].data),
-            unit: BytesReader::new(&column.children[2].data),
-            r#type: U64Decoder::new(&column.children[3].data),
+            bits: BitReader::new(column.data),
+            name: BytesReader::new(column.children[0].data),
+            description: BytesReader::new(column.children[1].data),
+            unit: BytesReader::new(column.children[2].data),
+            r#type: U64Decoder::new(column.children[3].data),
             metadata: AttributesDecoder::new(&column.children[4]),
             histogram_bounds: ArrayDecoder::new(&column.children[5]),
-            aggregation_temporality: U64Decoder::new(&column.children[6].data),
-            monotonic: BoolDecoder::new(&column.children[7].data),
+            aggregation_temporality: U64Decoder::new(column.children[6].data),
+            monotonic: BoolDecoder::new(column.children[7].data),
         }
     }
 
-    fn decode(&mut self, target: &mut DecMetric, state: &mut DecoderState) -> Result<(), Error> {
+    fn decode(
+        &mut self,
+        target: &mut DirectDecMetric,
+        state: &mut DirectDecoderState,
+    ) -> Result<(), Error> {
         if !self.bits.read_bit()? {
             let ref_num = usize::try_from(self.bits.read_uvarint_compact()?)
                 .map_err(|_| Error::InvalidRefNum)?;
@@ -1369,21 +2455,21 @@ impl<'a> MetricDecoder<'a> {
         let mut value = target.clone();
         let mask = self.bits.read_bits(8)?;
         if mask & (1 << 0) != 0 {
-            value.name = self.name.read_dict_string(&mut state.metric_name)?;
+            value.name = self.name.read_direct_dict_string(&mut state.metric_name)?;
         }
         if mask & (1 << 1) != 0 {
             value.description = self
                 .description
-                .read_dict_string(&mut state.metric_description)?;
+                .read_direct_dict_string(&mut state.metric_description)?;
         }
         if mask & (1 << 2) != 0 {
-            value.unit = self.unit.read_dict_string(&mut state.metric_unit)?;
+            value.unit = self.unit.read_direct_dict_string(&mut state.metric_unit)?;
         }
         if mask & (1 << 3) != 0 {
             value.r#type = self.r#type.decode()?;
         }
         if mask & (1 << 4) != 0 {
-            self.metadata.decode(&mut value.metadata, state)?;
+            self.metadata.decode_direct(&mut value.metadata, state)?;
         }
         if mask & (1 << 5) != 0 {
             self.histogram_bounds.decode_empty()?;
@@ -1401,24 +2487,28 @@ impl<'a> MetricDecoder<'a> {
 }
 
 #[derive(Default)]
-struct ResourceDecoder<'a> {
+struct DirectResourceDecoder<'a> {
     bits: BitReader<'a>,
     schema_url: BytesReader<'a>,
     attributes: AttributesDecoder<'a>,
     dropped_attributes_count: U64Decoder<'a>,
 }
 
-impl<'a> ResourceDecoder<'a> {
-    fn new(column: &'a Column) -> Self {
+impl<'a> DirectResourceDecoder<'a> {
+    fn new(column: &'a DecodeColumn<'a>) -> Self {
         Self {
-            bits: BitReader::new(&column.data),
-            schema_url: BytesReader::new(&column.children[0].data),
+            bits: BitReader::new(column.data),
+            schema_url: BytesReader::new(column.children[0].data),
             attributes: AttributesDecoder::new(&column.children[1]),
-            dropped_attributes_count: U64Decoder::new(&column.children[2].data),
+            dropped_attributes_count: U64Decoder::new(column.children[2].data),
         }
     }
 
-    fn decode(&mut self, target: &mut DecResource, state: &mut DecoderState) -> Result<(), Error> {
+    fn decode(
+        &mut self,
+        target: &mut DirectDecResource,
+        state: &mut DirectDecoderState,
+    ) -> Result<(), Error> {
         if !self.bits.read_bit()? {
             let ref_num = usize::try_from(self.bits.read_uvarint_compact()?)
                 .map_err(|_| Error::InvalidRefNum)?;
@@ -1434,10 +2524,13 @@ impl<'a> ResourceDecoder<'a> {
         let mut value = target.clone();
         let mask = self.bits.read_bits(3)?;
         if mask & (1 << 0) != 0 {
-            value.schema_url = self.schema_url.read_dict_string(&mut state.schema_url)?;
+            value.schema_url = self
+                .schema_url
+                .read_direct_dict_string(&mut state.schema_url)?;
         }
         if mask & (1 << 1) != 0 {
-            self.attributes.decode(&mut value.attributes, state)?;
+            self.attributes
+                .decode_direct(&mut value.attributes, state)?;
         }
         if mask & (1 << 2) != 0 {
             value.dropped_attributes_count = u32::try_from(self.dropped_attributes_count.decode()?)
@@ -1450,7 +2543,7 @@ impl<'a> ResourceDecoder<'a> {
 }
 
 #[derive(Default)]
-struct ScopeDecoder<'a> {
+struct DirectScopeDecoder<'a> {
     bits: BitReader<'a>,
     name: BytesReader<'a>,
     version: BytesReader<'a>,
@@ -1459,19 +2552,23 @@ struct ScopeDecoder<'a> {
     dropped_attributes_count: U64Decoder<'a>,
 }
 
-impl<'a> ScopeDecoder<'a> {
-    fn new(column: &'a Column) -> Self {
+impl<'a> DirectScopeDecoder<'a> {
+    fn new(column: &'a DecodeColumn<'a>) -> Self {
         Self {
-            bits: BitReader::new(&column.data),
-            name: BytesReader::new(&column.children[0].data),
-            version: BytesReader::new(&column.children[1].data),
-            schema_url: BytesReader::new(&column.children[2].data),
+            bits: BitReader::new(column.data),
+            name: BytesReader::new(column.children[0].data),
+            version: BytesReader::new(column.children[1].data),
+            schema_url: BytesReader::new(column.children[2].data),
             attributes: AttributesDecoder::new(&column.children[3]),
-            dropped_attributes_count: U64Decoder::new(&column.children[4].data),
+            dropped_attributes_count: U64Decoder::new(column.children[4].data),
         }
     }
 
-    fn decode(&mut self, target: &mut DecScope, state: &mut DecoderState) -> Result<(), Error> {
+    fn decode(
+        &mut self,
+        target: &mut DirectDecScope,
+        state: &mut DirectDecoderState,
+    ) -> Result<(), Error> {
         if !self.bits.read_bit()? {
             let ref_num = usize::try_from(self.bits.read_uvarint_compact()?)
                 .map_err(|_| Error::InvalidRefNum)?;
@@ -1487,16 +2584,21 @@ impl<'a> ScopeDecoder<'a> {
         let mut value = target.clone();
         let mask = self.bits.read_bits(5)?;
         if mask & (1 << 0) != 0 {
-            value.name = self.name.read_dict_string(&mut state.scope_name)?;
+            value.name = self.name.read_direct_dict_string(&mut state.scope_name)?;
         }
         if mask & (1 << 1) != 0 {
-            value.version = self.version.read_dict_string(&mut state.scope_version)?;
+            value.version = self
+                .version
+                .read_direct_dict_string(&mut state.scope_version)?;
         }
         if mask & (1 << 2) != 0 {
-            value.schema_url = self.schema_url.read_dict_string(&mut state.schema_url)?;
+            value.schema_url = self
+                .schema_url
+                .read_direct_dict_string(&mut state.schema_url)?;
         }
         if mask & (1 << 3) != 0 {
-            self.attributes.decode(&mut value.attributes, state)?;
+            self.attributes
+                .decode_direct(&mut value.attributes, state)?;
         }
         if mask & (1 << 4) != 0 {
             value.dropped_attributes_count = u32::try_from(self.dropped_attributes_count.decode()?)
@@ -1518,11 +2620,11 @@ struct PointDecoder<'a> {
 }
 
 impl<'a> PointDecoder<'a> {
-    fn new(column: &'a Column) -> Self {
+    fn new(column: &'a DecodeColumn<'a>) -> Self {
         Self {
-            bits: BitReader::new(&column.data),
-            start_timestamp: U64Decoder::new(&column.children[0].data),
-            timestamp: U64Decoder::new(&column.children[1].data),
+            bits: BitReader::new(column.data),
+            start_timestamp: U64Decoder::new(column.children[0].data),
+            timestamp: U64Decoder::new(column.children[1].data),
             value: PointValueDecoder::new(&column.children[2]),
             exemplars: ArrayDecoder::new(&column.children[3]),
         }
@@ -1554,11 +2656,11 @@ struct PointValueDecoder<'a> {
 }
 
 impl<'a> PointValueDecoder<'a> {
-    fn new(column: &'a Column) -> Self {
+    fn new(column: &'a DecodeColumn<'a>) -> Self {
         Self {
-            bits: BitReader::new(&column.data),
-            int64: I64Decoder::new(&column.children[0].data),
-            float64: Float64Decoder::new(&column.children[1].data),
+            bits: BitReader::new(column.data),
+            int64: I64Decoder::new(column.children[0].data),
+            float64: Float64Decoder::new(column.children[1].data),
         }
     }
 
@@ -1580,18 +2682,18 @@ struct AttributesDecoder<'a> {
 }
 
 impl<'a> AttributesDecoder<'a> {
-    fn new(column: &'a Column) -> Self {
+    fn new(column: &'a DecodeColumn<'a>) -> Self {
         Self {
-            header: BytesReader::new(&column.data),
-            key: BytesReader::new(&column.children[0].data),
+            header: BytesReader::new(column.data),
+            key: BytesReader::new(column.children[0].data),
             value: AnyValueDecoder::new(&column.children[1]),
         }
     }
 
-    fn decode(
+    fn decode_direct(
         &mut self,
-        target: &mut Vec<KeyValue>,
-        state: &mut DecoderState,
+        target: &mut Vec<DirectAttribute>,
+        state: &mut DirectDecoderState,
     ) -> Result<(), Error> {
         let count_or_changed = self.header.read_uvarint()?;
         if count_or_changed == 0 {
@@ -1602,23 +2704,58 @@ impl<'a> AttributesDecoder<'a> {
             let changed = count_or_changed >> 1;
             for (index, item) in target.iter_mut().enumerate() {
                 if changed & (1 << index) != 0 {
-                    item.value = Some(self.value.decode(state)?);
+                    item.value = self.value.decode_direct(state)?;
                 }
             }
             return Ok(());
         }
-
         let count = usize::try_from(count_or_changed >> 1)
             .map_err(|_| Error::ValueOutOfRange("attributes"))?;
         target.clear();
         target.reserve(count);
         for _ in 0..count {
-            let key = self.key.read_dict_string(&mut state.attribute_key)?;
-            let value = self.value.decode(state)?;
-            target.push(KeyValue {
-                key,
-                value: Some(value),
-            });
+            let key = self.key.read_direct_dict_string(&mut state.attribute_key)?;
+            let value = self.value.decode_direct(state)?;
+            target.push(DirectAttribute { key, value });
+        }
+        Ok(())
+    }
+
+    fn decode_direct_number_point_attrs(
+        &mut self,
+        target: &mut Vec<DirectAttribute>,
+        state: &mut DirectDecoderState,
+        point_id: u32,
+        attribute_rb_builder: &mut DirectNumberDpAttrsRecordBatchBuilder,
+    ) -> Result<(), Error> {
+        let count_or_changed = self.header.read_uvarint()?;
+        if count_or_changed == 0 {
+            attribute_rb_builder.append_all(point_id, target);
+            return Ok(());
+        }
+
+        if count_or_changed & 1 == 0 {
+            let changed = count_or_changed >> 1;
+            for (index, item) in target.iter_mut().enumerate() {
+                if changed & (1 << index) != 0 {
+                    item.value = self.value.decode_direct(state)?;
+                }
+            }
+            attribute_rb_builder.append_all(point_id, target);
+            return Ok(());
+        }
+
+        let count = usize::try_from(count_or_changed >> 1)
+            .map_err(|_| Error::ValueOutOfRange("attributes"))?;
+        attribute_rb_builder.reserve_frame_rows_for_attr_count(count);
+        target.clear();
+        target.reserve(count);
+        for _ in 0..count {
+            let key = self.key.read_direct_dict_string(&mut state.attribute_key)?;
+            let value = self.value.decode_direct(state)?;
+            let attribute = DirectAttribute { key, value };
+            attribute_rb_builder.append(point_id, &attribute);
+            target.push(attribute);
         }
         Ok(())
     }
@@ -1635,34 +2772,32 @@ struct AnyValueDecoder<'a> {
 }
 
 impl<'a> AnyValueDecoder<'a> {
-    fn new(column: &'a Column) -> Self {
+    fn new(column: &'a DecodeColumn<'a>) -> Self {
         Self {
-            bits: BitReader::new(&column.data),
-            string: BytesReader::new(&column.children[0].data),
-            bool_: BoolDecoder::new(&column.children[1].data),
-            int64: I64Decoder::new(&column.children[2].data),
-            float64: Float64Decoder::new(&column.children[3].data),
-            bytes: BytesReader::new(&column.children[6].data),
+            bits: BitReader::new(column.data),
+            string: BytesReader::new(column.children[0].data),
+            bool_: BoolDecoder::new(column.children[1].data),
+            int64: I64Decoder::new(column.children[2].data),
+            float64: Float64Decoder::new(column.children[3].data),
+            bytes: BytesReader::new(column.children[6].data),
         }
     }
 
-    fn decode(&mut self, state: &mut DecoderState) -> Result<AnyValue, Error> {
-        let value = match self.bits.read_bits(4)? {
-            0 => None,
-            1 => Some(otlp_any_value::Value::StringValue(
-                self.string.read_dict_string(&mut state.any_value_string)?,
+    fn decode_direct(&mut self, state: &mut DirectDecoderState) -> Result<DirectAnyValue, Error> {
+        match self.bits.read_bits(4)? {
+            0 => Ok(DirectAnyValue::Empty),
+            1 => Ok(DirectAnyValue::String(
+                self.string
+                    .read_direct_dict_string(&mut state.any_value_string)?,
             )),
-            2 => Some(otlp_any_value::Value::BoolValue(self.bool_.decode()?)),
-            3 => Some(otlp_any_value::Value::IntValue(self.int64.decode()?)),
-            4 => Some(otlp_any_value::Value::DoubleValue(self.float64.decode()?)),
-            5 => return Err(Error::UnsupportedStefValue("array attribute")),
-            6 => return Err(Error::UnsupportedStefValue("kvlist attribute")),
-            7 => Some(otlp_any_value::Value::BytesValue(
-                self.bytes.read_plain_bytes()?,
-            )),
-            _ => return Err(Error::UnsupportedStefValue("attribute value")),
-        };
-        Ok(AnyValue { value })
+            2 => Ok(DirectAnyValue::Bool(self.bool_.decode()?)),
+            3 => Ok(DirectAnyValue::Int(self.int64.decode()?)),
+            4 => Ok(DirectAnyValue::Double(self.float64.decode()?)),
+            5 => Err(Error::UnsupportedStefValue("array attribute")),
+            6 => Err(Error::UnsupportedStefValue("kvlist attribute")),
+            7 => Ok(DirectAnyValue::Bytes(self.bytes.read_plain_bytes()?)),
+            _ => Err(Error::UnsupportedStefValue("attribute value")),
+        }
     }
 }
 
@@ -1672,9 +2807,9 @@ struct ArrayDecoder<'a> {
 }
 
 impl<'a> ArrayDecoder<'a> {
-    fn new(column: &'a Column) -> Self {
+    fn new(column: &'a DecodeColumn<'a>) -> Self {
         Self {
-            bits: BitReader::new(&column.data),
+            bits: BitReader::new(column.data),
         }
     }
 
@@ -1689,19 +2824,19 @@ impl<'a> ArrayDecoder<'a> {
 }
 
 #[derive(Default)]
-struct StringDict {
-    values: Vec<String>,
+struct DirectStringDict {
+    values: Vec<Rc<str>>,
 }
 
-impl StringDict {
+impl DirectStringDict {
     fn reset(&mut self) {
         self.values.clear();
     }
 
-    fn decode(&mut self, value: i64, reader: &mut BytesReader<'_>) -> Result<String, Error> {
+    fn decode(&mut self, value: i64, reader: &mut BytesReader<'_>) -> Result<Rc<str>, Error> {
         if value >= 0 {
             let len = usize::try_from(value).map_err(|_| Error::ValueOutOfRange("string"))?;
-            let value = reader.read_utf8_string(len)?;
+            let value = reader.read_shared_utf8_string(len)?;
             if len > 1 {
                 self.values.push(value.clone());
             }
@@ -1735,7 +2870,7 @@ impl<'a> BytesReader<'a> {
         Ok(((value >> 1) as i64) ^ (-((value & 1) as i64)))
     }
 
-    fn read_dict_string(&mut self, dict: &mut StringDict) -> Result<String, Error> {
+    fn read_direct_dict_string(&mut self, dict: &mut DirectStringDict) -> Result<Rc<str>, Error> {
         let value = self.read_varint()?;
         dict.decode(value, self)
     }
@@ -1746,10 +2881,10 @@ impl<'a> BytesReader<'a> {
         Ok(self.read_bytes(len)?.to_vec())
     }
 
-    fn read_utf8_string(&mut self, len: usize) -> Result<String, Error> {
+    fn read_shared_utf8_string(&mut self, len: usize) -> Result<Rc<str>, Error> {
         let bytes = self.read_bytes(len)?;
         std::str::from_utf8(bytes)
-            .map(|value| value.to_owned())
+            .map(Rc::<str>::from)
             .map_err(|_| Error::InvalidFrame("invalid utf8 string"))
     }
 
@@ -2029,16 +3164,16 @@ fn read_var_header(bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-fn read_column_sizes(
-    column: &mut Column,
+fn read_decode_column_sizes(
+    column: &mut DecodeColumn<'_>,
     sizes: &mut BitReader<'_>,
     mut read_limit: u64,
 ) -> Result<(), Error> {
-    read_column_sizes_inner(column, sizes, &mut read_limit)
+    read_decode_column_sizes_inner(column, sizes, &mut read_limit)
 }
 
-fn read_column_sizes_inner(
-    column: &mut Column,
+fn read_decode_column_sizes_inner(
+    column: &mut DecodeColumn<'_>,
     sizes: &mut BitReader<'_>,
     read_limit: &mut u64,
 ) -> Result<(), Error> {
@@ -2047,94 +3182,132 @@ fn read_column_sizes_inner(
         return Err(Error::InvalidFrame("column exceeds frame"));
     }
     *read_limit -= size;
-    column.data = vec![0; usize::try_from(size).map_err(|_| Error::ValueOutOfRange("column"))?];
+    column.byte_len = usize::try_from(size).map_err(|_| Error::ValueOutOfRange("column"))?;
+    column.data = &[];
     if size == 0 {
-        reset_column_data(column);
+        reset_decode_column_data(column);
         return Ok(());
     }
     for child in &mut column.children {
-        read_column_sizes_inner(child, sizes, read_limit)?;
+        read_decode_column_sizes_inner(child, sizes, read_limit)?;
     }
     Ok(())
 }
 
-fn reset_column_data(column: &mut Column) {
-    column.data.clear();
+fn reset_decode_column_data(column: &mut DecodeColumn<'_>) {
+    column.data = &[];
+    column.byte_len = 0;
     for child in &mut column.children {
-        reset_column_data(child);
+        reset_decode_column_data(child);
     }
 }
 
-fn read_column_data(column: &mut Column, reader: &mut SliceReader<'_>) -> Result<(), Error> {
-    if column.data.is_empty() {
+fn read_decode_column_data<'a>(
+    column: &mut DecodeColumn<'a>,
+    reader: &mut SliceReader<'a>,
+) -> Result<(), Error> {
+    if column.byte_len == 0 {
         return Ok(());
     }
-    let bytes = reader.read_bytes(column.data.len())?;
-    column.data.copy_from_slice(bytes);
+    column.data = reader.read_bytes(column.byte_len)?;
     for child in &mut column.children {
-        read_column_data(child, reader)?;
+        read_decode_column_data(child, reader)?;
     }
     Ok(())
-}
-
-/// Builds a default one-point gauge request for STEF tests and examples.
-#[cfg(any(test, feature = "testing"))]
-#[must_use]
-pub fn example_gauge_request() -> ExportMetricsServiceRequest {
-    use crate::proto::opentelemetry::resource::v1::Resource;
-
-    ExportMetricsServiceRequest {
-        resource_metrics: vec![ResourceMetrics {
-            resource: Some(Resource {
-                attributes: vec![KeyValue {
-                    key: "service.name".to_owned(),
-                    value: Some(AnyValue {
-                        value: Some(otlp_any_value::Value::StringValue("demo".to_owned())),
-                    }),
-                }],
-                dropped_attributes_count: 0,
-                entity_refs: Vec::new(),
-            }),
-            scope_metrics: vec![ScopeMetrics {
-                scope: None,
-                metrics: vec![Metric {
-                    name: "requests".to_owned(),
-                    description: String::new(),
-                    unit: "1".to_owned(),
-                    metadata: Vec::new(),
-                    data: Some(metric::Data::Gauge(Gauge {
-                        data_points: vec![NumberDataPoint {
-                            attributes: vec![KeyValue {
-                                key: "route".to_owned(),
-                                value: Some(AnyValue {
-                                    value: Some(otlp_any_value::Value::StringValue(
-                                        "/v1/metrics".to_owned(),
-                                    )),
-                                }),
-                            }],
-                            start_time_unix_nano: 10,
-                            time_unix_nano: 20,
-                            exemplars: Vec::new(),
-                            flags: 0,
-                            value: Some(number_data_point::Value::AsInt(7)),
-                        }],
-                    })),
-                }],
-                schema_url: String::new(),
-            }],
-            schema_url: String::new(),
-        }],
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::opentelemetry::metrics::v1::{AggregationTemporality, Sum};
+    use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+    use crate::proto::opentelemetry::common::v1::{
+        AnyValue, KeyValue, any_value as otlp_any_value,
+    };
+    use crate::proto::opentelemetry::metrics::v1::{
+        AggregationTemporality, Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
+        metric, number_data_point,
+    };
+    use crate::proto::opentelemetry::resource::v1::Resource;
+    use crate::views::otlp::bytes::metrics::RawMetricsData;
+    use prost::Message as ProstMessage;
+
+    fn example_gauge_request() -> ExportMetricsServiceRequest {
+        ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".to_owned(),
+                        value: Some(AnyValue {
+                            value: Some(otlp_any_value::Value::StringValue("demo".to_owned())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: Vec::new(),
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![Metric {
+                        name: "requests".to_owned(),
+                        description: String::new(),
+                        unit: "1".to_owned(),
+                        metadata: Vec::new(),
+                        data: Some(metric::Data::Gauge(Gauge {
+                            data_points: vec![NumberDataPoint {
+                                attributes: vec![KeyValue {
+                                    key: "route".to_owned(),
+                                    value: Some(AnyValue {
+                                        value: Some(otlp_any_value::Value::StringValue(
+                                            "/v1/metrics".to_owned(),
+                                        )),
+                                    }),
+                                }],
+                                start_time_unix_nano: 10,
+                                time_unix_nano: 20,
+                                exemplars: Vec::new(),
+                                flags: 0,
+                                value: Some(number_data_point::Value::AsInt(7)),
+                            }],
+                        })),
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        }
+    }
+
+    fn otlp_bytes(request: &ExportMetricsServiceRequest) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        request.encode(&mut bytes).unwrap();
+        bytes
+    }
+
+    fn encode_request_direct(request: &ExportMetricsServiceRequest) -> (Vec<u8>, u64) {
+        let bytes = otlp_bytes(request);
+        let view = RawMetricsData::new(&bytes);
+        encode_metrics_view_with_count(&view).unwrap()
+    }
+
+    fn assert_single_gauge_value(records: &OtapArrowRecords) {
+        let view = crate::views::otap::metrics::OtapMetricsView::try_from(records).unwrap();
+        let resource_metrics = view.resources().next().unwrap();
+        let scope_metrics = resource_metrics.scopes().next().unwrap();
+        let metric = scope_metrics.metrics().next().unwrap();
+        assert_eq!(std::str::from_utf8(metric.name()).unwrap(), "requests");
+        assert_eq!(std::str::from_utf8(metric.unit()).unwrap(), "1");
+
+        let data = metric.data().unwrap();
+        let gauge = data.as_gauge().unwrap();
+        let point = gauge.data_points().next().unwrap();
+        assert_eq!(point.start_time_unix_nano(), 10);
+        assert_eq!(point.time_unix_nano(), 20);
+        assert_eq!(point.value(), Some(metrics_view::Value::Integer(7)));
+    }
 
     #[test]
     fn encodes_metrics_stream_header_and_schema() {
-        let bytes = encode_metrics_request(&example_gauge_request()).unwrap();
+        let (bytes, record_count) = encode_request_direct(&example_gauge_request());
+        assert_eq!(record_count, 1);
         assert!(bytes.starts_with(b"STEF"));
         assert!(
             bytes
@@ -2152,31 +3325,45 @@ mod tests {
                 aggregation_temporality: AggregationTemporality::Cumulative as i32,
                 is_monotonic: true,
             }));
-        let _ = encode_metrics_request(&request).unwrap();
+        let (bytes, record_count) = encode_request_direct(&request);
+        assert_eq!(record_count, 0);
+        assert!(bytes.starts_with(b"STEF"));
     }
 
     #[test]
-    fn roundtrips_numeric_gauge_stream() {
-        let bytes = encode_metrics_request(&example_gauge_request()).unwrap();
-        let decoded = decode_metrics_request(&bytes).unwrap();
+    fn roundtrips_numeric_gauge_through_direct_otap() {
+        let (bytes, encoded_count) = encode_request_direct(&example_gauge_request());
+        assert_eq!(encoded_count, 1);
 
-        let resource_metrics = &decoded.resource_metrics[0];
-        assert_eq!(
-            resource_metrics.resource.as_ref().unwrap().attributes[0].key,
-            "service.name"
-        );
-        let scope_metrics = &resource_metrics.scope_metrics[0];
-        let metric = &scope_metrics.metrics[0];
-        assert_eq!(metric.name, "requests");
-        assert_eq!(metric.unit, "1");
+        let (records, decoded_count) = decode_metrics_otap_with_count(&bytes).unwrap();
+        assert_eq!(decoded_count, 1);
+        assert_eq!(records.num_items(), 1);
+        assert_single_gauge_value(&records);
+    }
 
-        let metric::Data::Gauge(gauge) = metric.data.as_ref().unwrap() else {
-            panic!("expected gauge metric");
-        };
-        let point = &gauge.data_points[0];
-        assert_eq!(point.start_time_unix_nano, 10);
-        assert_eq!(point.time_unix_nano, 20);
-        assert_eq!(point.attributes[0].key, "route");
-        assert_eq!(point.value, Some(number_data_point::Value::AsInt(7)));
+    #[test]
+    fn decodes_metrics_stream_directly_to_otap_records() {
+        let (bytes, _) = encode_request_direct(&example_gauge_request());
+        let (records, record_count) = decode_metrics_otap_with_count(&bytes).unwrap();
+        assert_eq!(record_count, 1);
+        assert_eq!(records.num_items(), 1);
+
+        let (encoded, encoded_count) = encode_metrics_otap_with_count(&records).unwrap();
+        assert_eq!(encoded_count, 1);
+        let (decoded_records, decoded_count) = decode_metrics_otap_with_count(&encoded).unwrap();
+        assert_eq!(decoded_count, 1);
+        assert_single_gauge_value(&decoded_records);
+    }
+
+    #[test]
+    fn encodes_raw_otlp_metrics_view_directly_to_stef() {
+        let otlp_bytes = otlp_bytes(&example_gauge_request());
+        let view = RawMetricsData::new(&otlp_bytes);
+        let (encoded, record_count) = encode_metrics_view_with_count(&view).unwrap();
+        assert_eq!(record_count, 1);
+
+        let (records, decoded_count) = decode_metrics_otap_with_count(&encoded).unwrap();
+        assert_eq!(decoded_count, 1);
+        assert_single_gauge_value(&records);
     }
 }

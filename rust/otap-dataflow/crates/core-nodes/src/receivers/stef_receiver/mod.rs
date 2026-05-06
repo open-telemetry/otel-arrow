@@ -10,7 +10,6 @@ use crate::stef_grpc::{
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
-use bytes::Bytes;
 use futures::Stream;
 use futures::future::BoxFuture;
 use http::{Request, Response};
@@ -36,14 +35,12 @@ use otap_df_otap::otap_grpc::server_settings::GrpcServerSettings;
 use otap_df_otap::otlp_metrics::OtlpReceiverMetrics;
 use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
-use otap_df_pdata::OtlpProtoBytes;
-use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-use otap_df_pdata::proto::opentelemetry::metrics::v1::metric;
-use otap_df_pdata::stef::{METRICS_ROOT_STRUCT_NAME, METRICS_WIRE_SCHEMA, decode_metrics_request};
+use otap_df_pdata::stef::{
+    METRICS_ROOT_STRUCT_NAME, METRICS_WIRE_SCHEMA, decode_metrics_otap_with_count,
+};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::otel_info;
 use parking_lot::Mutex;
-use prost::Message as ProstMessage;
 use serde::Deserialize;
 use serde_json::Value;
 use std::convert::Infallible;
@@ -78,7 +75,7 @@ pub struct Config {
     pub max_dict_bytes: u64,
 }
 
-/// Receiver that accepts STEF metrics over gRPC and forwards OTLP metrics bytes downstream.
+/// Receiver that accepts STEF metrics over gRPC and forwards OTAP metrics records downstream.
 pub struct StefReceiver {
     config: Config,
     metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
@@ -394,16 +391,11 @@ impl StreamingService<StefClientMessage> for StefStreamService {
                         continue;
                     }
 
-                    let request = decode_metrics_request(&chunk)
+                    let (otap_records, point_count) = decode_metrics_otap_with_count(&chunk)
                         .map_err(|e| Status::invalid_argument(format!("STEF decode error: {e}")))?;
-                    let point_count = count_metric_points(&request);
-                    let mut otlp_bytes = Vec::with_capacity(request.encoded_len());
-                    request
-                        .encode(&mut otlp_bytes)
-                        .map_err(|e| Status::internal(format!("OTLP metrics encode error: {e}")))?;
                     let pdata = OtapPdata::new(
                         Context::default(),
-                        OtlpProtoBytes::ExportMetricsRequest(Bytes::from(otlp_bytes)).into(),
+                        otap_records.into(),
                     );
                     effect_handler
                         .send_message_with_source_node(pdata)
@@ -441,25 +433,6 @@ fn ack_message(ack_record_id: u64) -> StefServerMessage {
             bad_data_record_id_ranges: Vec::new(),
         })),
     }
-}
-
-fn count_metric_points(request: &ExportMetricsServiceRequest) -> u64 {
-    request
-        .resource_metrics
-        .iter()
-        .flat_map(|resource| &resource.scope_metrics)
-        .flat_map(|scope| &scope.metrics)
-        .map(|metric| match metric.data.as_ref() {
-            Some(metric::Data::Gauge(gauge)) => gauge.data_points.len() as u64,
-            Some(metric::Data::Sum(sum)) => sum.data_points.len() as u64,
-            Some(metric::Data::Histogram(histogram)) => histogram.data_points.len() as u64,
-            Some(metric::Data::ExponentialHistogram(histogram)) => {
-                histogram.data_points.len() as u64
-            }
-            Some(metric::Data::Summary(summary)) => summary.data_points.len() as u64,
-            None => 0,
-        })
-        .sum()
 }
 
 fn unimplemented_resp() -> Response<Body> {
