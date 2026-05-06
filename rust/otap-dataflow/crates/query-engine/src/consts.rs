@@ -11,3 +11,7 @@ pub(crate) const ENCODE_FUNC_NAME: &str = "encode";
 pub(crate) const FORMAT_DATETIME_FUNC_NAME: &str = "format_datetime";
 pub(crate) const REGEXP_SUBSTR_FUNC_NAME: &str = "regexp_substr";
 pub(crate) const SHA256_FUNC_NAME: &str = "sha256";
+pub(crate) const UUID_FUNC_NAME: &str = "uuid";
+pub(crate) const UUIDV7_FUNC_NAME: &str = "uuidv7";
+pub(crate) const LOWER_CASE_FUNC_NAME: &str = "lower_case";
+pub(crate) const UPPER_CASE_FUNC_NAME: &str = "upper_case";

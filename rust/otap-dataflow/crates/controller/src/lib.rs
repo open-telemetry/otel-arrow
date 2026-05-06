@@ -80,7 +80,7 @@ use otap_df_engine::memory_limiter::{
     EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureChanged,
     MemoryPressureLevel,
 };
-use otap_df_engine::processor::FlowMeasurementHook;
+use otap_df_engine::processor::FlowMetricHook;
 use otap_df_engine::topic::{
     InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
     TopicSet,
@@ -275,14 +275,7 @@ fn engine_context() -> LogContext {
 }
 
 impl<
-    PData: 'static
-        + Clone
-        + Send
-        + Sync
-        + std::fmt::Debug
-        + ReceivedAtNode
-        + Unwindable
-        + FlowMeasurementHook,
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
 > Controller<PData>
 {
     /// Creates a new controller with the given pipeline factory.
