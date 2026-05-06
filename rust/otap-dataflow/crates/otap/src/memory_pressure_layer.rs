@@ -15,10 +15,15 @@ use tower::{Layer, Service};
 
 use crate::otlp_metrics::OtlpReceiverMetrics;
 
-/// Records request rejections caused by process-wide hard memory pressure.
+/// Records request rejections before they enter the pipeline.
 pub trait MemoryPressureRejectionMetrics: Send + Sync {
+    /// Records one request rejected before entering the pipeline.
+    fn record_rejection(&self);
+
     /// Records one request rejected before entering the pipeline due to hard memory pressure.
-    fn record_memory_pressure_rejection(&self);
+    fn record_memory_pressure_rejection(&self) {
+        self.record_rejection();
+    }
 }
 
 /// Builds a gRPC `resource_exhausted` status with retry pushback metadata.
@@ -37,6 +42,10 @@ pub fn grpc_memory_pressure_status(state: &SharedReceiverAdmissionState) -> Stat
 }
 
 impl MemoryPressureRejectionMetrics for Mutex<MetricSet<OtlpReceiverMetrics>> {
+    fn record_rejection(&self) {
+        self.lock().rejected_requests.inc();
+    }
+
     fn record_memory_pressure_rejection(&self) {
         let mut metrics = self.lock();
         metrics.rejected_requests.inc();

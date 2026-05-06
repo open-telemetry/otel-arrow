@@ -11,6 +11,9 @@
 //! ToDo: Change how channel sizes are handled? Currently defined when creating otap_receiver -> passing channel size to the ServiceImpl
 
 use crate::pdata::{Context, OtapPdata};
+use futures::future::BoxFuture;
+use futures::stream::FuturesUnordered;
+use futures::{FutureExt, StreamExt as FuturesStreamExt};
 use otap_df_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
     memory_limiter::SharedReceiverAdmissionState, shared::receiver as shared,
@@ -30,7 +33,7 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Request, Response, Status};
+use tonic::{Request, Response, Status, Streaming};
 
 pub mod client_settings;
 pub mod common;
@@ -60,12 +63,22 @@ pub struct Settings {
     pub response_stream_channel_size: usize,
     /// Maximum concurrent requests per receiver instance (per core).
     pub max_concurrent_requests: usize,
+    /// Maximum in-flight wait-for-result requests admitted from a single stream.
+    pub max_concurrent_requests_per_stream: usize,
     /// Whether the receiver should wait.
     pub wait_for_result: bool,
     /// Receiver-local memory pressure admission state.
     pub admission_state: SharedReceiverAdmissionState,
     /// Shared rejection counters used by both stream-open and per-batch shedding.
     pub memory_pressure_rejection_metrics: Option<Arc<dyn MemoryPressureRejectionMetrics>>,
+}
+
+impl Settings {
+    fn effective_max_concurrent_requests_per_stream(&self) -> usize {
+        self.max_concurrent_requests_per_stream
+            .min(self.max_concurrent_requests)
+            .max(1)
+    }
 }
 
 /// struct that implements the ArrowLogsService trait
@@ -154,59 +167,21 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
         Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>;
     async fn arrow_logs(
         &self,
-        request: Request<tonic::Streaming<BatchArrowRecords>>,
+        request: Request<Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowLogsStream>, Status> {
-        let mut input_stream = request.into_inner();
-        // ToDo [LQ] How can we abstract this to avoid any dependency on Tokio inside receiver implementations.
         let (tx, rx) = tokio::sync::mpsc::channel(self.settings.response_stream_channel_size);
-        let effect_handler_clone = self.effect_handler.clone();
-        let state_clone = self.state.clone();
-        let settings = self.settings.clone();
 
         // Provide client a stream to listen to
         let output = ReceiverStream::new(rx);
 
-        // write to the channel
-        // ToDo [LQ] How can we abstract this to avoid any dependency on Tokio inside receiver implementations.
-        _ = tokio::spawn(async move {
-            let mut consumer = Consumer::default();
-
-            // Process messages until stream ends or error occurs
-            loop {
-                if reject_open_stream_for_memory_pressure(
-                    &settings.admission_state,
-                    settings.memory_pressure_rejection_metrics.as_deref(),
-                    &tx,
-                )
-                .await
-                {
-                    break;
-                }
-
-                let batch = match input_stream.message().await {
-                    Ok(Some(batch)) => batch,
-                    Ok(None) | Err(_) => break,
-                };
-
-                // accept the batch data and handle output response
-                if accept_data::<Logs, _>(
-                    OtapArrowRecords::Logs,
-                    &mut consumer,
-                    batch,
-                    &effect_handler_clone,
-                    state_clone.clone(),
-                    &settings.admission_state,
-                    settings.memory_pressure_rejection_metrics.as_deref(),
-                    &tx,
-                )
-                .await
-                .is_err()
-                {
-                    // end loop if error occurs
-                    break;
-                }
-            }
-        });
+        spawn_stream_handler::<Logs, _>(
+            request.into_inner(),
+            OtapArrowRecords::Logs,
+            self.effect_handler.clone(),
+            self.state.clone(),
+            self.settings.clone(),
+            tx,
+        );
 
         Ok(Response::new(Box::pin(output) as Self::ArrowLogsStream))
     }
@@ -218,57 +193,21 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
         Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>;
     async fn arrow_metrics(
         &self,
-        request: Request<tonic::Streaming<BatchArrowRecords>>,
+        request: Request<Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowMetricsStream>, Status> {
-        let mut input_stream = request.into_inner();
         let (tx, rx) = tokio::sync::mpsc::channel(self.settings.response_stream_channel_size);
-        let effect_handler_clone = self.effect_handler.clone();
-        let state_clone = self.state.clone();
-        let settings = self.settings.clone();
 
         // Provide client a stream to listen to
         let output = ReceiverStream::new(rx);
 
-        // write to the channel
-        _ = tokio::spawn(async move {
-            let mut consumer = Consumer::default();
-
-            // Process messages until stream ends or error occurs
-            loop {
-                if reject_open_stream_for_memory_pressure(
-                    &settings.admission_state,
-                    settings.memory_pressure_rejection_metrics.as_deref(),
-                    &tx,
-                )
-                .await
-                {
-                    break;
-                }
-
-                let batch = match input_stream.message().await {
-                    Ok(Some(batch)) => batch,
-                    Ok(None) | Err(_) => break,
-                };
-
-                // accept the batch data and handle output response
-                if accept_data::<Metrics, _>(
-                    OtapArrowRecords::Metrics,
-                    &mut consumer,
-                    batch,
-                    &effect_handler_clone,
-                    state_clone.clone(),
-                    &settings.admission_state,
-                    settings.memory_pressure_rejection_metrics.as_deref(),
-                    &tx,
-                )
-                .await
-                .is_err()
-                {
-                    // end loop if error occurs
-                    break;
-                }
-            }
-        });
+        spawn_stream_handler::<Metrics, _>(
+            request.into_inner(),
+            OtapArrowRecords::Metrics,
+            self.effect_handler.clone(),
+            self.state.clone(),
+            self.settings.clone(),
+            tx,
+        );
 
         Ok(Response::new(Box::pin(output) as Self::ArrowMetricsStream))
     }
@@ -280,72 +219,142 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
         Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>;
     async fn arrow_traces(
         &self,
-        request: Request<tonic::Streaming<BatchArrowRecords>>,
+        request: Request<Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowTracesStream>, Status> {
-        let mut input_stream = request.into_inner();
         let (tx, rx) = tokio::sync::mpsc::channel(self.settings.response_stream_channel_size);
-        let effect_handler_clone = self.effect_handler.clone();
-        let state_clone = self.state.clone();
-        let settings = self.settings.clone();
 
         // create a stream to output result to
         let output = ReceiverStream::new(rx);
 
-        // write to the channel
-        _ = tokio::spawn(async move {
-            let mut consumer = Consumer::default();
-
-            // Process messages until stream ends or error occurs
-            loop {
-                if reject_open_stream_for_memory_pressure(
-                    &settings.admission_state,
-                    settings.memory_pressure_rejection_metrics.as_deref(),
-                    &tx,
-                )
-                .await
-                {
-                    break;
-                }
-
-                let batch = match input_stream.message().await {
-                    Ok(Some(batch)) => batch,
-                    Ok(None) | Err(_) => break,
-                };
-
-                // accept the batch data and handle output response
-                if accept_data::<Traces, _>(
-                    OtapArrowRecords::Traces,
-                    &mut consumer,
-                    batch,
-                    &effect_handler_clone,
-                    state_clone.clone(),
-                    &settings.admission_state,
-                    settings.memory_pressure_rejection_metrics.as_deref(),
-                    &tx,
-                )
-                .await
-                .is_err()
-                {
-                    // end loop if error occurs
-                    break;
-                }
-            }
-        });
+        spawn_stream_handler::<Traces, _>(
+            request.into_inner(),
+            OtapArrowRecords::Traces,
+            self.effect_handler.clone(),
+            self.state.clone(),
+            self.settings.clone(),
+            tx,
+        );
 
         Ok(Response::new(Box::pin(output) as Self::ArrowTracesStream))
     }
 }
 
+type PendingResponseFuture = BoxFuture<'static, PendingResponse>;
+
+enum PendingResponse {
+    Ack { batch_id: i64 },
+    Nack { batch_id: i64, reason: String },
+    ChannelClosed { batch_id: i64 },
+}
+
+fn spawn_stream_handler<T, F>(
+    input_stream: Streaming<BatchArrowRecords>,
+    otap_batch: F,
+    effect_handler: shared::EffectHandler<OtapPdata>,
+    state: Option<SharedState>,
+    settings: Settings,
+    tx: tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
+) where
+    T: OtapBatchStore + Send + 'static,
+    F: Fn(T) -> OtapArrowRecords + Copy + Send + 'static,
+{
+    _ = tokio::spawn(async move {
+        handle_stream::<T, F>(
+            input_stream,
+            otap_batch,
+            effect_handler,
+            state,
+            settings,
+            tx,
+        )
+        .await;
+    });
+}
+
+async fn handle_stream<T, F>(
+    mut input_stream: Streaming<BatchArrowRecords>,
+    otap_batch: F,
+    effect_handler: shared::EffectHandler<OtapPdata>,
+    state: Option<SharedState>,
+    settings: Settings,
+    tx: tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
+) where
+    T: OtapBatchStore + Send + 'static,
+    F: Fn(T) -> OtapArrowRecords + Copy + Send + 'static,
+{
+    let mut consumer = Consumer::default();
+    let max_pending = settings.effective_max_concurrent_requests_per_stream();
+    let mut pending = FuturesUnordered::<PendingResponseFuture>::new();
+
+    loop {
+        while pending.len() >= max_pending {
+            if let Some(response) = pending.next().await {
+                if send_pending_response(response, &tx).await.is_err() {
+                    return;
+                }
+            }
+        }
+
+        if reject_open_stream_for_memory_pressure(
+            &settings.admission_state,
+            settings.memory_pressure_rejection_metrics.as_deref(),
+            &tx,
+        )
+        .await
+        {
+            break;
+        }
+
+        tokio::select! {
+            response = pending.next(), if !pending.is_empty() => {
+                if let Some(response) = response
+                    && send_pending_response(response, &tx).await.is_err()
+                {
+                    return;
+                }
+            }
+            batch = input_stream.message() => {
+                let batch = match batch {
+                    Ok(Some(batch)) => batch,
+                    Ok(None) | Err(_) => break,
+                };
+
+                match accept_data::<T, F>(
+                    otap_batch,
+                    &mut consumer,
+                    batch,
+                    &effect_handler,
+                    state.clone(),
+                    &settings.admission_state,
+                    settings.memory_pressure_rejection_metrics.as_deref(),
+                    &tx,
+                )
+                .await {
+                    Ok(Some(response)) => pending.push(response),
+                    Ok(None) => {}
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+
+    while let Some(response) = pending.next().await {
+        if send_pending_response(response, &tx).await.is_err() {
+            return;
+        }
+    }
+}
+
 async fn reject_open_stream_for_memory_pressure(
     admission_state: &SharedReceiverAdmissionState,
-    memory_pressure_metrics: Option<&dyn MemoryPressureRejectionMetrics>,
+    rejection_metrics: Option<&dyn MemoryPressureRejectionMetrics>,
     tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
 ) -> bool {
     if !admission_state.should_shed_ingress() {
         return false;
     }
 
-    if let Some(metrics) = memory_pressure_metrics {
+    if let Some(metrics) = rejection_metrics {
         metrics.record_memory_pressure_rejection();
     }
 
@@ -377,15 +386,15 @@ async fn accept_data<T: OtapBatchStore, F>(
     effect_handler: &shared::EffectHandler<OtapPdata>,
     state: Option<SharedState>,
     admission_state: &SharedReceiverAdmissionState,
-    memory_pressure_metrics: Option<&dyn MemoryPressureRejectionMetrics>,
+    rejection_metrics: Option<&dyn MemoryPressureRejectionMetrics>,
     tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
-) -> Result<(), ()>
+) -> Result<Option<PendingResponseFuture>, ()>
 where
     F: Fn(T) -> OtapArrowRecords,
 {
     let batch_id = batch.batch_id;
     if admission_state.should_shed_ingress() {
-        if let Some(metrics) = memory_pressure_metrics {
+        if let Some(metrics) = rejection_metrics {
             metrics.record_memory_pressure_rejection();
         }
 
@@ -404,7 +413,7 @@ where
             otel_error!("otap.response.send_failed", error = ?e, message = "Error sending BatchStatus response");
         })?;
 
-        return Ok(());
+        return Ok(None);
     }
 
     let batch = consumer.consume_bar(&mut batch).map_err(|e| {
@@ -437,6 +446,9 @@ where
                     "otap.request.concurrency_limit",
                     message = "Too many concurrent requests"
                 );
+                if let Some(metrics) = rejection_metrics {
+                    metrics.record_rejection();
+                }
 
                 // Send backpressure response
                 tx.send(Ok(BatchStatus {
@@ -452,7 +464,7 @@ where
                     otel_error!("otap.response.send_failed", error = ?e, message = "Error sending BatchStatus response");
                 })?;
 
-                return Ok(());
+                return Ok(None);
             }
             Some(pair) => pair,
         };
@@ -468,7 +480,8 @@ where
         None
     };
 
-    // Send and wait for Ack/Nack
+    // Send to the pipeline. The Ack/Nack wait is returned to the stream driver
+    // so the driver can continue reading up to the per-stream in-flight limit.
     match effect_handler
         .send_message_with_source_node(otap_pdata)
         .await
@@ -482,38 +495,10 @@ where
 
     // If backpressure, await a response. The guard will cancel and return the
     // slot if Tonic times-out this task.
-    if let Some((_cancel_guard, rx)) = cancel_rx {
-        match rx.await {
-            Ok(Ok(())) => {
-                // Received Ack
-                // Behavior is similar to `wait_for_result` set to `false` case
-                // No need to send a response here since success response is sent
-                // before returning from the function anyway
-            }
-            Ok(Err(nack)) => {
-                // Received Nack
-                // TODO: Use more specific status codes based on nack reason/type
-                // when more detailed error information is available from the pipeline
-                tx.send(Ok(BatchStatus {
-                    batch_id,
-                    status_code: StatusCode::Unavailable as i32,
-                    status_message: format!("Pipeline processing failed: {}", nack.reason),
-                }))
-                .await
-                .map_err(|e| {
-                    otel_error!("otap.response.send_failed", error = ?e, message = "Error sending BatchStatus response");
-                })?;
-
-                return Ok(());
-            }
-            Err(_) => {
-                otel_error!(
-                    "otap.response.channel_closed",
-                    message = "Response channel closed unexpectedly"
-                );
-                return Err(());
-            }
-        }
+    if let Some((cancel_guard, rx)) = cancel_rx {
+        return Ok(Some(
+            wait_for_pending_response(batch_id, cancel_guard, rx).boxed(),
+        ));
     }
 
     tx.send(Ok(BatchStatus {
@@ -523,6 +508,53 @@ where
     }))
     .await
     .map_err(|e| {
+        otel_error!("otap.response.send_failed", error = ?e, message = "Error sending BatchStatus response");
+    })?;
+
+    Ok(None)
+}
+
+async fn wait_for_pending_response(
+    batch_id: i64,
+    _cancel_guard: otlp::server::SlotGuard,
+    rx: oneshot::Receiver<Result<(), otap_df_engine::control::NackMsg<OtapPdata>>>,
+) -> PendingResponse {
+    match rx.await {
+        Ok(Ok(())) => PendingResponse::Ack { batch_id },
+        Ok(Err(nack)) => PendingResponse::Nack {
+            batch_id,
+            reason: nack.reason,
+        },
+        Err(_) => PendingResponse::ChannelClosed { batch_id },
+    }
+}
+
+async fn send_pending_response(
+    response: PendingResponse,
+    tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
+) -> Result<(), ()> {
+    let status = match response {
+        PendingResponse::Ack { batch_id } => BatchStatus {
+            batch_id,
+            status_code: StatusCode::Ok as i32,
+            status_message: "Successfully received".to_string(),
+        },
+        PendingResponse::Nack { batch_id, reason } => BatchStatus {
+            batch_id,
+            status_code: StatusCode::Unavailable as i32,
+            status_message: format!("Pipeline processing failed: {reason}"),
+        },
+        PendingResponse::ChannelClosed { batch_id } => {
+            otel_error!(
+                "otap.response.channel_closed",
+                batch_id = batch_id,
+                message = "Response channel closed unexpectedly"
+            );
+            return Err(());
+        }
+    };
+
+    tx.send(Ok(status)).await.map_err(|e| {
         otel_error!("otap.response.send_failed", error = ?e, message = "Error sending BatchStatus response");
     })
 }
@@ -543,7 +575,7 @@ mod tests {
     }
 
     impl MemoryPressureRejectionMetrics for CountingMemoryPressureMetrics {
-        fn record_memory_pressure_rejection(&self) {
+        fn record_rejection(&self) {
             let _ = self.calls.fetch_add(1, Ordering::Relaxed);
         }
     }
