@@ -1194,7 +1194,8 @@ impl Drop for HostMetricsLease {
 
 fn normalized_root_path(root_path: Option<&Path>) -> Result<PathBuf, otap_df_config::error::Error> {
     let path = root_path.unwrap_or_else(|| Path::new("/"));
-    if !path.is_absolute() {
+    let path_text = path.to_string_lossy();
+    if !path.is_absolute() && !path_text.starts_with('/') {
         return Err(otap_df_config::error::Error::InvalidUserConfig {
             error: format!("root_path must be absolute: {}", path.display()),
         });
