@@ -19,3 +19,6 @@ pub mod otap_receiver;
 
 /// OTLP receiver.
 pub mod otlp_receiver;
+
+/// ETW (Event Tracing for Windows) receiver.
+pub mod etw_receiver;

@@ -1,0 +1,42 @@
+# ETW → Console pipeline
+#
+# Subscribes to Windows ETW providers and prints events to the console.
+#
+# Usage:
+#   cargo run -- -c configs/etw-console.yaml
+#
+# NOTE: This receiver only works on Windows. The ETW data-plane
+# implementation is a TODO — currently only the control-flow
+# (startup, shutdown, telemetry) is wired up.
+
+version: otel_dataflow/v1
+engine: { }
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          etw:
+            type: receiver:etw
+            config:
+              session_name: "OtelArrowETW"
+              providers:
+                # Provider identified by name (resolved to GUID at runtime)
+                - name: "Microsoft-Windows-Kernel-Process"
+                  level: information
+                # Provider identified by GUID (used directly, no lookup)
+                - guid: "7dd42a49-5329-4832-8dfd-43d979153a88"
+                  level: warning
+                  keywords: 16
+          console:
+            type: exporter:console
+            config: {}
+
+        connections:
+          - from: etw
+            to: console
