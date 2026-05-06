@@ -5658,4 +5658,3 @@ mod test {
         test_update_attr_to_lower_case_function_call::<KqlParser>().await
     }
 }
-
