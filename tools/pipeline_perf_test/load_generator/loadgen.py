@@ -308,21 +308,40 @@ class LoadGenerator:
             resource_logs=[resource_logs]
         )
 
-        # Accumulate metrics locally to avoid lock contention
-        total_sent = 0
-        total_failed = 0
-        total_bytes_sent = 0
-        total_late_batches = 0
+        # Accumulate metrics locally between flushes to keep lock contention low
+        # while still publishing during the observation window (not only on exit).
+        batch_sent = 0
+        batch_failed = 0
+        batch_bytes_sent = 0
+        batch_late_batches = 0
+
+        def flush_batch_metrics():
+            nonlocal batch_sent, batch_failed, batch_bytes_sent, batch_late_batches
+            if not (batch_sent or batch_failed or batch_bytes_sent or batch_late_batches):
+                return
+            updates = {}
+            if batch_sent:
+                updates["logs_produced"] = batch_sent
+                updates["bytes_sent"] = batch_bytes_sent
+            if batch_failed:
+                updates["failed"] = batch_failed
+            if batch_late_batches:
+                updates["late_batches"] = batch_late_batches
+            self.update_metrics(**updates)
+            batch_sent = 0
+            batch_failed = 0
+            batch_bytes_sent = 0
+            batch_late_batches = 0
 
         next_send_time = time.perf_counter()
         while not self.stop_event.is_set():
             try:
                 stub.Export(logs_request)
-                total_sent += args["batch_size"]
-                total_bytes_sent += logs_request.ByteSize()
+                batch_sent += args["batch_size"]
+                batch_bytes_sent += logs_request.ByteSize()
             except Exception as e:
                 print(f"Thread {thread_id}: Failed to send log batch: {e}")
-                total_failed += args["batch_size"]
+                batch_failed += args["batch_size"]
 
             # If we're targeting a specific rate we do additional calculations
             # to ensure we're not exceeding it via sleep. If we're not reaching
@@ -335,20 +354,15 @@ class LoadGenerator:
                     time.sleep(sleep_time)
                 elif now - next_send_time > batch_interval:
                     # More than 1 interval behind
-                    total_late_batches += 1
+                    batch_late_batches += 1
                 next_send_time += batch_interval
 
-        # Update global metrics once when thread exits
-        if total_sent > 0 or total_failed > 0 or total_late_batches > 0:
-            updates = {}
-            if total_sent > 0:
-                updates["logs_produced"] = total_sent
-                updates["bytes_sent"] = total_bytes_sent
-            if total_failed > 0:
-                updates["failed"] = total_failed
-            if total_late_batches > 0:
-                updates["late_batches"] = total_late_batches
-            self.update_metrics(**updates)
+            # Publish metrics for this iteration so observers see progress
+            # during the run, not only after the thread exits.
+            flush_batch_metrics()
+
+        # Final flush of any residual counters
+        flush_batch_metrics()
 
     def syslog_tcp_worker_thread(self, thread_id: int, args: dict) -> None:
         """
@@ -406,21 +420,40 @@ class LoadGenerator:
         batch_buffer = b''.join(syslog_batch)
         batch_total_size = len(batch_buffer)
 
-        # Accumulate metrics locally to avoid lock contention
-        total_sent = 0
-        total_failed = 0
-        total_bytes_sent = 0
-        total_late_batches = 0
+        # Accumulate metrics locally between flushes to keep lock contention low
+        # while still publishing during the observation window (not only on exit).
+        batch_sent = 0
+        batch_failed = 0
+        batch_bytes_sent = 0
+        batch_late_batches = 0
+
+        def flush_batch_metrics():
+            nonlocal batch_sent, batch_failed, batch_bytes_sent, batch_late_batches
+            if not (batch_sent or batch_failed or batch_bytes_sent or batch_late_batches):
+                return
+            updates = {}
+            if batch_sent:
+                updates["logs_produced"] = batch_sent
+                updates["bytes_sent"] = batch_bytes_sent
+            if batch_failed:
+                updates["failed"] = batch_failed
+            if batch_late_batches:
+                updates["late_batches"] = batch_late_batches
+            self.update_metrics(**updates)
+            batch_sent = 0
+            batch_failed = 0
+            batch_bytes_sent = 0
+            batch_late_batches = 0
 
         next_send_time = time.perf_counter()
         while not self.stop_event.is_set():
             try:
                 sock.sendall(batch_buffer)
-                total_sent += args["batch_size"]
-                total_bytes_sent += batch_total_size
+                batch_sent += args["batch_size"]
+                batch_bytes_sent += batch_total_size
             except Exception as e:
                 print(f"Thread {thread_id}: Failed to send syslog batch: {e}")
-                total_failed += args["batch_size"]
+                batch_failed += args["batch_size"]
                 # Try to reconnect
                 try:
                     sock.close()
@@ -442,20 +475,15 @@ class LoadGenerator:
                     time.sleep(sleep_time)
                 elif now - next_send_time > batch_interval:
                     # More than 1 interval behind
-                    total_late_batches += 1
+                    batch_late_batches += 1
                 next_send_time += batch_interval
 
-        # Update global metrics once when thread exits
-        if total_sent > 0 or total_failed > 0 or total_late_batches > 0:
-            updates = {}
-            if total_sent > 0:
-                updates["logs_produced"] = total_sent
-                updates["bytes_sent"] = total_bytes_sent
-            if total_failed > 0:
-                updates["failed"] = total_failed
-            if total_late_batches > 0:
-                updates["late_batches"] = total_late_batches
-            self.update_metrics(**updates)
+            # Publish metrics for this iteration so observers see progress
+            # during the run, not only after the thread exits.
+            flush_batch_metrics()
+
+        # Final flush of any residual counters
+        flush_batch_metrics()
 
         sock.close()
 
@@ -508,11 +536,32 @@ class LoadGenerator:
             )
             syslog_batch.append(syslog_message)
 
-        # Accumulate metrics locally to avoid lock contention
-        total_sent = 0
-        total_failed = 0
-        total_bytes_sent = 0
-        total_late_batches = 0
+        # Accumulate metrics locally between flushes to keep lock contention low
+        # while still publishing during the observation window (not only on exit).
+        # We accumulate over each UDP batch (inner for-loop) and flush once per batch.
+        total_failed = 0  # cumulative for first-N error-print throttling only
+        batch_sent = 0
+        batch_failed = 0
+        batch_bytes_sent = 0
+        batch_late_batches = 0
+
+        def flush_batch_metrics():
+            nonlocal batch_sent, batch_failed, batch_bytes_sent, batch_late_batches
+            if not (batch_sent or batch_failed or batch_bytes_sent or batch_late_batches):
+                return
+            updates = {}
+            if batch_sent:
+                updates["logs_produced"] = batch_sent
+                updates["bytes_sent"] = batch_bytes_sent
+            if batch_failed:
+                updates["failed"] = batch_failed
+            if batch_late_batches:
+                updates["late_batches"] = batch_late_batches
+            self.update_metrics(**updates)
+            batch_sent = 0
+            batch_failed = 0
+            batch_bytes_sent = 0
+            batch_late_batches = 0
 
         next_send_time = time.perf_counter()
         while not self.stop_event.is_set():
@@ -520,9 +569,10 @@ class LoadGenerator:
             for message in syslog_batch:
                 try:
                     bytes_sent = sock.sendto(message, (syslog_server, syslog_port))
-                    total_sent += 1
-                    total_bytes_sent += bytes_sent
+                    batch_sent += 1
+                    batch_bytes_sent += bytes_sent
                 except Exception as e:
+                    batch_failed += 1
                     total_failed += 1
                     # Only print first few errors to avoid spam
                     if total_failed <= 3:
@@ -536,20 +586,15 @@ class LoadGenerator:
                     time.sleep(sleep_time)
                 elif now - next_send_time > batch_interval:
                     # More than 1 interval behind
-                    total_late_batches += 1
+                    batch_late_batches += 1
                 next_send_time += batch_interval
 
-        # Update global metrics once when thread exits
-        if total_sent > 0 or total_failed > 0 or total_late_batches > 0:
-            updates = {}
-            if total_sent > 0:
-                updates["logs_produced"] = total_sent
-                updates["bytes_sent"] = total_bytes_sent
-            if total_failed > 0:
-                updates["failed"] = total_failed
-            if total_late_batches > 0:
-                updates["late_batches"] = total_late_batches
-            self.update_metrics(**updates)
+            # Publish metrics for this iteration so observers see progress
+            # during the run, not only after the thread exits.
+            flush_batch_metrics()
+
+        # Final flush of any residual counters
+        flush_batch_metrics()
 
         sock.close()
         print(f"Thread {thread_id}: Syslog UDP worker exiting")

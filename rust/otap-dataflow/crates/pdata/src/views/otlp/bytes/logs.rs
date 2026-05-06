@@ -46,6 +46,67 @@ impl<'a> RawLogsData<'a> {
     pub const fn new(buf: &'a [u8]) -> Self {
         Self { buf }
     }
+
+    /// Construct a [`RawLogsData`] after validating top-level protobuf wire framing.
+    ///
+    /// Cost: a single linear walk of `buf` with no allocations. Each field tag is decoded,
+    /// and each length-delimited or fixed-width field is bounds-checked against the end of
+    /// `buf`. Length-delimited payloads are not recursively decoded as messages; nested
+    /// `ResourceLogs`, `ScopeLogs`, and `LogRecord` content is interpreted lazily on access
+    /// via the view APIs.
+    pub fn try_new(buf: &'a [u8]) -> Result<Self, Error> {
+        let mut pos = 0;
+        while pos < buf.len() {
+            let (tag, next) = read_varint(buf, pos).ok_or(Error::InvalidProtobufWireFormat)?;
+            let field_num = tag >> 3;
+            let wire_type = tag & 7;
+
+            if field_num == 0 {
+                return Err(Error::InvalidProtobufWireFormat);
+            }
+
+            pos = match wire_type {
+                wire_types::VARINT => {
+                    let (_, p) = read_varint(buf, next).ok_or(Error::InvalidProtobufWireFormat)?;
+                    p
+                }
+                wire_types::LEN => {
+                    let (len, p) =
+                        read_varint(buf, next).ok_or(Error::InvalidProtobufWireFormat)?;
+                    let end = p
+                        .checked_add(
+                            usize::try_from(len).map_err(|_| Error::InvalidProtobufWireFormat)?,
+                        )
+                        .ok_or(Error::InvalidProtobufWireFormat)?;
+                    if end > buf.len() {
+                        return Err(Error::InvalidProtobufWireFormat);
+                    }
+                    end
+                }
+                wire_types::FIXED64 => {
+                    let end = next
+                        .checked_add(8)
+                        .ok_or(Error::InvalidProtobufWireFormat)?;
+                    if end > buf.len() {
+                        return Err(Error::InvalidProtobufWireFormat);
+                    }
+                    end
+                }
+                wire_types::FIXED32 => {
+                    let end = next
+                        .checked_add(4)
+                        .ok_or(Error::InvalidProtobufWireFormat)?;
+                    if end > buf.len() {
+                        return Err(Error::InvalidProtobufWireFormat);
+                    }
+                    end
+                }
+                _ => return Err(Error::InvalidProtobufWireFormat),
+            };
+        }
+
+        Ok(Self { buf })
+    }
 }
 
 impl<'a> TryFrom<&'a OtlpProtoBytes> for RawLogsData<'a> {
@@ -53,7 +114,7 @@ impl<'a> TryFrom<&'a OtlpProtoBytes> for RawLogsData<'a> {
 
     fn try_from(bytes: &'a OtlpProtoBytes) -> Result<Self, Self::Error> {
         match bytes {
-            OtlpProtoBytes::ExportLogsRequest(bytes) => Ok(Self::new(bytes)),
+            OtlpProtoBytes::ExportLogsRequest(bytes) => Self::try_new(bytes),
             _ => Err(Error::LogRecordNotFound),
         }
     }
@@ -501,5 +562,53 @@ impl LogRecordView for RawLogRecord<'_> {
     fn event_name(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
         self.bytes_parser
             .advance_to_find_field(LOG_RECORD_EVENT_NAME)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_new_accepts_valid_empty_request() {
+        let logs = RawLogsData::try_new(&[]).expect("empty request is valid protobuf");
+        assert_eq!(logs.resources().count(), 0);
+    }
+
+    #[test]
+    fn try_new_rejects_malformed_varint() {
+        assert!(matches!(
+            RawLogsData::try_new(b"\xff"),
+            Err(Error::InvalidProtobufWireFormat)
+        ));
+    }
+
+    #[test]
+    fn try_new_rejects_truncated_length_delimited_field() {
+        assert!(matches!(
+            RawLogsData::try_new(&[0x0a, 0x05, 0x00]),
+            Err(Error::InvalidProtobufWireFormat)
+        ));
+    }
+
+    #[test]
+    fn try_new_rejects_trailing_partial_varint() {
+        assert!(matches!(
+            RawLogsData::try_new(&[0x08, 0x80]),
+            Err(Error::InvalidProtobufWireFormat)
+        ));
+    }
+
+    #[test]
+    fn try_new_rejects_field_number_zero() {
+        assert!(matches!(
+            RawLogsData::try_new(&[0x00]),
+            Err(Error::InvalidProtobufWireFormat)
+        ));
+    }
+
+    #[test]
+    fn try_new_accepts_unknown_fields() {
+        assert!(RawLogsData::try_new(&[0xa2, 0x06, 0x00]).is_ok());
     }
 }

@@ -105,8 +105,16 @@ pub(super) struct LaunchedPipelineThread<PData> {
     pub(super) _marker: std::marker::PhantomData<PData>,
 }
 
-impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
-    ControllerRuntime<PData>
+impl<
+    PData: 'static
+        + Clone
+        + Send
+        + Sync
+        + std::fmt::Debug
+        + ReceivedAtNode
+        + Unwindable
+        + FlowMeasurementHook,
+> ControllerRuntime<PData>
 {
     #[allow(clippy::too_many_arguments)]
     /// Builds the resident controller runtime used by live reconfiguration.
@@ -441,8 +449,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
     }
 }
 
-impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
-    ControlPlane for ControllerControlPlane<PData>
+impl<
+    PData: 'static
+        + Clone
+        + Send
+        + Sync
+        + std::fmt::Debug
+        + ReceivedAtNode
+        + Unwindable
+        + FlowMeasurementHook,
+> ControlPlane for ControllerControlPlane<PData>
 {
     fn shutdown_all(&self, timeout_secs: u64) -> Result<(), ControlPlaneError> {
         self.runtime.request_shutdown_all(timeout_secs)

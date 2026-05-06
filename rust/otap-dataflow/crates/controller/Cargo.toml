@@ -14,6 +14,7 @@ workspace = true
 
 [features]
 testing = []
+admin-live-logs-ws = ["otap-df-admin/live-logs-ws"]
 
 [dependencies]
 otap-df-config = { workspace = true }
