@@ -3,6 +3,8 @@
 
 //! Implementation of the Core nodes (receiver, exporter, processor).
 
+mod stef_grpc;
+
 /// Exporter implementations for core nodes.
 pub mod exporters;
 

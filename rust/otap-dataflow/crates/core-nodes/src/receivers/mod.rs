@@ -19,3 +19,6 @@ pub mod otap_receiver;
 
 /// OTLP receiver.
 pub mod otlp_receiver;
+
+/// STEF receiver.
+pub mod stef_receiver;
