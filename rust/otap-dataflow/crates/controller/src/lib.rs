@@ -1526,6 +1526,9 @@ impl<
                     telemetry_registry,
                     memory_pressure_state,
                     log_tap_handle,
+                    // TODO: Wire real OTel resource attributes from the engine configuration
+                    // so that `target_info` is emitted with service.name, etc. See issue #2748.
+                    HashMap::new(),
                     cancellation_token,
                 )
             },

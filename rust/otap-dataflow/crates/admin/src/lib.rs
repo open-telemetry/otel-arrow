@@ -18,6 +18,7 @@ pub use otap_df_admin_types::pipelines::{
     RolloutCoreStatus, RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
 };
 use serde::Serialize;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -141,6 +142,9 @@ struct AppState {
 
     /// Shared process-wide memory pressure state.
     memory_pressure_state: MemoryPressureState,
+
+    /// Resource attributes for target_info metric.
+    resource_attributes: HashMap<String, String>,
 }
 
 /// Run the admin HTTP server until shutdown is requested.
@@ -151,6 +155,7 @@ pub async fn run(
     metrics_registry: TelemetryRegistryHandle,
     memory_pressure_state: MemoryPressureState,
     log_tap: Option<InternalLogTapHandle>,
+    resource_attributes: HashMap<String, String>,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
     let app_state = AppState {
@@ -159,6 +164,7 @@ pub async fn run(
         controller,
         log_tap,
         memory_pressure_state,
+        resource_attributes,
     };
 
     let api_routes = Router::new()
