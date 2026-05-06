@@ -1,173 +1,102 @@
 # Comparison Dashboard
 
-Benchmarking of the DF Engine and the OTel Collector using the
-upstream orchestrator framework, with decoupled suites and comparisons.
+Static site for comparing OTel pipeline benchmark results across binaries
+(DFE, OTel Collector, Fluent Bit, Vector, Rotel) and configurations.
+Benchmark execution is delegated to the
+[orchestrator](../pipeline_perf_test/orchestrator) -- this tool wraps the
+orchestrator with a manifest-driven workflow and a static viewer.
+
+> **Status: scaffolding only.** This initial port contains the framework
+> (`dashboard.py`, manifest, shared site assets) but no suites, comparisons,
+> templates, or reports yet. Those will land in subsequent stacked diffs.
 
 ## Concepts
 
-**Suites** define and orchestrator test to run. Each suite is scoped to a 
+**Suites** define an orchestrator test to run. Each suite is scoped to a
 single binary and runs some set of tests that typically vary over a single
 dimension like loadgen rate. Suite files live in `suites/` and reference an
 orchestrator template that has the test definitions hardcoded.
 
-**Comparisons** define what suites are comparable. A comparison references
-multiple suites and charts them side by side, grouping by test name. Comparison
-files live in `comparisons/`.
+**Comparisons** define which suites are comparable. A comparison references
+multiple suites and charts them side by side, grouping by test name.
+Comparison files live in `comparisons/`.
 
 **Manifest** (`manifest.yaml` at the dashboard root) is the single source of
-truth for the dashboard. It declares:
+truth. It declares:
 - the path to every suite and comparison file
 - the site root directory
 - `variables`: top-level Jinja variables passed straight through to template
-  rendering (e.g. `df_engine_image`, `otelcol_image`). The scripts treat these
-  as opaque pass-through values -- update images by editing the manifest.
+  rendering. The script treats these as opaque pass-through values -- e.g.
+  set image refs here rather than via CLI flags.
 - `meta`: the closed schema of allowed keys and values for every suite's
-  `meta` block. The build validates each suite against it.
+  `meta` block. Validation rejects undeclared keys and disallowed values.
 
-`dashboard.py` is the main script for doing dashboard operations like serving a
-local site, validating configs, running a scenario, or building the site. It
-works based on the manifest.
+`dashboard.py` is the single entry point. All subcommands read the manifest.
 
 ## Setup
 
-From the repo root:
+The dashboard reuses the orchestrator's Python environment. Set it up once
+from the repo root:
 
 ```bash
-bash tools/pipeline_perf_test/dashboard/setup.sh
-source <venv-path>/bin/activate   # printed by setup.sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r tools/pipeline_perf_test/orchestrator/requirements.txt
 ```
 
-## Running Benchmarks
+Run all `dashboard.py` commands from `tools/comparison_dashboard/` with that
+environment active.
 
-All commands run from `tools/pipeline_perf_test/`.
+## Commands
 
 ```bash
-cd tools/pipeline_perf_test
+cd tools/comparison_dashboard
 
-# Run a single suite
-python dashboard/scripts/dashboard.py run dashboard/suites/dfe/dfe-logs-otap-none-baseline.yaml
+# Check the manifest (slug uniqueness, comparison cross-refs, suite meta)
+python dashboard.py validate
 
-# Run all suites
-python dashboard/scripts/dashboard.py run "dashboard/suites/**/*.yaml"
+# Build the static site from the manifest + any published suite results
+python dashboard.py build
 
-# Run only DFE suites
-python dashboard/scripts/dashboard.py run "dashboard/suites/dfe/*.yaml"
+# Serve the built site locally
+python dashboard.py serve              # http://localhost:3000
+python dashboard.py serve --port 8080
 
-# Generate orchestrator configs without running
-python dashboard/scripts/dashboard.py run "dashboard/suites/**/*.yaml" --generate-only
+# Run one or more suites (matches positional args against manifest entries)
+python dashboard.py run "suites/dfe/*.yaml"
+python dashboard.py run "suites/**/*.yaml" --generate-only
 ```
 
-Results are published to `site/data/suite/<slug>/`.
+`build` and `validate` share the exact same validation code path, so any
+manifest issue surfaces with identical wording in either verb.
 
-## Building the Dashboard
+`build` writes:
+- `site/data/suite/<slug>/data.js` for each suite with published data
+- `site/index.html` (landing page with comparison sections)
+- `site/compare/<slug>/index.html` (per-comparison detail page)
 
-After running suites, build the static site:
-
-```bash
-python dashboard/scripts/dashboard.py build
-# or with an explicit manifest:
-python dashboard/scripts/dashboard.py build --manifest dashboard/manifest.yaml
-```
-
-The build validates that:
-- suite slugs are unique among suites
-- comparison slugs are unique among comparisons
-- every suite slug referenced by a comparison resolves to a manifest-listed suite
-- every key in each suite's `meta` block is declared in `manifest.meta`, and
-  every value (or every list element, for list-typed keys) is in the allowed set
-
-The build aborts on any validation failure.
-
-This generates:
-- `site/data/suite/<slug>/data.js` for each suite with data
-- `site/index.html` landing page with comparison sections
-- `site/compare/<slug>/index.html` detail pages per comparison
-
-## Viewing the Dashboard
-
-```bash
-python dashboard/scripts/dashboard.py serve
-# Open http://localhost:3000
-```
+`run` stages run artifacts in `.data/<slug>/<timestamp>/` and publishes
+results to `site/data/suite/<slug>/` on success.
 
 ## Directory Structure
 
 ```
-dashboard/
-├── manifest.yaml        Inventory of suites + comparisons; defines site root
-├── suites/              Suite definitions, grouped into per-binary subfolders
-│   ├── dfe/             DFE suites
-│   ├── otc/             OTel Collector suites
-│   ├── fluentbit/       Fluent Bit suites
-│   ├── rotel/           Rotel suites
-│   └── vector/          Vector suites
-├── comparisons/         Comparison definitions (what to chart together)
-├── templates/
-│   ├── orchestrator/    Orchestrator templates (DFE and OTC variants)
-│   ├── steps/           Step templates for df-engine and otelcol
-│   ├── engine/          DF Engine pipeline configs
-│   ├── otelcol/         OTel Collector configs
-│   ├── loadgen/         Load generator configs (Jinja2)
-│   ├── backend/         Backend service configs (Jinja2)
-│   └── reports/         Report output templates
-├── reports/             SQL report configs
-├── scripts/
-│   └── dashboard.py     CLI with `run`, `build`, and `serve` subcommands
-├── site/                Dashboard web UI (generated + shared assets)
-│   ├── shared/          Shared JS and CSS
-│   ├── data/suite/      Published benchmark data
-│   └── compare/         Comparison detail pages
-├── setup.sh             One-time environment setup
-└── .data/               Staging area for run artifacts (gitignored)
+tools/comparison_dashboard/
+├── dashboard.py        CLI: validate | build | run | serve
+├── manifest.yaml       Inventory + framework config (variables, meta, etc.)
+├── site/               Static dashboard site
+│   ├── shared/         Shared JS/CSS assets
+│   ├── index.html      Generated landing page
+│   ├── compare/        Generated per-comparison pages
+│   └── data/suite/     Published per-suite data
+└── .data/              Run staging area (gitignored)
 ```
 
-## Adding a Suite
+Forthcoming directories (planned for later stacked diffs):
 
-Create a YAML file in `suites/` and add its path to `manifest.yaml`:
-
-```yaml
-name: DFE OTAP Passthrough (Logs)
-slug: dfe_logs_otap_otap_none_passthrough
-description: Dataflow Engine proxying OTAP logs with no processing
-orchestrator_template: dashboard/templates/orchestrator/dfe-single-core-multi-rate.yaml
-
-meta:
-  binary: dfe
-  protocols: [otap]
-  signals: [logs]
-  compression: none
-
-variables:
-  report: dashboard/reports/integration_report_logs.yaml
-  engine_config: dashboard/templates/engine/otap-otap.yaml
-  loadgen_config: dashboard/templates/loadgen/otap.yaml.j2
-  backend_config: dashboard/templates/backend/otap.yaml.j2
-  protocol: otap
-  signal: logs
-  observation_interval: 20
-  max_batch_size: 1000
-  compression_method: none
 ```
-
-DFE suites set `meta.binary: dfe`, use `engine_config`, and the `dfe-single-core-multi-rate.yaml` template.
-OTC suites set `meta.binary: otc`, use `collector_config`, and the `otc-single-core-multi-rate.yaml` template.
-
-## Adding a Comparison
-
-Create a YAML file in `comparisons/` and add its path to `manifest.yaml`:
-
-```yaml
-slug: my_comparison
-name: My Comparison
-description: Compare X to Y
-
-suites:
-  - name: Suite A
-    slug: suite_a_slug
-    short: A
-  - name: Suite B
-    slug: suite_b_slug
-    short: B
+├── suites/             Per-binary suite definitions
+├── comparisons/        Comparison definitions
+├── templates/          Orchestrator/engine/loadgen/backend templates
+└── reports/            SQL report configs
 ```
-
-The `short` field is used as the legend label in charts.

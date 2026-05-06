@@ -9,10 +9,11 @@ Subcommands:
             published suite results.
   serve  -- serve the static dashboard site over HTTP for local viewing.
 
-Usage (from tools/pipeline_perf_test/):
-    python dashboard/scripts/dashboard.py run "dashboard/suites/dfe/*.yaml"
-    python dashboard/scripts/dashboard.py build
-    python dashboard/scripts/dashboard.py serve --port 3000
+Usage (from tools/comparison_dashboard/):
+    python dashboard.py validate
+    python dashboard.py build
+    python dashboard.py serve --port 3000
+    python dashboard.py run "suites/<binary>/*.yaml"
 """
 
 import argparse
@@ -35,9 +36,9 @@ from jinja2 import Environment, BaseLoader, StrictUndefined
 # ---------------------------------------------------------------------------
 # Shared constants
 # ---------------------------------------------------------------------------
-DEFAULT_MANIFEST = Path("dashboard/manifest.yaml")
-STAGING_DIR = Path("dashboard/.data")
-SITE_SUITE_DATA_DIR = Path("dashboard/site/data/suite")
+DEFAULT_MANIFEST = Path("manifest.yaml")
+STAGING_DIR = Path(".data")
+SITE_SUITE_DATA_DIR = Path("site/data/suite")
 
 # File extensions included when scanning test directories during build
 ALLOWED_EXTENSIONS = {".toml", ".yaml", ".yml", ".json", ".txt"}
@@ -151,10 +152,11 @@ def simplify_suite_yaml(suite: dict) -> dict:
 # ===========================================================================
 def cmd_run(args) -> int:
     """Render and execute one or more benchmark suites."""
-    if not Path("orchestrator/run_orchestrator.py").exists():
+    orchestrator_script = Path("../pipeline_perf_test/orchestrator/run_orchestrator.py")
+    if not orchestrator_script.exists():
         print(
-            "Error: must be run from tools/pipeline_perf_test/\n"
-            "  cd tools/pipeline_perf_test && python dashboard/scripts/dashboard.py run ...",
+            "Error: must be run from tools/comparison_dashboard/\n"
+            "  cd tools/comparison_dashboard && python dashboard.py run ...",
             file=sys.stderr,
         )
         return 1
@@ -380,7 +382,7 @@ def run_orchestrator(config_path: Path, log_path: Path, tests: str | None = None
     log_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable,
-        "orchestrator/run_orchestrator.py",
+        "../pipeline_perf_test/orchestrator/run_orchestrator.py",
         "--config",
         str(config_path),
     ]
