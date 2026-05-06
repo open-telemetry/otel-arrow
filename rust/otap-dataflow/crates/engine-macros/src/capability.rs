@@ -50,17 +50,13 @@
 //!   implementations could have different associated types, making a single
 //!   registry entry impossible.
 //! - **Associated constants** — same fundamental issue as associated types.
-//!
-//! # Receiver shapes (no macro-side validation)
-//!
-//! `&self` and `&mut self` are the supported receiver shapes for
-//! `#[capability]` methods. Other shapes (consuming `self`, arbitrary
-//! self types like `self: Box<Self>`, methods with no `self`
-//! receiver) are not validated by the macro — Rust's object-safety
-//! checks at the use sites of `dyn local::Trait` / `dyn shared::Trait`,
-//! and the generated `SharedAsLocal` adapter, will reject anything
-//! the system cannot support, with clearer error messages than the
-//! macro could synthesize.
+//! - **Receiver shapes** — only `&self` and `&mut self` are supported.
+//!   Other shapes (consuming `self`, arbitrary self types like
+//!   `self: Box<Self>`, no-`self` associated functions) make the
+//!   trait either non-object-safe or non-dispatchable through `dyn`,
+//!   so the generated `Box<dyn shared::Trait>` field on
+//!   `SharedAsLocal` (or its delegating method bodies) will fail to
+//!   compile right at the capability definition.
 //!
 //! # Generated code paths
 //!
@@ -178,12 +174,13 @@ fn validate_trait(trait_item: &ItemTrait) -> Result<(), TokenStream> {
                 .to_compile_error());
             }
             TraitItem::Fn(_) => {
-                // No macro-side receiver validation. Object-safety
-                // and adapter delegation are enforced by the Rust
-                // compiler at the use sites of `dyn local::Trait` /
-                // `dyn shared::Trait` and inside the generated
-                // `SharedAsLocal` adapter, which gives clearer
-                // error messages than what the macro could emit.
+                // No macro-side receiver validation. Any unsupported
+                // receiver shape (consuming `self`, arbitrary self
+                // types, no-`self` associated functions) will be
+                // rejected by the compiler when the macro-generated
+                // `Box<dyn shared::Trait>` field on `SharedAsLocal`
+                // (or its delegating method bodies) is type-checked,
+                // with clearer errors than the macro could synthesize.
             }
             _ => {}
         }
