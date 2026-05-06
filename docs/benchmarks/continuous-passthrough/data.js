@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778092648932,
+  "lastUpdate": 1778103955065,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "drewrelmas@gmail.com",
-            "name": "Drew Relmas",
-            "username": "drewrelmas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "607e963919bf0e635484fb392ec35052a753b167",
-          "message": "fix: Add Missing experimental-tls feature inheritance for core-nodes (#2391)\n\n# Change Summary\n\nAddress a regression introduced in the move of receivers to `core-nodes`\ncrate:\n- #2339\n- #2360\n\nBefore these PRs, the `experimental-tls` feature in the core\n`otap-dataflow` `Cargo.toml` correctly propagated to the `otap` crate.\n\nAfter these PRs, building `df_engine` with the feature\n`experimental-tls` did NOT connect to the `experimental-tls` feature\ninside the `core-nodes` crate.\n\nAs a result, configuring a receiver with `tls` settings resulted in a\nruntime config error:\n> Error: Custom { kind: Other, error: \"Invalid config for component\n`urn:otel:receiver:syslog_cef` in pipeline_group=byoc-syslog-pipeline\npipeline=main node=syslog-receiver: An invalid user configuration\noccurred: unknown field `tls`, expected `listening_addr`\" }\n\nbecause this field is gated behind the feature:\n```rust\n#[cfg(feature = \"experimental-tls\")]\ntls: Option<TlsServerConfig>,\n```\n\n## What issue does this PR close?\n\nN/A\n\n## How are these changes tested?\n\nTested manual pipeline build of `df_engine` with `experimental-tls` and\na sample configuration to confirm `tls` config field is found and\nparsed.\n\n## Are there any user-facing changes?\n\nYes, can once again use TLS on Syslog, OTAP, and OTLP receivers.",
-          "timestamp": "2026-03-20T20:15:24Z",
-          "tree_id": "03a5b60ba736dc65e9da88f239de6578f6caf6e1",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/607e963919bf0e635484fb392ec35052a753b167"
-        },
-        "date": 1774047395968,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.081695795059204,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 100.01262258459123,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.19304873324553,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 24.751822916666665,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 26.54296875,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 645282.793153378,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 652262.7900431649,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002319,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 17001743.510394134,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 17020517.506334685,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 175786.43582413826,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "nonicked@protonmail.com",
+            "name": "Nick Nikolakakis",
+            "username": "nicknikolakakis"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fd024d61e05c973c86696b2d8d0d4b49cf97cd43",
+          "message": "feat(query-engine): add uuid() and uuidv7() scalar functions (#2853)\n\n# Change Summary\n\nAdd two zero-arg scalar functions in the OTAP query-engine, per #2833:\n\n- `uuid()`: UUID v4 string per row, backed by DataFusion's built-in\n[`string::uuid`](https://datafusion.apache.org/user-guide/sql/scalar_functions.html#uuid)\nUDF.\n- `uuidv7()`: UUID v7 string per row, implemented as a custom volatile\n`ScalarUDF` (DataFusion has no v7 equivalent) using\n`uuid::Uuid::now_v7`.\n\n```kql\nlogs | extend attributes[\"my.log.id\"] = uuid()\nlogs | extend attributes[\"my.log.id\"] = uuidv7()\n```\n\n## Zero-arg function support\n\n`uuid()` / `uuidv7()` are the first 0-arg functions in the engine, so\nthis also lifts the prior `\"Only functions with one or more arguments\ncurrently supported\"` guard in\n`ExprLogicalPlanner::plan_function_invocation`.\n\nZero-arg invocations now plan with `DataScope::Root` (instead of\n`DataScope::StaticScalar`). This is important for volatile UDFs:\n`Volatility::Volatile` UDFs like `uuid()` produce one new value per row\nin the input batch, but evaluating them in `StaticScalar` scope would\nfeed them the empty placeholder batch (or collapse the result into a\n`ColumnarValue::Scalar` that gets broadcast to every row, so all rows\nwould get the same UUID). Routing through `Root` makes the function\nevaluate against the root batch and produce per-row distinct UUIDs.\n\nThis pattern should generalize to other zero-arg volatile functions\n(e.g. `now()` mentioned in the original TODO) and to non-volatile\nzero-arg functions, since broadcasting an identical scalar across\n`num_rows` rows is equivalent to producing `num_rows` identical values.\n\n## Files\n\n- `consts.rs`, `parser.rs`: register `uuid` and `uuidv7` as external\nfunctions with zero param placeholders.\n- `pipeline/expr.rs`: import DataFusion's `uuid()` and the new\n`uuidv7()` UDF, add them to `DataFusionFunctionDef::from_func_name`, and\nhandle the zero-arg path in `plan_function_invocation`.\n- `pipeline/functions/uuidv7.rs` (new): custom `UuidV7Func` mirroring\nDataFusion's `UuidFunc` shape but using `Uuid::now_v7`.\n- `pipeline/functions.rs`: wire the new module via `make_udf_function!`.\n- `crates/query-engine/Cargo.toml`: depend on the workspace `uuid` crate\n(already pulled in transitively, just needs to be declared).\n\n## What issue does this PR close?\n\n* Closes https://github.com/open-telemetry/otel-arrow/issues/2833\n* Part of #2818\n\n## How are these changes tested?\n\nThree layers of tests, all in this PR:\n\n- `pipeline::functions::uuidv7` UDF tests: verify per-row uniqueness,\nzero-row case, argument rejection, and that produced UUIDs parse as v7.\n- `pipeline::expr` planner tests (`test_function_invocation_uuid_v4`,\n`test_function_invocation_uuid_v7`): drive\n`ExprLogicalPlanner::plan_scalar_expr` with a 0-arg\n`InvokeFunctionScalarExpression`, execute against a 3-log OTAP batch,\nand check the resulting `StringArray` contains 3 distinct UUIDs of the\nexpected version.\n- `pipeline::assign` end-to-end tests\n(`test_set_attr_to_uuid_v{4,7}_function_call_result_{opl,kql}_parser`):\nrun `logs | extend attributes[\"my.log.id\"] = uuid()` (and `uuidv7()`)\nthrough both OPL and KQL parsers and the full pipeline, assert each log\nrow receives its own distinct UUID of the right version.\n\n`cargo xtask check` passes locally for the affected crates. There is one\nunrelated network-dependent failure in `otap-df-core-nodes`\n(`fake_data_generator` tests cloning\n`open-telemetry/semantic-conventions` over Git) that occurs on my\nmachine regardless of these changes.\n\n## Are there any user-facing changes?\n\nYes: users of the transform processor / query-engine can now invoke\n`uuid()` and `uuidv7()` in OPL/KQL programs, primarily for assigning a\nunique identifier per record:\n\n```kql\nlogs | extend attributes[\"my.log.id\"] = uuid()\nlogs | extend attributes[\"trace.log.id\"] = uuidv7()\n```\n\n---------\n\nSigned-off-by: Nick Nikolakakis <nonicked@protonmail.com>\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-05-06T20:48:09Z",
+          "tree_id": "89c7db5b85cc5183ecae24a671ba6dc7eaa0fc6e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/fd024d61e05c973c86696b2d8d0d4b49cf97cd43"
+        },
+        "date": 1778103954594,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.2729843854904175,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 5.740114800437457,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 6.216619761867944,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.360026041666668,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.7578125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 6032.718277186159,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 6109.513842242277,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003465,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 213269.85455366212,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 176107.67298714045,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
