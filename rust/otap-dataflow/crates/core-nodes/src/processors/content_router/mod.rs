@@ -959,7 +959,8 @@ pub static CONTENT_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactor
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             proc_cfg: &ProcessorConfig| {
+             proc_cfg: &ProcessorConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         let router_config: ContentRouterConfig = serde_json::from_value(node_config.config.clone())
             .map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("Failed to parse ContentRouter configuration: {e}"),

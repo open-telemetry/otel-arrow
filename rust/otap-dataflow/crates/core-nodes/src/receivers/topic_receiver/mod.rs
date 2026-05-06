@@ -148,65 +148,67 @@ struct PendingForward {
 /// Declares the topic receiver as a local receiver factory.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
-pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> =
-    ReceiverFactory {
-        name: TOPIC_RECEIVER_URN,
-        create: |pipeline: PipelineContext,
-                 node: NodeId,
-                 node_config: Arc<NodeUserConfig>,
-                 receiver_config: &ReceiverConfig| {
-            let config = TopicReceiver::parse_config(&node_config.config)?;
-            let topic_set = pipeline.topic_set::<OtapPdata>().ok_or_else(|| {
-                ConfigError::InvalidUserConfig {
+pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
+    name: TOPIC_RECEIVER_URN,
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             receiver_config: &ReceiverConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+        let config = TopicReceiver::parse_config(&node_config.config)?;
+        let topic_set =
+            pipeline
+                .topic_set::<OtapPdata>()
+                .ok_or_else(|| ConfigError::InvalidUserConfig {
                     error: "Topic set is not available in pipeline context".to_owned(),
-                }
-            })?;
-            let topic_binding = topic_set.get_required(&config.topic).map_err(|_| {
-                ConfigError::InvalidUserConfig {
+                })?;
+        let topic_binding =
+            topic_set
+                .get_required(&config.topic)
+                .map_err(|_| ConfigError::InvalidUserConfig {
                     error: format!(
                         "Unknown topic `{}` for topic receiver (pipeline `{}`/`{}`)",
                         config.topic,
                         pipeline.pipeline_group_id(),
                         pipeline.pipeline_id(),
                     ),
-                }
-            })?;
-            let mode = match &config.subscription {
-                TopicSubscriptionConfig::Broadcast {} => SubscriptionMode::Broadcast,
-                TopicSubscriptionConfig::Balanced { group } => SubscriptionMode::Balanced {
-                    group: group.clone(),
-                },
-            };
-            let subscription = topic_binding
-                .subscribe(mode, SubscriberOptions::default())
-                .map_err(|e| ConfigError::InvalidUserConfig {
-                    error: format!(
-                        "Failed to subscribe topic receiver to `{}`: {e}",
-                        config.topic
-                    ),
                 })?;
-            let ack_propagation_mode = topic_binding.default_ack_propagation_mode();
-            let broadcast_on_lag =
-                matches!(&config.subscription, TopicSubscriptionConfig::Broadcast {})
-                    .then(|| topic_binding.broadcast_on_lag_policy());
-            let metrics = pipeline
-                .register_metrics_with_topic::<TopicReceiverMetrics>(topic_binding.name().into());
-            Ok(ReceiverWrapper::local(
-                TopicReceiver {
-                    config,
-                    subscription,
-                    ack_propagation_mode,
-                    broadcast_on_lag,
-                    metrics,
-                },
-                node,
-                node_config,
-                receiver_config,
-            ))
-        },
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: |config| TopicReceiver::parse_config(config).map(|_| ()),
-    };
+        let mode = match &config.subscription {
+            TopicSubscriptionConfig::Broadcast {} => SubscriptionMode::Broadcast,
+            TopicSubscriptionConfig::Balanced { group } => SubscriptionMode::Balanced {
+                group: group.clone(),
+            },
+        };
+        let subscription = topic_binding
+            .subscribe(mode, SubscriberOptions::default())
+            .map_err(|e| ConfigError::InvalidUserConfig {
+                error: format!(
+                    "Failed to subscribe topic receiver to `{}`: {e}",
+                    config.topic
+                ),
+            })?;
+        let ack_propagation_mode = topic_binding.default_ack_propagation_mode();
+        let broadcast_on_lag =
+            matches!(&config.subscription, TopicSubscriptionConfig::Broadcast {})
+                .then(|| topic_binding.broadcast_on_lag_policy());
+        let metrics = pipeline
+            .register_metrics_with_topic::<TopicReceiverMetrics>(topic_binding.name().into());
+        Ok(ReceiverWrapper::local(
+            TopicReceiver {
+                config,
+                subscription,
+                ack_propagation_mode,
+                broadcast_on_lag,
+                metrics,
+            },
+            node,
+            node_config,
+            receiver_config,
+        ))
+    },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: |config| TopicReceiver::parse_config(config).map(|_| ()),
+};
 
 impl TopicReceiver {
     /// Parses and validates topic receiver configuration.
@@ -859,6 +861,7 @@ mod tests {
                 receiver_node.clone(),
                 Arc::new(receiver_user_cfg),
                 &ReceiverConfig::new("topic_receiver"),
+                &otap_df_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic receiver should be created");
 
@@ -958,6 +961,7 @@ mod tests {
                 receiver_node.clone(),
                 Arc::new(receiver_user_cfg),
                 &ReceiverConfig::new("topic_receiver"),
+                &otap_df_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic receiver should be created");
 
@@ -1059,6 +1063,7 @@ mod tests {
                 receiver_node.clone(),
                 Arc::new(receiver_user_cfg),
                 &ReceiverConfig::new("topic_receiver"),
+                &otap_df_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic receiver should be created");
 
@@ -1152,6 +1157,7 @@ mod tests {
                 receiver_node.clone(),
                 Arc::new(receiver_user_cfg),
                 &ReceiverConfig::new("topic_receiver"),
+                &otap_df_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic receiver should be created");
 
@@ -1272,6 +1278,7 @@ mod tests {
                 receiver_node.clone(),
                 Arc::new(receiver_user_cfg),
                 &ReceiverConfig::new("topic_receiver"),
+                &otap_df_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic receiver should be created");
 

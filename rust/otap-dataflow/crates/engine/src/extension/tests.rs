@@ -145,7 +145,7 @@ fn test_local_passive() {
     let mut set = ExtensionWrapper::builder(n, u, &c)
         .passive()
         .cloned()
-        .local(std::rc::Rc::new(42u32))
+        .local(42u32)
         .build()
         .unwrap();
     assert!(set.shared().is_none());
@@ -508,7 +508,7 @@ fn test_dual_passive() {
     let mut set = ExtensionWrapper::builder(n, u, &c)
         .passive()
         .cloned()
-        .local(std::rc::Rc::new(42u32))
+        .local(42u32)
         .shared("data".to_string())
         .build()
         .unwrap();
@@ -522,7 +522,7 @@ fn test_dual_passive_fresh() {
     let mut set = ExtensionWrapper::builder(n, u, &c)
         .passive()
         .constructed()
-        .local(|| std::rc::Rc::new(42u32))
+        .local(|| 42u32)
         .shared(|| "data".to_string())
         .build()
         .unwrap();

@@ -1918,6 +1918,7 @@ pub fn create_durable_buffer(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
+    _capabilities: &otap_df_engine::capability::registry::Capabilities,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let config: DurableBufferConfig =
         serde_json::from_value(node_config.config.clone()).map_err(|e| {
@@ -2032,6 +2033,7 @@ mod tests {
             test_node("durable-buffer-retry-wakeup"),
             Arc::new(node_config),
             &ProcessorConfig::new("durable-buffer-retry-wakeup"),
+            &otap_df_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create durable buffer");
 
@@ -2121,6 +2123,7 @@ mod tests {
             test_node("durable-buffer-unknown-wakeup"),
             Arc::new(node_config),
             &ProcessorConfig::with_channel_capacities("durable-buffer-unknown-wakeup", 1, 100),
+            &otap_df_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create durable buffer");
 
@@ -2222,6 +2225,7 @@ mod tests {
             test_node("durable-buffer-shared-retry-wakeup"),
             Arc::new(node_config),
             &ProcessorConfig::with_channel_capacities("durable-buffer-shared-retry-wakeup", 1, 100),
+            &otap_df_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create durable buffer");
 
@@ -2320,6 +2324,7 @@ mod tests {
             test_node("durable-buffer-shutdown-drain-deferred"),
             Arc::new(node_config),
             &ProcessorConfig::new("durable-buffer-shutdown-drain-deferred"),
+            &otap_df_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create durable buffer");
 

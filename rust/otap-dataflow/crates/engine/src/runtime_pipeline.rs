@@ -104,6 +104,13 @@ pub struct RuntimePipeline<PData: Debug> {
     processors: Vec<ProcessorWrapper<PData>>,
     /// A map node id to exporter runtime node.
     exporters: Vec<ExporterWrapper<PData>>,
+    /// Extension wrappers that survived the build-time consumed-tracker pruning.
+    /// One entry per surviving local-or-shared variant. Active extensions in
+    /// this list have their lifecycle tasks spawned by `run_forever` before
+    /// data-path nodes; passive extensions hold their instance factories so
+    /// `Capabilities::require_*` calls keep working at run time but are not
+    /// spawned themselves.
+    extensions: Vec<crate::extension::ExtensionWrapper>,
 
     /// A precomputed map of all node IDs to their Node trait objects (? @@@) for efficient access
     /// Indexed by NodeIndex
@@ -141,6 +148,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         receivers: Vec<ReceiverWrapper<PData>>,
         processors: Vec<ProcessorWrapper<PData>>,
         exporters: Vec<ExporterWrapper<PData>>,
+        extensions: Vec<crate::extension::ExtensionWrapper>,
         nodes: NodeDefs<PData, PipeNode>,
         telemetry_policy: TelemetryPolicy,
     ) -> Self {
@@ -149,6 +157,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             receivers,
             processors,
             exporters,
+            extensions,
             nodes,
             channel_metrics: Default::default(),
             telemetry_policy,
@@ -195,6 +204,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             receivers,
             processors,
             exporters,
+            extensions,
             nodes: _nodes,
             channel_metrics,
             telemetry_policy,
@@ -211,6 +221,72 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         let local_tasks = LocalSet::new();
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
+        // Active extensions live in their own collection so we can signal
+        // them to shut down only after the data-path has fully drained
+        // (per arch invariant: "extensions start first, shut down last").
+        let mut extension_futures: FuturesUnordered<tokio::task::JoinHandle<Result<(), Error>>> =
+            FuturesUnordered::new();
+        let mut extension_shutdown_senders: Vec<crate::control::ExtensionControlSender> =
+            Vec::new();
+        // Passive extensions hold the engine-side state that capability
+        // consumers' instances may reference (via cloned `Arc`s minted by
+        // the builder). Keeping the wrapper alive for the duration of the
+        // pipeline run prevents that state from being dropped while
+        // consumers still hold handles. When `run_forever` returns, these
+        // wrappers drop and any remaining shared state is released.
+        let mut _passive_extensions: Vec<crate::extension::ExtensionWrapper> = Vec::new();
+
+        // Lifecycle invariant: "extensions start first, shut down last".
+        // Concretely, `start()` is invoked on every active extension before
+        // any data-path node task is spawned, and `Shutdown` is delivered
+        // to extensions only after the data path has fully drained.
+        //
+        // NOTE: this orders *lifecycle calls*, not init completion.
+        // `start()` is async, so invoking it merely enqueues a future onto
+        // the LocalSet; the extension's init body runs concurrently with
+        // the data path once polling begins. Capability *construction*
+        // happens at build time (before any spawn), so structural wiring
+        // is always in place — but if an extension performs deferred async
+        // init in `start()` (opening a connection, loading config, warming
+        // a cache), capability consumers may observe the pre-init state
+        // until that work completes.
+        //
+        // Today, extensions handle this themselves (e.g., produce final
+        // state at capability construction time, or have the capability
+        // surface a not-ready error/default until init progresses).
+        //
+        // TODO: Revisit when an extension actually needs an init-complete
+        // guarantee. Likely shape: opt-in readiness probe registered at
+        // build time (e.g. `builder.with_readiness_probe()` returns a
+        // handle the extension fires from `start()`); the engine awaits
+        // only the registered probes via `try_join_all` before spawning
+        // data-path tasks. Extensions that don't opt in keep today's
+        // behavior with zero overhead.
+        for ext_wrapper in extensions {
+            if ext_wrapper.is_passive() {
+                _passive_extensions.push(ext_wrapper);
+                continue;
+            }
+            if let Some(sender) = ext_wrapper.extension_control_sender() {
+                extension_shutdown_senders.push(sender);
+            }
+            let ext_metrics_reporter = metrics_reporter.clone();
+            let ext_id = ext_wrapper.name();
+            let fut = async move {
+                match ext_wrapper.start(ext_metrics_reporter).await {
+                    Ok(_terminal_state) => Ok(()),
+                    Err(e) => {
+                        otap_df_telemetry::otel_warn!(
+                            "extension.task.error",
+                            extension = ext_id.as_ref(),
+                            error = format!("{e}"),
+                        );
+                        Err(e)
+                    }
+                }
+            };
+            extension_futures.push(local_tasks.spawn_local(fut));
+        }
         let mut control_senders = ControlSenders::default();
         let mut node_metric_entries: Vec<(usize, NodeMetricHandles)> = Vec::new();
 
@@ -436,29 +512,62 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         }));
 
         // Drive all local tasks until completion, returning the first error if any.
+        // Data-path tasks (`futures`) and extension tasks (`extension_futures`) run
+        // concurrently. When the data-path drains, broadcast `Shutdown` to active
+        // extensions so they can terminate gracefully, then continue draining
+        // extension futures. Errors from either side short-circuit and abort.
         rt.block_on(async {
             local_tasks
                 .run_until(async {
                     let mut task_results = Vec::new();
+                    let mut shutdown_signaled = false;
 
-                    // Process each future as they complete and handle errors
-                    while let Some(result) = futures.next().await {
-                        match result {
-                            Ok(Ok(res)) => {
-                                // Task completed successfully, collect its result
-                                task_results.push(res);
+                    loop {
+                        tokio::select! {
+                            biased;
+                            Some(result) = futures.next(), if !futures.is_empty() => {
+                                match result {
+                                    Ok(Ok(res)) => task_results.push(res),
+                                    Ok(Err(e)) => return Err(e),
+                                    Err(e) => return Err(Error::JoinTaskError {
+                                        is_canceled: e.is_cancelled(),
+                                        is_panic: e.is_panic(),
+                                        error: e.to_string(),
+                                    }),
+                                }
                             }
-                            Ok(Err(e)) => {
-                                // A task returned an error
-                                return Err(e);
+                            Some(result) = extension_futures.next(), if !extension_futures.is_empty() => {
+                                match result {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(e)) => return Err(e),
+                                    Err(e) => return Err(Error::JoinTaskError {
+                                        is_canceled: e.is_cancelled(),
+                                        is_panic: e.is_panic(),
+                                        error: e.to_string(),
+                                    }),
+                                }
                             }
-                            Err(e) => {
-                                // JoinError (panic or cancellation)
-                                return Err(Error::JoinTaskError {
-                                    is_canceled: e.is_cancelled(),
-                                    is_panic: e.is_panic(),
-                                    error: e.to_string(),
-                                });
+                            else => break,
+                        }
+
+                        // Once data-path is drained, fire the shutdown
+                        // broadcast exactly once. Active extensions react
+                        // by exiting their event loops and producing a
+                        // terminal state, draining `extension_futures`.
+                        if !shutdown_signaled
+                            && futures.is_empty()
+                            && !extension_shutdown_senders.is_empty()
+                        {
+                            shutdown_signaled = true;
+                            let deadline = tokio::time::Instant::now()
+                                + Duration::from_secs(5);
+                            for sender in &extension_shutdown_senders {
+                                let _ = sender.sender.try_send(
+                                    crate::control::ExtensionControlMsg::Shutdown {
+                                        deadline: deadline.into_std(),
+                                        reason: "pipeline data-path drained".into(),
+                                    },
+                                );
                             }
                         }
                     }

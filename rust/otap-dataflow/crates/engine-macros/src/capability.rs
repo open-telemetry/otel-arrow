@@ -17,7 +17,8 @@
 //!
 //! # Supported
 //!
-//! - Methods with `&self` receiver (sync and async)
+//! - Methods with `&self` or `&mut self` receivers (sync and async;
+//!   explicit lifetimes like `&'a self` are also accepted)
 //! - Method-level generics, lifetimes, and where clauses
 //! - Default method bodies (preserved in generated local/shared traits)
 //! - Doc attributes on the trait (propagated to generated traits)
@@ -50,6 +51,17 @@
 //!   registry entry impossible.
 //! - **Associated constants** — same fundamental issue as associated types.
 //!
+//! # Receiver shapes (no macro-side validation)
+//!
+//! `&self` and `&mut self` are the supported receiver shapes for
+//! `#[capability]` methods. Other shapes (consuming `self`, arbitrary
+//! self types like `self: Box<Self>`, methods with no `self`
+//! receiver) are not validated by the macro — Rust's object-safety
+//! checks at the use sites of `dyn local::Trait` / `dyn shared::Trait`,
+//! and the generated `SharedAsLocal` adapter, will reject anything
+//! the system cannot support, with clearer error messages than the
+//! macro could synthesize.
+//!
 //! # Generated code paths
 //!
 //! The macro generates `crate::capability::*` paths, so it must be invoked
@@ -60,7 +72,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    Ident, ItemTrait, LitStr, Meta, TraitItem, TraitItemFn,
+    FnArg, Ident, ItemTrait, LitStr, Meta, TraitItem, TraitItemFn,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
     token::Comma,
@@ -165,6 +177,14 @@ fn validate_trait(trait_item: &ItemTrait) -> Result<(), TokenStream> {
                 )
                 .to_compile_error());
             }
+            TraitItem::Fn(_) => {
+                // No macro-side receiver validation. Object-safety
+                // and adapter delegation are enforced by the Rust
+                // compiler at the use sites of `dyn local::Trait` /
+                // `dyn shared::Trait` and inside the generated
+                // `SharedAsLocal` adapter, which gives clearer
+                // error messages than what the macro could emit.
+            }
             _ => {}
         }
     }
@@ -247,7 +267,7 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
                 .inputs
                 .iter()
                 .filter_map(|arg| {
-                    if let syn::FnArg::Typed(pat_type) = arg {
+                    if let FnArg::Typed(pat_type) = arg {
                         if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
                             Some(&pat_ident.ident)
                         } else {
@@ -365,14 +385,14 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
 
                 let adapt_as_local: fn(
                     ::std::boxed::Box<dyn ::std::any::Any + Send>,
-                ) -> ::std::rc::Rc<dyn ::std::any::Any> = |erased| {
+                ) -> ::std::boxed::Box<dyn ::std::any::Any> = |erased| {
                     let shared: ::std::boxed::Box<::std::boxed::Box<dyn shared::#trait_name>> =
                         erased
                             .downcast()
                             .expect("shared_entry produce closure returned wrong envelope");
-                    let rc_local = <#trait_name as crate::capability::ExtensionCapability>::
+                    let boxed_local = <#trait_name as crate::capability::ExtensionCapability>::
                         wrap_shared_as_local(*shared);
-                    ::std::rc::Rc::new(rc_local) as ::std::rc::Rc<dyn ::std::any::Any>
+                    ::std::boxed::Box::new(boxed_local) as ::std::boxed::Box<dyn ::std::any::Any>
                 };
 
                 crate::capability::registry::SharedCapabilityEntry::new(
@@ -387,9 +407,9 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
             /// object.
             ///
             /// The entry's produce closure calls the stored instance
-            /// factory, downcasts the erased `Rc<dyn Any>` to `Rc<E>`,
-            /// coerces to `Rc<dyn local::#trait_name>`, and re-erases
-            /// under the double-`Rc` envelope expected by the registry.
+            /// factory, downcasts the erased `Box<dyn Any>` to `Box<E>`,
+            /// coerces to `Box<dyn local::#trait_name>`, and re-erases
+            /// under the double-`Box` envelope expected by the registry.
             #[allow(non_snake_case, clippy::missing_errors_doc)]
             #vis fn local_entry<E>(
                 extension_id: ::otap_df_config::ExtensionId,
@@ -398,13 +418,13 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
             where
                 E: local::#trait_name + 'static,
             {
-                let produce = move || -> ::std::rc::Rc<dyn ::std::any::Any> {
+                let produce = move || -> ::std::boxed::Box<dyn ::std::any::Any> {
                     let erased = factory.produce();
-                    let concrete: ::std::rc::Rc<E> = erased
+                    let concrete: ::std::boxed::Box<E> = erased
                         .downcast()
                         .expect("instance_factory produced wrong type for capability");
-                    let local: ::std::rc::Rc<dyn local::#trait_name> = concrete;
-                    ::std::rc::Rc::new(local) as ::std::rc::Rc<dyn ::std::any::Any>
+                    let local: ::std::boxed::Box<dyn local::#trait_name> = concrete;
+                    ::std::boxed::Box::new(local) as ::std::boxed::Box<dyn ::std::any::Any>
                 };
 
                 crate::capability::registry::LocalCapabilityEntry::new(extension_id, produce)
@@ -426,9 +446,9 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
 
             fn wrap_shared_as_local(
                 shared: ::std::boxed::Box<Self::Shared>,
-            ) -> ::std::rc::Rc<Self::Local> {
+            ) -> ::std::boxed::Box<Self::Local> {
                 let adapter = #shared_as_local_name(shared);
-                ::std::rc::Rc::new(adapter)
+                ::std::boxed::Box::new(adapter)
             }
         }
 
@@ -436,6 +456,11 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
         // slice at link time, so the engine can enumerate all capabilities
         // compiled into the binary (by name, description, and TypeId) without
         // needing an explicit registration call.
+        //
+        // `#[allow(unsafe_code)]` is required because `linkme::distributed_slice`
+        // emits a static with `#[link_section = "..."]`, which the engine
+        // crate's lints (`-D unsafe-code`) would otherwise reject.
+        #[allow(unsafe_code)]
         #[::linkme::distributed_slice(crate::capability::KNOWN_CAPABILITIES)]
         #[linkme(crate = ::linkme)]
         static #known_cap_static: crate::capability::KnownCapability =
@@ -444,5 +469,52 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
                 description: #description_str,
                 type_id: || ::std::any::TypeId::of::<#trait_name>(),
             };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parse a trait body and run it through `validate_trait`, returning the
+    /// error message text on rejection or `None` on success.
+    fn validate(src: &str) -> Option<String> {
+        let trait_item: ItemTrait = syn::parse_str(src).expect("parse trait");
+        validate_trait(&trait_item).err().map(|ts| ts.to_string())
+    }
+
+    #[test]
+    fn accepts_ref_self() {
+        assert!(validate("trait Cap { fn get(&self) -> u32; }").is_none());
+    }
+
+    #[test]
+    fn accepts_ref_self_with_lifetime() {
+        assert!(validate("trait Cap { fn get<'a>(&'a self) -> &'a str; }").is_none());
+    }
+
+    #[test]
+    fn accepts_async_ref_self() {
+        assert!(validate("trait Cap { async fn get(&self) -> u32; }").is_none());
+    }
+
+    #[test]
+    fn accepts_default_method_body() {
+        assert!(validate("trait Cap { fn get(&self) -> u32 { 0 } }").is_none());
+    }
+
+    #[test]
+    fn accepts_mut_self_reference() {
+        assert!(validate("trait Cap { fn set(&mut self); }").is_none());
+    }
+
+    #[test]
+    fn accepts_mut_self_reference_with_lifetime() {
+        assert!(validate("trait Cap { fn set<'a>(&'a mut self); }").is_none());
+    }
+
+    #[test]
+    fn accepts_async_mut_self() {
+        assert!(validate("trait Cap { async fn set(&mut self); }").is_none());
     }
 }

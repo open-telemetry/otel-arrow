@@ -55,7 +55,8 @@ pub static INTERNAL_TELEMETRY_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFac
     create: |mut pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig| {
+             receiver_config: &ReceiverConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         // Get internal telemetry settings from the pipeline context
         let internal_telemetry = pipeline.take_internal_telemetry().ok_or_else(|| {
             otap_df_config::error::Error::InvalidUserConfig {

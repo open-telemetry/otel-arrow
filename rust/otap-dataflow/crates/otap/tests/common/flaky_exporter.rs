@@ -143,7 +143,8 @@ static FLAKY_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     create: |_pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
+             exporter_config: &ExporterConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         // Look up state by ID from node config
         let flaky_id = node_config.config.get("flaky_id").and_then(|v| v.as_str());
         let (counter, should_ack, nack_count, permanent_nack, permanent_nack_count) = flaky_id
