@@ -546,6 +546,9 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     let mut task_results = Vec::new();
 
                     loop {
+                        // `biased;`: prefer data-path completions when both
+                        // arms are simultaneously ready. Functionally
+                        // optional — kept to make intent explicit.
                         tokio::select! {
                             biased;
                             Some(result) = futures.next(), if !futures.is_empty() => {

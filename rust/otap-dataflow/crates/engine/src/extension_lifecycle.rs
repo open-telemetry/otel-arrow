@@ -116,9 +116,7 @@ impl ExtensionLifecycle {
 
     /// Awaits the next active+background extension task to complete.
     /// Returns `None` when no extension tasks remain.
-    pub async fn next_completion(
-        &mut self,
-    ) -> Option<Result<Result<(), Error>, JoinError>> {
+    pub async fn next_completion(&mut self) -> Option<Result<Result<(), Error>, JoinError>> {
         self.futures.next().await
     }
 

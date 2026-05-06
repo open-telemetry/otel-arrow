@@ -295,6 +295,7 @@ mod tests {
     use super::*;
     use bytes::BytesMut;
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::capability;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
@@ -371,9 +372,14 @@ mod tests {
             json!({ "query": query })
         };
 
-        let proc =
-            create_recordset_kql_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
-                .expect("create processor");
+        let proc = create_recordset_kql_processor(
+            pipeline_ctx,
+            node,
+            Arc::new(node_config),
+            rt.config(),
+            &capability::registry::Capabilities::empty(),
+        )
+        .expect("create processor");
         let phase = rt.set_processor(proc);
 
         phase
