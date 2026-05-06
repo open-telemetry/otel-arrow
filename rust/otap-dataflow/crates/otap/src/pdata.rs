@@ -18,6 +18,7 @@ use std::num::NonZeroU64;
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
+use otap_df_engine::_private::AckNackRouting;
 use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth};
 use otap_df_engine::error::{Error, TypedError};
 use otap_df_engine::processor::{FlowMeasurementHook, StopwatchEffectHandler};
@@ -675,7 +676,6 @@ macro_rules! impl_consumer_ext {
         #[async_trait(?Send)]
         impl ConsumerEffectHandlerExtension<OtapPdata> for $handler {
             async fn notify_ack(&self, mut ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-                use otap_df_engine::_private::AckNackRouting;
                 if ack.accepted.has_timing(Interests::ACKS) {
                     ack.unwind.return_time_ns = nanos_since_birth();
                 }
@@ -683,7 +683,6 @@ macro_rules! impl_consumer_ext {
             }
 
             async fn notify_nack(&self, mut nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-                use otap_df_engine::_private::AckNackRouting;
                 if nack.refused.has_timing(Interests::NACKS) {
                     nack.unwind.return_time_ns = nanos_since_birth();
                 }
