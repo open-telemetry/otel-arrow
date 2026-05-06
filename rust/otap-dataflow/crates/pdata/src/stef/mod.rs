@@ -502,7 +502,6 @@ impl MetricsStreamEncoder {
                 break;
             };
 
-            let point_value = otap_number_point_value(number_dp, dp_row)?;
             let mut root_mask = ROOT_ATTRIBUTES_FIELD | ROOT_POINT_FIELD;
             if encode_metric {
                 root_mask |= ROOT_METRIC_FIELD;
@@ -549,17 +548,7 @@ impl MetricsStreamEncoder {
                 number_dp.id.value_at(dp_row),
                 &mut cursors.number_dp_attrs,
             )?;
-            self.point.encode(&StefPoint {
-                start_timestamp: number_dp
-                    .start_time_unix_nano
-                    .and_then(|col| col.value_at(dp_row).map(|v| v as u64))
-                    .unwrap_or(0),
-                timestamp: number_dp
-                    .time_unix_nano
-                    .and_then(|col| col.value_at(dp_row).map(|v| v as u64))
-                    .unwrap_or(0),
-                value: point_value,
-            })?;
+            self.point.encode_otap_number_point(number_dp, dp_row)?;
             self.record_count += 1;
             wrote = true;
             encode_metric = false;
@@ -746,25 +735,6 @@ fn otap_scope_schema_url<'a>(arrays: &'a OtapMetricsDirectArrays<'a>, row: usize
         .as_ref()
         .and_then(|col| col.str_at(row).map(|value| value.as_bytes()))
         .unwrap_or(b"")
-}
-
-fn otap_number_point_value(
-    arrays: &NumberDpArrays<'_>,
-    row: usize,
-) -> Result<StefPointValue, Error> {
-    if let Some(value) = arrays.double_value.and_then(|col| col.value_at(row)) {
-        return Ok(StefPointValue::Float64(value));
-    }
-    if let Some(value) = arrays.int_value.and_then(|col| col.value_at(row)) {
-        return Ok(StefPointValue::Int64(value));
-    }
-
-    let flags = arrays.flags.and_then(|col| col.value_at(row)).unwrap_or(0);
-    if flags & 1 != 0 {
-        Ok(StefPointValue::None)
-    } else {
-        Err(Error::UnsupportedDataPointValue)
-    }
 }
 
 struct ViewMetric<'a, M> {
@@ -1130,6 +1100,99 @@ impl PointEncoder {
         Ok(())
     }
 
+    fn encode_otap_number_point(
+        &mut self,
+        arrays: &NumberDpArrays<'_>,
+        row: usize,
+    ) -> Result<(), Error> {
+        let start_timestamp = arrays
+            .start_time_unix_nano
+            .and_then(|col| col.value_at(row).map(|v| v as u64))
+            .unwrap_or(0);
+        let timestamp = arrays
+            .time_unix_nano
+            .and_then(|col| col.value_at(row).map(|v| v as u64))
+            .unwrap_or(0);
+
+        let last = self.last.as_ref();
+        let mut mask = 0;
+        if last.is_none_or(|last| last.start_timestamp != start_timestamp) {
+            mask |= 1 << 0;
+        }
+        if last.is_none_or(|last| last.timestamp != timestamp) {
+            mask |= 1 << 1;
+        }
+
+        if let Some(value) = arrays.double_value.and_then(|col| col.value_at(row)) {
+            if last.is_none_or(|last| last.value != StefPointValue::Float64(value)) {
+                mask |= 1 << 2;
+            }
+            self.bits.write_bits(mask, 4);
+            if mask & (1 << 0) != 0 {
+                self.start_timestamp.encode(start_timestamp);
+            }
+            if mask & (1 << 1) != 0 {
+                self.timestamp.encode(timestamp);
+            }
+            if mask & (1 << 2) != 0 {
+                self.value.encode_float64(value);
+            }
+            self.last = Some(StefPoint {
+                start_timestamp,
+                timestamp,
+                value: StefPointValue::Float64(value),
+            });
+            return Ok(());
+        }
+
+        if let Some(value) = arrays.int_value.and_then(|col| col.value_at(row)) {
+            if last.is_none_or(|last| last.value != StefPointValue::Int64(value)) {
+                mask |= 1 << 2;
+            }
+            self.bits.write_bits(mask, 4);
+            if mask & (1 << 0) != 0 {
+                self.start_timestamp.encode(start_timestamp);
+            }
+            if mask & (1 << 1) != 0 {
+                self.timestamp.encode(timestamp);
+            }
+            if mask & (1 << 2) != 0 {
+                self.value.encode_int64(value);
+            }
+            self.last = Some(StefPoint {
+                start_timestamp,
+                timestamp,
+                value: StefPointValue::Int64(value),
+            });
+            return Ok(());
+        }
+
+        let flags = arrays.flags.and_then(|col| col.value_at(row)).unwrap_or(0);
+        if flags & 1 == 0 {
+            return Err(Error::UnsupportedDataPointValue);
+        }
+
+        if last.is_none_or(|last| last.value != StefPointValue::None) {
+            mask |= 1 << 2;
+        }
+        self.bits.write_bits(mask, 4);
+        if mask & (1 << 0) != 0 {
+            self.start_timestamp.encode(start_timestamp);
+        }
+        if mask & (1 << 1) != 0 {
+            self.timestamp.encode(timestamp);
+        }
+        if mask & (1 << 2) != 0 {
+            self.value.encode_none();
+        }
+        self.last = Some(StefPoint {
+            start_timestamp,
+            timestamp,
+            value: StefPointValue::None,
+        });
+        Ok(())
+    }
+
     fn take_column(&mut self) -> Column {
         let mut column = point_column_tree();
         column.data = self.bits.take_bytes();
@@ -1151,16 +1214,24 @@ struct PointValueEncoder {
 impl PointValueEncoder {
     fn encode(&mut self, value: &StefPointValue) {
         match value {
-            StefPointValue::None => self.bits.write_bits(0, 3),
-            StefPointValue::Int64(value) => {
-                self.bits.write_bits(1, 3);
-                self.int64.encode(*value);
-            }
-            StefPointValue::Float64(value) => {
-                self.bits.write_bits(2, 3);
-                self.float64.encode(*value);
-            }
+            StefPointValue::None => self.encode_none(),
+            StefPointValue::Int64(value) => self.encode_int64(*value),
+            StefPointValue::Float64(value) => self.encode_float64(*value),
         }
+    }
+
+    fn encode_none(&mut self) {
+        self.bits.write_bits(0, 3);
+    }
+
+    fn encode_int64(&mut self, value: i64) {
+        self.bits.write_bits(1, 3);
+        self.int64.encode(value);
+    }
+
+    fn encode_float64(&mut self, value: f64) {
+        self.bits.write_bits(2, 3);
+        self.float64.encode(value);
     }
 
     fn take_column(&mut self) -> Column {
@@ -1811,7 +1882,9 @@ impl ExemplarArrayEncoder {
 }
 
 #[derive(Clone, Default)]
-struct SharedStringDict(Rc<RefCell<HashMap<String, usize>>>);
+struct SharedStringDict(Rc<RefCell<StefStringDict>>);
+
+type StefStringDict = HashMap<String, usize, ahash::RandomState>;
 
 #[derive(Default)]
 struct StringEncoder {
