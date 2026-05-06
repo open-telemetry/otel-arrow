@@ -5476,4 +5476,80 @@ mod test {
     async fn test_update_attr_to_regexp_substring_func_call_with_scalars_kq_parser() {
         test_update_attr_to_regexp_substring_func_call_with_scalars::<KqlParser>().await
     }
+
+    async fn test_update_attr_to_upper_case_function_call<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "attr",
+                    AnyValue::new_string("hello world"),
+                )])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["attr"] = upper_case(attributes["attr"])"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new("attr", AnyValue::new_string("HELLO WORLD"))]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_upper_case_function_call_opl_parser() {
+        test_update_attr_to_upper_case_function_call::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_upper_case_function_call_kql_parser() {
+        test_update_attr_to_upper_case_function_call::<KqlParser>().await
+    }
+
+    async fn test_update_attr_to_lower_case_function_call<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "attr",
+                    AnyValue::new_string("HELLO WORLD"),
+                )])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["attr"] = lower_case(attributes["attr"])"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new("attr", AnyValue::new_string("hello world"))]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_lower_case_function_call_opl_parser() {
+        test_update_attr_to_lower_case_function_call::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_lower_case_function_call_kql_parser() {
+        test_update_attr_to_lower_case_function_call::<KqlParser>().await
+    }
 }
