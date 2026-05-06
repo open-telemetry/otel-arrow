@@ -328,7 +328,7 @@ pub const TRUNCATION_SUFFIX: &[u8] = "[...]".as_bytes();
 
 /// Returned when a buffer write cannot fit within the size limit.
 ///
-/// Used as the error type in [`EncodeResult`] returns from
+/// Used as the error type in [`EncodeResult`] which is returned from
 /// buffer write methods, enabling `?` propagation through recursive
 /// protobuf encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
