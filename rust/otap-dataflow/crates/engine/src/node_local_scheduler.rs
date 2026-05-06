@@ -592,11 +592,7 @@ mod tests {
         scheduler.heap.assert_consistent();
     }
 
-    fn expect_resume(
-        msg: Option<NodeControlMsg<i32>>,
-        expected_when: Instant,
-        expected_data: i32,
-    ) {
+    fn expect_resume(msg: Option<NodeControlMsg<i32>>, expected_when: Instant, expected_data: i32) {
         match msg {
             Some(NodeControlMsg::ResumeData { when, data }) => {
                 assert_eq!(when, expected_when);

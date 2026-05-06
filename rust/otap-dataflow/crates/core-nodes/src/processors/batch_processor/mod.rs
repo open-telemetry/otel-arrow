@@ -1260,50 +1260,49 @@ impl local::Processor<OtapPdata> for BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         match msg {
-            Message::Control(ctrl) => {
-                match ctrl {
-                    NodeControlMsg::Config { .. } => Ok(()),
-                    NodeControlMsg::Shutdown { .. } => {
-                        self.flush_shutdown(effect).await?;
-                        Ok(())
-                    }
-                    NodeControlMsg::CollectTelemetry {
-                        mut metrics_reporter,
-                    } => {
-                        effect
-                            .report_local_scheduler_metrics(&mut metrics_reporter)
-                            .map_err(|e| EngineError::InternalError {
-                                message: e.to_string(),
-                            })?;
-                        metrics_reporter.report(&mut self.metrics).map_err(|e| {
-                            EngineError::InternalError {
-                                message: e.to_string(),
-                            }
-                        })
-                    }
-                    NodeControlMsg::Wakeup { slot, when, .. } => {
-                        let Some((format, signal)) = signal_from_wakeup_slot(slot) else {
-                            return Ok(());
-                        };
+            Message::Control(ctrl) => match ctrl {
+                NodeControlMsg::Config { .. } => Ok(()),
+                NodeControlMsg::Shutdown { .. } => {
+                    self.flush_shutdown(effect).await?;
+                    Ok(())
+                }
+                NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                } => {
+                    effect
+                        .report_local_scheduler_metrics(&mut metrics_reporter)
+                        .map_err(|e| EngineError::InternalError {
+                            message: e.to_string(),
+                        })?;
+                    metrics_reporter.report(&mut self.metrics).map_err(|e| {
+                        EngineError::InternalError {
+                            message: e.to_string(),
+                        }
+                    })
+                }
+                NodeControlMsg::Wakeup { slot, when, .. } => {
+                    let Some((format, signal)) = signal_from_wakeup_slot(slot) else {
+                        return Ok(());
+                    };
 
-                        match format {
-                            SignalFormat::OtapRecords => {
-                                if let Some(mut otap_format) = self.otap_format() {
-                                    otap_format
-                                        .for_signal(signal)
-                                        .flush_signal_impl(effect, when, FlushReason::Timer)
-                                        .await?;
-                                }
+                    match format {
+                        SignalFormat::OtapRecords => {
+                            if let Some(mut otap_format) = self.otap_format() {
+                                otap_format
+                                    .for_signal(signal)
+                                    .flush_signal_impl(effect, when, FlushReason::Timer)
+                                    .await?;
                             }
-                            SignalFormat::OtlpBytes => {
-                                if let Some(mut otlp_format) = self.otlp_format() {
-                                    otlp_format
-                                        .for_signal(signal)
-                                        .flush_signal_impl(effect, when, FlushReason::Timer)
-                                        .await?;
-                                }
+                        }
+                        SignalFormat::OtlpBytes => {
+                            if let Some(mut otlp_format) = self.otlp_format() {
+                                otlp_format
+                                    .for_signal(signal)
+                                    .flush_signal_impl(effect, when, FlushReason::Timer)
+                                    .await?;
                             }
-                        };
+                        }
+                    };
 
                     Ok(())
                 }
