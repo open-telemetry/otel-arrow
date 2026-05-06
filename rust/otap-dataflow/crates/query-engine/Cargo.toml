@@ -22,6 +22,7 @@ smallvec = { workspace = true }
 thiserror = { workspace = true }
 data_engine_expressions = { workspace = true }
 data_engine_parser_abstractions = { workspace = true }
+uuid = { workspace = true }
 
 otap-df-config = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["testing"] }

@@ -16,10 +16,12 @@ mod contains;
 pub(crate) mod is_type;
 mod regexp_substr;
 mod substring;
+mod uuidv7;
 
 make_udf_function!(contains::ExtendedContainsFunc, contains);
 make_udf_function!(substring::SubstringFunc, substring);
 make_udf_function!(regexp_substr::RegexpSubstrFunc, regexp_substr);
+make_udf_function!(uuidv7::UuidV7Func, uuidv7);
 
 /// helper functions to create logical plan expressions that invoke UDFs
 pub mod expr_fn {
