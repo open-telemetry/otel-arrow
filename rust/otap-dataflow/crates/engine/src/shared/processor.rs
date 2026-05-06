@@ -39,9 +39,9 @@ use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
 };
 use crate::error::{Error, TypedError};
-use crate::flow_measurement::{
-    EndMeasurements, FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
-    IncomingMeasurements, SharedFlowMeasurementState, nanos_u64,
+use crate::flow_metric::{
+    EndFlowMetrics, FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
+    IncomingFlowMetrics, SharedFlowMetricState, nanos_u64,
 };
 use crate::message::Message;
 use crate::node::NodeId;
@@ -129,14 +129,14 @@ pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     /// Output-port router.
     pub router: OutputRouter<SharedSender<PData>>,
-    /// Per-handler flow_measurement state. See [`SharedFlowMeasurementState`] /
-    /// [`EndMeasurements`] for field-level documentation.
+    /// Per-handler flow_metric state. See [`SharedFlowMetricState`] /
+    /// [`EndFlowMetrics`] for field-level documentation.
     ///
     /// `Mutex` is used inside the marker/accumulator cells because shared
     /// processors run on worker threads — contention is bounded to the
     /// per-processor sequential `process()` loop and the periodic
     /// telemetry drain.
-    pub(crate) flow: SharedFlowMeasurementState,
+    pub(crate) flow: SharedFlowMetricState,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -154,7 +154,7 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core,
             router,
-            flow: SharedFlowMeasurementState::default(),
+            flow: SharedFlowMetricState::default(),
         }
     }
 
@@ -194,7 +194,7 @@ impl<PData> EffectHandler<PData> {
         self.core.node_interests()
     }
 
-    /// Sets flow_measurement start/stop roles for this node.
+    /// Sets flow_metric start/stop roles for this node.
     pub(crate) fn set_flow_roles(
         &mut self,
         is_start: bool,
@@ -202,16 +202,16 @@ impl<PData> EffectHandler<PData> {
         signals_incoming_metric: Option<MetricSet<FlowSignalsIncomingMetrics>>,
         duration_metric: Option<MetricSet<FlowDurationMetrics>>,
         signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>>,
-        flow_measurements_active: bool,
+        flow_metrics_active: bool,
     ) {
         self.flow.is_start = is_start;
         self.flow.is_end = is_end;
-        self.flow.active = flow_measurements_active;
-        self.flow.incoming = IncomingMeasurements {
+        self.flow.active = flow_metrics_active;
+        self.flow.incoming = IncomingFlowMetrics {
             signals_incoming: signals_incoming_metric
                 .map(|metrics| (metrics, Arc::new(Mutex::new(Mmsc::default())))),
         };
-        self.flow.end = EndMeasurements {
+        self.flow.end = EndFlowMetrics {
             duration: duration_metric
                 .map(|metrics| (metrics, Arc::new(Mutex::new(Mmsc::default())))),
             signals_outgoing: signals_outgoing_metric
@@ -219,30 +219,30 @@ impl<PData> EffectHandler<PData> {
         };
     }
 
-    /// Returns whether this node is a flow_measurement start node.
+    /// Returns whether this node is a flow_metric start node.
     #[must_use]
     pub fn is_flow_start(&self) -> bool {
         self.flow.is_start
     }
 
-    /// Returns whether this node is a flow_measurement stop node.
+    /// Returns whether this node is a flow_metric stop node.
     #[must_use]
     pub fn is_flow_end(&self) -> bool {
         self.flow.is_end
     }
 
-    /// Returns whether any flow_measurement is configured in this pipeline.
+    /// Returns whether any flow_metric is configured in this pipeline.
     #[must_use]
-    pub fn flow_measurements_active(&self) -> bool {
+    pub fn flow_metrics_active(&self) -> bool {
         self.flow.active
     }
 
-    /// Begin per-message flow_measurement timing for the upcoming `process()` call.
+    /// Begin per-message flow_metric timing for the upcoming `process()` call.
     ///
     /// Sets the send-marker to "now" so that the first
     /// [`take_elapsed_since_send_marker_ns`] call (typically from the send
     /// hook) measures elapsed time from the start of `process()`.
-    /// No-op when no flow_measurements are configured.
+    /// No-op when no flow_metrics are configured.
     pub(crate) fn begin_process_timing(&self) {
         if self.flow.active {
             *self
@@ -255,7 +255,7 @@ impl<PData> EffectHandler<PData> {
 
     /// Returns nanoseconds elapsed since the send-marker was last set or
     /// advanced, then advances the marker to "now". Returns 0 when no
-    /// marker is active (e.g. flow_measurements disabled, or
+    /// marker is active (e.g. flow_metrics disabled, or
     /// `begin_process_timing` was not called for this message).
     #[must_use]
     pub fn take_elapsed_since_send_marker_ns(&self) -> u64 {
@@ -272,7 +272,7 @@ impl<PData> EffectHandler<PData> {
         nanos_u64(now.duration_since(prev).as_nanos())
     }
 
-    /// Record `total` nanoseconds into the shared flow_measurement accumulator.
+    /// Record `total` nanoseconds into the shared flow_metric accumulator.
     pub fn record_flow_duration(&self, total: u64) {
         let Some((_, acc_mutex)) = self.flow.end.duration.as_ref() else {
             return;
@@ -305,8 +305,8 @@ impl<PData> EffectHandler<PData> {
         acc.record(signals as f64);
     }
 
-    /// Drain accumulated flow_measurement observations into the MetricSet and report.
-    pub(crate) fn report_flow_measurements(&mut self) {
+    /// Drain accumulated flow_metric observations into the MetricSet and report.
+    pub(crate) fn report_flow_metrics(&mut self) {
         if let Some((metrics, acc_mutex)) = self.flow.incoming.signals_incoming.as_mut() {
             let drained = {
                 let mut guard = acc_mutex
@@ -347,7 +347,7 @@ impl<PData> EffectHandler<PData> {
     #[inline]
     pub async fn send_message(&self, mut data: PData) -> Result<(), TypedError<PData>>
     where
-        PData: crate::processor::FlowMeasurementHook + Send,
+        PData: crate::processor::FlowMetricHook + Send,
     {
         data.before_processor_send(self);
         self.router.send_default(data).await
@@ -366,7 +366,7 @@ impl<PData> EffectHandler<PData> {
     #[inline]
     pub fn try_send_message(&self, mut data: PData) -> Result<(), TypedError<PData>>
     where
-        PData: crate::processor::FlowMeasurementHook + Send,
+        PData: crate::processor::FlowMetricHook + Send,
     {
         data.before_processor_send(self);
         self.router.try_send_default(data)
@@ -381,7 +381,7 @@ impl<PData> EffectHandler<PData> {
     ) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
-        PData: crate::processor::FlowMeasurementHook + Send,
+        PData: crate::processor::FlowMetricHook + Send,
     {
         data.before_processor_send(self);
         self.router.send_to(port, data).await
@@ -401,7 +401,7 @@ impl<PData> EffectHandler<PData> {
     pub fn try_send_message_to<P>(&self, port: P, mut data: PData) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
-        PData: crate::processor::FlowMeasurementHook + Send,
+        PData: crate::processor::FlowMetricHook + Send,
     {
         data.before_processor_send(self);
         self.router.try_send_to(port, data)
@@ -510,7 +510,7 @@ impl<PData> EffectHandler<PData> {
     }
 }
 
-impl<PData> crate::processor::FlowMeasurementEffectHandler for EffectHandler<PData> {
+impl<PData> crate::processor::FlowMetricEffectHandler for EffectHandler<PData> {
     #[inline]
     fn is_flow_start(&self) -> bool {
         EffectHandler::is_flow_start(self)
@@ -552,7 +552,7 @@ impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for Effect
 mod tests {
     #![allow(missing_docs)]
     use super::*;
-    use crate::flow_measurement::{FlowAttributeSet, FlowSignalsOutgoingMetrics};
+    use crate::flow_metric::{FlowAttributeSet, FlowSignalsOutgoingMetrics};
     use crate::shared::message::SharedSender;
     use crate::testing::{test_node, test_pipeline_ctx};
     use otap_df_channel::error::SendError;
@@ -560,7 +560,7 @@ mod tests {
     use otap_df_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
 
-    // Note: `impl FlowMeasurementHook for u64` lives in `crate::local::processor`
+    // Note: `impl FlowMetricHook for u64` lives in `crate::local::processor`
     // tests; trait impls are crate-wide so we share it across test modules.
 
     #[test]
@@ -679,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn flow_measurement_marker_accumulates_after_begin_process_timing_shared() {
+    fn flow_metric_marker_accumulates_after_begin_process_timing_shared() {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
@@ -778,7 +778,7 @@ mod tests {
         assert_eq!(produced_before_report.count, 2);
         assert!((produced_before_report.sum - 15.0).abs() < f64::EPSILON);
 
-        eh.report_flow_measurements();
+        eh.report_flow_metrics();
 
         let start_drained = eh
             .flow
@@ -823,9 +823,9 @@ mod tests {
 
         let snapshot = metrics_rx
             .try_recv()
-            .expect("start flow_measurement metric should be reported");
+            .expect("start flow_metric metric should be reported");
         let [MetricValue::Mmsc(consumed_snapshot)] = snapshot.get_metrics() else {
-            panic!("expected one start flow_measurement MMSC metric");
+            panic!("expected one start flow_metric MMSC metric");
         };
         assert_eq!(consumed_snapshot.count, 2);
         assert!((consumed_snapshot.sum - 30.0).abs() < f64::EPSILON);

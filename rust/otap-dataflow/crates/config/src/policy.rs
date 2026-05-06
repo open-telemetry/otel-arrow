@@ -270,50 +270,50 @@ pub struct TelemetryPolicy {
     /// shared control-plane telemetry.
     #[serde(default = "default_metric_level_basic")]
     pub runtime_metrics: MetricLevel,
-    /// Distributed flow_measurements that sum per-message compute duration across
+    /// Distributed flow_metrics that sum per-message compute duration across
     /// a range of processor nodes.
     #[serde(default)]
-    pub flow_measurements: Vec<FlowMeasurementConfig>,
+    pub flow_metrics: Vec<FlowMetricConfig>,
 }
 
-/// Configuration for flow measurements across a contiguous range of processor nodes.
+/// Configuration for flow metrics across a contiguous range of processor nodes.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct FlowMeasurementConfig {
-    /// User-facing name for this flow measurement, used as a metric attribute.
+pub struct FlowMetricConfig {
+    /// User-facing name for this flow metric, used as a metric attribute.
     pub name: String,
-    /// Processor node bounds for this flow measurement.
+    /// Processor node bounds for this flow metric.
     pub bounds: FlowBounds,
-    /// Measurements to enable. Omitted means all measurements are enabled.
+    /// Metrics to enable. Omitted means all metrics are enabled.
     #[serde(default)]
-    pub measurements: Option<Vec<FlowMeasurement>>,
+    pub metrics: Option<Vec<FlowMetric>>,
 }
 
-impl FlowMeasurementConfig {
-    /// Returns whether the given measurement is enabled for this flow.
+impl FlowMetricConfig {
+    /// Returns whether the given metric is enabled for this flow.
     #[must_use]
-    pub fn has(&self, measurement: FlowMeasurement) -> bool {
-        match &self.measurements {
+    pub fn has(&self, metric: FlowMetric) -> bool {
+        match &self.metrics {
             None => true,
-            Some(measurements) => measurements.contains(&measurement),
+            Some(metrics) => metrics.contains(&metric),
         }
     }
 }
 
-/// Start/end node bounds for a flow measurement.
+/// Start/end node bounds for a flow metric.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct FlowBounds {
-    /// Processor node name where the flow measurement range begins (inclusive).
+    /// Processor node name where the flow metric range begins (inclusive).
     pub start_node: String,
-    /// Processor node name where the flow measurement range ends (inclusive).
+    /// Processor node name where the flow metric range ends (inclusive).
     pub end_node: String,
 }
 
-/// Individual measurements that can be enabled for a flow.
+/// Individual metrics that can be enabled for a flow.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
-pub enum FlowMeasurement {
+pub enum FlowMetric {
     /// Aggregate processor compute duration across the flow.
     ComputeDuration,
     /// Signal item count entering the flow.
@@ -327,17 +327,17 @@ impl TelemetryPolicy {
     #[must_use]
     pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
         let mut errors = Vec::new();
-        for (idx, flow) in self.flow_measurements.iter().enumerate() {
-            let path = format!("{path_prefix}.flow_measurements[{idx}].measurements");
-            if let Some(measurements) = &flow.measurements {
-                if measurements.is_empty() {
+        for (idx, flow) in self.flow_metrics.iter().enumerate() {
+            let path = format!("{path_prefix}.flow_metrics[{idx}].metrics");
+            if let Some(metrics) = &flow.metrics {
+                if metrics.is_empty() {
                     errors.push(format!(
                         "{path} must not be empty when explicitly configured"
                     ));
                 }
                 let mut seen = HashSet::new();
-                for measurement in measurements {
-                    if !seen.insert(*measurement) {
+                for metric in metrics {
+                    if !seen.insert(*metric) {
                         errors.push(format!("{path} must not contain duplicate entries"));
                         break;
                     }
@@ -354,7 +354,7 @@ impl Default for TelemetryPolicy {
             pipeline_metrics: true,
             tokio_metrics: true,
             runtime_metrics: MetricLevel::Basic,
-            flow_measurements: Vec::new(),
+            flow_metrics: Vec::new(),
         }
     }
 }
@@ -862,46 +862,46 @@ mod tests {
     }
 
     #[test]
-    fn flow_measurements_omitted_measurements_enable_all() {
+    fn flow_metrics_omitted_metrics_enable_all() {
         let yaml = r#"
-            flow_measurements:
+            flow_metrics:
               - name: flow1
                 bounds: { start_node: a, end_node: b }
         "#;
         let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
-        let flow = &policy.flow_measurements[0];
-        assert!(flow.measurements.is_none());
-        assert!(flow.has(super::FlowMeasurement::ComputeDuration));
-        assert!(flow.has(super::FlowMeasurement::SignalsIncoming));
-        assert!(flow.has(super::FlowMeasurement::SignalsOutgoing));
+        let flow = &policy.flow_metrics[0];
+        assert!(flow.metrics.is_none());
+        assert!(flow.has(super::FlowMetric::ComputeDuration));
+        assert!(flow.has(super::FlowMetric::SignalsIncoming));
+        assert!(flow.has(super::FlowMetric::SignalsOutgoing));
     }
 
     #[test]
-    fn flow_measurements_explicit_subset_is_honored() {
+    fn flow_metrics_explicit_subset_is_honored() {
         let yaml = r#"
-            flow_measurements:
+            flow_metrics:
               - name: flow1
                 bounds: { start_node: a, end_node: b }
-                measurements: [compute_duration]
+                metrics: [compute_duration]
         "#;
         let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
-        let flow = &policy.flow_measurements[0];
-        assert!(flow.has(super::FlowMeasurement::ComputeDuration));
-        assert!(!flow.has(super::FlowMeasurement::SignalsIncoming));
-        assert!(!flow.has(super::FlowMeasurement::SignalsOutgoing));
+        let flow = &policy.flow_metrics[0];
+        assert!(flow.has(super::FlowMetric::ComputeDuration));
+        assert!(!flow.has(super::FlowMetric::SignalsIncoming));
+        assert!(!flow.has(super::FlowMetric::SignalsOutgoing));
     }
 
     #[test]
-    fn flow_measurements_rejects_empty_measurements() {
+    fn flow_metrics_rejects_empty_metrics() {
         let policies = Policies {
             telemetry: Some(super::TelemetryPolicy {
-                flow_measurements: vec![super::FlowMeasurementConfig {
+                flow_metrics: vec![super::FlowMetricConfig {
                     name: "flow1".to_string(),
                     bounds: super::FlowBounds {
                         start_node: "a".to_string(),
                         end_node: "b".to_string(),
                     },
-                    measurements: Some(vec![]),
+                    metrics: Some(vec![]),
                 }],
                 ..super::TelemetryPolicy::default()
             }),
@@ -916,18 +916,18 @@ mod tests {
     }
 
     #[test]
-    fn flow_measurements_rejects_duplicate_measurements() {
+    fn flow_metrics_rejects_duplicate_metrics() {
         let policies = Policies {
             telemetry: Some(super::TelemetryPolicy {
-                flow_measurements: vec![super::FlowMeasurementConfig {
+                flow_metrics: vec![super::FlowMetricConfig {
                     name: "flow1".to_string(),
                     bounds: super::FlowBounds {
                         start_node: "a".to_string(),
                         end_node: "b".to_string(),
                     },
-                    measurements: Some(vec![
-                        super::FlowMeasurement::ComputeDuration,
-                        super::FlowMeasurement::ComputeDuration,
+                    metrics: Some(vec![
+                        super::FlowMetric::ComputeDuration,
+                        super::FlowMetric::ComputeDuration,
                     ]),
                 }],
                 ..super::TelemetryPolicy::default()

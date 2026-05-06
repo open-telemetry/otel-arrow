@@ -75,7 +75,7 @@ mod control_plane_metrics;
 pub mod effect_handler;
 pub mod engine_metrics;
 pub mod entity_context;
-pub mod flow_measurement;
+pub mod flow_metric;
 pub(crate) mod indexed_min_heap;
 pub mod local;
 pub mod memory_limiter;
@@ -383,13 +383,13 @@ impl ReceivedAtNode for () {
 impl ReceivedAtNode for String {
     fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
 }
-// `FlowMeasurementHook` is a bound on the `PData` generic of `ProcessorWrapper::start*`,
+// `FlowMetricHook` is a bound on the `PData` generic of `ProcessorWrapper::start*`,
 // `RuntimePipeline`, and the controller. Test code uses `()` and `String` as stand-in PData
 // types (e.g. `Controller<()>`); these blanket no-op impls let those tests compile without
 // requiring every test PData type to define hook behavior. Real PData types (e.g. `OtapPdata`)
-// override these methods to drive flow_measurement signal counting and compute-duration accumulation.
-impl processor::FlowMeasurementHook for () {}
-impl processor::FlowMeasurementHook for String {}
+// override these methods to drive flow_metric signal counting and compute-duration accumulation.
+impl processor::FlowMetricHook for () {}
+impl processor::FlowMetricHook for String {}
 
 /// Trait for setting exit information in the Context, for PData consumers.
 pub trait StampOutputPort {
@@ -405,16 +405,16 @@ impl StampOutputPort for String {
     fn stamp_output_port_index(&mut self, _index: u16) {}
 }
 
-/// Trait for forward-path flow_measurement compute accumulation on PData.
+/// Trait for forward-path flow_metric compute accumulation on PData.
 ///
-/// At most one flow_measurement range can be active on a given message at a
+/// At most one flow_metric range can be active on a given message at a
 /// time (non-overlapping ranges).
-pub trait FlowMeasurementAccumulation {
-    /// Initialise a fresh flow_measurement accumulator (set to 0).
+pub trait FlowMetricAccumulation {
+    /// Initialise a fresh flow_metric accumulator (set to 0).
     /// Called at the start node.
-    fn start_flow_measurement(&mut self);
+    fn start_flow_metric(&mut self);
 
-    /// Add `ns` nanoseconds to the active flow_measurement accumulator, if any.
+    /// Add `ns` nanoseconds to the active flow_metric accumulator, if any.
     fn add_flow_compute(&mut self, ns: u64);
 
     /// Remove and return the accumulated total.

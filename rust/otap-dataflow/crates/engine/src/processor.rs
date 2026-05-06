@@ -20,7 +20,7 @@ use crate::control::{
 use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
-use crate::flow_measurement::{
+use crate::flow_metric::{
     FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
 };
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -40,22 +40,22 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// FlowMeasurement-relevant slice of a processor `EffectHandler`'s surface.
+/// FlowMetric-relevant slice of a processor `EffectHandler`'s surface.
 ///
 /// Implemented by both `local::processor::EffectHandler<PData>` and
-/// `shared::processor::EffectHandler<PData>` so that PData-side flow_measurement
-/// hooks (see [`FlowMeasurementHook`]) can be written once, generic over
+/// `shared::processor::EffectHandler<PData>` so that PData-side flow_metric
+/// hooks (see [`FlowMetricHook`]) can be written once, generic over
 /// handler kind.
-pub trait FlowMeasurementEffectHandler {
-    /// Whether this node is the start of a flow_measurement range.
+pub trait FlowMetricEffectHandler {
+    /// Whether this node is the start of a flow_metric range.
     fn is_flow_start(&self) -> bool;
-    /// Whether this node is the end of a flow_measurement range.
+    /// Whether this node is the end of a flow_metric range.
     fn is_flow_end(&self) -> bool;
     /// Read elapsed nanoseconds since the last send-marker advance and
     /// advance the marker to "now". Returns 0 when no marker is armed
-    /// (e.g. flow_measurements inactive on this pipeline).
+    /// (e.g. flow_metrics inactive on this pipeline).
     fn take_elapsed_since_send_marker_ns(&self) -> u64;
-    /// Record a complete flow_measurement transit total (nanoseconds) into the
+    /// Record a complete flow_metric transit total (nanoseconds) into the
     /// stop node's local accumulator.
     fn record_flow_duration(&self, total: u64);
     /// Record signal-item count into the start node's local accumulator.
@@ -74,33 +74,33 @@ pub trait FlowMeasurementEffectHandler {
 /// family and the `send_message_with_source_node[_to]` family — every
 /// send method on every processor handler invokes it exactly once.
 /// Both methods default to no-ops; PData types with bookkeeping needs
-/// (e.g. flow_measurement accumulation on `OtapPdata`) override one or both.
+/// (e.g. flow_metric accumulation on `OtapPdata`) override one or both.
 ///
 /// `EffectHandler<PData>` is generic but lives in the engine crate, while
 /// some `PData` types need bookkeeping defined in their own crate.
 /// Inherent methods shadow extension-trait methods, so we route
 /// per-`PData` behavior through this trait. PData types with nothing to
-/// do can simply write `impl FlowMeasurementHook for MyPData {}`.
+/// do can simply write `impl FlowMetricHook for MyPData {}`.
 ///
 /// NOTE: This trait currently lives in `processor.rs` and only fires from
 /// processor run loops / processor effect handlers because processors are
 /// the only nodes that need pre-process and pre-send hooks today (for
-/// flow_measurement flow measurement). If receivers or exporters ever need
+/// flow_metric flow metric). If receivers or exporters ever need
 /// analogous `before_*` / `after_*` hooks on PData, this trait should be
 /// hoisted to a more generic location (e.g. a top-level `flow_hook` module
-/// or `crate::lib`) and its `H: FlowMeasurementEffectHandler` bound generalized
+/// or `crate::lib`) and its `H: FlowMetricEffectHandler` bound generalized
 /// so it can be invoked from receiver/exporter handlers as well.
-pub trait FlowMeasurementHook: Sized {
+pub trait FlowMetricHook: Sized {
     /// Invoked once per message immediately before the processor handler
     /// forwards it to the output router.
-    fn before_processor_send<H: FlowMeasurementEffectHandler>(&mut self, _handler: &H) {}
+    fn before_processor_send<H: FlowMetricEffectHandler>(&mut self, _handler: &H) {}
 
     /// Invoked once per `Message::PData` immediately after it is dequeued
     /// by a processor's run loop and before `process()` runs. Lets PData
     /// types observe the *pre-process* state of the data — e.g. counting
-    /// items entering a flow_measurement start node before any filter or drop
+    /// items entering a flow_metric start node before any filter or drop
     /// inside `process()`. Default impl is a no-op.
-    fn after_processor_receive<H: FlowMeasurementEffectHandler>(&mut self, _handler: &H) {}
+    fn after_processor_receive<H: FlowMetricEffectHandler>(&mut self, _handler: &H) {}
 }
 
 /// Processor-local wakeup requirements declared by a processor implementation.
@@ -571,7 +571,7 @@ impl<PData> ProcessorWrapper<PData> {
         node_interests: Interests,
     ) -> Result<(), Error>
     where
-        PData: ReceivedAtNode + FlowMeasurementHook,
+        PData: ReceivedAtNode + FlowMetricHook,
     {
         self.start_with_completion_metrics(
             runtime_ctrl_msg_tx,
@@ -601,10 +601,10 @@ impl<PData> ProcessorWrapper<PData> {
         flow_signals_incoming_metric: Option<MetricSet<FlowSignalsIncomingMetrics>>,
         flow_duration_metric: Option<MetricSet<FlowDurationMetrics>>,
         flow_signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>>,
-        flow_measurements_active: bool,
+        flow_metrics_active: bool,
     ) -> Result<(), Error>
     where
-        PData: ReceivedAtNode + FlowMeasurementHook,
+        PData: ReceivedAtNode + FlowMetricHook,
     {
         let runtime = self
             .prepare_runtime(metrics_reporter.clone(), node_interests)
@@ -632,7 +632,7 @@ impl<PData> ProcessorWrapper<PData> {
                     flow_signals_incoming_metric.clone(),
                     flow_duration_metric.clone(),
                     flow_signals_outgoing_metric.clone(),
-                    flow_measurements_active,
+                    flow_metrics_active,
                 );
 
                 // Start periodic telemetry collection
@@ -641,13 +641,13 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
-                    if effect_handler.flow_measurements_active() {
+                    if effect_handler.flow_metrics_active() {
                         match &mut msg {
                             Message::Control(NodeControlMsg::CollectTelemetry { .. })
                                 if effect_handler.is_flow_start()
                                     || effect_handler.is_flow_end() =>
                             {
-                                effect_handler.report_flow_measurements();
+                                effect_handler.report_flow_metrics();
                             }
                             Message::PData(data) => {
                                 data.after_processor_receive(&effect_handler);
@@ -662,7 +662,7 @@ impl<PData> ProcessorWrapper<PData> {
                 _ = telemetry_cancel_handle.cancel().await;
                 // Collect final metrics before exiting
                 if effect_handler.is_flow_start() || effect_handler.is_flow_end() {
-                    effect_handler.report_flow_measurements();
+                    effect_handler.report_flow_metrics();
                 }
                 processor
                     .process(
@@ -692,7 +692,7 @@ impl<PData> ProcessorWrapper<PData> {
                     flow_signals_incoming_metric.clone(),
                     flow_duration_metric.clone(),
                     flow_signals_outgoing_metric.clone(),
-                    flow_measurements_active,
+                    flow_metrics_active,
                 );
 
                 // Start periodic telemetry collection
@@ -701,13 +701,13 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
-                    if effect_handler.flow_measurements_active() {
+                    if effect_handler.flow_metrics_active() {
                         match &mut msg {
                             Message::Control(NodeControlMsg::CollectTelemetry { .. })
                                 if effect_handler.is_flow_start()
                                     || effect_handler.is_flow_end() =>
                             {
-                                effect_handler.report_flow_measurements();
+                                effect_handler.report_flow_metrics();
                             }
                             Message::PData(data) => {
                                 data.after_processor_receive(&effect_handler);
@@ -722,7 +722,7 @@ impl<PData> ProcessorWrapper<PData> {
                 _ = telemetry_cancel_handle.cancel().await;
                 // Collect final metrics before exiting
                 if effect_handler.is_flow_start() || effect_handler.is_flow_end() {
-                    effect_handler.report_flow_measurements();
+                    effect_handler.report_flow_metrics();
                 }
                 processor
                     .process(
@@ -888,7 +888,7 @@ mod tests {
         NodeControlMsg::{Config, Shutdown, TimerTick},
         pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
-    use crate::flow_measurement::{
+    use crate::flow_metric::{
         FlowAttributeSet, FlowDurationMetrics, FlowSignalsIncomingMetrics,
         FlowSignalsOutgoingMetrics,
     };
@@ -1124,41 +1124,41 @@ mod tests {
     }
 
     #[derive(Clone, Debug, Default)]
-    struct FlowMeasurementTestPData {
+    struct FlowMetricTestPData {
         flow_compute_ns: u64,
-        flow_measurement_active: bool,
+        flow_metric_active: bool,
     }
 
-    impl crate::ReceivedAtNode for FlowMeasurementTestPData {
+    impl crate::ReceivedAtNode for FlowMetricTestPData {
         fn received_at_node(&mut self, _node_id: usize, _node_interests: crate::Interests) {}
     }
 
-    impl crate::processor::FlowMeasurementHook for FlowMeasurementTestPData {
-        fn before_processor_send<H: crate::processor::FlowMeasurementEffectHandler>(
+    impl crate::processor::FlowMetricHook for FlowMetricTestPData {
+        fn before_processor_send<H: crate::processor::FlowMetricEffectHandler>(
             &mut self,
             handler: &H,
         ) {
-            if !handler.is_flow_start() && !handler.is_flow_end() && !self.flow_measurement_active {
+            if !handler.is_flow_start() && !handler.is_flow_end() && !self.flow_metric_active {
                 return;
             }
 
             if handler.is_flow_start() {
-                self.flow_measurement_active = true;
+                self.flow_metric_active = true;
             }
 
             self.flow_compute_ns = self
                 .flow_compute_ns
                 .saturating_add(handler.take_elapsed_since_send_marker_ns());
 
-            if handler.is_flow_end() && self.flow_measurement_active && self.flow_compute_ns > 0 {
+            if handler.is_flow_end() && self.flow_metric_active && self.flow_compute_ns > 0 {
                 handler.record_flow_duration(self.flow_compute_ns);
                 handler.record_flow_signals_outgoing(1);
                 self.flow_compute_ns = 0;
-                self.flow_measurement_active = false;
+                self.flow_metric_active = false;
             }
         }
 
-        fn after_processor_receive<H: crate::processor::FlowMeasurementEffectHandler>(
+        fn after_processor_receive<H: crate::processor::FlowMetricEffectHandler>(
             &mut self,
             handler: &H,
         ) {
@@ -1168,14 +1168,14 @@ mod tests {
         }
     }
 
-    struct SyncOnlyFlowMeasurementProcessor;
+    struct SyncOnlyFlowMetricProcessor;
 
     #[async_trait(?Send)]
-    impl local::Processor<FlowMeasurementTestPData> for SyncOnlyFlowMeasurementProcessor {
+    impl local::Processor<FlowMetricTestPData> for SyncOnlyFlowMetricProcessor {
         async fn process(
             &mut self,
-            msg: Message<FlowMeasurementTestPData>,
-            effect_handler: &mut local::EffectHandler<FlowMeasurementTestPData>,
+            msg: Message<FlowMetricTestPData>,
+            effect_handler: &mut local::EffectHandler<FlowMetricTestPData>,
         ) -> Result<(), Error> {
             let Message::PData(data) = msg else {
                 return Ok(());
@@ -1215,7 +1215,7 @@ mod tests {
         handler.record_flow_signals_incoming(3);
         handler.record_flow_duration(10);
         handler.record_flow_signals_outgoing(4);
-        handler.report_flow_measurements();
+        handler.report_flow_metrics();
 
         let snapshot = metrics_rx
             .try_recv()
@@ -1259,7 +1259,7 @@ mod tests {
         handler.record_flow_signals_incoming(3);
         handler.record_flow_duration(10);
         handler.record_flow_signals_outgoing(4);
-        handler.report_flow_measurements();
+        handler.report_flow_metrics();
 
         let duration_snapshot = metrics_rx
             .try_recv()
@@ -1279,7 +1279,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flow_measurement_auto_measures_process_without_timed() {
+    async fn flow_metric_auto_measures_process_without_timed() {
         let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
         let attrs = FlowAttributeSet {
             flow_name: "auto_measure".into(),
@@ -1304,7 +1304,7 @@ mod tests {
             "auto_measure_processor",
         ));
         let mut processor = ProcessorWrapper::local(
-            SyncOnlyFlowMeasurementProcessor,
+            SyncOnlyFlowMetricProcessor,
             node_id.clone(),
             user_config,
             &config,
@@ -1356,7 +1356,7 @@ mod tests {
                 });
 
                 input_tx
-                    .send(FlowMeasurementTestPData::default())
+                    .send(FlowMetricTestPData::default())
                     .expect("test input should enqueue");
                 let _ = output_rx
                     .recv()
@@ -1372,13 +1372,13 @@ mod tests {
                 let snapshot =
                     tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
                         .await
-                        .expect("flow_measurement metric should be reported")
+                        .expect("flow_metric metric should be reported")
                         .expect("metrics channel should remain open");
                 processor_task.abort();
                 let _ = processor_task.await;
 
                 let [MetricValue::Mmsc(signals_incoming)] = snapshot.get_metrics() else {
-                    panic!("expected one start flow_measurement MMSC metric");
+                    panic!("expected one start flow_metric MMSC metric");
                 };
                 assert_eq!(signals_incoming.count, 1);
                 assert!((signals_incoming.sum - 1.0).abs() < f64::EPSILON);
@@ -1386,18 +1386,18 @@ mod tests {
                 let snapshot =
                     tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
                         .await
-                        .expect("flow_measurement stop metric should be reported")
+                        .expect("flow_metric stop metric should be reported")
                         .expect("metrics channel should remain open");
                 let [MetricValue::Mmsc(compute_duration)] = snapshot.get_metrics() else {
                     panic!("expected flow duration MMSC metric");
                 };
                 assert!(
                     compute_duration.count >= 1,
-                    "flow_measurement compute duration should have at least one observation"
+                    "flow_metric compute duration should have at least one observation"
                 );
                 assert!(
                     compute_duration.sum > 0.0,
-                    "flow_measurement compute duration sum should be non-zero"
+                    "flow_metric compute duration sum should be non-zero"
                 );
                 let snapshot =
                     tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())

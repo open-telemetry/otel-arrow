@@ -20,9 +20,9 @@ use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth};
 use otap_df_engine::error::{Error, TypedError};
-use otap_df_engine::processor::{FlowMeasurementEffectHandler, FlowMeasurementHook};
+use otap_df_engine::processor::{FlowMetricEffectHandler, FlowMetricHook};
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, FlowMeasurementAccumulation, Interests,
+    ConsumerEffectHandlerExtension, FlowMetricAccumulation, Interests,
     MessageSourceLocalEffectHandlerExtension, MessageSourceSharedEffectHandlerExtension,
     ProducerEffectHandlerExtension,
 };
@@ -45,13 +45,13 @@ pub struct Context {
     /// `None` when no headers have been captured (the common case, zero
     /// additional allocation).
     transport_headers: Option<TransportHeaders>,
-    /// Active flow_measurement accumulator (nanoseconds).
+    /// Active flow_metric accumulator (nanoseconds).
     ///
-    /// `Some(ns)` when a message is inside a flow_measurement range (between
+    /// `Some(ns)` when a message is inside a flow_metric range (between
     /// start and end nodes). Stored value equals the real accumulated
-    /// nanoseconds. `start_flow_measurement` initializes to 1ns as an "active"
+    /// nanoseconds. `start_flow_metric` initializes to 1ns as an "active"
     /// sentinel — duration measurements are required to be >0 ns, so the
-    /// 1ns sentinel is acceptable drift. At most one flow_measurement can be
+    /// 1ns sentinel is acceptable drift. At most one flow_metric can be
     /// active at a time (non-overlapping ranges).
     flow_compute_ns: Option<NonZeroU64>,
 }
@@ -354,33 +354,33 @@ impl otap_df_engine::StampOutputPort for OtapPdata {
     }
 }
 
-impl FlowMeasurementAccumulation for OtapPdata {
-    fn start_flow_measurement(&mut self) {
-        // Build-time validation in `build_flow_measurement_state` rejects flow_measurements
+impl FlowMetricAccumulation for OtapPdata {
+    fn start_flow_metric(&mut self) {
+        // Build-time validation in `build_flow_metric_state` rejects flow_metrics
         // that share a start or end node, but it does NOT yet detect
         // interleaved ranges with distinct endpoints (e.g. 1→3 + 2→4 on the
-        // path 1→2→3→4). Until that gap is closed (see TODO(flow_measurement-interleave)
-        // in engine/src/flow_measurement.rs), keep a defensive runtime warning so a
+        // path 1→2→3→4). Until that gap is closed (see TODO(flow_metric-interleave)
+        // in engine/src/flow_metric.rs), keep a defensive runtime warning so a
         // misconfigured pipeline is diagnosable instead of silently producing
         // truncated histograms.
         if self.context.flow_compute_ns.is_some() {
             otap_df_telemetry::otel_warn!(
-                "flow_measurement.overlap",
-                "start_flow_measurement called while another flow_measurement is active; \
+                "flow_metric.overlap",
+                "start_flow_metric called while another flow_metric is active; \
                  overlapping ranges are not supported — previous accumulator discarded"
             );
         }
-        // Use a 1ns active sentinel because flow_measurement duration measurements
+        // Use a 1ns active sentinel because flow_metric duration measurements
         // are required to be greater than 0ns.
         self.context.flow_compute_ns = Some(NonZeroU64::new(1).expect("1 is non-zero"));
     }
 
     fn add_flow_compute(&mut self, ns: u64) {
         if let Some(acc) = &mut self.context.flow_compute_ns {
-            // The 1ns initialization sentinel from start_flow_measurement is included
+            // The 1ns initialization sentinel from start_flow_metric is included
             // in the total.
             *acc = NonZeroU64::new(acc.get().saturating_add(ns))
-                .expect("flow_measurement accumulator is non-zero");
+                .expect("flow_metric accumulator is non-zero");
         }
     }
 
@@ -390,9 +390,9 @@ impl FlowMeasurementAccumulation for OtapPdata {
 }
 
 impl OtapPdata {
-    /// Returns `true` if a flow_measurement accumulator is currently active.
+    /// Returns `true` if a flow_metric accumulator is currently active.
     #[must_use]
-    fn has_active_flow_measurement(&self) -> bool {
+    fn has_active_flow_metric(&self) -> bool {
         self.context.flow_compute_ns.is_some()
     }
 }
@@ -699,48 +699,48 @@ impl_consumer_ext!(otap_df_engine::shared::exporter::EffectHandler<OtapPdata>);
 
 /* --------  effect handler extensions (shared, local) -------- */
 
-/// Forward-path flow_measurement accumulation for non-overlapping ranges.
-/// Invoked by local and shared processor handlers (via `FlowMeasurementHook`);
-/// receivers and exporters do not measure flow_measurements.
-fn flow_accumulate<H: FlowMeasurementEffectHandler>(handler: &H, data: &mut OtapPdata) {
+/// Forward-path flow_metric accumulation for non-overlapping ranges.
+/// Invoked by local and shared processor handlers (via `FlowMetricHook`);
+/// receivers and exporters do not measure flow_metrics.
+fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata) {
     let is_start = handler.is_flow_start();
     let is_end = handler.is_flow_end();
-    if !is_start && !is_end && !data.has_active_flow_measurement() {
+    if !is_start && !is_end && !data.has_active_flow_metric() {
         return;
     }
     let delta_ns = handler.take_elapsed_since_send_marker_ns();
 
     if is_start {
-        data.start_flow_measurement();
+        data.start_flow_metric();
     }
     data.add_flow_compute(delta_ns);
     if is_end {
         if let Some(total) = data.take_flow_compute() {
             handler.record_flow_duration(total);
         }
-        // num_items() is only called at flow_measurement boundaries to keep
+        // num_items() is only called at flow_metric boundaries to keep
         // overhead off the per-node hot path. At the end node this
         // reflects the post-process count — what is actually leaving
-        // the flow_measurement range. Recorded unconditionally (including 0)
+        // the flow_metric range. Recorded unconditionally (including 0)
         // so signals.outgoing.count stays in lockstep with
         // compute.duration.count and 0-out traversals stay visible.
         handler.record_flow_signals_outgoing(data.num_items() as u64);
     }
 }
 
-impl FlowMeasurementHook for OtapPdata {
-    fn before_processor_send<H: FlowMeasurementEffectHandler>(&mut self, handler: &H) {
+impl FlowMetricHook for OtapPdata {
+    fn before_processor_send<H: FlowMetricEffectHandler>(&mut self, handler: &H) {
         flow_accumulate(handler, self);
     }
 
-    /// At the flow_measurement start node, count items *entering* the range —
+    /// At the flow_metric start node, count items *entering* the range —
     /// i.e. before `process()` runs and may filter or drop them. This
     /// gives the true input volume to compare against the end-node
     /// output volume recorded in [`flow_accumulate`]. Recorded
     /// unconditionally (including 0) so signals.incoming.count stays in
     /// lockstep with compute.duration.count and 0-in traversals stay
     /// visible.
-    fn after_processor_receive<H: FlowMeasurementEffectHandler>(&mut self, handler: &H) {
+    fn after_processor_receive<H: FlowMetricEffectHandler>(&mut self, handler: &H) {
         if handler.is_flow_start() {
             handler.record_flow_signals_incoming(self.num_items() as u64);
         }
@@ -884,7 +884,7 @@ mod test {
         (TestCallData::default(), create_test_pdata())
     }
 
-    struct FakeFlowMeasurementHandler {
+    struct FakeFlowMetricHandler {
         is_start: bool,
         is_end: bool,
         elapsed_ns: u64,
@@ -896,7 +896,7 @@ mod test {
         stop_signals_calls: Cell<u32>,
     }
 
-    impl FakeFlowMeasurementHandler {
+    impl FakeFlowMetricHandler {
         fn start(elapsed_ns: u64) -> Self {
             Self {
                 is_start: true,
@@ -926,7 +926,7 @@ mod test {
         }
     }
 
-    impl FlowMeasurementEffectHandler for FakeFlowMeasurementHandler {
+    impl FlowMetricEffectHandler for FakeFlowMetricHandler {
         fn is_flow_start(&self) -> bool {
             self.is_start
         }
@@ -963,7 +963,7 @@ mod test {
         let signals = pdata.num_items() as u64;
         assert!(signals > 0, "test pdata must contain signal items");
 
-        let start_handler = FakeFlowMeasurementHandler::start(5);
+        let start_handler = FakeFlowMetricHandler::start(5);
         // Incoming count is recorded by after_processor_receive (pre-process).
         pdata.after_processor_receive(&start_handler);
         // The send hook still drives compute-duration accumulation.
@@ -971,7 +971,7 @@ mod test {
         assert_eq!(start_handler.start_signals.get(), signals);
         assert_eq!(start_handler.stop_signals.get(), 0);
 
-        let end_handler = FakeFlowMeasurementHandler::end(7);
+        let end_handler = FakeFlowMetricHandler::end(7);
         pdata.after_processor_receive(&end_handler);
         pdata.before_processor_send(&end_handler);
         assert_eq!(end_handler.stop_signals.get(), signals);
@@ -990,7 +990,7 @@ mod test {
 
         // Start node: after_processor_receive must record (incoming = 0)
         // even though the batch is empty.
-        let start_handler = FakeFlowMeasurementHandler::start(5);
+        let start_handler = FakeFlowMetricHandler::start(5);
         pdata.after_processor_receive(&start_handler);
         pdata.before_processor_send(&start_handler);
         assert_eq!(start_handler.start_signals_calls.get(), 1);
@@ -999,7 +999,7 @@ mod test {
 
         // Stop node: before_processor_send must record both
         // compute.duration AND outgoing = 0, in lockstep.
-        let end_handler = FakeFlowMeasurementHandler::end(7);
+        let end_handler = FakeFlowMetricHandler::end(7);
         pdata.after_processor_receive(&end_handler);
         pdata.before_processor_send(&end_handler);
         assert_eq!(
@@ -2236,65 +2236,65 @@ mod test {
     }
 
     // -----------------------------------------------------------------------
-    // FlowMeasurement accumulation tests
+    // FlowMetric accumulation tests
     // -----------------------------------------------------------------------
 
     #[test]
-    fn flow_measurement_basic_accumulate_and_take() {
+    fn flow_metric_basic_accumulate_and_take() {
         let mut pdata = create_test_pdata();
 
         // No accumulator active initially.
-        assert!(!pdata.has_active_flow_measurement());
+        assert!(!pdata.has_active_flow_metric());
         assert_eq!(pdata.take_flow_compute(), None);
 
         // Start → accumulate → take.
-        pdata.start_flow_measurement();
-        assert!(pdata.has_active_flow_measurement());
+        pdata.start_flow_metric();
+        assert!(pdata.has_active_flow_metric());
         pdata.add_flow_compute(100);
         pdata.add_flow_compute(200);
         assert_eq!(pdata.take_flow_compute(), Some(300));
 
         // Accumulator consumed.
-        assert!(!pdata.has_active_flow_measurement());
+        assert!(!pdata.has_active_flow_metric());
     }
 
     #[test]
-    fn flow_measurement_add_without_start_is_noop() {
+    fn flow_metric_add_without_start_is_noop() {
         let mut pdata = create_test_pdata();
 
         // add_flow_compute without start should be harmless.
         pdata.add_flow_compute(999);
-        assert!(!pdata.has_active_flow_measurement());
+        assert!(!pdata.has_active_flow_metric());
         assert_eq!(pdata.take_flow_compute(), None);
     }
 
     #[test]
-    fn flow_measurement_runtime_overlap_overwrites_accumulator() {
+    fn flow_metric_runtime_overlap_overwrites_accumulator() {
         let mut pdata = create_test_pdata();
 
-        // First flow_measurement starts and accumulates.
-        pdata.start_flow_measurement();
+        // First flow_metric starts and accumulates.
+        pdata.start_flow_metric();
         pdata.add_flow_compute(100);
 
-        // Second flow_measurement starts while first is still active — this is
+        // Second flow_metric starts while first is still active — this is
         // the interleaved 1→3 + 2→4 scenario that build-time validation
         // does not yet detect. The runtime warning fires and the accumulator
         // is reset to the 1ns active sentinel.
-        pdata.start_flow_measurement();
-        assert!(pdata.has_active_flow_measurement());
+        pdata.start_flow_metric();
+        assert!(pdata.has_active_flow_metric());
 
-        // Only the second flow_measurement's compute should be present.
+        // Only the second flow_metric's compute should be present.
         pdata.add_flow_compute(50);
         assert_eq!(pdata.take_flow_compute(), Some(50));
     }
 
     #[test]
-    fn flow_measurement_clone_without_context_clears_accumulator() {
+    fn flow_metric_clone_without_context_clears_accumulator() {
         let mut pdata = create_test_pdata();
-        pdata.start_flow_measurement();
+        pdata.start_flow_metric();
         pdata.add_flow_compute(42);
 
         let cloned = pdata.clone_without_context();
-        assert!(!cloned.has_active_flow_measurement());
+        assert!(!cloned.has_active_flow_metric());
     }
 }
