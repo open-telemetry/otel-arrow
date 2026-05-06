@@ -1,33 +1,33 @@
-# Demonstrates the distributed stopwatch feature.
+# Demonstrates the distributed flow metrics feature.
 #
 # Five attribute processors form a sequential processing chain, with a 1-in-3
 # log sampler in the middle so that produced < consumed:
 #
-#   stopwatch "ingest_pipeline" - covers attr1 through attr4 (full chain)
+#   flow metric "ingest_pipeline" - covers sampler through attr4 (full chain)
 #
-# Stopwatches sum per-processor wall-clock compute time across each node in the
-# range. The engine arms an Instant send-marker before each `process()` call
+# Flow metrics sum per-processor wall-clock compute time across each node in
+# the range. The engine arms an Instant send-marker before each `process()` call
 # and advances it on every `send_message`; the elapsed delta is accumulated
-# onto the message's stopwatch context and recorded at the stop node. This
+# onto the message's flow metric context and recorded at the end node. This
 # captures synchronous compute plus any await/I/O that occurs inside
 # `process()` between sends; it excludes time the message spends queued in
 # inbound channels.
 #
-# Metrics emitted on the `stopwatch` metric set:
-#   - stopwatch.compute.duration (MMSC histogram, nanoseconds)
-#   - stopwatch.signals.incoming   (MMSC, items observed at the start node)
-#   - stopwatch.signals.outgoing   (MMSC, items observed at the stop node)
+# Metrics emitted on the `flow` metric set:
+#   - flow.compute.duration (MMSC histogram, nanoseconds)
+#   - flow.signals.incoming   (MMSC, items observed at the start node)
+#   - flow.signals.outgoing   (MMSC, items observed at the end node)
 #
-# With the sampler in place, `signals.incoming` (at attr1) reflects the full
+# With the sampler in place, `signals.incoming` (at sampler) reflects the full
 # input volume while `signals.outgoing` (at attr4) reflects roughly 1/3 of it,
 # so the difference is directly visible.
 #
-# Note: only non-overlapping stopwatch ranges are supported. A message can be
-# inside at most one stopwatch range at a time.
+# Note: only non-overlapping flow metric ranges are supported. A message can
+# be inside at most one flow metric range at a time.
 #
 # Query metrics while running:
 #   curl -s 'http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json' \
-#     | jq '[.metric_sets[] | select(.name == "stopwatch" or .name == "processor.compute")]'
+#     | jq '[.metric_sets[] | select(.name == "flow" or .name == "processor.compute")]'
 
 version: otel_dataflow/v1
 engine: {}
@@ -43,10 +43,14 @@ groups:
             pdata: 128
           telemetry:
             runtime_metrics: normal
-            stopwatches:
+            flow_metrics:
               - name: ingest_pipeline
-                start_node: sampler
-                stop_node: attr4
+                bounds:
+                  start_node: sampler
+                  end_node: attr4
+                # metrics is optional
+                # if omitted, all supported metrics are recorded
+                metrics: [ compute_duration, signals_incoming, signals_outgoing ]
 
         nodes:
           receiver:
@@ -60,7 +64,7 @@ groups:
 
           # Drops ~2 of every 3 log records so that signals.outgoing
           # at attr4 is visibly smaller than signals.incoming at sampler.
-          # Used as beginning of stopwatch range to prove that signals.incoming
+          # Used as beginning of flow metric range to prove that signals.incoming
           # is reported before start node's process() begins.
           sampler:
             type: processor:log_sampling
