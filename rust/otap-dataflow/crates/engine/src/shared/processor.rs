@@ -438,6 +438,11 @@ impl<PData> EffectHandler<PData> {
         self.core.delay_data(when, data).await
     }
 
+    /// Requeue retained pdata onto this node later.
+    pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
+        self.core.requeue_later(when, data)
+    }
+
     /// Set or replace a processor-local wakeup.
     pub fn set_wakeup(
         &self,

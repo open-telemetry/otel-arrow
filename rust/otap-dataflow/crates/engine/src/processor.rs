@@ -448,7 +448,7 @@ impl<PData> ProcessorWrapper<PData> {
         match self {
             ProcessorWrapper::Local {
                 node_id,
-                runtime_config: _,
+                runtime_config,
                 processor,
                 control_receiver,
                 pdata_senders,
@@ -465,25 +465,20 @@ impl<PData> ProcessorWrapper<PData> {
                     source_detail: String::new(),
                 })?;
                 validate_local_wakeup_requirements(&node_id, runtime_requirements)?;
-                let maybe_local_scheduler = runtime_requirements
-                    .local_wakeups
-                    .map(|requirements| NodeLocalSchedulerHandle::new(requirements.live_slots));
-                let inbox = if let Some(local_scheduler) = maybe_local_scheduler.clone() {
-                    ProcessorInbox::new_with_local_scheduler(
-                        Receiver::Local(control_receiver),
-                        pdata_receiver,
-                        local_scheduler,
-                        node_id.index,
-                        node_interests,
-                    )
-                } else {
-                    ProcessorInbox::new(
-                        Receiver::Local(control_receiver),
-                        pdata_receiver,
-                        node_id.index,
-                        node_interests,
-                    )
-                };
+                let local_scheduler = NodeLocalSchedulerHandle::new(
+                    runtime_config.input_pdata_channel.capacity,
+                    runtime_requirements
+                        .local_wakeups
+                        .map(|requirements| requirements.live_slots)
+                        .unwrap_or(0),
+                );
+                let inbox = ProcessorInbox::new_with_local_scheduler(
+                    Receiver::Local(control_receiver),
+                    pdata_receiver,
+                    local_scheduler.clone(),
+                    node_id.index,
+                    node_interests,
+                );
                 let default_port = user_config.default_output.clone();
                 let mut effect_handler = local::EffectHandler::new(
                     node_id,
@@ -492,9 +487,7 @@ impl<PData> ProcessorWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
-                if let Some(local_scheduler) = maybe_local_scheduler {
-                    effect_handler.core.set_local_scheduler(local_scheduler);
-                }
+                effect_handler.core.set_local_scheduler(local_scheduler);
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
                     effect_handler,
@@ -503,7 +496,7 @@ impl<PData> ProcessorWrapper<PData> {
             }
             ProcessorWrapper::Shared {
                 node_id,
-                runtime_config: _,
+                runtime_config,
                 processor,
                 control_receiver,
                 pdata_senders,
@@ -521,25 +514,20 @@ impl<PData> ProcessorWrapper<PData> {
                         source_detail: String::new(),
                     })?);
                 validate_local_wakeup_requirements(&node_id, runtime_requirements)?;
-                let maybe_local_scheduler = runtime_requirements
-                    .local_wakeups
-                    .map(|requirements| NodeLocalSchedulerHandle::new(requirements.live_slots));
-                let inbox = if let Some(local_scheduler) = maybe_local_scheduler.clone() {
-                    ProcessorInbox::new_with_local_scheduler(
-                        Receiver::Shared(control_receiver),
-                        pdata_receiver,
-                        local_scheduler,
-                        node_id.index,
-                        node_interests,
-                    )
-                } else {
-                    ProcessorInbox::new(
-                        Receiver::Shared(control_receiver),
-                        pdata_receiver,
-                        node_id.index,
-                        node_interests,
-                    )
-                };
+                let local_scheduler = NodeLocalSchedulerHandle::new(
+                    runtime_config.input_pdata_channel.capacity,
+                    runtime_requirements
+                        .local_wakeups
+                        .map(|requirements| requirements.live_slots)
+                        .unwrap_or(0),
+                );
+                let inbox = ProcessorInbox::new_with_local_scheduler(
+                    Receiver::Shared(control_receiver),
+                    pdata_receiver,
+                    local_scheduler.clone(),
+                    node_id.index,
+                    node_interests,
+                );
                 let default_port = user_config.default_output.clone();
                 let mut effect_handler = shared::EffectHandler::new(
                     node_id,
@@ -548,9 +536,7 @@ impl<PData> ProcessorWrapper<PData> {
                     metrics_reporter,
                 );
                 effect_handler.set_source_tagging(source_tag);
-                if let Some(local_scheduler) = maybe_local_scheduler {
-                    effect_handler.core.set_local_scheduler(local_scheduler);
-                }
+                effect_handler.core.set_local_scheduler(local_scheduler);
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
                     effect_handler,
