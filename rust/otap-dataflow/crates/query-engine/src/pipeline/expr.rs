@@ -61,7 +61,7 @@ use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::crypto::sha256;
 use datafusion::functions::encoding::encode;
-use datafusion::functions::string::{concat, concat_ws, replace};
+use datafusion::functions::string::{concat, concat_ws, lower, replace, upper};
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{
     BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit,
@@ -76,7 +76,10 @@ use otap_df_pdata::arrays::{
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
-use crate::consts::{ENCODE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
+use crate::consts::{
+    ENCODE_FUNC_NAME, LOWER_CASE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME,
+    UPPER_CASE_FUNC_NAME,
+};
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::{join, multi_join};
 use crate::pipeline::expr::types::{
@@ -827,6 +830,8 @@ impl DataFusionFunctionDef {
                 Self::new(regexp_substr(), ExprLogicalType::String, false, None)
             }
             SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
+            UPPER_CASE_FUNC_NAME => Self::new(upper(), ExprLogicalType::String, true, None),
+            LOWER_CASE_FUNC_NAME => Self::new(lower(), ExprLogicalType::String, true, None),
             _ => return None,
         })
     }
@@ -1290,7 +1295,8 @@ impl PhysicalExprEvalResult {
 mod test {
     use super::*;
     use arrow::array::{
-        BinaryArray, DictionaryArray, Float64Array, Int32Array, Int64Array, StructArray, UInt8Array,
+        BinaryArray, DictionaryArray, Float64Array, Int32Array, Int64Array, StringArray,
+        StructArray, UInt8Array,
     };
     use data_engine_expressions::{
         BinaryMathematicalScalarExpression, IntegerScalarExpression,
@@ -3381,6 +3387,100 @@ mod test {
             Some("KWY7mjLuMsLKWmRRF2ls4IiMhLOfj9kcDsTrzQkCXfQ"),
             Some("IC2PQboIcxJjBtYKMQxbwlmMbR5mmNCXR80hiyhHMeI"),
         ]);
+
+        assert_eq!(result_arr.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_function_invocation_upper_case() {
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "event_name",
+                        )),
+                    )]),
+                ),
+            ))],
+        ));
+
+        let functions = [PipelineFunction::new_external("upper_case", vec![], None)];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("hello").finish(),
+            LogRecord::build().event_name("World").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = StringArray::from_iter([None, Some("HELLO"), Some("WORLD")]);
+
+        assert_eq!(result_arr.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_function_invocation_lower_case() {
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "event_name",
+                        )),
+                    )]),
+                ),
+            ))],
+        ));
+
+        let functions = [PipelineFunction::new_external("lower_case", vec![], None)];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("HELLO").finish(),
+            LogRecord::build().event_name("World").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = StringArray::from_iter([None, Some("hello"), Some("world")]);
 
         assert_eq!(result_arr.as_ref(), &expected);
     }
