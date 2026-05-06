@@ -127,12 +127,54 @@ Join the OpenTelemetry
 - If the PR is not ready for review, please put `[WIP]` in the title or mark it
   as draft.
 - Make sure CLA is signed and all required CI checks are clear.
-- Submit small, focused PRs addressing a single concern/issue.
+- Submit small, focused PRs addressing a single concern/issue. See
+  [Keep Pull Requests Small and Incremental](#keep-pull-requests-small-and-incremental)
+  below for the expectations this project applies.
 - Make sure the PR title reflects the contribution.
 - Write a summary that helps understand the change.
 - Include usage examples in the summary, where applicable.
 - Include benchmarks (before/after) in the summary, for contributions that are
   performance enhancements.
+
+### Keep Pull Requests Small and Incremental
+
+This repository has a limited pool of reviewers and approvers, and PR volume
+is high. To keep review quality high and merge times short, contributors are
+**strongly expected to submit small, single-purpose PRs**. This expectation
+applies regardless of whether the change was authored manually or with AI
+assistance.
+
+Large PRs are difficult to review thoroughly. In practice they tend to be
+approved on the strength of the parts a reviewer was able to read closely,
+while the rest receives a pass — which slowly erodes long-term quality.
+Small, incremental PRs let every component get the attention it deserves.
+
+**Guidelines:**
+
+- **One concern per PR.** A PR should do one thing: add a config type, wire
+  a no-op, implement one behavior, fix one bug, perform one refactor. If
+  the description needs the word "and", consider splitting.
+- **Target roughly < 400 lines of meaningful diff** (excluding generated
+  code, lockfiles, vendored data, and test fixtures). Larger PRs are
+  acceptable when genuinely unavoidable, but the description should explain
+  why splitting was not practical.
+- **Separate mechanical changes from logic changes.** Renames, reformats,
+  file moves, and dependency bumps belong in their own PRs, not bundled
+  with behavioral changes.
+- **Build new features incrementally.** A typical sequence is:
+  1. Introduce the crate / module skeleton in the right location.
+  2. Add configuration types (serde, validation, tests) wired as a no-op.
+  3. Integrate the no-op into the pipeline / runtime.
+  4. Add behavior in small, independently reviewable slices, each with
+     tests.
+  5. Documentation and examples.
+- **Use a tracking issue** for multi-PR features so the overall design and
+  progress remain visible to reviewers across the sequence of PRs.
+
+Reviewers may ask authors to split a PR before reviewing it. PRs that
+bundle unrelated changes, or that are large enough that no single reviewer
+can give every component close attention, are likely to be sent back for
+splitting.
 
 ### How to Get PRs Merged
 
