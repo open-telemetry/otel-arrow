@@ -23,6 +23,8 @@ use crate::pipeline_ctrl::{
     NodeMetricHandles, PipelineCompletionMsgDispatcher, RuntimeCtrlMsgManager,
     report_node_metrics_with_handles,
 };
+use crate::processor::FlowMeasurementHook;
+use crate::stopwatch::{StopwatchStartMetrics, StopwatchStopMetrics, build_stopwatch_state};
 use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
@@ -32,6 +34,7 @@ use otap_df_telemetry::event::ObservedEventReporter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::time::Duration;
@@ -172,7 +175,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     }
 }
 
-impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeline<PData> {
+impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMeasurementHook>
+    RuntimePipeline<PData>
+{
     /// Runs the pipeline forever, starting all nodes and handling their tasks.
     /// Returns an error if any node fails to start or if any task encounters an error.
     pub fn run_forever(
@@ -213,6 +218,30 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         let mut futures = FuturesUnordered::new();
         let mut control_senders = ControlSenders::default();
         let mut node_metric_entries: Vec<(usize, NodeMetricHandles)> = Vec::new();
+
+        // Build a name→index map from NodeDefs so we can resolve stopwatch
+        // config before processors are spawned.
+        let node_name_to_index: HashMap<String, usize> = _nodes
+            .iter()
+            .map(|(nid, _)| (nid.name.to_string(), nid.index))
+            .collect();
+
+        // Collect local and shared processor node indices for stopwatch validation.
+        let processor_indices: HashSet<usize> = processors
+            .iter()
+            .map(|p| match p {
+                ProcessorWrapper::Local { node_id, .. }
+                | ProcessorWrapper::Shared { node_id, .. } => node_id.index,
+            })
+            .collect();
+
+        // Build stopwatch state and per-node role assignments up front.
+        let stopwatch_state = build_stopwatch_state(
+            &telemetry_policy,
+            &node_name_to_index,
+            &processor_indices,
+            &pipeline_context,
+        )?;
 
         // Spawn node tasks and register their control senders, scoping telemetry where available.
         for exporter in exporters {
@@ -299,6 +328,17 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let metrics_reporter = metrics_reporter.clone();
+            // Extract stopwatch roles for this processor node.
+            let sw_is_start = stopwatch_state.start_nodes.contains_key(&node_id.index);
+            let sw_start_metric: Option<MetricSet<StopwatchStartMetrics>> = stopwatch_state
+                .start_nodes
+                .get(&node_id.index)
+                .map(|&id| stopwatch_state.start_metrics[id].clone());
+            let sw_stop_metric: Option<MetricSet<StopwatchStopMetrics>> = stopwatch_state
+                .stop_nodes
+                .get(&node_id.index)
+                .map(|&id| stopwatch_state.stop_metrics[id].clone());
+            let sw_active = !stopwatch_state.start_nodes.is_empty();
             let fut = async move {
                 let result = processor
                     .start_with_completion_metrics(
@@ -307,6 +347,10 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                         metrics_reporter,
                         node_interests,
                         completion_emission_metrics,
+                        sw_is_start,
+                        sw_start_metric,
+                        sw_stop_metric,
+                        sw_active,
                     )
                     .await;
                 drop(telemetry_guard);

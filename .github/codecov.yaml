@@ -1,11 +1,27 @@
+codecov:
+  notify:
+    # Wait for all coverage uploads before posting status. Without this,
+    # codecov posts a (failing) partial status as soon as the first
+    # upload arrives, before the other test jobs have even finished.
+    #
+    # IMPORTANT: this number must match the total count of
+    # `codecov/codecov-action` upload steps across all workflows.
+    # Currently:
+    #   - .github/workflows/rust-ci.yml `test` (Linux x86_64)
+    #   - .github/workflows/rust-ci.yml `coverage`
+    #   - .github/workflows/go-ci.yml   `test_and_coverage`
+    # If you add or remove a codecov upload, update this number.
+    after_n_builds: 3
+
 coverage:
   status:
     project: # Overall repo coverage
       default:
-        target: 85%
+        target: auto      # compare against the base commit
+        threshold: 1%     # allow a small drop without failing
     patch: # Changed lines in PR
       default:
-        target: 70%
+        target: 80%
 
 ignore:
   - "rust/otap-dataflow/crates/quiver-e2e/**" # Test tool, not production code

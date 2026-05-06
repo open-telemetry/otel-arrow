@@ -26,6 +26,7 @@ use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::Producer;
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::encode::producer::ProducerOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::{BatchArrowRecords, BatchStatus, StatusCode};
@@ -467,7 +468,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         self.pdata_metrics.inc_consumed(signal_type);
                         let payload = pdata.take_payload();
 
-                        let message: OtapArrowRecords = match payload.try_into() {
+                        let message: OtapArrowRecords = match payload.try_into_with_default() {
                             Ok(m) => m,
                             Err(e) => {
                                 self.pdata_metrics.inc_failed(signal_type);
@@ -1009,6 +1010,7 @@ mod tests {
         test_node,
     };
     use otap_df_otap::compression::CompressionMethod;
+    use otap_df_pdata::TryIntoWithOptions;
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
@@ -1112,7 +1114,7 @@ mod tests {
                         .expect("Timed out waiting for message")
                         .expect("No message received")
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .expect("Could convert pdata to OTAPData");
 
                 // Assert that the message received is what the exporter sent
@@ -1126,7 +1128,7 @@ mod tests {
                         .expect("Timed out waiting for message")
                         .expect("No message received")
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .expect("Could convert pdata to OTAPData");
                 let _expected_logs_message =
                     create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
@@ -1138,7 +1140,7 @@ mod tests {
                         .expect("Timed out waiting for message")
                         .expect("No message received")
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .expect("Could convert pdata to OTAPData");
 
                 let _expected_trace_message =
@@ -1671,7 +1673,7 @@ mod tests {
         let pdata = OtapPdata::new_default(log_message.into());
         let payload = pdata.clone();
         batches_tx
-            .send((pdata, payload.payload().try_into().unwrap()))
+            .send((pdata, payload.payload().try_into_with_default().unwrap()))
             .await
             .unwrap();
         // Drop sender so the function exits after processing
@@ -1731,7 +1733,7 @@ mod tests {
             let pdata = OtapPdata::new_default(log_message.into());
             let payload = pdata.clone();
             batches_tx
-                .send((pdata, payload.payload().try_into().unwrap()))
+                .send((pdata, payload.payload().try_into_with_default().unwrap()))
                 .await
                 .unwrap();
         }

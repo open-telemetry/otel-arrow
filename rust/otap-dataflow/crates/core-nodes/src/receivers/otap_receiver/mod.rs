@@ -619,6 +619,7 @@ mod tests {
     use otap_df_otap::pdata::OtapPdata;
     use otap_df_otap::testing::{next_ack, next_nack};
     use otap_df_pdata::Producer;
+    use otap_df_pdata::TryIntoWithOptions;
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
@@ -752,7 +753,7 @@ mod tests {
                     let metrics_records: OtapArrowRecords = metrics_pdata
                         .clone()
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .expect("Could convert pdata to OTAPData");
 
                     // Assert that the message received is what the test client sent.
@@ -778,7 +779,7 @@ mod tests {
                     let logs_records: OtapArrowRecords = logs_pdata
                         .clone()
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .expect("Could convert pdata to OTAPData");
 
                     // Assert that the message received is what the test client sent.
@@ -804,7 +805,7 @@ mod tests {
                     let traces_records: OtapArrowRecords = traces_pdata
                         .clone()
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .expect("Could convert pdata to OTAPData");
 
                     // Assert that the message received is what the test client sent.

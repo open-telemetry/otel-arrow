@@ -13,14 +13,18 @@
 //! encountered issues (Nack) downstream, optionally preserving the payload for retry or logging.
 //! This functionality is exposed through various traits implemented by effect handlers.
 
+use std::num::NonZeroU64;
+
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth};
 use otap_df_engine::error::{Error, TypedError};
+use otap_df_engine::processor::{FlowMeasurementHook, StopwatchEffectHandler};
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
     MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
+    StopwatchAccumulation,
 };
 use otap_df_pdata::OtapPayload;
 
@@ -41,6 +45,15 @@ pub struct Context {
     /// `None` when no headers have been captured (the common case, zero
     /// additional allocation).
     transport_headers: Option<TransportHeaders>,
+    /// Active stopwatch accumulator (nanoseconds).
+    ///
+    /// `Some(ns)` when a message is inside a stopwatch range (between
+    /// start and stop nodes). Stored value equals the real accumulated
+    /// nanoseconds. `start_stopwatch` initializes to 1ns as an "active"
+    /// sentinel — duration measurements are required to be >0 ns, so the
+    /// 1ns sentinel is acceptable drift. At most one stopwatch can be
+    /// active at a time (non-overlapping ranges).
+    stopwatch_compute_ns: Option<NonZeroU64>,
 }
 
 impl Context {
@@ -51,6 +64,7 @@ impl Context {
         Self {
             stack: Vec::with_capacity(capacity),
             transport_headers: None,
+            stopwatch_compute_ns: None,
         }
     }
 
@@ -83,7 +97,7 @@ impl Context {
             route: RouteData {
                 calldata,
                 entry_time_ns,
-                output_port_index: 0,
+                ..Default::default()
             },
         });
     }
@@ -340,6 +354,52 @@ impl otap_df_engine::StampOutputPort for OtapPdata {
     }
 }
 
+impl StopwatchAccumulation for OtapPdata {
+    fn start_stopwatch(&mut self) {
+        // Build-time validation in `build_stopwatch_state` rejects stopwatches
+        // that share a start or stop node, but it does NOT yet detect
+        // interleaved ranges with distinct endpoints (e.g. 1→3 + 2→4 on the
+        // path 1→2→3→4). Until that gap is closed (see TODO(stopwatch-interleave)
+        // in engine/src/stopwatch.rs), keep a defensive runtime warning so a
+        // misconfigured pipeline is diagnosable instead of silently producing
+        // truncated histograms.
+        if self.context.stopwatch_compute_ns.is_some() {
+            otap_df_telemetry::otel_warn!(
+                "stopwatch.overlap",
+                "start_stopwatch called while another stopwatch is active; \
+                 overlapping ranges are not supported — previous accumulator discarded"
+            );
+        }
+        // Use a 1ns active sentinel because stopwatch duration measurements
+        // are required to be greater than 0ns.
+        self.context.stopwatch_compute_ns = Some(NonZeroU64::new(1).expect("1 is non-zero"));
+    }
+
+    fn add_stopwatch_compute(&mut self, ns: u64) {
+        if let Some(acc) = &mut self.context.stopwatch_compute_ns {
+            // The 1ns initialization sentinel from start_stopwatch is included
+            // in the total.
+            *acc = NonZeroU64::new(acc.get().saturating_add(ns))
+                .expect("stopwatch accumulator is non-zero");
+        }
+    }
+
+    fn take_stopwatch_compute(&mut self) -> Option<u64> {
+        self.context
+            .stopwatch_compute_ns
+            .take()
+            .map(|acc| acc.get() - 1)
+    }
+}
+
+impl OtapPdata {
+    /// Returns `true` if a stopwatch accumulator is currently active.
+    #[must_use]
+    fn has_active_stopwatch(&self) -> bool {
+        self.context.stopwatch_compute_ns.is_some()
+    }
+}
+
 /// Context + container for telemetry data
 #[derive(Clone, Debug)]
 pub struct OtapPdata {
@@ -432,6 +492,7 @@ impl OtapPdata {
             context: Context {
                 stack: Vec::new(),
                 transport_headers: self.context.transport_headers.clone(),
+                stopwatch_compute_ns: None,
             },
             payload: self.payload.clone(),
         }
@@ -641,6 +702,54 @@ impl_consumer_ext!(otap_df_engine::shared::exporter::EffectHandler<OtapPdata>);
 
 /* --------  effect handler extensions (shared, local) -------- */
 
+/// Forward-path stopwatch accumulation for non-overlapping ranges.
+/// Invoked by local and shared processor handlers (via `FlowMeasurementHook`);
+/// receivers and exporters do not measure stopwatches.
+fn stopwatch_accumulate<H: StopwatchEffectHandler>(handler: &H, data: &mut OtapPdata) {
+    let is_start = handler.is_stopwatch_start();
+    let is_stop = handler.is_stopwatch_stop();
+    if !is_start && !is_stop && !data.has_active_stopwatch() {
+        return;
+    }
+    let delta_ns = handler.take_elapsed_since_send_marker_ns();
+
+    if is_start {
+        data.start_stopwatch();
+    }
+    data.add_stopwatch_compute(delta_ns);
+    if is_stop {
+        if let Some(total) = data.take_stopwatch_compute() {
+            handler.record_stopwatch_stop(total);
+        }
+        // num_items() is only called at stopwatch boundaries to keep
+        // overhead off the per-node hot path. At the stop node this
+        // reflects the post-process count — what is actually leaving
+        // the stopwatch range. Recorded unconditionally (including 0)
+        // so signals.outgoing.count stays in lockstep with
+        // compute.duration.count and 0-out traversals stay visible.
+        handler.record_stopwatch_stop_signals(data.num_items() as u64);
+    }
+}
+
+impl FlowMeasurementHook for OtapPdata {
+    fn before_processor_send<H: StopwatchEffectHandler>(&mut self, handler: &H) {
+        stopwatch_accumulate(handler, self);
+    }
+
+    /// At the stopwatch start node, count items *entering* the range —
+    /// i.e. before `process()` runs and may filter or drop them. This
+    /// gives the true input volume to compare against the stop-node
+    /// output volume recorded in [`stopwatch_accumulate`]. Recorded
+    /// unconditionally (including 0) so signals.incoming.count stays in
+    /// lockstep with compute.duration.count and 0-in traversals stay
+    /// visible.
+    fn after_processor_receive<H: StopwatchEffectHandler>(&mut self, handler: &H) {
+        if handler.is_stopwatch_start() {
+            handler.record_stopwatch_start_signals(self.num_items() as u64);
+        }
+    }
+}
+
 /// Implements a `MessageSource{Local,Shared}EffectHandlerExtension` for an EffectHandler type.
 ///
 /// Parameters:
@@ -648,8 +757,17 @@ impl_consumer_ext!(otap_df_engine::shared::exporter::EffectHandler<OtapPdata>);
 ///   $trait_name   – `MessageSourceLocalEffectHandlerExtension` or `MessageSourceSharedEffectHandlerExtension`
 ///   $handler      – fully-qualified EffectHandler type
 ///   $id_method    – `processor_id` or `receiver_id`
+///   $hook         – `with_hook` (processors: invokes `before_processor_send`)
+///                   or `no_hook` (receivers: no per-send bookkeeping)
+macro_rules! maybe_processor_send_hook {
+    (with_hook, $handler:expr, $data:expr) => {
+        $data.before_processor_send($handler);
+    };
+    (no_hook, $handler:expr, $data:expr) => {};
+}
+
 macro_rules! impl_message_source_ext {
-    ($async_attr:meta, $trait_name:ident, $handler:ty, $id_method:ident) => {
+    ($async_attr:meta, $trait_name:ident, $handler:ty, $id_method:ident, $hook:ident) => {
         #[$async_attr]
         impl $trait_name<OtapPdata> for $handler {
             async fn send_message_with_source_node(
@@ -657,6 +775,7 @@ macro_rules! impl_message_source_ext {
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.send_default_stamped(data).await
             }
 
@@ -665,6 +784,7 @@ macro_rules! impl_message_source_ext {
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.try_send_default_stamped(data)
             }
 
@@ -677,6 +797,7 @@ macro_rules! impl_message_source_ext {
                 P: Into<PortName> + Send + 'static,
             {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.send_to_stamped(port, data).await
             }
 
@@ -689,6 +810,7 @@ macro_rules! impl_message_source_ext {
                 P: Into<PortName> + Send + 'static,
             {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.try_send_to_stamped(port, data)
             }
         }
@@ -699,25 +821,29 @@ impl_message_source_ext!(
     async_trait(?Send),
     MessageSourceLocalEffectHandlerExtension,
     otap_df_engine::local::processor::EffectHandler<OtapPdata>,
-    processor_id
+    processor_id,
+    with_hook
 );
 impl_message_source_ext!(
     async_trait(?Send),
     MessageSourceLocalEffectHandlerExtension,
     otap_df_engine::local::receiver::EffectHandler<OtapPdata>,
-    receiver_id
+    receiver_id,
+    no_hook
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
     otap_df_engine::shared::processor::EffectHandler<OtapPdata>,
-    processor_id
+    processor_id,
+    with_hook
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
     otap_df_engine::shared::receiver::EffectHandler<OtapPdata>,
-    receiver_id
+    receiver_id,
+    no_hook
 );
 
 /* -------- ReceivedAtNode implementation -------- */
@@ -732,7 +858,9 @@ impl otap_df_engine::ReceivedAtNode for OtapPdata {
 mod test {
     use super::*;
 
-    use crate::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
+    use crate::testing::{
+        TestCallData, create_empty_test_pdata, create_test_pdata, next_ack, next_nack,
+    };
     use otap_df_channel::mpsc::Channel as LocalChannel;
     use otap_df_engine::ConsumerEffectHandlerExtension;
     use otap_df_engine::control::{
@@ -751,11 +879,139 @@ mod test {
     use otap_df_engine::shared::receiver::EffectHandler as SharedReceiverEffectHandler;
     use otap_df_telemetry::reporter::MetricsReporter;
     use pretty_assertions::assert_eq;
+    use std::cell::Cell;
     use std::collections::HashMap;
     use tokio::sync::mpsc;
 
     fn create_test() -> (TestCallData, OtapPdata) {
         (TestCallData::default(), create_test_pdata())
+    }
+
+    struct FakeStopwatchHandler {
+        is_start: bool,
+        is_stop: bool,
+        elapsed_ns: u64,
+        stop_total: Cell<u64>,
+        stop_total_calls: Cell<u32>,
+        start_signals: Cell<u64>,
+        start_signals_calls: Cell<u32>,
+        stop_signals: Cell<u64>,
+        stop_signals_calls: Cell<u32>,
+    }
+
+    impl FakeStopwatchHandler {
+        fn start(elapsed_ns: u64) -> Self {
+            Self {
+                is_start: true,
+                is_stop: false,
+                elapsed_ns,
+                stop_total: Cell::new(0),
+                stop_total_calls: Cell::new(0),
+                start_signals: Cell::new(0),
+                start_signals_calls: Cell::new(0),
+                stop_signals: Cell::new(0),
+                stop_signals_calls: Cell::new(0),
+            }
+        }
+
+        fn stop(elapsed_ns: u64) -> Self {
+            Self {
+                is_start: false,
+                is_stop: true,
+                elapsed_ns,
+                stop_total: Cell::new(0),
+                stop_total_calls: Cell::new(0),
+                start_signals: Cell::new(0),
+                start_signals_calls: Cell::new(0),
+                stop_signals: Cell::new(0),
+                stop_signals_calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl StopwatchEffectHandler for FakeStopwatchHandler {
+        fn is_stopwatch_start(&self) -> bool {
+            self.is_start
+        }
+
+        fn is_stopwatch_stop(&self) -> bool {
+            self.is_stop
+        }
+
+        fn take_elapsed_since_send_marker_ns(&self) -> u64 {
+            self.elapsed_ns
+        }
+
+        fn record_stopwatch_stop(&self, total: u64) {
+            self.stop_total.set(total);
+            self.stop_total_calls.set(self.stop_total_calls.get() + 1);
+        }
+
+        fn record_stopwatch_start_signals(&self, signals: u64) {
+            self.start_signals.set(signals);
+            self.start_signals_calls
+                .set(self.start_signals_calls.get() + 1);
+        }
+
+        fn record_stopwatch_stop_signals(&self, signals: u64) {
+            self.stop_signals.set(signals);
+            self.stop_signals_calls
+                .set(self.stop_signals_calls.get() + 1);
+        }
+    }
+
+    #[test]
+    fn stopwatch_hooks_record_start_and_stop_signal_counts() {
+        let mut pdata = create_test_pdata();
+        let signals = pdata.num_items() as u64;
+        assert!(signals > 0, "test pdata must contain signal items");
+
+        let start_handler = FakeStopwatchHandler::start(5);
+        // Incoming count is recorded by after_processor_receive (pre-process).
+        pdata.after_processor_receive(&start_handler);
+        // The send hook still drives compute-duration accumulation.
+        pdata.before_processor_send(&start_handler);
+        assert_eq!(start_handler.start_signals.get(), signals);
+        assert_eq!(start_handler.stop_signals.get(), 0);
+
+        let stop_handler = FakeStopwatchHandler::stop(7);
+        pdata.after_processor_receive(&stop_handler);
+        pdata.before_processor_send(&stop_handler);
+        assert_eq!(stop_handler.stop_signals.get(), signals);
+        assert!(stop_handler.stop_total.get() > 0);
+    }
+
+    /// A 0-item batch must still produce one record() call on each MMSC,
+    /// so signals.incoming.count, signals.outgoing.count, and
+    /// compute.duration.count stay in lockstep with the number of
+    /// traversals. Hiding 0-item batches would diverge the counts and
+    /// erase a useful starvation/over-filter signal.
+    #[test]
+    fn stopwatch_hooks_record_zero_item_batches() {
+        let mut pdata = create_empty_test_pdata();
+        assert_eq!(pdata.num_items(), 0);
+
+        // Start node: after_processor_receive must record (incoming = 0)
+        // even though the batch is empty.
+        let start_handler = FakeStopwatchHandler::start(5);
+        pdata.after_processor_receive(&start_handler);
+        pdata.before_processor_send(&start_handler);
+        assert_eq!(start_handler.start_signals_calls.get(), 1);
+        assert_eq!(start_handler.start_signals.get(), 0);
+        assert_eq!(start_handler.stop_signals_calls.get(), 0);
+
+        // Stop node: before_processor_send must record both
+        // compute.duration AND outgoing = 0, in lockstep.
+        let stop_handler = FakeStopwatchHandler::stop(7);
+        pdata.after_processor_receive(&stop_handler);
+        pdata.before_processor_send(&stop_handler);
+        assert_eq!(
+            stop_handler.stop_total_calls.get(),
+            stop_handler.stop_signals_calls.get(),
+            "compute.duration and signals.outgoing must record together for parity"
+        );
+        assert_eq!(stop_handler.stop_signals.get(), 0);
+        assert!(stop_handler.stop_total.get() > 0);
     }
 
     #[tokio::test]
@@ -1980,5 +2236,68 @@ mod test {
             }
             other => panic!("expected DeliverNack, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Stopwatch accumulation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stopwatch_basic_accumulate_and_take() {
+        let mut pdata = create_test_pdata();
+
+        // No accumulator active initially.
+        assert!(!pdata.has_active_stopwatch());
+        assert_eq!(pdata.take_stopwatch_compute(), None);
+
+        // Start → accumulate → take.
+        pdata.start_stopwatch();
+        assert!(pdata.has_active_stopwatch());
+        pdata.add_stopwatch_compute(100);
+        pdata.add_stopwatch_compute(200);
+        assert_eq!(pdata.take_stopwatch_compute(), Some(300));
+
+        // Accumulator consumed.
+        assert!(!pdata.has_active_stopwatch());
+    }
+
+    #[test]
+    fn stopwatch_add_without_start_is_noop() {
+        let mut pdata = create_test_pdata();
+
+        // add_stopwatch_compute without start should be harmless.
+        pdata.add_stopwatch_compute(999);
+        assert!(!pdata.has_active_stopwatch());
+        assert_eq!(pdata.take_stopwatch_compute(), None);
+    }
+
+    #[test]
+    fn stopwatch_runtime_overlap_overwrites_accumulator() {
+        let mut pdata = create_test_pdata();
+
+        // First stopwatch starts and accumulates.
+        pdata.start_stopwatch();
+        pdata.add_stopwatch_compute(100);
+
+        // Second stopwatch starts while first is still active — this is
+        // the interleaved 1→3 + 2→4 scenario that build-time validation
+        // does not yet detect. The runtime warning fires and the accumulator
+        // is reset to the 1ns active sentinel.
+        pdata.start_stopwatch();
+        assert!(pdata.has_active_stopwatch());
+
+        // Only the second stopwatch's compute should be present.
+        pdata.add_stopwatch_compute(50);
+        assert_eq!(pdata.take_stopwatch_compute(), Some(50));
+    }
+
+    #[test]
+    fn stopwatch_clone_without_context_clears_accumulator() {
+        let mut pdata = create_test_pdata();
+        pdata.start_stopwatch();
+        pdata.add_stopwatch_compute(42);
+
+        let cloned = pdata.clone_without_context();
+        assert!(!cloned.has_active_stopwatch());
     }
 }

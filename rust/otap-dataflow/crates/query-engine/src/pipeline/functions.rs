@@ -13,6 +13,7 @@ use datafusion::logical_expr::{self as datafusion_expr, TypeSignature};
 use datafusion::logical_expr_common::signature::Arity;
 
 mod contains;
+pub(crate) mod is_type;
 mod regexp_substr;
 mod substring;
 

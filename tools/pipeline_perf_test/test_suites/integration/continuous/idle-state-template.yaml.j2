@@ -28,7 +28,7 @@ components:
       docker_component: {}
 {% endif %}
       prometheus:
-        endpoint: http://localhost:{{port}}/telemetry/metrics?format=prometheus&reset=false
+        endpoint: http://localhost:{{port}}/api/v1/telemetry/metrics?format=prometheus&reset=false
 
 tests:
   - name: Idle State Baseline - {{core_label}}
@@ -48,7 +48,7 @@ tests:
                     backend_hostname: localhost
             post:
               - ready_check_http:
-                  url: http://localhost:{{port}}/telemetry/metrics?reset=false
+                  url: http://localhost:{{port}}/api/v1/telemetry/metrics?reset=false
                   method: GET
                   expected_status_code: 200
 

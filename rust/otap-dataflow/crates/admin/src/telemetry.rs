@@ -11,6 +11,7 @@
 
 use crate::AppState;
 use crate::convert::json_shape;
+#[cfg(feature = "live-logs-ws")]
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
@@ -30,18 +31,24 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
+#[cfg(feature = "live-logs-ws")]
 use std::sync::Arc;
+#[cfg(feature = "live-logs-ws")]
 use tokio::sync::broadcast;
 
 /// All the routes for telemetry.
 pub(crate) fn routes() -> Router<AppState> {
-    Router::new()
+    let router = Router::new()
         .route("/telemetry/live-schema", get(get_live_schema))
         .route("/telemetry/logs", get(get_logs))
-        .route("/telemetry/logs/stream", get(ws_logs_stream))
         .route("/telemetry/metrics", get(get_metrics))
         .route("/telemetry/metrics/aggregate", get(get_metrics_aggregate))
-        .route("/metrics", get(get_metrics))
+        .route("/metrics", get(get_metrics));
+
+    #[cfg(feature = "live-logs-ws")]
+    let router = router.route("/telemetry/logs/stream", get(ws_logs_stream));
+
+    router
 }
 
 /// All metric sets.
@@ -1297,6 +1304,7 @@ fn level_severity(level: &str) -> u8 {
 }
 
 /// Map a `tracing::Level` to the same severity scale used by [`level_severity`].
+#[cfg_attr(not(feature = "live-logs-ws"), allow(dead_code))]
 fn tracing_level_severity(level: &otap_df_telemetry::Level) -> u8 {
     match *level {
         otap_df_telemetry::Level::ERROR => 4,
@@ -1312,6 +1320,7 @@ fn tracing_level_severity(level: &otap_df_telemetry::Level) -> u8 {
 /// Applied after rendering so that `search_query` can match against the fully
 /// formatted message text as well as metadata fields (level, target, etc.).
 #[derive(Default)]
+#[cfg_attr(not(feature = "live-logs-ws"), allow(dead_code))]
 struct LogFilter {
     /// Case-insensitive substring matched against: rendered message, level,
     /// target, event_name, and file path.
@@ -1323,6 +1332,7 @@ struct LogFilter {
     minimum_level: Option<u8>,
 }
 
+#[cfg_attr(not(feature = "live-logs-ws"), allow(dead_code))]
 impl LogFilter {
     /// Returns `true` when the rendered log entry passes all active criteria.
     fn matches(&self, entry: &LogEntry) -> bool {
@@ -1410,6 +1420,7 @@ impl LogFilter {
 }
 
 /// Client to server WebSocket messages.
+#[cfg(feature = "live-logs-ws")]
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum WsClientMsg {
@@ -1456,6 +1467,7 @@ enum WsClientMsg {
 }
 
 /// Server to client WebSocket messages.
+#[cfg(feature = "live-logs-ws")]
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WsServerMsg {
@@ -1490,6 +1502,7 @@ enum WsServerMsg {
 }
 
 /// Upgrade handler for `GET /api/v1/telemetry/logs/stream`.
+#[cfg(feature = "live-logs-ws")]
 async fn ws_logs_stream(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(move |socket| handle_ws_logs(socket, state))
 }
@@ -1497,6 +1510,7 @@ async fn ws_logs_stream(State(state): State<AppState>, ws: WebSocketUpgrade) -> 
 /// Send a serialized `WsServerMsg` as a WebSocket text frame.
 ///
 /// Returns `false` if the socket is closed and the caller should stop sending.
+#[cfg(feature = "live-logs-ws")]
 async fn ws_send(ws: &mut WebSocket, msg: &WsServerMsg) -> bool {
     match serde_json::to_string(msg) {
         Ok(text) => ws.send(Message::Text(text.into())).await.is_ok(),
@@ -1508,6 +1522,7 @@ async fn ws_send(ws: &mut WebSocket, msg: &WsServerMsg) -> bool {
 ///
 /// Applies `filter` to the rendered entries so that snapshot and backfill
 /// responses are consistent with what the live stream sends for the same filter.
+#[cfg(feature = "live-logs-ws")]
 async fn ws_send_snapshot(
     ws: &mut WebSocket,
     registry: &TelemetryRegistryHandle,
@@ -1545,6 +1560,7 @@ async fn ws_send_snapshot(
 /// 5. If the client falls more than `SUBSCRIBER_CHANNEL_CAPACITY` events
 ///    behind, the broadcast channel drops the overflow; the server notifies the
 ///    client with an `error` message so it can issue a `backfill`.
+#[cfg(feature = "live-logs-ws")]
 async fn handle_ws_logs(mut ws: WebSocket, state: AppState) {
     let Some(log_tap) = state.log_tap.as_ref() else {
         let _ = ws_send(
@@ -1885,6 +1901,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "live-logs-ws")]
     #[tokio::test]
     async fn telemetry_routes_include_logs_stream_websocket_endpoint() {
         let response = routes()
@@ -1899,6 +1916,23 @@ mod tests {
             .expect("route should respond");
 
         assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[cfg(not(feature = "live-logs-ws"))]
+    #[tokio::test]
+    async fn telemetry_routes_exclude_logs_stream_websocket_endpoint_without_feature() {
+        let response = routes()
+            .with_state(test_app_state())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/telemetry/logs/stream")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("route should respond");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     /// Ensures aggregate group ordering is deterministic: metric-set name first,
@@ -2487,6 +2521,7 @@ mod tests {
     // WebSocket / HTTP schema alignment tests
     // ---------------------------------------------------------------------------
 
+    #[cfg(feature = "live-logs-ws")]
     #[test]
     fn ws_log_msg_serializes_same_fields_as_api_log_entry() {
         let entry = make_log_entry("hello", "INFO", "admin", "2026-01-01T00:00:00Z");
@@ -2515,6 +2550,7 @@ mod tests {
         assert_eq!(roundtrip.rendered, "hello");
     }
 
+    #[cfg(feature = "live-logs-ws")]
     #[test]
     fn ws_snapshot_logs_use_api_log_entry_shape() {
         let entry = make_log_entry("hello", "INFO", "admin", "2026-01-01T00:00:00Z");
