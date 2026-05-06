@@ -146,7 +146,7 @@ assistance.
 
 Large PRs are difficult to review thoroughly. In practice they tend to be
 approved on the strength of the parts a reviewer was able to read closely,
-while the rest receives a pass — which slowly erodes long-term quality.
+while the rest receives a pass, which slowly erodes long-term quality.
 Small, incremental PRs let every component get the attention it deserves.
 
 **Guidelines:**
