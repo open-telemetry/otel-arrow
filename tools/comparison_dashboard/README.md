@@ -1,10 +1,9 @@
 # Comparison Dashboard
 
-Static site for comparing OTel pipeline benchmark results across binaries (DFE,
-OTel Collector, Fluent Bit, Vector, Rotel) and configurations. Benchmark
-execution is delegated to the [orchestrator](../pipeline_perf_test/orchestrator)
--- this tool wraps the orchestrator with a manifest-driven workflow and a static
-viewer.
+Static site for comparing OTel pipeline benchmark results across binaries.
+Benchmark execution is delegated to the 
+[orchestrator](../pipeline_perf_test/orchestrator) -- this tool wraps the 
+orchestrator with a manifest-driven workflow and a static viewer.
 
 ## Concepts
 
@@ -36,7 +35,7 @@ The dashboard reuses the orchestrator's Python environment. Set it up once from
 the repo root:
 
 ```bash
-python3 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
 pip install -r tools/pipeline_perf_test/orchestrator/requirements.txt
 ```
