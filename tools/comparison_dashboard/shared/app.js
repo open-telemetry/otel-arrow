@@ -11,7 +11,21 @@
 // (detail page).
 // ============================================================================
 
-const BASE = "";  // set to "/<repo-name>" for GitHub Pages project sites
+// `BASE` is the URL of the comparison-dashboard site root (compare/).
+// Computed at runtime so the same bundle works for project Pages, user
+// Pages, custom domains, and a local serve without a build-time knob.
+//
+// On the landing page,    `location.pathname` is `<...>/compare/`        -> BASE = `<...>/compare`.
+// On a comparison stub,   `location.pathname` is `<...>/compare/<slug>/` -> BASE = `<...>/compare`.
+const BASE = (() => {
+  const p = location.pathname.replace(/\/$/, "");
+  const m = p.match(/^(.*)\/compare\/[^\/]+$/);
+  return m ? `${m[1]}/compare` : p;
+})();
+
+// `DATA_BASE` points at the `comparison_data/` directory that lives as a
+// sibling of `compare/` on the deployed site (and locally under `site/`).
+const DATA_BASE = BASE.replace(/\/compare$/, "/comparison_data");
 
 // ── Metric display config ──────────────────────────────────────────────────
 
@@ -781,7 +795,7 @@ function renderComparisonDetail(suiteData, comparison, testNames, initialSuiteId
 // ── File viewer modal ──────────────────────────────────────────────────────
 
 async function loadConfigFile(suiteSlug, testName, fileName) {
-  const url = `${BASE}/data/suite/${encodeURIComponent(suiteSlug)}/${encodeURIComponent(testName)}/${encodeURIComponent(fileName)}`;
+  const url = `${DATA_BASE}/${encodeURIComponent(suiteSlug)}/${encodeURIComponent(testName)}/${encodeURIComponent(fileName)}`;
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Failed to load ${fileName}: ${resp.status}`);
   return resp.text();

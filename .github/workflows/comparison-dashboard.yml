@@ -1,0 +1,85 @@
+# Rebuilds the comparison dashboard site on the `benchmarks` branch whenever
+# new per-suite data lands under `docs/comparison_data/` and opens a PR back
+# to `benchmarks` with the rebuilt `docs/compare/` tree. Once that PR merges,
+# Pages (sourced from the `benchmarks` branch) serves the updated site.
+#
+# This workflow does not deploy to Pages directly -- the repo's Pages source
+# is "Deploy from a branch: benchmarks" so that the existing
+# `benchmark-action/github-action-benchmark` flow can keep publishing under
+# `docs/benchmarks/` from the same branch.
+name: Comparison Dashboard - Publish Site
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [benchmarks]
+    paths:
+      - 'docs/comparison_data/**'
+
+permissions:
+  contents: write          # the PR action creates a branch on this repo
+  pull-requests: write     # ...and opens a PR from it
+
+concurrency:
+  group: comparison-dashboard-publish
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      # Source code (dashboard.py, manifest, suite/comparison defs) lives on
+      # main. Check it out into ./source/.
+      - name: Check out main (source)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          path: source
+
+      # The benchmarks branch holds the published per-suite data and is the
+      # PR target. Check it out into ./target/.
+      - name: Check out benchmarks (target)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: benchmarks
+          path: target
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: source/tools/comparison_dashboard/requirements.txt
+
+      - name: Install dashboard dependencies
+        run: pip install -r source/tools/comparison_dashboard/requirements.txt
+
+      # Build directly into the target tree: read data from
+      # target/docs/comparison_data, write site to target/docs/compare.
+      # `working-directory` is source/tools/comparison_dashboard, so paths
+      # are three levels up to reach the workflow workspace.
+      - name: Build comparison dashboard site
+        working-directory: source/tools/comparison_dashboard
+        run: |
+          python dashboard.py build \
+            --data-dir ../../../target/docs/comparison_data \
+            --site-dir ../../../target/docs/compare
+
+      - name: Open PR with rebuilt site
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          path: target
+          base: benchmarks
+          branch: comparison-dashboard/auto-publish-${{ github.run_id }}
+          title: "auto: rebuild comparison dashboard site"
+          commit-message: "auto: rebuild comparison dashboard site"
+          body: |
+            Automated rebuild triggered by changes under
+            `docs/comparison_data/`. Review the `docs/compare/` diff before
+            merging.
+          delete-branch: true

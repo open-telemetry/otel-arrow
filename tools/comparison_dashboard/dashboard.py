@@ -161,6 +161,7 @@ def cmd_run(args) -> int:
         print()
 
     manifest = load_manifest(args.manifest)
+    publish_dir = (args.publish_dir or manifest.default_data_dir()).resolve()
     suite_paths = resolve_suites_from_manifest_obj(args.suites, manifest)
     total = len(suite_paths)
 
@@ -441,7 +442,7 @@ def publish_results(staging_dir: Path, suite: dict, publish_dir: Path) -> None:
     Publish run artifacts from staging to <publish_dir>/suite/<slug>/.
 
     For each test directory in the staging area:
-    1. Clear the corresponding site test directory (clean slate)
+    1. Clear the corresponding published test directory (clean slate)
     2. Copy rendered config files (.yaml, .yml, .toml)
     3. Convert latest sql_report-*.json to metrics.json
     4. Copy timeseries.json if present
@@ -614,6 +615,10 @@ def cmd_build(args) -> int:
     total_tests = sum(len(s["tests"]) for s in suites.values())
     print(f"  {len(suites)} suites, {total_tests} total tests")
     print(f"  {len(comparisons)} comparisons")
+    print()
+
+    print("Copying shared assets...")
+    copy_shared_assets(site_out_dir)
     print()
 
     print("Generating index.html...")
@@ -1200,6 +1205,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--manifest", type=Path, default=DEFAULT_MANIFEST,
         help=f"Path to dashboard manifest.yaml (default: {DEFAULT_MANIFEST})",
+    )
+    p_run.add_argument(
+        "--publish-dir", type=Path, default=None,
+        help=(
+            f"Directory under which per-suite results are published as "
+            f"<publish-dir>/<slug>/. "
+            f"Default: <site_root>/{DEFAULT_DATA_SUBDIR}."
+        ),
     )
     p_run.add_argument(
         "--tests", default=None,
