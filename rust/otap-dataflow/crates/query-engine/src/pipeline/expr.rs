@@ -45,6 +45,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 
+use crate::pipeline::functions::fnv_hash;
 use arrow::array::{Array, ArrayRef, RecordBatch, StringArray, StructArray, UInt16Array};
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
@@ -76,7 +77,9 @@ use otap_df_pdata::arrays::{
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
-use crate::consts::{ENCODE_FUNC_NAME, MD5_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
+use crate::consts::{
+    ENCODE_FUNC_NAME, FNV_FUNC_NAME, MD5_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME,
+};
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::{join, multi_join};
 use crate::pipeline::expr::types::{
@@ -828,6 +831,7 @@ impl DataFusionFunctionDef {
             }
             SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
             MD5_FUNC_NAME => Self::new(md5(), ExprLogicalType::Binary, true, None),
+            FNV_FUNC_NAME => Self::new(fnv_hash(), ExprLogicalType::Int64, true, None),
             _ => return None,
         })
     }

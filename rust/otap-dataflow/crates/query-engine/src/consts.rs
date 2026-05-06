@@ -11,3 +11,4 @@ pub(crate) const ENCODE_FUNC_NAME: &str = "encode";
 pub(crate) const REGEXP_SUBSTR_FUNC_NAME: &str = "regexp_substr";
 pub(crate) const SHA256_FUNC_NAME: &str = "sha256";
 pub(crate) const MD5_FUNC_NAME: &str = "md5";
+pub(crate) const FNV_FUNC_NAME: &str = "fnv";
