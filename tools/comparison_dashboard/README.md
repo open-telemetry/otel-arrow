@@ -6,10 +6,6 @@ Benchmark execution is delegated to the
 [orchestrator](../pipeline_perf_test/orchestrator) -- this tool wraps the
 orchestrator with a manifest-driven workflow and a static viewer.
 
-> **Status: scaffolding only.** This initial port contains the framework
-> (`dashboard.py`, manifest, shared site assets) but no suites, comparisons,
-> templates, or reports yet. Those will land in subsequent stacked diffs.
-
 ## Concepts
 
 **Suites** define an orchestrator test to run. Each suite is scoped to a
@@ -84,19 +80,12 @@ results to `site/data/suite/<slug>/` on success.
 tools/comparison_dashboard/
 ├── dashboard.py        CLI: validate | build | run | serve
 ├── manifest.yaml       Inventory + framework config (variables, meta, etc.)
+├── suites/             Per-binary suite definitions
+├── comparisons/        Comparison definitions
 ├── site/               Static dashboard site
 │   ├── shared/         Shared JS/CSS assets
 │   ├── index.html      Generated landing page
 │   ├── compare/        Generated per-comparison pages
 │   └── data/suite/     Published per-suite data
 └── .data/              Run staging area (gitignored)
-```
-
-Forthcoming directories (planned for later stacked diffs):
-
-```
-├── suites/             Per-binary suite definitions
-├── comparisons/        Comparison definitions
-├── templates/          Orchestrator/engine/loadgen/backend templates
-└── reports/            SQL report configs
 ```
