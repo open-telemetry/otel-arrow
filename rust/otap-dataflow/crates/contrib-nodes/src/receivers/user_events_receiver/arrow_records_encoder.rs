@@ -69,11 +69,6 @@ impl ArrowRecordsBuilder {
             .logs
             .append_span_id(record.span_id.as_ref() as Option<&SpanId>);
 
-        // Receiver-internal transport/diagnostic fields are intentionally not
-        // represented on decoded records or emitted as downstream attributes:
-        // the Ingestion backend treats OTLP log attributes as backend columns,
-        // so surfacing per-record diagnostics there would pollute the
-        // application schema.
         for (key, value) in record.attributes {
             self.log_attrs.append_key(key.as_ref());
             match value {
@@ -94,6 +89,11 @@ impl ArrowRecordsBuilder {
     pub(super) fn build(mut self) -> Result<OtapArrowRecords> {
         let log_record_count = self.curr_log_id.into();
 
+        // All logs belong to the same resource and scope. These columns carry
+        // no receiver-specific values, but the current record builders still
+        // need row-aligned arrays before finish().
+        // TODO: Replace these placeholder appends with lighter-weight builder
+        // support for absent optional resource/scope/log columns.
         self.logs.resource.append_id_n(0, log_record_count);
         self.logs
             .resource
@@ -128,7 +128,7 @@ impl ArrowRecordsBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::receivers::userevents_receiver::decoder::{
+    use crate::receivers::user_events_receiver::decoder::{
         DecodedAttrValue, DecodedUsereventsRecord,
     };
     use arrow::array::{

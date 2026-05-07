@@ -22,13 +22,15 @@ Aggregate flags enable all nodes in their category.
 
 | Node | URN | Module |
 | ---- | --- | ------ |
-| userevents_receiver | `urn:otel:receiver:userevents` | `src/receivers/userevents_receiver/` |
+| user_events_receiver | `urn:otel:receiver:user_events` | `src/receivers/user_events_receiver/` |
 
-#### userevents_receiver
+#### user_events_receiver
 
 - Reads Linux `user_events` tracepoints through per-CPU perf sessions
 - Supports single-tracepoint and multi-tracepoint configuration
-- Supports tracefs structural decoding and EventHeader decoding
+- Supports tracefs structural decoding by default
+- Supports EventHeader decoding when the `userevents-eventheader` feature is
+  enabled
 
 ### Exporters
 

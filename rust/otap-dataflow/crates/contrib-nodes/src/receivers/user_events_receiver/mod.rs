@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
-
 //! Linux userevents receiver.
 
 mod arrow_records_encoder;
@@ -39,14 +37,10 @@ use serde_json::Value;
 use self::arrow_records_encoder::ArrowRecordsBuilder;
 use self::decoder::DecodedUsereventsRecord;
 use self::metrics::UsereventsReceiverMetrics;
-#[cfg(target_os = "linux")]
 use self::session::SessionInitError;
 use self::session::{RawUsereventsRecord, SessionDrainStats, UsereventsSession};
-#[cfg(target_os = "linux")]
 use otap_df_engine::control::NodeControlMsg;
-#[cfg(target_os = "linux")]
 use otap_df_telemetry::{otel_info, otel_warn};
-#[cfg(target_os = "linux")]
 use tokio::time::{self, MissedTickBehavior};
 
 const DEFAULT_PER_CPU_BUFFER_SIZE: usize = 1024 * 1024;
@@ -60,11 +54,11 @@ const DEFAULT_BATCH_MAX_SIZE: u16 = 512;
 const DEFAULT_BATCH_MAX_DURATION: Duration = Duration::from_millis(50);
 const DEFAULT_LATE_REGISTRATION_POLL: Duration = Duration::from_secs(1);
 
-/// URN for the Linux userevents receiver.
+/// URN for the Linux user_events receiver.
 ///
 /// The receiver identity is vendor-neutral: it collects Linux `user_events`
 /// and structurally decodes records into OTAP logs.
-pub const USEREVENTS_RECEIVER_URN: &str = "urn:otel:receiver:userevents";
+pub const USER_EVENTS_RECEIVER_URN: &str = "urn:otel:receiver:user_events";
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -83,6 +77,7 @@ enum FormatConfig {
     /// receiver flattens EventHeader structs into `Struct.field` attributes but
     /// does not attach semantic meaning to field names. Schema-specific
     /// interpretation belongs in processors.
+    #[cfg(feature = "userevents-eventheader")]
     EventHeader,
 }
 
@@ -93,7 +88,7 @@ enum FormatConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SubscriptionConfig {
-    /// Tracepoint name to subscribe to, for example `my_provider:event_name`.
+    /// user_events tracepoint name, with or without the `user_events:` prefix.
     tracepoint: String,
     /// Payload decoding format for records emitted by this tracepoint.
     #[serde(default)]
@@ -260,14 +255,14 @@ impl UsereventsReceiver {
         pipeline: PipelineContext,
         config: &Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-        let config: UsereventsReceiverConfig =
+        let mut config: UsereventsReceiverConfig =
             serde_json::from_value(config.clone()).map_err(|e| {
                 otap_df_config::error::Error::InvalidUserConfig {
                     error: e.to_string(),
                 }
             })?;
 
-        Self::validate_subscriptions(&config.subscriptions)?;
+        Self::normalize_subscriptions(&mut config.subscriptions)?;
         let session = config.session.clone().unwrap_or(SessionConfig {
             per_cpu_buffer_size: default_per_cpu_buffer_size(),
             wakeup_watermark: default_wakeup_watermark(),
@@ -310,8 +305,8 @@ impl UsereventsReceiver {
         })
     }
 
-    fn validate_subscriptions(
-        subscriptions: &[SubscriptionConfig],
+    fn normalize_subscriptions(
+        subscriptions: &mut [SubscriptionConfig],
     ) -> Result<(), otap_df_config::error::Error> {
         if subscriptions.is_empty() {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
@@ -319,27 +314,29 @@ impl UsereventsReceiver {
             });
         }
         for subscription in subscriptions {
-            Self::validate_tracepoint(&subscription.tracepoint)?;
+            subscription.tracepoint = Self::normalize_tracepoint(&subscription.tracepoint)?;
         }
         Ok(())
     }
 
-    fn validate_tracepoint(tracepoint: &str) -> Result<(), otap_df_config::error::Error> {
-        let Some((group, event_name)) = tracepoint.split_once(':') else {
+    fn normalize_tracepoint(tracepoint: &str) -> Result<String, otap_df_config::error::Error> {
+        let tracepoint = tracepoint.trim();
+        if tracepoint.is_empty() {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: format!(
-                    "userevents receiver tracepoint `{tracepoint}` must use `user_events:<event>`"
-                ),
+                error: "userevents receiver tracepoint must not be empty".to_owned(),
             });
-        };
-        if group != "user_events" || event_name.is_empty() {
+        }
+        if let Some((group, event_name)) = tracepoint.split_once(':') {
+            if group == "user_events" && !event_name.is_empty() {
+                return Ok(tracepoint.to_owned());
+            }
             return Err(otap_df_config::error::Error::InvalidUserConfig {
                 error: format!(
-                    "userevents receiver tracepoint `{tracepoint}` must use `user_events:<event>`"
+                    "userevents receiver tracepoint `{tracepoint}` must be an event name or `user_events:<event>`"
                 ),
             });
         }
-        Ok(())
+        Ok(format!("user_events:{tracepoint}"))
     }
 
     fn validate_session(session: &SessionConfig) -> Result<(), otap_df_config::error::Error> {
@@ -509,9 +506,9 @@ async fn process_drained_records(
 
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
-/// Declares the Linux userevents receiver as a local receiver factory.
-pub static USEREVENTS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
-    name: USEREVENTS_RECEIVER_URN,
+/// Declares the Linux user_events receiver as a local receiver factory.
+pub static USER_EVENTS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
+    name: USER_EVENTS_RECEIVER_URN,
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
@@ -531,206 +528,189 @@ pub static USEREVENTS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
 impl local::Receiver<OtapPdata> for UsereventsReceiver {
     async fn start(
         self: Box<Self>,
-        _ctrl_chan: local::ControlChannel<OtapPdata>,
+        mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = self;
-            let _ = _ctrl_chan;
-            return Err(Error::ReceiverError {
-                receiver: effect_handler.receiver_id(),
-                kind: ReceiverErrorKind::Configuration,
-                error: "userevents receiver is supported only on Linux".to_owned(),
-                source_detail: String::new(),
-            });
-        }
+        let telemetry_timer_handle = effect_handler
+            .start_periodic_telemetry(Duration::from_secs(1))
+            .await?;
+        let batch_cfg = self.batching.clone();
+        let session_cfg = self.session.clone();
+        let drain_cfg = self.drain.clone();
+        let overflow_mode = self.overflow.on_downstream_full.clone();
 
-        #[cfg(target_os = "linux")]
-        {
-            let mut ctrl_chan = _ctrl_chan;
-            let telemetry_timer_handle = effect_handler
-                .start_periodic_telemetry(Duration::from_secs(1))
-                .await?;
-            let batch_cfg = self.batching.clone();
-            let session_cfg = self.session.clone();
-            let drain_cfg = self.drain.clone();
-            let overflow_mode = self.overflow.on_downstream_full.clone();
+        let mut flush_interval = time::interval(batch_cfg.max_duration);
+        flush_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-            let mut flush_interval = time::interval(batch_cfg.max_duration);
-            flush_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let retry_period = Duration::from_millis(session_cfg.late_registration.poll_interval_ms);
+        let mut retry_interval = time::interval(retry_period.max(Duration::from_millis(1)));
+        retry_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-            let retry_period =
-                Duration::from_millis(session_cfg.late_registration.poll_interval_ms);
-            let mut retry_interval = time::interval(retry_period.max(Duration::from_millis(1)));
-            retry_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut session: Option<UsereventsSession> = None;
+        let mut builder = ArrowRecordsBuilder::new();
+        let mut drained_records = Vec::with_capacity(drain_cfg.max_records_per_turn);
+        let node_name = effect_handler.receiver_id().name.as_ref().to_owned();
+        otel_info!(
+            "user_events_receiver.start",
+            node = node_name.as_str(),
+            pipeline_core = self.cpu_id,
+            message = "Linux userevents receiver started"
+        );
 
-            let mut session: Option<UsereventsSession> = None;
-            let mut builder = ArrowRecordsBuilder::new();
-            let mut drained_records = Vec::with_capacity(drain_cfg.max_records_per_turn);
-            let node_name = effect_handler.receiver_id().name.as_ref().to_owned();
-            otel_info!(
-                "userevents_receiver.start",
-                node = node_name.as_str(),
-                pipeline_core = self.cpu_id,
-                message = "Linux userevents receiver started"
-            );
+        loop {
+            tokio::select! {
+                biased;
 
-            loop {
-                tokio::select! {
-                    biased;
+                ctrl = ctrl_chan.recv() => {
+                    match ctrl {
+                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                            let mut metrics = self.metrics.borrow_mut();
+                            let _ = metrics_reporter.report(&mut metrics);
+                        }
+                        Ok(NodeControlMsg::MemoryPressureChanged { update }) => {
+                            self.admission_state.apply(update);
+                        }
+                        Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
+                            let _ = telemetry_timer_handle.cancel().await;
+                            if let Some(session) = session.as_mut() {
+                                if Instant::now() < deadline {
+                                    let drain_stats = session
+                                        .drain_once(&drain_cfg, &mut drained_records)
+                                        .map_err(|error| Error::ReceiverError {
+                                            receiver: effect_handler.receiver_id(),
+                                            kind: ReceiverErrorKind::Transport,
+                                            error: "failed to drain Linux userevents perf ring during ingress drain".to_owned(),
+                                            source_detail: format_error_sources(&error),
+                                        })?;
 
-                    ctrl = ctrl_chan.recv() => {
-                        match ctrl {
-                            Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                                let mut metrics = self.metrics.borrow_mut();
-                                let _ = metrics_reporter.report(&mut metrics);
-                            }
-                            Ok(NodeControlMsg::MemoryPressureChanged { update }) => {
-                                self.admission_state.apply(update);
-                            }
-                            Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
-                                let _ = telemetry_timer_handle.cancel().await;
-                                if let Some(session) = session.as_mut() {
-                                    if Instant::now() < deadline {
-                                        let drain_stats = session
-                                            .drain_once(&drain_cfg, &mut drained_records)
-                                            .map_err(|error| Error::ReceiverError {
-                                                receiver: effect_handler.receiver_id(),
-                                                kind: ReceiverErrorKind::Transport,
-                                                error: "failed to drain Linux userevents perf ring during ingress drain".to_owned(),
-                                                source_detail: format_error_sources(&error),
-                                            })?;
-
-                                        process_drained_records(
-                                            &effect_handler,
-                                            &self.subscriptions,
-                                            &self.admission_state,
-                                            &self.metrics,
-                                            &mut builder,
-                                            &mut drained_records,
-                                            drain_stats,
-                                            &batch_cfg,
-                                            &overflow_mode,
-                                        )
-                                        .await?;
-                                    }
+                                    process_drained_records(
+                                        &effect_handler,
+                                        &self.subscriptions,
+                                        &self.admission_state,
+                                        &self.metrics,
+                                        &mut builder,
+                                        &mut drained_records,
+                                        drain_stats,
+                                        &batch_cfg,
+                                        &overflow_mode,
+                                    )
+                                    .await?;
                                 }
-                                if self.admission_state.should_shed_ingress() {
-                                    drop_batch(&self.metrics, &mut builder);
-                                } else {
-                                    flush_batch(&effect_handler, &self.metrics, &mut builder, &overflow_mode).await?;
-                                }
-                                effect_handler.notify_receiver_drained().await?;
-                                let snapshot = self.metrics.borrow().snapshot();
-                                return Ok(TerminalState::new(deadline, [snapshot]));
                             }
-                            Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                let _ = telemetry_timer_handle.cancel().await;
-                                let snapshot = self.metrics.borrow().snapshot();
-                                return Ok(TerminalState::new(deadline, [snapshot]));
+                            if self.admission_state.should_shed_ingress() {
+                                drop_batch(&self.metrics, &mut builder);
+                            } else {
+                                flush_batch(&effect_handler, &self.metrics, &mut builder, &overflow_mode).await?;
                             }
-                            Err(error) => return Err(Error::ChannelRecvError(error)),
-                            _ => {}
+                            effect_handler.notify_receiver_drained().await?;
+                            let snapshot = self.metrics.borrow().snapshot();
+                            return Ok(TerminalState::new(deadline, [snapshot]));
                         }
-                    }
-
-                    _ = flush_interval.tick() => {
-                        if self.admission_state.should_shed_ingress() {
-                            drop_batch(&self.metrics, &mut builder);
-                        } else {
-                            flush_batch(&effect_handler, &self.metrics, &mut builder, &overflow_mode).await?;
+                        Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+                            let _ = telemetry_timer_handle.cancel().await;
+                            let snapshot = self.metrics.borrow().snapshot();
+                            return Ok(TerminalState::new(deadline, [snapshot]));
                         }
-                    }
-
-                    _ = retry_interval.tick(), if session.is_none() && session_cfg.late_registration.enabled => {
-                        self.metrics.borrow_mut().late_registration_retries.inc();
-                        match UsereventsSession::open(&self.subscriptions, &session_cfg, self.cpu_id) {
-                            Ok(opened) => {
-                                self.metrics.borrow_mut().sessions_started.inc();
-                                otel_info!(
-                                    "userevents_receiver.session_opened",
-                                    node = node_name.as_str(),
-                                    subscriptions = opened.subscription_count(),
-                                    message = "Opened Linux userevents perf session"
-                                );
-                                session = Some(opened);
-                            }
-                            Err(SessionInitError::MissingTracepoint(tracepoint)) => {
-                                otel_warn!(
-                                    "userevents_receiver.tracepoint_pending",
-                                    node = node_name.as_str(),
-                                    tracepoint = tracepoint.as_str(),
-                                    message = "Waiting for late tracepoint registration"
-                                );
-                            }
-                            Err(error) => {
-                                let source_detail = {
-                                    let nested = format_error_sources(&error);
-                                    if nested.is_empty() {
-                                        error.to_string()
-                                    } else {
-                                        format!("{}: {}", error, nested)
-                                    }
-                                };
-                                return Err(Error::ReceiverError {
-                                    receiver: effect_handler.receiver_id(),
-                                    kind: ReceiverErrorKind::Configuration,
-                                    error: "failed to open Linux userevents perf session".to_owned(),
-                                    source_detail,
-                                });
-                            }
-                        }
-                    }
-
-                    drained = async {
-                        let Some(session) = session.as_mut() else {
-                            return Err(std::io::Error::other(
-                                "userevents session branch selected without an active session",
-                            ));
-                        };
-                        session.drain_ready(&drain_cfg, &mut drained_records).await
-                    }, if session.is_some() => {
-                        // TODO: Reopen the session for recoverable mid-stream
-                        // collection failures once one_collect exposes typed
-                        // error classification. Today drain errors are reported
-                        // as terminal transport failures.
-                        let drain_stats = drained.map_err(|error| Error::ReceiverError {
-                            receiver: effect_handler.receiver_id(),
-                            kind: ReceiverErrorKind::Transport,
-                            error: "failed to drain Linux userevents perf ring".to_owned(),
-                            source_detail: format_error_sources(&error),
-                        })?;
-
-                        process_drained_records(
-                            &effect_handler,
-                            &self.subscriptions,
-                            &self.admission_state,
-                            &self.metrics,
-                            &mut builder,
-                            &mut drained_records,
-                            drain_stats,
-                            &batch_cfg,
-                            &overflow_mode,
-                        )
-                        .await?;
+                        Err(error) => return Err(Error::ChannelRecvError(error)),
+                        _ => {}
                     }
                 }
 
-                if session.is_none() && !session_cfg.late_registration.enabled {
+                _ = flush_interval.tick() => {
+                    if self.admission_state.should_shed_ingress() {
+                        drop_batch(&self.metrics, &mut builder);
+                    } else {
+                        flush_batch(&effect_handler, &self.metrics, &mut builder, &overflow_mode).await?;
+                    }
+                }
+
+                _ = retry_interval.tick(), if session.is_none() && session_cfg.late_registration.enabled => {
+                    self.metrics.borrow_mut().late_registration_retries.inc();
                     match UsereventsSession::open(&self.subscriptions, &session_cfg, self.cpu_id) {
                         Ok(opened) => {
                             self.metrics.borrow_mut().sessions_started.inc();
+                            otel_info!(
+                                "user_events_receiver.session_opened",
+                                node = node_name.as_str(),
+                                subscriptions = opened.subscription_count(),
+                                message = "Opened Linux userevents perf session"
+                            );
                             session = Some(opened);
                         }
+                        Err(SessionInitError::MissingTracepoint(tracepoint)) => {
+                            otel_warn!(
+                                "user_events_receiver.tracepoint_pending",
+                                node = node_name.as_str(),
+                                tracepoint = tracepoint.as_str(),
+                                message = "Waiting for late tracepoint registration"
+                            );
+                        }
                         Err(error) => {
+                            let source_detail = {
+                                let nested = format_error_sources(&error);
+                                if nested.is_empty() {
+                                    error.to_string()
+                                } else {
+                                    format!("{}: {}", error, nested)
+                                }
+                            };
                             return Err(Error::ReceiverError {
                                 receiver: effect_handler.receiver_id(),
                                 kind: ReceiverErrorKind::Configuration,
                                 error: "failed to open Linux userevents perf session".to_owned(),
-                                source_detail: format_error_sources(&error),
+                                source_detail,
                             });
                         }
+                    }
+                }
+
+                drained = async {
+                    let Some(session) = session.as_mut() else {
+                        return Err(std::io::Error::other(
+                            "userevents session branch selected without an active session",
+                        ));
+                    };
+                    session.drain_ready(&drain_cfg, &mut drained_records).await
+                }, if session.is_some() => {
+                    // TODO: Reopen the session for recoverable mid-stream
+                    // collection failures once one_collect exposes typed
+                    // error classification. Today drain errors are reported
+                    // as terminal transport failures.
+                    let drain_stats = drained.map_err(|error| Error::ReceiverError {
+                        receiver: effect_handler.receiver_id(),
+                        kind: ReceiverErrorKind::Transport,
+                        error: "failed to drain Linux userevents perf ring".to_owned(),
+                        source_detail: format_error_sources(&error),
+                    })?;
+
+                    process_drained_records(
+                        &effect_handler,
+                        &self.subscriptions,
+                        &self.admission_state,
+                        &self.metrics,
+                        &mut builder,
+                        &mut drained_records,
+                        drain_stats,
+                        &batch_cfg,
+                        &overflow_mode,
+                    )
+                    .await?;
+                }
+            }
+
+            if session.is_none() && !session_cfg.late_registration.enabled {
+                match UsereventsSession::open(&self.subscriptions, &session_cfg, self.cpu_id) {
+                    Ok(opened) => {
+                        self.metrics.borrow_mut().sessions_started.inc();
+                        session = Some(opened);
+                    }
+                    Err(error) => {
+                        return Err(Error::ReceiverError {
+                            receiver: effect_handler.receiver_id(),
+                            kind: ReceiverErrorKind::Configuration,
+                            error: "failed to open Linux userevents perf session".to_owned(),
+                            source_detail: format_error_sources(&error),
+                        });
                     }
                 }
             }
@@ -790,6 +770,7 @@ mod linux_integration_tests {
     use std::io;
     use std::time::Duration;
 
+    #[cfg(feature = "userevents-eventheader")]
     use eventheader_dynamic::{EventBuilder, FieldFormat, Level, Provider};
     use tokio::time;
 
@@ -878,6 +859,7 @@ mod linux_integration_tests {
         true
     }
 
+    #[cfg(feature = "userevents-eventheader")]
     async fn write_eventheader_sample(event_set: &eventheader_dynamic::EventSet) -> bool {
         for _ in 0..20 {
             if event_set.enabled() {
@@ -978,86 +960,93 @@ mod linux_integration_tests {
             "tracefs session should decode the emitted ci_answer and ci_message fields"
         );
 
-        let provider_name = format!("otap_df_ci_{}", std::process::id());
-        let tracepoint = format!("user_events:{provider_name}_L4K1");
-        let mut provider = Provider::new(&provider_name, &Provider::new_options());
-        let event_set = provider.register_set(Level::Informational, 1);
-        if event_set.errno() != 0 {
-            if user_events_unavailable_errno(event_set.errno()) {
+        #[cfg(feature = "userevents-eventheader")]
+        {
+            let provider_name = format!("otap_df_ci_{}", std::process::id());
+            let tracepoint = format!("user_events:{provider_name}_L4K1");
+            let mut provider = Provider::new(&provider_name, &Provider::new_options());
+            let event_set = provider.register_set(Level::Informational, 1);
+            if event_set.errno() != 0 {
+                if user_events_unavailable_errno(event_set.errno()) {
+                    return;
+                }
+                fail_user_events_e2e(format!(
+                    "EventHeader registration returned errno {}",
+                    event_set.errno()
+                ));
+            }
+
+            let mut eventheader_tracefs_session =
+                match open_session_or_skip(&tracepoint, FormatConfig::Tracefs) {
+                    Some(session) => session,
+                    None => return,
+                };
+            assert_eq!(eventheader_tracefs_session.subscription_count(), 1);
+            if !write_eventheader_sample(&event_set).await {
                 return;
             }
-            fail_user_events_e2e(format!(
-                "EventHeader registration returned errno {}",
-                event_set.errno()
-            ));
-        }
 
-        let mut eventheader_tracefs_session =
-            match open_session_or_skip(&tracepoint, FormatConfig::Tracefs) {
-                Some(session) => session,
-                None => return,
-            };
-        assert_eq!(eventheader_tracefs_session.subscription_count(), 1);
-        if !write_eventheader_sample(&event_set).await {
-            return;
-        }
+            let mut eventheader_tracefs_records = Vec::new();
+            let drain_config = test_drain_config();
+            let eventheader_tracefs_stats = time::timeout(
+                Duration::from_secs(2),
+                eventheader_tracefs_session
+                    .drain_ready(&drain_config, &mut eventheader_tracefs_records),
+            )
+            .await
+            .expect("timed out draining EventHeader tracefs sample")
+            .expect("drain EventHeader tracefs sample");
+            assert_eq!(eventheader_tracefs_stats.dropped_no_subscription, 0);
+            assert!(
+                !eventheader_tracefs_records.is_empty(),
+                "tracefs session should collect at least one EventHeader sample"
+            );
 
-        let mut eventheader_tracefs_records = Vec::new();
-        let drain_config = test_drain_config();
-        let eventheader_tracefs_stats = time::timeout(
-            Duration::from_secs(2),
-            eventheader_tracefs_session
-                .drain_ready(&drain_config, &mut eventheader_tracefs_records),
-        )
-        .await
-        .expect("timed out draining EventHeader tracefs sample")
-        .expect("drain EventHeader tracefs sample");
-        assert_eq!(eventheader_tracefs_stats.dropped_no_subscription, 0);
-        assert!(
-            !eventheader_tracefs_records.is_empty(),
-            "tracefs session should collect at least one EventHeader sample"
-        );
+            let mut eventheader_session =
+                match open_session_or_skip(&tracepoint, FormatConfig::EventHeader) {
+                    Some(session) => session,
+                    None => return,
+                };
+            assert_eq!(eventheader_session.subscription_count(), 1);
+            if !write_eventheader_sample(&event_set).await {
+                return;
+            }
 
-        let mut eventheader_session =
-            match open_session_or_skip(&tracepoint, FormatConfig::EventHeader) {
-                Some(session) => session,
-                None => return,
-            };
-        assert_eq!(eventheader_session.subscription_count(), 1);
-        if !write_eventheader_sample(&event_set).await {
-            return;
-        }
+            let mut eventheader_records = Vec::new();
+            let drain_config = test_drain_config();
+            let eventheader_stats = time::timeout(
+                Duration::from_secs(2),
+                eventheader_session.drain_ready(&drain_config, &mut eventheader_records),
+            )
+            .await
+            .expect("timed out draining EventHeader sample")
+            .expect("drain EventHeader sample");
+            assert_eq!(eventheader_stats.dropped_no_subscription, 0);
 
-        let mut eventheader_records = Vec::new();
-        let drain_config = test_drain_config();
-        let eventheader_stats = time::timeout(
-            Duration::from_secs(2),
-            eventheader_session.drain_ready(&drain_config, &mut eventheader_records),
-        )
-        .await
-        .expect("timed out draining EventHeader sample")
-        .expect("drain EventHeader sample");
-        assert_eq!(eventheader_stats.dropped_no_subscription, 0);
-
-        let decoded = eventheader_records
-            .into_iter()
-            .map(|record| {
-                DecodedUsereventsRecord::from_raw(&tracepoint, record, &FormatConfig::EventHeader)
-            })
-            .find(|record| {
-                record.attributes.iter().any(|(key, value)| {
-                    key.as_ref() == "ci_message"
-                        && matches!(
-                            value,
-                            decoder::DecodedAttrValue::Str(value) if value == "hello-from-ci"
-                        )
+            let decoded = eventheader_records
+                .into_iter()
+                .map(|record| {
+                    DecodedUsereventsRecord::from_raw(
+                        &tracepoint,
+                        record,
+                        &FormatConfig::EventHeader,
+                    )
                 })
-            });
+                .find(|record| {
+                    record.attributes.iter().any(|(key, value)| {
+                        key.as_ref() == "ci_message"
+                            && matches!(
+                                value,
+                                decoder::DecodedAttrValue::Str(value) if value == "hello-from-ci"
+                            )
+                    })
+                });
 
-        assert!(
-            decoded.is_some(),
-            "EventHeader session should decode the emitted ci_message field"
-        );
+            assert!(
+                decoded.is_some(),
+                "EventHeader session should decode the emitted ci_message field"
+            );
+        }
     }
 }
 
@@ -1105,7 +1094,7 @@ mod config_tests {
 
         (
             local::EffectHandler::new(
-                test_node("userevents_receiver"),
+                test_node("user_events_receiver"),
                 senders,
                 None,
                 runtime_tx,
@@ -1272,19 +1261,26 @@ mod config_tests {
 
     #[test]
     fn validate_subscriptions_accepts_single_subscription() {
-        let config = UsereventsReceiverConfig {
-            subscriptions: vec![SubscriptionConfig {
-                tracepoint: "user_events:example_L5K1".to_owned(),
-                format: FormatConfig::Tracefs,
-            }],
-            session: None,
-            drain: None,
-            batching: None,
-            overflow: None,
-        };
+        let mut subscriptions = vec![SubscriptionConfig {
+            tracepoint: "user_events:example_L5K1".to_owned(),
+            format: FormatConfig::Tracefs,
+        }];
 
-        UsereventsReceiver::validate_subscriptions(&config.subscriptions)
+        UsereventsReceiver::normalize_subscriptions(&mut subscriptions)
             .expect("subscriptions accepted");
+        assert_eq!(subscriptions[0].tracepoint, "user_events:example_L5K1");
+    }
+
+    #[test]
+    fn normalize_subscriptions_accepts_bare_user_events_name() {
+        let mut subscriptions = vec![SubscriptionConfig {
+            tracepoint: "example_L5K1".to_owned(),
+            format: FormatConfig::Tracefs,
+        }];
+
+        UsereventsReceiver::normalize_subscriptions(&mut subscriptions)
+            .expect("subscriptions accepted");
+        assert_eq!(subscriptions[0].tracepoint, "user_events:example_L5K1");
     }
 
     #[test]
@@ -1300,6 +1296,27 @@ mod config_tests {
         );
     }
 
+    #[cfg(not(feature = "userevents-eventheader"))]
+    #[test]
+    fn deserialize_config_rejects_event_header_without_feature() {
+        let error = serde_json::from_value::<UsereventsReceiverConfig>(serde_json::json!({
+            "subscriptions": [
+                {
+                    "tracepoint": "user_events:example_L5K1",
+                    "format": {
+                        "type": "event_header"
+                    }
+                }
+            ]
+        }))
+        .expect_err("event_header rejected without feature");
+
+        assert!(
+            error.to_string().contains("unknown variant `event_header`"),
+            "unexpected error: {error}"
+        );
+    }
+
     #[test]
     fn validate_subscriptions_rejects_empty_list() {
         let config = UsereventsReceiverConfig {
@@ -1310,7 +1327,8 @@ mod config_tests {
             overflow: None,
         };
 
-        let error = UsereventsReceiver::validate_subscriptions(&config.subscriptions)
+        let mut subscriptions = config.subscriptions;
+        let error = UsereventsReceiver::normalize_subscriptions(&mut subscriptions)
             .expect_err("config rejected");
         assert!(
             error.to_string().contains("at least one subscription"),
@@ -1331,31 +1349,28 @@ mod config_tests {
             overflow: None,
         };
 
-        let error = UsereventsReceiver::validate_subscriptions(&config.subscriptions)
+        let mut subscriptions = config.subscriptions;
+        let error = UsereventsReceiver::normalize_subscriptions(&mut subscriptions)
             .expect_err("config rejected");
         assert!(
-            error.to_string().contains("user_events:<event>"),
+            error
+                .to_string()
+                .contains("event name or `user_events:<event>`"),
             "unexpected error: {error}"
         );
     }
 
     #[test]
-    fn validate_subscriptions_rejects_tracepoint_without_group() {
-        let config = UsereventsReceiverConfig {
-            subscriptions: vec![SubscriptionConfig {
-                tracepoint: "example_L2K1".to_owned(),
-                format: FormatConfig::Tracefs,
-            }],
-            session: None,
-            drain: None,
-            batching: None,
-            overflow: None,
-        };
+    fn validate_subscriptions_rejects_empty_tracepoint_name() {
+        let mut subscriptions = vec![SubscriptionConfig {
+            tracepoint: String::new(),
+            format: FormatConfig::Tracefs,
+        }];
 
-        let error = UsereventsReceiver::validate_subscriptions(&config.subscriptions)
+        let error = UsereventsReceiver::normalize_subscriptions(&mut subscriptions)
             .expect_err("config rejected");
         assert!(
-            error.to_string().contains("user_events:<event>"),
+            error.to_string().contains("must not be empty"),
             "unexpected error: {error}"
         );
     }

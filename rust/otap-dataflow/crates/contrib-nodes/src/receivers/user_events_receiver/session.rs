@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
-
 //! Session wrapper for Linux userevents collection.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +73,6 @@ pub(crate) struct SessionDrainStats {
     pub dropped_pending_overflow: u64,
 }
 
-#[cfg(target_os = "linux")]
 mod imp {
     use std::io;
     use std::time::Duration;
@@ -234,63 +231,6 @@ mod imp {
 
         pub(crate) fn subscription_count(&self) -> usize {
             self.inner.subscription_count()
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-mod imp {
-    use std::io;
-
-    use super::super::{DrainConfig, SessionConfig, SubscriptionConfig};
-    use super::{RawUsereventsRecord, SessionDrainStats};
-
-    #[derive(Debug)]
-    pub(crate) enum SessionInitError {
-        Unsupported,
-    }
-
-    impl std::fmt::Display for SessionInitError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match self {
-                Self::Unsupported => write!(f, "userevents sessions are supported only on Linux"),
-            }
-        }
-    }
-
-    impl std::error::Error for SessionInitError {}
-
-    pub(crate) struct UsereventsSession;
-
-    impl UsereventsSession {
-        pub(crate) fn open(
-            _subscriptions: &[SubscriptionConfig],
-            _config: &SessionConfig,
-            _cpu_id: usize,
-        ) -> Result<Self, SessionInitError> {
-            Err(SessionInitError::Unsupported)
-        }
-
-        pub(crate) async fn drain_ready(
-            &mut self,
-            _config: &DrainConfig,
-            out: &mut Vec<RawUsereventsRecord>,
-        ) -> io::Result<SessionDrainStats> {
-            out.clear();
-            Ok(SessionDrainStats::default())
-        }
-
-        pub(crate) fn drain_once(
-            &mut self,
-            _config: &DrainConfig,
-            out: &mut Vec<RawUsereventsRecord>,
-        ) -> io::Result<SessionDrainStats> {
-            out.clear();
-            Ok(SessionDrainStats::default())
-        }
-
-        pub(crate) fn subscription_count(&self) -> usize {
-            0
         }
     }
 }

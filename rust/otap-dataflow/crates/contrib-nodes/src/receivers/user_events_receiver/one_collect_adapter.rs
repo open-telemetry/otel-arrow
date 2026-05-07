@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
-
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::io;
@@ -10,13 +8,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[cfg(target_os = "linux")]
 use one_collect::event::LocationType;
-#[cfg(target_os = "linux")]
 use one_collect::helpers::exporting::ExportMachine;
-#[cfg(target_os = "linux")]
 use one_collect::perf_event::{PerfSession, RingBufBuilder, RingBufSessionBuilder};
-#[cfg(target_os = "linux")]
 use one_collect::tracefs::TraceFS;
 
 use super::session::{TracefsField, TracefsFieldLocation};
@@ -63,14 +57,12 @@ pub(crate) struct UserEventsSessionConfig {
     pub max_pending_bytes: usize,
 }
 
-#[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy)]
 struct PerfTimeAnchor {
     unix_nano: u64,
     perf_nano: u64,
 }
 
-#[cfg(target_os = "linux")]
 impl PerfTimeAnchor {
     fn capture() -> Self {
         let before = ExportMachine::qpc_time();
@@ -113,7 +105,6 @@ impl std::fmt::Display for CollectInitError {
 
 impl std::error::Error for CollectInitError {}
 
-#[cfg(target_os = "linux")]
 pub(crate) struct OneCollectUserEventsSession {
     session: PerfSession,
     pending: Rc<RefCell<VecDeque<CollectedEvent>>>,
@@ -123,7 +114,6 @@ pub(crate) struct OneCollectUserEventsSession {
     subscription_count: usize,
 }
 
-#[cfg(target_os = "linux")]
 impl OneCollectUserEventsSession {
     pub(crate) fn open(
         subscriptions: &[UserEventsSubscription],
@@ -168,7 +158,9 @@ impl OneCollectUserEventsSession {
         let pid_field = session.pid_field_ref();
         let tid_field = session.tid_data_ref();
         // TODO: Prefer a one_collect-owned sample-time to realtime conversion API
-        // once the session exposes one.
+        // once the session exposes one. Revisit periodic re-anchoring only with
+        // an explicit policy for wall-clock steps, since refreshing this anchor
+        // can make emitted timestamps jump forward or backward.
         let tracefs = TraceFS::open().map_err(CollectInitError::Io)?;
         let time_anchor = PerfTimeAnchor::capture();
 
@@ -406,7 +398,6 @@ fn pop_pending_event(
     Some(event)
 }
 
-#[cfg(target_os = "linux")]
 fn register_lost_callbacks(session: &mut PerfSession, lost_samples: Rc<Cell<u64>>) {
     let lost_field = session.lost_event().format().get_field_ref("lost");
     let lost_counter = Rc::clone(&lost_samples);
@@ -428,52 +419,17 @@ fn register_lost_callbacks(session: &mut PerfSession, lost_samples: Rc<Cell<u64>
     });
 }
 
-#[cfg(target_os = "linux")]
 fn page_count(per_cpu_buffer_size: usize) -> usize {
     let page_size = one_collect::os::linux::system_page_size() as usize;
     let rounded = per_cpu_buffer_size.max(page_size).next_power_of_two();
     (rounded / page_size).max(1)
 }
 
-#[cfg(target_os = "linux")]
 fn current_time_unix_nano() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos().min(u128::from(u64::MAX)) as u64)
         .unwrap_or_default()
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) struct OneCollectUserEventsSession;
-
-#[cfg(not(target_os = "linux"))]
-impl OneCollectUserEventsSession {
-    pub(crate) fn open(
-        _subscriptions: &[UserEventsSubscription],
-        _config: &UserEventsSessionConfig,
-    ) -> Result<Self, CollectInitError> {
-        Err(CollectInitError::Io(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "one_collect user_events collection is supported only on Linux",
-        )))
-    }
-
-    pub(crate) fn subscription_count(&self) -> usize {
-        0
-    }
-
-    pub(crate) fn drain(
-        &mut self,
-        _max_records: usize,
-        _max_bytes: usize,
-        _max_drain_ns: Duration,
-    ) -> io::Result<CollectedDrain> {
-        Ok(CollectedDrain {
-            events: Vec::new(),
-            lost_samples: 0,
-            dropped_pending_overflow: 0,
-        })
-    }
 }
 
 #[cfg(test)]

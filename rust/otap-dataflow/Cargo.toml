@@ -230,6 +230,7 @@ anyhow = "1.0.98"
 crossterm = "0.29"
 data_engine_recordset = { path = '../experimental/query_engine/engine-recordset' }
 data_engine_recordset_otlp_bridge = { path = '../experimental/query_engine/engine-recordset-otlp-bridge' }
+eventheader_dynamic = "0.5.0"
 include_dir = "0.7.4"
 mime_guess = "2.0.5"
 minijinja = "2"
@@ -246,6 +247,8 @@ ratatui = "0.30"
 testcontainers = "0.27"
 toml = "1.0.0"
 tonic-prost-build = "0.14"
+tracepoint = { version = "0.5.0", features = ["user_events"] }
+tracepoint_decode = "0.5.0"
 urlencoding = "2"
 geneva-uploader = "0.4.0"
 
@@ -280,6 +283,7 @@ azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
 # Contrib receivers (opt-in) - now in contrib-nodes
 contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
 userevents-receiver = ["otap-df-contrib-nodes/userevents-receiver"]
+userevents-eventheader = ["otap-df-contrib-nodes/userevents-eventheader"]
 # Contrib processors (opt-in) - now in contrib-nodes
 contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
 condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]

@@ -1,8 +1,8 @@
 <!-- markdownlint-disable MD013 -->
 
-# Linux Userevents Receiver
+# Linux User Events Receiver
 
-**URN:** `urn:otel:receiver:userevents`
+**URN:** `urn:otel:receiver:user_events`
 
 This receiver ingests Linux
 [`user_events`](https://docs.kernel.org/trace/user_events.html) tracepoints
@@ -198,8 +198,8 @@ Current implementation supports:
 - one or more tracepoint subscriptions per receiver
 - `tracefs`, which decodes standard Linux tracefs fields into typed log
   attributes
-- `event_header`, which decodes EventHeader self-describing fields into typed
-  log attributes
+- optional `event_header` decoding when the `userevents-eventheader` feature is
+  enabled
 
 ## Configuration
 
@@ -212,10 +212,10 @@ multiple list entries.
 ```yaml
 nodes:
   ingest:
-    type: receiver:userevents
+    type: urn:otel:receiver:user_events
     config:
       subscriptions:
-        - tracepoint: "user_events:myprovider_L2K1"
+        - tracepoint: "myprovider_L2K1"
           format:
             type: tracefs
       session:
@@ -239,15 +239,15 @@ Add another list entry when one receiver should listen to several tracepoints:
 ```yaml
 nodes:
   ingest:
-    type: receiver:userevents
+    type: urn:otel:receiver:user_events
     config:
       subscriptions:
-        - tracepoint: "user_events:myprovider_L2K1"
+        - tracepoint: "myprovider_L2K1"
           format:
             type: tracefs
-        - tracepoint: "user_events:app_L2K1"
+        - tracepoint: "app_L2K1"
           format:
-            type: event_header
+            type: tracefs
       session:
         per_cpu_buffer_size: 1048576  # bytes
 ```
@@ -281,7 +281,8 @@ Supporting partial startup and later subscription registration is a future
 improvement.
 
 `subscriptions` must contain at least one entry. `tracefs` is the default
-`subscriptions[].format.type`.
+`subscriptions[].format.type`. `event_header` requires the
+`userevents-eventheader` feature.
 
 `session.wakeup_watermark` exists as a reserved configuration field for future
 one_collect wakeup support, but is currently ignored.
@@ -298,8 +299,8 @@ tracepoint sessions.
 
 | Field | Default | Description |
 | --- | --- | --- |
-| `subscriptions` | none | Required non-empty list of tracepoints. Each entry must use `user_events:<event>`. |
-| `subscriptions[].format.type` | `tracefs` | Decode format for one subscription. Supported values: `tracefs`, `event_header`. |
+| `subscriptions` | none | Required non-empty list of `user_events` tracepoints. Each entry may be either `<event>` or `user_events:<event>`. |
+| `subscriptions[].format.type` | `tracefs` | Decode format for one subscription. `tracefs` is always supported; `event_header` requires the `userevents-eventheader` feature. |
 | `session.per_cpu_buffer_size` | `1048576` | Requested per-CPU perf ring size in bytes. Rounded up to at least one page and then to the next power of two. |
 | `session.wakeup_watermark` | `262144` | Reserved for future one_collect wakeup support; currently ignored. |
 | `session.max_pending_events` | `4096` | Maximum parsed events buffered between one_collect callbacks and the receiver drain loop. New events are dropped when this cap is reached. |
@@ -322,13 +323,15 @@ low-volume traces timely while making higher-volume traces more efficient.
 
 ### Tracepoint Naming
 
-Tracepoints must be configured with the `user_events:` group prefix. The receiver
-rejects other groups because collection always uses the Linux `user_events`
-tracefs group:
+Tracepoints may be configured as bare `user_events` event names because this
+receiver only collects from the Linux `user_events` tracefs group:
 
 ```text
-user_events:<provider>_L<level>K<keyword>
+<provider>_L<level>K<keyword>
 ```
+
+The explicit `user_events:<event>` form is also accepted and normalized
+internally. Other tracefs groups are rejected.
 
 EventHeader-style names such as `<provider>_L<level>K<keyword>` are accepted,
 but the generic receiver does not interpret the level or keyword as OTLP
@@ -352,6 +355,8 @@ EventHeader structs are flattened with dot-separated attribute names. If an
 EventHeader payload cannot be decoded, the raw user payload is preserved in the
 `linux.userevents.payload_base64` attribute.
 
+This decoder is optional and requires the `userevents-eventheader` feature.
+
 Only scalar EventHeader values that map to the receiver's current attribute
 types are surfaced: strings, signed integers, booleans, and floating point
 values. EventHeader arrays, binary blobs, and other non-scalar encodings are
@@ -359,6 +364,17 @@ not emitted as attributes yet.
 
 TODO: Add support for non-scalar EventHeader values once there is a stable
 mapping to OTLP log attributes.
+
+## Producers
+
+Applications can emit Linux `user_events` directly or through OpenTelemetry
+libraries that target `user_events`:
+
+- [LinuxTracepoints-Rust](https://github.com/microsoft/LinuxTracepoints-Rust)
+  provides non-OpenTelemetry Rust APIs for Linux Tracepoints and EventHeader
+  events.
+- [opentelemetry-user-events-logs](https://github.com/open-telemetry/opentelemetry-rust-contrib/tree/main/opentelemetry-user-events-logs)
+  provides an OpenTelemetry Rust log exporter that writes to Linux `user_events`.
 
 ## Output Shape
 
@@ -458,6 +474,11 @@ drops buffered batches rather than blocking on downstream flush.
 If `late_registration.enabled` is true, the receiver will keep retrying
 tracepoint attachment until the producer has registered the tracepoint.
 
+TODO: For EventHeader producers, investigate whether preregistered tracepoint
+definitions can avoid polling once the Rust collection path exposes support
+equivalent to the C++ `tracepoint_control::TracepointCache::PreregisterTracepointDefinition`
+API.
+
 If late registration is disabled and any configured tracepoint is missing or
 invalid, session startup fails and the receiver does not start. With multiple
 subscriptions, one missing tracepoint fails the whole session.
@@ -545,6 +566,66 @@ For reliable testing, prefer:
 
 Recommended test layers:
 
-- unit tests for tracefs structural decoding and EventHeader payload handling
+- unit tests for tracefs structural decoding, plus EventHeader payload handling
+  when `userevents-eventheader` is enabled
 - Linux-only receiver integration tests using a real kernel tracepoint
 - pipeline-level schema mapping tests in the processor that owns that schema
+
+### Manual tracefs E2E
+
+The tracefs debug pipeline exercises a real Linux `user_events` producer, this
+receiver, the debug processor, and the noop exporter:
+
+```bash
+cargo build --features userevents-receiver
+cargo build -p otap-df-contrib-nodes \
+  --features userevents-receiver \
+  --example user_events_tracefs_producer
+
+sudo ./target/debug/df_engine \
+  --config configs/user-events-tracefs-debug.yaml \
+  --num-cores 1
+
+sudo taskset -c 0 \
+  ./target/debug/examples/user_events_tracefs_producer \
+  otap_df_tracefs_demo 3 100
+
+sudo cat /tmp/user_events_tracefs_debug.log
+```
+
+Expected debug output includes `EventName: user_events:otap_df_tracefs_demo`,
+`ci_answer: 0`, `ci_answer: 1`, `ci_answer: 2`, and
+`ci_message: hello-from-ci`.
+
+### Manual EventHeader E2E
+
+The EventHeader debug pipeline uses the optional `userevents-eventheader`
+feature and validates EventHeader payload decoding through the same receiver
+and debug processor path:
+
+```bash
+cargo build --features userevents-eventheader
+cargo build -p otap-df-contrib-nodes \
+  --features userevents-eventheader \
+  --example user_events_eventheader_producer
+
+sudo ./target/debug/df_engine \
+  --config configs/user-events-eventheader-debug.yaml \
+  --num-cores 1
+
+sudo taskset -c 0 \
+  ./target/debug/examples/user_events_eventheader_producer \
+  otap_df_eventheader_demo 3 100
+
+sudo cat /tmp/user_events_eventheader_debug.log
+```
+
+Expected debug output includes
+`EventName: user_events:otap_df_eventheader_demo_L4K1`,
+`ci_answer: 0`, `ci_answer: 1`, `ci_answer: 2`, and
+`ci_message: hello-from-ci`.
+
+The `sudo` usage is intentional for hosts that restrict tracefs writes or
+`perf_event_open`. If the current user already has those permissions, sudo is
+not required. `taskset -c 0` keeps the producer on the CPU read by the
+single-core receiver process used in these examples.
