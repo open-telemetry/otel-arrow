@@ -523,6 +523,7 @@ pub(super) struct FilesystemFilters<'a> {
 pub(super) fn parse_mountinfo(
     input: &str,
     include_virtual_filesystems: bool,
+    include_remote_filesystems: bool,
     emit_limit: bool,
     filters: FilesystemFilters<'_>,
 ) -> Vec<FilesystemMount> {
@@ -550,7 +551,10 @@ pub(super) fn parse_mountinfo(
         let Some(device) = post_fields.next() else {
             continue;
         };
-        if !include_virtual_filesystems && is_skipped_filesystem_type(fs_type) {
+        if !include_virtual_filesystems && is_virtual_filesystem_type(fs_type) {
+            continue;
+        }
+        if !include_remote_filesystems && is_remote_filesystem_type(fs_type) {
             continue;
         }
         if !filter_allows(fs_type, filters.include_fs_types, filters.exclude_fs_types) {
@@ -587,10 +591,14 @@ pub(super) fn filesystem_mode(options: &str) -> &'static str {
     }
 }
 
-pub(super) fn is_skipped_filesystem_type(fs_type: &str) -> bool {
+pub(super) fn is_remote_filesystem_type(fs_type: &str) -> bool {
     if fs_type == "fuse" || fs_type == "fuseblk" || fs_type.starts_with("fuse.") {
         return true;
     }
+    matches!(fs_type, "nfs" | "nfs4" | "cifs" | "smb3" | "9p")
+}
+
+pub(super) fn is_virtual_filesystem_type(fs_type: &str) -> bool {
     matches!(
         fs_type,
         "autofs"
@@ -610,11 +618,6 @@ pub(super) fn is_skipped_filesystem_type(fs_type: &str) -> bool {
             | "sysfs"
             | "tmpfs"
             | "tracefs"
-            | "nfs"
-            | "nfs4"
-            | "cifs"
-            | "smb3"
-            | "9p"
     )
 }
 

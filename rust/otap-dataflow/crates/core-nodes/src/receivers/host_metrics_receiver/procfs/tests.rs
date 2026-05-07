@@ -483,6 +483,7 @@ fn scrape_due_emits_successful_families_after_partial_read_error() {
             memory_hugepages: false,
             disk_limit: false,
             filesystem_include_virtual: false,
+            filesystem_include_remote: false,
             filesystem_limit: false,
             filesystem_include_devices: None,
             filesystem_exclude_devices: None,
@@ -545,6 +546,7 @@ fn scrape_due_preserves_disk_counter_state_after_diskstats_read_error() {
             memory_hugepages: false,
             disk_limit: false,
             filesystem_include_virtual: false,
+            filesystem_include_remote: false,
             filesystem_limit: false,
             filesystem_include_devices: None,
             filesystem_exclude_devices: None,
@@ -634,6 +636,7 @@ fn scrape_due_fails_when_all_due_families_fail() {
             memory_hugepages: false,
             disk_limit: false,
             filesystem_include_virtual: false,
+            filesystem_include_remote: false,
             filesystem_limit: false,
             filesystem_include_devices: None,
             filesystem_exclude_devices: None,
@@ -690,6 +693,7 @@ fn scrape_due_reads_opt_in_disk_limit_from_sysfs() {
             memory_hugepages: false,
             disk_limit: true,
             filesystem_include_virtual: false,
+            filesystem_include_remote: false,
             filesystem_limit: false,
             filesystem_include_devices: None,
             filesystem_exclude_devices: None,
@@ -763,6 +767,7 @@ fn scrape_due_uses_boot_time_for_counter_only_family_ticks() {
             memory_hugepages: false,
             disk_limit: false,
             filesystem_include_virtual: false,
+            filesystem_include_remote: false,
             filesystem_limit: false,
             filesystem_include_devices: None,
             filesystem_exclude_devices: None,
@@ -837,6 +842,7 @@ fn scrape_due_reads_filesystem_usage_from_mountinfo() {
             memory_hugepages: false,
             disk_limit: false,
             filesystem_include_virtual: false,
+            filesystem_include_remote: false,
             filesystem_limit: true,
             filesystem_include_devices: None,
             filesystem_exclude_devices: None,
@@ -1018,13 +1024,14 @@ fn diskstats_parser_applies_filters_before_parsing_values() {
 }
 
 #[test]
-fn mountinfo_parser_skips_virtual_filesystems_by_default() {
+fn mountinfo_parser_skips_virtual_and_remote_filesystems_by_default() {
     let mounts = parse_mountinfo(
         "36 25 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
          37 25 0:32 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n\
          38 25 0:33 / /mnt/fuse rw,relatime - fuse.sshfs sshfs rw\n\
          39 25 0:34 / /mnt/fuseblk rw,relatime - fuseblk /dev/fuse rw\n\
          40 25 0:35 / /mnt/nfs rw,relatime - nfs server:/export rw\n",
+        false,
         false,
         true,
         FilesystemFilters::default(),
@@ -1039,9 +1046,63 @@ fn mountinfo_parser_skips_virtual_filesystems_by_default() {
 }
 
 #[test]
+fn mountinfo_parser_keeps_remote_filesystems_separate_from_virtual_filesystems() {
+    let mountinfo = "36 25 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
+         37 25 0:32 / /run rw,nosuid,nodev - tmpfs tmpfs rw\n\
+         38 25 0:33 / /mnt/fuse rw,relatime - fuse.sshfs sshfs rw\n\
+         39 25 0:34 / /mnt/fuseblk rw,relatime - fuseblk /dev/fuse rw\n\
+         40 25 0:35 / /mnt/nfs rw,relatime - nfs server:/export rw\n\
+         41 25 0:36 / /mnt/cifs rw,relatime - cifs //server/share rw\n\
+         42 25 0:37 / /mnt/9p rw,relatime - 9p hostshare rw\n";
+
+    let virtual_only = parse_mountinfo(mountinfo, true, false, false, FilesystemFilters::default());
+    assert_eq!(virtual_only.len(), 2);
+    assert_eq!(virtual_only[0].fs_type, "ext4");
+    assert_eq!(virtual_only[1].fs_type, "tmpfs");
+
+    let remote_only = parse_mountinfo(mountinfo, false, true, false, FilesystemFilters::default());
+    assert_eq!(remote_only.len(), 6);
+    assert_eq!(remote_only[0].fs_type, "ext4");
+    assert_eq!(remote_only[1].fs_type, "fuse.sshfs");
+    assert_eq!(remote_only[2].fs_type, "fuseblk");
+    assert_eq!(remote_only[3].fs_type, "nfs");
+    assert_eq!(remote_only[4].fs_type, "cifs");
+    assert_eq!(remote_only[5].fs_type, "9p");
+
+    let all_included = parse_mountinfo(mountinfo, true, true, false, FilesystemFilters::default());
+    assert_eq!(all_included.len(), 7);
+}
+
+#[test]
+fn mountinfo_parser_applies_filters_after_remote_filesystem_opt_in() {
+    let include_fs_types = CompiledFilter::compile(
+        crate::receivers::host_metrics_receiver::MatchType::Strict,
+        vec!["nfs".to_owned()],
+    )
+    .expect("valid")
+    .expect("filter");
+    let mounts = parse_mountinfo(
+        "36 25 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
+         37 25 0:35 / /mnt/nfs rw,relatime - nfs server:/export rw\n\
+         38 25 0:36 / /mnt/cifs rw,relatime - cifs //server/share rw\n",
+        false,
+        true,
+        false,
+        FilesystemFilters {
+            include_fs_types: Some(&include_fs_types),
+            ..FilesystemFilters::default()
+        },
+    );
+
+    assert_eq!(mounts.len(), 1);
+    assert_eq!(mounts[0].fs_type, "nfs");
+}
+
+#[test]
 fn mountinfo_parser_unescapes_paths() {
     let mounts = parse_mountinfo(
         "36 25 8:1 / /mnt/data\\040disk rw,relatime - ext4 /dev/disk\\040one rw\n",
+        false,
         false,
         false,
         FilesystemFilters::default(),
@@ -1056,6 +1117,7 @@ fn mountinfo_parser_unescapes_paths() {
 fn mountinfo_parser_preserves_utf8_while_unescaping_paths() {
     let mounts = parse_mountinfo(
         "36 25 8:1 / /mnt/caf\u{00e9}\\040disk rw,relatime - ext4 /dev/disk\\040\u{00e9} rw\n",
+        false,
         false,
         false,
         FilesystemFilters::default(),
@@ -1082,6 +1144,7 @@ fn mountinfo_parser_applies_filesystem_filters() {
     .expect("filter");
     let mounts = parse_mountinfo(
         "36 25 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n37 25 8:2 / /data rw,relatime - ext4 /dev/sdb1 rw\n38 25 8:3 / /data2 rw,relatime - xfs /dev/sdc1 rw\n",
+        false,
         false,
         false,
         FilesystemFilters {

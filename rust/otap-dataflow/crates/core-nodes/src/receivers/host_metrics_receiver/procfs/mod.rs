@@ -67,6 +67,8 @@ pub struct ProcfsConfig {
     pub disk_limit: bool,
     /// Include virtual filesystems.
     pub filesystem_include_virtual: bool,
+    /// Include remote and userspace filesystems.
+    pub filesystem_include_remote: bool,
     /// Emit filesystem limit metric.
     pub filesystem_limit: bool,
     /// Disk include filter.
@@ -297,6 +299,7 @@ impl ProcfsSource {
 
         let filesystems = if due.filesystem {
             let include_virtual = self.config.filesystem_include_virtual;
+            let include_remote = self.config.filesystem_include_remote;
             let emit_limit = self.config.filesystem_limit;
             let include_devices = self.config.filesystem_include_devices.clone();
             let exclude_devices = self.config.filesystem_exclude_devices.clone();
@@ -314,7 +317,13 @@ impl ProcfsSource {
                         include_mount_points: include_mount_points.as_ref(),
                         exclude_mount_points: exclude_mount_points.as_ref(),
                     };
-                    let mounts = parse_mountinfo(mountinfo, include_virtual, emit_limit, filters);
+                    let mounts = parse_mountinfo(
+                        mountinfo,
+                        include_virtual,
+                        include_remote,
+                        emit_limit,
+                        filters,
+                    );
                     self.read_filesystems(mounts, &mut partial_errors, &mut first_error)
                 }
                 Err(err) => {

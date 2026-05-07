@@ -236,6 +236,8 @@ pub struct FilesystemFamilyConfig {
     pub interval: Option<Duration>,
     /// Include virtual filesystems.
     pub include_virtual_filesystems: bool,
+    /// Include remote and userspace filesystems.
+    pub include_remote_filesystems: bool,
     /// Enable filesystem limit metrics.
     pub limit: bool,
     /// Device include filter.
@@ -258,6 +260,7 @@ impl Default for FilesystemFamilyConfig {
             enabled: true,
             interval: None,
             include_virtual_filesystems: false,
+            include_remote_filesystems: false,
             limit: false,
             include_devices: None,
             exclude_devices: None,
@@ -447,6 +450,7 @@ pub(super) struct RuntimeFilesystemFamily {
     pub(super) enabled: bool,
     pub(super) interval: Duration,
     pub(super) include_virtual_filesystems: bool,
+    pub(super) include_remote_filesystems: bool,
     pub(super) limit: bool,
     pub(super) include_devices: Option<CompiledFilter>,
     pub(super) exclude_devices: Option<CompiledFilter>,
@@ -746,6 +750,10 @@ impl TryFrom<Config> for RuntimeConfig {
                         .families
                         .filesystem
                         .include_virtual_filesystems,
+                    include_remote_filesystems: config
+                        .families
+                        .filesystem
+                        .include_remote_filesystems,
                     limit: config.families.filesystem.limit,
                     include_devices: filesystem_include_devices,
                     exclude_devices: filesystem_exclude_devices,

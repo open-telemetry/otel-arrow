@@ -450,6 +450,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                 memory_hugepages: config.memory_hugepages,
                 disk_limit: config.families.disk.limit,
                 filesystem_include_virtual: config.families.filesystem.include_virtual_filesystems,
+                filesystem_include_remote: config.families.filesystem.include_remote_filesystems,
                 filesystem_limit: config.families.filesystem.limit,
                 disk_include: config.families.disk.include.clone(),
                 disk_exclude: config.families.disk.exclude.clone(),
@@ -766,6 +767,7 @@ mod tests {
                 "filesystem": {
                     "interval": "5m",
                     "include_virtual_filesystems": true,
+                    "include_remote_filesystems": true,
                     "limit": true,
                     "exclude_fs_types": {
                         "fs_types": ["tmpfs"],
@@ -785,6 +787,7 @@ mod tests {
             Some(Duration::from_secs(300))
         );
         assert!(config.families.filesystem.include_virtual_filesystems);
+        assert!(config.families.filesystem.include_remote_filesystems);
         assert!(config.families.filesystem.limit);
         assert_eq!(
             config

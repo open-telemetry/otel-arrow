@@ -117,6 +117,7 @@ groups:
 | `families.disk.limit` | bool | `false` | Emits disk capacity from sysfs. |
 | `families.filesystem.limit` | bool | `false` | Emits filesystem capacity. |
 | `families.filesystem.include_virtual_filesystems` | bool | `false` | Includes virtual filesystems such as tmpfs. |
+| `families.filesystem.include_remote_filesystems` | bool | `false` | Includes remote and userspace filesystems such as NFS, CIFS, 9p, and FUSE. |
 
 Families are `cpu`, `memory`, `paging`, `system`, `disk`, `filesystem`,
 `network`, and `processes`.
