@@ -43,8 +43,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    println!("registered user_events:{provider_name}_L4K1");
-    println!("waiting for a listener to enable the tracepoint");
+    // Uncomment for manual progress output while running this example locally.
+    // println!("registered user_events:{provider_name}_L4K1");
+    // println!("waiting for a listener to enable the tracepoint");
 
     for _ in 0..100 {
         if event_set.enabled() {
@@ -72,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .into());
         }
-        println!("wrote user_events:{provider_name}_L4K1 ci_answer={ci_answer}");
+        // println!("wrote user_events:{provider_name}_L4K1 ci_answer={ci_answer}");
         thread::sleep(Duration::from_millis(interval_ms));
     }
 
