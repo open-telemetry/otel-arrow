@@ -11,8 +11,9 @@ use data_engine_expressions::{
 use data_engine_parser_abstractions::ParserOptions;
 
 use crate::consts::{
-    ENCODE_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOWER_CASE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME,
-    SHA256_FUNC_NAME, UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME, UUIDV7_FUNC_NAME, LTRIM_FUNC_NAME, RTRIM_FUNC_NAME
+    ENCODE_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME,
+    REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME, SHA256_FUNC_NAME, UPPER_CASE_FUNC_NAME,
+    UUID_FUNC_NAME, UUIDV7_FUNC_NAME,
 };
 
 /// Create parser options that can be used when parsing an expression that will be executed with

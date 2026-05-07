@@ -5669,8 +5669,7 @@ mod test {
                 .finish(),
         ]);
 
-        let query =
-            r#"logs | extend attributes["attr"] = ltrim(attributes["attr"], " ")"#;
+        let query = r#"logs | extend attributes["attr"] = ltrim(attributes["attr"], " ")"#;
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
@@ -5709,8 +5708,7 @@ mod test {
                 .finish(),
         ]);
 
-        let query =
-            r#"logs | extend attributes["attr"] = rtrim(attributes["attr"], "\n")"#;
+        let query = r#"logs | extend attributes["attr"] = rtrim(attributes["attr"], "\n")"#;
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
             .pipeline;
