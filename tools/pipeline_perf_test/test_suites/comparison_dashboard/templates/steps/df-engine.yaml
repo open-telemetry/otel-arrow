@@ -1,0 +1,203 @@
+{# Spread every suite-defined variable as a flat key (so leaf templates can
+reference them by bare name) and forward the whole `variables` dict so any
+leaf can also use namespaced access (`variables.X`). Per-hook overrides
+below the spread win on key collision. #}
+{% macro forward_variables() -%}
+{%- for k, v in variables.items() %}
+                {{ k }}: {{ v | tojson }}
+{%- endfor %}
+                variables: {{ variables | tojson }}
+{%- endmacro -%}
+steps:
+  - name: Deploy Backend Engine
+    action:
+      component_action:
+        phase: deploy
+        target: backend-service
+    hooks:
+      run:
+        pre:
+          - render_template:
+              template_path: '{{backend_config}}'
+              output_path: '{{test_dir}}/backend-config.rendered.yaml'
+              variables:{{ forward_variables() }}
+                core_start: {{backend_core_start}}
+                core_end: {{backend_core_end}}
+                compression_method: {{compression_method | default(null)}}
+          - run_command:
+              command: 'cp {{test_dir}}/backend-config.rendered.yaml {{data_dir}}/backend-config.rendered.yaml'
+        post:
+          - ready_check_http:
+              url: http://localhost:8087/api/v1/telemetry/metrics?reset=false
+              method: GET
+              expected_status_code: 200
+  - name: Deploy Dataflow Engine
+    action:
+      component_action:
+        phase: deploy
+        target: df-engine
+    hooks:
+      run:
+        pre:
+          - render_template:
+              template_path: '{{engine_config}}'
+              output_path: '{{test_dir}}/engine-config.rendered.yaml'
+              variables:{{ forward_variables() }}
+                backend_hostname: backend-service
+                core_start: {{engine_core_start}}
+                core_end: {{engine_core_end}}
+                compression_method: {{compression_method | default("none")}}
+                payload_compression: {{payload_compression | default("none")}}
+          - run_command:
+              command: 'cp {{test_dir}}/engine-config.rendered.yaml {{data_dir}}/engine-config.rendered.yaml'
+        post:
+          - ready_check_http:
+              url: http://localhost:8086/api/v1/telemetry/metrics?reset=false
+              method: GET
+              expected_status_code: 200
+  - name: Deploy Load Generator
+    action:
+      component_action:
+        phase: deploy
+        target: load-generator
+    hooks:
+      run:
+        pre:
+          - render_template:
+              template_path: '{{loadgen_config}}'
+              output_path: '{{test_dir}}/loadgen-config.rendered.yaml'
+              variables:{{ forward_variables() }}
+                loadgen_max_batch_size: {{loadgen_max_batch_size | default(1000)}}
+                signals_per_second: {{ 'null' if signals_per_second is none else (signals_per_second | default(100000)) }}
+                metric_weight: {{metric_weight | default(0)}}
+                trace_weight: {{trace_weight | default(0)}}
+                log_weight: {{log_weight | default(100)}}
+                engine_hostname: df-engine
+                core_start: {{loadgen_core_start}}
+                core_end: {{loadgen_core_end}}
+                compression_method: {{compression_method | default("none")}}
+                payload_compression: {{payload_compression | default("none")}}
+          - run_command:
+              command: 'cp {{test_dir}}/loadgen-config.rendered.yaml {{data_dir}}/loadgen-config.rendered.yaml'
+        post:
+          - ready_check_http:
+              url: http://localhost:8085/api/v1/telemetry/metrics?reset=false
+              method: GET
+              expected_status_code: 200
+
+  - name: Monitor All
+    action:
+      multi_component_action:
+        phase: start_monitoring
+        targets:
+          - backend-service
+          - load-generator
+          - df-engine
+  - name: Wait for data
+    action:
+      wait:
+        delay_seconds: {{wait_for_data_interval | default(10)}}
+  - name: Observe Load
+    action:
+      wait:
+        delay_seconds: {{observation_interval | default(20)}}
+    hooks:
+      run:
+        pre:
+          - record_event:
+              name: observation_start
+        post:
+          - record_event:
+              name: observation_stop
+  - name: Wait Before Drain
+    action:
+      wait:
+        delay_seconds: {{drain_wait_secs | default(10)}}
+  - name: Stop Load Generator
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8085/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(5)}}
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: {{drain_timeout_secs | default(5) | int + 5}}
+              raise_for_status: false
+    action:
+      no_op: {}
+  - name: Stop Engine
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8085/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(5)}}
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: {{drain_timeout_secs | default(5) | int + 5}}
+              raise_for_status: false
+    action:
+      no_op: {}
+  - name: Stop Backend
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8086/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(5)}}
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: {{drain_timeout_secs | default(5) | int + 5}}
+              raise_for_status: false
+    action:
+      no_op: {}
+  - name: Wait For Metrics Update
+    action:
+      wait:
+        delay_seconds: 1
+  - name: Stop Monitoring All
+    action:
+      multi_component_action:
+        phase: stop_monitoring
+        targets:
+          - backend-service
+          - load-generator
+          - df-engine
+  - name: Destroy All
+    action:
+      multi_component_action:
+        phase: destroy
+        targets:
+          - load-generator
+          - df-engine
+          - backend-service
+  - name: Run Report
+    action:
+      wait:
+        delay_seconds: 0
+    hooks:
+      run:
+        post:
+          - print_container_logs: {}
+          - sql_report:
+              name: '{{report_name | default("Dashboard Report")}}'
+              report_config_file: '{{report}}'
+              output:
+                - format:
+                    template: {}
+                  destination:
+                    console: {}
+                - format:
+                    template:
+                      path: ./test_suites/integration/templates/reports/gh-action-sqlreport.j2
+                  destination:
+                    file:
+                      directory: '{{test_dir}}'
+                - format:
+                    template:
+                      path: ./dashboard/templates/reports/dashboard-timeseries.j2
+                  destination:
+                    file:
+                      directory: '{{test_dir}}'
+                      name: timeseries

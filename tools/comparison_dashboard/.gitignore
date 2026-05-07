@@ -1,0 +1,2 @@
+# Staging directory where the dashboard script stores data during suite runs
+.data
