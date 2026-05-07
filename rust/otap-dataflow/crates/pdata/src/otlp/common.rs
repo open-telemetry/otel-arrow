@@ -329,16 +329,10 @@ pub const TRUNCATION_SUFFIX: &[u8] = "[...]".as_bytes();
 /// Returned when a buffer write cannot fit within the size limit.
 ///
 /// Used as the error type in [`EncodeResult`] which is returned from
-/// buffer write methods, enabling `?` propagation through recursive
-/// protobuf encoding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// buffer write methods. This is used for to indicate truncation, no
+/// distinction is made for partial/total drop.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Dropped;
-
-impl fmt::Display for Dropped {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("buffer full")
-    }
-}
 
 /// Result type for buffer write methods.
 pub type EncodeResult = std::result::Result<(), Dropped>;
@@ -500,9 +494,7 @@ pub trait BoundedBuf {
 
     /// Encode a string field, truncating with a `[...]` suffix if it won't fit.
     ///
-    /// Returns `Err(Dropped)` if not even a minimal truncated form fits.
-    /// On `Err`, the buffer may have partial bytes written; callers that need
-    /// atomicity should wrap in [`try_encode`](Self::try_encode).
+    /// Returns `Err(Dropped)` if the string is truncated or entirely dropped.
     fn encode_string_bounded(&mut self, field_tag: u64, val: &str) -> EncodeResult {
         let full_len = val.len();
         let tag_bytes = varint_len((field_tag << 3) | wire_types::LEN);
@@ -614,17 +606,17 @@ pub trait BoundedBuf {
         Self: Sized,
     {
         match self.placeholder_width() {
-            1 => self.encode_len_delimited_with::<1, E, _>(field_tag, f),
-            2 => self.encode_len_delimited_with::<2, E, _>(field_tag, f),
-            3 => self.encode_len_delimited_with::<3, E, _>(field_tag, f),
-            _ => self.encode_len_delimited_with::<4, E, _>(field_tag, f),
+            1 => self.encode_len_delimited_width::<1, E, _>(field_tag, f),
+            2 => self.encode_len_delimited_width::<2, E, _>(field_tag, f),
+            3 => self.encode_len_delimited_width::<3, E, _>(field_tag, f),
+            _ => self.encode_len_delimited_width::<4, E, _>(field_tag, f),
         }
     }
 
     /// Implementation of [`encode_len_delimited`](Self::encode_len_delimited)
     /// with an explicit `B`-byte placeholder width.
     #[inline]
-    fn encode_len_delimited_with<const B: usize, E, F>(
+    fn encode_len_delimited_width<const B: usize, E, F>(
         &mut self,
         field_tag: u64,
         f: F,
@@ -903,16 +895,6 @@ pub struct StackProtoBuffer<const N: usize> {
 }
 
 impl<const N: usize> StackProtoBuffer<N> {
-    /// Construct a stack buffer bounded to `N` bytes.
-    #[must_use]
-    pub const fn with_inline() -> Self {
-        Self {
-            buf: [0u8; N],
-            pos: 0,
-            limit: N,
-        }
-    }
-
     /// Borrow the encoded bytes (zero-copy).
     #[must_use]
     #[inline]
@@ -930,7 +912,11 @@ impl<const N: usize> StackProtoBuffer<N> {
 
 impl<const N: usize> Default for StackProtoBuffer<N> {
     fn default() -> Self {
-        Self::with_inline()
+        Self {
+            buf: [0u8; N],
+            pos: 0,
+            limit: N,
+        }
     }
 }
 
@@ -1709,7 +1695,7 @@ mod test {
         use crate::otlp::common::{BoundedBuf, ProtoBuffer, Result, StackProtoBuffer};
 
         // A small inline buffer (127 bytes) should use a 1-byte placeholder.
-        let mut buf = StackProtoBuffer::<127>::with_inline();
+        let mut buf = StackProtoBuffer::<127>::default();
         buf.encode_len_delimited(1, |buf: &mut StackProtoBuffer<127>| -> Result<()> {
             Ok(buf.encode_string(1, "hi")?)
         })
@@ -1718,7 +1704,7 @@ mod test {
         assert_eq!(buf.len(), 6);
 
         // A 128-byte inline buffer should use a 2-byte placeholder (128 >= 2^7).
-        let mut buf = StackProtoBuffer::<128>::with_inline();
+        let mut buf = StackProtoBuffer::<128>::default();
         buf.encode_len_delimited(1, |buf: &mut StackProtoBuffer<128>| -> Result<()> {
             Ok(buf.encode_string(1, "hi")?)
         })
@@ -1767,7 +1753,7 @@ mod test {
         // callers (this is the bug that bit encode_body_string).
         use crate::otlp::common::{BoundedBuf, Dropped, EncodeResult, StackProtoBuffer};
 
-        let mut buf = StackProtoBuffer::<8>::with_inline();
+        let mut buf = StackProtoBuffer::<8>::default();
         let r: EncodeResult = buf.encode_len_delimited(1, |b| {
             // Write enough partial content to force overflow before completion.
             b.encode_string(1, "AAAAAAAAAAAAAAAAAAAA")?;
@@ -1781,7 +1767,7 @@ mod test {
         assert_eq!(buf.as_ref()[1], 0x00, "placeholder remained unpatched");
 
         // The safe pattern: wrap in try_encode so partial bytes roll back.
-        let mut buf = StackProtoBuffer::<8>::with_inline();
+        let mut buf = StackProtoBuffer::<8>::default();
         let r: EncodeResult = buf.try_encode(|b| {
             b.encode_len_delimited(1, |b| b.encode_string(1, "AAAAAAAAAAAAAAAAAAAA"))
         });
@@ -1797,7 +1783,7 @@ mod test {
         // Partial mode: even when the inner closure returns Err mid-way, the
         // length placeholder reflects the bytes actually written, leaving a
         // valid LEN-prefixed wire field that can be parsed.
-        let mut buf = StackProtoBuffer::<128>::with_inline();
+        let mut buf = StackProtoBuffer::<128>::default();
         // Pre-write a marker field so we can detect mis-parsing of trailing data.
         buf.encode_string(7, "marker").unwrap();
         let len_before = buf.len();
@@ -1831,20 +1817,20 @@ mod test {
         use crate::otlp::common::{BoundedBuf, Dropped, StackProtoBuffer, TRUNCATION_SUFFIX};
 
         // (a) Full fit -> Ok(false), no suffix.
-        let mut buf = StackProtoBuffer::<64>::with_inline();
+        let mut buf = StackProtoBuffer::<64>::default();
         let r = buf.encode_string_truncating(1, "hi");
         assert_eq!(r, Ok(false));
         assert!(!buf.as_ref().windows(5).any(|w| w == TRUNCATION_SUFFIX));
 
         // (b) Truncated -> Ok(true), output ends with suffix.
-        let mut buf = StackProtoBuffer::<32>::with_inline();
+        let mut buf = StackProtoBuffer::<32>::default();
         let long = "X".repeat(1000);
         let r = buf.encode_string_truncating(1, &long);
         assert_eq!(r, Ok(true));
         assert!(buf.as_ref().ends_with(TRUNCATION_SUFFIX));
 
         // (c) Hard fail -> Err(Dropped), buffer unchanged.
-        let mut buf = StackProtoBuffer::<4>::with_inline();
+        let mut buf = StackProtoBuffer::<4>::default();
         // Pre-fill so remaining < min_overhead.
         buf.extend_from_slice(b"abcd").unwrap();
         let snapshot: Vec<u8> = buf.as_ref().to_vec();
@@ -1865,7 +1851,7 @@ mod test {
         // Encode a truncating string as if it were the "string_value" of an
         // AnyValue (field 1 = string) and decode via prost to confirm the
         // bytes form a valid wire message ending in the truncation suffix.
-        let mut buf = StackProtoBuffer::<48>::with_inline();
+        let mut buf = StackProtoBuffer::<48>::default();
         let long = "Y".repeat(500);
         let r = buf.encode_string_truncating(1, &long);
         assert_eq!(r, Ok(true));
@@ -1915,7 +1901,7 @@ mod test {
     fn with_max_remaining_restores_outer_limit() {
         use crate::otlp::common::{BoundedBuf, StackProtoBuffer};
 
-        let mut buf = StackProtoBuffer::<64>::with_inline();
+        let mut buf = StackProtoBuffer::<64>::default();
         let outer_limit = buf.limit();
         let outer_remaining = buf.remaining();
 
@@ -1933,7 +1919,7 @@ mod test {
     fn with_max_remaining_nests_correctly() {
         use crate::otlp::common::{BoundedBuf, StackProtoBuffer};
 
-        let mut buf = StackProtoBuffer::<128>::with_inline();
+        let mut buf = StackProtoBuffer::<128>::default();
         let outer = buf.limit();
 
         buf.with_max_remaining(50, |b| {
@@ -1952,7 +1938,7 @@ mod test {
     fn with_max_remaining_saturates_and_honors_outer() {
         use crate::otlp::common::{BoundedBuf, StackProtoBuffer};
 
-        let mut buf = StackProtoBuffer::<32>::with_inline();
+        let mut buf = StackProtoBuffer::<32>::default();
         let outer = buf.limit();
 
         // usize::MAX should saturate without overflow and never exceed outer.

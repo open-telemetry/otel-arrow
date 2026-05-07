@@ -147,7 +147,7 @@ impl StackLogRecord {
     /// Construct from an event, encoding body/attributes on the stack.
     #[must_use]
     pub fn new(event: &Event<'_>) -> Self {
-        let mut buf = StackProtoBuffer::<LOG_ARGUMENTS_ENCODE_INLINE>::with_inline();
+        let mut buf = StackProtoBuffer::<LOG_ARGUMENTS_ENCODE_INLINE>::default();
         let dropped_count;
         {
             let mut visitor = DirectFieldVisitor::new(&mut buf);

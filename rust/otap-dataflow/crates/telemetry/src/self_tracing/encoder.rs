@@ -883,7 +883,7 @@ mod tests {
 
         // Drive the visitor directly with each (field, value) pair, which is
         // what `event.record(visitor)` does internally.
-        let mut buf = StackProtoBuffer::<INLINE>::with_inline();
+        let mut buf = StackProtoBuffer::<INLINE>::default();
         let mut visitor = DirectFieldVisitor::new(&mut buf);
         visitor.record_str(&a, big.as_str());
         visitor.record_str(&b, big.as_str());
@@ -1005,7 +1005,7 @@ mod tests {
         let fields = meta.fields();
         let dbg = fields.field("dbg").unwrap();
 
-        let mut buf = StackProtoBuffer::<256>::with_inline();
+        let mut buf = StackProtoBuffer::<256>::default();
         let mut visitor = DirectFieldVisitor::new(&mut buf);
         visitor.record_debug(&dbg, &value);
         assert_eq!(visitor.dropped_count(), 0, "no fields should be dropped");
@@ -1056,7 +1056,7 @@ mod tests {
         let fields = meta.fields();
         let dbg = fields.field("dbg").unwrap();
 
-        let mut buf = StackProtoBuffer::<64>::with_inline();
+        let mut buf = StackProtoBuffer::<64>::default();
         let before_len = buf.len();
         let mut visitor = DirectFieldVisitor::new(&mut buf);
         visitor.record_debug(&dbg, &Huge);
