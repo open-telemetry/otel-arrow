@@ -709,10 +709,6 @@ impl BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
         request: OtapPdata,
     ) -> Result<(), EngineError> {
-        // Note: we do not check for and reject/count records with
-        // zero items, which is not the same as checking for an empty
-        // request, since both OTLP and OTAP can carry "empty envelopes"
-        // and callers are not required to drop them.
         let signal = request.signal_type();
         match signal {
             SignalType::Logs => self.metrics.consumed_batches_logs.add(1),
@@ -730,9 +726,10 @@ impl BatchProcessor {
                         .accept_payload(effect, ctx, otap)
                         .await?
                 } else if let Some(mut otlp_format) = self.otlp_format() {
+                    let otlp_payload = otap.try_into_with_default()?;
                     otlp_format
                         .for_signal(signal)
-                        .accept_payload(effect, ctx, otap.try_into_with_default()?)
+                        .accept_payload(effect, ctx, otlp_payload)
                         .await?
                 } else {
                     return Err(Self::no_active_format_error());
@@ -745,9 +742,10 @@ impl BatchProcessor {
                         .accept_payload(effect, ctx, otlp)
                         .await?
                 } else if let Some(mut otap_format) = self.otap_format() {
+                    let otap_payload = otlp.try_into_with_default()?;
                     otap_format
                         .for_signal(signal)
-                        .accept_payload(effect, ctx, otlp.try_into_with_default()?)
+                        .accept_payload(effect, ctx, otap_payload)
                         .await?
                 } else {
                     return Err(Self::no_active_format_error());
@@ -837,8 +835,15 @@ where
         ctx: Context,
         payload: T,
     ) -> Result<(), EngineError> {
-        // Compute weight in the active sizer's unit.
         let weight = self.fmtcfg.sizer.batch_size(&payload)?;
+        if weight == 0 {
+            // Note: we do not check for empty envelopes, e.g., logs
+            // requests with only a resource and no log records. We do
+            // not count these.
+            let pdata = OtapPdata::new(ctx, payload.into());
+            effect.notify_ack(AckMsg::new(pdata)).await?;
+            return Ok(());
+        }
 
         // If there are subscribers, calculate an inbound slot key.
         let inkey = if ctx.has_subscribers() {
