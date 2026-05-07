@@ -1424,12 +1424,12 @@ where
     }
 
     /// Using a multi-context corresponding with the input pending
-    /// data, and considering an output weight (in the active sizer's
-    /// unit) for a single output batch, this determines the set of
-    /// (maybe partial) pending batches that correspond. When merging
-    /// only (not splitting), this will return the entire set of pending
-    /// contexts; when splitting, this will return all except the portion
-    /// that was retained as first-in-line.
+    /// data, and considering an output weight for a single output
+    /// batch, this determines the set of (maybe partial) pending
+    /// batches that correspond. When merging only (not splitting),
+    /// this will return the entire set of pending contexts; when
+    /// splitting, this will return all except the portion that was
+    /// retained as first-in-line.
     fn drain_context(
         &mut self,
         mut weight: usize,
