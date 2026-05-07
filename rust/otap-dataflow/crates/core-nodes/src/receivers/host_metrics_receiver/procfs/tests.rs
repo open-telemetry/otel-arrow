@@ -612,6 +612,122 @@ fn scrape_due_preserves_disk_counter_state_after_diskstats_read_error() {
 }
 
 #[test]
+fn scrape_due_uses_stable_fallback_start_time_when_stat_is_unavailable() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let proc = root.path().join("proc");
+    std::fs::create_dir(&proc).expect("proc dir");
+    std::fs::write(
+        proc.join("diskstats"),
+        "8 0 sda 1 0 100 0 2 0 200 0 0 0 0 0 0 0 0\n",
+    )
+    .expect("diskstats");
+    let mut source = ProcfsSource::new(
+        Some(root.path()),
+        ProcfsConfig {
+            cpu: false,
+            memory: false,
+            paging: false,
+            system: false,
+            disk: true,
+            filesystem: false,
+            network: false,
+            processes: false,
+            cpu_utilization: false,
+            memory_limit: false,
+            memory_shared: false,
+            memory_hugepages: false,
+            disk_limit: false,
+            filesystem_include_virtual: false,
+            filesystem_include_remote: false,
+            filesystem_limit: false,
+            filesystem_include_devices: None,
+            filesystem_exclude_devices: None,
+            filesystem_include_fs_types: None,
+            filesystem_exclude_fs_types: None,
+            filesystem_include_mount_points: None,
+            filesystem_exclude_mount_points: None,
+            disk_include: None,
+            disk_exclude: None,
+            network_include: None,
+            network_exclude: None,
+            validation: HostViewValidationMode::None,
+        },
+    )
+    .expect("source");
+
+    let first = source
+        .scrape_due(ProcfsFamilies {
+            disk: true,
+            ..ProcfsFamilies::default()
+        })
+        .expect("first disk scrape");
+    std::thread::sleep(Duration::from_millis(1));
+    let second = source
+        .scrape_due(ProcfsFamilies {
+            disk: true,
+            ..ProcfsFamilies::default()
+        })
+        .expect("second disk scrape");
+
+    assert_eq!(first.partial_errors, 1);
+    assert_eq!(second.partial_errors, 1);
+    assert_eq!(
+        first.snapshot.start_time_unix_nano,
+        second.snapshot.start_time_unix_nano
+    );
+}
+
+#[test]
+fn validation_requires_stat_for_cumulative_families() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let proc = root.path().join("proc");
+    std::fs::create_dir(&proc).expect("proc dir");
+    std::fs::write(
+        proc.join("diskstats"),
+        "8 0 sda 1 0 100 0 2 0 200 0 0 0 0 0 0 0 0\n",
+    )
+    .expect("diskstats");
+
+    let err = match ProcfsSource::new(
+        Some(root.path()),
+        ProcfsConfig {
+            cpu: false,
+            memory: false,
+            paging: false,
+            system: false,
+            disk: true,
+            filesystem: false,
+            network: false,
+            processes: false,
+            cpu_utilization: false,
+            memory_limit: false,
+            memory_shared: false,
+            memory_hugepages: false,
+            disk_limit: false,
+            filesystem_include_virtual: false,
+            filesystem_include_remote: false,
+            filesystem_limit: false,
+            filesystem_include_devices: None,
+            filesystem_exclude_devices: None,
+            filesystem_include_fs_types: None,
+            filesystem_exclude_fs_types: None,
+            filesystem_include_mount_points: None,
+            filesystem_exclude_mount_points: None,
+            disk_include: None,
+            disk_exclude: None,
+            network_include: None,
+            network_exclude: None,
+            validation: HostViewValidationMode::FailSelected,
+        },
+    ) {
+        Ok(_) => panic!("missing stat should fail validation for cumulative disk metrics"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::NotFound);
+}
+
+#[test]
 fn filesystem_stat_worker_reports_disconnect_as_broken_pipe() {
     let worker = FilesystemStatWorker::disconnected_for_test();
     match worker.statvfs(PathBuf::from("/"), Duration::from_millis(1)) {

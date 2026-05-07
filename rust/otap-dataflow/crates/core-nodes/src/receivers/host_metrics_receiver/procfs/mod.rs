@@ -34,6 +34,7 @@ pub struct ProcfsSource {
     filesystem_worker: FilesystemStatWorker,
     counter_tracker: CounterTracker,
     boot_time_unix_nano: Option<u64>,
+    fallback_start_time_unix_nano: u64,
     resource: Option<HostResource>,
 }
 
@@ -143,6 +144,7 @@ impl ProcfsSource {
             filesystem_worker: FilesystemStatWorker::new()?,
             counter_tracker: CounterTracker::default(),
             boot_time_unix_nano: None,
+            fallback_start_time_unix_nano: now_unix_nano(),
             resource: None,
         };
         source.apply_startup_validation()?;
@@ -179,7 +181,9 @@ impl ProcfsSource {
         if stat.boot_time_unix_nano != 0 {
             self.boot_time_unix_nano = Some(stat.boot_time_unix_nano);
         }
-        let start_time_unix_nano = self.boot_time_unix_nano.unwrap_or(now_unix_nano);
+        let start_time_unix_nano = self
+            .boot_time_unix_nano
+            .unwrap_or(self.fallback_start_time_unix_nano);
         let cpu_utilization = if due.cpu && self.config.cpu_utilization {
             let utilization = stat.cpu.and_then(|current| {
                 self.previous_cpu
@@ -388,7 +392,14 @@ impl ProcfsSource {
     }
 
     fn validate_selected_paths(&self) -> io::Result<()> {
-        if self.config.cpu || self.config.system || self.config.processes {
+        if self.config.cpu
+            || self.config.memory
+            || self.config.paging
+            || self.config.disk
+            || self.config.filesystem
+            || self.config.network
+            || self.config.processes
+        {
             let _ = File::open(self.paths.path(PathKind::Stat))?;
         }
         if self.config.cpu {
