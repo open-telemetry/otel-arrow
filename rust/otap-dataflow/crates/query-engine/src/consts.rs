@@ -15,3 +15,4 @@ pub(crate) const FNV_FUNC_NAME: &str = "fnv";
 pub(crate) const MURMUR3_FUNC_NAME: &str = "murmur3";
 pub(crate) const SHA1_FUNC_NAME: &str = "sha1";
 pub(crate) const SHA512_FUNC_NAME: &str = "sha512";
+pub(crate) const XXH3_FUNC_NAME: &str = "xxh3";

@@ -19,11 +19,13 @@ mod murmur3;
 mod regexp_substr;
 mod sha1;
 mod substring;
+mod xxh3;
 
 make_udf_function!(contains::ExtendedContainsFunc, contains);
 make_udf_function!(fnv::FnvHashFunc, fnv_hash);
 make_udf_function!(murmur3::Murmur3HashFunc, murmur3_hash);
 make_udf_function!(sha1::Sha1Func, sha1_hash);
+make_udf_function!(xxh3::Xxh3Func, xxh3_hash);
 make_udf_function!(substring::SubstringFunc, substring);
 make_udf_function!(regexp_substr::RegexpSubstrFunc, regexp_substr);
 
