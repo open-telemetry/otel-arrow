@@ -12,7 +12,7 @@
 use otap_df_config::tls::TlsServerConfig;
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::compression::CompressionMethod;
-use otap_df_otap::memory_pressure_layer::{MemoryPressureLayer, MemoryPressureRejectionMetrics};
+use otap_df_otap::memory_pressure_layer::{MemoryPressureLayer, ReceiverRejectionMetrics};
 use otap_df_otap::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
 use otap_df_otap::otap_grpc::otlp::server::{RouteResponse, SharedState};
 use otap_df_otap::otap_grpc::{
@@ -297,7 +297,7 @@ impl SharedOtapMemoryPressureMetrics {
     }
 }
 
-impl MemoryPressureRejectionMetrics for SharedOtapMemoryPressureMetrics {
+impl ReceiverRejectionMetrics for SharedOtapMemoryPressureMetrics {
     fn record_rejection(&self) {
         let _ = self.rejected_requests.fetch_add(1, Ordering::Relaxed);
     }
@@ -363,7 +363,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                 .get(),
             wait_for_result: self.config.wait_for_result,
             admission_state: self.admission_state.clone(),
-            memory_pressure_rejection_metrics: Some(self.memory_pressure_metrics.clone()),
+            receiver_rejection_metrics: Some(self.memory_pressure_metrics.clone()),
         };
 
         //create services for the grpc server and clone the effect handler to pass message
@@ -617,7 +617,7 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otap::memory_pressure_layer::MemoryPressureRejectionMetrics;
+    use otap_df_otap::memory_pressure_layer::ReceiverRejectionMetrics;
     use otap_df_otap::otap_mock::create_otap_batch;
     use otap_df_otap::pdata::OtapPdata;
     use otap_df_otap::testing::{next_ack, next_nack};

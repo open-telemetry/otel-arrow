@@ -16,7 +16,7 @@ use tower::{Layer, Service};
 use crate::otlp_metrics::OtlpReceiverMetrics;
 
 /// Records request rejections before they enter the pipeline.
-pub trait MemoryPressureRejectionMetrics: Send + Sync {
+pub trait ReceiverRejectionMetrics: Send + Sync {
     /// Records one request rejected before entering the pipeline.
     fn record_rejection(&self);
 
@@ -41,7 +41,7 @@ pub fn grpc_memory_pressure_status(state: &SharedReceiverAdmissionState) -> Stat
     Status::with_metadata(Code::ResourceExhausted, "memory pressure", metadata)
 }
 
-impl MemoryPressureRejectionMetrics for Mutex<MetricSet<OtlpReceiverMetrics>> {
+impl ReceiverRejectionMetrics for Mutex<MetricSet<OtlpReceiverMetrics>> {
     fn record_rejection(&self) {
         self.lock().rejected_requests.inc();
     }
@@ -60,7 +60,7 @@ impl MemoryPressureRejectionMetrics for Mutex<MetricSet<OtlpReceiverMetrics>> {
 #[derive(Clone)]
 pub struct MemoryPressureLayer {
     state: SharedReceiverAdmissionState,
-    metrics: Option<Arc<dyn MemoryPressureRejectionMetrics>>,
+    metrics: Option<Arc<dyn ReceiverRejectionMetrics>>,
 }
 
 impl MemoryPressureLayer {
@@ -77,7 +77,7 @@ impl MemoryPressureLayer {
     #[must_use]
     pub fn with_metrics<M>(state: SharedReceiverAdmissionState, metrics: Arc<M>) -> Self
     where
-        M: MemoryPressureRejectionMetrics + 'static,
+        M: ReceiverRejectionMetrics + 'static,
     {
         Self {
             state,
@@ -113,7 +113,7 @@ impl<S> Layer<S> for MemoryPressureLayer {
 pub struct MemoryPressureService<S> {
     inner: S,
     state: SharedReceiverAdmissionState,
-    metrics: Option<Arc<dyn MemoryPressureRejectionMetrics>>,
+    metrics: Option<Arc<dyn ReceiverRejectionMetrics>>,
     reject_next_call: bool,
 }
 

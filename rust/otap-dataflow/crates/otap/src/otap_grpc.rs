@@ -42,7 +42,7 @@ pub mod otlp;
 pub mod proxy;
 pub mod server_settings;
 
-use crate::memory_pressure_layer::{MemoryPressureRejectionMetrics, grpc_memory_pressure_status};
+use crate::memory_pressure_layer::{ReceiverRejectionMetrics, grpc_memory_pressure_status};
 use crate::otap_grpc::otlp::server::SharedState;
 pub use client_settings::GrpcClientSettings;
 pub use server_settings::GrpcServerSettings;
@@ -70,7 +70,7 @@ pub struct Settings {
     /// Receiver-local memory pressure admission state.
     pub admission_state: SharedReceiverAdmissionState,
     /// Shared rejection counters used by both stream-open and per-batch shedding.
-    pub memory_pressure_rejection_metrics: Option<Arc<dyn MemoryPressureRejectionMetrics>>,
+    pub receiver_rejection_metrics: Option<Arc<dyn ReceiverRejectionMetrics>>,
 }
 
 impl Settings {
@@ -297,7 +297,7 @@ async fn handle_stream<T, F>(
 
         if reject_open_stream_for_memory_pressure(
             &settings.admission_state,
-            settings.memory_pressure_rejection_metrics.as_deref(),
+            settings.receiver_rejection_metrics.as_deref(),
             &tx,
         )
         .await
@@ -326,7 +326,7 @@ async fn handle_stream<T, F>(
                     &effect_handler,
                     state.clone(),
                     &settings.admission_state,
-                    settings.memory_pressure_rejection_metrics.as_deref(),
+                    settings.receiver_rejection_metrics.as_deref(),
                     &tx,
                 )
                 .await {
@@ -347,7 +347,7 @@ async fn handle_stream<T, F>(
 
 async fn reject_open_stream_for_memory_pressure(
     admission_state: &SharedReceiverAdmissionState,
-    rejection_metrics: Option<&dyn MemoryPressureRejectionMetrics>,
+    rejection_metrics: Option<&dyn ReceiverRejectionMetrics>,
     tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
 ) -> bool {
     if !admission_state.should_shed_ingress() {
@@ -386,7 +386,7 @@ async fn accept_data<T: OtapBatchStore, F>(
     effect_handler: &shared::EffectHandler<OtapPdata>,
     state: Option<SharedState>,
     admission_state: &SharedReceiverAdmissionState,
-    rejection_metrics: Option<&dyn MemoryPressureRejectionMetrics>,
+    rejection_metrics: Option<&dyn ReceiverRejectionMetrics>,
     tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
 ) -> Result<Option<PendingResponseFuture>, ()>
 where
@@ -570,11 +570,11 @@ mod tests {
     use tonic::Code;
 
     #[derive(Default)]
-    struct CountingMemoryPressureMetrics {
+    struct CountingReceiverRejectionMetrics {
         calls: AtomicUsize,
     }
 
-    impl MemoryPressureRejectionMetrics for CountingMemoryPressureMetrics {
+    impl ReceiverRejectionMetrics for CountingReceiverRejectionMetrics {
         fn record_rejection(&self) {
             let _ = self.calls.fetch_add(1, Ordering::Relaxed);
         }
@@ -590,7 +590,7 @@ mod tests {
         });
         state.set_level_for_tests(MemoryPressureLevel::Hard);
 
-        let metrics = CountingMemoryPressureMetrics::default();
+        let metrics = CountingReceiverRejectionMetrics::default();
         let local_state = SharedReceiverAdmissionState::from_process_state(&state);
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 
