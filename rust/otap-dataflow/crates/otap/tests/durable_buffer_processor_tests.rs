@@ -23,7 +23,7 @@ use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_core_nodes::exporters::error_exporter::ERROR_EXPORTER_URN;
 use otap_df_core_nodes::exporters::noop_exporter::NOOP_EXPORTER_URN;
 use otap_df_core_nodes::processors::durable_buffer_processor::DURABLE_BUFFER_URN;
-use otap_df_core_nodes::receivers::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
+use otap_df_core_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{
     RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
@@ -266,7 +266,7 @@ impl TestConfigBuilder {
         PipelineConfigBuilder::new()
             .add_receiver(
                 "fake_receiver",
-                OTAP_FAKE_DATA_GENERATOR_URN,
+                TRAFFIC_GENERATOR_RECEIVER_URN,
                 Some(receiver_config_value),
             )
             .add_processor("durable_buffer", DURABLE_BUFFER_URN, Some(buffer_config))

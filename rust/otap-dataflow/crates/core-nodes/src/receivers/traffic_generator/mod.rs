@@ -5,7 +5,7 @@
 //! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 //!
 
-use crate::receivers::fake_data_generator::config::Config;
+use crate::receivers::traffic_generator::config::Config;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use metrics::FakeSignalReceiverMetrics;
@@ -53,13 +53,13 @@ pub mod semconv_signal;
 /// Static hardcoded signal generators for lightweight load testing
 pub mod static_signal;
 
-/// The URN for the fake data generator receiver
-pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:receiver:traffic_generator";
+/// The URN for the traffic generator receiver (a.k.a. fake data generator).
+pub const TRAFFIC_GENERATOR_RECEIVER_URN: &str = "urn:otel:receiver:traffic_generator";
 
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
 
 /// A Receiver that generates fake OTAP data for testing purposes.
-pub struct FakeGeneratorReceiver {
+pub struct TrafficGeneratorReceiver {
     /// Configuration for the fake data generator
     config: Config,
 
@@ -85,20 +85,20 @@ fn elapsed_nanos(start: StdInstant) -> f64 {
     duration_nanos(start.elapsed())
 }
 
-/// Declares the fake data generator as a local receiver factory
+/// Declares the traffic generator as a local receiver factory
 ///
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
-pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OtapPdata> = ReceiverFactory {
-    name: OTAP_FAKE_DATA_GENERATOR_URN,
+pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
+    name: TRAFFIC_GENERATOR_RECEIVER_URN,
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::local(
-            FakeGeneratorReceiver::from_config(pipeline, &node_config.config)?,
+            TrafficGeneratorReceiver::from_config(pipeline, &node_config.config)?,
             node,
             node_config,
             receiver_config,
@@ -108,8 +108,8 @@ pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OtapPdata> = ReceiverFactor
     validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
-impl FakeGeneratorReceiver {
-    /// creates a new FakeSignalReceiver
+impl TrafficGeneratorReceiver {
+    /// creates a new TrafficGeneratorReceiver
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
         let metrics = pipeline_ctx.register_metrics::<FakeSignalReceiverMetrics>();
@@ -127,7 +127,7 @@ impl FakeGeneratorReceiver {
             }
         })?;
         config.get_traffic_config().validate()?;
-        Ok(FakeGeneratorReceiver::new(pipeline_ctx, config))
+        Ok(TrafficGeneratorReceiver::new(pipeline_ctx, config))
     }
 
     async fn run_smooth(
@@ -506,9 +506,9 @@ async fn handle_control_msg(
     }
 }
 
-/// Implement the Receiver trait for the FakeGeneratorReceiver
+/// Implement the Receiver trait for the TrafficGeneratorReceiver
 #[async_trait(?Send)]
-impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
+impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
     async fn start(
         mut self: Box<Self>,
         ctrl_msg_recv: local::ControlChannel<OtapPdata>,
@@ -587,7 +587,7 @@ mod tests {
     use super::config::{DataSource, GenerationStrategy};
     use super::*;
 
-    use crate::receivers::fake_data_generator::config::{Config, TrafficConfig};
+    use crate::receivers::traffic_generator::config::{Config, TrafficConfig};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_config::transport_headers::ValueKind;
     use otap_df_engine::context::ControllerContext;
@@ -852,7 +852,7 @@ mod tests {
 
         // create our receiver
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
         ));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
@@ -860,7 +860,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         // create our receiver
         let receiver = ReceiverWrapper::local(
-            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            TrafficGeneratorReceiver::new(pipeline_ctx, config),
             test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
@@ -932,7 +932,7 @@ mod tests {
 
         // create our receiver
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
         ));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
@@ -940,7 +940,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         // create our receiver
         let receiver = ReceiverWrapper::local(
-            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            TrafficGeneratorReceiver::new(pipeline_ctx, config),
             test_node("fake_receiver"),
             node_config,
             test_runtime.config(),
@@ -1008,7 +1008,7 @@ mod tests {
 
         // create our receiver
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
         ));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
@@ -1016,7 +1016,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         // create our receiver
         let receiver = ReceiverWrapper::local(
-            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            TrafficGeneratorReceiver::new(pipeline_ctx, config),
             test_node("fake_receiver"),
             node_config,
             test_runtime.config(),
@@ -1089,7 +1089,7 @@ mod tests {
 
         // create our receiver
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
         ));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
@@ -1097,7 +1097,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         // create our receiver
         let receiver = ReceiverWrapper::local(
-            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            TrafficGeneratorReceiver::new(pipeline_ctx, config),
             test_node("fake_receiver_pregenerated"),
             node_config,
             test_runtime.config(),
@@ -1131,14 +1131,14 @@ mod tests {
             Config::new(traffic_config, registry_path).with_data_source(DataSource::Static);
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
         ));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let receiver = ReceiverWrapper::local(
-            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            TrafficGeneratorReceiver::new(pipeline_ctx, config),
             test_node("fake_receiver_drain"),
             node_config,
             test_runtime.config(),
@@ -1191,14 +1191,14 @@ mod tests {
             .with_generation_strategy(GenerationStrategy::PreGenerated);
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
         ));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let receiver = ReceiverWrapper::local(
-            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            TrafficGeneratorReceiver::new(pipeline_ctx, config),
             test_node("fake_receiver_hot_drain"),
             node_config,
             test_runtime.config(),
@@ -1251,14 +1251,14 @@ mod tests {
             Config::new(traffic_config, registry_path).with_data_source(DataSource::Static);
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
         ));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let receiver = ReceiverWrapper::local(
-            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            TrafficGeneratorReceiver::new(pipeline_ctx, config),
             test_node("fake_receiver_ctrl_sleep"),
             node_config,
             test_runtime.config(),
@@ -1343,7 +1343,7 @@ mod tests {
             )]));
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
         ));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
@@ -1351,7 +1351,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let receiver = ReceiverWrapper::local(
-            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            TrafficGeneratorReceiver::new(pipeline_ctx, config),
             test_node("fake_receiver_transport_headers"),
             node_config,
             test_runtime.config(),
@@ -1419,7 +1419,7 @@ mod tests {
             .with_transport_headers(HashMap::from([("x-request-id".to_string(), None)]));
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
         ));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
@@ -1427,7 +1427,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let receiver = ReceiverWrapper::local(
-            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            TrafficGeneratorReceiver::new(pipeline_ctx, config),
             test_node("fake_receiver_random_headers"),
             node_config,
             test_runtime.config(),
@@ -1505,7 +1505,7 @@ mod tests {
             .with_transport_headers(HashMap::from([("x-trace-bin".to_string(), None)]));
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
         ));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
@@ -1513,7 +1513,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let receiver = ReceiverWrapper::local(
-            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            TrafficGeneratorReceiver::new(pipeline_ctx, config),
             test_node("fake_receiver_binary_headers"),
             node_config,
             test_runtime.config(),
@@ -1585,7 +1585,7 @@ mod tests {
             .with_generation_strategy(GenerationStrategy::Fresh);
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
         ));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
@@ -1593,7 +1593,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let receiver = ReceiverWrapper::local(
-            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            TrafficGeneratorReceiver::new(pipeline_ctx, config),
             test_node("fake_receiver_no_headers"),
             node_config,
             test_runtime.config(),
