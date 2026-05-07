@@ -3,7 +3,11 @@
 
 use super::*;
 use crate::receivers::host_metrics_receiver::semconv::{attr, metric};
+#[cfg(feature = "dev-tools")]
+use otap_df_pdata::proto::opentelemetry::common::v1::AnyValue;
 use otap_df_pdata::proto::opentelemetry::common::v1::{KeyValue, any_value};
+#[cfg(feature = "dev-tools")]
+use otap_df_pdata::proto::opentelemetry::metrics::v1::NumberDataPoint;
 use otap_df_pdata::proto::opentelemetry::metrics::v1::{
     AggregationTemporality, Metric, MetricsData, metric as otlp_metric, number_data_point,
 };
