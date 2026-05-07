@@ -816,6 +816,11 @@ mod test {
             .await
         });
 
+        // Wait for the server to be ready to accept connections. Without this,
+        // the exporter may attempt to connect before the server has bound,
+        // leading to a retryable NACK and the test hanging in validation.
+        wait_for_port_ready(endpoint_addr);
+
         (pdata_rx, server_cancellation_token2)
     }
 
@@ -923,6 +928,21 @@ mod test {
         let _ = tracker.close();
     }
 
+    /// Polls a TCP port until it accepts connections, or panics after 5 seconds.
+    fn wait_for_port_ready(addr: &str) {
+        let addr: std::net::SocketAddr = addr.parse().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if Instant::now() >= deadline {
+                panic!("Server did not become ready within 5 seconds on {addr}");
+            }
+            match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(50)) {
+                Ok(_) => return,
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+    }
+
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
     /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
     /// the test is finished), and a receiver that will emit any pdata that the server produces.
@@ -973,6 +993,11 @@ mod test {
             )
             .await;
         });
+
+        // Wait for the server to be ready to accept connections. Without this,
+        // the exporter may attempt to connect before the server has bound,
+        // leading to a retryable NACK and the test hanging in validation.
+        wait_for_port_ready(endpoint_addr);
 
         (pdata_rx, server_cancellation_token2)
     }
@@ -2083,12 +2108,18 @@ mod test {
 
                     let num_expected_pdatas = 1;
                     let mut pdatas_received = Vec::new();
-                    while let Some(pdata) = pdata_rx.recv().await {
-                        pdatas_received.push(pdata);
-                        if pdatas_received.len() >= num_expected_pdatas {
-                            break;
+                    let recv_deadline = tokio::time::timeout(Duration::from_secs(10), async {
+                        while let Some(pdata) = pdata_rx.recv().await {
+                            pdatas_received.push(pdata);
+                            if pdatas_received.len() >= num_expected_pdatas {
+                                break;
+                            }
                         }
-                    }
+                    });
+                    recv_deadline.await.expect(
+                        "timed out waiting for server to receive pdata; \
+                         server may not have been ready in time",
+                    );
 
                     server_cancellation_token.cancel();
 

@@ -11,7 +11,7 @@
 #   - No other engine instances running on ports 8080–8082, 4317, 4319
 #
 # Usage (from rust/otap-dataflow/):
-#   bash crates/core-nodes/src/receivers/fake_data_generator/bench/bench.sh
+#   bash crates/core-nodes/src/receivers/traffic_generator/bench/bench.sh
 #
 # Each test runs for ~40s. Full suite takes ~3 minutes.
 
