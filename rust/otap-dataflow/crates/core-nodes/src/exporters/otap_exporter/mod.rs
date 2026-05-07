@@ -943,7 +943,7 @@ async fn handle_res_stream(
     shutdown
 }
 
-fn batch_status_is_ok(status: &BatchStatus) -> bool {
+const fn batch_status_is_ok(status: &BatchStatus) -> bool {
     status.status_code == StatusCode::Ok as i32
 }
 
@@ -1038,9 +1038,7 @@ mod tests {
     const TRACE_BATCH_ID: i64 = 2;
 
     fn calldata_with_id(id: u64) -> CallData {
-        let mut calldata = CallData::new();
-        calldata.push(id.into());
-        calldata
+        smallvec::smallvec!(id.into())
     }
 
     fn calldata_id(pdata: &OtapPdata) -> u64 {
