@@ -8,7 +8,7 @@
 use crate::receivers::traffic_generator::config::Config;
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use metrics::FakeSignalReceiverMetrics;
+use metrics::TrafficGeneratorReceiverMetrics;
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
@@ -40,11 +40,11 @@ use tokio::time::{Duration, Interval, MissedTickBehavior, interval};
 use self::producer::{GenerateError, TrafficProducer};
 
 pub mod attributes;
-/// allows the user to configure their fake signal receiver
+/// allows the user to configure their traffic generator receiver
 pub mod config;
-/// provides the fake signal with fake data
+/// provides synthetic data for generated signals
 pub mod fake_data;
-/// fake signal metrics implementation
+/// traffic generator metrics implementation
 pub mod metrics;
 /// Signal generation abstractions
 pub mod producer;
@@ -63,8 +63,8 @@ pub struct TrafficGeneratorReceiver {
     /// Configuration for the fake data generator
     config: Config,
 
-    /// Metrics for the fake data generator
-    metrics: MetricSet<FakeSignalReceiverMetrics>,
+    /// Metrics for the traffic generator
+    metrics: MetricSet<TrafficGeneratorReceiverMetrics>,
 }
 
 fn smooth_batch_interval(run_len: usize) -> Option<Duration> {
@@ -112,7 +112,7 @@ impl TrafficGeneratorReceiver {
     /// creates a new TrafficGeneratorReceiver
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<FakeSignalReceiverMetrics>();
+        let metrics = pipeline_ctx.register_metrics::<TrafficGeneratorReceiverMetrics>();
         Self { config, metrics }
     }
 
@@ -465,7 +465,7 @@ fn build_transport_headers(
 async fn wait_for_terminal(
     mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
     handler: &local::EffectHandler<OtapPdata>,
-    metrics: &mut MetricSet<FakeSignalReceiverMetrics>,
+    metrics: &mut MetricSet<TrafficGeneratorReceiverMetrics>,
 ) -> Result<TerminalState, Error> {
     loop {
         let msg = ctrl_msg_recv.recv().await;
@@ -483,7 +483,7 @@ async fn wait_for_terminal(
 async fn handle_control_msg(
     ctrl_msg: Result<NodeControlMsg<OtapPdata>, RecvError>,
     effect_handler: &local::EffectHandler<OtapPdata>,
-    metrics: &mut MetricSet<FakeSignalReceiverMetrics>,
+    metrics: &mut MetricSet<TrafficGeneratorReceiverMetrics>,
 ) -> Result<Option<TerminalState>, Error> {
     match ctrl_msg {
         Ok(NodeControlMsg::CollectTelemetry {
@@ -493,12 +493,12 @@ async fn handle_control_msg(
             Ok(None)
         }
         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
-            otel_info!("fake_data_generator.drain_ingress");
+            otel_info!("traffic_generator.drain_ingress");
             effect_handler.notify_receiver_drained().await?;
             Ok(Some(TerminalState::new(deadline, [metrics.snapshot()])))
         }
         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-            otel_info!("fake_data_generator.shutdown");
+            otel_info!("traffic_generator.shutdown");
             Ok(Some(TerminalState::new(deadline, [metrics.snapshot()])))
         }
         Err(e) => Err(Error::ChannelRecvError(e)),
@@ -834,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fake_signal_receiver() {
+    fn test_traffic_generator_receiver() {
         let test_runtime = TestRuntime::new();
 
         let registry_path = VirtualDirectoryPath::GitRepo {
@@ -918,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fake_signal_receiver_message_rate_only() {
+    fn test_traffic_generator_receiver_message_rate_only() {
         let test_runtime = TestRuntime::new();
 
         let registry_path = VirtualDirectoryPath::GitRepo {
@@ -995,7 +995,7 @@ mod tests {
         }
     }
     #[test]
-    fn test_fake_signal_receiver_max_signal_count_only() {
+    fn test_traffic_generator_receiver_max_signal_count_only() {
         let test_runtime = TestRuntime::new();
         let registry_path = VirtualDirectoryPath::GitRepo {
             url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
@@ -1072,7 +1072,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fake_signal_receiver_static_pregenerated() {
+    fn test_traffic_generator_receiver_static_pregenerated() {
         let test_runtime = TestRuntime::new();
 
         // Use Static data source with PreGenerated strategy
