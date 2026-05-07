@@ -82,7 +82,7 @@ tests:
   # 100k: 1 loadgen core
   - name: 100k
     from_template:
-      path: dashboard/templates/steps/df-engine.yaml
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/df-engine.yaml
       variables:{{ forward_variables() }}
         data_dir: {{data_dir}}
         test_dir: {{data_dir}}/tests/100k
@@ -102,7 +102,7 @@ tests:
   # 200k: 2 loadgen cores
   - name: 200k
     from_template:
-      path: dashboard/templates/steps/df-engine.yaml
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/df-engine.yaml
       variables:{{ forward_variables() }}
         data_dir: {{data_dir}}
         test_dir: {{data_dir}}/tests/200k
@@ -122,7 +122,7 @@ tests:
   # 300k: 3 loadgen cores
   - name: 300k
     from_template:
-      path: dashboard/templates/steps/df-engine.yaml
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/df-engine.yaml
       variables:{{ forward_variables() }}
         data_dir: {{data_dir}}
         test_dir: {{data_dir}}/tests/300k
@@ -142,7 +142,7 @@ tests:
   # 400k: 4 loadgen cores
   - name: 400k
     from_template:
-      path: dashboard/templates/steps/df-engine.yaml
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/df-engine.yaml
       variables:{{ forward_variables() }}
         data_dir: {{data_dir}}
         test_dir: {{data_dir}}/tests/400k
@@ -161,7 +161,7 @@ tests:
 
   - name: 600k
     from_template:
-      path: dashboard/templates/steps/df-engine.yaml
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/df-engine.yaml
       variables:{{ forward_variables() }}
         data_dir: {{data_dir}}
         test_dir: {{data_dir}}/tests/600k
@@ -180,7 +180,7 @@ tests:
 
   - name: 800k
     from_template:
-      path: dashboard/templates/steps/df-engine.yaml
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/df-engine.yaml
       variables:{{ forward_variables() }}
         data_dir: {{data_dir}}
         test_dir: {{data_dir}}/tests/800k
@@ -199,7 +199,7 @@ tests:
 
   - name: 1000k
     from_template:
-      path: dashboard/templates/steps/df-engine.yaml
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/df-engine.yaml
       variables:{{ forward_variables() }}
         data_dir: {{data_dir}}
         test_dir: {{data_dir}}/tests/1000k
