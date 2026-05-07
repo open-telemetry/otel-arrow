@@ -75,7 +75,7 @@ pub struct Config {
     #[serde(default = "default_max_concurrent_requests")]
     max_concurrent_requests: usize,
 
-    /// Maximum number of concurrent wait-for-result requests admitted from one OTAP stream.
+    /// Maximum number of concurrent wait-for-result requests admitted from one OTAP stream. Clamped to `max_concurrent_requests` at runtime.
     #[serde(
         default = "default_max_concurrent_requests_per_stream",
         deserialize_with = "deserialize_positive_max_concurrent_requests_per_stream"
