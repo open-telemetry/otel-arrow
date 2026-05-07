@@ -14,9 +14,9 @@
 # inbound channels.
 #
 # Metrics emitted on the `flow` metric set:
-#   - flow.compute.duration (MMSC histogram, nanoseconds)
-#   - flow.signals.incoming   (MMSC, items observed at the start node)
-#   - flow.signals.outgoing   (MMSC, items observed at the end node)
+#   - compute.duration (MMSC histogram, nanoseconds)
+#   - signals.incoming   (MMSC, items observed at the start node)
+#   - signals.outgoing   (MMSC, items observed at the end node)
 #
 # With the sampler in place, `signals.incoming` (at sampler) reflects the full
 # input volume while `signals.outgoing` (at attr4) reflects roughly 1/3 of it,

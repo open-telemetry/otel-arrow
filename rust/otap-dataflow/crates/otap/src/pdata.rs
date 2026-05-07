@@ -360,12 +360,12 @@ impl FlowMetricAccumulation for OtapPdata {
         // that share a start or end node, but it does NOT yet detect
         // interleaved ranges with distinct endpoints (e.g. 1→3 + 2→4 on the
         // path 1→2→3→4). Until that gap is closed (see TODO(flow_metric-interleave)
-        // in engine/src/flow_metric.rs), keep a defensive runtime warning so a
+        // in engine/src/flow_metrics.rs), keep a defensive runtime warning so a
         // misconfigured pipeline is diagnosable instead of silently producing
         // truncated histograms.
         if self.context.flow_compute_ns.is_some() {
             otap_df_telemetry::otel_warn!(
-                "flow_metric.overlap",
+                "flow_metrics.overlap",
                 "start_flow_metric called while another flow_metric is active; \
                  overlapping ranges are not supported — previous accumulator discarded"
             );
