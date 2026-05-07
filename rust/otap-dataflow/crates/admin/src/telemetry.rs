@@ -338,9 +338,19 @@ async fn get_metrics(
         }
         OutputFormat::Prometheus => {
             let body = if q.reset {
-                format_prometheus_text(&state.metrics_registry, true, Some(now.timestamp_millis()))
+                format_prometheus_text(
+                    &state.metrics_registry,
+                    true,
+                    Some(now.timestamp_millis()),
+                    &state.target_info,
+                )
             } else {
-                format_prometheus_text(&state.metrics_registry, false, Some(now.timestamp_millis()))
+                format_prometheus_text(
+                    &state.metrics_registry,
+                    false,
+                    Some(now.timestamp_millis()),
+                    &state.target_info,
+                )
             };
             let mut resp = body.into_response();
             // Prometheus text exposition format 0.0.4
@@ -407,7 +417,8 @@ pub async fn get_metrics_aggregate(
             Ok(resp)
         }
         OutputFormat::Prometheus => {
-            let body = agg_prometheus_text(&groups, Some(now.timestamp_millis()));
+            let body =
+                agg_prometheus_text(&groups, Some(now.timestamp_millis()), &state.target_info);
             let mut resp = body.into_response();
             let _ = resp.headers_mut().insert(
                 header::CONTENT_TYPE,
@@ -688,115 +699,237 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
     out
 }
 
-fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>) -> String {
+/// Emits a single scalar metric sample (with optional HELP/UNIT/TYPE metadata).
+fn emit_scalar_metric(
+    out: &mut String,
+    seen: &mut HashSet<String>,
+    field: &MetricsField,
+    value: MetricValue,
+    base_labels: &str,
+    ts_suffix: &str,
+) {
+    let metric_name = build_prom_metric_name(field.name, field.unit, field.instrument);
+
+    if seen.insert(metric_name.clone()) {
+        if !field.brief.is_empty() {
+            let _ = writeln!(
+                out,
+                "# HELP {} {}",
+                metric_name,
+                escape_prom_help(field.brief)
+            );
+        }
+        if let Some(unit_word) = ucum_to_prometheus_unit(field.unit) {
+            let _ = writeln!(out, "# UNIT {metric_name} {unit_word}");
+        }
+        let prom_type = match field.instrument {
+            Instrument::Counter => "counter",
+            Instrument::UpDownCounter => "gauge",
+            Instrument::Gauge => "gauge",
+            // `Instrument::Histogram` reaches this path with a scalar
+            // `U64`/`F64` value because the telemetry registry does not yet
+            // store pre-aggregated bucket data — see the matching TODO in the
+            // dispatcher's `add_opentelemetry_metric`. The stored scalar is
+            // a single observation (whatever the metric set's
+            // `snapshot_values()` returns); buckets/sum/count exist only
+            // downstream inside the OTel SDK, not here.
+            //
+            // Rendering as the Prometheus histogram family
+            // (`_bucket{le=...}`/`_sum`/`_count`) would require fabricating
+            // bucket data we don't have, so we emit a `gauge` reflecting the
+            // raw stored scalar. This is a known limitation: not spec-compliant
+            // for OTel Histograms (the spec mandates the histogram family) and
+            // potentially misleading because the gauge value's meaning depends
+            // on what the producer chose to put in `snapshot_values()`.
+            // Proper handling requires extending `MetricValue` with a variant
+            // carrying buckets/sum/count.
+            Instrument::Histogram => "gauge",
+            Instrument::Mmsc => unreachable!("MMSC is not a scalar"),
+        };
+        let _ = writeln!(out, "# TYPE {metric_name} {prom_type}");
+    }
+    let value_str = format_prom_value(value, Some(field.value_type));
+    emit_sample_line(out, &metric_name, base_labels, &value_str, ts_suffix);
+}
+
+/// Emits MMSC (min/max/sum/count) sub-metrics using histogram-family naming conventions.
+fn emit_mmsc_metric(
+    out: &mut String,
+    seen: &mut HashSet<String>,
+    field: &MetricsField,
+    s: &otap_df_telemetry::instrument::MmscSnapshot,
+    base_labels: &str,
+    ts_suffix: &str,
+) {
+    if s.count == 0 {
+        return;
+    }
+    let base_metric_name = build_prom_metric_name(field.name, field.unit, Instrument::Gauge);
+    let brief = escape_prom_help(field.brief);
+    let unit_word = ucum_to_prometheus_unit(field.unit);
+
+    // _min and _max as gauges
+    for (suffix, prom_type, val) in [("_min", "gauge", s.min), ("_max", "gauge", s.max)] {
+        let sub_name = format!("{base_metric_name}{suffix}");
+        if seen.insert(sub_name.clone()) {
+            if !field.brief.is_empty() {
+                let _ = writeln!(out, "# HELP {sub_name} {brief}");
+            }
+            if let Some(uw) = unit_word {
+                let _ = writeln!(out, "# UNIT {sub_name} {uw}");
+            }
+            let _ = writeln!(out, "# TYPE {sub_name} {prom_type}");
+        }
+        emit_sample_line(out, &sub_name, base_labels, &format!("{val}"), ts_suffix);
+    }
+
+    // _sum uses same unit-bearing base name (histogram-family convention)
+    let sum_name = format!("{base_metric_name}_sum");
+    if seen.insert(sum_name.clone()) {
+        if !field.brief.is_empty() {
+            let _ = writeln!(out, "# HELP {sum_name} {brief}");
+        }
+        if let Some(uw) = unit_word {
+            let _ = writeln!(out, "# UNIT {sum_name} {uw}");
+        }
+        let _ = writeln!(out, "# TYPE {sum_name} counter");
+    }
+    emit_sample_line(
+        out,
+        &sum_name,
+        base_labels,
+        &format!("{}", s.sum),
+        ts_suffix,
+    );
+
+    // _count uses same unit-bearing base name (histogram-family convention).
+    // Although count is "number of observations", it shares the unit-bearing
+    // prefix for consistency with _sum and standard histogram naming.
+    let count_name = format!("{base_metric_name}_count");
+    if seen.insert(count_name.clone()) {
+        if !field.brief.is_empty() {
+            let _ = writeln!(out, "# HELP {count_name} {brief}");
+        }
+        if let Some(uw) = unit_word {
+            let _ = writeln!(out, "# UNIT {count_name} {uw}");
+        }
+        let _ = writeln!(out, "# TYPE {count_name} counter");
+    }
+    emit_sample_line(
+        out,
+        &count_name,
+        base_labels,
+        &format!("{}", s.count),
+        ts_suffix,
+    );
+}
+
+/// Writes a single sample line with optional labels and timestamp suffix.
+fn emit_sample_line(
+    out: &mut String,
+    metric_name: &str,
+    labels: &str,
+    value: &str,
+    ts_suffix: &str,
+) {
+    if labels.is_empty() {
+        let _ = writeln!(out, "{metric_name} {value}{ts_suffix}");
+    } else {
+        let _ = writeln!(out, "{metric_name}{{{labels}}} {value}{ts_suffix}");
+    }
+}
+
+/// Renders the `target_info` gauge block from resource attributes into a
+/// reusable string. Returns an empty string when `resource_attributes` is
+/// empty (per OTel→Prometheus spec, `target_info` is only emitted when there
+/// is metadata to expose). Intended to be called once at server startup; the
+/// resulting string is then prepended verbatim to every Prometheus scrape.
+pub(crate) fn render_target_info(resource_attributes: &HashMap<String, String>) -> String {
+    if resource_attributes.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    let _ = writeln!(&mut out, "# HELP target_info Target metadata");
+    let _ = writeln!(&mut out, "# TYPE target_info gauge");
+    let merged = sanitize_and_merge_label_pairs(
+        resource_attributes
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.clone())),
+    );
+    let mut labels = String::new();
+    for (key, value) in &merged {
+        if !labels.is_empty() {
+            labels.push(',');
+        }
+        let _ = write!(
+            &mut labels,
+            "{}=\"{}\"",
+            key,
+            escape_prom_label_value(value)
+        );
+    }
+    let _ = writeln!(&mut out, "target_info{{{labels}}} 1");
+    out
+}
+
+fn agg_prometheus_text(
+    groups: &[AggregateGroup],
+    timestamp_millis: Option<i64>,
+    target_info: &str,
+) -> String {
     let mut out = String::new();
     let ts_suffix = timestamp_millis
         .map(|ms| format!(" {ms}"))
         .unwrap_or_default();
     let mut seen: HashSet<String> = HashSet::new();
 
+    out.push_str(target_info);
+
     for g in groups {
-        // Base labels include set name and selected attributes
+        // Base labels: `otel_scope_name` plus the merged sanitized attributes.
+        // `otel_scope_version` is emitted only when a non-empty version is
+        // available; the current `MetricsDescriptor` does not carry one, so
+        // the label is omitted entirely (per OTel→Prometheus spec: only
+        // labels with values are emitted).
         let mut base_labels = String::new();
         if !g.name.is_empty() {
             let _ = write!(
                 &mut base_labels,
-                "set=\"{}\"",
+                "otel_scope_name=\"{}\"",
                 escape_prom_label_value(&g.name)
             );
         }
-        // ensure deterministic order of attributes in output
-        let mut attrs: Vec<(&String, &AttributeValue)> = g.attributes.iter().collect();
-        attrs.sort_by(|a, b| a.0.cmp(b.0));
-        for (k, v) in attrs {
+        // Merge values for keys that collide after sanitization (per
+        // OTel→Prometheus spec). Emission order is unspecified — Prometheus
+        // treats labels as an unordered set.
+        let merged = sanitize_and_merge_label_pairs(
+            g.attributes
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.to_string_value())),
+        );
+        for (k, v) in &merged {
             if !base_labels.is_empty() {
                 base_labels.push(',');
             }
-            let _ = write!(
-                &mut base_labels,
-                "{}=\"{}\"",
-                sanitize_prom_label_key(k),
-                escape_prom_label_value(&v.to_string_value())
-            );
+            let _ = write!(&mut base_labels, "{}=\"{}\"", k, escape_prom_label_value(v));
         }
 
         // Emit metrics for this group
         for field in g.brief.metrics.iter() {
             if let Some(value) = g.metrics.get(field.name) {
-                let metric_name = build_prom_metric_name(field.name, field.unit, field.instrument);
                 match value {
                     MetricValue::U64(_) | MetricValue::F64(_) => {
-                        if seen.insert(metric_name.clone()) {
-                            if !field.brief.is_empty() {
-                                let _ = writeln!(
-                                    &mut out,
-                                    "# HELP {} {}",
-                                    metric_name,
-                                    escape_prom_help(field.brief)
-                                );
-                            }
-                            let prom_type = match field.instrument {
-                                Instrument::Counter => "counter",
-                                Instrument::UpDownCounter => "gauge",
-                                Instrument::Gauge => "gauge",
-                                Instrument::Histogram => "gauge",
-                                Instrument::Mmsc => unreachable!("MMSC is not a scalar"),
-                            };
-                            let _ = writeln!(&mut out, "# TYPE {metric_name} {prom_type}");
-                        }
-                        let value_str = format_prom_value(*value, Some(field.value_type));
-                        if base_labels.is_empty() {
-                            let _ = writeln!(&mut out, "{metric_name} {value_str}{ts_suffix}");
-                        } else {
-                            let _ = writeln!(
-                                &mut out,
-                                "{metric_name}{{{base_labels}}} {value_str}{ts_suffix}"
-                            );
-                        }
+                        emit_scalar_metric(
+                            &mut out,
+                            &mut seen,
+                            field,
+                            *value,
+                            &base_labels,
+                            &ts_suffix,
+                        );
                     }
                     MetricValue::Mmsc(s) => {
-                        if s.count == 0 {
-                            continue;
-                        }
-                        let brief = escape_prom_help(field.brief);
-                        for (suffix, prom_type, val) in [
-                            ("_min", "gauge", s.min),
-                            ("_max", "gauge", s.max),
-                            ("_sum", "counter", s.sum),
-                        ] {
-                            let sub_name = format!("{metric_name}{suffix}");
-                            if seen.insert(sub_name.clone()) {
-                                if !field.brief.is_empty() {
-                                    let _ = writeln!(&mut out, "# HELP {sub_name} {brief}");
-                                }
-                                let _ = writeln!(&mut out, "# TYPE {sub_name} {prom_type}");
-                            }
-                            if base_labels.is_empty() {
-                                let _ = writeln!(&mut out, "{sub_name} {val}{ts_suffix}");
-                            } else {
-                                let _ = writeln!(
-                                    &mut out,
-                                    "{sub_name}{{{base_labels}}} {val}{ts_suffix}"
-                                );
-                            }
-                        }
-                        // _count as counter with integer value
-                        let count_name = format!("{metric_name}_count");
-                        if seen.insert(count_name.clone()) {
-                            if !field.brief.is_empty() {
-                                let _ = writeln!(&mut out, "# HELP {count_name} {brief}");
-                            }
-                            let _ = writeln!(&mut out, "# TYPE {count_name} counter");
-                        }
-                        if base_labels.is_empty() {
-                            let _ = writeln!(&mut out, "{count_name} {}{ts_suffix}", s.count);
-                        } else {
-                            let _ = writeln!(
-                                &mut out,
-                                "{count_name}{{{base_labels}}} {}{ts_suffix}",
-                                s.count
-                            );
-                        }
+                        emit_mmsc_metric(&mut out, &mut seen, field, s, &base_labels, &ts_suffix);
                     }
                 }
             }
@@ -1038,6 +1171,7 @@ fn format_prometheus_text(
     telemetry_registry: &TelemetryRegistryHandle,
     reset: bool,
     timestamp_millis: Option<i64>,
+    target_info: &str,
 ) -> String {
     let mut out = String::new();
     let ts_suffix = timestamp_millis
@@ -1045,105 +1179,50 @@ fn format_prometheus_text(
         .unwrap_or_default();
     let mut seen: HashSet<String> = HashSet::new();
 
+    out.push_str(target_info);
+
     let mut visit = |descriptor: &'static MetricsDescriptor,
                      attributes: &dyn AttributeSetHandler,
                      metrics_iter: MetricsIterator<'_>| {
-        // Render labels from attributes + set label
+        // Base labels: `otel_scope_name` plus the merged sanitized attributes.
+        // `otel_scope_version` is emitted only when a non-empty version is
+        // available; the current `MetricsDescriptor` does not carry one, so
+        // the label is omitted entirely (per OTel→Prometheus spec: only
+        // labels with values are emitted).
         let mut base_labels = String::new();
         if !descriptor.name.is_empty() {
             let _ = write!(
                 &mut base_labels,
-                "set=\"{}\"",
+                "otel_scope_name=\"{}\"",
                 escape_prom_label_value(descriptor.name)
             );
         }
-        for (key, value) in attributes.iter_attributes() {
+        // Merge values for keys that collide after sanitization (per
+        // OTel→Prometheus spec). Emission order is unspecified.
+        let merged = sanitize_and_merge_label_pairs(
+            attributes
+                .iter_attributes()
+                .map(|(k, v)| (k, v.to_string_value())),
+        );
+        for (key, value) in &merged {
             if !base_labels.is_empty() {
                 base_labels.push(',');
             }
             let _ = write!(
                 &mut base_labels,
                 "{}=\"{}\"",
-                sanitize_prom_label_key(key),
-                escape_prom_label_value(&value.to_string_value())
+                key,
+                escape_prom_label_value(value)
             );
         }
 
         for (field, value) in metrics_iter {
-            let metric_name = build_prom_metric_name(field.name, field.unit, field.instrument);
-
             match value {
                 MetricValue::U64(_) | MetricValue::F64(_) => {
-                    // HELP/TYPE once per metric name
-                    if seen.insert(metric_name.clone()) {
-                        if !field.brief.is_empty() {
-                            let _ = writeln!(
-                                &mut out,
-                                "# HELP {} {}",
-                                metric_name,
-                                escape_prom_help(field.brief)
-                            );
-                        }
-                        let prom_type = match field.instrument {
-                            Instrument::Counter => "counter",
-                            Instrument::UpDownCounter => "gauge",
-                            Instrument::Gauge => "gauge",
-                            Instrument::Histogram => "gauge",
-                            Instrument::Mmsc => unreachable!("MMSC is not a scalar"),
-                        };
-                        let _ = writeln!(&mut out, "# TYPE {metric_name} {prom_type}");
-                    }
-                    let value_str = format_prom_value(value, Some(field.value_type));
-                    if base_labels.is_empty() {
-                        let _ = writeln!(&mut out, "{metric_name} {value_str}{ts_suffix}");
-                    } else {
-                        let _ = writeln!(
-                            &mut out,
-                            "{metric_name}{{{base_labels}}} {value_str}{ts_suffix}"
-                        );
-                    }
+                    emit_scalar_metric(&mut out, &mut seen, field, value, &base_labels, &ts_suffix);
                 }
-                MetricValue::Mmsc(s) => {
-                    if s.count == 0 {
-                        continue;
-                    }
-                    let brief = escape_prom_help(field.brief);
-                    for (suffix, prom_type, val) in [
-                        ("_min", "gauge", s.min),
-                        ("_max", "gauge", s.max),
-                        ("_sum", "counter", s.sum),
-                    ] {
-                        let sub_name = format!("{metric_name}{suffix}");
-                        if seen.insert(sub_name.clone()) {
-                            if !field.brief.is_empty() {
-                                let _ = writeln!(&mut out, "# HELP {sub_name} {brief}");
-                            }
-                            let _ = writeln!(&mut out, "# TYPE {sub_name} {prom_type}");
-                        }
-                        if base_labels.is_empty() {
-                            let _ = writeln!(&mut out, "{sub_name} {val}{ts_suffix}");
-                        } else {
-                            let _ =
-                                writeln!(&mut out, "{sub_name}{{{base_labels}}} {val}{ts_suffix}");
-                        }
-                    }
-                    // _count as counter with integer value
-                    let count_name = format!("{metric_name}_count");
-                    if seen.insert(count_name.clone()) {
-                        if !field.brief.is_empty() {
-                            let _ = writeln!(&mut out, "# HELP {count_name} {brief}");
-                        }
-                        let _ = writeln!(&mut out, "# TYPE {count_name} counter");
-                    }
-                    if base_labels.is_empty() {
-                        let _ = writeln!(&mut out, "{count_name} {}{ts_suffix}", s.count);
-                    } else {
-                        let _ = writeln!(
-                            &mut out,
-                            "{count_name}{{{base_labels}}} {}{ts_suffix}",
-                            s.count
-                        );
-                    }
+                MetricValue::Mmsc(ref s) => {
+                    emit_mmsc_metric(&mut out, &mut seen, field, s, &base_labels, &ts_suffix);
                 }
             }
         }
@@ -1486,25 +1565,39 @@ fn has_total_suffix(name: &str) -> bool {
 }
 
 fn sanitize_prom_label_key(s: &str) -> String {
+    // Sanitize each char and collapse runs of `_` inline
+    // (per OTel spec §Metric Attributes). No intermediate allocation.
     let mut out = String::with_capacity(s.len());
-    for (i, ch) in s.chars().enumerate() {
-        let ok = matches!(ch, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | ':');
-        if ok && !(i == 0 && ch.is_ascii_digit()) {
-            out.push(ch);
-        } else if ch == '.' || ch == '-' || ch == ' ' {
-            out.push('_');
-        } else if i == 0 && ch.is_ascii_digit() {
-            out.push('_');
-            out.push(ch);
+    let mut prev_underscore = false;
+    let mut first = true;
+    for ch in s.chars() {
+        let mapped = match ch {
+            'a'..='z' | 'A'..='Z' | '_' | ':' => ch,
+            '0'..='9' => {
+                if first {
+                    // Leading digit: prepend `_` then keep the digit.
+                    out.push('_');
+                    prev_underscore = true;
+                }
+                ch
+            }
+            _ => '_',
+        };
+        if mapped == '_' {
+            if !prev_underscore {
+                out.push('_');
+                prev_underscore = true;
+            }
         } else {
-            out.push('_');
+            out.push(mapped);
+            prev_underscore = false;
         }
+        first = false;
     }
     if out.is_empty() {
-        "label".to_string()
-    } else {
-        out
+        return "label".to_string();
     }
+    out
 }
 
 fn escape_prom_label_value(s: &str) -> String {
@@ -1532,6 +1625,29 @@ fn escape_prom_label_value(s: &str) -> String {
 fn escape_prom_help(s: &str) -> String {
     // Similar escaping to label value per Prometheus recommendations
     escape_prom_label_value(s)
+}
+
+/// Sanitizes label keys and merges values that collide after sanitization
+/// into a single entry separated by `;`, per the OTel→Prometheus spec.
+///
+/// Iteration order over the returned map is not specified — Prometheus
+/// treats labels as an unordered set.
+fn sanitize_and_merge_label_pairs<'a, I>(attrs: I) -> HashMap<String, String>
+where
+    I: IntoIterator<Item = (&'a str, String)>,
+{
+    let mut merged: HashMap<String, String> = HashMap::new();
+    for (key, value) in attrs {
+        let sanitized = sanitize_prom_label_key(key);
+        let _ = merged
+            .entry(sanitized)
+            .and_modify(|existing| {
+                existing.push(';');
+                existing.push_str(&value);
+            })
+            .or_insert(value);
+    }
+    merged
 }
 
 // ---------------------------------------------------------------------------
@@ -2121,6 +2237,7 @@ mod tests {
             controller: Arc::new(NoopControlPlane),
             log_tap: None,
             memory_pressure_state: MemoryPressureState::default(),
+            target_info: Arc::from(""),
         }
     }
 
@@ -2554,38 +2671,33 @@ mod tests {
             },
         }];
 
-        let output = agg_prometheus_text(&groups, Some(1000));
+        let output = agg_prometheus_text(&groups, Some(1000), "");
 
         // Each sub-metric should have its own HELP and TYPE.
         // Unit `ms` adds the `_milliseconds` suffix per OTel→Prometheus spec.
         assert!(output.contains("# HELP request_duration_milliseconds_min Request duration\n"));
         assert!(output.contains("# TYPE request_duration_milliseconds_min gauge\n"));
-        assert!(
-            output
-                .contains("request_duration_milliseconds_min{set=\"latency_metrics\"} 1.5 1000\n")
-        );
+        assert!(output.contains(
+            "request_duration_milliseconds_min{otel_scope_name=\"latency_metrics\"} 1.5 1000\n"
+        ));
 
         assert!(output.contains("# HELP request_duration_milliseconds_max Request duration\n"));
         assert!(output.contains("# TYPE request_duration_milliseconds_max gauge\n"));
-        assert!(
-            output
-                .contains("request_duration_milliseconds_max{set=\"latency_metrics\"} 100 1000\n")
-        );
+        assert!(output.contains(
+            "request_duration_milliseconds_max{otel_scope_name=\"latency_metrics\"} 100 1000\n"
+        ));
 
         assert!(output.contains("# HELP request_duration_milliseconds_sum Request duration\n"));
         assert!(output.contains("# TYPE request_duration_milliseconds_sum counter\n"));
-        assert!(
-            output.contains(
-                "request_duration_milliseconds_sum{set=\"latency_metrics\"} 250.5 1000\n"
-            )
-        );
+        assert!(output.contains(
+            "request_duration_milliseconds_sum{otel_scope_name=\"latency_metrics\"} 250.5 1000\n"
+        ));
 
         assert!(output.contains("# HELP request_duration_milliseconds_count Request duration\n"));
         assert!(output.contains("# TYPE request_duration_milliseconds_count counter\n"));
-        assert!(
-            output
-                .contains("request_duration_milliseconds_count{set=\"latency_metrics\"} 10 1000\n")
-        );
+        assert!(output.contains(
+            "request_duration_milliseconds_count{otel_scope_name=\"latency_metrics\"} 10 1000\n"
+        ));
 
         // Should NOT contain the base metric name without suffix
         assert!(!output.contains("# TYPE request_duration gauge"));
@@ -2992,5 +3104,289 @@ mod tests {
     #[test]
     fn test_sanitize_prom_metric_name_collapses_underscores() {
         assert_eq!(sanitize_prom_metric_name("foo__bar___baz"), "foo_bar_baz");
+    }
+
+    // ---------------------------------------------------------------------
+    // Label key sanitization & collision merging
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn test_sanitize_prom_label_key_collapses_underscores() {
+        // Per OTel spec §Metric Attributes: "Multiple consecutive _ characters
+        // SHOULD be replaced with a single _ character." This applies to label
+        // keys, not just metric names.
+        assert_eq!(sanitize_prom_label_key("foo..bar"), "foo_bar");
+        assert_eq!(sanitize_prom_label_key("a__b___c"), "a_b_c");
+        assert_eq!(sanitize_prom_label_key("trailing__"), "trailing_");
+        assert_eq!(sanitize_prom_label_key(""), "label");
+    }
+
+    #[test]
+    fn test_sanitize_and_merge_label_pairs_collisions_use_semicolon() {
+        // Per OTel→Prometheus spec: when two original keys collide after
+        // sanitization, their values are concatenated with `;`.
+        let merged = sanitize_and_merge_label_pairs(vec![
+            ("http.method", "GET".to_string()),
+            ("http_method", "POST".to_string()),
+        ]);
+        // Keys are merged into a single sanitized entry.
+        assert_eq!(merged.len(), 1);
+        // Values are joined in iteration order with `;`.
+        assert_eq!(
+            merged.get("http_method").map(String::as_str),
+            Some("GET;POST")
+        );
+    }
+
+    #[test]
+    fn test_sanitize_and_merge_label_pairs_distinct_keys_unchanged() {
+        let merged =
+            sanitize_and_merge_label_pairs(vec![("a", "1".to_string()), ("b", "2".to_string())]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged.get("a").map(String::as_str), Some("1"));
+        assert_eq!(merged.get("b").map(String::as_str), Some("2"));
+    }
+
+    /// Returns true if `output` contains a line of the shape
+    /// `<prefix><labels><suffix>` where `<labels>` (the comma-separated
+    /// content between `{` and `}`) is exactly the set in `expected_labels`,
+    /// regardless of order. Used by tests that assert label *content* without
+    /// pinning down emission order (Prometheus treats labels as unordered).
+    fn line_has_labels(output: &str, prefix: &str, suffix: &str, expected_labels: &[&str]) -> bool {
+        let expected: HashSet<&str> = expected_labels.iter().copied().collect();
+        output.lines().any(|line| {
+            if !line.starts_with(prefix) || !line.ends_with(suffix) {
+                return false;
+            }
+            let labels_str = &line[prefix.len()..line.len() - suffix.len()];
+            let actual: HashSet<&str> = labels_str.split(',').collect();
+            actual == expected
+        })
+    }
+
+    // -------------------------------------------------------------------
+    // End-to-end integration test: format_prometheus_text with real metrics
+    // -------------------------------------------------------------------
+
+    use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+    use otap_df_telemetry::descriptor::{
+        AttributeField, AttributeValueType, AttributesDescriptor, MetricValueType,
+    };
+    use otap_df_telemetry::metrics::{MetricSetHandler, MetricValue};
+
+    #[derive(Debug)]
+    struct E2eMetricSet {
+        values: Vec<MetricValue>,
+    }
+
+    impl Default for E2eMetricSet {
+        fn default() -> Self {
+            Self {
+                values: vec![
+                    MetricValue::U64(0),   // http_requests counter
+                    MetricValue::F64(0.0), // http_request_duration counter
+                    MetricValue::U64(0),   // memory_usage gauge
+                ],
+            }
+        }
+    }
+
+    static E2E_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "http_server",
+        metrics: &[
+            MetricsField {
+                name: "http_requests",
+                unit: "1",
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
+                brief: "Total HTTP requests",
+                value_type: MetricValueType::U64,
+            },
+            MetricsField {
+                name: "http_request_duration",
+                unit: "s",
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
+                brief: "Total request duration",
+                value_type: MetricValueType::F64,
+            },
+            MetricsField {
+                name: "memory_usage",
+                unit: "By",
+                instrument: Instrument::Gauge,
+                temporality: None,
+                brief: "Current memory usage",
+                value_type: MetricValueType::U64,
+            },
+        ],
+    };
+
+    static E2E_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+        name: "http_attrs",
+        fields: &[AttributeField {
+            key: "http.method",
+            r#type: AttributeValueType::String,
+            brief: "HTTP method",
+        }],
+    };
+
+    impl MetricSetHandler for E2eMetricSet {
+        fn descriptor(&self) -> &'static MetricsDescriptor {
+            &E2E_METRICS_DESCRIPTOR
+        }
+
+        fn snapshot_values(&self) -> Vec<MetricValue> {
+            self.values.clone()
+        }
+
+        fn clear_values(&mut self) {
+            self.values.iter_mut().for_each(MetricValue::reset);
+        }
+
+        fn needs_flush(&self) -> bool {
+            self.values.iter().any(|&v| !v.is_zero())
+        }
+    }
+
+    #[derive(Debug)]
+    struct E2eAttributeSet {
+        values: Vec<AttributeValue>,
+    }
+
+    impl AttributeSetHandler for E2eAttributeSet {
+        fn descriptor(&self) -> &'static AttributesDescriptor {
+            &E2E_ATTRIBUTES_DESCRIPTOR
+        }
+
+        fn attribute_values(&self) -> &[AttributeValue] {
+            &self.values
+        }
+    }
+
+    /// Full integration test: registers metrics, accumulates values, then validates
+    /// the Prometheus text output follows OTel OTLP-to-Prometheus translation rules.
+    #[test]
+    fn test_format_prometheus_text_e2e_otel_compliance() {
+        let registry = TelemetryRegistryHandle::new();
+
+        // Register a metric set with attributes
+        let metric_set = registry.register_metric_set::<E2eMetricSet>(E2eAttributeSet {
+            values: vec![AttributeValue::String("GET".to_string())],
+        });
+
+        // Accumulate some metric values
+        registry.accumulate_metric_set_snapshot(
+            metric_set.metric_set_key(),
+            &[
+                MetricValue::U64(42),   // http_requests counter
+                MetricValue::F64(1.25), // http_request_duration counter (seconds)
+                MetricValue::U64(1024), // memory_usage gauge (bytes)
+            ],
+        );
+
+        // Format with resource attributes for target_info
+        let mut resource_attrs = HashMap::new();
+        let _ = resource_attrs.insert("service.name".to_string(), "my-service".to_string());
+        let _ = resource_attrs.insert("service.instance.id".to_string(), "host1:8080".to_string());
+
+        let target_info = render_target_info(&resource_attrs);
+        let output = format_prometheus_text(&registry, false, Some(1000), &target_info);
+
+        // --- Validate target_info metric ---
+        assert!(
+            output.contains("# HELP target_info Target metadata\n"),
+            "missing target_info HELP"
+        );
+        assert!(
+            output.contains("# TYPE target_info gauge\n"),
+            "missing target_info TYPE"
+        );
+        // target_info labels: order is unspecified (HashMap iteration).
+        assert!(
+            line_has_labels(
+                &output,
+                "target_info{",
+                "} 1",
+                &[
+                    "service_instance_id=\"host1:8080\"",
+                    "service_name=\"my-service\"",
+                ],
+            ),
+            "target_info should carry both resource-derived labels. Output:\n{output}"
+        );
+
+        // --- Validate counter with _total suffix (dimensionless unit "1") ---
+        assert!(
+            output.contains("# HELP http_requests_total Total HTTP requests\n"),
+            "counter should get _total suffix. Output:\n{output}"
+        );
+        assert!(
+            output.contains("# TYPE http_requests_total counter\n"),
+            "counter TYPE should be counter"
+        );
+        assert!(
+            output.contains(
+                "http_requests_total{otel_scope_name=\"http_server\",http_method=\"GET\"} 42 1000\n"
+            ),
+            "counter should have otel_scope_name and (omitted-when-empty) otel_scope_version labels. Output:\n{output}"
+        );
+        // No UNIT metadata for dimensionless "1"
+        assert!(
+            !output.contains("# UNIT http_requests_total"),
+            "dimensionless counter should not have UNIT"
+        );
+
+        // --- Validate counter with unit suffix ---
+        assert!(
+            output.contains("# HELP http_request_duration_seconds_total Total request duration\n"),
+            "counter with unit 's' should get _seconds_total suffix. Output:\n{output}"
+        );
+        assert!(
+            output.contains("# UNIT http_request_duration_seconds_total seconds\n"),
+            "should emit UNIT metadata for seconds"
+        );
+        assert!(
+            output.contains("# TYPE http_request_duration_seconds_total counter\n"),
+            "TYPE should be counter"
+        );
+        assert!(
+            output.contains("http_request_duration_seconds_total{otel_scope_name=\"http_server\",http_method=\"GET\"} 1.25 1000\n"),
+            "should have correct value with labels. Output:\n{output}"
+        );
+
+        // --- Validate gauge with unit suffix ---
+        assert!(
+            output.contains("# HELP memory_usage_bytes Current memory usage\n"),
+            "gauge with unit 'By' should get _bytes suffix. Output:\n{output}"
+        );
+        assert!(
+            output.contains("# UNIT memory_usage_bytes bytes\n"),
+            "should emit UNIT metadata for bytes"
+        );
+        assert!(
+            output.contains("# TYPE memory_usage_bytes gauge\n"),
+            "TYPE should be gauge"
+        );
+        assert!(
+            output.contains("memory_usage_bytes{otel_scope_name=\"http_server\",http_method=\"GET\"} 1024 1000\n"),
+            "gauge should have correct value. Output:\n{output}"
+        );
+
+        // --- Validate labels ---
+        assert!(!output.contains("set=\""), "should not use old 'set' label");
+        assert!(
+            output.contains("otel_scope_name=\"http_server\""),
+            "should use otel_scope_name label"
+        );
+        assert!(
+            !output.contains("otel_scope_version"),
+            "otel_scope_version label should be omitted when empty"
+        );
+
+        // --- Validate no double _total suffix ---
+        assert!(
+            !output.contains("_total_total"),
+            "should not double-add _total suffix"
+        );
     }
 }
