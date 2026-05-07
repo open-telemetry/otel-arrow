@@ -78,7 +78,7 @@ use otap_df_pdata::schema::consts;
 
 use crate::consts::{
     ENCODE_FUNC_NAME, FNV_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME,
-    SHA1_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME, XXH3_FUNC_NAME,
+    SHA1_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME, XXH3_FUNC_NAME, XXH128_FUNC_NAME,
 };
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::{join, multi_join};
@@ -87,6 +87,7 @@ use crate::pipeline::expr::types::{
 };
 use crate::pipeline::functions::{
     arity_range, fnv_hash, murmur3_hash, regexp_substr, sha1_hash, substring, xxh3_hash,
+    xxh128_hash,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::anyval::{
@@ -838,6 +839,7 @@ impl DataFusionFunctionDef {
             SHA1_FUNC_NAME => Self::new(sha1_hash(), ExprLogicalType::Binary, true, None),
             SHA512_FUNC_NAME => Self::new(sha512(), ExprLogicalType::Binary, true, None),
             XXH3_FUNC_NAME => Self::new(xxh3_hash(), ExprLogicalType::Int64, true, None),
+            XXH128_FUNC_NAME => Self::new(xxh128_hash(), ExprLogicalType::Binary, true, None),
             _ => return None,
         })
     }
