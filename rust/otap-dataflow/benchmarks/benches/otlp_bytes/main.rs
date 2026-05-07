@@ -107,7 +107,7 @@ fn otlp_payload_clone(c: &mut Criterion) {
 
     let logs = create_logs_data();
 
-    // Encode logs to protobuf bytes (same as fake_data_generator does)
+    // Encode logs to protobuf bytes (same as traffic_generator does)
     let mut bytes = BytesMut::new();
     logs.encode(&mut bytes).expect("encoding success");
     let payload: OtapPayload = OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into();
