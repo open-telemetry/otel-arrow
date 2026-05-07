@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! A fake data generator receiver.
+//! A traffic generator receiver.
 //! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 //!
 
@@ -53,14 +53,14 @@ pub mod semconv_signal;
 /// Static hardcoded signal generators for lightweight load testing
 pub mod static_signal;
 
-/// The URN for the traffic generator receiver (a.k.a. fake data generator).
+/// The URN for the traffic generator receiver.
 pub const TRAFFIC_GENERATOR_RECEIVER_URN: &str = "urn:otel:receiver:traffic_generator";
 
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
 
 /// A Receiver that generates fake OTAP data for testing purposes.
 pub struct TrafficGeneratorReceiver {
-    /// Configuration for the fake data generator
+    /// Configuration for the traffic generator
     config: Config,
 
     /// Metrics for the traffic generator
@@ -116,7 +116,7 @@ impl TrafficGeneratorReceiver {
         Self { config, metrics }
     }
 
-    /// Creates a new fake data generator from a configuration object
+    /// Creates a new traffic generator from a configuration object
     pub fn from_config(
         pipeline_ctx: PipelineContext,
         config: &Value,
