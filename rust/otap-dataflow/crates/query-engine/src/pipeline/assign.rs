@@ -1514,7 +1514,7 @@ fn can_assign_type(dest_type: &ExprLogicalType, source_type: &ExprLogicalType) -
     }
 
     // scalar int type can be converted to any integer type
-    if dest_type.is_integer() && source_type == &ExprLogicalType::ScalarInt {
+    if dest_type.is_integer() && source_type == &ExprLogicalType::AnyInt {
         return true;
     }
 
@@ -1531,7 +1531,7 @@ fn can_assign_type(dest_type: &ExprLogicalType, source_type: &ExprLogicalType) -
                 | ExprLogicalType::Int64
                 | ExprLogicalType::Float64
                 | ExprLogicalType::AnyValueNumeric
-                | ExprLogicalType::ScalarInt
+                | ExprLogicalType::AnyInt
         ),
 
         // TODO - handle other cases as we support a greater variety of destinations
@@ -2057,7 +2057,7 @@ mod test {
             Err(e) => {
                 let err_msg = e.to_string();
                 assert!(
-                    err_msg.contains("cannot assign expression of type ScalarInt to type String"),
+                    err_msg.contains("cannot assign expression of type AnyInt to type String"),
                     "unexpected error message: {err_msg:?}"
                 )
             }
@@ -4905,6 +4905,81 @@ mod test {
         test_update_attr_to_substring_function_call_result_with_no_end_index::<KqlParser>().await
     }
 
+    async fn test_set_attr_to_uuid_function_call_result<P: Parser>(
+        fn_name: &str,
+        expected_version: usize,
+    ) {
+        use std::collections::HashSet;
+
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+        ]);
+
+        let query = format!(r#"logs | extend attributes["my.log.id"] = {fn_name}()"#);
+        let pipeline_expr = P::parse_with_options(&query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let log_records = &result_logs_data.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(log_records.len(), 3);
+
+        let mut seen = HashSet::new();
+        for log in log_records {
+            let attrs = &log.attributes;
+            assert_eq!(attrs.len(), 1, "expected one attribute on log: {attrs:?}");
+            assert_eq!(attrs[0].key, "my.log.id");
+            let any_value = attrs[0].value.as_ref().expect("attribute value");
+            let str_value = match &any_value.value {
+                Some(
+                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                        s,
+                    ),
+                ) => s.clone(),
+                other => panic!("expected string value, got {other:?}"),
+            };
+            let parsed = ::uuid::Uuid::parse_str(&str_value)
+                .unwrap_or_else(|e| panic!("expected valid UUID, got {str_value}: {e}"));
+            assert_eq!(
+                parsed.get_version_num(),
+                expected_version,
+                "expected v{expected_version} UUID, got {str_value}"
+            );
+            assert!(
+                seen.insert(str_value.clone()),
+                "expected distinct UUIDs per row, but {str_value} appeared twice"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_set_attr_to_uuid_v4_function_call_result_opl_parser() {
+        test_set_attr_to_uuid_function_call_result::<OplParser>("uuid", 4).await
+    }
+
+    #[tokio::test]
+    async fn test_set_attr_to_uuid_v4_function_call_result_kql_parser() {
+        test_set_attr_to_uuid_function_call_result::<KqlParser>("uuid", 4).await
+    }
+
+    #[tokio::test]
+    async fn test_set_attr_to_uuid_v7_function_call_result_opl_parser() {
+        test_set_attr_to_uuid_function_call_result::<OplParser>("uuidv7", 7).await
+    }
+
+    #[tokio::test]
+    async fn test_set_attr_to_uuid_v7_function_call_result_kql_parser() {
+        test_set_attr_to_uuid_function_call_result::<KqlParser>("uuidv7", 7).await
+    }
+
     async fn test_update_attr_to_concat_with_scalars<P: Parser>(concat_fn_name: &str) {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
@@ -5471,9 +5546,116 @@ mod test {
     async fn test_update_attr_to_regexp_substring_func_call_with_scalars_opl_parser() {
         test_update_attr_to_regexp_substring_func_call_with_scalars::<OplParser>().await
     }
+    async fn test_set_attr_to_format_datetime_result<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .time_unix_nano(1_000_000_000_000_000_000u64) // 2001-09-09 01:46:40 UTC
+                .finish(),
+        ]);
+
+        let query =
+            r#"logs | extend attributes["date"] = format_datetime(time_unix_nano, "%Y-%m-%d")"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new("date", AnyValue::new_string("2001-09-09"))]
+        );
+    }
 
     #[tokio::test]
-    async fn test_update_attr_to_regexp_substring_func_call_with_scalars_kq_parser() {
-        test_update_attr_to_regexp_substring_func_call_with_scalars::<KqlParser>().await
+    async fn test_set_attr_to_format_datetime_result_opl_parser() {
+        test_set_attr_to_format_datetime_result::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_set_attr_to_format_datetime_result_kql_parser() {
+        test_set_attr_to_format_datetime_result::<KqlParser>().await
+    }
+
+    async fn test_update_attr_to_upper_case_function_call<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "attr",
+                    AnyValue::new_string("hello world"),
+                )])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["attr"] = upper_case(attributes["attr"])"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new("attr", AnyValue::new_string("HELLO WORLD"))]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_upper_case_function_call_opl_parser() {
+        test_update_attr_to_upper_case_function_call::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_upper_case_function_call_kql_parser() {
+        test_update_attr_to_upper_case_function_call::<KqlParser>().await
+    }
+
+    async fn test_update_attr_to_lower_case_function_call<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "attr",
+                    AnyValue::new_string("HELLO WORLD"),
+                )])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["attr"] = lower_case(attributes["attr"])"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new("attr", AnyValue::new_string("hello world"))]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_lower_case_function_call_opl_parser() {
+        test_update_attr_to_lower_case_function_call::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_lower_case_function_call_kql_parser() {
+        test_update_attr_to_lower_case_function_call::<KqlParser>().await
     }
 }
