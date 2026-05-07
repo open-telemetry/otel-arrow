@@ -1025,7 +1025,7 @@ def cmd_serve(args) -> int:
     print()
 
     handler = lambda *a, **kw: _DashboardHandler(*a, directory=str(site_dir), **kw)
-    server = HTTPServer(("0.0.0.0", args.port), handler)
+    server = HTTPServer(("127.0.0.1", args.port), handler)
 
     try:
         server.serve_forever()
