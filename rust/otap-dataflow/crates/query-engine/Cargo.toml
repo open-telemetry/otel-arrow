@@ -13,6 +13,7 @@ arrow = { workspace = true, features = ["prettyprint"] }
 async-trait = { workspace = true }
 datafusion = { workspace = true, features = [
     "crypto_expressions",
+    "datetime_expressions",
     "unicode_expressions",
 ] }
 futures-core = { workspace = true }
@@ -22,6 +23,7 @@ smallvec = { workspace = true }
 thiserror = { workspace = true }
 data_engine_expressions = { workspace = true }
 data_engine_parser_abstractions = { workspace = true }
+uuid = { workspace = true }
 
 otap-df-config = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["testing"] }

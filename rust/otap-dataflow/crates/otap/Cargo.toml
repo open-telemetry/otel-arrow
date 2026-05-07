@@ -83,7 +83,7 @@ rustls-symcrypt = { workspace = true, optional = true }
 
 [features]
 test-utils = ["rustls/ring", "otap-df-pdata/testing"]
-# Integration tests that depend on the fake_data_generator receiver and the
+# Integration tests that depend on the traffic_generator receiver and the
 # `weaver_common` crate (used to load semconv schemas). Gating these behind
 # an opt-in feature lets builds that don't need them avoid pulling weaver,
 # gix, reqwest, native-tls and (on Linux) openssl-sys into the dep graph.
@@ -113,7 +113,7 @@ otap-df-pdata = { workspace = true, features = ["testing"] }
 otap-df-state = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 
-# Integration tests that pull `core-nodes/dev-tools` (fake_data_generator)
+# Integration tests that pull `core-nodes/dev-tools` (traffic_generator)
 # and `weaver_common`. Listing them here with `required-features` lets cargo
 # skip the test binaries entirely when the `integration-tests` feature is
 # off, keeping the test source files free of `#[cfg]` gating.

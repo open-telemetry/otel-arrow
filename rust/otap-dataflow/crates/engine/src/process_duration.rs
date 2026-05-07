@@ -13,10 +13,10 @@
 //! compute time from error-path time.
 //!
 //! This API complements, but is not required for, the engine's automatic
-//! per-message stopwatch. [`ComputeDuration::timed`] provides the
+//! per-message flow_metric. [`ComputeDuration::timed`] provides the
 //! success/failed outcome split for `processor.compute.{success,failed}.duration`,
 //! while the engine's `Instant`-marker timing on the EffectHandler captures
-//! total wall-clock compute between sends for stopwatches without processor
+//! total wall-clock compute between sends for flow_metrics without processor
 //! cooperation.
 //!
 //! The closure-based API structurally prevents timing from spanning
@@ -73,7 +73,7 @@ impl ComputeDuration {
     ///
     /// The elapsed time is recorded into the `success` or `failed`
     /// accumulator based on the closure's `Result` outcome. This feeds only
-    /// the `processor.compute.{success,failed}.duration` metric; stopwatch
+    /// the `processor.compute.{success,failed}.duration` metric; flow_metric
     /// participation is handled separately by the engine's `Instant`-marker
     /// timing on the EffectHandler.
     ///
