@@ -20,7 +20,7 @@ use crate::control::{
 use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
-use crate::flow_metric::{
+use crate::flow_metrics::{
     FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
 };
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -874,7 +874,7 @@ mod tests {
         NodeControlMsg::{Config, Shutdown, TimerTick},
         pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
-    use crate::flow_metric::{
+    use crate::flow_metrics::{
         FlowAttributeSet, FlowDurationMetrics, FlowSignalsIncomingMetrics,
         FlowSignalsOutgoingMetrics,
     };
