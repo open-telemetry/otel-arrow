@@ -520,12 +520,13 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         metrics.families_scraped.add(due_family_count(due));
                         metrics.scrape_lag_ns.record(duration_nanos(now.saturating_duration_since(scheduled_due)));
                     }
-                    match source.scrape_due(due) {
+                    match source.scrape_due(due).await {
                         Ok(scrape) => {
                             if let Some(metrics) = metrics.as_mut() {
                                 metrics.partial_errors.add(scrape.partial_errors);
                                 metrics.source_read_errors.add(scrape.partial_errors);
                             }
+                            tokio::task::consume_budget().await;
                             let pdata = match encode_snapshot(scrape.snapshot) {
                                 Ok(pdata) => pdata,
                                 Err(err) => {
@@ -541,6 +542,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                     });
                                 }
                             };
+                            tokio::task::consume_budget().await;
                             match effect_handler.try_send_message_with_source_node(pdata) {
                                 Ok(()) => {
                                     if let Some(metrics) = metrics.as_mut() {

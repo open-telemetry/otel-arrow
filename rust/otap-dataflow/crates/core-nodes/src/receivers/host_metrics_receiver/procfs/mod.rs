@@ -152,7 +152,7 @@ impl ProcfsSource {
     }
 
     /// Collects one host snapshot for the due family set.
-    pub fn scrape_due(&mut self, due: ProcfsFamilies) -> io::Result<HostScrape> {
+    pub async fn scrape_due(&mut self, due: ProcfsFamilies) -> io::Result<HostScrape> {
         let due = due.enabled_by(&self.config);
         let now_unix_nano = now_unix_nano();
         let clk_tck = self.clk_tck;
@@ -260,6 +260,8 @@ impl ProcfsSource {
             }
         };
 
+        tokio::task::consume_budget().await;
+
         let disks = if due.disk {
             let disk_include = self.config.disk_include.clone();
             let disk_exclude = self.config.disk_exclude.clone();
@@ -283,6 +285,8 @@ impl ProcfsSource {
             None
         };
 
+        tokio::task::consume_budget().await;
+
         let networks = if due.network {
             let network_include = self.config.network_include.clone();
             let network_exclude = self.config.network_exclude.clone();
@@ -300,6 +304,8 @@ impl ProcfsSource {
         } else {
             None
         };
+
+        tokio::task::consume_budget().await;
 
         let filesystems = if due.filesystem {
             let include_virtual = self.config.filesystem_include_virtual;
@@ -338,6 +344,8 @@ impl ProcfsSource {
         } else {
             Vec::new()
         };
+
+        tokio::task::consume_budget().await;
 
         let resource = self.read_resource().clone();
         let counter_starts = self.counter_tracker.snapshot(

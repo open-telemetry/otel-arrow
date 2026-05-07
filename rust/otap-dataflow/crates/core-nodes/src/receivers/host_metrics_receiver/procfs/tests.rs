@@ -15,7 +15,7 @@ use otap_df_pdata::testing::round_trip::decode_metrics;
 use projection::{CounterStarts, counter_key, counter_key_joined, counter_key_matches_joined};
 #[cfg(feature = "dev-tools")]
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::ErrorKind;
+use std::io::{self, ErrorKind};
 use std::path::PathBuf;
 #[cfg(feature = "dev-tools")]
 use weaver_common::{result::WResult, vdir::VirtualDirectoryPath};
@@ -32,6 +32,13 @@ use weaver_semconv::{
     group::{GroupType, InstrumentSpec},
     registry_repo::RegistryRepo,
 };
+
+fn block_on_scrape(source: &mut ProcfsSource, due: ProcfsFamilies) -> io::Result<HostScrape> {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime")
+        .block_on(source.scrape_due(due))
+}
 
 #[test]
 fn projection_uses_expected_metric_shapes() {
@@ -504,13 +511,15 @@ fn scrape_due_emits_successful_families_after_partial_read_error() {
     )
     .expect("source");
 
-    let scrape = source
-        .scrape_due(ProcfsFamilies {
+    let scrape = block_on_scrape(
+        &mut source,
+        ProcfsFamilies {
             memory: true,
             disk: true,
             ..ProcfsFamilies::default()
-        })
-        .expect("partial scrape");
+        },
+    )
+    .expect("partial scrape");
 
     assert_eq!(scrape.partial_errors, 1);
     assert!(scrape.snapshot.memory.is_some());
@@ -567,25 +576,29 @@ fn scrape_due_preserves_disk_counter_state_after_diskstats_read_error() {
     )
     .expect("source");
 
-    let first = source
-        .scrape_due(ProcfsFamilies {
+    let first = block_on_scrape(
+        &mut source,
+        ProcfsFamilies {
             disk: true,
             ..ProcfsFamilies::default()
-        })
-        .expect("first disk scrape");
+        },
+    )
+    .expect("first disk scrape");
     let first_start = first
         .snapshot
         .counter_starts
         .get_joined(metric::DISK_IO, "sda", "read", 0);
 
     std::fs::remove_file(proc.join("diskstats")).expect("remove diskstats");
-    let partial = source
-        .scrape_due(ProcfsFamilies {
+    let partial = block_on_scrape(
+        &mut source,
+        ProcfsFamilies {
             memory: true,
             disk: true,
             ..ProcfsFamilies::default()
-        })
-        .expect("partial scrape");
+        },
+    )
+    .expect("partial scrape");
     assert_eq!(partial.partial_errors, 1);
     assert!(partial.snapshot.disks.is_empty());
 
@@ -594,12 +607,14 @@ fn scrape_due_preserves_disk_counter_state_after_diskstats_read_error() {
         "8 0 sda 1 0 50 0 2 0 100 0 0 0 0 0 0 0 0\n",
     )
     .expect("diskstats after reset");
-    let after_error = source
-        .scrape_due(ProcfsFamilies {
+    let after_error = block_on_scrape(
+        &mut source,
+        ProcfsFamilies {
             disk: true,
             ..ProcfsFamilies::default()
-        })
-        .expect("disk scrape after read error");
+        },
+    )
+    .expect("disk scrape after read error");
     let reset_start =
         after_error
             .snapshot
@@ -655,19 +670,23 @@ fn scrape_due_uses_stable_fallback_start_time_when_stat_is_unavailable() {
     )
     .expect("source");
 
-    let first = source
-        .scrape_due(ProcfsFamilies {
+    let first = block_on_scrape(
+        &mut source,
+        ProcfsFamilies {
             disk: true,
             ..ProcfsFamilies::default()
-        })
-        .expect("first disk scrape");
+        },
+    )
+    .expect("first disk scrape");
     std::thread::sleep(Duration::from_millis(1));
-    let second = source
-        .scrape_due(ProcfsFamilies {
+    let second = block_on_scrape(
+        &mut source,
+        ProcfsFamilies {
             disk: true,
             ..ProcfsFamilies::default()
-        })
-        .expect("second disk scrape");
+        },
+    )
+    .expect("second disk scrape");
 
     assert_eq!(first.partial_errors, 1);
     assert_eq!(second.partial_errors, 1);
@@ -774,12 +793,14 @@ fn scrape_due_fails_when_all_due_families_fail() {
     .expect("source");
 
     assert!(
-        source
-            .scrape_due(ProcfsFamilies {
+        block_on_scrape(
+            &mut source,
+            ProcfsFamilies {
                 memory: true,
                 ..ProcfsFamilies::default()
-            })
-            .is_err()
+            },
+        )
+        .is_err()
     );
 }
 
@@ -830,12 +851,14 @@ fn scrape_due_reads_opt_in_disk_limit_from_sysfs() {
     )
     .expect("source");
 
-    let scrape = source
-        .scrape_due(ProcfsFamilies {
+    let scrape = block_on_scrape(
+        &mut source,
+        ProcfsFamilies {
             disk: true,
             ..ProcfsFamilies::default()
-        })
-        .expect("disk scrape");
+        },
+    )
+    .expect("disk scrape");
 
     assert_eq!(scrape.snapshot.disks.len(), 1);
     assert_eq!(
@@ -905,32 +928,38 @@ fn scrape_due_uses_boot_time_for_counter_only_family_ticks() {
     .expect("source");
 
     let expected_start = 123 * NANOS_PER_SEC;
-    let disk_scrape = source
-        .scrape_due(ProcfsFamilies {
+    let disk_scrape = block_on_scrape(
+        &mut source,
+        ProcfsFamilies {
             disk: true,
             ..ProcfsFamilies::default()
-        })
-        .expect("disk scrape");
+        },
+    )
+    .expect("disk scrape");
     assert_eq!(disk_scrape.snapshot.start_time_unix_nano, expected_start);
     assert_eq!(disk_scrape.snapshot.disks.len(), 1);
 
     std::fs::remove_file(proc.join("stat")).expect("remove stat after cache");
 
-    let network_scrape = source
-        .scrape_due(ProcfsFamilies {
+    let network_scrape = block_on_scrape(
+        &mut source,
+        ProcfsFamilies {
             network: true,
             ..ProcfsFamilies::default()
-        })
-        .expect("network scrape");
+        },
+    )
+    .expect("network scrape");
     assert_eq!(network_scrape.snapshot.start_time_unix_nano, expected_start);
     assert_eq!(network_scrape.snapshot.networks.len(), 1);
 
-    let paging_scrape = source
-        .scrape_due(ProcfsFamilies {
+    let paging_scrape = block_on_scrape(
+        &mut source,
+        ProcfsFamilies {
             paging: true,
             ..ProcfsFamilies::default()
-        })
-        .expect("paging scrape");
+        },
+    )
+    .expect("paging scrape");
     assert_eq!(paging_scrape.snapshot.start_time_unix_nano, expected_start);
     assert!(paging_scrape.snapshot.paging.is_some());
 }
@@ -979,12 +1008,14 @@ fn scrape_due_reads_filesystem_usage_from_mountinfo() {
     )
     .expect("source");
 
-    let scrape = source
-        .scrape_due(ProcfsFamilies {
+    let scrape = block_on_scrape(
+        &mut source,
+        ProcfsFamilies {
             filesystem: true,
             ..ProcfsFamilies::default()
-        })
-        .expect("filesystem scrape");
+        },
+    )
+    .expect("filesystem scrape");
 
     assert_eq!(scrape.snapshot.filesystems.len(), 1);
     assert_eq!(scrape.snapshot.filesystems[0].device, "/dev/sda1");
