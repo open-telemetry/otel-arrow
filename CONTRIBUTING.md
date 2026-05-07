@@ -139,25 +139,29 @@ Join the OpenTelemetry
 ### Keep Pull Requests Small and Incremental
 
 This repository has a limited pool of reviewers and approvers, and PR volume
-is high. To keep review quality high and merge times short, contributors are
-**strongly expected to submit small, single-purpose PRs**. This expectation
-applies regardless of whether the change was authored manually or with AI
-assistance.
+is high. The guiding rule is **reviewability**: a PR should be small enough
+and cohesive enough that a single reviewer can give every part close
+attention in one sitting. This expectation applies regardless of whether the
+change was authored manually or with AI assistance.
 
-Large PRs are difficult to review thoroughly. In practice they tend to be
-approved on the strength of the parts a reviewer was able to read closely,
-while the rest receives a pass, which slowly erodes long-term quality.
-Small, incremental PRs let every component get the attention it deserves.
+Hard-to-review PRs tend to be approved on the strength of the parts a
+reviewer was able to read closely, while the rest receives a pass, which
+slowly erodes long-term quality. Small, single-purpose PRs are the default
+because they are the easiest to review well; larger PRs are fine when the
+change is genuinely cohesive and clearly scoped.
 
 **Guidelines:**
 
 - **One concern per PR.** A PR should do one thing: add a config type, wire
   a no-op, implement one behavior, fix one bug, perform one refactor. If
   the description needs the word "and", consider splitting.
-- **Target roughly < 400 lines of meaningful diff** (excluding generated
-  code, lockfiles, vendored data, and test fixtures). Larger PRs are
-  acceptable when genuinely unavoidable, but the description should explain
-  why splitting was not practical.
+- **Use diff size as a signal, not a limit.** As a rough heuristic, PRs
+  beyond ~400 lines of meaningful diff (excluding generated code,
+  lockfiles, vendored data, and test fixtures) are worth a second look to
+  see whether they can be split. Larger PRs are welcome when the change is
+  cohesive (e.g. a single mechanical refactor, or a tightly-coupled set of
+  edits that only make sense together); the description should briefly
+  explain why the change is best reviewed as one unit.
 - **Separate mechanical changes from logic changes.** Renames, reformats,
   file moves, and dependency bumps belong in their own PRs, not bundled
   with behavioral changes.
@@ -174,7 +178,8 @@ Small, incremental PRs let every component get the attention it deserves.
 Reviewers may ask authors to split a PR before reviewing it. PRs that
 bundle unrelated changes, or that are large enough that no single reviewer
 can give every component close attention, are likely to be sent back for
-splitting.
+splitting. Conversely, a large but cohesive PR with a clear scope and a
+description explaining why it is reviewed as one unit is acceptable.
 
 ### How to Get PRs Merged
 
