@@ -88,6 +88,8 @@ impl ScalarUDFImpl for FnvHashFunc {
     }
 }
 
+/// computes the FNV-1a 64-bit hash of a scalar value
+/// returns None if the input is null, or an error if the input type is not supported.
 fn hash_scalar(scalar: &ScalarValue) -> Result<Option<i64>> {
     match scalar {
         ScalarValue::Utf8(v) | ScalarValue::LargeUtf8(v) => {
@@ -99,6 +101,9 @@ fn hash_scalar(scalar: &ScalarValue) -> Result<Option<i64>> {
     }
 }
 
+/// computes the FNV-1a 64-bit hash of each element in an array
+/// null elements produce null output values.
+/// supports [DataType::Utf8], [DataType::LargeUtf8], and [DataType::Binary] input arrays.
 fn hash_array(arr: &dyn Array) -> Result<Int64Array> {
     match arr.data_type() {
         DataType::Utf8 => {
@@ -211,7 +216,7 @@ mod test {
         let ColumnarValue::Array(arr) = result else {
             panic!("expected array");
         };
-        let arr = arr.as_any().downcast_ref::<Int64Array>().unwrap();
+        let arr = arr.as_any().downcast_ref::<Int64Array>().expect("Int64");
         assert_eq!(arr.value(0), -6615550055289275125_i64);
         assert!(!arr.is_null(0));
         assert!(!arr.is_null(1));

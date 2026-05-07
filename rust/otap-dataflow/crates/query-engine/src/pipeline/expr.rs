@@ -45,7 +45,6 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 
-use crate::pipeline::functions::{fnv_hash, murmur3_hash};
 use arrow::array::{Array, ArrayRef, RecordBatch, StringArray, StructArray, UInt16Array};
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
@@ -60,7 +59,7 @@ use data_engine_expressions::{
 };
 use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::functions::crypto::{md5, sha256};
+use datafusion::functions::crypto::{md5, sha256, sha512};
 use datafusion::functions::encoding::encode;
 use datafusion::functions::string::{concat, concat_ws, replace};
 use datafusion::logical_expr::expr::ScalarFunction;
@@ -79,14 +78,16 @@ use otap_df_pdata::schema::consts;
 
 use crate::consts::{
     ENCODE_FUNC_NAME, FNV_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME,
-    SHA256_FUNC_NAME,
+    SHA1_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME,
 };
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::{join, multi_join};
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
-use crate::pipeline::functions::{arity_range, regexp_substr, substring};
+use crate::pipeline::functions::{
+    arity_range, fnv_hash, murmur3_hash, regexp_substr, sha1_hash, substring,
+};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::anyval::{
     find_any_value_columns, project_any_value_columns, stitch_partitioned_results,
@@ -834,6 +835,8 @@ impl DataFusionFunctionDef {
             MD5_FUNC_NAME => Self::new(md5(), ExprLogicalType::Binary, true, None),
             FNV_FUNC_NAME => Self::new(fnv_hash(), ExprLogicalType::Int64, true, None),
             MURMUR3_FUNC_NAME => Self::new(murmur3_hash(), ExprLogicalType::Int64, true, None),
+            SHA1_FUNC_NAME => Self::new(sha1_hash(), ExprLogicalType::Binary, true, None),
+            SHA512_FUNC_NAME => Self::new(sha512(), ExprLogicalType::Binary, true, None),
             _ => return None,
         })
     }

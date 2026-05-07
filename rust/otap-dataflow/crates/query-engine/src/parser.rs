@@ -12,7 +12,7 @@ use data_engine_parser_abstractions::ParserOptions;
 
 use crate::consts::{
     ENCODE_FUNC_NAME, FNV_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME,
-    SHA256_FUNC_NAME,
+    SHA1_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME,
 };
 
 /// Create parser options that can be used when parsing an expression that will be executed with
@@ -37,6 +37,8 @@ pub fn default_parser_options() -> ParserOptions {
         .with_external_function(MD5_FUNC_NAME, param_placeholders(1), None)
         .with_external_function(FNV_FUNC_NAME, param_placeholders(1), None)
         .with_external_function(MURMUR3_FUNC_NAME, param_placeholders(1), None)
+        .with_external_function(SHA1_FUNC_NAME, param_placeholders(1), None)
+        .with_external_function(SHA512_FUNC_NAME, param_placeholders(1), None)
         .with_external_function(ENCODE_FUNC_NAME, param_placeholders(2), None)
         .with_external_function(
             REGEXP_SUBSTR_FUNC_NAME,
