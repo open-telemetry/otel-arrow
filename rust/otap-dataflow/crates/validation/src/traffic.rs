@@ -9,7 +9,7 @@ use crate::ValidationInstructions;
 use crate::error::ValidationError;
 use crate::template::render_jinja;
 use minijinja::context;
-use otap_df_core_nodes::receivers::fake_data_generator::config::DataSource;
+use otap_df_core_nodes::receivers::traffic_generator::config::DataSource;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use std::collections::HashMap;
