@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-enginectl"
+name = "otap-df-ctl"
 description = "Control CLI for the OTAP dataflow engine admin SDK"
 version.workspace = true
 authors.workspace = true

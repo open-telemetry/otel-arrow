@@ -12,7 +12,7 @@
 use std::io::{self, IsTerminal, Write};
 
 fn main() -> std::process::ExitCode {
-    let cli = otap_df_enginectl::Cli::parse_effective();
+    let cli = otap_df_ctl::Cli::parse_effective();
     let error_format = cli.error_format();
     let stdout_is_terminal = io::stdout().is_terminal();
     if cli.is_ui() {
@@ -38,9 +38,9 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run(
-    cli: otap_df_enginectl::Cli,
+    cli: otap_df_ctl::Cli,
     stdout_is_terminal: bool,
-    error_format: otap_df_enginectl::ErrorFormat,
+    error_format: otap_df_ctl::ErrorFormat,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<std::process::ExitCode, std::process::ExitCode> {
@@ -52,7 +52,7 @@ fn run(
             std::process::ExitCode::from(6)
         })?;
 
-    match runtime.block_on(otap_df_enginectl::run_with_terminal_and_diagnostics(
+    match runtime.block_on(otap_df_ctl::run_with_terminal_and_diagnostics(
         cli,
         stdout,
         stdout_is_terminal,
@@ -69,9 +69,9 @@ fn run(
 }
 
 fn run_ui(
-    cli: otap_df_enginectl::Cli,
+    cli: otap_df_ctl::Cli,
     stdout_is_terminal: bool,
-    error_format: otap_df_enginectl::ErrorFormat,
+    error_format: otap_df_ctl::ErrorFormat,
     stderr: &mut dyn Write,
 ) -> Result<std::process::ExitCode, std::process::ExitCode> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -82,7 +82,7 @@ fn run_ui(
             std::process::ExitCode::from(6)
         })?;
 
-    match runtime.block_on(otap_df_enginectl::run_with_terminal_and_diagnostics(
+    match runtime.block_on(otap_df_ctl::run_with_terminal_and_diagnostics(
         cli,
         &mut io::sink(),
         stdout_is_terminal,

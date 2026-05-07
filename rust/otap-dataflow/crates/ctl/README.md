@@ -4,7 +4,7 @@
 
 It is built on top of the public Rust SDK `otap-df-admin-api`, but end users
 should think in terms of the installed `dfctl` command. The Rust package name
-for this crate remains `otap-df-enginectl`.
+for this crate remains `otap-df-ctl`.
 
 ## Design Goals
 
@@ -34,7 +34,7 @@ For security and privacy behavior, see
 - In this repo, build the CLI with:
 
 ```bash
-cargo build -p otap-df-enginectl --bin dfctl
+cargo build -p otap-df-ctl --bin dfctl
 ```
 
 Common local setup:
