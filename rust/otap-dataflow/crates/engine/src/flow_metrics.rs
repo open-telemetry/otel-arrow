@@ -33,7 +33,7 @@ use otap_df_config::policy::{FlowMetric, TelemetryPolicy};
 pub struct FlowSignalsIncomingMetrics {
     /// Number of signal items (log records, spans, or metric data points)
     /// entering the flow range.
-    #[metric(name = "flow.signals.incoming", unit = "{item}")]
+    #[metric(name = "signals.incoming", unit = "{item}")]
     pub signals_incoming: Mmsc,
 }
 
@@ -42,7 +42,7 @@ pub struct FlowSignalsIncomingMetrics {
 #[derive(Debug, Default, Clone)]
 pub struct FlowDurationMetrics {
     /// Sum of per-node compute durations (nanoseconds) for messages traversing the flow range.
-    #[metric(name = "flow.compute.duration", unit = "ns")]
+    #[metric(name = "compute.duration", unit = "ns")]
     pub compute_duration: Mmsc,
 }
 
@@ -51,7 +51,7 @@ pub struct FlowDurationMetrics {
 #[derive(Debug, Default, Clone)]
 pub struct FlowSignalsOutgoingMetrics {
     /// Number of signal items (log records, spans, or metric data points) leaving the flow range.
-    #[metric(name = "flow.signals.outgoing", unit = "{item}")]
+    #[metric(name = "signals.outgoing", unit = "{item}")]
     pub signals_outgoing: Mmsc,
 }
 

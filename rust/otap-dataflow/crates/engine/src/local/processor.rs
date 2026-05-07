@@ -40,7 +40,7 @@ use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
 };
 use crate::error::{Error, TypedError};
-use crate::flow_metric::{
+use crate::flow_metrics::{
     EndFlowMetrics, FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
     IncomingFlowMetrics, LocalFlowMetricState, nanos_u64,
 };
@@ -992,7 +992,7 @@ mod tests {
     #[test]
     fn flow_accumulate_then_report() {
         use crate::context::ControllerContext;
-        use crate::flow_metric::{
+        use crate::flow_metrics::{
             FlowAttributeSet, FlowDurationMetrics, FlowSignalsIncomingMetrics,
             FlowSignalsOutgoingMetrics,
         };
