@@ -7,8 +7,8 @@
 //!
 //! ToDo: Add profile signal support -> update the builder lib.rs to work on profile object
 
-use crate::receivers::fake_data_generator::attributes::get_attribute_name_value;
-use crate::receivers::fake_data_generator::fake_data::{
+use crate::receivers::traffic_generator::attributes::get_attribute_name_value;
+use crate::receivers::traffic_generator::fake_data::{
     current_time, delay, gen_span_id, gen_trace_id, get_scope_name, get_scope_version,
 };
 use otap_df_pdata::proto::opentelemetry::{
@@ -38,7 +38,7 @@ pub fn semconv_otlp_traces(signal_count: usize, registry: &ResolvedRegistry) -> 
     let resources: Vec<ResourceSpans> = vec![ResourceSpans::new(
         Resource::build()
             .attributes(vec![KeyValue::new(
-                "fake_data_generator",
+                "traffic_generator",
                 AnyValue::new_string("v1"),
             )])
             .finish(),
@@ -61,7 +61,7 @@ pub fn semconv_otlp_logs(signal_count: usize, registry: &ResolvedRegistry) -> Lo
     let resources: Vec<ResourceLogs> = vec![ResourceLogs::new(
         Resource::build()
             .attributes(vec![KeyValue::new(
-                "fake_data_generator",
+                "traffic_generator",
                 AnyValue::new_string("v1"),
             )])
             .finish(),
@@ -85,7 +85,7 @@ pub fn semconv_otlp_metrics(signal_count: usize, registry: &ResolvedRegistry) ->
     let resources: Vec<ResourceMetrics> = vec![ResourceMetrics::new(
         Resource::build()
             .attributes(vec![KeyValue::new(
-                "fake_data_generator",
+                "traffic_generator",
                 AnyValue::new_string("v1"),
             )])
             .finish(),
