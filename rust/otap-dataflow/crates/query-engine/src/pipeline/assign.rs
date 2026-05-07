@@ -5658,4 +5658,82 @@ mod test {
     async fn test_update_attr_to_lower_case_function_call_kql_parser() {
         test_update_attr_to_lower_case_function_call::<KqlParser>().await
     }
+
+    async fn test_update_attr_using_ltrim<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "attr",
+                    AnyValue::new_string("   hello world"),
+                )])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["attr"] = ltrim(attributes["attr"], " ")"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new("attr", AnyValue::new_string("hello world"))]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_using_ltrim_opl_parser() {
+        test_update_attr_using_ltrim::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_using_ltrim_kql_parser() {
+        test_update_attr_using_ltrim::<KqlParser>().await
+    }
+
+    async fn test_update_attr_using_rtrim<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "attr",
+                    AnyValue::new_string("hello world\n\n"),
+                )])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["attr"] = rtrim(attributes["attr"], "\n")"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new("attr", AnyValue::new_string("hello world"))]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_using_rtrim_opl_parser() {
+        test_update_attr_using_rtrim::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_using_rtrim_kql_parser() {
+        test_update_attr_using_rtrim::<KqlParser>().await
+    }
 }
