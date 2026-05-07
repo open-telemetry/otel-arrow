@@ -5546,10 +5546,41 @@ mod test {
     async fn test_update_attr_to_regexp_substring_func_call_with_scalars_opl_parser() {
         test_update_attr_to_regexp_substring_func_call_with_scalars::<OplParser>().await
     }
+    async fn test_set_attr_to_format_datetime_result<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .time_unix_nano(1_000_000_000_000_000_000u64) // 2001-09-09 01:46:40 UTC
+                .finish(),
+        ]);
+
+        let query =
+            r#"logs | extend attributes["date"] = format_datetime(time_unix_nano, "%Y-%m-%d")"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new("date", AnyValue::new_string("2001-09-09"))]
+        );
+    }
 
     #[tokio::test]
-    async fn test_update_attr_to_regexp_substring_func_call_with_scalars_kq_parser() {
-        test_update_attr_to_regexp_substring_func_call_with_scalars::<KqlParser>().await
+    async fn test_set_attr_to_format_datetime_result_opl_parser() {
+        test_set_attr_to_format_datetime_result::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_set_attr_to_format_datetime_result_kql_parser() {
+        test_set_attr_to_format_datetime_result::<KqlParser>().await
     }
 
     async fn test_update_attr_to_upper_case_function_call<P: Parser>() {
