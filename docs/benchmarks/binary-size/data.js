@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778027883573,
+  "lastUpdate": 1778114303014,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3944,6 +3944,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 104.57,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "EMMANUELA OPURUM",
+            "username": "Cloud-Architect-Emma",
+            "email": "86380966+Cloud-Architect-Emma@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3ab5efb81801f555a13b4db880b5204aa4b4ec43",
+          "message": "feat: support format_datetime scalar function in OPL/OTAP query engine (#2850)\n\nFixes #2835\n\n## Summary\nAdds support for `format_datetime(timestamp, format)` as a scalar\nfunction\nin the OPL/OTAP query engine, allowing queries like:\nlogs | set attributes[\"date\"] = format_datetime(timestamp_unix_nano,\n\"%m/%d/%Y\")\n\n## Implementation\nThis is implemented using DataFusion's built-in `to_char` function,\nwhich\nuses chrono strftime format strings, compatible with OTTL's FormatTime\nformats.\n\n## Changes\n- Added `datetime_expressions` feature to datafusion dependency in\n`Cargo.toml`\n- Added `FORMAT_DATETIME_FUNC_NAME` constant to `consts.rs`\n- Registered `format_datetime` as an external function with 2 parameters\nin `parser.rs`\n- Wired `format_datetime` to DataFusion's `to_char` UDF in `expr.rs\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-05-06T22:30:06Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/3ab5efb81801f555a13b4db880b5204aa4b4ec43"
+        },
+        "date": 1778114295666,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 104.61,
             "unit": "MB"
           }
         ]
