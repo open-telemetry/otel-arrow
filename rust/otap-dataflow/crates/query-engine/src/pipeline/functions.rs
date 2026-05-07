@@ -30,6 +30,7 @@ make_udf_function!(xxh128::Xxh128Func, xxh128_hash);
 make_udf_function!(xxh3::Xxh3Func, xxh3_hash);
 make_udf_function!(substring::SubstringFunc, substring);
 make_udf_function!(regexp_substr::RegexpSubstrFunc, regexp_substr);
+make_udf_function!(uuidv7::UuidV7Func, uuidv7);
 
 /// helper functions to create logical plan expressions that invoke UDFs
 pub mod expr_fn {

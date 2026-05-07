@@ -20,6 +20,9 @@ use crate::control::{
 use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
+use crate::flow_metric::{
+    FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
+};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{Message, ProcessorInbox, Receiver, Sender};
@@ -27,7 +30,6 @@ use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
-use crate::stopwatch::{StopwatchStartMetrics, StopwatchStopMetrics};
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
@@ -38,28 +40,28 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Stopwatch-relevant slice of a processor `EffectHandler`'s surface.
+/// FlowMetric-relevant slice of a processor `EffectHandler`'s surface.
 ///
 /// Implemented by both `local::processor::EffectHandler<PData>` and
-/// `shared::processor::EffectHandler<PData>` so that PData-side stopwatch
-/// hooks (see [`FlowMeasurementHook`]) can be written once, generic over
+/// `shared::processor::EffectHandler<PData>` so that PData-side flow_metric
+/// hooks (see [`FlowMetricHook`]) can be written once, generic over
 /// handler kind.
-pub trait StopwatchEffectHandler {
-    /// Whether this node is the start of a stopwatch range.
-    fn is_stopwatch_start(&self) -> bool;
-    /// Whether this node is the end of a stopwatch range.
-    fn is_stopwatch_stop(&self) -> bool;
+pub trait FlowMetricEffectHandler {
+    /// Whether this node is the start of a flow_metric range.
+    fn is_flow_start(&self) -> bool;
+    /// Whether this node is the end of a flow_metric range.
+    fn is_flow_end(&self) -> bool;
     /// Read elapsed nanoseconds since the last send-marker advance and
     /// advance the marker to "now". Returns 0 when no marker is armed
-    /// (e.g. stopwatches inactive on this pipeline).
+    /// (e.g. flow_metrics inactive on this pipeline).
     fn take_elapsed_since_send_marker_ns(&self) -> u64;
-    /// Record a complete stopwatch transit total (nanoseconds) into the
+    /// Record a complete flow_metric transit total (nanoseconds) into the
     /// stop node's local accumulator.
-    fn record_stopwatch_stop(&self, total: u64);
+    fn record_flow_duration(&self, total: u64);
     /// Record signal-item count into the start node's local accumulator.
-    fn record_stopwatch_start_signals(&self, signals: u64);
+    fn record_flow_signals_incoming(&self, signals: u64);
     /// Record signal-item count into the stop node's local accumulator.
-    fn record_stopwatch_stop_signals(&self, signals: u64);
+    fn record_flow_signals_outgoing(&self, signals: u64);
 }
 
 /// Per-`PData` hooks straddling a processor's `process()` call: an
@@ -72,33 +74,33 @@ pub trait StopwatchEffectHandler {
 /// family and the `send_message_with_source_node[_to]` family — every
 /// send method on every processor handler invokes it exactly once.
 /// Both methods default to no-ops; PData types with bookkeeping needs
-/// (e.g. stopwatch accumulation on `OtapPdata`) override one or both.
+/// (e.g. flow_metric accumulation on `OtapPdata`) override one or both.
 ///
 /// `EffectHandler<PData>` is generic but lives in the engine crate, while
 /// some `PData` types need bookkeeping defined in their own crate.
 /// Inherent methods shadow extension-trait methods, so we route
 /// per-`PData` behavior through this trait. PData types with nothing to
-/// do can simply write `impl FlowMeasurementHook for MyPData {}`.
+/// do can simply write `impl FlowMetricHook for MyPData {}`.
 ///
 /// NOTE: This trait currently lives in `processor.rs` and only fires from
 /// processor run loops / processor effect handlers because processors are
 /// the only nodes that need pre-process and pre-send hooks today (for
-/// stopwatch flow measurement). If receivers or exporters ever need
+/// flow_metric flow metric). If receivers or exporters ever need
 /// analogous `before_*` / `after_*` hooks on PData, this trait should be
 /// hoisted to a more generic location (e.g. a top-level `flow_hook` module
-/// or `crate::lib`) and its `H: StopwatchEffectHandler` bound generalized
+/// or `crate::lib`) and its `H: FlowMetricEffectHandler` bound generalized
 /// so it can be invoked from receiver/exporter handlers as well.
-pub trait FlowMeasurementHook: Sized {
+pub trait FlowMetricHook: Sized {
     /// Invoked once per message immediately before the processor handler
     /// forwards it to the output router.
-    fn before_processor_send<H: StopwatchEffectHandler>(&mut self, _handler: &H) {}
+    fn before_processor_send<H: FlowMetricEffectHandler>(&mut self, _handler: &H) {}
 
     /// Invoked once per `Message::PData` immediately after it is dequeued
     /// by a processor's run loop and before `process()` runs. Lets PData
     /// types observe the *pre-process* state of the data — e.g. counting
-    /// items entering a stopwatch start node before any filter or drop
+    /// items entering a flow_metric start node before any filter or drop
     /// inside `process()`. Default impl is a no-op.
-    fn after_processor_receive<H: StopwatchEffectHandler>(&mut self, _handler: &H) {}
+    fn after_processor_receive<H: FlowMetricEffectHandler>(&mut self, _handler: &H) {}
 }
 
 /// Processor-local wakeup requirements declared by a processor implementation.
@@ -555,7 +557,7 @@ impl<PData> ProcessorWrapper<PData> {
         node_interests: Interests,
     ) -> Result<(), Error>
     where
-        PData: ReceivedAtNode + FlowMeasurementHook,
+        PData: ReceivedAtNode + FlowMetricHook,
     {
         self.start_with_completion_metrics(
             runtime_ctrl_msg_tx,
@@ -564,6 +566,8 @@ impl<PData> ProcessorWrapper<PData> {
             node_interests,
             None,
             false,
+            false,
+            None,
             None,
             None,
             false,
@@ -578,13 +582,15 @@ impl<PData> ProcessorWrapper<PData> {
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
         completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
-        stopwatch_is_start: bool,
-        stopwatch_start_metric: Option<MetricSet<StopwatchStartMetrics>>,
-        stopwatch_stop_metric: Option<MetricSet<StopwatchStopMetrics>>,
-        stopwatches_active: bool,
+        flow_is_start: bool,
+        flow_is_end: bool,
+        flow_signals_incoming_metric: Option<MetricSet<FlowSignalsIncomingMetrics>>,
+        flow_duration_metric: Option<MetricSet<FlowDurationMetrics>>,
+        flow_signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>>,
+        flow_metrics_active: bool,
     ) -> Result<(), Error>
     where
-        PData: ReceivedAtNode + FlowMeasurementHook,
+        PData: ReceivedAtNode + FlowMetricHook,
     {
         let runtime = self
             .prepare_runtime(metrics_reporter.clone(), node_interests)
@@ -606,11 +612,13 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics.clone());
-                effect_handler.set_stopwatch_roles(
-                    stopwatch_is_start,
-                    stopwatch_start_metric.clone(),
-                    stopwatch_stop_metric.clone(),
-                    stopwatches_active,
+                effect_handler.set_flow_roles(
+                    flow_is_start,
+                    flow_is_end,
+                    flow_signals_incoming_metric.clone(),
+                    flow_duration_metric.clone(),
+                    flow_signals_outgoing_metric.clone(),
+                    flow_metrics_active,
                 );
 
                 // Start periodic telemetry collection
@@ -619,13 +627,13 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
-                    if effect_handler.stopwatches_active() {
+                    if effect_handler.flow_metrics_active() {
                         match &mut msg {
                             Message::Control(NodeControlMsg::CollectTelemetry { .. })
-                                if effect_handler.is_stopwatch_start()
-                                    || effect_handler.is_stopwatch_stop() =>
+                                if effect_handler.is_flow_start()
+                                    || effect_handler.is_flow_end() =>
                             {
-                                effect_handler.report_stopwatch();
+                                effect_handler.report_flow_metrics();
                             }
                             Message::PData(data) => {
                                 data.after_processor_receive(&effect_handler);
@@ -639,8 +647,8 @@ impl<PData> ProcessorWrapper<PData> {
                 // Cancel periodic collection
                 _ = telemetry_cancel_handle.cancel().await;
                 // Collect final metrics before exiting
-                if effect_handler.is_stopwatch_start() || effect_handler.is_stopwatch_stop() {
-                    effect_handler.report_stopwatch();
+                if effect_handler.is_flow_start() || effect_handler.is_flow_end() {
+                    effect_handler.report_flow_metrics();
                 }
                 processor
                     .process(
@@ -664,11 +672,13 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics);
-                effect_handler.set_stopwatch_roles(
-                    stopwatch_is_start,
-                    stopwatch_start_metric.clone(),
-                    stopwatch_stop_metric.clone(),
-                    stopwatches_active,
+                effect_handler.set_flow_roles(
+                    flow_is_start,
+                    flow_is_end,
+                    flow_signals_incoming_metric.clone(),
+                    flow_duration_metric.clone(),
+                    flow_signals_outgoing_metric.clone(),
+                    flow_metrics_active,
                 );
 
                 // Start periodic telemetry collection
@@ -677,13 +687,13 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
-                    if effect_handler.stopwatches_active() {
+                    if effect_handler.flow_metrics_active() {
                         match &mut msg {
                             Message::Control(NodeControlMsg::CollectTelemetry { .. })
-                                if effect_handler.is_stopwatch_start()
-                                    || effect_handler.is_stopwatch_stop() =>
+                                if effect_handler.is_flow_start()
+                                    || effect_handler.is_flow_end() =>
                             {
-                                effect_handler.report_stopwatch();
+                                effect_handler.report_flow_metrics();
                             }
                             Message::PData(data) => {
                                 data.after_processor_receive(&effect_handler);
@@ -697,8 +707,8 @@ impl<PData> ProcessorWrapper<PData> {
                 // Cancel periodic collection
                 _ = telemetry_cancel_handle.cancel().await;
                 // Collect final metrics before exiting
-                if effect_handler.is_stopwatch_start() || effect_handler.is_stopwatch_stop() {
-                    effect_handler.report_stopwatch();
+                if effect_handler.is_flow_start() || effect_handler.is_flow_end() {
+                    effect_handler.report_flow_metrics();
                 }
                 processor
                     .process(
@@ -864,6 +874,10 @@ mod tests {
         NodeControlMsg::{Config, Shutdown, TimerTick},
         pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
+    use crate::flow_metric::{
+        FlowAttributeSet, FlowDurationMetrics, FlowSignalsIncomingMetrics,
+        FlowSignalsOutgoingMetrics,
+    };
     use crate::local::message::{LocalReceiver, LocalSender};
     use crate::local::processor as local;
     use crate::message::{Message, Receiver, Sender};
@@ -872,7 +886,6 @@ mod tests {
         Error, ProcessorRuntimeRequirements, ProcessorWrapper, validate_local_wakeup_requirements,
     };
     use crate::shared::processor as shared;
-    use crate::stopwatch::{StopwatchAttributeSet, StopwatchStartMetrics, StopwatchStopMetrics};
     use crate::testing::processor::TestRuntime;
     use crate::testing::processor::{TestContext, ValidateContext};
     use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
@@ -1097,62 +1110,58 @@ mod tests {
     }
 
     #[derive(Clone, Debug, Default)]
-    struct StopwatchTestPData {
-        stopwatch_compute_ns: u64,
-        stopwatch_active: bool,
+    struct FlowMetricTestPData {
+        flow_compute_ns: u64,
+        flow_metric_active: bool,
     }
 
-    impl crate::ReceivedAtNode for StopwatchTestPData {
+    impl crate::ReceivedAtNode for FlowMetricTestPData {
         fn received_at_node(&mut self, _node_id: usize, _node_interests: crate::Interests) {}
     }
 
-    impl crate::processor::FlowMeasurementHook for StopwatchTestPData {
-        fn before_processor_send<H: crate::processor::StopwatchEffectHandler>(
+    impl crate::processor::FlowMetricHook for FlowMetricTestPData {
+        fn before_processor_send<H: crate::processor::FlowMetricEffectHandler>(
             &mut self,
             handler: &H,
         ) {
-            if !handler.is_stopwatch_start()
-                && !handler.is_stopwatch_stop()
-                && !self.stopwatch_active
-            {
+            if !handler.is_flow_start() && !handler.is_flow_end() && !self.flow_metric_active {
                 return;
             }
 
-            if handler.is_stopwatch_start() {
-                self.stopwatch_active = true;
+            if handler.is_flow_start() {
+                self.flow_metric_active = true;
             }
 
-            self.stopwatch_compute_ns = self
-                .stopwatch_compute_ns
+            self.flow_compute_ns = self
+                .flow_compute_ns
                 .saturating_add(handler.take_elapsed_since_send_marker_ns());
 
-            if handler.is_stopwatch_stop() && self.stopwatch_active && self.stopwatch_compute_ns > 0
-            {
-                handler.record_stopwatch_stop(self.stopwatch_compute_ns);
-                handler.record_stopwatch_stop_signals(1);
-                self.stopwatch_compute_ns = 0;
-                self.stopwatch_active = false;
+            if handler.is_flow_end() && self.flow_metric_active && self.flow_compute_ns > 0 {
+                handler.record_flow_duration(self.flow_compute_ns);
+                handler.record_flow_signals_outgoing(1);
+                self.flow_compute_ns = 0;
+                self.flow_metric_active = false;
             }
         }
 
-        fn after_processor_receive<H: crate::processor::StopwatchEffectHandler>(
+        fn after_processor_receive<H: crate::processor::FlowMetricEffectHandler>(
             &mut self,
             handler: &H,
         ) {
-            if handler.is_stopwatch_start() {
-                handler.record_stopwatch_start_signals(1);
+            if handler.is_flow_start() {
+                handler.record_flow_signals_incoming(1);
             }
         }
     }
 
-    struct SyncOnlyStopwatchProcessor;
+    struct SyncOnlyFlowMetricProcessor;
 
     #[async_trait(?Send)]
-    impl local::Processor<StopwatchTestPData> for SyncOnlyStopwatchProcessor {
+    impl local::Processor<FlowMetricTestPData> for SyncOnlyFlowMetricProcessor {
         async fn process(
             &mut self,
-            msg: Message<StopwatchTestPData>,
-            effect_handler: &mut local::EffectHandler<StopwatchTestPData>,
+            msg: Message<FlowMetricTestPData>,
+            effect_handler: &mut local::EffectHandler<FlowMetricTestPData>,
         ) -> Result<(), Error> {
             let Message::PData(data) = msg else {
                 return Ok(());
@@ -1170,22 +1179,110 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn stopwatch_auto_measures_process_without_timed() {
+    #[test]
+    fn flow_opt_in_signals_incoming_reports_only_start_metric() {
         let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
-        let attrs = StopwatchAttributeSet {
-            stopwatch_name: "auto_measure".into(),
+        let entity_key = pipeline_ctx
+            .metrics_registry()
+            .register_entity(FlowAttributeSet::default());
+        let incoming_metric = pipeline_ctx
+            .metrics_registry()
+            .register_metric_set_for_entity::<FlowSignalsIncomingMetrics>(entity_key);
+        let (metrics_rx, metrics_reporter) =
+            otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+        let mut handler = local::EffectHandler::<TestMsg>::new(
+            test_node("proc"),
+            std::collections::HashMap::new(),
+            None,
+            metrics_reporter,
+        );
+        handler.set_flow_roles(true, false, Some(incoming_metric), None, None, true);
+
+        handler.record_flow_signals_incoming(3);
+        handler.record_flow_duration(10);
+        handler.record_flow_signals_outgoing(4);
+        handler.report_flow_metrics();
+
+        let snapshot = metrics_rx
+            .try_recv()
+            .expect("incoming metric should report");
+        let [MetricValue::Mmsc(incoming)] = snapshot.get_metrics() else {
+            panic!("expected incoming metric only");
+        };
+        assert_eq!(incoming.count, 1);
+        assert!(metrics_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn flow_opt_in_duration_and_outgoing_reports_only_end_metrics() {
+        let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
+        let entity_key = pipeline_ctx
+            .metrics_registry()
+            .register_entity(FlowAttributeSet::default());
+        let duration_metric = pipeline_ctx
+            .metrics_registry()
+            .register_metric_set_for_entity::<FlowDurationMetrics>(entity_key);
+        let outgoing_metric = pipeline_ctx
+            .metrics_registry()
+            .register_metric_set_for_entity::<FlowSignalsOutgoingMetrics>(entity_key);
+        let (metrics_rx, metrics_reporter) =
+            otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+        let mut handler = local::EffectHandler::<TestMsg>::new(
+            test_node("proc"),
+            std::collections::HashMap::new(),
+            None,
+            metrics_reporter,
+        );
+        handler.set_flow_roles(
+            false,
+            true,
+            None,
+            Some(duration_metric),
+            Some(outgoing_metric),
+            true,
+        );
+
+        handler.record_flow_signals_incoming(3);
+        handler.record_flow_duration(10);
+        handler.record_flow_signals_outgoing(4);
+        handler.report_flow_metrics();
+
+        let duration_snapshot = metrics_rx
+            .try_recv()
+            .expect("duration metric should report");
+        let [MetricValue::Mmsc(duration)] = duration_snapshot.get_metrics() else {
+            panic!("expected duration metric");
+        };
+        assert_eq!(duration.count, 1);
+        let outgoing_snapshot = metrics_rx
+            .try_recv()
+            .expect("outgoing metric should report");
+        let [MetricValue::Mmsc(outgoing)] = outgoing_snapshot.get_metrics() else {
+            panic!("expected outgoing metric");
+        };
+        assert_eq!(outgoing.count, 1);
+        assert!(metrics_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn flow_metric_auto_measures_process_without_timed() {
+        let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
+        let attrs = FlowAttributeSet {
+            flow_name: "auto_measure".into(),
             start_node: "auto_measure_processor".into(),
-            stop_node: "auto_measure_processor".into(),
+            end_node: "auto_measure_processor".into(),
             pipeline_attrs: pipeline_ctx.pipeline_attribute_set(),
         };
         let entity_key = pipeline_ctx.metrics_registry().register_entity(attrs);
         let start_metric_set = pipeline_ctx
             .metrics_registry()
-            .register_metric_set_for_entity::<StopwatchStartMetrics>(entity_key);
-        let stop_metric_set = pipeline_ctx
+            .register_metric_set_for_entity::<FlowSignalsIncomingMetrics>(entity_key);
+        let duration_metric_set = pipeline_ctx
             .metrics_registry()
-            .register_metric_set_for_entity::<StopwatchStopMetrics>(entity_key);
+            .register_metric_set_for_entity::<FlowDurationMetrics>(entity_key);
+        let outgoing_metric_set = pipeline_ctx
+            .metrics_registry()
+            .register_metric_set_for_entity::<FlowSignalsOutgoingMetrics>(entity_key);
 
         let config = crate::config::ProcessorConfig::new("auto_measure_processor");
         let node_id = test_node(config.name.clone());
@@ -1193,7 +1290,7 @@ mod tests {
             "auto_measure_processor",
         ));
         let mut processor = ProcessorWrapper::local(
-            SyncOnlyStopwatchProcessor,
+            SyncOnlyFlowMetricProcessor,
             node_id.clone(),
             user_config,
             &config,
@@ -1235,15 +1332,17 @@ mod tests {
                             crate::Interests::PROCESS_DURATION,
                             None,
                             true,
+                            true,
                             Some(start_metric_set),
-                            Some(stop_metric_set),
+                            Some(duration_metric_set),
+                            Some(outgoing_metric_set),
                             true,
                         )
                         .await
                 });
 
                 input_tx
-                    .send(StopwatchTestPData::default())
+                    .send(FlowMetricTestPData::default())
                     .expect("test input should enqueue");
                 let _ = output_rx
                     .recv()
@@ -1259,13 +1358,13 @@ mod tests {
                 let snapshot =
                     tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
                         .await
-                        .expect("stopwatch metric should be reported")
+                        .expect("flow_metric metric should be reported")
                         .expect("metrics channel should remain open");
                 processor_task.abort();
                 let _ = processor_task.await;
 
                 let [MetricValue::Mmsc(signals_incoming)] = snapshot.get_metrics() else {
-                    panic!("expected one start stopwatch MMSC metric");
+                    panic!("expected one start flow_metric MMSC metric");
                 };
                 assert_eq!(signals_incoming.count, 1);
                 assert!((signals_incoming.sum - 1.0).abs() < f64::EPSILON);
@@ -1273,23 +1372,27 @@ mod tests {
                 let snapshot =
                     tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
                         .await
-                        .expect("stopwatch stop metric should be reported")
+                        .expect("flow_metric stop metric should be reported")
                         .expect("metrics channel should remain open");
-                let [
-                    MetricValue::Mmsc(compute_duration),
-                    MetricValue::Mmsc(signals_outgoing),
-                ] = snapshot.get_metrics()
-                else {
-                    panic!("expected stopwatch duration and outgoing MMSC metrics");
+                let [MetricValue::Mmsc(compute_duration)] = snapshot.get_metrics() else {
+                    panic!("expected flow duration MMSC metric");
                 };
                 assert!(
                     compute_duration.count >= 1,
-                    "stopwatch compute duration should have at least one observation"
+                    "flow_metric compute duration should have at least one observation"
                 );
                 assert!(
                     compute_duration.sum > 0.0,
-                    "stopwatch compute duration sum should be non-zero"
+                    "flow_metric compute duration sum should be non-zero"
                 );
+                let snapshot =
+                    tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
+                        .await
+                        .expect("flow outgoing metric should be reported")
+                        .expect("metrics channel should remain open");
+                let [MetricValue::Mmsc(signals_outgoing)] = snapshot.get_metrics() else {
+                    panic!("expected flow outgoing MMSC metric");
+                };
                 assert_eq!(signals_outgoing.count, 1);
                 assert!((signals_outgoing.sum - 1.0).abs() < f64::EPSILON);
             })

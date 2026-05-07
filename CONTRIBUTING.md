@@ -127,12 +127,59 @@ Join the OpenTelemetry
 - If the PR is not ready for review, please put `[WIP]` in the title or mark it
   as draft.
 - Make sure CLA is signed and all required CI checks are clear.
-- Submit small, focused PRs addressing a single concern/issue.
+- Submit small, focused PRs addressing a single concern/issue. See
+  [Keep Pull Requests Small and Incremental](#keep-pull-requests-small-and-incremental)
+  below for the expectations this project applies.
 - Make sure the PR title reflects the contribution.
 - Write a summary that helps understand the change.
 - Include usage examples in the summary, where applicable.
 - Include benchmarks (before/after) in the summary, for contributions that are
   performance enhancements.
+
+### Keep Pull Requests Small and Incremental
+
+This repository has a limited pool of reviewers and approvers, and PR volume
+is high. The guiding rule is **reviewability**: a PR should be small enough
+and cohesive enough that a single reviewer can give every part close
+attention in one sitting. This expectation applies regardless of whether the
+change was authored manually or with AI assistance.
+
+Hard-to-review PRs tend to be approved on the strength of the parts a
+reviewer was able to read closely, while the rest receives a pass, which
+slowly erodes long-term quality. Small, single-purpose PRs are the default
+because they are the easiest to review well; larger PRs are fine when the
+change is genuinely cohesive and clearly scoped.
+
+**Guidelines:**
+
+- **One concern per PR.** A PR should do one thing: add a config type, wire
+  a no-op, implement one behavior, fix one bug, perform one refactor. If
+  the description needs the word "and", consider splitting.
+- **Use diff size as a signal, not a limit.** As a rough heuristic, PRs
+  beyond ~400 lines of meaningful diff (excluding generated code,
+  lockfiles, vendored data, and test fixtures) are worth a second look to
+  see whether they can be split. Larger PRs are welcome when the change is
+  cohesive (e.g. a single mechanical refactor, or a tightly-coupled set of
+  edits that only make sense together); the description should briefly
+  explain why the change is best reviewed as one unit.
+- **Separate mechanical changes from logic changes.** Renames, reformats,
+  file moves, and dependency bumps belong in their own PRs, not bundled
+  with behavioral changes.
+- **Build new features incrementally.** A typical sequence is:
+  1. Introduce the crate / module skeleton in the right location.
+  2. Add configuration types (serde, validation, tests) wired as a no-op.
+  3. Integrate the no-op into the pipeline / runtime.
+  4. Add behavior in small, independently reviewable slices, each with
+     tests.
+  5. Documentation and examples.
+- **Use a tracking issue** for multi-PR features so the overall design and
+  progress remain visible to reviewers across the sequence of PRs.
+
+Reviewers may ask authors to split a PR when it is hard to review
+thoroughly -- for example, when it bundles unrelated changes or is large
+enough that no single reviewer can give every component close attention.
+A large but cohesive PR with a clear scope and a description explaining
+why it is reviewed as one unit is fine.
 
 ### How to Get PRs Merged
 
