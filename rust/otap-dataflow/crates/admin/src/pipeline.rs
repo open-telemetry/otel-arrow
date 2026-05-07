@@ -441,7 +441,6 @@ mod tests {
     use otap_df_state::store::ObservedStateStore;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     #[derive(Clone)]
@@ -513,7 +512,7 @@ mod tests {
             controller,
             log_tap: None,
             memory_pressure_state: MemoryPressureState::default(),
-            resource_attributes: HashMap::new(),
+            target_info: Arc::from(""),
         }
     }
 

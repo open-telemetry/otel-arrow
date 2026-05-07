@@ -143,8 +143,12 @@ struct AppState {
     /// Shared process-wide memory pressure state.
     memory_pressure_state: MemoryPressureState,
 
-    /// Resource attributes for target_info metric.
-    resource_attributes: HashMap<String, String>,
+    /// Pre-rendered Prometheus `target_info` block (HELP/TYPE/sample lines)
+    /// derived once from the resource attributes at server startup. Empty
+    /// when no resource attributes are supplied; written verbatim at the top
+    /// of every Prometheus scrape so we don't re-sort and re-escape on each
+    /// request.
+    target_info: Arc<str>,
 }
 
 /// Run the admin HTTP server until shutdown is requested.
@@ -158,13 +162,14 @@ pub async fn run(
     resource_attributes: HashMap<String, String>,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
+    let target_info: Arc<str> = telemetry::render_target_info(&resource_attributes).into();
     let app_state = AppState {
         observed_state_store: observed_store,
         metrics_registry,
         controller,
         log_tap,
         memory_pressure_state,
-        resource_attributes,
+        target_info,
     };
 
     let api_routes = Router::new()
