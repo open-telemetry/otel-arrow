@@ -2,12 +2,11 @@
 #
 # Subscribes to Windows ETW providers and prints events to the console.
 #
-# Usage:
+# Usage (run as Administrator for ETW access):
 #   cargo run -- -c configs/etw-console.yaml
 #
-# NOTE: This receiver only works on Windows. The ETW data-plane
-# implementation is a TODO — currently only the control-flow
-# (startup, shutdown, telemetry) is wired up.
+# The receiver captures raw ETW events from the configured providers
+# and logs a summary to stdout. Full Arrow encoding is a TODO.
 
 version: otel_dataflow/v1
 engine: { }
@@ -26,17 +25,18 @@ groups:
             config:
               session_name: "OtelArrowETW"
               providers:
-                # Provider identified by name (resolved to GUID at runtime)
-                - name: "Microsoft-Windows-Kernel-Process"
+                # Microsoft-Windows-Kernel-Process
+                - guid: "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716"
                   level: information
-                # Provider identified by GUID (used directly, no lookup)
-                - guid: "7dd42a49-5329-4832-8dfd-43d979153a88"
-                  level: warning
-                  keywords: 16
-          console:
-            type: exporter:console
-            config: {}
+                # Windows DNS Client (generates frequent events)
+                - guid: "1c95126e-7eea-49a9-a3fe-a378b03ddb4d"
+                  level: verbose
+          # Console exporter — uncomment once Arrow encoding (Step 4) is
+          # implemented and the ETW receiver sends data downstream.
+          # console:
+          #   type: exporter:console
+          #   config: {}
 
-        connections:
-          - from: etw
-            to: console
+        # connections:
+        #   - from: etw
+        #     to: console

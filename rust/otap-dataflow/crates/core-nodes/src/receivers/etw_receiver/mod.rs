@@ -12,9 +12,15 @@
 //!   type: receiver:etw
 //!   config:
 //!     providers:
-//!       - name: "Microsoft-Windows-Kernel-Process"
+//!       - guid: "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716"
 //!         level: information
 //! ```
+
+#[cfg(target_os = "windows")]
+mod session;
+
+#[cfg(target_os = "windows")]
+use session::EtwEventData;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -27,6 +33,7 @@ use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::{
+    effect_handler::TelemetryTimerCancelHandle,
     error::Error,
     local::receiver as local,
 };
@@ -177,6 +184,142 @@ impl EtwReceiver {
     }
 }
 
+// ── Platform-specific run loops ──────────────────────────────────────────────
+
+#[cfg(target_os = "windows")]
+impl EtwReceiver {
+    /// Main event loop when an ETW session is active (Windows only).
+    ///
+    /// Consumes events from the ETW session channel and processes control
+    /// messages. Returns when a shutdown or drain-ingress control message is
+    /// received.
+    async fn run_with_session(
+        &self,
+        session_handle: session::SessionHandle,
+        event_rx: &mut tokio::sync::mpsc::Receiver<EtwEventData>,
+        ctrl_chan: &mut local::ControlChannel<OtapPdata>,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+        telemetry_timer_handle: TelemetryTimerCancelHandle<OtapPdata>,
+    ) -> Result<TerminalState, Error> {
+        let mut event_count: u64 = 0;
+
+        loop {
+            tokio::select! {
+                biased; // Prioritise control messages over data.
+
+                ctrl_msg = ctrl_chan.recv() => {
+                    match ctrl_msg {
+                        Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
+                            let _ = telemetry_timer_handle.cancel().await;
+                            session_handle.stop();
+                            effect_handler.notify_receiver_drained().await?;
+                            let snapshot = self.metrics.borrow().snapshot();
+                            return Ok(TerminalState::new(deadline, [snapshot]));
+                        }
+                        Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+                            let _ = telemetry_timer_handle.cancel().await;
+                            otel_info!(
+                                "etw_receiver.shutdown",
+                                message = "ETW receiver shutting down",
+                            );
+                            session_handle.stop();
+                            let snapshot = self.metrics.borrow().snapshot();
+                            return Ok(TerminalState::new(deadline, [snapshot]));
+                        }
+                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                            let mut m = self.metrics.borrow_mut();
+                            let _ = metrics_reporter.report(&mut m);
+                        }
+                        Ok(NodeControlMsg::MemoryPressureChanged { .. }) => {
+                            // TODO: Implement shedding if needed.
+                        }
+                        Err(e) => {
+                            return Err(Error::ChannelRecvError(e));
+                        }
+                        _ => {
+                            // Other control messages — ignore for now.
+                        }
+                    }
+                }
+
+                // Receive event data from the ETW session thread.
+                event_data = event_rx.recv() => {
+                    match event_data {
+                        Some(event) => {
+                            self.metrics.borrow_mut().received_events_total.inc();
+                            event_count += 1;
+
+                            // Log first 10 events individually, then every 1000th.
+                            if event_count <= 10 || event_count % 1000 == 0 {
+                                otel_info!(
+                                    "etw_receiver.event",
+                                    total = event_count,
+                                    event_id = event.event_id,
+                                    level = event.level,
+                                    opcode = event.opcode,
+                                    pid = event.process_id,
+                                    tid = event.thread_id,
+                                    timestamp = event.timestamp,
+                                    keywords = event.keywords,
+                                );
+                            }
+
+                            // TODO: Convert event data to Arrow record batches
+                            // and forward downstream via effect_handler.
+                        }
+                        None => {
+                            // Channel closed — the ETW session thread has
+                            // exited. Continue the loop to handle any pending
+                            // control messages (the select will still work on
+                            // ctrl_chan).
+                            otel_info!(
+                                "etw_receiver.session_ended",
+                                message = "ETW session event channel closed",
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl EtwReceiver {
+    /// Control-message-only loop used on non-Windows platforms (or when no ETW
+    /// session is available). The receiver simply waits for shutdown.
+    #[cfg(not(target_os = "windows"))]
+    async fn run_without_session(
+        &self,
+        ctrl_chan: &mut local::ControlChannel<OtapPdata>,
+        _effect_handler: &local::EffectHandler<OtapPdata>,
+        telemetry_timer_handle: TelemetryTimerCancelHandle<OtapPdata>,
+    ) -> Result<TerminalState, Error> {
+        loop {
+            match ctrl_chan.recv().await {
+                Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
+                    let _ = telemetry_timer_handle.cancel().await;
+                    _effect_handler.notify_receiver_drained().await?;
+                    let snapshot = self.metrics.borrow().snapshot();
+                    return Ok(TerminalState::new(deadline, [snapshot]));
+                }
+                Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+                    let _ = telemetry_timer_handle.cancel().await;
+                    let snapshot = self.metrics.borrow().snapshot();
+                    return Ok(TerminalState::new(deadline, [snapshot]));
+                }
+                Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                    let mut m = self.metrics.borrow_mut();
+                    let _ = metrics_reporter.report(&mut m);
+                }
+                Err(e) => {
+                    return Err(Error::ChannelRecvError(e));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 // ── Factory registration ─────────────────────────────────────────────────────
 
 /// Register the ETW receiver in the pipeline factory.
@@ -219,74 +362,22 @@ impl local::Receiver<OtapPdata> for EtwReceiver {
             provider_count = self.config.providers.len(),
         );
 
-        // TODO: Initialize ETW trace session here.
-        // 1. Create/open an ETW trace session using the one-collect API or similar.
-        // 2. Enable the configured providers on the session.
-        // 3. Start consuming events in a loop.
-        //
-        // For now, the receiver enters a control-message-only loop,
-        // responding to shutdown and telemetry collection requests.
-        // Replace the body of this loop with actual ETW event consumption
-        // once the data-plane implementation is ready.
+        // Platform-specific ETW session startup.
+        #[cfg(target_os = "windows")]
+        let (session_handle, mut event_rx) =
+            session::start_etw_session(&self.config, self.metrics.clone())?;
 
-        loop {
-            tokio::select! {
-                biased; // Prioritise control messages over data.
+        #[cfg(target_os = "windows")]
+        return self
+            .run_with_session(session_handle, &mut event_rx, &mut ctrl_chan, &effect_handler, telemetry_timer_handle)
+            .await;
 
-                ctrl_msg = ctrl_chan.recv() => {
-                    match ctrl_msg {
-                        Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
-                            let _ = telemetry_timer_handle.cancel().await;
-
-                            // TODO: Stop the ETW session and flush any
-                            // buffered records before notifying that the
-                            // receiver has drained.
-
-                            effect_handler.notify_receiver_drained().await?;
-
-                            let snapshot = self.metrics.borrow().snapshot();
-                            return Ok(TerminalState::new(deadline, [snapshot]));
-                        }
-                        Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                            let _ = telemetry_timer_handle.cancel().await;
-
-                            otel_info!(
-                                "etw_receiver.shutdown",
-                                message = "ETW receiver shutting down",
-                            );
-
-                            // TODO: Tear down the ETW session cleanly.
-
-                            let snapshot = self.metrics.borrow().snapshot();
-                            return Ok(TerminalState::new(deadline, [snapshot]));
-                        }
-                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                            let mut m = self.metrics.borrow_mut();
-                            let _ = metrics_reporter.report(&mut m);
-                        }
-                        Ok(NodeControlMsg::MemoryPressureChanged { .. }) => {
-                            // TODO: Implement shedding if needed.
-                        }
-                        Err(e) => {
-                            return Err(Error::ChannelRecvError(e));
-                        }
-                        _ => {
-                            // Other control messages — ignore for now.
-                        }
-                    }
-                }
-
-                // TODO: Replace this with the actual ETW event consumption branch.
-                // Example pattern (pseudo-code):
-                //
-                // event = etw_session.next_event() => {
-                //     self.metrics.borrow_mut().received_events_total.inc();
-                //     // parse event → Arrow record batch
-                //     // effect_handler.send_message_with_source_node(pdata).await;
-                //     self.metrics.borrow_mut().received_events_forwarded.inc();
-                // }
-            }
-        }
+        // On non-Windows platforms the receiver has no data source; it enters
+        // a control-message-only loop and shuts down when asked.
+        #[cfg(not(target_os = "windows"))]
+        return self
+            .run_without_session(&mut ctrl_chan, &effect_handler, telemetry_timer_handle)
+            .await;
     }
 }
 
