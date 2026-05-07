@@ -48,6 +48,7 @@ use serde::de::Error as SerdeError;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::ops::Add;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -80,7 +81,7 @@ pub struct Config {
         default = "default_max_concurrent_requests_per_stream",
         deserialize_with = "deserialize_positive_max_concurrent_requests_per_stream"
     )]
-    max_concurrent_requests_per_stream: usize,
+    max_concurrent_requests_per_stream: NonZeroUsize,
 
     /// Whether to wait for the result (default: true)
     ///
@@ -108,26 +109,25 @@ const fn default_max_concurrent_requests() -> usize {
     1000
 }
 
-const fn default_max_concurrent_requests_per_stream() -> usize {
-    16
+fn default_max_concurrent_requests_per_stream() -> NonZeroUsize {
+    NonZeroUsize::new(16).expect("default per-stream concurrency must be non-zero")
 }
 
-fn deserialize_positive_usize<'de, D>(deserializer: D, field_name: &str) -> Result<usize, D::Error>
+fn deserialize_positive_usize<'de, D>(
+    deserializer: D,
+    field_name: &str,
+) -> Result<NonZeroUsize, D::Error>
 where
     D: Deserializer<'de>,
 {
     let value = usize::deserialize(deserializer)?;
-    if value == 0 {
-        return Err(D::Error::custom(format!(
-            "{field_name} must be greater than 0"
-        )));
-    }
-    Ok(value)
+    NonZeroUsize::new(value)
+        .ok_or_else(|| D::Error::custom(format!("{field_name} must be greater than 0")))
 }
 
 fn deserialize_positive_max_concurrent_requests_per_stream<'de, D>(
     deserializer: D,
-) -> Result<usize, D::Error>
+) -> Result<NonZeroUsize, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -357,7 +357,10 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let settings = Settings {
             response_stream_channel_size: self.config.response_stream_channel_size,
             max_concurrent_requests: self.config.max_concurrent_requests,
-            max_concurrent_requests_per_stream: self.config.max_concurrent_requests_per_stream,
+            max_concurrent_requests_per_stream: self
+                .config
+                .max_concurrent_requests_per_stream
+                .get(),
             wait_for_result: self.config.wait_for_result,
             admission_state: self.admission_state.clone(),
             memory_pressure_rejection_metrics: Some(self.memory_pressure_metrics.clone()),
@@ -1116,7 +1119,7 @@ mod tests {
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4317");
         assert_eq!(receiver.config.response_stream_channel_size, 100);
         assert_eq!(receiver.config.max_concurrent_requests, 5000);
-        assert_eq!(receiver.config.max_concurrent_requests_per_stream, 16);
+        assert_eq!(receiver.config.max_concurrent_requests_per_stream.get(), 16);
         assert!(!receiver.config.wait_for_result);
         assert!(receiver.config.compression_method.is_none());
         assert!(receiver.config.timeout.is_none());
@@ -1130,7 +1133,7 @@ mod tests {
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4318");
         assert_eq!(receiver.config.response_stream_channel_size, 200);
         assert_eq!(receiver.config.max_concurrent_requests, 1000);
-        assert_eq!(receiver.config.max_concurrent_requests_per_stream, 16);
+        assert_eq!(receiver.config.max_concurrent_requests_per_stream.get(), 16);
         assert!(!receiver.config.wait_for_result);
         assert!(receiver.config.compression_method.is_none());
         assert!(receiver.config.timeout.is_none());
@@ -1149,7 +1152,7 @@ mod tests {
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4319");
         assert_eq!(receiver.config.response_stream_channel_size, 150);
         assert_eq!(receiver.config.max_concurrent_requests, 2500);
-        assert_eq!(receiver.config.max_concurrent_requests_per_stream, 32);
+        assert_eq!(receiver.config.max_concurrent_requests_per_stream.get(), 32);
         assert!(receiver.config.wait_for_result);
         assert!(matches!(
             receiver.config.compression_method,
