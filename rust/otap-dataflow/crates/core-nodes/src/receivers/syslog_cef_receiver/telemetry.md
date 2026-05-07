@@ -14,7 +14,7 @@ Metrics are registered under the metric set name `syslog_cef.receiver.metrics`.
 | --- | --- | --- | --- | --- |
 | `syslog_cef.receiver.metrics.received_logs_total` | Counter | `{item}` | Total number of log records observed at the socket before parsing. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef.receiver.metrics.received_logs_forwarded` | Counter | `{item}` | Number of log records successfully forwarded downstream. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `syslog_cef.receiver.metrics.received_logs_invalid` | Counter | `{item}` | Number of log records that failed to parse. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `syslog_cef.receiver.metrics.received_logs_invalid` | Counter | `{item}` | Number of log records rejected because their payload is zero-length. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef.receiver.metrics.received_logs_truncated` | Counter | `{item}` | Number of log records whose raw message exceeded the maximum message size and were truncated before parsing. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef.receiver.metrics.received_logs_forward_failed` | Counter | `{item}` | Number of log records refused by downstream (backpressure/unavailable). | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef.receiver.metrics.tcp_connections_active` | UpDownCounter | `{conn}` | Number of currently active TCP connections. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
