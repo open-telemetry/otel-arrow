@@ -175,11 +175,11 @@ change is genuinely cohesive and clearly scoped.
 - **Use a tracking issue** for multi-PR features so the overall design and
   progress remain visible to reviewers across the sequence of PRs.
 
-Reviewers may ask authors to split a PR before reviewing it. PRs that
-bundle unrelated changes, or that are large enough that no single reviewer
-can give every component close attention, are likely to be sent back for
-splitting. Conversely, a large but cohesive PR with a clear scope and a
-description explaining why it is reviewed as one unit is acceptable.
+Reviewers may ask authors to split a PR when it is hard to review
+thoroughly -- for example, when it bundles unrelated changes or is large
+enough that no single reviewer can give every component close attention.
+A large but cohesive PR with a clear scope and a description explaining
+why it is reviewed as one unit is fine.
 
 ### How to Get PRs Merged
 
