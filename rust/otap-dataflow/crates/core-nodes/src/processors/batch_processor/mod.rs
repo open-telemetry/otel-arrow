@@ -548,9 +548,6 @@ pub struct BatchProcessorMetrics {
     /// Number of batches for which errors encountered
     #[metric(unit = "{error}")]
     batching_errors: Counter<u64>,
-    /// Number of empty records dropped
-    #[metric(unit = "{msg}")]
-    dropped_empty_records: Counter<u64>,
     /// Number of requests nacked due to inbound slot exhaustion
     #[metric(unit = "{msg}")]
     nacked_inbound_slots: Counter<u64>,
@@ -712,13 +709,10 @@ impl BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
         request: OtapPdata,
     ) -> Result<(), EngineError> {
-        if request.is_empty() {
-            self.metrics.dropped_empty_records.inc();
-            // Note: Failure to Ack/Nack is an engine-level error.
-            effect.notify_ack(AckMsg::new(request)).await?;
-            return Ok(());
-        }
-
+        // Note: we do not check for and reject/count records with
+        // zero items, which is not the same as checking for an empty
+        // request, since both OTLP and OTAP can carry "empty envelopes"
+        // and callers are not required to drop them.
         let signal = request.signal_type();
         match signal {
             SignalType::Logs => self.metrics.consumed_batches_logs.add(1),
@@ -1622,11 +1616,14 @@ mod tests {
         (telemetry_registry, metrics_reporter, phase)
     }
 
-    /// Helper to verify that batch counters were incremented.
-    fn verify_item_metrics(
+    /// Helper to verify that batch counters were incremented to the expected
+    /// values. `expected_counts` is `(consumed_batches, produced_batches)` —
+    /// i.e. the number of input requests consumed by the processor and the
+    /// number of output batches it produced.
+    fn verify_batch_metrics(
         telemetry_registry: &TelemetryRegistryHandle,
         signal: SignalType,
-        _expected_items: usize,
+        expected_counts: (usize, usize),
     ) {
         let mut consumed_batches = 0u64;
         let mut produced_batches = 0u64;
@@ -1653,8 +1650,15 @@ mod tests {
             }
         });
 
-        assert!(produced_batches != 0, "produced_batches != 0");
-        assert!(consumed_batches != 0, "consumed_batches != 0");
+        let (expected_consumed, expected_produced) = expected_counts;
+        assert_eq!(
+            consumed_batches, expected_consumed as u64,
+            "consumed_batches"
+        );
+        assert_eq!(
+            produced_batches, expected_produced as u64,
+            "produced_batches"
+        );
     }
 
     fn mmsc_metric_count(
@@ -1875,6 +1879,8 @@ mod tests {
         let input_item_count: usize = inputs_otlp.iter().map(|m| m.num_items()).sum();
         let num_inputs = inputs_otlp.len();
         let total_events = events.len();
+        let produced_total = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let produced_total_inner = produced_total.clone();
 
         phase
             .run_test(move |mut ctx| async move {
@@ -2046,12 +2052,18 @@ mod tests {
 
                 // Test-specific validation.
                 (verify_outputs)(&event_outputs);
+
+                // Publish the produced batch count for the validate closure.
+                produced_total_inner
+                    .store(total_outputs, std::sync::atomic::Ordering::SeqCst);
             })
             .validate(move |_| async move {
                 // TODO: Not clear why, but this sleep is necessary (probably flaky)
                 // for the NodeControlMsg::CollectTelemetry sent above to take effect.
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_item_metrics(&telemetry_registry, signal, input_item_count);
+                let produced =
+                    produced_total.load(std::sync::atomic::Ordering::SeqCst);
+                verify_batch_metrics(&telemetry_registry, signal, (num_inputs, produced));
             });
     }
 
@@ -2292,7 +2304,9 @@ mod tests {
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_item_metrics(&telemetry_registry, SignalType::Logs, 9);
+                // 3 inputs consumed; 2 batches produced (one size flush after
+                // the second input, one timer flush after the third).
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (3, 2));
             });
     }
 
@@ -2352,7 +2366,10 @@ mod tests {
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_item_metrics(&telemetry_registry, SignalType::Logs, 18);
+                // 4 inputs consumed; 3 size-flushed batches produced (the
+                // first input only arms the timer; each subsequent input
+                // size-flushes one batch).
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (4, 3));
                 assert_eq!(
                     mmsc_metric_count(
                         &telemetry_registry,
@@ -2426,7 +2443,8 @@ mod tests {
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_item_metrics(&telemetry_registry, SignalType::Logs, 3);
+                // 1 input consumed; 1 batch produced by the real wakeup.
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
             });
     }
 
@@ -2581,7 +2599,8 @@ mod tests {
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_item_metrics(&telemetry_registry, SignalType::Logs, 3);
+                // 1 input consumed; 1 batch produced by the shutdown flush.
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
             });
     }
 
@@ -3092,7 +3111,8 @@ mod tests {
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_item_metrics(&telemetry_registry, SignalType::Logs, 3);
+                // 1 input consumed; 1 batch produced by the byte-size flush.
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
             });
     }
 
@@ -3179,7 +3199,7 @@ mod tests {
 
                 assert_equivalent(&[logs1, logs2], &outputs);
 
-                // Collect telemetry for verify_item_metrics.
+                // Collect telemetry for verify_batch_metrics.
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
                     metrics_reporter,
                 }))
@@ -3188,7 +3208,9 @@ mod tests {
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_item_metrics(&telemetry_registry, SignalType::Logs, 6);
+                // 2 inputs consumed (one OTLP, one OTAP); 2 batches produced
+                // (one per format, both flushed by their respective wakeups).
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (2, 2));
             });
     }
 
