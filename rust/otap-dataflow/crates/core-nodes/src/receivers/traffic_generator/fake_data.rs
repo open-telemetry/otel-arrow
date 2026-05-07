@@ -11,9 +11,9 @@ use rand::RngExt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_NS_DELAY: u64 = 10000;
-/// default scope name to use for fake signals
-const SCOPE_NAME: &str = "fake_signal";
-/// default scope version to use for fake signals
+/// default scope name to use for generated traffic signals
+const SCOPE_NAME: &str = "traffic_generator";
+/// default scope version to use for generated traffic signals
 const SCOPE_VERSION: &str = "1.0.0";
 
 const TRACE_ID_LENGTH: usize = 16;

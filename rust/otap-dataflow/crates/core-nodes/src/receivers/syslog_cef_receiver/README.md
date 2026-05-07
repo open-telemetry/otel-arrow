@@ -407,7 +407,7 @@ The receiver exposes the following internal metrics:
 | ------- | ------ | ------------- |
 | `received_logs_total` | Counter | Total logs observed at socket |
 | `received_logs_forwarded` | Counter | Logs successfully sent downstream |
-| `received_logs_invalid` | Counter | Logs that failed to parse |
+| `received_logs_invalid` | Counter | Zero-length payloads rejected |
 | `received_logs_forward_failed` | Counter | Logs refused by downstream |
 | `tcp_connections_active` | UpDownCounter | Active TCP connections |
 | `tls_handshake_failures` | Counter | TLS handshake failures (TLS only) |
