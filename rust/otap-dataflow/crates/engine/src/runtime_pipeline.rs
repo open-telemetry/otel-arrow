@@ -17,7 +17,7 @@ use crate::control::{
 };
 use crate::entity_context::{NodeTaskContext, NodeTelemetryHandle, instrument_with_node_context};
 use crate::error::{Error, TypedError};
-use crate::flow_metric::{
+use crate::flow_metrics::{
     FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
     build_flow_metric_state,
 };

@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Implementation of the configuration of the fake signal receiver
+//! Implementation of the traffic generator receiver configuration
 
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
