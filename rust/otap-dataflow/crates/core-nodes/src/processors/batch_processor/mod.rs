@@ -2054,15 +2054,13 @@ mod tests {
                 (verify_outputs)(&event_outputs);
 
                 // Publish the produced batch count for the validate closure.
-                produced_total_inner
-                    .store(total_outputs, std::sync::atomic::Ordering::SeqCst);
+                produced_total_inner.store(total_outputs, std::sync::atomic::Ordering::SeqCst);
             })
             .validate(move |_| async move {
                 // TODO: Not clear why, but this sleep is necessary (probably flaky)
                 // for the NodeControlMsg::CollectTelemetry sent above to take effect.
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                let produced =
-                    produced_total.load(std::sync::atomic::Ordering::SeqCst);
+                let produced = produced_total.load(std::sync::atomic::Ordering::SeqCst);
                 verify_batch_metrics(&telemetry_registry, signal, (num_inputs, produced));
             });
     }
