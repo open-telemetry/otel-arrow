@@ -75,8 +75,8 @@ Expected payload:
 
 Main consumed metric-set families:
 
-- `engine.metrics`
-- `pipeline.metrics`
+- `engine`
+- `pipeline`
 - `tokio.runtime`
 - `channel.sender`
 - `channel.receiver`
@@ -147,7 +147,7 @@ Rules:
 - optional skip of all-zero engine snapshots (`skipAllZeroSnapshots`)
 - optional hold-last behavior for sparse snapshots (`holdLastValues`)
 - derive group/pipeline/core counts from observed attributes/sets
-- derive engine uptime from `pipeline.metrics.uptime` (max observed)
+- derive engine uptime from `pipeline.uptime` (max observed)
 
 ### Pipeline and Tokio cards
 

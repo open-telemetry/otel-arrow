@@ -351,7 +351,7 @@ if pressure reaches `Hard`. The `/livez` endpoint is unaffected.
 
 ### Engine-level (emitted by the engine metrics monitor)
 
-All engine metrics are registered under the `engine.metrics` metric-set.
+All engine metrics are registered under the `engine` metric-set.
 
 <!-- markdownlint-disable MD013 -->
 | Metric | Description |
