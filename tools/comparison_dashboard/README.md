@@ -1,24 +1,24 @@
 # Comparison Dashboard
 
 Static site for comparing telemetry engines and protocols across various
-scenarios. 
+scenarios.
 
 This dashboard is fully static. It does not query a backend or fetch benchmark
 results from a remote service. Displayed benchmark data comes from local suite
 runs published into `site/data/suite/<slug>/` typically via `dashboard.py run`.
 
-Benchmark execution via is delegated to the 
-[orchestrator](../pipeline_perf_test/orchestrator) -- `dashboard.py run` is 
-just a wrapper that knows how to render orchestrator templates, store the
-results in a temporary directory (typically `.data`) and then copy the results
-to the appropriate `site/data` directory.
+Benchmark execution via is delegated to the
+[orchestrator](../pipeline_perf_test/orchestrator) -- `dashboard.py run` is just
+a wrapper that knows how to render orchestrator templates, store the results in
+a temporary directory (typically `.data`) and then copy the results to the
+appropriate `site/data` directory.
 
-Any data in those directories is then crunched along with various site
-manifests by `dashboard.py build` in order to generate the appropriate page 
-stubs and `data.js` files.
+Any data in those directories is then crunched along with various site manifests
+by `dashboard.py build` in order to generate the appropriate page stubs and
+`data.js` files.
 
-The dashboard can then be hosted on some static site server like github
-pages, but can also be served locally using `dashboard.py serve`.
+The dashboard can then be hosted on some static site server like github pages,
+but can also be served locally using `dashboard.py serve`.
 
 ## Concepts
 
