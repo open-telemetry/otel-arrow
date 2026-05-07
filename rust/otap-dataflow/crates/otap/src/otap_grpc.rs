@@ -287,6 +287,13 @@ async fn handle_stream<T, F>(
     let mut pending = FuturesUnordered::<PendingResponseFuture>::new();
 
     loop {
+        if flush_ready_pending_responses(&mut pending, &tx)
+            .await
+            .is_err()
+        {
+            return;
+        }
+
         while pending.len() >= max_pending {
             if let Some(response) = pending.next().await {
                 if send_pending_response(response, &tx).await.is_err() {
@@ -343,6 +350,16 @@ async fn handle_stream<T, F>(
             return;
         }
     }
+}
+
+async fn flush_ready_pending_responses(
+    pending: &mut FuturesUnordered<PendingResponseFuture>,
+    tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
+) -> Result<(), ()> {
+    while let Some(Some(response)) = pending.next().now_or_never() {
+        send_pending_response(response, tx).await?;
+    }
+    Ok(())
 }
 
 async fn reject_open_stream_for_memory_pressure(
@@ -578,6 +595,44 @@ mod tests {
         fn record_rejection(&self) {
             let _ = self.calls.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    #[tokio::test]
+    async fn flush_ready_pending_responses_drains_ready_without_waiting() {
+        let mut pending = FuturesUnordered::<PendingResponseFuture>::new();
+        pending.push(futures::future::ready(PendingResponse::Ack { batch_id: 1_i64 }).boxed());
+        pending.push(futures::future::pending::<PendingResponse>().boxed());
+        pending.push(
+            futures::future::ready(PendingResponse::Nack {
+                batch_id: 2_i64,
+                reason: "rejected".to_string(),
+            })
+            .boxed(),
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+
+        flush_ready_pending_responses(&mut pending, &tx)
+            .await
+            .expect("ready responses should be flushed");
+
+        assert_eq!(pending.len(), 1);
+        let mut statuses = [
+            rx.recv()
+                .await
+                .expect("first status should be sent")
+                .expect("first status should be ok"),
+            rx.recv()
+                .await
+                .expect("second status should be sent")
+                .expect("second status should be ok"),
+        ];
+        statuses.sort_by_key(|status| status.batch_id);
+
+        assert_eq!(statuses[0].batch_id, 1);
+        assert_eq!(statuses[0].status_code, StatusCode::Ok as i32);
+        assert_eq!(statuses[1].batch_id, 2);
+        assert_eq!(statuses[1].status_code, StatusCode::Unavailable as i32);
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]
