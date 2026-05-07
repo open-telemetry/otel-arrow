@@ -1034,7 +1034,9 @@ fn mountinfo_parser_skips_virtual_and_remote_filesystems_by_default() {
          37 25 0:32 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n\
          38 25 0:33 / /mnt/fuse rw,relatime - fuse.sshfs sshfs rw\n\
          39 25 0:34 / /mnt/fuseblk rw,relatime - fuseblk /dev/fuse rw\n\
-         40 25 0:35 / /mnt/nfs rw,relatime - nfs server:/export rw\n",
+         40 25 0:35 / /mnt/nfs rw,relatime - nfs server:/export rw\n\
+         41 25 0:36 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw\n\
+         42 25 0:37 / /sys/kernel/security rw,nosuid,nodev,noexec,relatime - securityfs securityfs rw\n",
         false,
         false,
         true,
