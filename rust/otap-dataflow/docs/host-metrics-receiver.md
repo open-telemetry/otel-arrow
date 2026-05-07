@@ -632,7 +632,7 @@ macros. Use `otel_info!`, `otel_warn!`, and `otel_debug!` from
 Use `MetricSet` for receiver self-observability.
 
 Use `Mmsc` with `ns` units for duration distribution fields to match existing
-repo MetricSet duration metrics such as the fake data generator and OTAP
+repo MetricSet duration metrics such as the traffic generator and OTAP
 exporter. Use `Gauge` only if the implementation intentionally keeps a
 last-value metric instead of a distribution.
 

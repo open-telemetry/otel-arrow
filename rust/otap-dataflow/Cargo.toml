@@ -268,7 +268,7 @@ dhat-heap = [
     "dep:dhat",
 ]
 
-# Dev/test tooling (fake data generator) and the otap integration tests
+# Dev/test tooling (traffic generator) and the otap integration tests
 # that exercise it. Activating this from the workspace default keeps
 # `cargo test` running the full suite locally; CI jobs that drop
 # `dev-tools` (e.g. the Linux ARM `build_nonrequired` job) avoid the
