@@ -1,6 +1,6 @@
 #!/bin/bash
-# Fake Data Generator — SUT saturation benchmark.
-# Measures whether 1 sender core (fake-gen → OTLP export) can saturate
+# Traffic Generator - SUT saturation benchmark.
+# Measures whether 1 sender core (traffic-gen -> OTLP export) can saturate
 # 1 SUT core (OTLP recv → OTLP export forwarding) over gRPC.
 #
 # Setup: 3 processes, 1 core each:

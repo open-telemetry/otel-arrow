@@ -8,7 +8,7 @@
 #      cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --port 9999
 #
 #   2. Run the pipeline:
-#      cargo run --release --features azure-monitor-exporter -- --config crates/contrib-nodes/src/exporters/azure_monitor_exporter/fakegen-ame-local.yaml --num-cores 1
+#      cargo run --release --features azure-monitor-exporter -- --config crates/contrib-nodes/src/exporters/azure_monitor_exporter/trafficgen-ame-local.yaml --num-cores 1
 #
 # Error simulation examples:
 #   cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-rate 0.1                  # 10% -> 500
@@ -35,7 +35,7 @@ groups:
     pipelines:
       main:
         nodes:
-          fake-data-generator:
+          traffic-generator:
             type: "urn:otel:receiver:traffic_generator"
             config:
               data_source: static
@@ -74,5 +74,5 @@ groups:
                 method: "dev"
 
         connections:
-          - from: fake-data-generator
+          - from: traffic-generator
             to: azure-monitor-exporter

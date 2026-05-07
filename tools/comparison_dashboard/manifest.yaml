@@ -14,7 +14,8 @@ site_root: site
 # Variables passed straight through to Jinja template rendering at the top
 # level. The scripts have no special knowledge of these keys -- add them as
 # orchestrator templates require.
-variables: {}
+variables:
+  df_engine_image: df_engine:latest
 
 # Allowed values for every meta key a suite may declare. Validation rejects
 # any meta key not listed here, and any value (or list element) outside the
@@ -23,7 +24,10 @@ meta: {}
 
 # Suite definitions, listed by path. Each entry must point at an existing
 # YAML file with at least `name`, `slug`, `variables`, and `orchestrator_template`.
-suites: []
+suites:
+  - suites/dfe/dfe-logs-otap-none-baseline.yaml
+  - suites/dfe/dfe-logs-otap-gzip-baseline.yaml
+  - suites/dfe/dfe-logs-otap-zstd-baseline.yaml
 
 # Comparison definitions, listed by path. Each entry must point at an
 # existing YAML file with `slug` and `suites` (a list of suite refs).
