@@ -99,7 +99,7 @@ mod tests {
         let snapshot = MetricsSnapshot {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             metric_sets: vec![MetricSetSnapshot {
-                name: "fake_data_generator.receiver.metrics".into(),
+                name: "traffic_generator.receiver.metrics".into(),
                 brief: "loadgen metrics".into(),
                 attributes: HashMap::from([(
                     "role".into(),
@@ -119,7 +119,7 @@ mod tests {
 
         let rendered = format!("{snapshot}");
         assert!(rendered.contains("timestamp: 2024-01-01T00:00:00Z"));
-        assert!(rendered.contains("metric_set: fake_data_generator.receiver.metrics"));
+        assert!(rendered.contains("metric_set: traffic_generator.receiver.metrics"));
         assert!(rendered.contains("logs.produced [{log}]")); // unit shows up in brackets
         assert!(rendered.contains("value=123"));
     }
