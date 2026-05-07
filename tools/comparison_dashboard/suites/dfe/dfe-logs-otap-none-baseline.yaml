@@ -1,0 +1,21 @@
+name: DFE OTAP Baseline (Logs)
+slug: dfe_logs_otap_none_baseline
+description: Dataflow Engine baseline for OTAP logs with no compression
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/dfe-single-core-multi-rate.yaml
+
+meta:
+  binary: dfe
+  protocols: [otap]
+  signals: [logs]
+  compression: none
+
+variables:
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_logs.yaml
+  engine_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/engine/otap-otap.yaml
+  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otap.yaml.j2
+  backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/backend/otap.yaml.j2
+  protocol: otap
+  signal: logs
+  loadgen_max_batch_size: 1000
+  compression_method: none
+  wait_for_result: true
