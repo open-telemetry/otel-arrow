@@ -122,6 +122,7 @@ tikv-jemalloc-sys = "0.6.1"
 memchr = "2.8.0"
 memmap2 = "0.9"
 memory-stats = "1"
+libc = "0.2"
 nix = { version = "0.31.0", features = ["process", "signal", "fs", "mman"] }
 notify = "8.0"  # Uses platform-native backend: inotify (Linux), kqueue (macOS), ReadDirectoryChanges (Windows)
 num_enum = "0.7"
@@ -250,11 +251,16 @@ tonic-prost-build = "0.14"
 tracepoint = { version = "0.5.0", features = ["user_events"] }
 tracepoint_decode = "0.5.0"
 urlencoding = "2"
-geneva-uploader = "0.4.0"
+# Pinned to open-telemetry/opentelemetry-rust-contrib main on 2026-04-25.
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "ce866b48a1645f1fb222bdea19c42821a2b48d5a" }
+
+[patch."https://github.com/open-telemetry/otel-arrow"]
+otap-df-pdata = { path = "crates/pdata" }
+otap-df-pdata-views = { path = "crates/pdata-views" }
 
 [features]
 # ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof
-default = ["jemalloc", "crypto-ring", "dev-tools"]
+default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws"]
 jemalloc = ["dep:tikv-jemallocator", "otap-df-engine/jemalloc"]
 mimalloc = ["dep:mimalloc"]
 azure = ["otap-df-otap/azure"]
@@ -266,8 +272,15 @@ dhat-heap = [
     "dep:dhat",
 ]
 
-# Dev/test tooling (fake data generator).
-dev-tools = ["otap-df-core-nodes/dev-tools"]
+# Dev/test tooling (traffic generator) and the otap integration tests
+# that exercise it. Activating this from the workspace default keeps
+# `cargo test` running the full suite locally; CI jobs that drop
+# `dev-tools` (e.g. the Linux ARM `build_nonrequired` job) avoid the
+# weaver / gix / reqwest / native-tls / openssl-sys C build.
+dev-tools = ["otap-df-core-nodes/dev-tools", "otap-df-otap/integration-tests"]
+
+# Admin UI live log streaming over WebSocket.
+admin-live-logs-ws = ["otap-df-controller/admin-live-logs-ws"]
 
 # Cryptographic provider selection (mutually exclusive).
 # Exactly one must be enabled when using TLS or any rustls-backed dependency (e.g. reqwest).

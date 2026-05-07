@@ -72,11 +72,22 @@ rustls-openssl = { workspace = true, optional = true }
 # Quiver persistence engine (durable buffer processor)
 quiver = { workspace = true }
 
+# Optional dev-tools dep used only by integration tests gated on the
+# `integration-tests` feature. Declaring it here (rather than as a dev-dep)
+# lets the feature flag turn it on/off; otherwise it would always be pulled
+# into the build, dragging gix/reqwest/native-tls/openssl-sys with it.
+weaver_common = { workspace = true, optional = true }
+
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 rustls-symcrypt = { workspace = true, optional = true }
 
 [features]
 test-utils = ["rustls/ring", "otap-df-pdata/testing"]
+# Integration tests that depend on the traffic_generator receiver and the
+# `weaver_common` crate (used to load semconv schemas). Gating these behind
+# an opt-in feature lets builds that don't need them avoid pulling weaver,
+# gix, reqwest, native-tls and (on Linux) openssl-sys into the dep graph.
+integration-tests = ["dep:weaver_common", "otap-df-core-nodes/dev-tools"]
 crypto-ring = ["rustls/ring", "tokio-rustls/ring"]
 crypto-aws-lc = ["rustls/aws_lc_rs", "tokio-rustls/aws-lc-rs"]
 crypto-openssl = ["dep:rustls-openssl", "tonic/tls-native-roots"]
@@ -95,10 +106,28 @@ tokio-rustls.workspace = true
 rustls-pki-types.workspace = true
 tokio-stream.workspace = true
 otap-df-contrib-nodes = { workspace = true }
-otap-df-core-nodes = { workspace = true, features = ["dev-tools"] }
-weaver_common.workspace = true
+otap-df-core-nodes = { workspace = true }
 otap-test-tls-certs.workspace = true
 otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-pdata = { workspace = true, features = ["testing"] }
 otap-df-state = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
+
+# Integration tests that pull `core-nodes/dev-tools` (traffic_generator)
+# and `weaver_common`. Listing them here with `required-features` lets cargo
+# skip the test binaries entirely when the `integration-tests` feature is
+# off, keeping the test source files free of `#[cfg]` gating.
+[[test]]
+name = "pipeline_tests"
+path = "tests/pipeline_tests.rs"
+required-features = ["integration-tests"]
+
+[[test]]
+name = "durable_buffer_processor_tests"
+path = "tests/durable_buffer_processor_tests.rs"
+required-features = ["integration-tests"]
+
+[[test]]
+name = "core_node_liveness_tests"
+path = "tests/core_node_liveness_tests.rs"
+required-features = ["integration-tests"]

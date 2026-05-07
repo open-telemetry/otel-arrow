@@ -221,7 +221,7 @@ mod test {
         );
 
         let any_val_arrays = AnyValueArrays::try_from(&rb).unwrap();
-        let mut protobuf = ProtoBuffer::new();
+        let mut protobuf = ProtoBuffer::default();
 
         for i in 0..rb.num_rows() {
             if let Some(value_type) = any_val_arrays.attr_type.value_at(i) {

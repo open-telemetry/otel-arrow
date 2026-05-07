@@ -11,7 +11,7 @@
 use crate::error::Error;
 use crate::pipeline::telemetry::{AttributeValue, TelemetryAttribute};
 use crate::transport_headers_policy::{HeaderCapturePolicy, HeaderPropagationPolicy};
-use crate::{CapabilityId, Description, NodeId, NodeUrn, PortName};
+use crate::{CapabilityId, Description, ExtensionId, NodeUrn, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,7 +25,7 @@ use std::collections::HashMap;
 /// and returns an error so the user gets immediate feedback.
 fn deserialize_no_dup_keys<'de, D>(
     deserializer: D,
-) -> Result<HashMap<CapabilityId, NodeId>, D::Error>
+) -> Result<HashMap<CapabilityId, ExtensionId>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -35,7 +35,7 @@ where
     struct NoDupVisitor;
 
     impl<'de> Visitor<'de> for NoDupVisitor {
-        type Value = HashMap<CapabilityId, NodeId>;
+        type Value = HashMap<CapabilityId, ExtensionId>;
 
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.write_str("a map with no duplicate keys")
@@ -49,7 +49,7 @@ where
                         "duplicate capability key '{key}'"
                     )));
                 }
-                let _ = result.insert(CapabilityId::from(key), NodeId::from(value));
+                let _ = result.insert(CapabilityId::from(key), ExtensionId::from(value));
             }
             Ok(result)
         }
@@ -115,7 +115,7 @@ pub struct NodeUserConfig {
         skip_serializing_if = "HashMap::is_empty",
         deserialize_with = "deserialize_no_dup_keys"
     )]
-    pub capabilities: HashMap<CapabilityId, NodeId>,
+    pub capabilities: HashMap<CapabilityId, ExtensionId>,
 
     /// Entity configuration for the node.
     ///
