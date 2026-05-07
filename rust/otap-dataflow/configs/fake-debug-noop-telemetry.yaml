@@ -13,7 +13,7 @@ engine:
                 endpoint: "http://127.0.0.1:43480"
       views:
         - selector:
-            scope_name: "fake_data_generator.receiver.metrics"
+            scope_name: "traffic_generator.receiver.metrics"
             instrument_name: "logs.produced"
           stream:
             name: "otlp.logs.produced.count"

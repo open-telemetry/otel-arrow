@@ -1,15 +1,15 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Metrics for the OTLP Fake Signal Receiver node.
+//! Metrics for the traffic generator receiver node.
 
 use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
 use otap_df_telemetry_macros::metric_set;
 
-/// Pdata-oriented metrics for the OTAP PerfExporter.
-#[metric_set(name = "fake_data_generator.receiver.metrics")]
+/// Pdata-oriented metrics for the traffic generator receiver.
+#[metric_set(name = "traffic_generator.receiver.metrics")]
 #[derive(Debug, Default, Clone)]
-pub struct FakeSignalReceiverMetrics {
+pub struct TrafficGeneratorReceiverMetrics {
     /// Number of logs generated.
     #[metric(unit = "{log}")]
     pub logs_produced: Counter<u64>,

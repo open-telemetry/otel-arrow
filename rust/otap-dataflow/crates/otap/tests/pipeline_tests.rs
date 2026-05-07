@@ -15,11 +15,11 @@ use otap_df_config::pipeline::{
 use otap_df_config::policy::{ChannelCapacityPolicy, MetricLevel, TelemetryPolicy};
 use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_core_nodes::exporters::noop_exporter::NOOP_EXPORTER_URN;
-use otap_df_core_nodes::receivers::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
-use otap_df_core_nodes::receivers::fake_data_generator::config::{
-    Config as FakeDataGeneratorConfig, DataSource, TrafficConfig,
-};
 use otap_df_core_nodes::receivers::otlp_receiver::OTLP_RECEIVER_URN;
+use otap_df_core_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
+use otap_df_core_nodes::receivers::traffic_generator::config::{
+    Config as TrafficGeneratorConfig, DataSource, TrafficConfig,
+};
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{
     RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
@@ -216,7 +216,7 @@ fn build_test_pipeline_config(
     PipelineConfigBuilder::new()
         .add_receiver(
             "receiver",
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
             Some(receiver_config_value),
         )
         .add_exporter("exporter", "urn:otel:exporter:noop", None)
@@ -234,12 +234,12 @@ fn build_fan_in_pipeline_config(
     PipelineConfigBuilder::new()
         .add_receiver(
             "receiver_a",
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
             Some(receiver_config_value.clone()),
         )
         .add_receiver(
             "receiver_b",
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
             Some(receiver_config_value),
         )
         .add_exporter("exporter", "urn:otel:exporter:noop", None)
@@ -259,7 +259,7 @@ fn build_mixed_receiver_pipeline_config(
     PipelineConfigBuilder::new()
         .add_receiver(
             "local_receiver",
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
             Some(local_receiver_config_value),
         )
         .one_of("local_receiver", ["exporter"])
@@ -281,7 +281,7 @@ fn fake_receiver_config_value() -> serde_json::Value {
         sub_folder: Some("model".to_owned()),
         refspec: None,
     };
-    let receiver_config = FakeDataGeneratorConfig::new(traffic_config, registry_path)
+    let receiver_config = TrafficGeneratorConfig::new(traffic_config, registry_path)
         .with_data_source(DataSource::Static);
     to_value(receiver_config).expect("failed to serialize receiver config")
 }
