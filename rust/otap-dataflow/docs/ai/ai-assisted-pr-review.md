@@ -119,6 +119,9 @@ Check for:
   errors, unsupported platforms, and documentation examples
 - stable telemetry contracts, including metric names, label cardinality,
   deterministic label order, and explicit collision handling
+- precise telemetry semantics, including instrument kind, aggregation cadence,
+  numerator/denominator consistency, monotonicity, units, dimensions, and
+  scrape or reporting timing
 - intentional shutdown, drain, flush, cancellation, and pending-message behavior
   for async tasks, streams, channels, and metric updates
 - reuse of existing engine, Query Engine, pdata view, decoder, validation, or
@@ -139,6 +142,9 @@ Review Rust correctness and safety through the lens of the OTAP runtime model:
   longer than necessary across `.await`
 - long-running work observes cancellation and deadlines where shutdown or live
   reconfiguration can interrupt it
+- prefer correctness by construction: use types, builders, validation, and
+  fail-fast APIs to make invalid states impossible or explicit instead of
+  relying on convention, comments, or debug-only checks
 
 Review semantic fidelity where data models, protocols, or query behavior are
 affected:
