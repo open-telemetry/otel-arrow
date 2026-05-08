@@ -1,7 +1,7 @@
 set -exu
 
 if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then
-  RUST_TARGET=x86_64-unknown-linux-musl
+  RUST_TARGET=x86_64-unknown-linux-gnu
   apt-get update && apt-get install -y musl-tools
   export CC_x86_64_unknown_linux_musl=musl-gcc
   if [ "${TARGETPLATFORM}" != "${BUILDPLATFORM}" ]; then
