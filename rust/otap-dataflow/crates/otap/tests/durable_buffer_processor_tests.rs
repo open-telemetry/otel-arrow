@@ -1732,7 +1732,7 @@ fn test_durable_buffer_otlp_item_count_metrics() {
     let pipeline_group_id: PipelineGroupId = "item-count-test".into();
     let pipeline_id: PipelineId = "item-count-pipeline".into();
 
-    // The fake data generator sends signals in order (metrics, traces, logs) per
+    // The traffic generator sends signals in order (metrics, traces, logs) per
     // iteration. Using equal weights with max_batch_size=30 ensures exactly 10 of
     // each signal type per iteration (30 total). No rate limit — the budget is
     // governed entirely by max_signal_count.
@@ -1823,7 +1823,7 @@ fn test_durable_buffer_otlp_item_count_metrics() {
         "Metrics should have non-zero item_count in manifest (got {metric_items})"
     );
 
-    // For OTLP pass-through, each signal from the fake data generator is 1 item
+    // For OTLP pass-through, each signal from the traffic generator is 1 item
     // (1 log record, 1 span, or 1 metric data point). The total should match.
     assert_eq!(
         total_manifest_items, phase1_signals,

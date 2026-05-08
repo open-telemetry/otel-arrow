@@ -2110,7 +2110,7 @@ impl ExemplarView for RawExemplar<'_> {
 mod test {
     use super::*;
     use crate::{
-        otlp::ProtoBuffer,
+        otlp::{ProtoBuffer, common::BoundedBuf},
         proto::opentelemetry::metrics::v1::{
             Metric, NumberDataPoint, Sum, metric::Data, number_data_point,
         },
@@ -2157,16 +2157,16 @@ mod test {
         let mut buffer = ProtoBuffer::default();
 
         // first write packed encoded
-        buffer.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::LEN);
-        buffer.encode_varint(3 * 8); // 8 bytes per val (fixed64)
-        buffer.extend_from_slice(&1u64.to_le_bytes());
-        buffer.extend_from_slice(&2u64.to_le_bytes());
-        buffer.extend_from_slice(&3u64.to_le_bytes());
+        let _ = buffer.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::LEN);
+        let _ = buffer.encode_varint(3 * 8); // 8 bytes per val (fixed64)
+        let _ = buffer.extend_from_slice(&1u64.to_le_bytes());
+        let _ = buffer.extend_from_slice(&2u64.to_le_bytes());
+        let _ = buffer.extend_from_slice(&3u64.to_le_bytes());
 
-        buffer.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::LEN);
-        buffer.encode_varint(2 * 8); // 8 bytes per val (double)
-        buffer.extend_from_slice(&4.0f64.to_le_bytes());
-        buffer.extend_from_slice(&5.0f64.to_le_bytes());
+        let _ = buffer.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::LEN);
+        let _ = buffer.encode_varint(2 * 8); // 8 bytes per val (double)
+        let _ = buffer.extend_from_slice(&4.0f64.to_le_bytes());
+        let _ = buffer.extend_from_slice(&5.0f64.to_le_bytes());
 
         // check results
         let hist_dp_view = RawHistogramDataPoint {
@@ -2180,12 +2180,12 @@ mod test {
         // now write with expanded encoding
         buffer.clear();
         for i in [6u64, 7, 8] {
-            buffer.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::FIXED64);
-            buffer.extend_from_slice(&i.to_le_bytes());
+            let _ = buffer.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::FIXED64);
+            let _ = buffer.extend_from_slice(&i.to_le_bytes());
         }
         for i in [9f64, 0.0] {
-            buffer.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::FIXED64);
-            buffer.extend_from_slice(&i.to_le_bytes());
+            let _ = buffer.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::FIXED64);
+            let _ = buffer.extend_from_slice(&i.to_le_bytes());
         }
 
         // check results
@@ -2200,20 +2200,20 @@ mod test {
         // there's an extra edge-case where when using packed encoding, multiple key-value
         // pairs are allowed. test to ensure we handle this:
         buffer.clear();
-        buffer.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::LEN);
-        buffer.encode_varint(2 * 8);
-        buffer.extend_from_slice(&1u64.to_le_bytes());
-        buffer.extend_from_slice(&2u64.to_le_bytes());
-        buffer.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::LEN);
-        buffer.encode_varint(8);
-        buffer.extend_from_slice(&3u64.to_le_bytes());
+        let _ = buffer.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::LEN);
+        let _ = buffer.encode_varint(2 * 8);
+        let _ = buffer.extend_from_slice(&1u64.to_le_bytes());
+        let _ = buffer.extend_from_slice(&2u64.to_le_bytes());
+        let _ = buffer.encode_field_tag(HISTOGRAM_DP_BUCKET_COUNTS, wire_types::LEN);
+        let _ = buffer.encode_varint(8);
+        let _ = buffer.extend_from_slice(&3u64.to_le_bytes());
 
-        buffer.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::LEN);
-        buffer.encode_varint(8);
-        buffer.extend_from_slice(&4.0f64.to_le_bytes());
-        buffer.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::LEN);
-        buffer.encode_varint(8);
-        buffer.extend_from_slice(&5.0f64.to_le_bytes());
+        let _ = buffer.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::LEN);
+        let _ = buffer.encode_varint(8);
+        let _ = buffer.extend_from_slice(&4.0f64.to_le_bytes());
+        let _ = buffer.encode_field_tag(HISTOGRAM_DP_EXPLICIT_BOUNDS, wire_types::LEN);
+        let _ = buffer.encode_varint(8);
+        let _ = buffer.extend_from_slice(&5.0f64.to_le_bytes());
         let hist_dp_view = RawHistogramDataPoint {
             byte_parser: ProtoBytesParser::new(buffer.as_ref()),
         };
@@ -2232,9 +2232,9 @@ mod test {
         let mut buffer = ProtoBuffer::default();
 
         // test packed encoding
-        buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::LEN);
-        buffer.encode_varint(3); // 3 x 1byte varints
-        buffer.extend_from_slice(&[0x01, 0x02, 0x03]);
+        let _ = buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::LEN);
+        let _ = buffer.encode_varint(3); // 3 x 1byte varints
+        let _ = buffer.extend_from_slice(&[0x01, 0x02, 0x03]);
 
         let bucket_view = RawBuckets {
             byte_parser: ProtoBytesParser::new(buffer.as_ref()),
@@ -2244,12 +2244,12 @@ mod test {
 
         // test expanded encoding
         buffer.clear();
-        buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::VARINT);
-        buffer.encode_varint(1);
-        buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::VARINT);
-        buffer.encode_varint(2);
-        buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::VARINT);
-        buffer.encode_varint(3);
+        let _ = buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::VARINT);
+        let _ = buffer.encode_varint(1);
+        let _ = buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::VARINT);
+        let _ = buffer.encode_varint(2);
+        let _ = buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::VARINT);
+        let _ = buffer.encode_varint(3);
         let bucket_view = RawBuckets {
             byte_parser: ProtoBytesParser::new(buffer.as_ref()),
         };
@@ -2259,12 +2259,12 @@ mod test {
         // there's an extra edge-case where when using packed encoding, multiple key-value
         // pairs are allowed. test to ensure we handle this:
         buffer.clear();
-        buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::LEN);
-        buffer.encode_varint(2);
-        buffer.extend_from_slice(&[0x01, 0x02]);
-        buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::LEN);
-        buffer.encode_varint(1);
-        buffer.extend_from_slice(&[0x03]);
+        let _ = buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::LEN);
+        let _ = buffer.encode_varint(2);
+        let _ = buffer.extend_from_slice(&[0x01, 0x02]);
+        let _ = buffer.encode_field_tag(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, wire_types::LEN);
+        let _ = buffer.encode_varint(1);
+        let _ = buffer.extend_from_slice(&[0x03]);
         let bucket_view = RawBuckets {
             byte_parser: ProtoBytesParser::new(buffer.as_ref()),
         };
