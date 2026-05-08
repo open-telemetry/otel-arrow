@@ -18,6 +18,7 @@ pub use otap_df_admin_types::pipelines::{
     RolloutCoreStatus, RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
 };
 use serde::Serialize;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -141,6 +142,13 @@ struct AppState {
 
     /// Shared process-wide memory pressure state.
     memory_pressure_state: MemoryPressureState,
+
+    /// Pre-rendered Prometheus `target_info` block (HELP/TYPE/sample lines)
+    /// derived once from the resource attributes at server startup. Empty
+    /// when no resource attributes are supplied; written verbatim at the top
+    /// of every Prometheus scrape so we don't re-sort and re-escape on each
+    /// request.
+    target_info: Arc<str>,
 }
 
 /// Run the admin HTTP server until shutdown is requested.
@@ -151,14 +159,17 @@ pub async fn run(
     metrics_registry: TelemetryRegistryHandle,
     memory_pressure_state: MemoryPressureState,
     log_tap: Option<InternalLogTapHandle>,
+    resource_attributes: HashMap<String, String>,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
+    let target_info: Arc<str> = telemetry::render_target_info(&resource_attributes).into();
     let app_state = AppState {
         observed_state_store: observed_store,
         metrics_registry,
         controller,
         log_tap,
         memory_pressure_state,
+        target_info,
     };
 
     let api_routes = Router::new()

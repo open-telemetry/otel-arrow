@@ -187,7 +187,7 @@ where
         let context = (self.context_fn)();
         let record = LogRecord::new(event, context);
         if let Some(writer) = self.writer {
-            writer.print_log_record(time, &record, |w| {
+            writer.print_log_record(time, &record.as_view(), |w| {
                 w.format_entity_suffix_without_registry(&record.context);
             });
         }
@@ -427,6 +427,85 @@ mod tests {
             for _ in 0..4 {
                 let _ = receiver.try_recv().expect("should receive log");
             }
+        });
+    }
+
+    #[test]
+    fn dropped_attributes_count_propagates() {
+        // Regression test: when too many attributes are passed to overflow
+        // the inline encoding buffer, the visitor's dropped_attributes_count
+        // must be preserved end-to-end through the ITS encode path
+        // (encode_export_logs_request) and parsed back via the same
+        // RawLogsData view used by the console exporter.
+        //
+        // Historically, a partial body write left an unpatched length
+        // placeholder + trailing garbage bytes in the inline buffer, which
+        // corrupted subsequent fields appended by encode_log_record (notably
+        // dropped_attributes_count itself). encode_body_string is now wrapped
+        // in try_encode to roll back partial bytes on overflow.
+        crate::with_cleared_rust_log(|| {
+            let (reporter, receiver) = test_reporter();
+            let setup = test_setup(internal_async_provider(reporter), level("info"));
+
+            // Use enough long-string attributes to overflow any reasonable
+            // LOG_ARGUMENTS_ENCODE_INLINE (well above 256 bytes worth of payload).
+            setup.with_subscriber_ignoring_env(|| {
+                otel_info!(
+                    "overflow.test",
+                    a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    c = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    d = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                    e = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                    f = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                    g = "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+                    message = "Body that itself is fairly long and may not fit alongside the attributes above"
+                );
+            });
+
+            let event = receiver.try_recv().expect("should receive log");
+            let log_event = match event {
+                ObservedEvent::Log(le) => le,
+                _ => panic!("expected log"),
+            };
+            let visitor_dropped = log_event.record.dropped_attributes_count;
+            assert!(
+                visitor_dropped > 0,
+                "expected visitor to drop attrs, got {visitor_dropped}"
+            );
+
+            // Encode through the full ITS path and parse via RawLogsData
+            // (the same path used by internal_telemetry_receiver → console
+            // exporter).
+            use crate::self_tracing::{ScopeToBytesMap, encode_export_logs_request};
+            use bytes::Bytes;
+            use otap_df_pdata::otlp::ProtoBuffer;
+            use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+            use otap_df_pdata_views::views::logs::{
+                LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
+            };
+
+            let resource_bytes = Bytes::new();
+            let registry = crate::registry::TelemetryRegistryHandle::new();
+            let mut scope_cache = ScopeToBytesMap::new(registry);
+            let mut buf = ProtoBuffer::default();
+            encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
+            let bytes_vec = buf.into_bytes();
+
+            let raw = RawLogsData::new(bytes_vec.as_ref());
+            let mut parsed_dropped = None;
+            for rl in raw.resources() {
+                for sl in rl.scopes() {
+                    for lr in sl.log_records() {
+                        parsed_dropped = Some(lr.dropped_attributes_count());
+                    }
+                }
+            }
+            assert_eq!(
+                parsed_dropped,
+                Some(visitor_dropped as u32),
+                "dropped_attributes_count must round-trip through encode/parse"
+            );
         });
     }
 

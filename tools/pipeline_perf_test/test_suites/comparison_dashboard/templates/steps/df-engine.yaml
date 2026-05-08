@@ -190,13 +190,13 @@ steps:
                     console: {}
                 - format:
                     template:
-                      path: ./test_suites/integration/templates/reports/gh-action-sqlreport.j2
+                      path: ../pipeline_perf_test/test_suites/integration/templates/reports/gh-action-sqlreport.j2
                   destination:
                     file:
                       directory: '{{test_dir}}'
                 - format:
                     template:
-                      path: ./dashboard/templates/reports/dashboard-timeseries.j2
+                      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/reports/dashboard-timeseries.j2
                   destination:
                     file:
                       directory: '{{test_dir}}'

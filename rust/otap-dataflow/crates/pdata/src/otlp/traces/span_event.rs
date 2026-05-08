@@ -3,6 +3,7 @@
 
 use arrow::array::{RecordBatch, TimestampNanosecondArray, UInt16Array, UInt32Array};
 
+use crate::otlp::common::BoundedBuf;
 use crate::{
     arrays::{
         NullableArrayAccessor, StringArrayAccessor, get_timestamp_nanosecond_array_opt,
@@ -21,7 +22,6 @@ use crate::{
         },
         wire_types,
     },
-    proto_encode_len_delimited_unknown_size,
     schema::consts,
 };
 
@@ -59,14 +59,14 @@ pub fn encode_span_event(
 ) -> Result<()> {
     if let Some(col) = &event_arrays.time_unix_nano {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SPAN_EVENT_TIME_UNIX_NANO, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(SPAN_EVENT_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = &event_arrays.name {
         if let Some(val) = col.str_at(index) {
-            result_buf.encode_string(SPAN_EVENT_NAME, val);
+            result_buf.encode_string(SPAN_EVENT_NAME, val)?;
         }
     }
 
@@ -74,19 +74,18 @@ pub fn encode_span_event(
         if let Some(id) = event_arrays.id.value_at(index) {
             let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
             for attrs_index in attrs_index_iter {
-                proto_encode_len_delimited_unknown_size!(
-                    SPAN_EVENT_ATTRIBUTES,
-                    encode_key_value(attrs, attrs_index, result_buf)?,
-                    result_buf
-                );
+                result_buf.encode_len_delimited(SPAN_EVENT_ATTRIBUTES, |result_buf| {
+                    encode_key_value(attrs, attrs_index, result_buf)
+                })?;
             }
         }
     }
 
     if let Some(col) = &event_arrays.dropped_attributes_count {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS, wire_types::VARINT);
-            result_buf.encode_varint(val as u64);
+            result_buf
+                .encode_field_tag(SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
         }
     }
 

@@ -1,0 +1,40 @@
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+    control:
+      pipeline: {{ default_pipeline_ctrl_msg_channel_size | default(100) }}
+      node: {{ default_node_ctrl_msg_channel_size | default(100) }}
+    pdata: {{ default_pdata_channel_size | default(100) }}
+  resources:
+    core_allocation:
+      type: core_set
+      set:
+        - start: {{core_start}}
+          end: {{core_end}}
+
+engine: {}
+
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:otel:receiver:otlp"
+            config:
+              protocols:
+                http:
+                  listening_addr: "{{ listening_addr | default("0.0.0.0:1235") }}"
+
+          perf:
+            type: "urn:otel:exporter:perf"
+            config:
+              frequency: 500
+              cpu_usage: false
+              mem_usage: false
+              disk_usage: false
+              io_usage: false
+
+        connections:
+          - from: receiver
+            to: perf
