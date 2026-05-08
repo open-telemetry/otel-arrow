@@ -92,7 +92,7 @@ pub mod opentelemetry {
 /// into OtapArrowRecords, this type does not.
 ///
 /// Note this could be considered for #[cfg(test)], however we are
-/// aware of uses in otap-df-otap's fake_signal_generator and
+/// aware of uses in otap-df-otap's traffic generator and
 /// debug_processor.
 #[derive(Clone, Debug)]
 pub enum OtlpProtoMessage {

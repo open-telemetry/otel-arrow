@@ -192,7 +192,7 @@ e.g. `receiver`, `exporter`.
 - `with_transport_headers(headers)` - configure transport headers to inject
   into generated traffic
   - each key is a header name; the value is an optional fixed string
-  - when the value is `None`, the fake data generator assigns a random value
+  - when the value is `None`, the traffic generator assigns a random value
     at startup
   - only meaningful when the pipeline uses OTLP receivers/exporters
 - `to_container(ContainerConnection)` - use a custom exporter that sends to a
