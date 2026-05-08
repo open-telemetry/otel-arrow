@@ -3119,6 +3119,81 @@ mod tests {
             });
     }
 
+    /// A zero-byte OTLP request is acked immediately and never reaches the
+    /// batch buffer.
+    #[test]
+    fn test_otlp_zero_byte_request_acked_immediately() {
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "format": "otlp",
+            "otlp": {
+                "min_size": 100,
+                "sizer": "bytes",
+            },
+            "max_batch_duration": "1s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let empty = OtlpProtoBytes::ExportLogsRequest(Bytes::new());
+                ctx.process(Message::PData(OtapPdata::new_default(empty.into())))
+                    .await
+                    .expect("process empty otlp");
+
+                assert!(ctx.drain_pdata().await.is_empty(), "no batch should flush");
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 0));
+            });
+    }
+
+    /// An OTLP request that has non-zero bytes but zero log records is not
+    /// treated as empty under the bytes sizer; it flows through the batcher
+    /// like any other input.
+    #[test]
+    fn test_otlp_empty_container_passes_through_batcher() {
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "format": "otlp",
+            "otlp": {
+                "min_size": 1,
+                "sizer": "bytes",
+            },
+            "max_batch_duration": "1s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let logs = LogsData {
+                    resource_logs: vec![ResourceLogs::default()],
+                };
+                let input_bytes = otlp_message_to_bytes(&OtlpProtoMessage::Logs(logs));
+                assert!(input_bytes.num_bytes() > 0);
+
+                ctx.process(Message::PData(OtapPdata::new_default(input_bytes.into())))
+                    .await
+                    .expect("process empty-container otlp");
+
+                let outputs = ctx.drain_pdata().await;
+                assert_eq!(outputs.len(), 1, "empty container should size-flush");
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
+            });
+    }
+
     /// Test Preserve mode: this can't use the same test harness used above because it
     /// arranges mixed-format inputs.
     #[test]
