@@ -10,7 +10,7 @@ components:
         ports:
           - "{{port}}:8080"
         volumes:
-          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/nonroot/config.yaml:ro'
         command:
           - "--config"
           - "./config.yaml"

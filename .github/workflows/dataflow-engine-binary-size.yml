@@ -53,7 +53,7 @@ jobs:
 
       - name: Get binary size and create report
         run: |
-          SIZE=$(docker run --rm --entrypoint stat df_engine:${{ matrix.platform.name }} -c %s /home/dataflow/df_engine)
+          SIZE=$(docker run --rm --entrypoint stat df_engine:${{ matrix.platform.name }} -c %s /home/nonroot/df_engine)
           SIZE_HR=$(numfmt --to=iec-i --suffix=B $SIZE)
           SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
           echo "Binary size for ${{ matrix.platform.name }}: $SIZE_HR ($SIZE_MB MB)"
