@@ -1655,6 +1655,13 @@ fn escape_prom_help(s: &str) -> String {
 /// Sanitizes label keys and merges values that collide after sanitization
 /// into a single entry separated by `;`, per the OTel→Prometheus spec.
 ///
+/// Per spec: "OpenTelemetry keys [that] map to the same Prometheus key …
+/// MUST be concatenated together, separated by `;`, and ordered by the
+/// lexicographical order of the original keys." We collect and sort by
+/// original key before merging so the joined value is deterministic
+/// regardless of caller iteration order (e.g. `HashMap::iter`, which has
+/// no defined order).
+///
 /// `reserved_keys` lists already-emitted labels (post-sanitization) that
 /// must not appear in the merged map. Per the spec, the scope-derived
 /// `otel_scope_name` / `otel_scope_version` labels are emitted separately
@@ -1673,8 +1680,16 @@ fn sanitize_and_merge_label_pairs<'a, I>(
 where
     I: IntoIterator<Item = (&'a str, String)>,
 {
-    let mut merged: HashMap<String, String> = HashMap::new();
-    for (key, value) in attrs {
+    // Collect first so we can sort by original key. Sorting before the
+    // sanitize/merge pass guarantees that for collisions like
+    // `service.name="a"` + `service_name="b"`, the joined output is
+    // always `"a;b"` (lex-ordered by raw key), independent of how the
+    // caller iterates its source container.
+    let mut entries: Vec<(&'a str, String)> = attrs.into_iter().collect();
+    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    let mut merged: HashMap<String, String> = HashMap::with_capacity(entries.len());
+    for (key, value) in entries {
         let sanitized = sanitize_prom_label_key(key);
         // Skip keys that collide with separately-emitted scope/reserved
         // labels. Comparison is on the sanitized form to catch inputs like
@@ -3211,10 +3226,61 @@ mod tests {
         );
         // Keys are merged into a single sanitized entry.
         assert_eq!(merged.len(), 1);
-        // Values are joined in iteration order with `;`.
+        // Values are joined in lexicographical order of the original keys
+        // (`http.method` < `http_method` because `.` < `_`).
         assert_eq!(
             merged.get("http_method").map(String::as_str),
             Some("GET;POST")
+        );
+    }
+
+    #[test]
+    fn test_sanitize_and_merge_label_pairs_collision_is_lex_ordered_by_original_key() {
+        // Per OTel→Prometheus spec: "values MUST be concatenated together,
+        // separated by `;`, and ordered by the lexicographical order of the
+        // original keys." This must hold regardless of caller iteration
+        // order — including `HashMap::iter()`, which is unspecified.
+        //
+        // Three keys all sanitize to `service_name`. Lex order of the raw
+        // keys is: "service-name" < "service.name" < "service_name".
+        // Vary the input order to confirm the output is independent of it.
+        let cases = [
+            vec![
+                ("service.name", "dot".to_string()),
+                ("service_name", "underscore".to_string()),
+                ("service-name", "dash".to_string()),
+            ],
+            vec![
+                ("service_name", "underscore".to_string()),
+                ("service-name", "dash".to_string()),
+                ("service.name", "dot".to_string()),
+            ],
+            vec![
+                ("service-name", "dash".to_string()),
+                ("service.name", "dot".to_string()),
+                ("service_name", "underscore".to_string()),
+            ],
+        ];
+        for input in cases {
+            let merged = sanitize_and_merge_label_pairs(input, &[]);
+            assert_eq!(merged.len(), 1);
+            assert_eq!(
+                merged.get("service_name").map(String::as_str),
+                Some("dash;dot;underscore"),
+                "merge order must be lex-by-original-key, not caller order"
+            );
+        }
+
+        // HashMap input (genuinely unordered) must also produce the same
+        // deterministic output.
+        let mut hm = HashMap::new();
+        let _ = hm.insert("service.name", "dot".to_string());
+        let _ = hm.insert("service_name", "underscore".to_string());
+        let _ = hm.insert("service-name", "dash".to_string());
+        let merged = sanitize_and_merge_label_pairs(hm.iter().map(|(k, v)| (*k, v.clone())), &[]);
+        assert_eq!(
+            merged.get("service_name").map(String::as_str),
+            Some("dash;dot;underscore")
         );
     }
 
