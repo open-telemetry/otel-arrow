@@ -9,6 +9,7 @@ pub(crate) const VALUE_FIELD_NAME: &str = "value";
 
 pub(crate) const ENCODE_FUNC_NAME: &str = "encode";
 pub(crate) const FORMAT_DATETIME_FUNC_NAME: &str = "format_datetime";
+pub(crate) const LOG_FUNC_NAME: &str = "log10";
 pub(crate) const LTRIM_FUNC_NAME: &str = "ltrim";
 pub(crate) const REGEXP_SUBSTR_FUNC_NAME: &str = "regexp_substr";
 pub(crate) const RTRIM_FUNC_NAME: &str = "rtrim";

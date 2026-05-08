@@ -17,7 +17,7 @@ Kinds (for -k / --kind):
     pipeline   per-pipeline metrics (memory, CPU, uptime, context switches)
     tokio      per-pipeline Tokio runtime stats
     channel    inter-node channel sender/receiver counters
-    receiver   receiver component metrics (otap, syslog/cef, fake_data_gen, ...)
+    receiver   receiver component metrics (otap, syslog/cef, traffic_generator, ...)
     processor  processor component metrics (batch, retry, router, filter, ...)
     exporter   exporter component metrics (otap, parquet, geneva, ...)
 

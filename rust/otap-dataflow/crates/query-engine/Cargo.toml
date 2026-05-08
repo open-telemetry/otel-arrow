@@ -14,6 +14,7 @@ async-trait = { workspace = true }
 datafusion = { workspace = true, features = [
     "crypto_expressions",
     "datetime_expressions",
+    "math_expressions",
     "unicode_expressions",
 ] }
 futures-core = { workspace = true }
