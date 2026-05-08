@@ -30,15 +30,16 @@ controlled, reviewable, and accountable:
 
 ## Current Methods
 
-The project currently documents these AI-assisted development methods:
+Start with [AI-Assisted Component Development](ai-assisted-component-development.md)
+to choose the right approach.
 
-- [AI-Assisted Component Development](ai-assisted-component-development.md)
-  explains how to choose between the recommended approaches.
-  - [Spec-Constrained Oracle Reimplementation](spec-constrained-oracle-reimplementation.md)
-    applies when interoperability is the main risk and a reference
-    implementation acts as an executable oracle.
-  - [Reference-Informed OTAP-Native Capability Design](reference-informed-otap-native-capability-design.md)
-    applies when an existing implementation informs a better OTAP-native design.
+The two current methods are:
+
+- [Spec-Constrained Oracle Reimplementation](spec-constrained-oracle-reimplementation.md)
+  applies when interoperability is the main risk and a reference implementation
+  acts as an executable oracle.
+- [Reference-Informed OTAP-Native Capability Design](reference-informed-otap-native-capability-design.md)
+  applies when an existing implementation informs a better OTAP-native design.
 
 ## Guidelines in Development
 

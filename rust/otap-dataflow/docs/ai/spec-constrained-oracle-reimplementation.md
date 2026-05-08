@@ -88,6 +88,7 @@ Before implementing the core logic, define how the component fits into OTAP:
   shared libraries, and configuration conventions
 - live reconfiguration behavior and transition semantics
 - backpressure, retry, acknowledgement, and shutdown behavior, when relevant
+- security, authentication, and sensitive data handling, when relevant
 - configuration, failure semantics, and telemetry
 
 This prevents the Rust implementation from importing runtime assumptions from

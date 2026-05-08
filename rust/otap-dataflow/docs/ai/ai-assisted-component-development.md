@@ -89,8 +89,10 @@ Every AI-assisted component effort must remain controlled and reviewable:
 
 - define the declared scope and first useful end-to-end scenario
 - record the evidence used for design and validation
-- classify preserved, changed, unsupported, rejected, or divergent behavior
+- classify preserved, changed, unsupported, rejected, or intentionally divergent
+  behavior
 - make unsupported behavior and intentional divergences explicit
+- preserve human ownership of correctness, maintainability, and security
 - validate AI-generated conclusions with tests, fixtures, references, or
   documented OTAP decisions
 

@@ -83,8 +83,8 @@ Classify important findings before they become part of the Rust design:
 | Reject | Conflicts with OTAP design, reliability, safety, or scope. |
 | Investigate | Requires more evidence before release. |
 
-The classification records which reference behaviors are preserved, changed, or
-excluded, and why those decisions are intentional.
+The classification records the intended outcome for each relevant finding and
+why that decision is intentional.
 
 ## Design the OTAP-Native Architecture
 
