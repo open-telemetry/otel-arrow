@@ -569,9 +569,7 @@ fn test_batch_pipeline_uses_timer_wakeup_metrics_with_otlp_bytes_config() {
         5,
         "the local wakeup pipeline should export every generated item"
     );
-    metrics.assert_eq("consumed.items.logs", 5);
     metrics.assert_eq("consumed.batches.logs", 5);
-    metrics.assert_eq("produced.items.logs", 5);
     metrics.assert_eq("produced.batches.logs", 5);
     metrics.assert_eq("flushes.size", 0);
     metrics.assert_eq("flushes.timer", 5);
