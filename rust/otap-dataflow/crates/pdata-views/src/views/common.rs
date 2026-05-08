@@ -8,9 +8,38 @@
 //! an analogous proto message, but are available as common return types for other View trait
 //! implementations
 
+use std::borrow::Cow;
+
 /// All current implementations only use borrowed strings from the underlying data.
 /// If lossy UTF-8 support is needed in the future, this can be reverted to `Cow<'src, str>`.
 pub type Str<'src> = &'src [u8];
+
+/// Borrowed or owned scalar representation of an [`AnyValueView`].
+///
+/// This lets hot-path consumers fetch the type and value with one call. The default
+/// implementation may allocate for string and bytes values, while zero-copy view
+/// implementations can override it and return borrowed slices.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AnyValueScalar<'src> {
+    /// Empty/null value.
+    Empty,
+    /// UTF-8 string bytes.
+    String(Cow<'src, [u8]>),
+    /// Boolean value.
+    Bool(bool),
+    /// Signed 64-bit integer value.
+    Int64(i64),
+    /// Double-precision floating point value.
+    Double(f64),
+    /// Raw bytes value.
+    Bytes(Cow<'src, [u8]>),
+    /// Array value.
+    Array,
+    /// Key-value-list value.
+    KeyValueList,
+    /// The view reported a scalar type but could not return the matching value.
+    Invalid(ValueType),
+}
 
 /// View for AnyValue
 pub trait AnyValueView<'val> {
@@ -56,6 +85,42 @@ pub trait AnyValueView<'val> {
 
     /// Get the value as a list of kv pairs. Returns `None` if the value type is not `KeyValueList`
     fn as_kvlist(&self) -> Option<Self::KeyValueIter<'_>>;
+
+    /// Return this value as a scalar in a single call.
+    ///
+    /// Implementations backed by stable storage should override this and return borrowed
+    /// string/bytes slices. The default preserves existing behavior and returns owned
+    /// bytes for string and bytes values because the existing accessors only expose data
+    /// borrowed for the duration of `&self`.
+    fn scalar_value(&self) -> AnyValueScalar<'val> {
+        match self.value_type() {
+            ValueType::Empty => AnyValueScalar::Empty,
+            ValueType::String => self
+                .as_string()
+                .map_or(AnyValueScalar::Invalid(ValueType::String), |value| {
+                    AnyValueScalar::String(Cow::Owned(value.to_vec()))
+                }),
+            ValueType::Bool => self.as_bool().map_or(
+                AnyValueScalar::Invalid(ValueType::Bool),
+                AnyValueScalar::Bool,
+            ),
+            ValueType::Int64 => self.as_int64().map_or(
+                AnyValueScalar::Invalid(ValueType::Int64),
+                AnyValueScalar::Int64,
+            ),
+            ValueType::Double => self.as_double().map_or(
+                AnyValueScalar::Invalid(ValueType::Double),
+                AnyValueScalar::Double,
+            ),
+            ValueType::Array => AnyValueScalar::Array,
+            ValueType::KeyValueList => AnyValueScalar::KeyValueList,
+            ValueType::Bytes => self
+                .as_bytes()
+                .map_or(AnyValueScalar::Invalid(ValueType::Bytes), |value| {
+                    AnyValueScalar::Bytes(Cow::Owned(value.to_vec()))
+                }),
+        }
+    }
 
     /* ---------- helper ---------- */
     /// helper method to determine if the underlying value is a scalar.
@@ -108,6 +173,14 @@ pub trait AttributeView {
 
     /// access the value of the attribute. This will return `None` if the value is "empty"
     fn value(&self) -> Option<Self::Val<'_>>;
+
+    /// Access the key and scalar value in one call.
+    ///
+    /// Implementations that can parse both fields together should override this method.
+    /// The default preserves the existing accessor behavior.
+    fn key_scalar_value(&self) -> (Str<'_>, Option<AnyValueScalar<'_>>) {
+        (self.key(), self.value().map(|value| value.scalar_value()))
+    }
 }
 
 /// View for the instrumentation scope

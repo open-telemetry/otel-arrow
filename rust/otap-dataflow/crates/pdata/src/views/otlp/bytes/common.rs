@@ -4,6 +4,7 @@
 //! This module contains the implementation of the pdata View traits for serialized OTLP protobuf
 //! bytes for messages defined in common.proto
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 
@@ -21,7 +22,7 @@ use crate::views::otlp::bytes::decode::{
     read_varint, to_nonzero_range,
 };
 use otap_df_pdata_views::views::common::{
-    AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
+    AnyValueScalar, AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
 };
 
 /// Implementation of `AttributeView` backed by protobuf serialized `KeyValue` message
@@ -108,6 +109,44 @@ impl<'a> RawAnyValue<'a> {
             value_offset: Cell::new(None),
             variant: Cell::new(None),
         }
+    }
+}
+
+#[inline]
+fn raw_any_value_scalar(buf: &[u8]) -> AnyValueScalar<'_> {
+    let Some((tag, value_offset)) = read_varint(buf, 0) else {
+        return AnyValueScalar::Empty;
+    };
+
+    match tag >> 3 {
+        ANY_VALUE_STRING_VALUE => read_len_delim(buf, value_offset)
+            .map_or(AnyValueScalar::Invalid(ValueType::String), |(slice, _)| {
+                AnyValueScalar::String(Cow::Borrowed(slice))
+            }),
+        ANY_VALUE_BOOL_VALUE => read_varint(buf, value_offset)
+            .map_or(AnyValueScalar::Invalid(ValueType::Bool), |(value, _)| {
+                AnyValueScalar::Bool(value == 1)
+            }),
+        ANY_VALUE_INT_VALUE => read_varint(buf, value_offset)
+            .map_or(AnyValueScalar::Invalid(ValueType::Int64), |(value, _)| {
+                AnyValueScalar::Int64(value as i64)
+            }),
+        ANY_VALUE_DOUBLE_VALUE => read_fixed64(buf, value_offset)
+            .and_then(|(slice, _)| {
+                let bytes: [u8; 8] = slice.try_into().ok()?;
+                Some(f64::from_le_bytes(bytes))
+            })
+            .map_or(
+                AnyValueScalar::Invalid(ValueType::Double),
+                AnyValueScalar::Double,
+            ),
+        ANY_VALUE_ARRAY_VALUE => AnyValueScalar::Array,
+        ANY_VALUE_KVLIST_VALUE => AnyValueScalar::KeyValueList,
+        ANY_VALUE_BYTES_VALUE => read_len_delim(buf, value_offset)
+            .map_or(AnyValueScalar::Invalid(ValueType::Bytes), |(slice, _)| {
+                AnyValueScalar::Bytes(Cow::Borrowed(slice))
+            }),
+        _ => AnyValueScalar::Empty,
     }
 }
 
@@ -292,6 +331,35 @@ impl AttributeView for RawKeyValue<'_> {
 
         None
     }
+
+    #[inline]
+    fn key_scalar_value(
+        &self,
+    ) -> (
+        otap_df_pdata_views::views::common::Str<'_>,
+        Option<AnyValueScalar<'_>>,
+    ) {
+        loop {
+            if self.key_range.get().is_some() && self.value_range.get().is_some() {
+                break;
+            }
+            if self.pos.get() >= self.buf.len() {
+                break;
+            }
+
+            let pos = self.pos.get();
+            self.advance();
+            if self.pos.get() == pos {
+                break;
+            }
+        }
+
+        let key = from_option_nonzero_range_to_primitive(self.key_range.get())
+            .map_or(&[][..], |(start, end)| &self.buf[start..end]);
+        let value = from_option_nonzero_range_to_primitive(self.value_range.get())
+            .map(|(start, end)| raw_any_value_scalar(&self.buf[start..end]));
+        (key, value)
+    }
 }
 
 impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
@@ -451,6 +519,11 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
         } else {
             None
         }
+    }
+
+    #[inline]
+    fn scalar_value(&self) -> AnyValueScalar<'a> {
+        raw_any_value_scalar(self.buf)
     }
 }
 

@@ -29,4 +29,4 @@ pub mod otlp_grpc_exporter;
 pub mod otlp_http_exporter;
 
 /// STEF exporter.
-pub mod stef_exporter;
+pub mod stef;

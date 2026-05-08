@@ -10,9 +10,10 @@ use crate::proto::opentelemetry::common::v1::{
 
 use crate::views::otlp::proto::wrappers::{GenericObj, Wraps};
 use otap_df_pdata_views::views::common::{
-    AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType,
+    AnyValueScalar, AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType,
 };
 use otap_df_pdata_views::{SpanId, TraceId};
+use std::borrow::Cow;
 
 /* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
 
@@ -179,6 +180,24 @@ impl<'a> AnyValueView<'a> for ObjAny<'a> {
             None
         }
     }
+
+    #[inline]
+    fn scalar_value(&self) -> AnyValueScalar<'a> {
+        match self.inner.value.as_ref() {
+            Some(any_value::Value::StringValue(value)) => {
+                AnyValueScalar::String(Cow::Borrowed(value.as_bytes()))
+            }
+            Some(any_value::Value::BoolValue(value)) => AnyValueScalar::Bool(*value),
+            Some(any_value::Value::IntValue(value)) => AnyValueScalar::Int64(*value),
+            Some(any_value::Value::DoubleValue(value)) => AnyValueScalar::Double(*value),
+            Some(any_value::Value::BytesValue(value)) => {
+                AnyValueScalar::Bytes(Cow::Borrowed(value.as_slice()))
+            }
+            Some(any_value::Value::ArrayValue(_)) => AnyValueScalar::Array,
+            Some(any_value::Value::KvlistValue(_)) => AnyValueScalar::KeyValueList,
+            None => AnyValueScalar::Empty,
+        }
+    }
 }
 
 impl From<&any_value::Value> for ValueType {
@@ -209,6 +228,14 @@ impl AttributeView for ObjKeyValue<'_> {
     #[inline]
     fn value(&self) -> Option<Self::Val<'_>> {
         self.val.clone()
+    }
+
+    #[inline]
+    fn key_scalar_value(&self) -> (Str<'_>, Option<AnyValueScalar<'_>>) {
+        (
+            self.key.as_bytes(),
+            self.val.as_ref().map(AnyValueView::scalar_value),
+        )
     }
 }
 

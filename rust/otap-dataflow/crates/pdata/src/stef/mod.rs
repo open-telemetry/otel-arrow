@@ -33,13 +33,16 @@ use arrow::{
     error::ArrowError,
 };
 use otap_df_pdata_views::views::{
-    common::{AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType},
+    common::{
+        AnyValueScalar, AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType,
+    },
     metrics::{
         self as metrics_view, DataView, GaugeView, MetricView, MetricsView, NumberDataPointView,
         ResourceMetricsView, ScopeMetricsView, SumView,
     },
     resource::ResourceView,
 };
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
@@ -1373,10 +1376,12 @@ impl AttributesEncoder {
     where
         A: AttributeView,
     {
-        let key = std::str::from_utf8(attribute.key())
-            .map_err(|_| Error::InvalidUtf8("attribute.key"))?;
+        let (key, value) = attribute.key_scalar_value();
+        let key = std::str::from_utf8(key).map_err(|_| Error::InvalidUtf8("attribute.key"))?;
         self.key.encode(key);
-        let value = self.value.encode_view(attribute.value())?;
+        let value = self
+            .value
+            .encode_scalar(value.unwrap_or(AnyValueScalar::Empty))?;
         self.last.push(DirectAttribute {
             key: key.into(),
             value,
@@ -1539,49 +1544,18 @@ impl AttributesEncoder {
     }
 }
 
-fn direct_any_value_from_view<'v, V>(value: Option<V>) -> Result<DirectAnyValue, Error>
-where
-    V: AnyValueView<'v>,
-{
-    let Some(value) = value else {
-        return Ok(DirectAnyValue::Empty);
-    };
-    let value = match value.value_type() {
-        ValueType::Empty => DirectAnyValue::Empty,
-        ValueType::String => DirectAnyValue::String(
-            std::str::from_utf8(
-                value
-                    .as_string()
-                    .ok_or(Error::UnsupportedAttributeValue("string"))?,
-            )
-            .map_err(|_| Error::InvalidUtf8("attribute.value.string"))?
-            .into(),
-        ),
-        ValueType::Bool => DirectAnyValue::Bool(
-            value
-                .as_bool()
-                .ok_or(Error::UnsupportedAttributeValue("bool"))?,
-        ),
-        ValueType::Int64 => DirectAnyValue::Int(
-            value
-                .as_int64()
-                .ok_or(Error::UnsupportedAttributeValue("int"))?,
-        ),
-        ValueType::Double => DirectAnyValue::Double(
-            value
-                .as_double()
-                .ok_or(Error::UnsupportedAttributeValue("double"))?,
-        ),
-        ValueType::Array => return Err(Error::UnsupportedAttributeValue("array")),
-        ValueType::KeyValueList => return Err(Error::UnsupportedAttributeValue("kvlist")),
-        ValueType::Bytes => DirectAnyValue::Bytes(
-            value
-                .as_bytes()
-                .ok_or(Error::UnsupportedAttributeValue("bytes"))?
-                .to_vec(),
-        ),
-    };
-    Ok(value)
+#[inline]
+fn value_type_name(value_type: ValueType) -> &'static str {
+    match value_type {
+        ValueType::Empty => "empty",
+        ValueType::String => "string",
+        ValueType::Bool => "bool",
+        ValueType::Int64 => "int",
+        ValueType::Double => "double",
+        ValueType::Array => "array",
+        ValueType::KeyValueList => "kvlist",
+        ValueType::Bytes => "bytes",
+    }
 }
 
 fn direct_any_value_from_otap(anyval: &AnyValueArrays<'_>, row: usize) -> DirectAnyValue {
@@ -1708,6 +1682,7 @@ fn otap_attribute_value_type(anyval: &AnyValueArrays<'_>, row: usize) -> Attribu
     AttributeValueType::try_from(anyval.attr_type.value(row)).unwrap_or(AttributeValueType::Empty)
 }
 
+#[inline]
 fn direct_any_value_from_view_if_changed<'v, V>(
     value: Option<V>,
     last: &DirectAnyValue,
@@ -1725,11 +1700,11 @@ where
             let value = value
                 .as_string()
                 .ok_or(Error::UnsupportedAttributeValue("string"))?;
-            let value = std::str::from_utf8(value)
-                .map_err(|_| Error::InvalidUtf8("attribute.value.string"))?;
-            if matches!(last, DirectAnyValue::String(last) if last.as_ref() == value) {
+            if matches!(last, DirectAnyValue::String(last) if last.as_ref().as_bytes() == value) {
                 Ok(None)
             } else {
+                let value = std::str::from_utf8(value)
+                    .map_err(|_| Error::InvalidUtf8("attribute.value.string"))?;
                 Ok(Some(DirectAnyValue::String(value.into())))
             }
         }
@@ -1820,13 +1795,58 @@ impl AnyValueEncoder {
         Ok(())
     }
 
-    fn encode_view<'v, V>(&mut self, value: Option<V>) -> Result<DirectAnyValue, Error>
-    where
-        V: AnyValueView<'v>,
-    {
-        let value = direct_any_value_from_view(value)?;
-        self.encode(&value)?;
-        Ok(value)
+    fn encode_scalar(&mut self, value: AnyValueScalar<'_>) -> Result<DirectAnyValue, Error> {
+        match value {
+            AnyValueScalar::Empty => {
+                self.bits.write_bits(0, 4);
+                Ok(DirectAnyValue::Empty)
+            }
+            AnyValueScalar::String(value) => self.encode_scalar_string(value),
+            AnyValueScalar::Bool(value) => {
+                self.bits.write_bits(2, 4);
+                self.bool_.encode(value);
+                Ok(DirectAnyValue::Bool(value))
+            }
+            AnyValueScalar::Int64(value) => {
+                self.bits.write_bits(3, 4);
+                self.int64.encode(value);
+                Ok(DirectAnyValue::Int(value))
+            }
+            AnyValueScalar::Double(value) => {
+                self.bits.write_bits(4, 4);
+                self.float64.encode(value);
+                Ok(DirectAnyValue::Double(value))
+            }
+            AnyValueScalar::Bytes(value) => {
+                self.bits.write_bits(7, 4);
+                self.bytes.encode(value.as_ref());
+                Ok(DirectAnyValue::Bytes(value.into_owned()))
+            }
+            AnyValueScalar::Array => Err(Error::UnsupportedAttributeValue("array")),
+            AnyValueScalar::KeyValueList => Err(Error::UnsupportedAttributeValue("kvlist")),
+            AnyValueScalar::Invalid(value_type) => Err(Error::UnsupportedAttributeValue(
+                value_type_name(value_type),
+            )),
+        }
+    }
+
+    fn encode_scalar_string(&mut self, value: Cow<'_, [u8]>) -> Result<DirectAnyValue, Error> {
+        match value {
+            Cow::Borrowed(value) => {
+                let value = std::str::from_utf8(value)
+                    .map_err(|_| Error::InvalidUtf8("attribute.value.string"))?;
+                self.bits.write_bits(1, 4);
+                self.string.encode(value);
+                Ok(DirectAnyValue::String(value.into()))
+            }
+            Cow::Owned(value) => {
+                let value = String::from_utf8(value)
+                    .map_err(|_| Error::InvalidUtf8("attribute.value.string"))?;
+                self.bits.write_bits(1, 4);
+                self.string.encode(&value);
+                Ok(DirectAnyValue::String(Rc::<str>::from(value)))
+            }
+        }
     }
 
     fn encode_otap(
@@ -1901,16 +1921,23 @@ impl StringEncoder {
     }
 
     fn encode(&mut self, value: &str) {
+        if value.len() <= 1 {
+            self.encode_literal(value);
+            return;
+        }
+
         let mut dict = self.dict.0.borrow_mut();
         if let Some(ref_num) = dict.get(value) {
             self.bytes.write_varint(-(*ref_num as i64) - 1);
             return;
         }
-        if value.len() > 1 {
-            let ref_num = dict.len();
-            let _ = dict.insert(value.to_owned(), ref_num);
-        }
+        let ref_num = dict.len();
+        let _ = dict.insert(value.to_owned(), ref_num);
         drop(dict);
+        self.encode_literal(value);
+    }
+
+    fn encode_literal(&mut self, value: &str) {
         self.bytes.write_varint(value.len() as i64);
         self.bytes.write_bytes(value.as_bytes());
     }
@@ -4489,6 +4516,7 @@ mod tests {
     };
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::views::otlp::bytes::metrics::RawMetricsData;
+    use otap_df_pdata_views::views::common::AnyValueView;
     use prost::Message as ProstMessage;
 
     fn example_gauge_request() -> ExportMetricsServiceRequest {
