@@ -3,12 +3,12 @@ set -exu
 if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then
   RUST_TARGET=x86_64-unknown-linux-gnu
   if [ "${TARGETPLATFORM}" != "${BUILDPLATFORM}" ]; then
-    apt-get update && apt-get install -y gcc-x86-64-linux-gnu g++-x86-64-linux-gnu
+    apt-get update && apt-get install -y gcc-x86-64-linux-gnu
   fi
 elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then
   RUST_TARGET=aarch64-unknown-linux-gnu
   if [ "${TARGETPLATFORM}" != "${BUILDPLATFORM}" ]; then
-    apt-get update && apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+    apt-get update && apt-get install -y gcc-aarch64-linux-gnu
   fi
 else
   echo "Unsupported target platform: ${TARGETPLATFORM}"
