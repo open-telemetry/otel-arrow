@@ -13,6 +13,10 @@ Always inspect the full diff before evaluating a pull request. For GitHub PRs,
 use `gh pr diff <number>` or equivalent repository tooling; do not rely only on
 summaries, titles, or changed-file lists.
 
+This guideline is expected to evolve. Update it when recurring PR comments,
+issues, incidents, or maintainer feedback reveal review gaps that should become
+shared guidance.
+
 ## Review Posture
 
 Prioritize architectural integrity, performance characteristics, resource
@@ -91,6 +95,12 @@ event-driven non-blocking design, intentional work chunking, and predictable
 latency under load. Avoid excessive `yield_now()` in tight loops; cooperative
 yielding should be deliberate and tied to bounded progress.
 
+Require evidence when a change claims, risks, or depends on performance impact.
+Depending on the scope, this may be a benchmark, baseline comparison, complexity
+analysis, or a clear explanation of why the path is not performance-sensitive.
+Flag algorithmic complexity shifts, accidental loss of preallocation or
+zero-copy behavior, and changes that make future regressions harder to measure.
+
 ## Design and Serviceability
 
 Review whether the change keeps behavior easy to reason about under normal load
@@ -105,6 +115,14 @@ Check for:
 - useful telemetry, diagnostics, and controllable debug features
 - live reconfiguration and restart-free operation, when relevant
 - compatibility with OTLP, OTAP, and Collector integration expectations
+- clear operator-facing behavior for configuration, defaults, validation
+  errors, unsupported platforms, and documentation examples
+- stable telemetry contracts, including metric names, label cardinality,
+  deterministic label order, and explicit collision handling
+- intentional shutdown, drain, flush, cancellation, and pending-message behavior
+  for async tasks, streams, channels, and metric updates
+- reuse of existing engine, Query Engine, pdata view, decoder, validation, or
+  configuration abstractions before adding component-specific logic
 
 Complex abstractions are acceptable only when they make behavior more reliable,
 composable, or maintainable.
@@ -122,6 +140,22 @@ Review Rust correctness and safety through the lens of the OTAP runtime model:
 - long-running work observes cancellation and deadlines where shutdown or live
   reconfiguration can interrupt it
 
+Review semantic fidelity where data models, protocols, or query behavior are
+affected:
+
+- preserve exact OTLP, OTAP, OpenTelemetry, Prometheus, KQL, DataFusion, and
+  schema semantics where applicable
+- preserve required fields, invalid-payload handling, ack/nack behavior, and
+  backward compatibility unless a breaking change is explicit and justified
+- check empty, partial, duplicate, unsupported, and malformed inputs
+- make ordering, deduplication, type parity, and collision behavior
+  deterministic and tested
+
+Review test adequacy, not only test existence. Prefer direct tests at the
+affected layer, plus negative, edge-case, and regression tests when behavior
+changes. Round-trip or integration tests are useful evidence, but should not be
+the only proof when a narrower semantic contract can be tested directly.
+
 For unit tests, prefer a short function-level comment that states:
 
 - `Scenario:` the behavior or state transition being exercised
@@ -137,7 +171,18 @@ Security and privacy must be first-class review concerns:
 
 Check platform assumptions. New code should remain compatible with Linux and
 Windows, with reasonable macOS support, and with x86-64 and ARM unless a
-specific limitation is documented and justified.
+specific limitation is documented and justified. Platform-specific APIs,
+dependencies, clocks, time domains, filesystem assumptions, and target-gated
+code must be explicit.
+
+Check dependency and feature hygiene:
+
+- new dependencies should follow workspace conventions where applicable
+- optional functionality should not expand the default build without
+  justification
+- target-specific dependencies should be feature- or platform-gated
+- unreleased commit pins should be temporary, explained, and preferred only when
+  a release tag cannot satisfy the requirement
 
 ## Agent Reviewer Instructions
 
@@ -148,7 +193,7 @@ An agent reviewer should:
   paths are touched
 - evaluate only risks supported by the diff or repository context
 - focus findings on architecture, performance, bounded resources, backpressure,
-  correctness, security, and maintainability
+  correctness, semantic fidelity, test adequacy, security, and maintainability
 - avoid speculative or stylistic comments unless they affect system integrity
 - include concise file-specific findings, ordered by severity
 - state when no material findings are found and mention residual risk or tests
