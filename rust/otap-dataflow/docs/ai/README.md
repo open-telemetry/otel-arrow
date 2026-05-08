@@ -28,12 +28,17 @@ controlled, reviewable, and accountable:
 - Avoid exposing secrets, private data, or unsuitable third-party content.
 - Respect licensing, provenance, and attribution requirements.
 
-## Current Methods
+## Current Guidelines
 
 Start with [AI-Assisted Component Development](ai-assisted-component-development.md)
 to choose the right approach.
 
-The two current methods are:
+The current AI-assisted guidelines are:
+
+- [AI-Assisted Pull Request Review](ai-assisted-pr-review.md)
+  explains what matters when reviewing OTAP Dataflow Engine pull requests.
+
+The two current component-development methods are:
 
 - [Spec-Constrained Oracle Reimplementation](spec-constrained-oracle-reimplementation.md)
   applies when interoperability is the main risk and a reference implementation
@@ -45,7 +50,6 @@ The two current methods are:
 
 Additional guidelines are being developed for:
 
-- AI-assisted pull request review.
 - AI-assisted analysis of performance issues, bugs, and incompatibilities.
 - AI-assisted performance improvement in controlled environments with a clearly
   defined objective function.
