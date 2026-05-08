@@ -1,212 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778268677385,
+  "lastUpdate": 1778273928231,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "a.lockett@f5.com",
-            "name": "albertlockett",
-            "username": "albertlockett"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "9eb967e93c55492a6b5a7becfead40234b15a1ad",
-          "message": "Columnar Query Engine/OPL Parser support for `TextScalarExpression::Capture` (#2626)\n\n# Change Summary\n\n<!--\nReplace with a brief summary of the change in this PR\n-->\n\nPartially support `TextScalarExpression::Capture` in columnar query\nengine.\n\nhttps://github.com/open-telemetry/otel-arrow/blob/b5f0814099566c119a29aa8465a137e04adbeeb4/rust/experimental/query_engine/expressions/src/scalars/text_scalar_expression.rs#L7-L11\n\nThis currently only supports identifying the capture group by number or\nname.\n\nIn KQL, the `extract` function gets parsed into this type:\n```kql\nlogs | set severity_text = extract(\".*severity=(.*).*\", 1, event_name)\n```\n\nIn OPL, I added a function called `regexp_capture` that has similar\narguments:\n```kql\nlogs | set severity_text = regexp_capture(event_name, \".*severity=(.*).*\", 1)\n```\n\nNamed capture groups are also supported:\n```kql\nlogs | set attributes[\"x\"] = regexp_capture(attributes[\"y\"], \".*(?P<mygroup>.....+) \", \"mygroup\")\n```\n\nThe order of the arguments are slightly different from KQL's `extract`\nfunction. This follows the convention used in datafusion's [regexp\nscalar\nfunctions](https://datafusion.apache.org/user-guide/sql/scalar_functions.html#regular-expression-functions)\n(which are based on various functions available in SQL) where the first\nargument is the string and second is the pattern.\n\nUnderneath the hood, this is implemented using a ScalarUDF called\n`regexp_substr`, that accepts the same signature found in many SQL\ndialetcs (such as\nhttps://docs.snowflake.com/en/sql-reference/functions/regexp_substr),\nwith the additional capability that this can be called using a named\ngroup instead of a group number. This is probably overkill for just the\ncapture group extraction case, but I was thinking it was best to do\nsomething flexible/standard and that we could probably try donating this\nto upstream datafusion eventually.\n\nThis function is also available to be called in OPL/KQL directly:\n```kql\nlogs | extend attributes[\"s1\"] = regexp_substr(attributes[\"attr\"], \"hell.\")\n```\n\nThe `regex_substr` function is optimized for the case all the arguments\nare scalars, except for the first argument which is the source string\ncolumn. If any of the other arguments are not scalar, it casts the array\ninto either a string array or Int64 array. This keeps the imlementation\nstraight forward, and having a ton of edge cases for dict handling.\n\nThere's currently some funny logic in the handling for the optional\nparameters that I'm not proud of. Datafusion functions support optional\narguments (via multiple signatures), but our expression tree expects\nevery function to have a well-defined number of parameters, and the\ndefaults are actually supplied to the parser state. Currently KQL is\nusing these - if params are supplied in the query, it fills them in. OPL\nparser isn't doing this and just delegates to the function to figure it\nout internally. In the future, I'll probably try to fix up the\nexpressions we use for function signature in our expression tree to add\nthe concept of optional parameters.\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Closes #2578\n\n## How are these changes tested?\n\nunit\n\n## Are there any user-facing changes?\n\nYes - these functions are available for use in transform processor.\n\n <!-- If yes, provide further info below -->",
-          "timestamp": "2026-04-12T06:24:06Z",
-          "tree_id": "63b343585a6e2df6db0e7bfe1f3c4f239a103e65",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/9eb967e93c55492a6b5a7becfead40234b15a1ad"
-        },
-        "date": 1775978391925,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.1058624593434326,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.26439115540330116,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 13.206473214285714,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 13.4921875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.002164,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.2862749074479687,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.44828391314499183,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 18.037388392857142,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 18.14453125,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.002143,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.978016755016008,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 1.33191747761775,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 34.94921875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 35.05859375,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.002263,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.5219073599601445,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.7057981165849482,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 23.527901785714285,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 23.7421875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.002132,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.13586110055815342,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.25478389533525425,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 13.836495535714286,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 13.921875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.002256,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.17499397092151495,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.32755081379954837,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 15.214285714285714,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 15.25,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.002221,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -20398,6 +20194,210 @@ window.BENCHMARK_DATA = {
           {
             "name": "idle_test_duration",
             "value": 15.002147,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "pritishnahar@gmail.com",
+            "name": "Pritish Nahar",
+            "username": "pritishnahar95"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "721dff5d2d979d1d98d3bc333f8e47887a608fa3",
+          "message": "feat(admin): wire engine resource attributes into target_info (#2748) (#2907)\n\nfeat(admin): wire engine resource attributes into target_info (#2748)\n\nReplace the `HashMap::new()` placeholder in the controller with the\nengine's `telemetry.resource` map so `target_info` carries real resource\nmetadata.\n\nPush the typed `AttributeValue` enum down to `render_target_info`\ninstead of pre-flattening to strings at the API boundary.\nStringification now happens once at startup, in the only function that\nneeds the flat form, via a new `AttributeValue::to_string_value()` on\nthe config crate.\n\nConversion is round-trip lossless: scalars use Display (Ryu for f64),\narrays render as bare JSON arrays of the inner Vec (preserving element\ntype and order, avoiding the externally-tagged enum form).\n\nHot scrape path is unchanged: `target_info` is still pre-rendered once\nand cached as `Arc<str>`.\n\nAdds tests for scalar formatting, f64 bit-equal round-trip across edge\ncases (PI, 1e±300, EPSILON, -0.0), bare-JSON array encoding, and an\nend-to-end `render_target_info` test exercising every variant including\nescaped JSON arrays in Prometheus label values.\n\nCloses the `TODO(#2748)` for resource attribute wiring.\n\n# Change Summary\n\nThis is the **resource-attribute follow-up to #2748**, building on the\nmerged PR-1 (#2900 — name/unit suffix rules) and PR-2 (#2904 — scope\nlabel, `target_info` block, label-collision merging). PR-2 introduced\nthe `target_info` gauge but the controller was passing `HashMap::new()`\nwith a `TODO(#2748)` because the resource attributes had not yet been\nthreaded through. This PR closes that TODO.\n\nThe change has two parts:\n\n1. **Wiring (1 line of behavior change in the controller):** the admin\nserver is now spawned with\n`engine_config.engine.telemetry.resource.clone()` instead of the empty\nplaceholder, so any `engine.telemetry.resource` keys declared in YAML\nnow appear as `target_info` labels on every Prometheus scrape.\n\n2. **Type-correctness refactor at the admin API boundary:** previously,\n`pub async fn run(...)` accepted `HashMap<String, String>`, forcing\nevery caller to pre-flatten typed values. The signature now accepts\n`HashMap<String, AttributeValue>` (the same enum already defined in\n`otap_df_config::pipeline::telemetry`). Stringification is moved down\ninto `render_target_info` — the only function that actually needs the\nflat form. This eliminates a parallel string-only type at the boundary,\nmatches the pattern already used elsewhere in the codebase, and means\nfuture callers can pass typed values without first lossy-flattening\nthem.\n\nThe new helper `AttributeValue::to_string_value()` is the single source\nof truth for the typed → string conversion. It is round-trip lossless\nfor every variant:\n\n* `String` — cloned verbatim (no behavioral change vs. the prior code).\n* `Bool` — `\"true\"` / `\"false\"`.\n* `I64` — decimal `Display`.\n* `F64` — Rust's `Display`, which uses **Ryu** under the hood: the\nshortest decimal representation that round-trips back to a bit-equal\n`f64`. Verified by a dedicated test against `PI`, `1e±300`, `EPSILON`,\nand `-0.0`.\n* `Array` — encoded as a **bare JSON array** of the inner `Vec` (e.g.\n`[\"edge\",\"us-west\"]`, `[1,2,3]`, `[true,false]`). The inner `Vec` is\nserialized directly so the output is not the externally-tagged\n`{\"String\":[...]}` form that serializing the enum variant would yield.\nGeneric JSON tooling, OTel SDKs, and Prometheus consumers all parse the\nresult without special-casing.\n\nThe hot scrape path is unchanged: `render_target_info` is still called\nexactly once, at admin server startup, and the result is cached as\n`Arc<str>` on `AppState` and `push_str`'d on every scrape. No per-scrape\nallocation, no per-scrape conversion, no per-scrape locking.\n\n## What issue does this PR close?\n\n* Closes #2748 \n\n## How are these changes tested?\n\n* New unit tests on `AttributeValue::to_string_value()` in\n`otap-df-config`.\n* New end-to-end test on the renderer in `otap-df-admin`\n  (`test_format_prometheus_text_e2e_otel_compliance` extension).\n* New regression test for collision-merge ordering in `otap-df-admin`\n\n(`test_sanitize_and_merge_label_pairs_collision_order_is_lexicographic`),\n  covering multiple `Vec` permutations and a `HashMap` input to verify\n  the lex-by-original-key ordering required by the OTel→Prometheus spec.\n* Comment update on existing\n`test_sanitize_and_merge_label_pairs_collisions_use_semicolon`.\n\n* Full results:\n  * `cargo test -p otap-df-admin --lib` → 49 passed (47 prior + 2 new).\n  * `cargo test -p otap-df-config --lib` → all green, 3 new tests added.\n* `cargo clippy -p otap-df-admin --all-targets --no-deps -- -D warnings`\n→ clean.\n  * `cargo build -p otap-df-{admin,controller,config}` → clean.\n## Are there any user-facing changes?\n\nYes — but additive only. Resource attributes declared under\n`engine.telemetry.resource` in the YAML config now flow into the\n`target_info` gauge labels at `/metrics`. Example:\n\n```yaml\nengine:\n  telemetry:\n    resource:\n      service.name: \"edge-collector\"\n      service.instance.port: 4317\n      deployment.canary: true\n      service.tags: [\"edge\", \"us-west\"]\n```\n\n…now produces (label order is unspecified):\n\n```\n# HELP target_info Target metadata\n# TYPE target_info gauge\ntarget_info{service_name=\"edge-collector\",service_instance_port=\"4317\",deployment_canary=\"true\",service_tags=\"[\\\"edge\\\",\\\"us-west\\\"]\"} 1\n```\n\nPreviously, the `target_info` block was always empty, so any consumer\nthat was relying on its emptiness will see real labels for the first\ntime. No config schema change — the `engine.telemetry.resource` field\nalready existed and was already being consumed by the OTel SDK metrics\npath; this PR just stops dropping it on the Prometheus path.",
+          "timestamp": "2026-05-08T18:54:36Z",
+          "tree_id": "68dd5f1b48e2ec936d9e4768afd2bdaf8e126d05",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/721dff5d2d979d1d98d3bc333f8e47887a608fa3"
+        },
+        "date": 1778273927739,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.18423146044472127,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.3572046692607004,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 12.5859375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 12.8359375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002075,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.693626090956521,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.8676784185539731,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 18.517299107142858,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 18.64453125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002492,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 2.433162552088475,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 2.6248769853628153,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 36.413504464285715,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 36.58984375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.01787,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 1.0546390651491797,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 1.4436861768368618,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 23.58984375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 23.7578125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002154,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.25283603085639567,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.444368335019849,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 14.615513392857142,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 14.74609375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002116,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.37470217931237776,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.5569724342002803,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 16.111607142857142,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 16.28125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002139,
             "unit": "seconds",
             "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
           }
