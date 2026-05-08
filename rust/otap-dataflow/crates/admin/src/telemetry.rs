@@ -1321,6 +1321,16 @@ fn sanitize_prom_metric_name(s: &str) -> String {
             prev_underscore = false;
         }
     }
+    // Strip a trailing underscore so callers that append unit / `_total`
+    // suffixes don't produce double underscores (e.g. `foo.` → `foo_` →
+    // `foo__bytes`). If stripping leaves an empty string, fall back to
+    // the placeholder name used for fully-invalid inputs.
+    if collapsed.ends_with('_') {
+        let _ = collapsed.pop();
+    }
+    if collapsed.is_empty() {
+        return "metric".to_string();
+    }
     collapsed
 }
 
@@ -3104,6 +3114,29 @@ mod tests {
     #[test]
     fn test_sanitize_prom_metric_name_collapses_underscores() {
         assert_eq!(sanitize_prom_metric_name("foo__bar___baz"), "foo_bar_baz");
+    }
+
+    #[test]
+    fn test_sanitize_prom_metric_name_strips_trailing_underscore() {
+        // A trailing non-alphanumeric character (e.g. `.`, `-`) sanitizes to
+        // `_`. If left in place, downstream callers that append `_<unit>` or
+        // `_total` would produce double underscores (e.g.
+        // `foo.` → `foo_` → `foo__bytes`). `sanitize_prom_metric_name` strips
+        // the trailing `_` so suffix-appending callers don't have to.
+        assert_eq!(sanitize_prom_metric_name("foo."), "foo");
+        assert_eq!(sanitize_prom_metric_name("foo___"), "foo");
+        assert_eq!(sanitize_prom_metric_name("req.count."), "req_count");
+        // After stripping, the unit suffix joins cleanly with a single `_`.
+        assert_eq!(
+            build_prom_metric_name("foo.", "By", Instrument::Gauge),
+            "foo_bytes"
+        );
+        assert_eq!(
+            build_prom_metric_name("req.count.", "By", Instrument::Counter),
+            "req_count_bytes_total"
+        );
+        // All-invalid input still falls back to the placeholder.
+        assert_eq!(sanitize_prom_metric_name("..."), "metric");
     }
 
     // ---------------------------------------------------------------------
