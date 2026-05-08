@@ -18,3 +18,4 @@ variables:
   signal: logs
   loadgen_max_batch_size: 1000
   compression_method: zstd
+  wait_for_result: true
