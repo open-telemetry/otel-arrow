@@ -12,7 +12,7 @@
 use otap_df_config::tls::TlsServerConfig;
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::compression::CompressionMethod;
-use otap_df_otap::memory_pressure_layer::{MemoryPressureLayer, MemoryPressureRejectionMetrics};
+use otap_df_otap::memory_pressure_layer::{MemoryPressureLayer, ReceiverRejectionMetrics};
 use otap_df_otap::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
 use otap_df_otap::otap_grpc::otlp::server::{RouteResponse, SharedState};
 use otap_df_otap::otap_grpc::{
@@ -44,9 +44,11 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
-use serde::Deserialize;
+use serde::de::Error as SerdeError;
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::ops::Add;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -74,6 +76,13 @@ pub struct Config {
     #[serde(default = "default_max_concurrent_requests")]
     max_concurrent_requests: usize,
 
+    /// Maximum number of concurrent wait-for-result requests admitted from one OTAP stream. Clamped to `max_concurrent_requests` at runtime.
+    #[serde(
+        default = "default_max_concurrent_requests_per_stream",
+        deserialize_with = "deserialize_positive_max_concurrent_requests_per_stream"
+    )]
+    max_concurrent_requests_per_stream: NonZeroUsize,
+
     /// Whether to wait for the result (default: true)
     ///
     /// When enabled, the receiver will not send a response until the
@@ -98,6 +107,31 @@ pub struct Config {
 
 const fn default_max_concurrent_requests() -> usize {
     1000
+}
+
+fn default_max_concurrent_requests_per_stream() -> NonZeroUsize {
+    NonZeroUsize::new(16).expect("default per-stream concurrency must be non-zero")
+}
+
+fn deserialize_positive_usize<'de, D>(
+    deserializer: D,
+    field_name: &str,
+) -> Result<NonZeroUsize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = usize::deserialize(deserializer)?;
+    NonZeroUsize::new(value)
+        .ok_or_else(|| D::Error::custom(format!("{field_name} must be greater than 0")))
+}
+
+fn deserialize_positive_max_concurrent_requests_per_stream<'de, D>(
+    deserializer: D,
+) -> Result<NonZeroUsize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_positive_usize(deserializer, "max_concurrent_requests_per_stream")
 }
 
 const fn default_wait_for_result() -> bool {
@@ -263,9 +297,13 @@ impl SharedOtapMemoryPressureMetrics {
     }
 }
 
-impl MemoryPressureRejectionMetrics for SharedOtapMemoryPressureMetrics {
-    fn record_memory_pressure_rejection(&self) {
+impl ReceiverRejectionMetrics for SharedOtapMemoryPressureMetrics {
+    fn record_rejection(&self) {
         let _ = self.rejected_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_memory_pressure_rejection(&self) {
+        self.record_rejection();
         let _ = self.refused_memory_pressure.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -319,9 +357,13 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let settings = Settings {
             response_stream_channel_size: self.config.response_stream_channel_size,
             max_concurrent_requests: self.config.max_concurrent_requests,
+            max_concurrent_requests_per_stream: self
+                .config
+                .max_concurrent_requests_per_stream
+                .get(),
             wait_for_result: self.config.wait_for_result,
             admission_state: self.admission_state.clone(),
-            memory_pressure_rejection_metrics: Some(self.memory_pressure_metrics.clone()),
+            receiver_rejection_metrics: Some(self.memory_pressure_metrics.clone()),
         };
 
         //create services for the grpc server and clone the effect handler to pass message
@@ -575,7 +617,7 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otap::memory_pressure_layer::MemoryPressureRejectionMetrics;
+    use otap_df_otap::memory_pressure_layer::ReceiverRejectionMetrics;
     use otap_df_otap::otap_mock::create_otap_batch;
     use otap_df_otap::pdata::OtapPdata;
     use otap_df_otap::testing::{next_ack, next_nack};
@@ -1077,6 +1119,7 @@ mod tests {
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4317");
         assert_eq!(receiver.config.response_stream_channel_size, 100);
         assert_eq!(receiver.config.max_concurrent_requests, 5000);
+        assert_eq!(receiver.config.max_concurrent_requests_per_stream.get(), 16);
         assert!(!receiver.config.wait_for_result);
         assert!(receiver.config.compression_method.is_none());
         assert!(receiver.config.timeout.is_none());
@@ -1090,6 +1133,7 @@ mod tests {
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4318");
         assert_eq!(receiver.config.response_stream_channel_size, 200);
         assert_eq!(receiver.config.max_concurrent_requests, 1000);
+        assert_eq!(receiver.config.max_concurrent_requests_per_stream.get(), 16);
         assert!(!receiver.config.wait_for_result);
         assert!(receiver.config.compression_method.is_none());
         assert!(receiver.config.timeout.is_none());
@@ -1100,6 +1144,7 @@ mod tests {
             "response_stream_channel_size": 150,
             "compression_method": "gzip",
             "max_concurrent_requests": 2500,
+            "max_concurrent_requests_per_stream": 32,
             "wait_for_result": true,
             "timeout": "30s"
         });
@@ -1107,6 +1152,7 @@ mod tests {
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4319");
         assert_eq!(receiver.config.response_stream_channel_size, 150);
         assert_eq!(receiver.config.max_concurrent_requests, 2500);
+        assert_eq!(receiver.config.max_concurrent_requests_per_stream.get(), 32);
         assert!(receiver.config.wait_for_result);
         assert!(matches!(
             receiver.config.compression_method,
@@ -1137,7 +1183,8 @@ mod tests {
             "response_stream_channel_size": 75,
             "compression_method": "deflate"
         });
-        let receiver = OTAPReceiver::from_config(pipeline_ctx, &config_with_deflate).unwrap();
+        let receiver =
+            OTAPReceiver::from_config(pipeline_ctx.clone(), &config_with_deflate).unwrap();
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4321");
         assert_eq!(receiver.config.response_stream_channel_size, 75);
         assert!(matches!(
@@ -1145,10 +1192,24 @@ mod tests {
             Some(CompressionMethod::Deflate)
         ));
         assert!(receiver.config.timeout.is_none());
+
+        let config_with_zero_per_stream_limit = json!({
+            "listening_addr": "127.0.0.1:4322",
+            "response_stream_channel_size": 75,
+            "max_concurrent_requests_per_stream": 0
+        });
+        let err = match OTAPReceiver::from_config(pipeline_ctx, &config_with_zero_per_stream_limit)
+        {
+            Ok(_) => panic!("zero per-stream in-flight limit should be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            format!("{err}").contains("max_concurrent_requests_per_stream must be greater than 0")
+        );
     }
 
     #[test]
-    fn shared_memory_pressure_metrics_flush_into_reported_metric_set() {
+    fn shared_rejection_metrics_flush_into_reported_metric_set() {
         use serde_json::json;
 
         let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
@@ -1163,9 +1224,7 @@ mod tests {
         });
         let mut receiver = OTAPReceiver::from_config(pipeline_ctx, &config).unwrap();
 
-        receiver
-            .memory_pressure_metrics
-            .record_memory_pressure_rejection();
+        receiver.memory_pressure_metrics.record_rejection();
         receiver
             .memory_pressure_metrics
             .record_memory_pressure_rejection();
@@ -1173,7 +1232,7 @@ mod tests {
         receiver.flush_memory_pressure_metrics();
 
         assert_eq!(receiver.metrics.rejected_requests.get(), 2);
-        assert_eq!(receiver.metrics.refused_memory_pressure.get(), 2);
+        assert_eq!(receiver.metrics.refused_memory_pressure.get(), 1);
         assert_eq!(
             receiver
                 .memory_pressure_metrics
