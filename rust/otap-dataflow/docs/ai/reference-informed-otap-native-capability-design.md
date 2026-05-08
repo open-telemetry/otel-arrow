@@ -60,7 +60,8 @@ Record the evidence used for design decisions:
 - batching, retry, queueing, shutdown, and error handling behavior
 - telemetry, tests, examples, and known edge cases
 - community issues, pull requests, discussions, operational feedback, and
-  future plans that are specified or clearly accepted
+  documented future direction from specifications, accepted design notes,
+  roadmaps, or maintainer-approved issues
 
 Community feedback and future direction are especially important for this
 approach because the best OTAP design may fix known usability, reliability, or
@@ -101,6 +102,7 @@ The design should cover:
 - fit with the thread-per-core, share-nothing execution model
 - live reconfiguration behavior and transition semantics
 - backpressure, retry, acknowledgement, shutdown, and failure behavior
+- security, authentication, and sensitive data handling, when relevant
 - telemetry and diagnostics
 
 The final architecture should be justified by user needs and OTAP constraints,
@@ -128,9 +130,9 @@ the reference implementation.
 
 The first validation target should be the first useful end-to-end scenario.
 Additional coverage should focus on configuration validation, representative
-input/output data, pipeline integration, failure handling, unsupported
-features, known community-reported edge cases, and regression tests for
-discovered problems.
+input/output data, pipeline integration, backpressure, retry, cancellation and
+shutdown, live reconfiguration when relevant, unsupported features, known
+community-reported edge cases, and regression tests for discovered problems.
 
 Robustness validation should show that the component avoids panics, silent data
 corruption, uncontrolled memory growth, unbounded queues, retry storms, hangs
@@ -166,7 +168,7 @@ example `<component-module>/DEVELOPMENT.md`.
 The note should cover:
 
 - capability scope and primary user scenarios
-- reference implementation and feedback reviewed
+- reference implementation, feedback, and future direction reviewed
 - important finding classifications
 - OTAP architecture and component-boundary decisions
 - user-facing contract and intentional behavior changes
@@ -181,10 +183,12 @@ without duplicating the implementation or test suite.
 For the declared scope, the implementation is ready when:
 
 - the user capability and first useful scenario are clear
-- reference behavior and relevant feedback have been analyzed
+- reference behavior, relevant feedback, and documented future direction have
+  been analyzed
 - important findings have been classified
 - OTAP component boundaries and composition choices are justified
-- preserved, changed, unsupported, and rejected behavior are intentional
+- preserved, improved, simplified, decomposed, composed, avoided, unsupported,
+  and rejected behavior are intentional
 - the user-facing contract is documented
 - scenario tests cover the main user paths and failure modes
 - the OTAP integration contract is defined, including runtime behavior, live
