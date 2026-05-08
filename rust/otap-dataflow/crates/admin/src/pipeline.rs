@@ -512,6 +512,7 @@ mod tests {
             controller,
             log_tap: None,
             memory_pressure_state: MemoryPressureState::default(),
+            target_info: Arc::from(""),
         }
     }
 
