@@ -1686,7 +1686,7 @@ where
     // always `"a;b"` (lex-ordered by raw key), independent of how the
     // caller iterates its source container.
     let mut entries: Vec<(&'a str, String)> = attrs.into_iter().collect();
-    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+    entries.sort_by_key(|(k, _)| *k);
 
     let mut merged: HashMap<String, String> = HashMap::with_capacity(entries.len());
     for (key, value) in entries {
