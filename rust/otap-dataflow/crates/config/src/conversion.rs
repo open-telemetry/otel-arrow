@@ -4,11 +4,13 @@
 //! Options for protocol conversion.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroUsize;
 
 /// Options for protocol conversion.
-///
-/// Currently empty; intended as a placeholder for future per-conversion
-/// configuration (e.g., size limits) to be threaded through pipeline config.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
-pub struct ConversionOptions {}
+pub struct ConversionOptions {
+    /// default applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otlp_size_limit: Option<NonZeroUsize>,
+}
