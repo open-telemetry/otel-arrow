@@ -19,6 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use otap_df_admin_types::telemetry as api;
+use otap_df_config::pipeline::telemetry::AttributeValue as ResourceAttributeValue;
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, MetricsDescriptor, MetricsField};
 use otap_df_telemetry::event::LogEvent;
@@ -844,7 +845,12 @@ fn emit_sample_line(
 /// empty (per OTel→Prometheus spec, `target_info` is only emitted when there
 /// is metadata to expose). Intended to be called once at server startup; the
 /// resulting string is then prepended verbatim to every Prometheus scrape.
-pub(crate) fn render_target_info(resource_attributes: &HashMap<String, String>) -> String {
+///
+/// Accepts `AttributeValue` (the same type used in the engine telemetry
+/// config) so callers do not need to pre-flatten typed values to strings.
+pub(crate) fn render_target_info(
+    resource_attributes: &HashMap<String, ResourceAttributeValue>,
+) -> String {
     if resource_attributes.is_empty() {
         return String::new();
     }
@@ -854,7 +860,7 @@ pub(crate) fn render_target_info(resource_attributes: &HashMap<String, String>) 
     let merged = sanitize_and_merge_label_pairs(
         resource_attributes
             .iter()
-            .map(|(k, v)| (k.as_str(), v.clone())),
+            .map(|(k, v)| (k.as_str(), v.to_string_value())),
         // No reserved keys: `target_info` is a separate metric line and
         // does not carry `otel_scope_*` labels, so no collision is possible.
         &[],
@@ -3361,6 +3367,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_render_target_info_typed_resource_attributes() {
+        // Verifies the typed `AttributeValue` path: numerics, booleans,
+        // and arrays are rendered through `to_string_value()` (Display
+        // for scalars, bare JSON for arrays) into Prometheus label values.
+        let mut attrs: HashMap<String, ResourceAttributeValue> = HashMap::new();
+        let _ = attrs.insert(
+            "service.name".into(),
+            ResourceAttributeValue::String("svc".into()),
+        );
+        let _ = attrs.insert(
+            "service.instance.port".into(),
+            ResourceAttributeValue::I64(4317),
+        );
+        let _ = attrs.insert(
+            "deployment.staging".into(),
+            ResourceAttributeValue::Bool(true),
+        );
+        let _ = attrs.insert(
+            "service.tags".into(),
+            ResourceAttributeValue::Array(
+                otap_df_config::pipeline::telemetry::AttributeValueArray::String(vec![
+                    "edge".into(),
+                    "us-west".into(),
+                ]),
+            ),
+        );
+
+        let out = render_target_info(&attrs);
+        assert!(out.contains("# HELP target_info Target metadata"));
+        assert!(out.contains("# TYPE target_info gauge"));
+        assert!(
+            out.contains(r#"service_name="svc""#),
+            "missing service_name. Output:\n{out}"
+        );
+        assert!(
+            out.contains(r#"service_instance_port="4317""#),
+            "i64 should render as decimal. Output:\n{out}"
+        );
+        assert!(
+            out.contains(r#"deployment_staging="true""#),
+            "bool should render as `true`/`false`. Output:\n{out}"
+        );
+        // JSON array escaping: the inner `"` must be escaped per Prometheus
+        // label-value rules so the whole value parses as a single token.
+        assert!(
+            out.contains(r#"service_tags="[\"edge\",\"us-west\"]""#),
+            "array should render as bare JSON with escaped quotes. Output:\n{out}"
+        );
+    }
+
     /// Full integration test: registers metrics, accumulates values, then validates
     /// the Prometheus text output follows OTel OTLP-to-Prometheus translation rules.
     #[test]
@@ -3384,8 +3441,14 @@ mod tests {
 
         // Format with resource attributes for target_info
         let mut resource_attrs = HashMap::new();
-        let _ = resource_attrs.insert("service.name".to_string(), "my-service".to_string());
-        let _ = resource_attrs.insert("service.instance.id".to_string(), "host1:8080".to_string());
+        let _ = resource_attrs.insert(
+            "service.name".to_string(),
+            ResourceAttributeValue::String("my-service".to_string()),
+        );
+        let _ = resource_attrs.insert(
+            "service.instance.id".to_string(),
+            ResourceAttributeValue::String("host1:8080".to_string()),
+        );
 
         let target_info = render_target_info(&resource_attrs);
         let output = format_prometheus_text(&registry, false, Some(1000), &target_info);

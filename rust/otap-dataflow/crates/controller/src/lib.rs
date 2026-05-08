@@ -1526,10 +1526,7 @@ impl<
                     telemetry_registry,
                     memory_pressure_state,
                     log_tap_handle,
-                    // TODO(#2748): wire actual resource attributes once the
-                    // controller exposes them. Empty map produces an empty
-                    // `target_info` block, matching pre-#2748 behavior.
-                    HashMap::new(),
+                    engine_config.engine.telemetry.resource.clone(),
                     cancellation_token,
                 )
             },
