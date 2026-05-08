@@ -37,6 +37,27 @@ Check that changes preserve the thread-per-core, share-nothing design:
   atomics, shared async runtimes, or cross-thread wakeups
 - no coordination pattern that centralizes work or breaks locality
 - prefer `!Send` futures unless `Send` is strictly required
+- prefer pipeline-local `spawn_local` / `LocalSet` work; require justification
+  for `tokio::spawn`, `Send` bounds, `Arc`, atomics, or cross-thread task
+  movement
+
+Check that single-threaded async runtime responsiveness is preserved. Each
+pipeline instance runs on a single-threaded async runtime, so blocking or
+monopolizing that thread can stall data processing, backpressure, shutdown,
+live reconfiguration, telemetry, and ack/nack progress.
+
+Flag runtime-path work that can block or monopolize the core:
+
+- synchronous filesystem, I/O, networking, sleep, process execution, DNS,
+  compression, serialization, crypto, or native library calls
+- blocking waits on channels, mutexes, condition variables, or external
+  processes
+- long CPU sections over records, batches, encoders, decoders, aggregations,
+  sorting, or flushing without bounded work units or cooperative await points
+
+`spawn_blocking` is not automatically acceptable. Blocking offload must be
+bounded, cancel-aware, backpressure-integrated, observable, and justified
+because it can break locality or create hidden queues.
 
 Check that resource usage is bounded:
 
@@ -63,9 +84,12 @@ On hot paths, call out unnecessary:
 - branching, indirection, dynamic dispatch, or logging
 - locks, cross-thread wakeups, task scheduling, or system calls
 - materialization that could remain passthrough or zero-copy
+- long non-yielding loops or oversized batches that delay other local tasks
 
 Prefer localized data structures, CPU locality, buffer reuse, preallocation,
-event-driven non-blocking design, and predictable latency under load.
+event-driven non-blocking design, intentional work chunking, and predictable
+latency under load. Avoid excessive `yield_now()` in tight loops; cooperative
+yielding should be deliberate and tied to bounded progress.
 
 ## Design and Serviceability
 
@@ -93,6 +117,16 @@ Review Rust correctness and safety through the lens of the OTAP runtime model:
 - idiomatic Rust without sacrificing hot-path performance
 - no implicit behavior that hides failure, retries, or data loss
 - justified and reviewed `unsafe` blocks
+- no locks, mutable borrows, permits, backpressure tokens, or large buffers held
+  longer than necessary across `.await`
+- long-running work observes cancellation and deadlines where shutdown or live
+  reconfiguration can interrupt it
+
+For unit tests, prefer a short function-level comment that states:
+
+- `Scenario:` the behavior or state transition being exercised
+- `Guarantees:` the invariant, contract, or regression protection the test
+  provides
 
 Security and privacy must be first-class review concerns:
 
@@ -110,6 +144,8 @@ specific limitation is documented and justified.
 An agent reviewer should:
 
 - inspect the complete PR diff before forming conclusions
+- use `./scripts/check-async-blocking.sh` as a review aid when async/runtime
+  paths are touched
 - evaluate only risks supported by the diff or repository context
 - focus findings on architecture, performance, bounded resources, backpressure,
   correctness, security, and maintainability
