@@ -128,7 +128,13 @@ pub struct HostMetricsReceiver {
 /// Declares the host metrics receiver as a local receiver factory.
 pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: HOST_METRICS_RECEIVER_URN,
-    create: create_host_metrics_receiver,
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             receiver_config: &ReceiverConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+        create_host_metrics_receiver(pipeline, node, node_config, receiver_config)
+    },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: validate_host_metrics_config,
 };
