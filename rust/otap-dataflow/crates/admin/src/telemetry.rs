@@ -855,6 +855,9 @@ pub(crate) fn render_target_info(resource_attributes: &HashMap<String, String>) 
         resource_attributes
             .iter()
             .map(|(k, v)| (k.as_str(), v.clone())),
+        // No reserved keys: `target_info` is a separate metric line and
+        // does not carry `otel_scope_*` labels, so no collision is possible.
+        &[],
     );
     let mut labels = String::new();
     for (key, value) in &merged {
@@ -901,11 +904,14 @@ fn agg_prometheus_text(
         }
         // Merge values for keys that collide after sanitization (per
         // OTel→Prometheus spec). Emission order is unspecified — Prometheus
-        // treats labels as an unordered set.
+        // treats labels as an unordered set. Drop attribute keys that
+        // sanitize to the reserved `otel_scope_*` names already emitted
+        // above to avoid duplicate-label rejection by Prometheus.
         let merged = sanitize_and_merge_label_pairs(
             g.attributes
                 .iter()
                 .map(|(k, v)| (k.as_str(), v.to_string_value())),
+            RESERVED_SCOPE_LABEL_KEYS,
         );
         for (k, v) in &merged {
             if !base_labels.is_empty() {
@@ -1198,11 +1204,14 @@ fn format_prometheus_text(
             );
         }
         // Merge values for keys that collide after sanitization (per
-        // OTel→Prometheus spec). Emission order is unspecified.
+        // OTel→Prometheus spec). Emission order is unspecified. Drop
+        // attribute keys that sanitize to the reserved `otel_scope_*`
+        // names already emitted above.
         let merged = sanitize_and_merge_label_pairs(
             attributes
                 .iter_attributes()
                 .map(|(k, v)| (k, v.to_string_value())),
+            RESERVED_SCOPE_LABEL_KEYS,
         );
         for (key, value) in &merged {
             if !base_labels.is_empty() {
@@ -1640,15 +1649,33 @@ fn escape_prom_help(s: &str) -> String {
 /// Sanitizes label keys and merges values that collide after sanitization
 /// into a single entry separated by `;`, per the OTel→Prometheus spec.
 ///
+/// `reserved_keys` lists already-emitted labels (post-sanitization) that
+/// must not appear in the merged map. Per the spec, the scope-derived
+/// `otel_scope_name` / `otel_scope_version` labels are emitted separately
+/// from per-metric attributes; if a metric attribute key sanitizes to one
+/// of those reserved names, the conflicting attribute is dropped (Prometheus
+/// rejects duplicate label names on a single sample). Pass `&[]` when no
+/// reservation applies (e.g. when rendering `target_info` from resource
+/// attributes).
+///
 /// Iteration order over the returned map is not specified — Prometheus
 /// treats labels as an unordered set.
-fn sanitize_and_merge_label_pairs<'a, I>(attrs: I) -> HashMap<String, String>
+fn sanitize_and_merge_label_pairs<'a, I>(
+    attrs: I,
+    reserved_keys: &[&str],
+) -> HashMap<String, String>
 where
     I: IntoIterator<Item = (&'a str, String)>,
 {
     let mut merged: HashMap<String, String> = HashMap::new();
     for (key, value) in attrs {
         let sanitized = sanitize_prom_label_key(key);
+        // Skip keys that collide with separately-emitted scope/reserved
+        // labels. Comparison is on the sanitized form to catch inputs like
+        // `otel.scope.name` that map to the reserved name.
+        if reserved_keys.contains(&sanitized.as_str()) {
+            continue;
+        }
         let _ = merged
             .entry(sanitized)
             .and_modify(|existing| {
@@ -1659,6 +1686,17 @@ where
     }
     merged
 }
+
+/// Reserved Prometheus label keys for OTel scope identity. These are emitted
+/// separately from per-metric attributes; per-metric attributes whose keys
+/// sanitize to one of these names are dropped to avoid duplicate-label
+/// scrape errors.
+///
+/// `otel_scope_version` is intentionally omitted: the current
+/// `MetricsDescriptor` does not carry a version, so we never emit
+/// `otel_scope_version` ourselves and a user attribute with that name is
+/// not a collision. Add it here when version emission is implemented.
+const RESERVED_SCOPE_LABEL_KEYS: &[&str] = &["otel_scope_name"];
 
 // ---------------------------------------------------------------------------
 // WebSocket live log stream  (/api/v1/telemetry/logs/stream)
@@ -3158,10 +3196,13 @@ mod tests {
     fn test_sanitize_and_merge_label_pairs_collisions_use_semicolon() {
         // Per OTel→Prometheus spec: when two original keys collide after
         // sanitization, their values are concatenated with `;`.
-        let merged = sanitize_and_merge_label_pairs(vec![
-            ("http.method", "GET".to_string()),
-            ("http_method", "POST".to_string()),
-        ]);
+        let merged = sanitize_and_merge_label_pairs(
+            vec![
+                ("http.method", "GET".to_string()),
+                ("http_method", "POST".to_string()),
+            ],
+            &[],
+        );
         // Keys are merged into a single sanitized entry.
         assert_eq!(merged.len(), 1);
         // Values are joined in iteration order with `;`.
@@ -3173,11 +3214,35 @@ mod tests {
 
     #[test]
     fn test_sanitize_and_merge_label_pairs_distinct_keys_unchanged() {
-        let merged =
-            sanitize_and_merge_label_pairs(vec![("a", "1".to_string()), ("b", "2".to_string())]);
+        let merged = sanitize_and_merge_label_pairs(
+            vec![("a", "1".to_string()), ("b", "2".to_string())],
+            &[],
+        );
         assert_eq!(merged.len(), 2);
         assert_eq!(merged.get("a").map(String::as_str), Some("1"));
         assert_eq!(merged.get("b").map(String::as_str), Some("2"));
+    }
+
+    #[test]
+    fn test_sanitize_and_merge_label_pairs_drops_reserved_keys() {
+        // Per OTel→Prometheus spec: `otel_scope_name` is emitted separately
+        // from per-metric attributes. If a metric attribute key sanitizes to
+        // that reserved name (e.g. raw key `otel.scope.name`), the
+        // conflicting attribute is dropped to avoid Prometheus duplicate-
+        // label rejection. (`otel_scope_version` is not currently emitted,
+        // so user attributes with that name are not reserved.)
+        let merged = sanitize_and_merge_label_pairs(
+            vec![
+                ("otel.scope.name", "user_value".to_string()),
+                ("otel_scope_name", "literal_collision".to_string()),
+                ("http_method", "GET".to_string()),
+            ],
+            RESERVED_SCOPE_LABEL_KEYS,
+        );
+        // Only the non-reserved key survives.
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged.get("http_method").map(String::as_str), Some("GET"));
+        assert!(!merged.contains_key("otel_scope_name"));
     }
 
     /// Returns true if `output` contains a line of the shape
