@@ -1,100 +1,64 @@
 # Spec-Constrained Oracle Reimplementation
 
-This document provides a contributor framework for implementing a Rust component
-when compatibility with an existing protocol, format, schema, or framing behavior
-is the main risk.
+This document describes how to reimplement compatibility-sensitive behavior in
+Rust when a mature implementation in another language can be used as an
+executable oracle.
 
-Use this approach when a mature implementation exists and can be used as a
-behavioral oracle, but the Rust implementation must still be constrained by the
-specification, schemas, and OTAP Dataflow Engine semantics.
+The intended reader is an engineer already familiar with the OTAP Dataflow
+Engine, Rust, and OpenTelemetry. It focuses on the decisions that must be made
+and recorded; it does not prescribe every implementation step.
 
-## When to Use This Approach
+Use this approach for protocols, codecs, wire formats, file formats, schemas,
+framing layers, compression envelopes, handshakes, and other components where
+interoperability is a primary requirement.
 
-Use this approach for components or libraries involving:
-
-- protocol encoding and decoding
-- wire formats
-- file formats
-- schema-based serialization
-- framing
-- compression envelopes
-- handshakes
-- streaming message assembly
-- compatibility-sensitive request and response behavior
-
-The reference implementation is useful because specifications and schemas often
-do not describe every behavior required for interoperability.
-
-## Goal
-
-The goal is to produce a Rust implementation that is compatible for a declared
-scope.
-
-Compatibility does not always mean byte-for-byte equality. In many cases,
-semantic equivalence is the right target.
-
-The implementation should be:
-
-- traceable to specifications and schemas
-- compatible with the selected reference implementation
-- explicit about unsupported behavior
-- robust against malformed input
-- efficient in OTAP hot paths
-- integrated with OTAP runtime semantics
+The goal is not to translate the reference implementation mechanically. The
+goal is to build an OTAP-native Rust implementation whose supported behavior is
+traceable to specifications, schemas, reference behavior, tests, and OTAP
+runtime semantics.
 
 ## Core Principle
 
-The specification and schemas define normative constraints.
+The specification and schemas define the normative constraints. The reference
+implementation provides executable evidence for behavior that specifications
+often leave implicit.
 
-The reference implementation acts as an executable oracle for observable
-behavior.
+The Rust implementation should satisfy an explicit compatibility contract, not
+copy every observable behavior from the oracle. When the specification, schema,
+oracle, and OTAP runtime model disagree, document the decision and the reason.
 
-The Rust implementation must satisfy the declared compatibility contract, not
-blindly reproduce every behavior of the reference implementation.
+## Define the Compatibility Scope
 
-If the specification, schema, oracle, and OTAP runtime model disagree, the
-difference must be documented and resolved intentionally.
+Start with the smallest useful slice that can prove interoperability.
 
-## Workflow
+Record:
 
-### 1. Define the Scope
-
-Start by selecting the smallest useful compatibility slice.
-
-Document:
-
-- supported input formats
-- supported output formats
-- supported data types
-- unsupported data types
+- supported and unsupported input/output formats
+- supported and unsupported data types or protocol features
 - expected failure modes
-- semantic compatibility requirements
-- byte-level compatibility requirements
-- the first end-to-end scenario that proves useful interoperability
+- whether compatibility is semantic, byte-level, or both
+- the first end-to-end scenario that demonstrates useful interoperability
 
-The first scope should be small enough to review, test, and release
+The first scope should be narrow enough to review, test, and release
 incrementally.
 
-### 2. Pin the Evidence
+## Pin the Evidence
 
-Record the exact evidence used for implementation and validation.
+Record the exact sources used for implementation and validation:
 
-Include:
+- specification and schema versions
+- generated-code versions, when relevant
+- reference implementation repository and commit
+- fixture or corpus source and revision
+- validation toolchain versions, when they affect results
 
-- specification version or commit
-- schema version
-- generated-code version, if relevant
-- reference implementation commit
-- fixture or corpus commit, if relevant
-- toolchain versions used for validation
+These pins can live in the component's development note, test metadata, or
+fixtures directory. They must be easy to find during review.
 
-These pins should appear in the component methodology note or in test metadata.
+## Classify Oracle Behavior
 
-### 3. Classify Oracle Behavior
-
-Not every behavior in the reference implementation should be copied.
-
-Classify important observed behavior as one of:
+Do not treat every observed oracle behavior as in scope. Classify important
+observations before relying on them:
 
 | Classification | Meaning |
 |---|---|
@@ -106,247 +70,107 @@ Classify important observed behavior as one of:
 | Out of scope | Intentionally excluded from the current Rust scope. |
 | Unknown | Requires more investigation before release. |
 
-Only spec-required, schema-required, and approved ecosystem-required behavior
-should become compatibility requirements.
+For behavior admitted into the declared scope, compatibility with the executable
+oracle is the required check. The classification explains why that oracle
+behavior matters and records any intentional divergence, such as implementation
+artifacts, reference bugs, OTAP-specific constraints, or behavior left out of
+the current scope.
 
-### 4. Define the OTAP Integration Contract
+## Define the OTAP Integration Contract
 
-Before implementing the Rust logic, define how it fits into OTAP.
-
-Document:
+Before implementing the core logic, define how the component fits into OTAP:
 
 - OTAP-native input and output representation
-- when data remains passthrough
-- when decoding or materialization occurs
-- ownership and memory expectations
-- backpressure behavior
-- retry behavior, if relevant
-- ack and nack behavior, if relevant
-- cancellation and shutdown behavior
-- telemetry emitted by the component
-- configuration and failure semantics
+- passthrough versus decoded/materialized data
+- ownership, allocation, and hot-path expectations
+- fit with the thread-per-core, share-nothing execution model
+- composition with existing OTAP receivers, processors, exporters, extensions,
+  shared libraries, and configuration conventions
+- live reconfiguration behavior and transition semantics
+- backpressure, retry, acknowledgement, and shutdown behavior, when relevant
+- configuration, failure semantics, and telemetry
 
 This prevents the Rust implementation from importing runtime assumptions from
 the reference implementation.
 
-### 5. Build Compatibility Evidence
-
-Use fixtures and tests to compare behavior across implementations.
-
-Recommended evidence:
-
-- reference-generated fixtures decoded by Rust
-- Rust-generated fixtures decoded by the reference implementation
-- semantic comparison of decoded values
-- byte-level checks for required protocol fields
-- malformed input tests
-- unsupported input tests
-- regression fixtures for every discovered mismatch
-
-When practical, wrap the reference implementation with a small oracle adapter
-that can generate, encode, decode, validate, and report structured errors.
-
-### 6. Add Robustness and Performance Validation
-
-At minimum, validate that malformed or unsupported input does not cause:
-
-- panics
-- hangs
-- silent corruption
-- uncontrolled memory growth
-- misleading success telemetry
-
-For performance, measure the paths that matter for the component:
-
-- codec-only path
-- OTAP conversion path
-- end-to-end protocol path, if relevant
-- allocations
-- throughput
-- latency
-- peak memory
-
-Compare against the previous Rust baseline and against acceptance targets.
-Compare against the reference implementation when that comparison is meaningful.
-
 ## Compatibility Model
 
-Prefer semantic compatibility for structured data.
+Prefer semantic compatibility for structured data. Semantic compatibility means
+both implementations produce equivalent domain objects for the declared scope,
+even if their byte output differs (e.g. a JSON object with different key
+ordering or whitespace).
 
-Semantic compatibility means that both implementations decode or process data
-into equivalent domain objects for the declared scope.
-
-Semantic comparison should account for:
-
-- map ordering
-- default values
-- unknown fields
-- unsupported fields
-- empty values
-- timestamps
-- floating-point values, when relevant
-- metadata
-- schema identity
-
-Require byte-level compatibility only when exact bytes are required by the
-protocol or by interoperability.
-
-Examples:
-
-- magic bytes
-- version fields
-- fixed headers
-- schema identifiers
-- frame ordering
-- handshake messages
-- checksums
-- signatures
-- canonical encodings
+Use byte-level compatibility only when exact bytes are required for
+interoperability, such as magic bytes, version fields, fixed headers, schema
+identifiers, frame ordering, checksums, signatures, or canonical encodings.
 
 Do not require byte-for-byte equality when multiple valid encodings are allowed.
+The comparison rules should account for known sources of equivalent variation,
+such as map ordering, defaults, unknown fields, metadata, timestamps, and
+floating-point values.
 
-## Suggested PR Slicing
+## Validation Expectations
 
-A compatibility-focused implementation can often be split as follows:
+Build enough evidence to show that the Rust implementation is compatible for
+the declared scope and safe outside it.
 
-1. Add methodology note, scope, pins, and traceability summary.
-2. Add oracle adapter or fixture generation tooling.
-3. Add Rust data model or OTAP representation mapping.
-4. Add decoder for the first supported scope.
-5. Add encoder for the first supported scope.
-6. Add cross-decoder tests.
-7. Add differential roundtrip tests.
-8. Add malformed and unsupported input tests.
-9. Add protocol-level tests, if relevant.
-10. Add fuzz targets or corpus replay.
-11. Add benchmarks and performance report.
-12. Finalize documentation and release checklist.
+Use the reference implementation to generate or validate fixtures when
+practical. Add regression coverage for each discovered mismatch, especially for
+intentional divergences.
 
-The PR sequence can be adapted. The important point is to separate design,
-compatibility evidence, implementation, robustness, and performance whenever
-possible.
+Define the oracle comparison surface explicitly: inputs, outputs, normalization
+rules, expected error categories, and whether the oracle is used through
+fixtures, an adapter, or both.
 
-## Per-Component Methodology Note
+At minimum, malformed or unsupported input must not cause panics, hangs, silent
+corruption, uncontrolled memory growth, or misleading success telemetry.
 
-Each module using this approach should include a methodology note.
+Measure performance on the paths that matter for the component. Compare against
+the relevant Rust baseline and acceptance targets; compare against the reference
+implementation only when that comparison is meaningful.
 
-Suggested file:
+## PR Strategy
 
-```text
-<component-module>/DEVELOPMENT.md
-```
+Start with an issue or design note that names the component, oracle, first
+scope, compatibility contract, OTAP integration contract, and main risks.
 
-Suggested content:
+Split larger efforts so reviewers can evaluate decisions and evidence
+separately from implementation details. A typical sequence is:
 
-```md
-# Development Methodology
+1. Design, evidence pins, and compatibility contract.
+2. Core Rust implementation for the first supported path.
+3. Cross-implementation fixtures and mismatch regression tests.
+4. OTAP runtime behavior, telemetry, robustness, and performance validation.
 
-## Approach
+Small efforts may combine these steps. The important point is that
+compatibility decisions remain explicit and reviewable.
 
-This component follows the Spec-Constrained Oracle Reimplementation approach.
+## Component Development Note
 
-## Scope
+Each component using this approach must keep a short development note, for
+example `<component-module>/DEVELOPMENT.md`.
 
-Supported:
+The note should cover:
 
-- ...
+- current supported and unsupported scope
+- pinned specifications, schemas, reference implementation, and fixtures
+- semantic and byte-level compatibility requirements
+- intentional divergences from the oracle
+- OTAP integration decisions
+- validation coverage and known remaining work
 
-Unsupported:
-
-- ...
-
-Out of scope for this phase:
-
-- ...
-
-## Sources
-
-Specification:
-
-- name, version, commit, or link
-
-Schemas:
-
-- name, version, commit, or link
-
-Reference implementation:
-
-- repository
-- commit
-- relevant packages or modules
-
-Fixtures or corpora:
-
-- location
-- generator
-- commit or version
-
-## Compatibility Contract
-
-Semantic compatibility required for:
-
-- ...
-
-Byte-level compatibility required for:
-
-- ...
-
-Intentional divergences:
-
-- ...
-
-## OTAP Integration Notes
-
-- input representation:
-- output representation:
-- passthrough behavior:
-- memory and ownership considerations:
-- backpressure behavior:
-- retry, ack, nack behavior:
-- shutdown behavior:
-- telemetry:
-
-## Tests Added
-
-- cross-decoder tests:
-- roundtrip tests:
-- malformed input tests:
-- unsupported input tests:
-- protocol tests:
-- fuzz or corpus replay:
-- benchmarks:
-
-## Checklist
-
-- [ ] Scope defined.
-- [ ] Evidence pinned.
-- [ ] Oracle behavior classified.
-- [ ] OTAP integration contract documented.
-- [ ] Compatibility fixtures added.
-- [ ] Cross-decoder tests added.
-- [ ] Roundtrip tests added.
-- [ ] Unsupported behavior tested.
-- [ ] Malformed input tested.
-- [ ] Fuzzing or corpus replay added, when relevant.
-- [ ] Benchmarks added, when relevant.
-- [ ] Telemetry added.
-- [ ] Documentation updated.
-- [ ] Release criteria satisfied.
-
-## Remaining Work
-
-- ...
-```
+Keep the note brief. It should help reviewers understand the compatibility
+contract without duplicating the implementation or test suite.
 
 ## Completion Criteria
 
 For the declared scope, the implementation is ready when:
 
-- sources are pinned
-- compatibility expectations are explicit
-- unsupported behavior is documented and tested
+- evidence sources are pinned
+- compatibility expectations and unsupported behavior are explicit
 - semantic or byte-level compatibility is validated
 - malformed input is handled safely
-- OTAP runtime behavior is documented
+- the OTAP integration contract is defined, including runtime behavior, live
+  reconfiguration, component composition, and telemetry
 - performance is acceptable for the intended use
-- the module methodology note is up to date
+- the component development note reflects the current state
