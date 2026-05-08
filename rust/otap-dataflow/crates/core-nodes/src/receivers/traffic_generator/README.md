@@ -1,32 +1,32 @@
-# Fake Data Generator -- SUT Saturation Benchmarks
+# Traffic Generator -- SUT Saturation Benchmarks
 
 ## Purpose
 
-Verify that a **single fake-gen sender core can saturate a single
+Verify that a **single traffic-gen sender core can saturate a single
 `df_engine` (SUT) core** over OTLP gRPC, so that performance tests
 don't need multiple load-generator cores.
 
 ```text
   sender (1 core)           SUT (1 core)            backend (1 core)
-  fake-gen -> OTLP-export --> OTLP-recv -> OTLP-export --> OTLP-recv -> noop
+  traffic-gen -> OTLP-export --> OTLP-recv -> OTLP-export --> OTLP-recv -> noop
        :8080                     :8081                      :8082
 ```
 
 ## Configs (`bench/`)
 
-| File                        | Role        | Pipeline                          |
-|-----------------------------|-------------|-----------------------------------|
-| `sender-static-fresh.yaml`  | Load gen    | fake-gen(fresh) -> OTLP export    |
-| `sender-static-pregen.yaml` | Load gen    | fake-gen(pregen) -> OTLP export   |
-| `sut-otlp-forward.yaml`     | SUT         | OTLP recv -> OTLP export          |
-| `backend-noop.yaml`         | Backend     | OTLP recv -> noop                 |
+| File                        | Role        | Pipeline                           |
+|-----------------------------|-------------|------------------------------------|
+| `sender-static-fresh.yaml`  | Load gen    | traffic-gen(fresh) -> OTLP export  |
+| `sender-static-pregen.yaml` | Load gen    | traffic-gen(pregen) -> OTLP export |
+| `sut-otlp-forward.yaml`     | SUT         | OTLP recv -> OTLP export           |
+| `backend-noop.yaml`         | Backend     | OTLP recv -> noop                  |
 
 ## Quick start
 
 ```bash
 cd rust/otap-dataflow
 cargo build --release
-bash crates/core-nodes/src/receivers/fake_data_generator/bench/bench.sh
+bash crates/core-nodes/src/receivers/traffic_generator/bench/bench.sh
 ```
 
 ---

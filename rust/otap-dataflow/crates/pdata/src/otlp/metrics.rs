@@ -8,6 +8,7 @@ use crate::arrays::{
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value};
+use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{
     BatchSorter, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,
     proto_encode_instrumentation_scope, proto_encode_resource,
@@ -35,7 +36,6 @@ use crate::proto::consts::field_num::metrics::{
 };
 use crate::proto::consts::wire_types;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{BooleanArray, RecordBatch, UInt8Array, UInt16Array};
 use num_enum::TryFromPrimitive;
@@ -422,11 +422,9 @@ impl ProtoBytesEncoder for MetricsProtoBytesEncoder {
 
         // encode all `ResourceMetrics` for this `MetricsData`
         loop {
-            proto_encode_len_delimited_unknown_size!(
-                METRICS_DATA_RESOURCE_METRICS,
-                self.encode_resource_metrics(&metrics_data_arrays, result_buf)?,
-                result_buf
-            );
+            result_buf.encode_len_delimited(METRICS_DATA_RESOURCE_METRICS, |result_buf| {
+                self.encode_resource_metrics(&metrics_data_arrays, result_buf)
+            })?;
 
             if self.root_cursor.finished() {
                 break;
@@ -505,17 +503,15 @@ impl MetricsProtoBytesEncoder {
         };
 
         // encode the `Resource`
-        proto_encode_len_delimited_unknown_size!(
-            RESOURCE_METRICS_RESOURCE,
+        result_buf.encode_len_delimited(RESOURCE_METRICS_RESOURCE, |result_buf| {
             proto_encode_resource(
                 index,
                 &metrics_data_arrays.resource_arrays,
                 metrics_data_arrays.resource_attrs.as_ref(),
                 &mut self.resource_attrs_cursor,
                 result_buf,
-            )?,
-            result_buf
-        );
+            )
+        })?;
 
         // encode all the `ScopeMetrics` for this `ResourceMetrics`
         let resource_id = metrics_data_arrays
@@ -523,11 +519,9 @@ impl MetricsProtoBytesEncoder {
             .id
             .and_then(|arr| arr.value_at(index));
         loop {
-            proto_encode_len_delimited_unknown_size!(
-                RESOURCE_METRICS_SCOPE_METRICS,
-                self.encode_scope_metrics(metrics_data_arrays, result_buf)?,
-                result_buf
-            );
+            result_buf.encode_len_delimited(RESOURCE_METRICS_SCOPE_METRICS, |result_buf| {
+                self.encode_scope_metrics(metrics_data_arrays, result_buf)
+            })?;
 
             // break if we've reached the end of the record batch
             if self.root_cursor.finished() {
@@ -550,7 +544,7 @@ impl MetricsProtoBytesEncoder {
         // encode schema url
         if let Some(col) = &metrics_data_arrays.resource_arrays.schema_url {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(RESOURCE_METRICS_SCHEMA_URL, val);
+                result_buf.encode_string(RESOURCE_METRICS_SCHEMA_URL, val)?;
             }
         }
 
@@ -568,17 +562,15 @@ impl MetricsProtoBytesEncoder {
         };
 
         // encode the `InstrumentationScope`
-        proto_encode_len_delimited_unknown_size!(
-            SCOPE_METRICS_SCOPE,
+        result_buf.encode_len_delimited(SCOPE_METRICS_SCOPE, |result_buf| {
             proto_encode_instrumentation_scope(
                 index,
                 &metrics_data_arrays.scope_arrays,
                 metrics_data_arrays.scope_attrs.as_ref(),
                 &mut self.scope_attrs_cursor,
-                result_buf
-            )?,
-            result_buf
-        );
+                result_buf,
+            )
+        })?;
 
         // encode all `Metrics` for this `ScopeMetrics`
         let scope_id = metrics_data_arrays
@@ -587,11 +579,9 @@ impl MetricsProtoBytesEncoder {
             .and_then(|arr| arr.value_at(index));
 
         loop {
-            proto_encode_len_delimited_unknown_size!(
-                SCOPE_METRICS_METRICS,
-                self.encode_metrics(metrics_data_arrays, result_buf)?,
-                result_buf
-            );
+            result_buf.encode_len_delimited(SCOPE_METRICS_METRICS, |result_buf| {
+                self.encode_metrics(metrics_data_arrays, result_buf)
+            })?;
 
             // break if we've reached the end of the record batch
             if self.root_cursor.finished() {
@@ -614,7 +604,7 @@ impl MetricsProtoBytesEncoder {
         // encode the schema url
         if let Some(col) = &metrics_data_arrays.metrics_arrays.schema_url {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(SCOPE_METRICS_SCHEMA_URL, val);
+                result_buf.encode_string(SCOPE_METRICS_SCHEMA_URL, val)?;
             }
         }
 
@@ -634,18 +624,18 @@ impl MetricsProtoBytesEncoder {
         let metrics_arrays = &metrics_data_arrays.metrics_arrays;
 
         if let Some(val) = metrics_arrays.name.str_at(index) {
-            result_buf.encode_string(METRIC_NAME, val);
+            result_buf.encode_string(METRIC_NAME, val)?;
         }
 
         if let Some(col) = &metrics_arrays.description {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(METRIC_DESCRIPTION, val);
+                result_buf.encode_string(METRIC_DESCRIPTION, val)?;
             }
         }
 
         if let Some(col) = &metrics_arrays.unit {
             if let Some(val) = col.str_at(index) {
-                result_buf.encode_string(METRIC_UNIT, val);
+                result_buf.encode_string(METRIC_UNIT, val)?;
             }
         }
 
@@ -669,16 +659,14 @@ impl MetricsProtoBytesEncoder {
 
                 // encode metric data points (if it's not the Empty metric type)
                 if field_num != 0 {
-                    proto_encode_len_delimited_unknown_size!(
-                        field_num,
+                    result_buf.encode_len_delimited(field_num, |result_buf| {
                         self.encode_metric_data_points(
                             id,
                             metric_type,
                             metrics_data_arrays,
-                            result_buf
-                        )?,
-                        result_buf
-                    )
+                            result_buf,
+                        )
+                    })?
                 }
             }
         }
@@ -691,11 +679,9 @@ impl MetricsProtoBytesEncoder {
                     &mut self.metrics_attrs_cursor,
                 );
                 for attr_index in attrs_index_iter {
-                    proto_encode_len_delimited_unknown_size!(
-                        METRIC_METADATA,
-                        encode_key_value(metrics_attrs, attr_index, result_buf)?,
-                        result_buf
-                    )
+                    result_buf.encode_len_delimited(METRIC_METADATA, |result_buf| {
+                        encode_key_value(metrics_attrs, attr_index, result_buf)
+                    })?
                 }
             }
         }
@@ -737,8 +723,7 @@ impl MetricsProtoBytesEncoder {
                         SUM_DATA_POINTS
                     };
                     for dp_index in dp_index_iter {
-                        proto_encode_len_delimited_unknown_size!(
-                            field_num,
+                        result_buf.encode_len_delimited(field_num, |result_buf| {
                             proto_encode_number_data_point(
                                 dp_index,
                                 number_dp_arrays,
@@ -748,22 +733,21 @@ impl MetricsProtoBytesEncoder {
                                 &mut self.number_dp_exemplars_cursor,
                                 metrics_data_arrays.number_dp_exemplar_attrs.as_ref(),
                                 &mut self.number_dp_exemplars_attrs_cursor,
-                                result_buf
-                            )?,
-                            result_buf
-                        );
+                                result_buf,
+                            )
+                        })?;
                     }
                 }
                 if metric_type == MetricType::Sum {
                     if let Some(aggregation_temporality) = aggregation_temporality {
                         result_buf
-                            .encode_field_tag(SUM_AGGREGATION_TEMPORALITY, wire_types::VARINT);
-                        result_buf.encode_varint(aggregation_temporality as u64);
+                            .encode_field_tag(SUM_AGGREGATION_TEMPORALITY, wire_types::VARINT)?;
+                        result_buf.encode_varint(aggregation_temporality as u64)?;
                     }
 
                     if let Some(is_monotonic) = is_monotonic {
-                        result_buf.encode_field_tag(SUM_IS_MONOTONIC, wire_types::VARINT);
-                        result_buf.encode_varint(is_monotonic as u64);
+                        result_buf.encode_field_tag(SUM_IS_MONOTONIC, wire_types::VARINT)?;
+                        result_buf.encode_varint(is_monotonic as u64)?;
                     }
                 }
             }
@@ -774,8 +758,7 @@ impl MetricsProtoBytesEncoder {
                     let dp_index_iter =
                         ChildIndexIter::new(parent_id, &parent_ids, &mut self.hist_dp_cursor);
                     for dp_index in dp_index_iter {
-                        proto_encode_len_delimited_unknown_size!(
-                            HISTOGRAM_DATA_POINTS,
+                        result_buf.encode_len_delimited(HISTOGRAM_DATA_POINTS, |result_buf| {
                             proto_encode_histogram_data_point(
                                 dp_index,
                                 hist_dp_arrays,
@@ -785,16 +768,15 @@ impl MetricsProtoBytesEncoder {
                                 &mut self.hist_dp_exemplars_cursor,
                                 metrics_data_arrays.hist_dp_exemplar_attrs.as_ref(),
                                 &mut self.hist_dp_exemplars_attrs_cursor,
-                                result_buf
-                            )?,
-                            result_buf
-                        );
+                                result_buf,
+                            )
+                        })?;
                     }
                 }
                 if let Some(aggregation_temporality) = aggregation_temporality {
                     result_buf
-                        .encode_field_tag(HISTOGRAM_AGGREGATION_TEMPORALITY, wire_types::VARINT);
-                    result_buf.encode_varint(aggregation_temporality as u64);
+                        .encode_field_tag(HISTOGRAM_AGGREGATION_TEMPORALITY, wire_types::VARINT)?;
+                    result_buf.encode_varint(aggregation_temporality as u64)?;
                 }
             }
             MetricType::ExponentialHistogram => {
@@ -803,27 +785,28 @@ impl MetricsProtoBytesEncoder {
                     let dp_index_iter =
                         ChildIndexIter::new(parent_id, &parent_ids, &mut self.exp_hist_dp_cursor);
                     for dp_index in dp_index_iter {
-                        proto_encode_len_delimited_unknown_size!(
+                        result_buf.encode_len_delimited(
                             EXPONENTIAL_HISTOGRAM_DATA_POINTS,
-                            proto_encode_exp_hist_data_point(
-                                dp_index,
-                                exp_hist_dp_arrays,
-                                metrics_data_arrays.exp_hist_dp_attrs.as_ref(),
-                                &mut self.exp_hist_dp_attrs_cursor,
-                                metrics_data_arrays.exp_hist_dp_exemplar_arrays.as_ref(),
-                                &mut self.exp_hist_exemplars_cursor,
-                                metrics_data_arrays.exp_hist_dp_exemplar_attrs.as_ref(),
-                                &mut self.exp_hist_exemplars_attrs_cursor,
-                                result_buf
-                            )?,
-                            result_buf
-                        );
+                            |result_buf| {
+                                proto_encode_exp_hist_data_point(
+                                    dp_index,
+                                    exp_hist_dp_arrays,
+                                    metrics_data_arrays.exp_hist_dp_attrs.as_ref(),
+                                    &mut self.exp_hist_dp_attrs_cursor,
+                                    metrics_data_arrays.exp_hist_dp_exemplar_arrays.as_ref(),
+                                    &mut self.exp_hist_exemplars_cursor,
+                                    metrics_data_arrays.exp_hist_dp_exemplar_attrs.as_ref(),
+                                    &mut self.exp_hist_exemplars_attrs_cursor,
+                                    result_buf,
+                                )
+                            },
+                        )?;
                     }
                 }
                 if let Some(aggregation_temporality) = aggregation_temporality {
                     result_buf
-                        .encode_field_tag(HISTOGRAM_AGGREGATION_TEMPORALITY, wire_types::VARINT);
-                    result_buf.encode_varint(aggregation_temporality as u64);
+                        .encode_field_tag(HISTOGRAM_AGGREGATION_TEMPORALITY, wire_types::VARINT)?;
+                    result_buf.encode_varint(aggregation_temporality as u64)?;
                 }
             }
             MetricType::Summary => {
@@ -832,17 +815,15 @@ impl MetricsProtoBytesEncoder {
                     let dp_index_iter =
                         ChildIndexIter::new(parent_id, &parent_ids, &mut self.summary_dp_cursor);
                     for dp_index in dp_index_iter {
-                        proto_encode_len_delimited_unknown_size!(
-                            SUMMARY_DATA_POINTS,
+                        result_buf.encode_len_delimited(SUMMARY_DATA_POINTS, |result_buf| {
                             proto_encode_summary_data_point(
                                 dp_index,
                                 summary_dp_arrays,
                                 metrics_data_arrays.summary_dp_attrs.as_ref(),
                                 &mut self.summary_dp_attrs_cursor,
-                                result_buf
-                            )?,
-                            result_buf
-                        );
+                                result_buf,
+                            )
+                        })?;
                     }
                 }
             }

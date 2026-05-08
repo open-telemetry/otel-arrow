@@ -747,7 +747,7 @@ mod tests {
             "type": "otap",
             "nodes": {
                 "recv": {
-                    "type": "receiver:fake",
+                    "type": "receiver:traffic_generator",
                     "config": {}
                 }
             }

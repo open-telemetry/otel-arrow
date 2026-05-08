@@ -37,12 +37,12 @@ Each component lives in its own subfolder within a category:
         transform_processor/
       receivers/
         mod.rs (category exports)
-        fake_data_generator/
         internal_telemetry_receiver/
         otap_receiver/
         otlp_receiver/
         syslog_cef_receiver/
         topic_receiver/
+        traffic_generator/
       lib.rs
 
 ## Components
@@ -222,15 +222,15 @@ Each component lives in its own subfolder within a category:
 <!-- markdownlint-disable MD013 -->
 | Node | URN | Module |
 | ---- | --- | ------ |
-| fake_data_generator | `urn:otel:receiver:traffic_generator` | `src/receivers/fake_data_generator/` |
 | internal_telemetry_receiver | `urn:otel:receiver:internal_telemetry` | `src/receivers/internal_telemetry_receiver/` |
 | otap_receiver | `urn:otel:receiver:otap` | `src/receivers/otap_receiver/` |
 | otlp_receiver | `urn:otel:receiver:otlp` | `src/receivers/otlp_receiver/` |
 | syslog_cef_receiver | `urn:otel:receiver:syslog_cef` | `src/receivers/syslog_cef_receiver/` |
 | topic_receiver | `urn:otel:receiver:topic` | `src/receivers/topic_receiver/` |
+| traffic_generator | `urn:otel:receiver:traffic_generator` | `src/receivers/traffic_generator/` |
 <!-- markdownlint-enable MD013 -->
 
-#### fake_data_generator
+#### traffic_generator
 
 - Generates synthetic OTAP/OTLP signals for testing and benchmarking
 - Configurable signal generation strategies and volume constraints

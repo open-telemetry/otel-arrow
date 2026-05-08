@@ -39,7 +39,7 @@ use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
 };
 use crate::error::{Error, TypedError};
-use crate::flow_metric::{
+use crate::flow_metrics::{
     EndFlowMetrics, FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
     IncomingFlowMetrics, SharedFlowMetricState, nanos_u64,
 };
@@ -557,7 +557,7 @@ impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for Effect
 mod tests {
     #![allow(missing_docs)]
     use super::*;
-    use crate::flow_metric::{FlowAttributeSet, FlowSignalsOutgoingMetrics};
+    use crate::flow_metrics::{FlowAttributeSet, FlowSignalsOutgoingMetrics};
     use crate::shared::message::SharedSender;
     use crate::testing::{test_node, test_pipeline_ctx};
     use otap_df_channel::error::SendError;
