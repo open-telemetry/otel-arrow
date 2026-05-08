@@ -5,11 +5,12 @@ use std::sync::LazyLock;
 
 use data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
-    CaptureTextScalarExpression, CollectionScalarExpression, CombineScalarExpression,
-    ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression, DoubleValue,
-    EqualToLogicalExpression, Expression, GetRecordTypeScalarExpression, GetTypeScalarExpression,
-    GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression,
-    IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
+    CaptureTextScalarExpression, CoalesceScalarExpression, CollectionScalarExpression,
+    CombineScalarExpression, ContainsLogicalExpression, DateTimeScalarExpression,
+    DoubleScalarExpression, DoubleValue, EqualToLogicalExpression, Expression,
+    GetRecordTypeScalarExpression, GetTypeScalarExpression, GreaterThanLogicalExpression,
+    GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, IntegerValue,
+    InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
     ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
     NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
     RegexScalarExpression, ReplaceTextScalarExpression, ScalarExpression, SliceScalarExpression,
@@ -787,10 +788,8 @@ pub(crate) fn parse_tagged_literal(
 
 /// Parses invocation of function
 ///
-/// Currently we only support two known function `matches` and `contains`, both of which
-/// take two arguments and return a boolean value. In the future, our function library
-/// may be expanded to include more functions with various signatures and user defined
-/// functions, so the implementation of this function will be updated accordingly.
+/// Parses built-in scalar and logical functions (`contains`, `matches`, `concat`, `coalesce`,
+/// `substring`, and others) as well as user-defined pipeline functions.
 fn parse_function_call(
     rule: Pair<'_, Rule>,
     pipeline_builder: &dyn PipelineBuilder,
@@ -882,6 +881,21 @@ fn parse_function_call(
             ),
         ))
         .into()),
+        "coalesce" => {
+            if args.len() < 2 {
+                return Err(ParserError::SyntaxError(
+                    query_location,
+                    format!(
+                        "Function '{fn_name}' expects at least 2 arguments, got {}",
+                        args.len()
+                    ),
+                ));
+            }
+            Ok(
+                ScalarExpression::Coalesce(CoalesceScalarExpression::new(query_location, args))
+                    .into(),
+            )
+        }
         "join" | "concat_ws" => {
             if args.is_empty() {
                 return Err(ParserError::SyntaxError(
@@ -1035,9 +1049,9 @@ mod test {
 
     use data_engine_expressions::{
         AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
-        CaptureTextScalarExpression, CollectionScalarExpression, CombineScalarExpression,
-        ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression,
-        EqualToLogicalExpression, GreaterThanLogicalExpression,
+        CaptureTextScalarExpression, CoalesceScalarExpression, CollectionScalarExpression,
+        CombineScalarExpression, ContainsLogicalExpression, DateTimeScalarExpression,
+        DoubleScalarExpression, EqualToLogicalExpression, GreaterThanLogicalExpression,
         GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, JoinTextScalarExpression,
         ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
         NotLogicalExpression, NullScalarExpression, OrLogicalExpression, PipelineFunction,
@@ -2154,6 +2168,51 @@ mod test {
     }
 
     #[test]
+    fn test_parse_coalesce_function_call() {
+        let input = "coalesce(attributes[\"x\"], attributes[\"y\"], \"hello\")";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let result: ScalarExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
+
+        let expected = ScalarExpression::Coalesce(CoalesceScalarExpression::new(
+            QueryLocation::new_fake(),
+            vec![
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "x"),
+                        )),
+                    ]),
+                )),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "y"),
+                        )),
+                    ]),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+                )),
+            ],
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
     fn test_parse_concat_with_delimiter_function_call() {
         // "join" is alias for "concat_ws"
         for fn_name in ["concat_ws", "join"] {
@@ -2336,6 +2395,15 @@ mod test {
         assert_eq!(
             err.to_string(),
             "Function 'concat_ws' expects at least 1 argument, got 0".to_string(),
+        );
+    }
+
+    #[test]
+    fn test_parse_coalesce_function_call_wrong_arity() {
+        let err = parse_known_func_with_args("coalesce", &["\"only\""]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Function 'coalesce' expects at least 2 arguments, got 1".to_string(),
         );
     }
 

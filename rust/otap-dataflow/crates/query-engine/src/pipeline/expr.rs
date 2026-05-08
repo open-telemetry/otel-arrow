@@ -51,11 +51,11 @@ use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{DataType, Field, Schema};
 use data_engine_expressions::{
     BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
-    CollectionScalarExpression, CombineScalarExpression, DoubleValue, Expression, IntegerValue,
-    InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
-    MathScalarExpression, PipelineFunction, PipelineFunctionImplementation,
-    ReplaceTextScalarExpression, ScalarExpression, StaticScalarExpression, StringScalarExpression,
-    StringValue, TextScalarExpression,
+    CoalesceScalarExpression, CollectionScalarExpression, CombineScalarExpression, DoubleValue,
+    Expression, IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression,
+    JoinTextScalarExpression, MathScalarExpression, PipelineFunction,
+    PipelineFunctionImplementation, ReplaceTextScalarExpression, ScalarExpression,
+    StaticScalarExpression, StringScalarExpression, StringValue, TextScalarExpression,
 };
 use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
@@ -67,7 +67,7 @@ use datafusion::functions::math::log10;
 use datafusion::functions::string::{concat, concat_ws, lower, ltrim, replace, rtrim, upper, uuid};
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{
-    BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit,
+    BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit, when,
 };
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::SessionContext;
@@ -409,9 +409,66 @@ impl ExprLogicalPlanner {
                 })
             }
             ScalarExpression::Text(text) => self.plan_text_expr(text, functions),
+            ScalarExpression::Coalesce(coalesce_expr) => {
+                self.plan_coalesce_expr(coalesce_expr, functions)
+            }
             other_expr => Err(Error::NotYetSupportedError {
                 message: format!("expression not yet supported {other_expr:?}"),
             }),
+        }
+    }
+
+    fn plan_coalesce_expr(
+        &self,
+        coalesce_expr: &CoalesceScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        let (df_args, source_scope, _requires_dict_downcast) =
+            self.plan_function_args(coalesce_expr.get_expressions().iter(), functions)?;
+
+        // DataFusion's `coalesce` UDF is simplified to CASE during logical optimization and does not
+        // support direct physical evaluation. Mirror that rewrite here (same shape as
+        // `CoalesceFunc::simplify` in Apache DataFusion).
+        let case_expr = Self::coalesce_args_to_case_expr(df_args)?;
+
+        Ok(ScopedLogicalExpr {
+            logical_expr: case_expr,
+            expr_type: ExprLogicalType::AnyValue,
+            source: source_scope,
+            // Like `concat`, mixed attribute columns (often dictionary-encoded) and literals need
+            // dictionary downcasting before CASE can build a single array.
+            requires_dict_downcast: true,
+        })
+    }
+
+    /// Rewrites `coalesce(e1, …, eN)` to chained `WHEN eK IS NOT NULL THEN eK … ELSE eN`,
+    /// matching DataFusion's `coalesce` simplification.
+    fn coalesce_args_to_case_expr(mut args: Vec<Expr>) -> Result<Expr> {
+        match args.len() {
+            0 => Err(Error::InvalidPipelineError {
+                cause: "coalesce requires at least one argument".into(),
+                query_location: None,
+            }),
+            1 => Ok(args.pop().ok_or_else(|| Error::InvalidPipelineError {
+                cause: "coalesce internal error: empty args after len check".into(),
+                query_location: None,
+            })?),
+            _ => {
+                let last = args.pop().ok_or_else(|| Error::InvalidPipelineError {
+                    cause: "coalesce internal error: missing last argument".into(),
+                    query_location: None,
+                })?;
+                let first = args.first().ok_or_else(|| Error::InvalidPipelineError {
+                    cause: "coalesce internal error: missing first argument".into(),
+                    query_location: None,
+                })?;
+                let first = first.clone();
+                let mut builder = when(first.clone().is_not_null(), first);
+                for a in args.into_iter().skip(1) {
+                    builder = builder.when(a.clone().is_not_null(), a);
+                }
+                builder.otherwise(last).map_err(Error::from)
+            }
         }
     }
 
@@ -3581,6 +3638,48 @@ mod test {
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
         let expected_col = Arc::new(StringArray::from(vec!["ERROR_a", "INFO_b", "DEBUG_c"]));
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
+    }
+
+    /// `coalesce(attributes["k1"], "hello")` uses the literal when the attribute is absent.
+    #[test]
+    fn test_coalesce_attribute_with_string_fallback() {
+        use data_engine_expressions::CoalesceScalarExpression;
+
+        let attr_arg = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let fallback = ScalarExpression::Static(StaticScalarExpression::String(
+            StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+        ));
+
+        let input_expr = ScalarExpression::Coalesce(CoalesceScalarExpression::new(
+            QueryLocation::new_fake(),
+            vec![attr_arg, fallback],
+        ));
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("from_attr"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("k1", AnyValue { value: None })])
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let expected_col = Arc::new(StringArray::from(vec!["from_attr", "hello"]));
         run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
     }
 
