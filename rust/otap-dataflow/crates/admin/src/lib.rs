@@ -27,6 +27,7 @@ use tower::ServiceBuilder;
 
 use crate::error::Error;
 use otap_df_config::engine::HttpAdminSettings;
+use otap_df_config::pipeline::telemetry::AttributeValue as ResourceAttributeValue;
 use otap_df_engine::memory_limiter::MemoryPressureState;
 use otap_df_state::store::ObservedStateHandle;
 use otap_df_telemetry::log_tap::InternalLogTapHandle;
@@ -159,7 +160,7 @@ pub async fn run(
     metrics_registry: TelemetryRegistryHandle,
     memory_pressure_state: MemoryPressureState,
     log_tap: Option<InternalLogTapHandle>,
-    resource_attributes: HashMap<String, String>,
+    resource_attributes: HashMap<String, ResourceAttributeValue>,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
     let target_info: Arc<str> = telemetry::render_target_info(&resource_attributes).into();
