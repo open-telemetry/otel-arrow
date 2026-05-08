@@ -1,487 +1,193 @@
 # Reference-Informed OTAP-Native Capability Design
 
-This document provides a contributor framework for implementing a receiver,
-processor, exporter, extension, or related capability inspired by an existing
-OpenTelemetry Collector component.
+This document describes how to design an OTAP-native Rust capability when an
+existing OpenTelemetry Collector component can inform the work but should not
+define the result.
 
-Use this approach when the goal is to deliver the best OTAP-native capability,
-not necessarily to reproduce the existing Go implementation as-is.
+The intended reader is an engineer already familiar with the OTAP Dataflow
+Engine, Rust, and OpenTelemetry. It focuses on the decisions that must be made
+and recorded; it does not prescribe every implementation step.
 
-## When to Use This Approach
+Use this approach for receivers, processors, exporters, extensions, shared
+component libraries, or component families inspired by existing Collector or
+contrib implementations.
 
-Use this approach when implementing or redesigning:
-
-- receivers
-- processors
-- exporters
-- extensions
-- shared component libraries
-- component families inspired by Go Collector or contrib components
-
-This approach is appropriate when the existing implementation is useful as a
-source of evidence, but the OTAP implementation may intentionally differ.
-
-For example:
-
-- one Go receiver may become one Rust receiver
-- one Go receiver may become a receiver plus an extension
-- one Go receiver may become a receiver plus one or more processors
-- several Go components may become one shared OTAP capability
-- configuration may be simplified
-- defaults may be changed
-- error handling may be made stricter
-- runtime behavior may be redesigned for OTAP
-
-## Goal
-
-The goal is to provide a capability that is better for OTAP users.
-
-Better may mean:
-
-- safer defaults
-- clearer configuration
-- better error messages
-- better composability
-- better performance
-- lower memory use
-- fewer surprising behaviors
-- stronger validation
-- clearer telemetry
-- better reliability under load
-- cleaner separation of responsibilities
-
-The reference implementation should inform the design, but it should not
-automatically define the Rust component boundary or internal structure.
+The goal is not to translate the reference implementation mechanically. The
+goal is to deliver the best OTAP-native capability for the declared user
+scenarios, using the reference implementation, tests, documentation, issues,
+and operational feedback as evidence. Reimplementation is an opportunity to
+improve the design and user experience based on what existing users and
+maintainers have learned from the current solution.
 
 ## Core Principle
 
 The reference implementation is evidence, not an oracle.
 
-The main question is not:
+The main question is not how to reproduce the existing component in Rust. The
+main question is what OTAP-native capability should exist for users.
 
-```text
-How do we translate this Go component into Rust?
-```
+Preserve reference behavior only when it is required for compatibility,
+interoperability, user expectation, or migration. Improve, simplify, decompose,
+or reject behavior when OTAP constraints or user outcomes justify it.
 
-The main question is:
+## Define the Capability Scope
 
-```text
-What OTAP-native capability should we provide to users?
-```
+Start from the user outcome, not from the structure of the reference
+implementation.
 
-## Workflow
+Record:
 
-### 1. Define the Capability
+- the primary user scenarios
+- input and output data
+- external systems involved
+- supported and unsupported behavior
+- important operational and failure modes
+- scale, cardinality, and resource assumptions
+- the first useful end-to-end scenario
 
-Start from the user outcome.
+The first scope should be narrow enough to validate the architecture and
+release incrementally.
 
-Document:
+## Gather the Evidence
 
-- what users need to accomplish
-- what data enters the component
-- what data leaves the component
-- which external systems are involved
-- which operational problems matter
-- which failure modes matter
-- which scale and cardinality are expected
-- what the first useful release should support
-- what is out of scope
+Use the reference implementation to understand existing behavior, but do not
+assume that every behavior should be preserved.
 
-This helps avoid copying the shape of the existing Go component too early.
+Record the evidence used for design decisions:
 
-### 2. Analyze the Reference Implementation
+- reference implementation repository, version, commit, and relevant modules
+- configuration options, defaults, validation rules, and lifecycle behavior
+- batching, retry, queueing, shutdown, and error handling behavior
+- telemetry, tests, examples, and known edge cases
+- community issues, pull requests, discussions, operational feedback, and
+  future plans that are specified or clearly accepted
 
-Use AI to accelerate analysis, but review the conclusions manually.
+Community feedback and future direction are especially important for this
+approach because the best OTAP design may fix known usability, reliability, or
+performance problems, or implement an accepted future plan directly, rather
+than reproduce the current implementation.
 
-Extract:
+## Classify Findings
 
-- responsibilities
-- configuration options
-- defaults
-- validation rules
-- lifecycle behavior
-- batching behavior
-- retry behavior
-- authentication behavior
-- queueing behavior
-- shutdown behavior
-- error handling
-- telemetry
-- supported data types
-- unsupported data types
-- tests and examples
-- edge cases
-- performance-sensitive paths
-
-Do not assume that every extracted behavior should be preserved.
-
-### 3. Learn from Community and Operational Feedback
-
-When available, review issues, pull requests, documentation, discussions, and
-known operational experience.
-
-Look for:
-
-- common misconfigurations
-- confusing options
-- surprising defaults
-- recurring bugs
-- performance complaints
-- memory issues
-- high-cardinality problems
-- unclear errors
-- security-sensitive behavior
-- deprecated behavior
-- common workarounds
-- feature requests
-
-This is often where the best design improvements come from.
-
-### 4. Classify Findings
-
-Classify each important finding before it becomes part of the Rust design.
+Classify important findings before they become part of the Rust design:
 
 | Classification | Meaning |
 |---|---|
 | Preserve | Required for compatibility, user expectation, or interoperability. |
-| Improve | Useful behavior, but should be safer, clearer, faster, or more robust. |
+| Improve | Useful behavior that should be safer, clearer, faster, or more robust. |
 | Simplify | Can be represented with a simpler OTAP model. |
-| Decompose | Should be split across receiver, processor, exporter, extension, or library. |
+| Decompose | Should be split across OTAP components or libraries. |
 | Compose | Should be achieved by combining existing OTAP components. |
-| Avoid | Legacy, surprising, fragile, or tied to Go implementation details. |
+| Avoid | Legacy, surprising, fragile, or tied to implementation details. |
 | Reject | Conflicts with OTAP design, reliability, safety, or scope. |
-| Investigate | More evidence is required. |
+| Investigate | Requires more evidence before release. |
 
-This classification should be captured in the module methodology note.
+The classification records which reference behaviors are preserved, changed, or
+excluded, and why those decisions are intentional.
 
-### 5. Design the OTAP-Native Architecture
+## Design the OTAP-Native Architecture
 
-Decide where each responsibility belongs.
+Decide where each responsibility belongs in OTAP before implementing the first
+slice.
 
-Possible outcomes:
+The design should cover:
 
-- receiver only
-- processor only
-- exporter only
-- extension only
-- receiver plus processor
-- receiver plus extension
-- exporter plus processor
-- shared protocol library
-- shared configuration module
-- reusable authentication or connection module
-
-Questions to answer:
-
-- Is the Go component combining responsibilities that should be separated?
-- Can existing OTAP components provide part of this capability?
-- Should enrichment happen in a processor instead of a receiver?
-- Should authentication or connection management live in an extension?
-- Does the design preserve composability?
-- Does the design avoid unnecessary materialization?
-- Does the design fit OTAP backpressure and scheduling?
-- Does the design avoid unbounded memory growth?
-- Does the design produce useful telemetry?
+- component boundaries: receiver, processor, exporter, extension, or shared
+  library
+- composition with existing OTAP components and configuration conventions
+- OTAP-native input and output representation
+- passthrough versus decoded/materialized data
+- ownership, allocation, and hot-path expectations
+- fit with the thread-per-core, share-nothing execution model
+- live reconfiguration behavior and transition semantics
+- backpressure, retry, acknowledgement, shutdown, and failure behavior
+- telemetry and diagnostics
 
 The final architecture should be justified by user needs and OTAP constraints,
-not by the layout of the Go implementation.
-
-### 6. Define the User-Facing Contract
-
-Before implementing all options, define what users will experience.
-
-Document:
-
-- configuration schema
-- required fields
-- defaults
-- validation rules
-- supported data types
-- unsupported data types
-- error behavior
-- telemetry
-- retry behavior
-- backpressure behavior
-- shutdown behavior
-- resource limits
-- migration guidance, when relevant
-
-This is where the Rust implementation can intentionally improve usability.
-
-### 7. Implement the First Useful Slice
-
-Start with a small, reviewable implementation that proves the architecture.
-
-The first slice should include:
-
-- representative configuration
-- one useful end-to-end scenario
-- basic OTAP runtime behavior
-- basic telemetry
-- explicit unsupported-feature handling
-- tests for success paths
-- tests for failure paths
-- documentation of known limitations
+not by the package layout of the reference implementation.
 
-Avoid implementing every option before the design has been validated.
+## Define the User-Facing Contract
 
-### 8. Validate Through Scenarios
+Before implementing broad option coverage, define what users will experience:
 
-For this approach, scenario tests are usually more important than exact
-equivalence with the Go implementation.
+- configuration schema, defaults, and validation
+- supported and unsupported behavior
+- failure behavior and error reporting
+- retry, backpressure, shutdown, and resource-limit behavior
+- telemetry emitted by the capability
+- migration guidance, when existing users are expected to move from another
+  implementation
 
-Recommended tests:
+This is where the Rust implementation can intentionally improve usability
+without losing the behaviors that users depend on.
 
-- valid configuration scenarios
-- invalid configuration scenarios
-- representative input and output data
-- pipeline integration
-- external system unavailable
-- authentication failure
-- timeout
-- retry behavior
-- backpressure behavior
-- cancellation and shutdown
-- unsupported features
-- known community-reported edge cases
-- regression tests for previously discovered failures
+## Validation Expectations
 
-The Go implementation may be used as a comparison point, but exact equivalence
-is not automatically required.
+Validate the capability through scenarios rather than exact equivalence with
+the reference implementation.
 
-### 9. Validate Robustness and Performance
+The first validation target should be the first useful end-to-end scenario.
+Additional coverage should focus on configuration validation, representative
+input/output data, pipeline integration, failure handling, unsupported
+features, known community-reported edge cases, and regression tests for
+discovered problems.
 
-Robustness checks should verify that the component avoids:
+Robustness validation should show that the component avoids panics, silent data
+corruption, uncontrolled memory growth, unbounded queues, retry storms, hangs
+during shutdown, misleading success telemetry, and silent data loss for
+unsupported behavior.
 
-- panics
-- silent data corruption
-- uncontrolled memory growth
-- unbounded queues
-- retry storms
-- hangs during shutdown
-- misleading success telemetry
-- silent data loss for unsupported behavior
+Measure performance on the paths that matter for the OTAP design. Compare
+against relevant Rust baselines and acceptance targets; compare against the
+reference implementation only when that comparison is useful.
 
-Performance validation should measure the OTAP design, not only the translated
-logic.
+## PR Strategy
 
-Measure relevant paths:
+Start with an issue or design note that names the capability, user scenarios,
+reference implementation, first scope, OTAP architecture decision, user-facing
+contract, and main risks.
 
-- ingestion
-- transformation
-- export
-- batching
-- retry
-- telemetry overhead
-- allocations
-- throughput
-- latency
-- peak memory
+Split larger efforts so reviewers can evaluate design decisions separately from
+implementation details. A typical sequence is:
 
-Compare against acceptance targets and previous Rust baselines. Compare against
-the Go implementation when the comparison is useful.
+1. Capability scope, evidence summary, and OTAP architecture decision.
+2. User-facing contract, configuration validation, and component skeleton.
+3. First useful end-to-end scenario with basic telemetry and failures.
+4. Additional scenarios, runtime behavior, robustness, and performance.
 
-## Suggested PR Slicing
+Small efforts may combine these steps. The important point is that preserved,
+changed, unsupported, and rejected behavior remain explicit and reviewable.
 
-A capability-focused implementation can often be split as follows:
+## Component Development Note
 
-1. Add capability brief and methodology note.
-2. Add reference analysis and design decisions.
-3. Add configuration schema and validation.
-4. Add component skeleton and lifecycle wiring.
-5. Add first successful end-to-end scenario.
-6. Add unsupported-feature handling.
-7. Add telemetry.
-8. Add failure handling, retry, backpressure, and shutdown behavior.
-9. Add additional supported scenarios.
-10. Add regression tests from community feedback.
-11. Add benchmarks and performance tuning.
-12. Finalize documentation and release checklist.
+Each component using this approach must keep a short development note, for
+example `<component-module>/DEVELOPMENT.md`.
 
-The exact sequence depends on the component. The goal is to make each PR
-reviewable and to keep design choices visible.
+The note should cover:
 
-## Per-Component Methodology Note
+- capability scope and primary user scenarios
+- reference implementation and feedback reviewed
+- important finding classifications
+- OTAP architecture and component-boundary decisions
+- user-facing contract and intentional behavior changes
+- unsupported behavior
+- validation coverage and known remaining work
 
-Each module using this approach should include a methodology note.
-
-Suggested file:
-
-```text
-<component-module>/DEVELOPMENT.md
-```
-
-Suggested content:
-
-```md
-# Development Methodology
-
-## Approach
-
-This component follows the Reference-Informed OTAP-Native Capability Design
-approach.
-
-## Capability Summary
-
-This component provides:
-
-- ...
-
-Primary user scenarios:
-
-- ...
-
-Out of scope:
-
-- ...
-
-## Reference Implementation Reviewed
-
-Repository:
-
-- ...
-
-Commit or version:
-
-- ...
-
-Relevant packages or modules:
-
-- ...
-
-Reference behavior analyzed:
-
-- ...
-
-## Community and Operational Feedback
-
-Issues, PRs, discussions, or known feedback reviewed:
-
-- ...
-
-Important findings:
-
-- ...
-
-## Finding Classification
-
-| Finding | Classification | OTAP decision | Rationale |
-|---|---|---|---|
-| ... | Preserve / Improve / Simplify / Decompose / Compose / Avoid / Reject / Investigate | ... | ... |
-
-## OTAP Architecture Decision
-
-Chosen component structure:
-
-- receiver:
-- processor:
-- exporter:
-- extension:
-- shared library:
-
-Why this structure was chosen:
-
-- ...
-
-Alternatives considered:
-
-- ...
-
-## User-Facing Contract
-
-Configuration:
-
-- ...
-
-Defaults:
-
-- ...
-
-Validation:
-
-- ...
-
-Supported behavior:
-
-- ...
-
-Unsupported behavior:
-
-- ...
-
-Telemetry:
-
-- ...
-
-Failure behavior:
-
-- ...
-
-Migration notes, if relevant:
-
-- ...
-
-## OTAP Runtime Notes
-
-- input representation:
-- output representation:
-- batching:
-- backpressure:
-- retry:
-- ack and nack:
-- cancellation:
-- shutdown:
-- memory behavior:
-- hot-path materialization:
-- telemetry:
-
-## Tests Added
-
-- configuration tests:
-- scenario tests:
-- integration tests:
-- failure tests:
-- unsupported-feature tests:
-- regression tests:
-- robustness tests:
-- benchmarks:
-
-## Checklist
-
-- [ ] Capability defined.
-- [ ] Reference implementation reviewed.
-- [ ] Community or operational feedback reviewed, when available.
-- [ ] Findings classified.
-- [ ] OTAP architecture decision documented.
-- [ ] User-facing contract documented.
-- [ ] Runtime behavior documented.
-- [ ] First useful scenario implemented.
-- [ ] Unsupported behavior documented and tested.
-- [ ] Telemetry added.
-- [ ] Failure behavior tested.
-- [ ] Backpressure, retry, cancellation, or shutdown tested, when relevant.
-- [ ] Benchmarks added, when relevant.
-- [ ] Documentation updated.
-- [ ] Release criteria satisfied.
-
-## Remaining Work
-
-- ...
-```
+Keep the note brief. It should help reviewers understand the design rationale
+without duplicating the implementation or test suite.
 
 ## Completion Criteria
 
 For the declared scope, the implementation is ready when:
 
-- the user capability is clear
-- reference behavior has been analyzed
+- the user capability and first useful scenario are clear
+- reference behavior and relevant feedback have been analyzed
 - important findings have been classified
-- OTAP component boundaries are justified
-- preserved behavior is intentional
-- changed behavior is intentional
-- unsupported behavior is documented and tested
-- scenario tests cover the main user paths
-- failure behavior is controlled and observable
-- telemetry is useful
-- performance is acceptable for the intended use
-- the module methodology note is up to date
+- OTAP component boundaries and composition choices are justified
+- preserved, changed, unsupported, and rejected behavior are intentional
+- the user-facing contract is documented
+- scenario tests cover the main user paths and failure modes
+- the OTAP integration contract is defined, including runtime behavior, live
+  reconfiguration, component composition, and telemetry
+- robustness and performance are acceptable for the intended use
+- the component development note reflects the current state
