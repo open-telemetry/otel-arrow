@@ -1,212 +1,154 @@
 # AI-Assisted Component Development in the OTAP Dataflow Engine
 
-This document describes the two recommended AI-assisted approaches for developing
-new Rust components in the OTAP Dataflow Engine from existing OpenTelemetry
-implementations, especially the Go Collector and contrib repositories.
+This document explains how to choose between the two recommended AI-assisted
+approaches for developing Rust components in the OTAP Dataflow Engine from
+existing OpenTelemetry implementations.
 
-The goal is not to mechanically translate Go code into Rust. The goal is to use
-AI to accelerate analysis, implementation, testing, and documentation while
-keeping the result controlled, reviewable, interoperable, and aligned with the
-OTAP Dataflow Engine.
+The intended reader is an engineer already familiar with the OTAP Dataflow
+Engine, Rust, and OpenTelemetry. It focuses on choosing the right approach and
+recording the decisions that make the work reviewable.
+
+AI can accelerate analysis, implementation, testing, and documentation. It does
+not define correctness. Accepted behavior must be backed by traceable evidence,
+an OTAP design decision, or a documented intentional divergence.
 
 ## The Two Approaches
 
-The project uses two complementary approaches.
+The project uses two complementary approaches. Some components use both.
 
-### 1. Spec-Constrained Oracle Reimplementation
+### Spec-Constrained Oracle Reimplementation
 
-Use this approach when the main risk is interoperability.
+Use this approach when the main risk is interoperability and a mature reference
+implementation can act as an executable oracle for observable behavior.
 
 Typical cases include:
 
 - protocol encoders and decoders
 - wire formats
 - file formats
-- schemas
+- schemas and generated-code contracts
+- framing, compression envelopes, and handshakes
 
-In this approach, the specification and schemas define the normative rules. A
-mature reference implementation, often the Go Collector, is used as an executable
-oracle for observable behavior.
+The Rust implementation must satisfy an explicit compatibility contract for the
+declared scope while remaining OTAP-native. Specifications and schemas define
+normative constraints; the reference implementation validates observable
+behavior admitted into scope.
 
-The Rust implementation must satisfy a declared compatibility contract while
-remaining OTAP-native.
+Primary validation comes from compatibility evidence, such as reference
+fixtures, cross-implementation checks, semantic comparison, byte-level checks
+where required, and malformed-input tests.
 
-See [Spec-Constrained Oracle Reimplementation](docs/ai/spec-constrained-oracle-reimplementation.md)
-for a detailed contributor framework for this approach.
+See [Spec-Constrained Oracle Reimplementation](spec-constrained-oracle-reimplementation.md)
+for the companion guidance.
 
-### 2. Reference-Informed OTAP-Native Capability Design
+### Reference-Informed OTAP-Native Capability Design
 
-Use this approach when the main goal is to deliver a new OTAP capability inspired
-by an existing receiver, processor, exporter, extension, or contrib component.
+Use this approach when the main goal is to deliver a new or improved OTAP
+capability inspired by an existing receiver, processor, exporter, extension, or
+contrib component.
 
 Typical cases include:
 
-- implementing a receiver that already exists in contrib
-- implementing a processor with known user feedback
-- implementing an exporter with a different OTAP-native runtime model
-- splitting a Go component into several OTAP components
-- merging responsibilities differently to improve usability or performance
+- implementing a receiver, processor, exporter, or extension from contrib
+- splitting one existing component across several OTAP components
+- merging responsibilities differently for usability or performance
+- building a shared component library or component family
+- redesigning configuration, defaults, telemetry, or runtime behavior
 
-In this approach, the reference implementation is evidence, not an oracle. The
-Rust implementation should learn from existing code, tests, documentation,
-issues, user feedback, and operational experience, then produce the best
-OTAP-native design for users.
+The reference implementation is evidence, not an oracle. The Rust design should
+learn from existing code, tests, documentation, issues, operational feedback,
+and documented future direction, then deliver the best OTAP-native capability
+for the declared user scenarios.
 
-See [Reference-Informed OTAP-Native Capability Design](docs/ai/reference-informed-otap-native-capability-design.md)
-for a detailed contributor framework for this approach.
+Primary validation comes from scenario tests, integration tests, design
+rationale, failure coverage, and OTAP runtime behavior.
+
+See [Reference-Informed OTAP-Native Capability Design](reference-informed-otap-native-capability-design.md)
+for the companion guidance.
 
 ## Choosing the Right Approach
 
-| Question | Use Spec-Constrained Oracle Reimplementation | Use Reference-Informed OTAP-Native Capability Design |
+| Question | Spec-Constrained Oracle | Reference-Informed Design |
 |---|---:|---:|
-| Is there a protocol, schema, file format, or framing model? | Yes | Sometimes |
 | Is interoperability the primary risk? | Yes | Sometimes |
+| Is a protocol, schema, file format, or framing model central? | Yes | Sometimes |
+| Should the reference implementation define observable behavior? | Yes, for declared scope | No |
 | Is byte-level or semantic compatibility required? | Often | Sometimes |
-| Should the Go implementation define observable behavior? | Often | Not necessarily |
-| Is the component boundary open to redesign? | Usually no | Yes |
-| Can one Go component become several OTAP components? | Rarely | Yes |
-| Is the goal to preserve behavior or improve a capability? | Preserve declared behavior | Improve user capability |
+| Is the component boundary open to redesign? | Usually no | Usually yes |
+| Is improving user experience or design a primary goal? | Not usually | Yes |
+| Should future direction and user feedback shape the result? | Limited | Yes |
 | Main validation style | Compatibility tests | Scenario and integration tests |
 
-Some projects use both approaches.
+Hybrid projects should split the decision by responsibility. For example, an
+exporter may use the oracle approach for a wire protocol and the
+reference-informed approach for configuration, telemetry, and runtime behavior.
 
-For example, an exporter may use Spec-Constrained Oracle Reimplementation for
-its wire protocol, while using Reference-Informed OTAP-Native Capability Design
-for configuration, telemetry, and runtime behavior.
+## Shared Requirements
 
-## Shared Principles
+Every AI-assisted component effort must remain controlled and reviewable:
 
-### AI accelerates the work, but does not define correctness
+- define the declared scope and first useful end-to-end scenario
+- record the evidence used for design and validation
+- classify preserved, changed, unsupported, rejected, or divergent behavior
+- make unsupported behavior and intentional divergences explicit
+- validate AI-generated conclusions with tests, fixtures, references, or
+  documented OTAP decisions
 
-AI may help with:
+Every implementation must fit the OTAP Dataflow Engine:
 
-- reading reference implementations
-- summarizing behavior
-- proposing Rust code
-- generating tests
-- identifying edge cases
-- comparing designs
-- drafting documentation
-- optimizing performance
+- OTAP-native data representation and component composition
+- ownership, allocation, and hot-path materialization behavior
+- thread-per-core, share-nothing execution model
+- live reconfiguration behavior and transition semantics
+- backpressure, retry, acknowledgement, shutdown, and failure behavior
+- configuration validation, telemetry, diagnostics, and performance
+- security, authentication, and sensitive data handling, when relevant
 
-AI-generated output must be reviewed and validated. A behavior is accepted only
-when it is backed by a specification, schema, test, fixture, reference behavior,
-OTAP design decision, or documented intentional divergence.
+Matching or learning from an existing implementation is not enough. The result
+must also behave correctly inside OTAP.
 
-### The Go Collector is not always the target design
+## Development Note and PR Strategy
 
-The Go Collector is extremely valuable, but it should not always be copied.
+Each component using either approach must keep a short development note, for
+example `<component-module>/DEVELOPMENT.md`.
 
-For compatibility-sensitive protocol work, the Go implementation may be a strong
-behavioral oracle.
+The note should cover:
 
-For receivers, processors, exporters, and higher-level capabilities, the Go
-implementation is usually a reference source. It helps us understand the
-ecosystem, but the OTAP implementation may intentionally differ.
+- approach followed and scope selected
+- reference implementation, specifications, feedback, or future direction used
+- behavior preserved, changed, unsupported, rejected, or intentionally divergent
+- OTAP integration decisions
+- validation coverage and known remaining work
 
-### OTAP-native behavior is required
+Before opening implementation PRs, start with an issue or design note that names
+the component, user goal, chosen approach, first scope, evidence, OTAP
+integration concerns, and main risks.
 
-Every implementation must fit the OTAP Dataflow Engine.
+Split larger efforts so reviewers can evaluate decisions separately from
+implementation details. A typical sequence is:
 
-Contributors should consider:
-
-- OTAP-native data representation
-- ownership and memory behavior
-- scheduling
-- backpressure
-- retry behavior
-- ack and nack behavior
-- shutdown and cancellation
-- telemetry
-- configuration validation
-- live reconfiguration updates
-- failure reporting
-- composability
-- performance
-
-A component is not complete only because it matches an existing implementation.
-It must also behave correctly inside OTAP.
-
-## Required Per-Component Methodology Note
-
-Every component developed using one of these approaches should include a
-dedicated methodology note in the module directory.
-
-Suggested file name:
-
-```text
-<component-module>/DEVELOPMENT.md
-```
-
-or, for larger modules:
-
-```text
-<component-module>/docs/development-methodology.md
-```
-
-The note should explain:
-
-- which approach was followed
-- which reference implementation was analyzed
-- which scope was selected
-- which behavior was preserved
-- which behavior was changed
-- which behavior is unsupported
-- which OTAP-specific constraints were considered
-- which tests and benchmarks were added
-- what remains to be done
-
-The note should be updated as the implementation evolves.
-
-## Recommended Issue and PR Strategy
-
-Before opening implementation PRs, contributors should start with an issue that
-briefly describes:
-
-- the component or capability they want to contribute
-- the user goal or problem being addressed
-- the approach they plan to follow
-- the expected scope of the first implementation
-- known references, such as Go Collector packages, contrib components,
-  specifications, schemas, issues, or examples
-
-Large translation or reimplementation efforts should then be split into a small
-number of reviewable pull requests whenever practical. A typical effort should
-fit into 2 to 5 PRs.
-
-Suggested sequence:
-
-1. Design, scope, and methodology note.
+1. Scope, evidence, and design or compatibility contract.
 2. First working implementation slice.
 3. Compatibility or scenario coverage, including failures and unsupported
    behavior.
-4. OTAP runtime hardening, telemetry, robustness, and performance work.
-5. Documentation, release checklist, and remaining cleanup.
+4. OTAP runtime behavior, telemetry, robustness, and performance.
 
-Small components may combine some steps. Larger components should avoid one
-large PR that mixes design, implementation, tests, benchmarks, and documentation.
+Small components may combine steps. Larger efforts should avoid one PR that
+mixes design, implementation, tests, benchmarks, and documentation.
 
-## Shared Completion Criteria
+## Completion Criteria
 
-A component should not be considered complete until the declared scope is clear.
+A component is ready for its declared scope when:
 
-At minimum, contributors should document:
+- evidence and design decisions are recorded
+- compatibility expectations or user-facing behavior are explicit
+- unsupported behavior and intentional divergences are documented and tested
+- the relevant compatibility or scenario tests pass
+- the OTAP integration contract is defined, including runtime behavior, live
+  reconfiguration, component composition, and telemetry
+- robustness and performance are acceptable for the intended use
+- the component development note reflects the current state
 
-- supported features
-- unsupported features
-- expected failure modes
-- relevant reference implementation commit or version
-- OTAP runtime behavior
-- configuration behavior
-- telemetry
-- tests added
-- known limitations
-- follow-up work
-
-For Spec-Constrained Oracle Reimplementation, the completion evidence should
-include compatibility tests.
-
-For Reference-Informed OTAP-Native Capability Design, the completion evidence
-should include scenario tests and design rationale.
-
-For hybrid projects, both kinds of evidence are expected.
+For oracle work, completion evidence must include compatibility tests. For
+reference-informed design, completion evidence must include scenario tests and
+design rationale. Hybrid projects need both kinds of evidence.
