@@ -80,18 +80,22 @@ use otap_df_pdata::schema::consts;
 use crate::consts::{
     ENCODE_FUNC_NAME, FNV_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOWER_CASE_FUNC_NAME,
     LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME,
-    SHA1_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME, UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME,
+    SHA256_FUNC_NAME, SHA512_FUNC_NAME, UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME,
     UUIDV7_FUNC_NAME, XXH3_FUNC_NAME, XXH128_FUNC_NAME,
 };
+#[cfg(feature = "sha1-hash")]
+use crate::consts::SHA1_FUNC_NAME;
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::{join, multi_join};
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
 use crate::pipeline::functions::{
-    arity_range, fnv_hash, murmur3_hash, regexp_substr, sha1_hash, substring, xxh3_hash,
-    xxh128_hash, uuidv7
+    arity_range, fnv_hash, murmur3_hash, regexp_substr, substring, xxh3_hash,
+    xxh128_hash, uuidv7,
 };
+#[cfg(feature = "sha1-hash")]
+use crate::pipeline::functions::sha1_hash;
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::anyval::{
     find_any_value_columns, project_any_value_columns, stitch_partitioned_results,
@@ -843,9 +847,10 @@ impl DataFusionFunctionDef {
             FORMAT_DATETIME_FUNC_NAME => Self::new(to_char(), ExprLogicalType::String, false, None),
             RTRIM_FUNC_NAME => Self::new(rtrim(), ExprLogicalType::String, true, None),
             SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
-            MD5_FUNC_NAME => Self::new(md5(), ExprLogicalType::Binary, true, None),
+            MD5_FUNC_NAME => Self::new(md5(), ExprLogicalType::String, true, Some(DataType::Utf8)),
             FNV_FUNC_NAME => Self::new(fnv_hash(), ExprLogicalType::Int64, true, None),
             MURMUR3_FUNC_NAME => Self::new(murmur3_hash(), ExprLogicalType::Int64, true, None),
+            #[cfg(feature = "sha1-hash")]
             SHA1_FUNC_NAME => Self::new(sha1_hash(), ExprLogicalType::Binary, true, None),
             SHA512_FUNC_NAME => Self::new(sha512(), ExprLogicalType::Binary, true, None),
             XXH3_FUNC_NAME => Self::new(xxh3_hash(), ExprLogicalType::Int64, true, None),

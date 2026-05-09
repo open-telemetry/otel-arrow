@@ -17,14 +17,17 @@ mod fnv;
 pub(crate) mod is_type;
 mod murmur3;
 mod regexp_substr;
+#[cfg(feature = "sha1-hash")]
 mod sha1;
 mod substring;
 mod xxh128;
 mod xxh3;
+mod uuidv7;
 
 make_udf_function!(contains::ExtendedContainsFunc, contains);
 make_udf_function!(fnv::FnvHashFunc, fnv_hash);
 make_udf_function!(murmur3::Murmur3HashFunc, murmur3_hash);
+#[cfg(feature = "sha1-hash")]
 make_udf_function!(sha1::Sha1Func, sha1_hash);
 make_udf_function!(xxh128::Xxh128Func, xxh128_hash);
 make_udf_function!(xxh3::Xxh3Func, xxh3_hash);

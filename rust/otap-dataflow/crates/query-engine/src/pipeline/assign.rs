@@ -4815,8 +4815,8 @@ mod test {
                 .finish(),
         ]);
         let query = r#"logs | extend
-          attributes["str_attr"] = encode(md5(attributes["str_attr"]), "hex"),
-          attributes["binary_attr"] = encode(md5(attributes["binary_attr"]), "hex")
+          attributes["str_attr"] = md5(attributes["str_attr"]),
+          attributes["binary_attr"] = md5(attributes["binary_attr"])
       "#;
         let pipeline_expr = P::parse_with_options(query, default_parser_options())
             .unwrap()
@@ -4833,11 +4833,11 @@ mod test {
             vec![
                 KeyValue::new(
                     "str_attr",
-                    AnyValue::new_string("a6105c0a611b41b08f1209506350279e")
+                    AnyValue::new_string("415290769594460e2e485922904f345d")
                 ),
                 KeyValue::new(
                     "binary_attr",
-                    AnyValue::new_string("0ffe9bcd5a3d234d4e99e9a1fb9a5d2c")
+                    AnyValue::new_string("d1f255a373a3cef72e03aa9d980c7eca")
                 )
             ]
         );
@@ -4938,6 +4938,7 @@ mod test {
         test_update_attr_to_murmur3_hash_function_call_result::<KqlParser>().await
     }
 
+    #[cfg(feature = "sha1-hash")]
     async fn test_update_attr_to_sha1_hash_function_call_result<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
@@ -4970,11 +4971,13 @@ mod test {
         );
     }
 
+    #[cfg(feature = "sha1-hash")]
     #[tokio::test]
     async fn test_update_attr_to_sha1_hash_function_call_result_opl_parser() {
         test_update_attr_to_sha1_hash_function_call_result::<OplParser>().await
     }
 
+    #[cfg(feature = "sha1-hash")]
     #[tokio::test]
     async fn test_update_attr_to_sha1_hash_function_call_result_kql_parser() {
         test_update_attr_to_sha1_hash_function_call_result::<KqlParser>().await

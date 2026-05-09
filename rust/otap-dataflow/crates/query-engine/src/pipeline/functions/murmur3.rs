@@ -4,7 +4,10 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, BinaryArray, Int64Array, LargeStringArray, StringArray};
+use arrow::array::{
+    Array, ArrayRef, BinaryArray, Int64Array, LargeBinaryArray, LargeStringArray, StringArray,
+    StringViewArray,
+};
 use arrow::datatypes::DataType;
 use datafusion::common::exec_err;
 use datafusion::error::Result;
@@ -155,8 +158,24 @@ fn hash_array(arr: &dyn Array) -> Result<Int64Array> {
                 arr.iter().map(|v| v.map(|s| murmur3_32(s.as_bytes()))),
             ))
         }
+        DataType::Utf8View => {
+            let arr = arr
+                .as_any()
+                .downcast_ref::<StringViewArray>()
+                .expect("Utf8View");
+            Ok(Int64Array::from_iter(
+                arr.iter().map(|v| v.map(|s| murmur3_32(s.as_bytes()))),
+            ))
+        }
         DataType::Binary => {
             let arr = arr.as_any().downcast_ref::<BinaryArray>().expect("Binary");
+            Ok(Int64Array::from_iter(arr.iter().map(|v| v.map(murmur3_32))))
+        }
+        DataType::LargeBinary => {
+            let arr = arr
+                .as_any()
+                .downcast_ref::<LargeBinaryArray>()
+                .expect("LargeBinary");
             Ok(Int64Array::from_iter(arr.iter().map(|v| v.map(murmur3_32))))
         }
         other => exec_err!("murmur3: unsupported array type {:?}", other),

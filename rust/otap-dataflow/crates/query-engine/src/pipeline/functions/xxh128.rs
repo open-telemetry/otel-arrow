@@ -4,7 +4,10 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, BinaryArray, BinaryBuilder, LargeStringArray, StringArray};
+use arrow::array::{
+    Array, ArrayRef, BinaryArray, BinaryBuilder, LargeBinaryArray, LargeStringArray, StringArray,
+    StringViewArray,
+};
 use arrow::datatypes::DataType;
 use datafusion::common::exec_err;
 use datafusion::error::Result;
@@ -120,8 +123,32 @@ fn hash_array(arr: &dyn Array) -> Result<BinaryArray> {
                 }
             }
         }
+        DataType::Utf8View => {
+            let arr = arr
+                .as_any()
+                .downcast_ref::<StringViewArray>()
+                .expect("Utf8View");
+            for v in arr.iter() {
+                match v {
+                    Some(s) => builder.append_value(to_bytes(xxh3_128(s.as_bytes()))),
+                    None => builder.append_null(),
+                }
+            }
+        }
         DataType::Binary => {
             let arr = arr.as_any().downcast_ref::<BinaryArray>().expect("Binary");
+            for v in arr.iter() {
+                match v {
+                    Some(b) => builder.append_value(to_bytes(xxh3_128(b))),
+                    None => builder.append_null(),
+                }
+            }
+        }
+        DataType::LargeBinary => {
+            let arr = arr
+                .as_any()
+                .downcast_ref::<LargeBinaryArray>()
+                .expect("LargeBinary");
             for v in arr.iter() {
                 match v {
                     Some(b) => builder.append_value(to_bytes(xxh3_128(b))),

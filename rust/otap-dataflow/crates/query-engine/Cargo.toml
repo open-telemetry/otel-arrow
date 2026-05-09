@@ -18,7 +18,7 @@ datafusion = { workspace = true, features = [
 ] }
 futures-core = { workspace = true }
 memchr = { workspace = true }
-sha1 = { workspace = true }
+sha1 = { workspace = true, optional = true }
 xxhash-rust = { workspace = true }
 parking_lot = { workspace = true }
 smallvec = { workspace = true }
@@ -29,6 +29,9 @@ uuid = { workspace = true }
 
 otap-df-config = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["testing"] }
+
+[features]
+sha1-hash = ["dep:sha1"]
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }

@@ -4,7 +4,10 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, Int64Array, LargeStringArray, StringArray};
+use arrow::array::{
+    Array, ArrayRef, BinaryArray, Int64Array, LargeBinaryArray, LargeStringArray, StringArray,
+    StringViewArray,
+};
 use arrow::datatypes::DataType;
 use datafusion::common::exec_err;
 use datafusion::error::Result;
@@ -107,11 +110,29 @@ fn hash_array(arr: &dyn Array) -> Result<Int64Array> {
                 arr.iter().map(|v| v.map(|s| xxh3_64(s.as_bytes()) as i64)),
             ))
         }
+        DataType::Utf8View => {
+            let arr = arr
+                .as_any()
+                .downcast_ref::<StringViewArray>()
+                .expect("Utf8View");
+            Ok(Int64Array::from_iter(
+                arr.iter().map(|v| v.map(|s| xxh3_64(s.as_bytes()) as i64)),
+            ))
+        }
         DataType::Binary => {
             let arr = arr
                 .as_any()
-                .downcast_ref::<arrow::array::BinaryArray>()
+                .downcast_ref::<BinaryArray>()
                 .expect("Binary");
+            Ok(Int64Array::from_iter(
+                arr.iter().map(|v| v.map(|b| xxh3_64(b) as i64)),
+            ))
+        }
+        DataType::LargeBinary => {
+            let arr = arr
+                .as_any()
+                .downcast_ref::<LargeBinaryArray>()
+                .expect("LargeBinary");
             Ok(Int64Array::from_iter(
                 arr.iter().map(|v| v.map(|b| xxh3_64(b) as i64)),
             ))
