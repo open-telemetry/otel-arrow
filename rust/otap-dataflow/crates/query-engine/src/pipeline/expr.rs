@@ -62,6 +62,8 @@ use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::crypto::{md5, sha256, sha512};
 use datafusion::functions::datetime::to_char;
 use datafusion::functions::encoding::encode;
+
+use datafusion::functions::math::log10;
 use datafusion::functions::string::{concat, concat_ws, lower, ltrim, replace, rtrim, upper, uuid};
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{
@@ -81,7 +83,7 @@ use crate::consts::{
     ENCODE_FUNC_NAME, FNV_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOWER_CASE_FUNC_NAME,
     LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME,
     SHA256_FUNC_NAME, SHA512_FUNC_NAME, UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME,
-    UUIDV7_FUNC_NAME, XXH3_FUNC_NAME, XXH128_FUNC_NAME,
+    UUIDV7_FUNC_NAME, XXH3_FUNC_NAME, XXH128_FUNC_NAME, LOG_FUNC_NAME
 };
 #[cfg(feature = "sha1-hash")]
 use crate::consts::SHA1_FUNC_NAME;
@@ -840,6 +842,7 @@ impl DataFusionFunctionDef {
         // upstream in datafusion_functions)
         Some(match func_name {
             ENCODE_FUNC_NAME => Self::new(encode(), ExprLogicalType::String, false, None),
+            LOG_FUNC_NAME => Self::new(log10(), ExprLogicalType::Float64, true, None),
             LTRIM_FUNC_NAME => Self::new(ltrim(), ExprLogicalType::String, true, None),
             REGEXP_SUBSTR_FUNC_NAME => {
                 Self::new(regexp_substr(), ExprLogicalType::String, false, None)

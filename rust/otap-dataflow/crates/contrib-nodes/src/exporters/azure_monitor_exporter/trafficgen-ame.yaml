@@ -1,10 +1,10 @@
-# Azure Monitor Exporter with Fake Data Generator
+# Azure Monitor Exporter with Traffic Generator
 #
 # Uses the built-in traffic generator for quick self-contained testing of the
 # Azure Monitor Exporter.
 #
 # Usage:
-#   cargo run -- --config fakegen-ame.yaml
+#   cargo run -- --config trafficgen-ame.yaml
 
 version: otel_dataflow/v1
 
@@ -25,7 +25,7 @@ groups:
     pipelines:
       main:
         nodes:
-          fake-data-generator:
+          traffic-generator:
             type: "urn:otel:receiver:traffic_generator"
             config:
               data_source: static
@@ -68,5 +68,5 @@ groups:
                 method: "dev"
 
         connections:
-          - from: fake-data-generator
+          - from: traffic-generator
             to: azure-monitor-exporter

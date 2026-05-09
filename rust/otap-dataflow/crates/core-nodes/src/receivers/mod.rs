@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-/// Traffic generator receiver (a.k.a. fake data generator).
+/// Traffic generator receiver.
 #[cfg(feature = "dev-tools")]
 pub mod traffic_generator;
 
@@ -19,3 +19,6 @@ pub mod otap_receiver;
 
 /// OTLP receiver.
 pub mod otlp_receiver;
+
+/// Host metrics receiver.
+pub mod host_metrics_receiver;

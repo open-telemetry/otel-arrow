@@ -180,7 +180,7 @@ fail.
 
 A simple component that returns success. All requests succeed.
 
-#### Fake Data Generator
+#### Traffic Generator
 
 A simple component to produce synthetic data from semantic convention registries.
 

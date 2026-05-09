@@ -259,7 +259,7 @@ export function buildCoreUsage(metricSets) {
   const sums = new Map();
   const counts = new Map();
   metricSets.forEach((set) => {
-    if (set.name !== "pipeline.metrics") return;
+    if (set.name !== "pipeline") return;
     const attrs = normalizeAttributes(set.attributes || {});
     const coreId = attrs["core.id"];
     if (!coreId) return;

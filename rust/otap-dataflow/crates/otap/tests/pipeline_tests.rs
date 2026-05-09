@@ -3,7 +3,7 @@
 
 //! Verifies pipeline entity lifecycle handling across build/run/shutdown.
 //!
-//! This test constructs a minimal pipeline (fake data generator -> noop exporter),
+//! This test constructs a minimal pipeline (traffic generator -> noop exporter),
 //! asserts that pipeline/node/channel entities are registered after build, runs the
 //! pipeline until a graceful shutdown, and then confirms that all related entities
 //! and metric sets are unregistered to avoid registry leaks.

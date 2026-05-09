@@ -122,6 +122,7 @@ tikv-jemalloc-sys = "0.6.1"
 memchr = "2.8.0"
 memmap2 = "0.9"
 memory-stats = "1"
+libc = "0.2"
 nix = { version = "0.31.0", features = ["process", "signal", "fs", "mman"] }
 notify = "8.0"  # Uses platform-native backend: inotify (Linux), kqueue (macOS), ReadDirectoryChanges (Windows)
 num_enum = "0.7"
@@ -172,7 +173,7 @@ crc32fast = "1.4.2"
 replace_with = "0.1.8"
 simdutf8 = "0.1.5"
 slotmap = "1.0.7"
-smallvec = { version = "1.15" , features = ["union"] }
+smallvec = { version = "1.15" , features = ["union", "const_new"] }
 socket2 = { version = "0.6.1", features = ["all"] }
 ipnet = "2.11.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
@@ -269,7 +270,7 @@ dhat-heap = [
     "dep:dhat",
 ]
 
-# Dev/test tooling (fake data generator) and the otap integration tests
+# Dev/test tooling (traffic generator) and the otap integration tests
 # that exercise it. Activating this from the workspace default keeps
 # `cargo test` running the full suite locally; CI jobs that drop
 # `dev-tools` (e.g. the Linux ARM `build_nonrequired` job) avoid the
