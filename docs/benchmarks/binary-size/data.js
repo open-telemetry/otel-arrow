@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778200772018,
+  "lastUpdate": 1778287218076,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3998,6 +3998,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 104.91,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cijo Thomas",
+            "username": "cijothomas",
+            "email": "cijo.thomas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8401d51bc2b808d6cace3d52e52bafa49db811c7",
+          "message": "Rename engine.metrics and pipeline.metrics meters (#2888)\n\nDrops the redundant trailing `.metrics` from the engine-wide and\nper-pipeline meter/scope names:\n\n- `engine.metrics` → `engine`\n- `pipeline.metrics` → `pipeline`\n\nA meter name already names a set of metrics, so the trailing `.metrics`\nwas tautological in scrape output and view selectors. Instrument names\nare unchanged — only the scope/meter names.\n\nPart of #2531. Follow-up to #2879 (which renamed `otlp.receiver.metrics`\n→ `otlp.receiver`). The remaining per-component renames (core-nodes\nreceivers/processors/exporters, contrib-nodes, validation, docs sweep)\nwill land as separate smaller PRs.\n\n## Breaking change for downstream consumers\n\nAnything that selects metrics by **scope/meter name** must be updated.\nThe instrument names are unchanged — only the scope name changes.\n\nExamples that need updating:\n\n- View configurations that filter by `ScopeName` (e.g. `ScopeName:\n\"engine.metrics\"` → `ScopeName: \"engine\"`, `ScopeName:\n\"pipeline.metrics\"` → `ScopeName: \"pipeline\"`).\n- Prometheus relabeling/alerting that keys off the `set=\"…\"` label.\n- Dashboards or queries that group by OTLP scope name.\n\nEffective emitted name mapping (`<scope>.<instrument>`):\n\n| Before | After |\n|---|---|\n| `engine.metrics.memory_rss` | `engine.memory_rss` |\n| `engine.metrics.cpu_utilization` | `engine.cpu_utilization` |\n| `pipeline.metrics.uptime` | `pipeline.uptime` |\n| `pipeline.metrics.memory_usage` | `pipeline.memory_usage` |\n| `pipeline.metrics.cpu_utilization` | `pipeline.cpu_utilization` |\n| (…and the rest of the `pipeline.*` set) | (analogous) |\n\n## In-repo consumers updated in this PR\n\n- Rust: `enginectl` TUI (`refresh.rs`, `tests.rs`), `admin-types`\nwire-shape roundtrip tests\n- Admin UI JS: `engine-metrics.js`, `main.js`, `charts-controller.js`,\n`selectors-ui.js`, `polling-controller.test.mjs`\n- Python: `scripts/engine-metrics.py`\n- Docs: `engine/telemetry.md`, `docs/admin/architecture.md`,\n`docs/memory-limiter-phase1.md`, `docs/telemetry/metrics-guide.md`",
+          "timestamp": "2026-05-08T23:41:58Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/8401d51bc2b808d6cace3d52e52bafa49db811c7"
+        },
+        "date": 1778287210173,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 105.07,
             "unit": "MB"
           }
         ]
