@@ -81,7 +81,7 @@ Main consumed metric-set families:
 - `channel.sender`
 - `channel.receiver`
 - `topic.exporter.metrics`
-- `topic.receiver.metrics`
+- `topic.receiver`
 - node metric sets keyed by `node.id`
 
 ## State model
