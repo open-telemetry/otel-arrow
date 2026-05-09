@@ -19,6 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use otap_df_admin_types::telemetry as api;
+use otap_df_config::pipeline::telemetry::AttributeValue as ResourceAttributeValue;
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, MetricsDescriptor, MetricsField};
 use otap_df_telemetry::event::LogEvent;
@@ -844,7 +845,12 @@ fn emit_sample_line(
 /// empty (per OTel→Prometheus spec, `target_info` is only emitted when there
 /// is metadata to expose). Intended to be called once at server startup; the
 /// resulting string is then prepended verbatim to every Prometheus scrape.
-pub(crate) fn render_target_info(resource_attributes: &HashMap<String, String>) -> String {
+///
+/// Accepts `AttributeValue` (the same type used in the engine telemetry
+/// config) so callers do not need to pre-flatten typed values to strings.
+pub(crate) fn render_target_info(
+    resource_attributes: &HashMap<String, ResourceAttributeValue>,
+) -> String {
     if resource_attributes.is_empty() {
         return String::new();
     }
@@ -854,7 +860,7 @@ pub(crate) fn render_target_info(resource_attributes: &HashMap<String, String>) 
     let merged = sanitize_and_merge_label_pairs(
         resource_attributes
             .iter()
-            .map(|(k, v)| (k.as_str(), v.clone())),
+            .map(|(k, v)| (k.as_str(), v.to_string_value())),
         // No reserved keys: `target_info` is a separate metric line and
         // does not carry `otel_scope_*` labels, so no collision is possible.
         &[],
@@ -1649,6 +1655,13 @@ fn escape_prom_help(s: &str) -> String {
 /// Sanitizes label keys and merges values that collide after sanitization
 /// into a single entry separated by `;`, per the OTel→Prometheus spec.
 ///
+/// Per spec: "OpenTelemetry keys [that] map to the same Prometheus key …
+/// MUST be concatenated together, separated by `;`, and ordered by the
+/// lexicographical order of the original keys." We collect and sort by
+/// original key before merging so the joined value is deterministic
+/// regardless of caller iteration order (e.g. `HashMap::iter`, which has
+/// no defined order).
+///
 /// `reserved_keys` lists already-emitted labels (post-sanitization) that
 /// must not appear in the merged map. Per the spec, the scope-derived
 /// `otel_scope_name` / `otel_scope_version` labels are emitted separately
@@ -1667,8 +1680,16 @@ fn sanitize_and_merge_label_pairs<'a, I>(
 where
     I: IntoIterator<Item = (&'a str, String)>,
 {
-    let mut merged: HashMap<String, String> = HashMap::new();
-    for (key, value) in attrs {
+    // Collect first so we can sort by original key. Sorting before the
+    // sanitize/merge pass guarantees that for collisions like
+    // `service.name="a"` + `service_name="b"`, the joined output is
+    // always `"a;b"` (lex-ordered by raw key), independent of how the
+    // caller iterates its source container.
+    let mut entries: Vec<(&'a str, String)> = attrs.into_iter().collect();
+    entries.sort_by_key(|(k, _)| *k);
+
+    let mut merged: HashMap<String, String> = HashMap::with_capacity(entries.len());
+    for (key, value) in entries {
         let sanitized = sanitize_prom_label_key(key);
         // Skip keys that collide with separately-emitted scope/reserved
         // labels. Comparison is on the sanitized form to catch inputs like
@@ -3205,10 +3226,61 @@ mod tests {
         );
         // Keys are merged into a single sanitized entry.
         assert_eq!(merged.len(), 1);
-        // Values are joined in iteration order with `;`.
+        // Values are joined in lexicographical order of the original keys
+        // (`http.method` < `http_method` because `.` < `_`).
         assert_eq!(
             merged.get("http_method").map(String::as_str),
             Some("GET;POST")
+        );
+    }
+
+    #[test]
+    fn test_sanitize_and_merge_label_pairs_collision_is_lex_ordered_by_original_key() {
+        // Per OTel→Prometheus spec: "values MUST be concatenated together,
+        // separated by `;`, and ordered by the lexicographical order of the
+        // original keys." This must hold regardless of caller iteration
+        // order — including `HashMap::iter()`, which is unspecified.
+        //
+        // Three keys all sanitize to `service_name`. Lex order of the raw
+        // keys is: "service-name" < "service.name" < "service_name".
+        // Vary the input order to confirm the output is independent of it.
+        let cases = [
+            vec![
+                ("service.name", "dot".to_string()),
+                ("service_name", "underscore".to_string()),
+                ("service-name", "dash".to_string()),
+            ],
+            vec![
+                ("service_name", "underscore".to_string()),
+                ("service-name", "dash".to_string()),
+                ("service.name", "dot".to_string()),
+            ],
+            vec![
+                ("service-name", "dash".to_string()),
+                ("service.name", "dot".to_string()),
+                ("service_name", "underscore".to_string()),
+            ],
+        ];
+        for input in cases {
+            let merged = sanitize_and_merge_label_pairs(input, &[]);
+            assert_eq!(merged.len(), 1);
+            assert_eq!(
+                merged.get("service_name").map(String::as_str),
+                Some("dash;dot;underscore"),
+                "merge order must be lex-by-original-key, not caller order"
+            );
+        }
+
+        // HashMap input (genuinely unordered) must also produce the same
+        // deterministic output.
+        let mut hm = HashMap::new();
+        let _ = hm.insert("service.name", "dot".to_string());
+        let _ = hm.insert("service_name", "underscore".to_string());
+        let _ = hm.insert("service-name", "dash".to_string());
+        let merged = sanitize_and_merge_label_pairs(hm.iter().map(|(k, v)| (*k, v.clone())), &[]);
+        assert_eq!(
+            merged.get("service_name").map(String::as_str),
+            Some("dash;dot;underscore")
         );
     }
 
@@ -3361,6 +3433,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_render_target_info_typed_resource_attributes() {
+        // Verifies the typed `AttributeValue` path: numerics, booleans,
+        // and arrays are rendered through `to_string_value()` (Display
+        // for scalars, bare JSON for arrays) into Prometheus label values.
+        let mut attrs: HashMap<String, ResourceAttributeValue> = HashMap::new();
+        let _ = attrs.insert(
+            "service.name".into(),
+            ResourceAttributeValue::String("svc".into()),
+        );
+        let _ = attrs.insert(
+            "service.instance.port".into(),
+            ResourceAttributeValue::I64(4317),
+        );
+        let _ = attrs.insert(
+            "deployment.staging".into(),
+            ResourceAttributeValue::Bool(true),
+        );
+        let _ = attrs.insert(
+            "service.tags".into(),
+            ResourceAttributeValue::Array(
+                otap_df_config::pipeline::telemetry::AttributeValueArray::String(vec![
+                    "edge".into(),
+                    "us-west".into(),
+                ]),
+            ),
+        );
+
+        let out = render_target_info(&attrs);
+        assert!(out.contains("# HELP target_info Target metadata"));
+        assert!(out.contains("# TYPE target_info gauge"));
+        assert!(
+            out.contains(r#"service_name="svc""#),
+            "missing service_name. Output:\n{out}"
+        );
+        assert!(
+            out.contains(r#"service_instance_port="4317""#),
+            "i64 should render as decimal. Output:\n{out}"
+        );
+        assert!(
+            out.contains(r#"deployment_staging="true""#),
+            "bool should render as `true`/`false`. Output:\n{out}"
+        );
+        // JSON array escaping: the inner `"` must be escaped per Prometheus
+        // label-value rules so the whole value parses as a single token.
+        assert!(
+            out.contains(r#"service_tags="[\"edge\",\"us-west\"]""#),
+            "array should render as bare JSON with escaped quotes. Output:\n{out}"
+        );
+    }
+
     /// Full integration test: registers metrics, accumulates values, then validates
     /// the Prometheus text output follows OTel OTLP-to-Prometheus translation rules.
     #[test]
@@ -3384,8 +3507,14 @@ mod tests {
 
         // Format with resource attributes for target_info
         let mut resource_attrs = HashMap::new();
-        let _ = resource_attrs.insert("service.name".to_string(), "my-service".to_string());
-        let _ = resource_attrs.insert("service.instance.id".to_string(), "host1:8080".to_string());
+        let _ = resource_attrs.insert(
+            "service.name".to_string(),
+            ResourceAttributeValue::String("my-service".to_string()),
+        );
+        let _ = resource_attrs.insert(
+            "service.instance.id".to_string(),
+            ResourceAttributeValue::String("host1:8080".to_string()),
+        );
 
         let target_info = render_target_info(&resource_attrs);
         let output = format_prometheus_text(&registry, false, Some(1000), &target_info);

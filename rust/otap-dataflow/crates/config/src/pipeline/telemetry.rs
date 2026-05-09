@@ -220,6 +220,43 @@ pub enum AttributeValueArray {
     String(Vec<String>),
 }
 
+impl AttributeValue {
+    /// Render this attribute value as a single OTel-compatible string,
+    /// suitable for downstream consumers that require a flat string
+    /// representation (e.g. Prometheus label values, OTel SDK resource
+    /// attributes that have already been narrowed to strings).
+    ///
+    /// Conversion is round-trip lossless for every variant:
+    /// - `String`: cloned verbatim.
+    /// - `Bool`: `"true"` / `"false"`.
+    /// - `I64`: standard decimal formatting.
+    /// - `F64`: Rust's `Display`, which uses the Ryu algorithm — the
+    ///   shortest decimal that round-trips back to the same `f64`.
+    /// - `Array`: encoded as a bare JSON array (e.g. `["a","b"]`,
+    ///   `[1,2,3]`). JSON preserves element type and order, and avoids
+    ///   the variant-tag wrapping that a direct `serde_json::to_string`
+    ///   on `AttributeValueArray` would produce.
+    #[must_use]
+    pub fn to_string_value(&self) -> String {
+        match self {
+            AttributeValue::String(s) => s.clone(),
+            AttributeValue::Bool(b) => b.to_string(),
+            AttributeValue::I64(i) => i.to_string(),
+            AttributeValue::F64(f) => f.to_string(),
+            AttributeValue::Array(arr) => match arr {
+                // Serialize the inner `Vec` directly so the output is a
+                // bare JSON array, not the externally-tagged
+                // `{"String":[...]}` form that serializing the enum
+                // variant would yield.
+                AttributeValueArray::String(v) => serde_json::to_string(v).unwrap_or_default(),
+                AttributeValueArray::Bool(v) => serde_json::to_string(v).unwrap_or_default(),
+                AttributeValueArray::I64(v) => serde_json::to_string(v).unwrap_or_default(),
+                AttributeValueArray::F64(v) => serde_json::to_string(v).unwrap_or_default(),
+            },
+        }
+    }
+}
+
 /// A telemetry attribute with a value and an optional brief description.
 ///
 /// Supports two YAML/JSON forms:
@@ -276,6 +313,75 @@ impl TelemetryAttribute {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_attribute_value_to_string_value_scalars() {
+        assert_eq!(
+            AttributeValue::String("svc-1".into()).to_string_value(),
+            "svc-1"
+        );
+        assert_eq!(AttributeValue::Bool(true).to_string_value(), "true");
+        assert_eq!(AttributeValue::Bool(false).to_string_value(), "false");
+        assert_eq!(AttributeValue::I64(-42).to_string_value(), "-42");
+        assert_eq!(
+            AttributeValue::I64(i64::MAX).to_string_value(),
+            "9223372036854775807"
+        );
+        // f64 uses Ryu via Display: shortest round-trippable form.
+        assert_eq!(AttributeValue::F64(1.5).to_string_value(), "1.5");
+        assert_eq!(AttributeValue::F64(0.1).to_string_value(), "0.1");
+    }
+
+    #[test]
+    fn test_attribute_value_to_string_value_f64_round_trip_lossless() {
+        // Verify the f64 representation parses back to bit-equal value
+        // for several non-trivial floats. Guards against silent truncation
+        // if the impl is ever changed away from Ryu/Display.
+        for &orig in &[
+            std::f64::consts::PI,
+            1.0e-300_f64,
+            1.0e300_f64,
+            f64::EPSILON,
+            -0.0_f64,
+        ] {
+            let s = AttributeValue::F64(orig).to_string_value();
+            let back: f64 = s.parse().expect("must parse");
+            assert_eq!(
+                orig.to_bits(),
+                back.to_bits(),
+                "lossy round-trip for {orig}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_attribute_value_to_string_value_arrays_are_bare_json() {
+        // Arrays render as bare JSON arrays (no externally-tagged
+        // `{"String":[...]}` wrapper) so the output is consumable by
+        // generic JSON tooling and Prometheus label values.
+        assert_eq!(
+            AttributeValue::Array(AttributeValueArray::String(vec!["a".into(), "b".into()]))
+                .to_string_value(),
+            r#"["a","b"]"#
+        );
+        assert_eq!(
+            AttributeValue::Array(AttributeValueArray::Bool(vec![true, false])).to_string_value(),
+            "[true,false]"
+        );
+        assert_eq!(
+            AttributeValue::Array(AttributeValueArray::I64(vec![1, 2, 3])).to_string_value(),
+            "[1,2,3]"
+        );
+        assert_eq!(
+            AttributeValue::Array(AttributeValueArray::F64(vec![1.5, 2.5])).to_string_value(),
+            "[1.5,2.5]"
+        );
+        // Empty arrays are still typed but render as `[]`.
+        assert_eq!(
+            AttributeValue::Array(AttributeValueArray::String(vec![])).to_string_value(),
+            "[]"
+        );
+    }
 
     #[test]
     fn test_telemetry_config_deserialize() {

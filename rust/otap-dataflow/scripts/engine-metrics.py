@@ -266,7 +266,7 @@ ALL_KINDS = ("engine", "pipeline", "tokio", "channel", "receiver", "processor", 
 def classify(name):
     """Map a metric-set *name* to a kind string.
 
-    >>> classify('engine.metrics')
+    >>> classify('engine')
     'engine'
     >>> classify('channel.sender')
     'channel'
@@ -278,9 +278,9 @@ def classify(name):
     'exporter'
     """
     n = name.lower()
-    if n == "engine.metrics":
+    if n == "engine":
         return "engine"
-    if n == "pipeline.metrics":
+    if n == "pipeline":
         return "pipeline"
     if n == "tokio.runtime":
         return "tokio"
@@ -524,7 +524,7 @@ def main():
             # of --kind / --filter selection.
             parts = []
             eng = next(
-                (g for g in all_groups.values() if g["name"] == "engine.metrics"),
+                (g for g in all_groups.values() if g["name"] == "engine"),
                 None,
             )
             if eng:
@@ -548,7 +548,7 @@ def main():
                 parts.append(f"cpu(os)={os_cpu / (os.cpu_count() or 1):.1f}%")
 
             for pg in (
-                g for g in all_groups.values() if g["name"] == "pipeline.metrics"
+                g for g in all_groups.values() if g["name"] == "pipeline"
             ):
                 pt = _agg(pg)
                 heap = pt.get("memory.usage", 0)
