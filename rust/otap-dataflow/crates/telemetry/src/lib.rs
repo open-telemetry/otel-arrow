@@ -234,7 +234,7 @@ impl InternalTelemetrySystem {
         config: &TelemetryConfig,
         telemetry_registry: TelemetryRegistryHandle,
         console_async_reporter: Option<ObservedEventReporter>,
-        its_reporter_policy: SendPolicy,
+        logging_send_policy: SendPolicy,
         context_fn: LogContextFn,
         log_tap_handle: Option<log_tap::InternalLogTapHandle>,
     ) -> Result<Self, Error> {
@@ -262,10 +262,10 @@ impl InternalTelemetrySystem {
         let (its_reporter, its_settings) = if config.logs.providers.uses_its_provider() {
             let (sender, logs_receiver) = flume::bounded(config.reporting_channel_size);
             let reporter = if let Some(log_tap) = &log_tap_handle {
-                ObservedEventReporter::new(its_reporter_policy.clone(), sender)
+                ObservedEventReporter::new(logging_send_policy.clone(), sender)
                     .with_drop_counter(log_tap.ingest_drop_counter())
             } else {
-                ObservedEventReporter::new(its_reporter_policy.clone(), sender)
+                ObservedEventReporter::new(logging_send_policy.clone(), sender)
             };
             let resource_bytes = otel_sdk::encode_resource_bytes(&config.resource);
             (
