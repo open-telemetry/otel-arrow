@@ -10,8 +10,8 @@ through `perf_event_open` and converts them into OTAP logs for downstream
 processing.
 
 > **Note:** This receiver is vendor-neutral. It performs Linux `user_events`
-> collection and structural decoding only; schema-specific mappings such as
-> Microsoft Common Schema should be modeled outside the receiver.
+> collection and structural decoding only; schema-specific mappings should be
+> modeled outside the receiver.
 
 It follows the OTAP Dataflow thread-per-core model:
 
@@ -189,7 +189,7 @@ weakened if:
 This receiver is **Linux-only**.
 
 It does **not** work on macOS or Windows because `user_events` is a Linux
-kernel tracing feature. Windows support would require a separate ETW receiver.
+kernel tracing feature.
 
 ## Current Scope
 
@@ -198,7 +198,7 @@ Current implementation supports:
 - one or more tracepoint subscriptions per receiver
 - `tracefs`, which decodes standard Linux tracefs fields into typed log
   attributes
-- optional `event_header` decoding when the `userevents-eventheader` feature is
+- optional `event_header` decoding when the `user_events-eventheader` feature is
   enabled
 
 ## Configuration
@@ -220,9 +220,7 @@ nodes:
             type: tracefs
       session:
         per_cpu_buffer_size: 1048576  # bytes
-        late_registration:
-          enabled: true
-          poll_interval_ms: 100
+        late_registration_poll_interval: 100ms
       drain:
         max_records_per_turn: 1024
         max_bytes_per_turn: 1048576
@@ -282,7 +280,7 @@ improvement.
 
 `subscriptions` must contain at least one entry. `tracefs` is the default
 `subscriptions[].format.type`. `event_header` requires the
-`userevents-eventheader` feature.
+`user_events-eventheader` feature.
 
 `session.wakeup_watermark` exists as a reserved configuration field for future
 one_collect wakeup support, but is currently ignored.
@@ -300,13 +298,12 @@ tracepoint sessions.
 | Field | Default | Description |
 | --- | --- | --- |
 | `subscriptions` | none | Required non-empty list of `user_events` tracepoints. Each entry may be either `<event>` or `user_events:<event>`. |
-| `subscriptions[].format.type` | `tracefs` | Decode format for one subscription. `tracefs` is always supported; `event_header` requires the `userevents-eventheader` feature. |
+| `subscriptions[].format.type` | `tracefs` | Decode format for one subscription. `tracefs` is always supported; `event_header` requires the `user_events-eventheader` feature. |
 | `session.per_cpu_buffer_size` | `1048576` | Requested per-CPU perf ring size in bytes. Rounded up to at least one page and then to the next power of two. |
 | `session.wakeup_watermark` | `262144` | Reserved for future one_collect wakeup support; currently ignored. |
 | `session.max_pending_events` | `4096` | Maximum parsed events buffered between one_collect callbacks and the receiver drain loop. New events are dropped when this cap is reached. |
 | `session.max_pending_bytes` | `16777216` | Maximum raw event payload bytes buffered between one_collect callbacks and the receiver drain loop. New events are dropped when this cap would be exceeded. |
-| `session.late_registration.enabled` | `false` | When true, keep retrying if the tracepoint is not registered yet. |
-| `session.late_registration.poll_interval_ms` | `1000` | Retry interval for late tracepoint registration. |
+| `session.late_registration_poll_interval` | none | Optional retry interval for late tracepoint registration. When absent, missing tracepoints fail startup immediately. |
 | `drain.max_records_per_turn` | `1024` | Maximum records popped from the receiver's pending queue per drain turn. |
 | `drain.max_bytes_per_turn` | `1048576` | Maximum payload bytes popped per drain turn. |
 | `drain.max_drain_ns` | `2ms` | Total drain-turn budget. Accepts duration strings such as `2ms`, `500us`, or `1000000ns`; must be greater than zero. |
@@ -355,7 +352,7 @@ EventHeader structs are flattened with dot-separated attribute names. If an
 EventHeader payload cannot be decoded, the raw user payload is preserved in the
 `linux.userevents.payload_base64` attribute.
 
-This decoder is optional and requires the `userevents-eventheader` feature.
+This decoder is optional and requires the `user_events-eventheader` feature.
 
 Only scalar EventHeader values that map to the receiver's current attribute
 types are surfaced: strings, signed integers, booleans, and floating point
@@ -471,7 +468,7 @@ drops buffered batches rather than blocking on downstream flush.
 
 ### Late Registration
 
-If `late_registration.enabled` is true, the receiver will keep retrying
+If `late_registration_poll_interval` is set, the receiver will keep retrying
 tracepoint attachment until the producer has registered the tracepoint.
 
 TODO: For EventHeader producers, investigate whether preregistered tracepoint
@@ -567,7 +564,7 @@ For reliable testing, prefer:
 Recommended test layers:
 
 - unit tests for tracefs structural decoding, plus EventHeader payload handling
-  when `userevents-eventheader` is enabled
+  when `user_events-eventheader` is enabled
 - Linux-only receiver integration tests using a real kernel tracepoint
 - pipeline-level schema mapping tests in the processor that owns that schema
 
@@ -577,9 +574,9 @@ The tracefs debug pipeline exercises a real Linux `user_events` producer, this
 receiver, the debug processor, and the noop exporter:
 
 ```bash
-cargo build --features userevents-receiver
+cargo build --features user_events-receiver
 cargo build -p otap-df-contrib-nodes \
-  --features userevents-receiver \
+  --features user_events-receiver \
   --example user_events_tracefs_producer
 
 sudo ./target/debug/df_engine \
@@ -599,14 +596,14 @@ Expected debug output includes `EventName: user_events:otap_df_tracefs_demo`,
 
 ### Manual EventHeader E2E
 
-The EventHeader debug pipeline uses the optional `userevents-eventheader`
+The EventHeader debug pipeline uses the optional `user_events-eventheader`
 feature and validates EventHeader payload decoding through the same receiver
 and debug processor path:
 
 ```bash
-cargo build --features userevents-eventheader
+cargo build --features user_events-eventheader
 cargo build -p otap-df-contrib-nodes \
-  --features userevents-eventheader \
+  --features user_events-eventheader \
   --example user_events_eventheader_producer
 
 sudo ./target/debug/df_engine \

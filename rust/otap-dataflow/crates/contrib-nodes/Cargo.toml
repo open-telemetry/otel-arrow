@@ -62,16 +62,16 @@ tracepoint_decode = { workspace = true, optional = true }
 
 [features]
 contrib-receivers = [
-    "userevents-receiver",
+    "user_events-receiver",
 ]
-userevents-receiver = [
+user_events-receiver = [
     "dep:base64",
     "dep:chrono",
     "dep:humantime-serde",
     "dep:one_collect",
 ]
-userevents-eventheader = [
-    "userevents-receiver",
+user_events-eventheader = [
+    "user_events-receiver",
     "dep:tracepoint_decode",
 ]
 contrib-exporters = [
@@ -152,9 +152,9 @@ required-features = ["azure-monitor-exporter"]
 [[example]]
 name = "user_events_tracefs_producer"
 path = "src/receivers/user_events_receiver/examples/tracefs_producer.rs"
-required-features = ["userevents-receiver"]
+required-features = ["user_events-receiver"]
 
 [[example]]
 name = "user_events_eventheader_producer"
 path = "src/receivers/user_events_receiver/examples/eventheader_producer.rs"
-required-features = ["userevents-eventheader"]
+required-features = ["user_events-eventheader"]

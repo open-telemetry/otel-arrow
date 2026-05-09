@@ -77,7 +77,7 @@ enum FormatConfig {
     /// receiver flattens EventHeader structs into `Struct.field` attributes but
     /// does not attach semantic meaning to field names. Schema-specific
     /// interpretation belongs in processors.
-    #[cfg(feature = "userevents-eventheader")]
+    #[cfg(feature = "user_events-eventheader")]
     EventHeader,
 }
 
@@ -93,23 +93,6 @@ struct SubscriptionConfig {
     /// Payload decoding format for records emitted by this tracepoint.
     #[serde(default)]
     format: FormatConfig,
-}
-
-/// Optional polling for tracepoints that may be registered after startup.
-///
-/// Linux user_events tracepoints can appear after the receiver starts if the
-/// producer process registers them later. When enabled, the receiver retries
-/// missing subscriptions instead of treating startup absence as final.
-#[derive(Debug, Deserialize, Clone, Default)]
-#[serde(deny_unknown_fields)]
-struct LateRegistrationConfig {
-    /// Enables periodic retries for subscriptions whose tracepoints do not
-    /// exist yet.
-    #[serde(default)]
-    enabled: bool,
-    /// Delay, in milliseconds, between late-registration retry attempts.
-    #[serde(default = "default_late_registration_poll_ms")]
-    poll_interval_ms: u64,
 }
 
 /// Low-level tracepoint session settings.
@@ -143,9 +126,10 @@ struct SessionConfig {
     /// and the receiver drain loop.
     #[serde(default = "default_max_pending_bytes")]
     max_pending_bytes: usize,
-    /// Behavior for tracepoints that are absent during initial session setup.
-    #[serde(default)]
-    late_registration: LateRegistrationConfig,
+    /// Optional retry interval for tracepoints that may be registered after
+    /// startup. When absent, missing tracepoints fail startup immediately.
+    #[serde(default, with = "humantime_serde::option")]
+    late_registration_poll_interval: Option<Duration>,
 }
 
 /// Per-turn limits for reading samples from the tracepoint session.
@@ -268,10 +252,7 @@ impl UsereventsReceiver {
             wakeup_watermark: default_wakeup_watermark(),
             max_pending_events: default_max_pending_events(),
             max_pending_bytes: default_max_pending_bytes(),
-            late_registration: LateRegistrationConfig {
-                enabled: false,
-                poll_interval_ms: default_late_registration_poll_ms(),
-            },
+            late_registration_poll_interval: None,
         });
         Self::validate_session(&session)?;
         let drain = config.drain.clone().unwrap_or(DrainConfig {
@@ -349,6 +330,15 @@ impl UsereventsReceiver {
         if session.max_pending_bytes == 0 {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
                 error: "userevents receiver `session.max_pending_bytes` must be greater than zero"
+                    .to_owned(),
+            });
+        }
+        if session
+            .late_registration_poll_interval
+            .is_some_and(|poll_interval| poll_interval.is_zero())
+        {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "userevents receiver `session.late_registration_poll_interval` must be greater than zero"
                     .to_owned(),
             });
         }
@@ -542,7 +532,10 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
         let mut flush_interval = time::interval(batch_cfg.max_duration);
         flush_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        let retry_period = Duration::from_millis(session_cfg.late_registration.poll_interval_ms);
+        let late_registration_enabled = session_cfg.late_registration_poll_interval.is_some();
+        let retry_period = session_cfg
+            .late_registration_poll_interval
+            .unwrap_or(DEFAULT_LATE_REGISTRATION_POLL);
         let mut retry_interval = time::interval(retry_period.max(Duration::from_millis(1)));
         retry_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -624,7 +617,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                     }
                 }
 
-                _ = retry_interval.tick(), if session.is_none() && session_cfg.late_registration.enabled => {
+                _ = retry_interval.tick(), if session.is_none() && late_registration_enabled => {
                     self.metrics.borrow_mut().late_registration_retries.inc();
                     match UsereventsSession::open(&self.subscriptions, &session_cfg, self.cpu_id) {
                         Ok(opened) => {
@@ -698,7 +691,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                 }
             }
 
-            if session.is_none() && !session_cfg.late_registration.enabled {
+            if session.is_none() && !late_registration_enabled {
                 match UsereventsSession::open(&self.subscriptions, &session_cfg, self.cpu_id) {
                     Ok(opened) => {
                         self.metrics.borrow_mut().sessions_started.inc();
@@ -734,10 +727,6 @@ const fn default_max_pending_bytes() -> usize {
     DEFAULT_MAX_PENDING_BYTES
 }
 
-const fn default_late_registration_poll_ms() -> u64 {
-    DEFAULT_LATE_REGISTRATION_POLL.as_millis() as u64
-}
-
 const fn default_max_records_per_turn() -> usize {
     DEFAULT_MAX_RECORDS_PER_TURN
 }
@@ -770,7 +759,7 @@ mod linux_integration_tests {
     use std::io;
     use std::time::Duration;
 
-    #[cfg(feature = "userevents-eventheader")]
+    #[cfg(feature = "user_events-eventheader")]
     use eventheader_dynamic::{EventBuilder, FieldFormat, Level, Provider};
     use tokio::time;
 
@@ -790,7 +779,7 @@ mod linux_integration_tests {
             wakeup_watermark: default_wakeup_watermark(),
             max_pending_events: default_max_pending_events(),
             max_pending_bytes: default_max_pending_bytes(),
-            late_registration: LateRegistrationConfig::default(),
+            late_registration_poll_interval: None,
         }
     }
 
@@ -859,7 +848,7 @@ mod linux_integration_tests {
         true
     }
 
-    #[cfg(feature = "userevents-eventheader")]
+    #[cfg(feature = "user_events-eventheader")]
     async fn write_eventheader_sample(event_set: &eventheader_dynamic::EventSet) -> bool {
         for _ in 0..20 {
             if event_set.enabled() {
@@ -960,7 +949,7 @@ mod linux_integration_tests {
             "tracefs session should decode the emitted ci_answer and ci_message fields"
         );
 
-        #[cfg(feature = "userevents-eventheader")]
+        #[cfg(feature = "user_events-eventheader")]
         {
             let provider_name = format!("otap_df_ci_{}", std::process::id());
             let tracepoint = format!("user_events:{provider_name}_L4K1");
@@ -1296,7 +1285,7 @@ mod config_tests {
         );
     }
 
-    #[cfg(not(feature = "userevents-eventheader"))]
+    #[cfg(not(feature = "user_events-eventheader"))]
     #[test]
     fn deserialize_config_rejects_event_header_without_feature() {
         let error = serde_json::from_value::<UsereventsReceiverConfig>(serde_json::json!({
@@ -1382,7 +1371,7 @@ mod config_tests {
             wakeup_watermark: default_wakeup_watermark(),
             max_pending_events: 0,
             max_pending_bytes: default_max_pending_bytes(),
-            late_registration: LateRegistrationConfig::default(),
+            late_registration_poll_interval: None,
         };
         let error = UsereventsReceiver::validate_session(&session).expect_err("zero rejected");
         assert!(
@@ -1398,11 +1387,29 @@ mod config_tests {
             wakeup_watermark: default_wakeup_watermark(),
             max_pending_events: default_max_pending_events(),
             max_pending_bytes: 0,
-            late_registration: LateRegistrationConfig::default(),
+            late_registration_poll_interval: None,
         };
         let error = UsereventsReceiver::validate_session(&session).expect_err("zero rejected");
         assert!(
             error.to_string().contains("max_pending_bytes"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_session_rejects_zero_late_registration_poll_interval() {
+        let session = SessionConfig {
+            per_cpu_buffer_size: default_per_cpu_buffer_size(),
+            wakeup_watermark: default_wakeup_watermark(),
+            max_pending_events: default_max_pending_events(),
+            max_pending_bytes: default_max_pending_bytes(),
+            late_registration_poll_interval: Some(Duration::ZERO),
+        };
+        let error = UsereventsReceiver::validate_session(&session).expect_err("zero rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("late_registration_poll_interval"),
             "unexpected error: {error}"
         );
     }

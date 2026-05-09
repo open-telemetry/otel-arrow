@@ -7,7 +7,7 @@
 //!
 //! ```bash
 //! cargo run -p otap-df-contrib-nodes \
-//!   --features userevents-eventheader \
+//!   --features user_events-eventheader \
 //!   --example user_events_eventheader_producer
 //! ```
 

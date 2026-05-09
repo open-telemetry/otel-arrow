@@ -29,7 +29,7 @@ Aggregate flags enable all nodes in their category.
 - Reads Linux `user_events` tracepoints through per-CPU perf sessions
 - Supports single-tracepoint and multi-tracepoint configuration
 - Supports tracefs structural decoding by default
-- Supports EventHeader decoding when the `userevents-eventheader` feature is
+- Supports EventHeader decoding when the `user_events-eventheader` feature is
   enabled
 
 ### Exporters

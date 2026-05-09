@@ -7,9 +7,9 @@ groups:
         # Linux user_events EventHeader -> debug processor pipeline for manual
         # E2E validation.
         #
-        # Build:    cargo build --features userevents-eventheader
+        # Build:    cargo build --features user_events-eventheader
         # Run:      ./target/debug/df_engine --config configs/user-events-eventheader-debug.yaml --num-cores 1
-        # Produce:  cargo run -p otap-df-contrib-nodes --features userevents-eventheader --example user_events_eventheader_producer
+        # Produce:  cargo run -p otap-df-contrib-nodes --features user_events-eventheader --example user_events_eventheader_producer
         # Verify:   cat /tmp/user_events_eventheader_debug.log
 
         policies:
@@ -29,9 +29,7 @@ groups:
                     type: event_header
               session:
                 per_cpu_buffer_size: 1048576
-                late_registration:
-                  enabled: true
-                  poll_interval_ms: 100
+                late_registration_poll_interval: 100ms
               drain:
                 max_records_per_turn: 128
                 max_bytes_per_turn: 1048576

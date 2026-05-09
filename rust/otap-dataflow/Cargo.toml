@@ -295,8 +295,8 @@ geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
 azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
 # Contrib receivers (opt-in) - now in contrib-nodes
 contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
-userevents-receiver = ["otap-df-contrib-nodes/userevents-receiver"]
-userevents-eventheader = ["otap-df-contrib-nodes/userevents-eventheader"]
+user_events-receiver = ["otap-df-contrib-nodes/user_events-receiver"]
+user_events-eventheader = ["otap-df-contrib-nodes/user_events-eventheader"]
 # Contrib processors (opt-in) - now in contrib-nodes
 contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
 condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]
