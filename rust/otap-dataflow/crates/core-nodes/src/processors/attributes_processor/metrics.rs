@@ -7,7 +7,7 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
 /// Metrics for the AttributesProcessor node.
-#[metric_set(name = "attributes.processor.metrics")]
+#[metric_set(name = "attributes.processor")]
 #[derive(Debug, Default, Clone)]
 pub struct AttributesProcessorMetrics {
     /// Number of failed transform attempts.

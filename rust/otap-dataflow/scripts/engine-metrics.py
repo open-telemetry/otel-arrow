@@ -274,7 +274,7 @@ def classify(name):
     'receiver'
     >>> classify('otap.processor.batch')
     'processor'
-    >>> classify('azure_monitor_exporter.metrics')
+    >>> classify('azure_monitor_exporter')
     'exporter'
     """
     n = name.lower()
