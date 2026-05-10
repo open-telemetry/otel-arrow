@@ -270,7 +270,7 @@ def classify(name):
     'engine'
     >>> classify('channel.sender')
     'channel'
-    >>> classify('syslog_cef.receiver.metrics')
+    >>> classify('syslog_cef.receiver')
     'receiver'
     >>> classify('otap.processor.batch')
     'processor'
