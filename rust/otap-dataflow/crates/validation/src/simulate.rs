@@ -13,7 +13,7 @@ use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::collections::HashMap;
 use tokio::time::{Duration, sleep};
 
-const LOADGEN_METRIC_SET: &str = "traffic_generator.receiver.metrics";
+const LOADGEN_METRIC_SET: &str = "traffic_generator.receiver";
 const LOADGEN_METRIC_NAME_LOGS: &str = "logs.produced";
 const LOADGEN_METRIC_NAME_METRICS: &str = "metrics.produced";
 const LOADGEN_TRACE_NAME_SPANS: &str = "spans.produced";

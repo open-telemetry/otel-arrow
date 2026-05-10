@@ -490,7 +490,7 @@ mod test {
 
     fn logs_scenario(
         num_rows: usize,
-        shutdown_timeout: Instant,
+        shutdown_timeout: Duration,
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
@@ -510,7 +510,7 @@ mod test {
                 .await
                 .expect("Failed to send  logs message");
 
-                ctx.send_shutdown(shutdown_timeout, "test completed")
+                ctx.send_shutdown(Instant::now().add(shutdown_timeout), "test completed")
                     .await
                     .unwrap();
             })
@@ -793,10 +793,7 @@ mod test {
         let num_rows = 100;
         test_runtime
             .set_exporter(exporter)
-            .run_test(logs_scenario(
-                num_rows,
-                Instant::now().add(Duration::from_secs(1)),
-            ))
+            .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
                     exporter_result.unwrap();
@@ -881,10 +878,7 @@ mod test {
         let num_rows = 100;
         test_runtime
             .set_exporter(exporter)
-            .run_test(logs_scenario(
-                num_rows,
-                Instant::now().add(Duration::from_secs(1)),
-            ))
+            .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
                     exporter_result.unwrap();

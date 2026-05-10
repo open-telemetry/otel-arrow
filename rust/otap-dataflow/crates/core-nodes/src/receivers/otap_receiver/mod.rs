@@ -253,7 +253,7 @@ impl OTAPReceiver {
 }
 
 /// OTAP receiver metrics.
-#[metric_set(name = "otap.receiver.metrics")]
+#[metric_set(name = "otap.receiver")]
 #[derive(Debug, Default, Clone)]
 pub struct OtapReceiverMetrics {
     /// Number of acks sent.

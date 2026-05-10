@@ -2082,7 +2082,7 @@
 
   // --- Summary extraction and card updates ---
   function extractPipelineSummary(metricSets) {
-    const pipelineSets = metricSets.filter((ms) => ms.name === "pipeline.metrics");
+    const pipelineSets = metricSets.filter((ms) => ms.name === "pipeline");
     const summary = {
       count: pipelineSets.length,
       cpuUtilSum: 0,
