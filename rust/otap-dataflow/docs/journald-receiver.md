@@ -123,79 +123,45 @@ Key property for our design: the **cursor** is opaque, survives rotation, and is
 
 The loop runs entirely on the **blocking PartitionWorker thread** -- never on the async pipeline task (see Sec. 3.4). The only async-side interaction is the bounded MPSC the worker pushes completed batches into.
 
-```
-   [BLOCKING WORKER THREAD -- owns sd_journal* handle]
+```mermaid
+flowchart TD
+    Start([Start partition worker]) --> Init["Initialize journal"]
 
-            +--------------------+
-   start -> | load checkpoint    |
-            | open sd-journal    |
-            | add_match (config) |
-            | seek_cursor / tail |
-            +---------+----------+
-                      |
-                      v
-            +--------------------+
-            | sd_journal_next()  |<------------+
-            +---------+----------+             |
-                      |                        |
-            +---------+-----------+            |
-            v                     v            |
-        entry available       no entry         |
-            |                     |            |
-            |                     v            |
-            |     sd_journal_wait(wait_timeout)|
-            |     (blocking call, finite TO,   |
-            |      checks shutdown flag        |
-            |      between waits)              |
-            |                     |            |
-            |                     +------------+
-            v                                  |
-  read fields (enumerate_data),                |
-  get cursor (get_cursor)                      |
-  push record to batch                         |
-            |                                  |
-            v                                  |
-   batch full or flush_timer?                  |
-            |                                  |
-        no  +->------------------------------> |
-            |                                  |
-       yes  v                                  |
-   try_send(EmittedBatch{                      |
-     batch_id, first_cursor, last_cursor,      |
-     records                                   |
-   }) on bounded MPSC ----> [async receiver]   |
-            |                                  |
-            v                                  |
-   channel full? (= downstream backpressure)   |
-            |                                  |
-        no  +->------------------------------> |
-            |                                  |
-       yes  v                                  |
-   HOLD the batch in a single-slot pending-    |
-   send buffer (do NOT drop, do NOT rebuild,   |
-   do NOT advance journal cursor past it).     |
-                                               |
-   Held-loop (every iteration, in order):      |
-     1. drain control channel (non-blocking):  |
-          - Shutdown  -> exit Held, drain path  |
-          - Pause     -> stay Held, set flag    |
-          - Resume    -> clear pause flag       |
-          - CommitCursor(c) -> run commit       |
-            attempt (worker stateless re:      |
-            retry); reply Ok/Err to async      |
-     2. retry try_send on the held batch       |
-        if it fits -> clear slot, GOTO read     |
-                     loop (resume _next) ------+
-     3. bounded sd_journal_wait(wait_timeout)
-        -- yields the thread; on wake, GOTO 1.
+    Init --> Next[sd_journal_next]
 
-   Worker never reads new entries while a
-   batch is held; control commands are still
-   serviced every wait_timeout (or sooner if a
-   try_send wakes the loop). This guarantees
-   shutdown latency <= wait_timeout even under
-   sustained backpressure.
+    Next -->|entry available| Read["Read entry into batch"]
+    Next -->|no entry| Wait["sd_journal_wait(wait_timeout)"]
+    Wait --> Control
+
+    Read --> Flush{Batch full<br/>or flush timer?}
+    Flush -->|no| Next
+    Flush -->|yes| Send["try_send EmittedBatch"]
+
+    Send -->|sent| Next
+    Send -->|channel full| Held["Hold completed batch"]
+
+    Held --> Control["Drain control channel<br/>non-blocking"]
+
+    Control -->|Shutdown| Drain["Drain and close journal"]
+    Control -->|Pause| HeldWait["Stay paused"]
+    Control -->|Resume| RetrySend
+    Control -->|CommitCursor| Commit["Commit checkpoint"]
+    Control -->|no command| RetrySend
+
+    Commit --> RetrySend[Retry sending held batch]
+    HeldWait --> BoundedWait["sd_journal_wait(wait_timeout)"]
+    BoundedWait --> Control
+
+    RetrySend -->|sent| Next
+    RetrySend -->|still full| BoundedWait
+
+    Drain --> Done([Worker exits])
 ```
+
+The worker never reads new entries while a batch is held. Control commands are
+still serviced every `wait_timeout`, or sooner if retrying the held batch makes
+progress. This bounds shutdown responsiveness even under sustained
+backpressure.
 
 Key idioms:
 
