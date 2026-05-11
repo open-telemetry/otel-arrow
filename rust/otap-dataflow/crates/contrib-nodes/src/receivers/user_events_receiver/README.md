@@ -1,6 +1,6 @@
 <!-- markdownlint-disable MD013 -->
 
-# Linux User Events Receiver
+# Linux user_events Receiver
 
 **URN:** `urn:otel:receiver:user_events`
 
