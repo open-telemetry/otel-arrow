@@ -319,7 +319,7 @@ mod tests {
             "timestamp": "2026-01-01T00:00:00Z",
             "metric_sets": [
                 {
-                    "name": "engine.metrics",
+                    "name": "engine",
                     "brief": "engine",
                     "attributes": {
                         "node.id": { "String": "receiver" }
@@ -346,7 +346,7 @@ mod tests {
             "timestamp": "2026-01-01T00:00:00Z",
             "metric_sets": [
                 {
-                    "name": "engine.metrics",
+                    "name": "engine",
                     "attributes": {
                         "node.id": { "String": "receiver" }
                     },

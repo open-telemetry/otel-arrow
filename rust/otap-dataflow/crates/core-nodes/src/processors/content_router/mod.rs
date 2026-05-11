@@ -134,7 +134,7 @@ impl std::fmt::Display for RoutingKeyExpr {
 }
 
 /// Metrics for the ContentRouter processor.
-#[metric_set(name = "content_router.processor.metrics")]
+#[metric_set(name = "content_router.processor")]
 #[derive(Debug, Default, Clone)]
 pub struct ContentRouterMetrics {
     /// Number of messages routed to a named port.
