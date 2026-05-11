@@ -54,10 +54,6 @@ ALLOWED_EXTENSIONS = {".toml", ".yaml", ".yml", ".json", ".txt"}
 # File extensions to publish from staging to the data dir after a run
 PUBLISH_CONFIG_EXTENSIONS = {".yaml", ".yml", ".toml"}
 
-# Standard test names (hardcoded in the orchestrator templates)
-STANDARD_TESTS = ["100k", "200k", "300k", "400k"]
-
-
 # ---------------------------------------------------------------------------
 # Manifest
 # ---------------------------------------------------------------------------
@@ -69,7 +65,6 @@ class Manifest:
     comparison_files: list[Path]  # absolute paths to comparison YAMLs
     variables: dict               # template variables passed to Jinja at top level
     meta: dict                    # allowed values per meta key (key -> [values])
-
 
 def load_manifest(manifest_path: Path) -> Manifest:
     """Load and validate the manifest file. Resolves all listed paths."""
