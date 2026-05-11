@@ -37,8 +37,6 @@ groups:
               batching:
                 max_size: 1
                 max_duration: 100ms
-              overflow:
-                on_downstream_full: drop
 
           debug:
             type: processor:debug

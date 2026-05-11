@@ -7,7 +7,7 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
 /// Internal telemetry for the Linux userevents receiver.
-#[metric_set(name = "userevents.receiver.metrics")]
+#[metric_set(name = "user_events.receiver.metrics")]
 #[derive(Debug, Default, Clone)]
 pub(super) struct UsereventsReceiverMetrics {
     /// Number of perf samples received from the kernel ring.
@@ -16,9 +16,9 @@ pub(super) struct UsereventsReceiverMetrics {
     /// Number of perf samples forwarded downstream.
     #[metric(unit = "{item}")]
     pub forwarded_samples: Counter<u64>,
-    /// Number of samples dropped because the downstream channel was full.
-    #[metric(unit = "{item}")]
-    pub dropped_downstream_full: Counter<u64>,
+    /// Total time spent waiting for downstream channel capacity.
+    #[metric(unit = "ns")]
+    pub downstream_send_blocked_ns: Counter<u64>,
     /// Number of samples dropped due to process-wide memory pressure.
     #[metric(unit = "{item}")]
     pub dropped_memory_pressure: Counter<u64>,

@@ -177,23 +177,6 @@ struct BatchConfig {
     max_duration: Duration,
 }
 
-/// Policy for handling records when the receiver cannot send downstream.
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
-enum OverflowMode {
-    /// Drop the current record or batch and continue reading future events.
-    Drop,
-}
-
-/// Downstream backpressure behavior.
-#[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-struct OverflowConfig {
-    /// Action to take when the downstream local channel is full.
-    #[serde(default = "default_overflow_mode")]
-    on_downstream_full: OverflowMode,
-}
-
 /// User-supplied configuration for the Linux user_events receiver.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -209,9 +192,6 @@ struct UsereventsReceiverConfig {
     /// OTAP log batching limits.
     #[serde(default)]
     batching: Option<BatchConfig>,
-    /// Backpressure behavior when downstream cannot accept records.
-    #[serde(default)]
-    overflow: Option<OverflowConfig>,
 }
 
 /// Runtime state for one local user_events receiver task.
@@ -224,8 +204,6 @@ struct UsereventsReceiver {
     drain: DrainConfig,
     /// In-memory batching policy for decoded log records.
     batching: BatchConfig,
-    /// Policy applied when downstream admission or send capacity is exhausted.
-    overflow: OverflowConfig,
     /// Local pipeline CPU/shard assigned by the engine.
     cpu_id: usize,
     /// Receiver metric set shared with the local pipeline task.
@@ -266,16 +244,12 @@ impl UsereventsReceiver {
             max_duration: default_batch_max_duration(),
         });
         Self::validate_batching(&batching)?;
-        let overflow = config.overflow.clone().unwrap_or(OverflowConfig {
-            on_downstream_full: default_overflow_mode(),
-        });
 
         Ok(Self {
             subscriptions: config.subscriptions,
             session,
             drain,
             batching,
-            overflow,
             cpu_id: pipeline.core_id(),
             metrics: Rc::new(RefCell::new(
                 pipeline.register_metrics::<UsereventsReceiverMetrics>(),
@@ -397,7 +371,6 @@ async fn flush_batch(
     effect_handler: &local::EffectHandler<OtapPdata>,
     metrics: &Rc<RefCell<MetricSet<UsereventsReceiverMetrics>>>,
     builder: &mut ArrowRecordsBuilder,
-    overflow_mode: &OverflowMode,
 ) -> Result<(), Error> {
     if builder.is_empty() {
         return Ok(());
@@ -414,25 +387,18 @@ async fn flush_batch(
 
     let item_count = payload.num_items() as u64;
     let pdata = OtapPdata::new_todo_context(payload.into());
-    match effect_handler.try_send_message_with_source_node(pdata) {
-        Ok(()) => {
-            let mut guard = metrics.borrow_mut();
-            guard.forwarded_samples.add(item_count);
-            guard.flushed_batches.inc();
-            Ok(())
-        }
-        Err(otap_df_engine::error::TypedError::ChannelSendError(
-            otap_df_channel::error::SendError::Full(_),
-        )) => {
-            match overflow_mode {
-                OverflowMode::Drop => {
-                    metrics.borrow_mut().dropped_downstream_full.add(item_count);
-                }
-            }
-            Ok(())
-        }
-        Err(error) => Err(error.into()),
+    let send_started = Instant::now();
+    effect_handler.send_message_with_source_node(pdata).await?;
+    let send_elapsed_ns = send_started.elapsed().as_nanos();
+    let send_elapsed_ns = u64::try_from(send_elapsed_ns).unwrap_or(u64::MAX);
+
+    let mut guard = metrics.borrow_mut();
+    if send_elapsed_ns > 0 {
+        guard.downstream_send_blocked_ns.add(send_elapsed_ns);
     }
+    guard.forwarded_samples.add(item_count);
+    guard.flushed_batches.inc();
+    Ok(())
 }
 
 async fn process_drained_records(
@@ -444,7 +410,6 @@ async fn process_drained_records(
     drained_records: &mut Vec<RawUsereventsRecord>,
     drain_stats: SessionDrainStats,
     batch_cfg: &BatchConfig,
-    overflow_mode: &OverflowMode,
 ) -> Result<(), Error> {
     let received_samples = drain_stats.received_samples;
     let mut dropped_memory_pressure: u64 = 0;
@@ -468,7 +433,7 @@ async fn process_drained_records(
         );
         builder.append(decoded);
         if builder.len() >= batch_cfg.max_size {
-            flush_batch(effect_handler, metrics, builder, overflow_mode).await?;
+            flush_batch(effect_handler, metrics, builder).await?;
         }
     }
 
@@ -527,7 +492,6 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
         let batch_cfg = self.batching.clone();
         let session_cfg = self.session.clone();
         let drain_cfg = self.drain.clone();
-        let overflow_mode = self.overflow.on_downstream_full.clone();
 
         let mut flush_interval = time::interval(batch_cfg.max_duration);
         flush_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -585,7 +549,6 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                                         &mut drained_records,
                                         drain_stats,
                                         &batch_cfg,
-                                        &overflow_mode,
                                     )
                                     .await?;
                                 }
@@ -593,7 +556,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                             if self.admission_state.should_shed_ingress() {
                                 drop_batch(&self.metrics, &mut builder);
                             } else {
-                                flush_batch(&effect_handler, &self.metrics, &mut builder, &overflow_mode).await?;
+                                flush_batch(&effect_handler, &self.metrics, &mut builder).await?;
                             }
                             effect_handler.notify_receiver_drained().await?;
                             let snapshot = self.metrics.borrow().snapshot();
@@ -613,7 +576,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                     if self.admission_state.should_shed_ingress() {
                         drop_batch(&self.metrics, &mut builder);
                     } else {
-                        flush_batch(&effect_handler, &self.metrics, &mut builder, &overflow_mode).await?;
+                        flush_batch(&effect_handler, &self.metrics, &mut builder).await?;
                     }
                 }
 
@@ -685,7 +648,6 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                         &mut drained_records,
                         drain_stats,
                         &batch_cfg,
-                        &overflow_mode,
                     )
                     .await?;
                 }
@@ -745,10 +707,6 @@ const fn default_batch_max_size() -> u16 {
 
 const fn default_batch_max_duration() -> Duration {
     DEFAULT_BATCH_MAX_DURATION
-}
-
-const fn default_overflow_mode() -> OverflowMode {
-    OverflowMode::Drop
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -1158,7 +1116,6 @@ mod config_tests {
             &mut drained_records,
             drain_stats,
             &test_batch_config(10),
-            &OverflowMode::Drop,
         )
         .await
         .expect("drained records processed");
@@ -1173,8 +1130,82 @@ mod config_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn process_drained_records_counts_downstream_full_drop() {
-        let (effect_handler, _rx) = test_effect_handler(1, true);
+    async fn flush_batch_waits_for_downstream_capacity() {
+        let (effect_handler, rx) = test_effect_handler(1, true);
+        let metrics = test_metrics();
+        let mut builder = ArrowRecordsBuilder::new();
+        builder.append(DecodedUsereventsRecord::from_raw(
+            "user_events:test",
+            test_raw_record(0),
+            &FormatConfig::Tracefs,
+        ));
+
+        {
+            let flush = flush_batch(&effect_handler, &metrics, &mut builder);
+            tokio::pin!(flush);
+
+            tokio::select! {
+                result = &mut flush => {
+                    panic!("flush completed before downstream capacity was available: {result:?}");
+                }
+                _ = time::sleep(Duration::from_millis(10)) => {}
+            }
+
+            let prefilled = rx.recv().await.expect("prefilled item received");
+            assert_eq!(prefilled.num_items(), 0);
+            flush.await.expect("flush completed after capacity opened");
+        }
+
+        let pdata = rx.recv().await.expect("flushed batch received");
+        assert_eq!(pdata.num_items(), 1);
+
+        let metrics = metrics.borrow();
+        assert!(builder.is_empty());
+        assert_eq!(metrics.forwarded_samples.get(), 1);
+        assert_eq!(metrics.flushed_batches.get(), 1);
+        assert!(metrics.downstream_send_blocked_ns.get() > 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn flush_batch_unblocks_when_downstream_closes() {
+        let (effect_handler, rx) = test_effect_handler(1, true);
+        let metrics = test_metrics();
+        let mut builder = ArrowRecordsBuilder::new();
+        builder.append(DecodedUsereventsRecord::from_raw(
+            "user_events:test",
+            test_raw_record(0),
+            &FormatConfig::Tracefs,
+        ));
+
+        {
+            let flush = flush_batch(&effect_handler, &metrics, &mut builder);
+            tokio::pin!(flush);
+
+            tokio::select! {
+                result = &mut flush => {
+                    panic!("flush completed before downstream closed: {result:?}");
+                }
+                _ = time::sleep(Duration::from_millis(10)) => {}
+            }
+
+            drop(rx);
+            let error = flush
+                .await
+                .expect_err("closed downstream should fail the flush");
+            assert!(
+                matches!(error, Error::ChannelSendError { closed: true, .. }),
+                "unexpected error: {error}"
+            );
+        }
+
+        let metrics = metrics.borrow();
+        assert_eq!(metrics.forwarded_samples.get(), 0);
+        assert_eq!(metrics.flushed_batches.get(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn process_drained_records_flushes_with_downstream_capacity() {
+        let (effect_handler, rx) = test_effect_handler(1, false);
         let subscriptions = vec![test_subscription()];
         let admission_state = normal_admission_state();
         let metrics = test_metrics();
@@ -1194,17 +1225,17 @@ mod config_tests {
             &mut drained_records,
             drain_stats,
             &test_batch_config(1),
-            &OverflowMode::Drop,
         )
         .await
         .expect("drained records processed");
 
+        let pdata = rx.recv().await.expect("flushed batch received");
+        assert_eq!(pdata.num_items(), 1);
         let metrics = metrics.borrow();
         assert!(builder.is_empty());
         assert_eq!(metrics.received_samples.get(), 1);
-        assert_eq!(metrics.dropped_downstream_full.get(), 1);
-        assert_eq!(metrics.forwarded_samples.get(), 0);
-        assert_eq!(metrics.flushed_batches.get(), 0);
+        assert_eq!(metrics.forwarded_samples.get(), 1);
+        assert_eq!(metrics.flushed_batches.get(), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1229,13 +1260,12 @@ mod config_tests {
             &mut drained_records,
             drain_stats,
             &test_batch_config(10),
-            &OverflowMode::Drop,
         )
         .await
         .expect("drained records processed");
 
         assert_eq!(builder.len(), 1);
-        flush_batch(&effect_handler, &metrics, &mut builder, &OverflowMode::Drop)
+        flush_batch(&effect_handler, &metrics, &mut builder)
             .await
             .expect("partial batch flushed");
 
@@ -1313,7 +1343,6 @@ mod config_tests {
             session: None,
             drain: None,
             batching: None,
-            overflow: None,
         };
 
         let mut subscriptions = config.subscriptions;
@@ -1335,7 +1364,6 @@ mod config_tests {
             session: None,
             drain: None,
             batching: None,
-            overflow: None,
         };
 
         let mut subscriptions = config.subscriptions;

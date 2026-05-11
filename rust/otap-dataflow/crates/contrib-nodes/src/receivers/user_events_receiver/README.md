@@ -228,8 +228,6 @@ nodes:
       batching:
         max_size: 512
         max_duration: 50ms
-      overflow:
-        on_downstream_full: drop
 ```
 
 Add another list entry when one receiver should listen to several tracepoints:
@@ -258,10 +256,11 @@ the per-CPU locality model intact while allowing related tracepoints to share a
 receiver.
 
 The tradeoff is shared fate and shared budgets: all subscriptions in the
-receiver share the same perf session, drain limits, batching policy, overflow
-policy, and metrics. A high-volume tracepoint can consume the shared drain or
-batch budget and affect quieter tracepoints. If tracepoints need independent
-resource limits or failure isolation, configure separate receiver nodes instead.
+receiver share the same perf session, drain limits, batching policy, downstream
+backpressure boundary, and metrics. A high-volume tracepoint can consume the
+shared drain or batch budget and affect quieter tracepoints. If tracepoints need
+independent resource limits or failure isolation, configure separate receiver
+nodes instead.
 
 The receiver bounds the in-process pending queue between one_collect perf
 callbacks and the drain loop with `session.max_pending_events` and
@@ -270,7 +269,7 @@ is reached, new events are dropped before their payload is copied into user
 space and counted as `dropped_pending_overflow`. This cap covers only the
 adapter pending queue; kernel perf ring memory is governed by
 `session.per_cpu_buffer_size`, Arrow batch memory by `batching.*`, and
-downstream channel behavior by `overflow.on_downstream_full`.
+downstream channel pressure by the engine's bounded local channel.
 
 Late registration is also currently all-or-nothing for multiple subscriptions:
 if any configured tracepoint is missing, the receiver retries opening the
@@ -309,7 +308,6 @@ tracepoint sessions.
 | `drain.max_drain_ns` | `2ms` | Total drain-turn budget. Accepts duration strings such as `2ms`, `500us`, or `1000000ns`; must be greater than zero. |
 | `batching.max_size` | `512` | Flush once this many logs are buffered in the current Arrow batch. |
 | `batching.max_duration` | `50ms` | Flush interval for partially-filled batches. |
-| `overflow.on_downstream_full` | `drop` | Drop the batch if downstream is full; blocking the perf drain loop is intentionally avoided. |
 
 TODO: Add human-readable byte sizes such as `10KB`/`16MiB` if the dataflow
 configuration layer standardizes byte-size parsing.
@@ -399,7 +397,7 @@ backends with receiver implementation details.
 
 The per-pipeline-thread pipeline inside the receiver has four stages, each
 bounded by a specific config field. This diagram shows where the `drain.*`,
-`batching.*`, `overflow.*`, and memory-pressure knobs take effect:
+`batching.*`, downstream backpressure, and memory-pressure knobs take effect:
 
 ```text
   perf ring (per-CPU, kernel-owned)
@@ -425,11 +423,11 @@ bounded by a specific config field. This diagram shows where the `drain.*`,
   |                     |  flush on batching.max_duration tick
   +----------+----------+
              |
-             |  flush_batch -> effect_handler.try_send_message(...)
+             |  flush_batch -> effect_handler.send_message(...).await
              v
-  +---------------------+      ok    -> forwarded_samples += n, flushed_batches++
-  | downstream channel  |      full  -> dropped_downstream_full += n
-  |                     |               (overflow.on_downstream_full = drop)
+  +---------------------+      ok      -> forwarded_samples += n, flushed_batches++
+  | downstream channel  |      full    -> receiver task waits for capacity
+  |                     |      waiting -> downstream_send_blocked_ns += elapsed
   +---------------------+      memory pressure (should_shed_ingress):
                                      records    -> dropped_memory_pressure++
                                      buffered batch on ctrl event -> drop_batch
@@ -444,19 +442,21 @@ Notes:
   (records are counted toward `dropped_memory_pressure` instead of being
   appended to the batch) and on ctrl events where any already-buffered batch is
   dropped rather than flushed.
-- `overflow.on_downstream_full = drop` is currently the only mode; the perf
-  drain loop is never blocked on downstream.
+- When the downstream channel is full, the receiver awaits channel capacity.
+  While it is waiting, the perf ring is the intentional overflow point.
 
 ## Runtime Behavior
 
 ### Backpressure
 
 `user_events` perf rings cannot be backpressured like a socket. For that
-reason, the receiver does not block the perf drain loop when downstream is
-full; it drops already-drained batches and reports them as
-`dropped_downstream_full`. Separately, if the kernel/perf ring overruns before
-the receiver drains it, that loss is reported by the perf path and counted as
-`lost_perf_samples`.
+reason, the receiver applies backpressure at the engine channel boundary
+instead. When the downstream channel is full, the receiver awaits the async
+send, parks the receiver task, and stops draining new perf samples until
+capacity is available. Under sustained downstream saturation, the kernel perf
+ring is deliberately the overflow point; perf-ring loss is reported by the perf
+path and counted as `lost_perf_samples`. Time spent waiting for downstream
+capacity is counted as `downstream_send_blocked_ns`.
 
 TODO: Plumb corrupt perf event and corrupt perf buffer counters once
 `one_collect` exposes them.
@@ -493,13 +493,13 @@ extra drain/flush; use graceful drain when minimizing buffered data loss matters
 
 ## Metrics
 
-The receiver reports these counters under `userevents.receiver.metrics`:
+The receiver reports these counters under `user_events.receiver.metrics`:
 
 | Metric | Meaning |
 | --- | --- |
 | `received_samples` | Perf samples drained from the kernel/perf path. |
 | `forwarded_samples` | Log records successfully forwarded downstream. |
-| `dropped_downstream_full` | Batches dropped because the downstream channel was full. |
+| `downstream_send_blocked_ns` | Time spent waiting for downstream channel capacity. |
 | `dropped_memory_pressure` | Records or batches dropped because process memory pressure requested ingress shedding. |
 | `dropped_no_subscription` | Samples that did not map to a configured subscription index. This should normally stay zero. |
 | `lost_perf_samples` | Lost sample count reported by the perf ring. |

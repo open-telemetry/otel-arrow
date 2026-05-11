@@ -54,7 +54,10 @@ impl ArrowRecordsBuilder {
         self.logs.append_time_unix_nano(record.time_unix_nano);
         self.logs
             .append_observed_time_unix_nano(record.time_unix_nano);
-        self.logs.body.append_str(record.body.as_bytes());
+        match record.body {
+            Some(body) => self.logs.body.append_str(body.as_bytes()),
+            None => self.logs.body.append_null(),
+        }
         self.logs.append_severity_number(record.severity_number);
         self.logs
             .append_severity_text(record.severity_text.as_deref().map(str::as_bytes));
@@ -141,7 +144,7 @@ mod tests {
         let mut builder = ArrowRecordsBuilder::new();
         builder.append(DecodedUsereventsRecord {
             time_unix_nano: 1234,
-            body: "QUJD".to_owned(),
+            body: Some("QUJD".to_owned()),
             event_name: Some("example-event".to_owned()),
             severity_number: Some(17),
             severity_text: Some("ERROR".into()),
@@ -231,7 +234,7 @@ mod tests {
         let mut builder = ArrowRecordsBuilder::new();
         builder.append(DecodedUsereventsRecord {
             time_unix_nano: 1234,
-            body: "text".to_owned(),
+            body: None,
             event_name: Some("example-event".to_owned()),
             severity_number: Some(9),
             severity_text: Some("INFO".into()),
@@ -252,5 +255,31 @@ mod tests {
             .downcast_ref::<UInt32Array>()
             .expect("flags values");
         assert_eq!(flags_col.value(0), 1);
+    }
+
+    #[test]
+    fn build_omits_all_null_body_column() {
+        let mut builder = ArrowRecordsBuilder::new();
+        builder.append(DecodedUsereventsRecord {
+            time_unix_nano: 1234,
+            body: None,
+            event_name: Some("example-event".to_owned()),
+            severity_number: None,
+            severity_text: None,
+            flags: None,
+            trace_id: None,
+            span_id: None,
+            attributes: vec![],
+        });
+
+        let batch = builder.build().expect("build succeeds");
+        let logs_rb = batch
+            .get(ArrowPayloadType::Logs)
+            .expect("logs batch present");
+
+        assert!(
+            logs_rb.column_by_name("body").is_none(),
+            "all-null body column should be omitted"
+        );
     }
 }

@@ -121,8 +121,8 @@ impl PartialEq<&str> for DecodedAttrValue {
 pub(super) struct DecodedUsereventsRecord {
     /// Event timestamp in Unix epoch nanoseconds.
     pub time_unix_nano: i64,
-    /// Log body string.
-    pub body: String,
+    /// Optional log body string.
+    pub body: Option<String>,
     /// Optional promoted event name for the typed OTLP log field.
     pub event_name: Option<String>,
     /// Optional severity number.
@@ -172,7 +172,7 @@ impl DecodedUsereventsRecord {
 
         Self {
             time_unix_nano: i64::try_from(value.timestamp_unix_nano).unwrap_or(i64::MAX),
-            body: String::new(),
+            body: None,
             event_name: Some(tracepoint.to_owned()),
             severity_number: None,
             severity_text: None,
@@ -550,7 +550,7 @@ mod tests {
         let decoded = decode_tracefs(fields, event_data);
 
         assert_eq!(decoded.event_name.as_deref(), Some("user_events:my_event"));
-        assert_eq!(decoded.body, "");
+        assert!(decoded.body.is_none());
         assert_eq!(decoded.attributes.len(), 2);
         assert_eq!(decoded.attributes[0].0, "status");
         assert_eq!(decoded.attributes[0].1, DecodedAttrValue::Int(200));
@@ -781,7 +781,7 @@ mod tests {
             &FormatConfig::EventHeader,
         );
 
-        assert_eq!(decoded.body, "");
+        assert!(decoded.body.is_none());
         assert_eq!(decoded.attributes.len(), 1);
         assert_eq!(decoded.attributes[0].0, "linux.userevents.payload_base64");
     }
