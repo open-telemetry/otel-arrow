@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778468109158,
+  "lastUpdate": 1778474004175,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cithomas@microsoft.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "ac4a60e9875c995eafa1f4a9e8f54c7d9ef10b3e",
-          "message": "fix perf test (#2686)\n\nCloses #2667\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2026-04-16T02:51:58Z",
-          "tree_id": "987502055306c69e3b26a1fd1d8326d084f9c0d2",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/ac4a60e9875c995eafa1f4a9e8f54c7d9ef10b3e"
-        },
-        "date": 1776310807649,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.737657904624939,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 99.95408576505909,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.3666060138782,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 28.282161458333334,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 29.5,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 639658.7198414388,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 644377.2129393661,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.005598,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 16946187.341695677,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 16954720.548531137,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 176848.01454013732,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5c5bb9faecc77a73c95888c1bb58724ea78de875",
+          "message": "fix(deps): update module google.golang.org/grpc to v1.81.0 (#2923)\n\nThis PR contains the following updates:\n\n| Package | Change |\n[Age](https://docs.renovatebot.com/merge-confidence/) |\n[Confidence](https://docs.renovatebot.com/merge-confidence/) |\n|---|---|---|---|\n| [google.golang.org/grpc](https://redirect.github.com/grpc/grpc-go) |\n`v1.80.0` → `v1.81.0` |\n![age](https://developer.mend.io/api/mc/badges/age/go/google.golang.org%2fgrpc/v1.81.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/google.golang.org%2fgrpc/v1.80.0/v1.81.0?slim=true)\n|\n\n---\n\n### Release Notes\n\n<details>\n<summary>grpc/grpc-go (google.golang.org/grpc)</summary>\n\n###\n[`v1.81.0`](https://redirect.github.com/grpc/grpc-go/releases/tag/v1.81.0):\nRelease 1.81.0\n\n[Compare\nSource](https://redirect.github.com/grpc/grpc-go/compare/v1.80.0...v1.81.0)\n\n### Behavior Changes\n\n- balancer/rls: Switch gauge metrics to asynchronous emission (once per\ncollection cycle) to reduce telemetry noise and align with other gRPC\nlanguage implementations.\n([#&#8203;8808](https://redirect.github.com/grpc/grpc-go/issues/8808))\n\n### Dependencies\n\n- Minimum supported Go version is now 1.25.\n([#&#8203;8969](https://redirect.github.com/grpc/grpc-go/issues/8969))\n\n### Bug Fixes\n\n- xds: Use the leaf cluster's security config for the TLS handshake\ninstead of the aggregate cluster's config.\n([#&#8203;8956](https://redirect.github.com/grpc/grpc-go/issues/8956))\n- transport: Send a `RST_STREAM` when receiving an `END_STREAM` when the\nstream is not already half-closed.\n([#&#8203;8832](https://redirect.github.com/grpc/grpc-go/issues/8832))\n- xds: Fix ADS resource name validation to prevent a panic.\n([#&#8203;8970](https://redirect.github.com/grpc/grpc-go/issues/8970))\n\n### New Features\n\n- grpc/stats: Add support for custom labels in per-call metrics ([gRFC\nA108](https://redirect.github.com/grpc/proposal/blob/master/A108-otel-custom-per-call-label.md)).\n([#&#8203;9008](https://redirect.github.com/grpc/grpc-go/issues/9008))\n- xds: Add support for Server Name Indication (SNI) and SAN validation\n([gRFC\nA101](https://redirect.github.com/grpc/proposal/blob/master/A101-SNI-setting-and-SNI-SAN-validation.md)).\nDisabled by default. To enable, set `GRPC_EXPERIMENTAL_XDS_SNI=true`\nenvironment variable.\n([#&#8203;9016](https://redirect.github.com/grpc/grpc-go/issues/9016))\n- xds: Add support to control which fields get propagated from ORCA\nbackend metric reports to LRS load reports ([gRFC\nA85](https://redirect.github.com/grpc/proposal/blob/master/A85-lrs-custom-metrics-changes.md)).\nDisabled by default. To enable, set\n`GRPC_EXPERIMENTAL_XDS_ORCA_LRS_PROPAGATION=true`.\n([#&#8203;9005](https://redirect.github.com/grpc/grpc-go/issues/9005))\n- xds: Add metrics to track xDS client connectivity and cached resource\nstate ([gRFC\nA78](https://redirect.github.com/grpc/proposal/blob/master/A78-grpc-metrics-wrr-pf-xds.md)).\n([#&#8203;8807](https://redirect.github.com/grpc/grpc-go/issues/8807))\n- stats/otel: Enhance `grpc.subchannel.disconnections` metric by adding\ndisconnection reason to the `grpc.disconnect_error` label ([gRFC\nA94](https://redirect.github.com/grpc/proposal/blob/master/A94-subchannel-otel-metrics.md)).\nThis provides granular insights into why subchannels are closing.\n([#&#8203;8973](https://redirect.github.com/grpc/grpc-go/issues/8973))\n- mem: Add `mem.Buffer.Slice()` API to slice the buffer like a slice.\n([#&#8203;8977](https://redirect.github.com/grpc/grpc-go/issues/8977))\n  - Special Thanks: [@&#8203;ash2k](https://redirect.github.com/ash2k)\n\n### Performance Improvements\n\n- alts: Pool read buffers to lower memory utilization when sockets are\nunreadable.\n([#&#8203;8964](https://redirect.github.com/grpc/grpc-go/issues/8964))\n- transport: Pool HTTP/2 framer read buffers to reduce idle memory\nconsumption. Currently limited to Linux for ALTS and non-encrypted\ntransports (TCP, Unix). To disable, set\n`GRPC_GO_EXPERIMENTAL_HTTP_FRAMER_READ_BUFFER_POOLING=false` and report\nany issues.\n([#&#8203;9032](https://redirect.github.com/grpc/grpc-go/issues/9032))\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4xNTkuMiIsInVwZGF0ZWRJblZlciI6IjQzLjE1OS4yIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\n---------\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>\nCo-authored-by: otelbot <197425009+otelbot@users.noreply.github.com>\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
+          "timestamp": "2026-05-11T03:48:08Z",
+          "tree_id": "4df6d22158be94ad40a81cb7e3317b6d87b80a25",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5c5bb9faecc77a73c95888c1bb58724ea78de875"
+        },
+        "date": 1778474003675,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1111.8643798828125,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 5.784234837069658,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 6.058250985850151,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.438671875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.80078125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 503.34992304118265,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 6099.918558888909,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.013916,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 214991.45878161458,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 176309.38482303938,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
