@@ -38,12 +38,20 @@ from jinja2 import Environment, BaseLoader, StrictUndefined
 # ---------------------------------------------------------------------------
 DEFAULT_MANIFEST = Path("manifest.yaml")
 STAGING_DIR = Path(".data")
-SITE_SUITE_DATA_DIR = Path("site/data/suite")
+
+# Default build output layout, used when no explicit paths are passed.
+DEFAULT_SITE_ROOT = Path(".site")
+DEFAULT_DATA_SUBDIR = Path("data")
+DEFAULT_DATA_DIR = DEFAULT_SITE_ROOT / DEFAULT_DATA_SUBDIR
+
+# Source location of static assets (CSS/JS) relative to the manifest's
+# parent directory. Copied into <site-root>/shared/ at build time.
+SHARED_SOURCE_SUBDIR = Path("shared")
 
 # File extensions included when scanning test directories during build
 ALLOWED_EXTENSIONS = {".toml", ".yaml", ".yml", ".json", ".txt"}
 
-# File extensions to publish from staging to site/data after a run
+# File extensions to publish from staging to the data dir after a run
 PUBLISH_CONFIG_EXTENSIONS = {".yaml", ".yml", ".toml"}
 
 # Standard test names (hardcoded in the orchestrator templates)
@@ -56,23 +64,11 @@ STANDARD_TESTS = ["100k", "200k", "300k", "400k"]
 @dataclass
 class Manifest:
     path: Path                    # absolute path to manifest.yaml
-    site_dir: Path                # absolute path to site root
+    base_dir: Path                # absolute path to manifest.yaml's parent (source root)
     suite_files: list[Path]       # absolute paths to suite YAMLs
     comparison_files: list[Path]  # absolute paths to comparison YAMLs
     variables: dict               # template variables passed to Jinja at top level
     meta: dict                    # allowed values per meta key (key -> [values])
-
-    @property
-    def site_suite_data_dir(self) -> Path:
-        return self.site_dir / "data" / "suite"
-
-    @property
-    def compare_stubs_dir(self) -> Path:
-        return self.site_dir / "compare"
-
-    @property
-    def index_path(self) -> Path:
-        return self.site_dir / "index.html"
 
 
 def load_manifest(manifest_path: Path) -> Manifest:
@@ -92,7 +88,7 @@ def load_manifest(manifest_path: Path) -> Manifest:
         print(f"ERROR: manifest must be a mapping at top level: {manifest_path}")
         sys.exit(1)
 
-    for key in ("site_root", "suites", "comparisons", "variables", "meta"):
+    for key in ("suites", "comparisons", "variables", "meta"):
         if key not in data:
             print(f"ERROR: manifest missing required key '{key}': {manifest_path}")
             sys.exit(1)
@@ -112,13 +108,12 @@ def load_manifest(manifest_path: Path) -> Manifest:
             sys.exit(1)
 
     base = manifest_path.parent
-    site_dir = (base / data["site_root"]).resolve()
     suite_files = [_resolve_listed_path(base, p, "suite") for p in data["suites"]]
     comparison_files = [_resolve_listed_path(base, p, "comparison") for p in data["comparisons"]]
 
     return Manifest(
         path=manifest_path,
-        site_dir=site_dir,
+        base_dir=base,
         suite_files=suite_files,
         comparison_files=comparison_files,
         variables=variables,
@@ -170,9 +165,12 @@ def cmd_run(args) -> int:
     suite_paths = resolve_suites_from_manifest_obj(args.suites, manifest)
     total = len(suite_paths)
 
+    publish_dir = (args.publish_dir or DEFAULT_DATA_DIR).resolve()
+
     print(f"Resolved {total} suite(s):")
     for p in suite_paths:
         print(f"  - {p}")
+    print(f"Publishing to: {publish_dir}")
     print()
 
     passed: list[str] = []
@@ -187,6 +185,7 @@ def cmd_run(args) -> int:
         success = run_single_suite(
             suite_path,
             manifest,
+            publish_dir,
             args.generate_only,
             args.observation_interval,
             tests=args.tests,
@@ -280,6 +279,7 @@ def load_suite(path: Path) -> dict:
 def run_single_suite(
     suite_path: Path,
     manifest: Manifest,
+    publish_dir: Path,
     generate_only: bool,
     observation_interval: int,
     tests: str | None = None,
@@ -288,7 +288,7 @@ def run_single_suite(
     Load, render, and run a single suite.
 
     All artifacts are staged in .data/<slug>/<timestamp>/ and then
-    published to site/data/suite/<slug>/ after a successful run.
+    published to <publish_dir>/suite/<slug>/ after a successful run.
 
     Returns True on success, False on failure.
     """
@@ -333,7 +333,7 @@ def run_single_suite(
         )
         return False
 
-    publish_results(staging_dir, suite)
+    publish_results(staging_dir, suite, publish_dir)
     return True
 
 
@@ -437,9 +437,9 @@ def sanitize_for_json(obj):
     return obj
 
 
-def publish_results(staging_dir: Path, suite: dict) -> None:
+def publish_results(staging_dir: Path, suite: dict, publish_dir: Path) -> None:
     """
-    Publish run artifacts from staging to site/data/suite/<slug>/.
+    Publish run artifacts from staging to <publish_dir>/suite/<slug>/.
 
     For each test directory in the staging area:
     1. Clear the corresponding site test directory (clean slate)
@@ -447,17 +447,17 @@ def publish_results(staging_dir: Path, suite: dict) -> None:
     3. Convert latest sql_report-*.json to metrics.json
     4. Copy timeseries.json if present
 
-    Also writes a simplified suite.yaml to the site directory.
+    Also writes a simplified suite.yaml under the suite directory.
     """
     slug = suite["slug"]
-    site_suite_dir = SITE_SUITE_DATA_DIR / slug
-    site_suite_dir.mkdir(parents=True, exist_ok=True)
+    suite_dir = publish_dir / "suite" / slug
+    suite_dir.mkdir(parents=True, exist_ok=True)
 
     print("\nPublishing results...")
     simplified = simplify_suite_yaml(suite)
-    with open(site_suite_dir / "suite.yaml", "w") as f:
+    with open(suite_dir / "suite.yaml", "w") as f:
         yaml.dump(simplified, f, default_flow_style=False, sort_keys=False)
-    print(f"  Updated {site_suite_dir / 'suite.yaml'}")
+    print(f"  Updated {suite_dir / 'suite.yaml'}")
 
     staging_tests = staging_dir / "tests"
     if not staging_tests.exists():
@@ -469,15 +469,15 @@ def publish_results(staging_dir: Path, suite: dict) -> None:
             continue
 
         test_name = test_dir.name
-        site_test_dir = site_suite_dir / test_name
+        out_test_dir = suite_dir / test_name
 
-        if site_test_dir.exists():
-            shutil.rmtree(site_test_dir)
-        site_test_dir.mkdir(parents=True, exist_ok=True)
+        if out_test_dir.exists():
+            shutil.rmtree(out_test_dir)
+        out_test_dir.mkdir(parents=True, exist_ok=True)
 
         for f in sorted(test_dir.iterdir()):
             if f.is_file() and f.suffix in PUBLISH_CONFIG_EXTENSIONS:
-                shutil.copy2(f, site_test_dir / f.name)
+                shutil.copy2(f, out_test_dir / f.name)
 
         latest = latest_sql_report(test_dir)
         if latest:
@@ -485,7 +485,7 @@ def publish_results(staging_dir: Path, suite: dict) -> None:
                 with open(latest) as f:
                     data = json.load(f)
                 data = sanitize_for_json(data)
-                with open(site_test_dir / "metrics.json", "w") as f:
+                with open(out_test_dir / "metrics.json", "w") as f:
                     json.dump(data, f, indent=2)
                 print(f"  {test_name}: metrics.json from {latest.name}")
             except Exception as e:
@@ -495,44 +495,104 @@ def publish_results(staging_dir: Path, suite: dict) -> None:
 
         ts_file = test_dir / "timeseries.json"
         if ts_file.exists():
-            shutil.copy2(ts_file, site_test_dir / "timeseries.json")
+            shutil.copy2(ts_file, out_test_dir / "timeseries.json")
 
-        published = list(site_test_dir.iterdir())
+        published = list(out_test_dir.iterdir())
         print(f"  {test_name}: {len(published)} files published")
 
-    print(f"  Published to {site_suite_dir}")
+    print(f"  Published to {suite_dir}")
 
 
 # ===========================================================================
 # `build` subcommand
 # ===========================================================================
+@dataclass
+class BuildPaths:
+    """Resolved output paths for a single build invocation."""
+    site_root: Path        # absolute, dashboard-owned territory
+    data_dir: Path         # absolute, subdir of site_root
+    shared_src: Path       # absolute, source location of shared/ assets
+    shared_dst: Path       # absolute, = site_root / "shared"
+
+    def compare_page_dir(self, slug: str) -> Path:
+        return self.site_root / slug
+
+    def suite_dir(self, slug: str) -> Path:
+        return self.data_dir / "suite" / slug
+
+
+def resolve_build_paths(args, manifest: Manifest) -> BuildPaths:
+    """Resolve build paths from CLI args, applying defaults relative to cwd."""
+    site_root = (args.site_root or DEFAULT_SITE_ROOT).resolve()
+    data_dir = (args.data_dir or (site_root / DEFAULT_DATA_SUBDIR)).resolve()
+
+    # data_dir must live inside site_root so the generated relative paths
+    # in HTML resolve correctly when the site is served.
+    try:
+        data_dir.relative_to(site_root)
+    except ValueError:
+        print(
+            f"ERROR: --data-dir must be a subdirectory of --site-root.\n"
+            f"  site-root: {site_root}\n"
+            f"  data-dir:  {data_dir}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    shared_src = (manifest.base_dir / SHARED_SOURCE_SUBDIR).resolve()
+    if not shared_src.exists():
+        print(f"ERROR: shared assets not found at {shared_src}", file=sys.stderr)
+        sys.exit(1)
+
+    return BuildPaths(
+        site_root=site_root,
+        data_dir=data_dir,
+        shared_src=shared_src,
+        shared_dst=site_root / "shared",
+    )
+
+
 def cmd_build(args) -> int:
     """Build the static dashboard site from the manifest."""
     manifest = load_manifest(args.manifest)
+    paths = resolve_build_paths(args, manifest)
 
-    if not manifest.site_dir.exists():
-        print(f"ERROR: Site directory not found: {manifest.site_dir}")
-        return 1
-
-    manifest.site_suite_data_dir.mkdir(parents=True, exist_ok=True)
+    paths.site_root.mkdir(parents=True, exist_ok=True)
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Using manifest: {manifest.path}")
-    print(f"Site root: {manifest.site_dir}")
+    print(f"Site root:      {paths.site_root}")
+    print(f"Data dir:       {paths.data_dir}")
     print()
 
-    print("Regenerating suite.yaml files from manifest suites...")
-    regenerate_suite_yamls(manifest)
-    print()
-
-    print("Building suite data...")
-    suites = build_suites(manifest)
+    # Copy static assets fresh each build so changes to shared/ propagate.
+    if paths.shared_dst.exists():
+        shutil.rmtree(paths.shared_dst)
+    shutil.copytree(paths.shared_src, paths.shared_dst)
+    print(f"  Copied {paths.shared_src} -> {paths.shared_dst}")
     print()
 
     comparisons = validate_all(manifest)
 
+    manifest_slugs = collect_manifest_suite_slugs(manifest)
+    comparison_slugs = {c["slug"] for c in comparisons}
+
+    print("Reconciling data and site directories...")
+    reconcile_data_dir(paths.data_dir, manifest_slugs)
+    reconcile_site_root(paths, comparison_slugs)
+    print()
+
+    print("Regenerating suite.yaml files from manifest suites...")
+    regenerate_suite_yamls(manifest, paths)
+    print()
+
+    print("Building suite data...")
+    suites = build_suites(manifest, paths)
+    print()
+
     if suites:
         print("Generating data.js files...")
-        generate_suite_data_js(manifest, suites)
+        generate_suite_data_js(suites, paths)
         print()
 
     total_tests = sum(len(s["tests"]) for s in suites.values())
@@ -541,20 +601,62 @@ def cmd_build(args) -> int:
     print()
 
     print("Generating index.html...")
-    generate_index_html(manifest, comparisons, suites)
+    generate_index_html(comparisons, suites, paths)
     print()
 
     print("Generating comparison stubs...")
-    generate_compare_stubs(manifest, comparisons, suites)
+    generate_compare_stubs(comparisons, suites, paths)
     print()
 
     print("Build complete.")
     return 0
 
 
-def regenerate_suite_yamls(manifest: Manifest) -> None:
+def collect_manifest_suite_slugs(manifest: Manifest) -> set[str]:
+    """Read each suite file and return the set of declared slugs."""
+    slugs: set[str] = set()
+    for suite_file in manifest.suite_files:
+        with open(suite_file) as f:
+            slug = yaml.safe_load(f).get("slug")
+        if slug:
+            slugs.add(slug)
+    return slugs
+
+
+def reconcile_data_dir(data_dir: Path, manifest_slugs: set[str]) -> None:
+    """Delete any <data_dir>/suite/<slug>/ whose slug is not in the manifest."""
+    suite_root = data_dir / "suite"
+    if not suite_root.exists():
+        return
+    for child in sorted(suite_root.iterdir()):
+        if not child.is_dir():
+            continue
+        if child.name not in manifest_slugs:
+            shutil.rmtree(child)
+            print(f"  Pruned stale data: {child}")
+
+
+def reconcile_site_root(paths: BuildPaths, comparison_slugs: set[str]) -> None:
     """
-    Regenerate <site>/data/suite/<slug>/suite.yaml from the full suite
+    Delete any directory child of `site_root` that is not a reserved name
+    (`shared`, the data-dir's basename) and not a manifested comparison
+    slug. Site root is dashboard-owned territory.
+    """
+    # The first path component of data_dir relative to site_root is reserved.
+    data_first = paths.data_dir.relative_to(paths.site_root).parts[0]
+    reserved = {"shared", data_first}
+    for child in sorted(paths.site_root.iterdir()):
+        if not child.is_dir():
+            continue
+        if child.name in reserved or child.name in comparison_slugs:
+            continue
+        shutil.rmtree(child)
+        print(f"  Pruned stale comparison page: {child}")
+
+
+def regenerate_suite_yamls(manifest: Manifest, paths: BuildPaths) -> None:
+    """
+    Regenerate <data_dir>/suite/<slug>/suite.yaml from the full suite
     definitions listed in the manifest.
     """
     for suite_file in manifest.suite_files:
@@ -565,8 +667,9 @@ def regenerate_suite_yamls(manifest: Manifest) -> None:
         if not slug:
             continue
 
-        target_dir = manifest.site_suite_data_dir / slug
+        target_dir = paths.suite_dir(slug)
         if not target_dir.exists():
+            # Per-test data hasn't been published yet for this suite; skip.
             continue
 
         simplified = simplify_suite_yaml(suite)
@@ -627,20 +730,22 @@ def scan_test_directory(test_dir: Path) -> dict:
     }
 
 
-def build_suites(manifest: Manifest) -> dict:
+def build_suites(manifest: Manifest, paths: BuildPaths) -> dict:
     """
     Build suite data structures.
 
-    Pass 1 walks <site>/data/suite/ for published test results. Pass 2 ensures
-    every suite listed in the manifest has an entry, even without data.
+    Pass 1 walks <data_dir>/suite/ for published test results. Pass 2
+    ensures every suite listed in the manifest has an entry, even without
+    data.
 
     Returns dict of slug -> suite_data.
     """
     suites: dict = {}
 
-    manifest.site_suite_data_dir.mkdir(parents=True, exist_ok=True)
+    suite_root = paths.data_dir / "suite"
+    suite_root.mkdir(parents=True, exist_ok=True)
 
-    for suite_dir in sorted(manifest.site_suite_data_dir.iterdir()):
+    for suite_dir in sorted(suite_root.iterdir()):
         if not suite_dir.is_dir():
             continue
 
@@ -686,7 +791,7 @@ def build_suites(manifest: Manifest) -> dict:
         if not slug or slug in suites:
             continue
 
-        suite_dir = manifest.site_suite_data_dir / slug
+        suite_dir = paths.suite_dir(slug)
         suite_dir.mkdir(parents=True, exist_ok=True)
         simplified = simplify_suite_yaml(suite)
         with open(suite_dir / "suite.yaml", "w") as f:
@@ -803,6 +908,16 @@ def validate_manifest(manifest: Manifest, comparisons: list) -> None:
             joined = ", ".join(sources)
             errors.append(f"duplicate comparison slug '{slug}' in: {joined}")
 
+    # Comparison slugs become top-level directories under the site root.
+    # Reject any that would collide with the reserved static/data subtrees.
+    reserved_slugs = {"shared", "data"}
+    for slug, sources in comp_slug_sources.items():
+        if slug in reserved_slugs:
+            joined = ", ".join(sources)
+            errors.append(
+                f"comparison slug '{slug}' is reserved (collides with <site>/{slug}/): {joined}"
+            )
+
     for comp in comparisons:
         for suite_ref in comp.get("suites", []):
             ref_slug = suite_ref.get("slug")
@@ -824,10 +939,10 @@ def validate_manifest(manifest: Manifest, comparisons: list) -> None:
         sys.exit(1)
 
 
-def generate_suite_data_js(manifest: Manifest, suites: dict) -> None:
-    """Generate <site>/data/suite/<slug>/data.js for each suite."""
+def generate_suite_data_js(suites: dict, paths: BuildPaths) -> None:
+    """Generate <data_dir>/suite/<slug>/data.js for each suite."""
     for slug, suite_data in suites.items():
-        data_js_path = manifest.site_suite_data_dir / slug / "data.js"
+        data_js_path = paths.suite_dir(slug) / "data.js"
 
         payload = json.dumps(suite_data, indent=2)
         js_content = (
@@ -839,8 +954,11 @@ def generate_suite_data_js(manifest: Manifest, suites: dict) -> None:
         print(f"  Generated {data_js_path}")
 
 
-def generate_index_html(manifest: Manifest, comparisons: list, suites: dict) -> None:
-    """Generate <site>/index.html with comparison sections."""
+def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> None:
+    """Generate <site_root>/index.html with comparison sections."""
+    shared_rel = os.path.relpath(paths.shared_dst, paths.site_root)
+    data_rel = os.path.relpath(paths.data_dir, paths.site_root)
+
     referenced_slugs = set()
     for comp in comparisons:
         for suite_ref in comp["suites"]:
@@ -849,7 +967,7 @@ def generate_index_html(manifest: Manifest, comparisons: list, suites: dict) -> 
     available_slugs = sorted(slug for slug in referenced_slugs if slug in suites)
 
     data_script_tags = "\n".join(
-        f'  <script src="data/suite/{slug}/data.js"></script>'
+        f'  <script src="{data_rel}/suite/{slug}/data.js"></script>'
         for slug in available_slugs
     )
 
@@ -863,7 +981,7 @@ def generate_index_html(manifest: Manifest, comparisons: list, suites: dict) -> 
         '  <meta charset="utf-8">',
         '  <meta name="viewport" content="width=device-width, initial-scale=1">',
         '  <title>Telemetry Engine Benchmark Dashboard</title>',
-        '  <link rel="stylesheet" href="shared/styles.css">',
+        f'  <link rel="stylesheet" href="{shared_rel}/styles.css">',
         '</head>',
         '<body>',
         '  <div class="wip-banner" role="alert">',
@@ -891,14 +1009,15 @@ def generate_index_html(manifest: Manifest, comparisons: list, suites: dict) -> 
         '  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>',
         data_script_tags,
         f'  <script>window.COMPARISONS = {comparisons_json};</script>',
-        '  <script type="module" src="shared/app.js"></script>',
+        f'  <script type="module" src="{shared_rel}/app.js"></script>',
         '</body>',
         '</html>',
     ]
     html = "\n".join(lines) + "\n"
 
-    manifest.index_path.write_text(html)
-    print(f"  Generated {manifest.index_path}")
+    index_path = paths.site_root / "index.html"
+    index_path.write_text(html)
+    print(f"  Generated {index_path}")
 
 
 def _strip_internal(comp: dict) -> dict:
@@ -906,16 +1025,24 @@ def _strip_internal(comp: dict) -> dict:
     return {k: v for k, v in comp.items() if not (isinstance(k, str) and k.startswith("_"))}
 
 
-def generate_compare_stubs(manifest: Manifest, comparisons: list, suites: dict) -> None:
-    """Generate <site>/compare/<slug>/index.html stub pages."""
-    if manifest.compare_stubs_dir.exists():
-        shutil.rmtree(manifest.compare_stubs_dir)
-    manifest.compare_stubs_dir.mkdir(parents=True, exist_ok=True)
+def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths) -> None:
+    """Generate <site_root>/<slug>/index.html stub pages.
 
+    Per-comparison pages sit one level under the site root. Asset URLs are
+    computed via `os.path.relpath` so the page works regardless of where
+    `data_dir` sits relative to `site_root` (as long as it's under it).
+    """
     for comp in comparisons:
         comp_slug = comp["slug"]
-        stub_dir = manifest.compare_stubs_dir / comp_slug
+        stub_dir = paths.compare_page_dir(comp_slug)
+        # Clean-slate this comparison's directory; reconcile_site_root
+        # already removed unmanifested ones.
+        if stub_dir.exists():
+            shutil.rmtree(stub_dir)
         stub_dir.mkdir(parents=True, exist_ok=True)
+
+        shared_rel = os.path.relpath(paths.shared_dst, stub_dir)
+        data_rel = os.path.relpath(paths.data_dir, stub_dir)
 
         title = comp.get("name", comp_slug)
 
@@ -924,7 +1051,7 @@ def generate_compare_stubs(manifest: Manifest, comparisons: list, suites: dict) 
             slug = suite_ref["slug"]
             if slug in suites:
                 suite_script_tags.append(
-                    f'  <script src="../../data/suite/{slug}/data.js"></script>'
+                    f'  <script src="{data_rel}/suite/{slug}/data.js"></script>'
                 )
 
         suite_scripts = "\n".join(suite_script_tags)
@@ -938,7 +1065,7 @@ def generate_compare_stubs(manifest: Manifest, comparisons: list, suites: dict) 
             '  <meta charset="utf-8">',
             '  <meta name="viewport" content="width=device-width, initial-scale=1">',
             f'  <title>{title} - Benchmark Dashboard</title>',
-            '  <link rel="stylesheet" href="../../shared/styles.css">',
+            f'  <link rel="stylesheet" href="{shared_rel}/styles.css">',
             '</head>',
             '<body>',
             '  <div class="wip-banner" role="alert">',
@@ -964,7 +1091,7 @@ def generate_compare_stubs(manifest: Manifest, comparisons: list, suites: dict) 
             f'  <script>window.COMPARISON_SLUG = "{comp_slug}";</script>',
             suite_scripts,
             f'  <script>window.COMPARISON = {comp_json};</script>',
-            '  <script type="module" src="../../shared/app.js"></script>',
+            f'  <script type="module" src="{shared_rel}/app.js"></script>',
             '</body>',
             '</html>',
         ]
@@ -1007,16 +1134,17 @@ class _DashboardHandler(SimpleHTTPRequestHandler):
 
 def cmd_serve(args) -> int:
     """Serve the dashboard site directory over HTTP."""
-    manifest = load_manifest(args.manifest)
-    site_dir = manifest.site_dir
+    site_dir = (args.site_root or DEFAULT_SITE_ROOT).resolve()
 
     if not site_dir.exists():
-        print(f"Error: site/ directory not found: {site_dir}", file=sys.stderr)
+        print(f"Error: site root not found: {site_dir}", file=sys.stderr)
+        print("Hint: run `dashboard.py build` first.", file=sys.stderr)
         return 1
 
-    if not manifest.index_path.exists():
+    if not (site_dir / "index.html").exists():
         print(
-            "Warning: index.html not found. Run `dashboard.py build` first.",
+            "Warning: index.html not found in site root. "
+            "Run `dashboard.py build` first.",
             file=sys.stderr,
         )
 
@@ -1079,6 +1207,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--clean", action="store_true",
         help="Remove all old staging directories in .data/ before running.",
     )
+    p_run.add_argument(
+        "--publish-dir", type=Path, default=None,
+        help=(
+            "Directory to publish per-test results into "
+            f"(default: {DEFAULT_DATA_DIR}). Results land at "
+            "<publish-dir>/suite/<slug>/<test>/."
+        ),
+    )
     p_run.set_defaults(func=cmd_run)
 
     # ---- build ----
@@ -1089,6 +1225,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument(
         "--manifest", type=Path, default=DEFAULT_MANIFEST,
         help=f"Path to dashboard manifest.yaml (default: {DEFAULT_MANIFEST})",
+    )
+    p_build.add_argument(
+        "--site-root", type=Path, default=None,
+        help=(
+            f"Root directory for the generated site (default: {DEFAULT_SITE_ROOT}). "
+            "Treated as dashboard-owned: stale comparison-page directories are "
+            "pruned on every build."
+        ),
+    )
+    p_build.add_argument(
+        "--data-dir", type=Path, default=None,
+        help=(
+            "Per-suite data directory; must be a subdirectory of --site-root. "
+            f"Default: <site-root>/{DEFAULT_DATA_SUBDIR}. Layout: "
+            "<data-dir>/suite/<slug>/<test>/{metrics.json,timeseries.json,*.yaml}."
+        ),
     )
     p_build.set_defaults(func=cmd_build)
 
@@ -1109,8 +1261,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Serve the dashboard site directory over HTTP.",
     )
     p_serve.add_argument(
-        "--manifest", type=Path, default=DEFAULT_MANIFEST,
-        help=f"Path to dashboard manifest.yaml (default: {DEFAULT_MANIFEST})",
+        "--site-root", type=Path, default=None,
+        help=(
+            f"Site root directory to serve (default: {DEFAULT_SITE_ROOT}). "
+            "Run `dashboard.py build` first to populate it."
+        ),
     )
     p_serve.add_argument(
         "--port", type=int, default=3000,
