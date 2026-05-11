@@ -1074,7 +1074,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Instant;
     use tokio::net::TcpListener;
-    use tokio::runtime::Runtime;
+    use tokio::runtime::{Builder, LocalOptions, Runtime};
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
@@ -1094,6 +1094,14 @@ mod tests {
             .expect("test pdata should retain route calldata")
             .calldata[0]
             .into()
+    }
+
+    fn local_runtime(name: &'static str) -> tokio::runtime::LocalRuntime {
+        Builder::new_current_thread()
+            .enable_all()
+            .name(name)
+            .build_local(LocalOptions::default())
+            .expect("failed to create local runtime")
     }
 
     #[test]
@@ -1466,7 +1474,7 @@ mod tests {
         let grpc_addr = "127.0.0.1";
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
-        let tokio_rt = Runtime::new().unwrap();
+        let tokio_rt = local_runtime("otap-exporter-receiver-not-ready-test");
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
@@ -1635,7 +1643,7 @@ mod tests {
                 .expect("uh oh server failed");
         }
 
-        let server_handle = tokio_rt.spawn(async move {
+        let server_handle = tokio_rt.spawn_local(async move {
             let listening_addr = format!("{grpc_addr}:{grpc_port}");
 
             // wait for signal to start the server
@@ -1650,10 +1658,9 @@ mod tests {
         });
         let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
 
-        let _ = tokio_rt.block_on(async move {
-            let local_set = tokio::task::LocalSet::new();
+        tokio_rt.block_on(async move {
             let metrics_reporter_start_exporter = metrics_reporter.clone();
-            let _fut = local_set.spawn_local(async move {
+            let exporter_handle = tokio::task::spawn_local(async move {
                 start_exporter(
                     exporter,
                     runtime_ctrl_msg_tx,
@@ -1662,20 +1669,22 @@ mod tests {
                 )
                 .await
             });
-            tokio::join!(
-                local_set,
-                drive_test(
-                    server_startup_sender,
-                    server_start_ack_receiver,
-                    server_shutdown_sender,
-                    pdata_tx,
-                    control_sender,
-                    req_receiver,
-                    metrics_rx,
-                    metrics_reporter,
-                    pipeline_completion_msg_rx,
-                )
+            drive_test(
+                server_startup_sender,
+                server_start_ack_receiver,
+                server_shutdown_sender,
+                pdata_tx,
+                control_sender,
+                req_receiver,
+                metrics_rx,
+                metrics_reporter,
+                pipeline_completion_msg_rx,
             )
+            .await;
+            exporter_handle
+                .await
+                .expect("exporter task should join")
+                .expect("exporter should shut down cleanly");
         });
 
         tokio_rt
@@ -1869,7 +1878,7 @@ mod tests {
         let grpc_addr = "127.0.0.1";
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
-        let tokio_rt = Runtime::new().unwrap();
+        let tokio_rt = local_runtime("otap-exporter-out-of-order-status-test");
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
@@ -1910,7 +1919,7 @@ mod tests {
         let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
 
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
-        let server_handle = tokio_rt.spawn(async move {
+        let server_handle = tokio_rt.spawn_local(async move {
             let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
             let _ = server_ready_tx.send(());
             let tcp_stream = TcpListenerStream::new(tcp_listener);
@@ -1927,10 +1936,9 @@ mod tests {
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
 
-        let _ = tokio_rt.block_on(async move {
-            let local_set = tokio::task::LocalSet::new();
+        tokio_rt.block_on(async move {
             let mr = metrics_reporter.clone();
-            let _exporter_fut = local_set.spawn_local(async move {
+            let exporter_handle = tokio::task::spawn_local(async move {
                 let _ = exporter
                     .start(
                         runtime_ctrl_msg_tx,
@@ -1941,7 +1949,7 @@ mod tests {
                     .await;
             });
 
-            tokio::join!(local_set, async {
+            async {
                 server_ready_rx
                     .await
                     .expect("server should bind before exporter traffic starts");
@@ -1997,7 +2005,9 @@ mod tests {
                     .await
                     .unwrap();
                 server_shutdown_tx.send(true).unwrap();
-            })
+            }
+            .await;
+            exporter_handle.await.expect("exporter task should join");
         });
 
         tokio_rt
@@ -2050,7 +2060,7 @@ mod tests {
         let grpc_addr = "127.0.0.1";
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
-        let tokio_rt = Runtime::new().unwrap();
+        let tokio_rt = local_runtime("otap-exporter-shutdown-nacks-test");
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
@@ -2095,7 +2105,7 @@ mod tests {
         let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
 
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
-        let server_handle = tokio_rt.spawn(async move {
+        let server_handle = tokio_rt.spawn_local(async move {
             let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
             let _ = server_ready_tx.send(());
             let tcp_stream = TcpListenerStream::new(tcp_listener);
@@ -2115,10 +2125,9 @@ mod tests {
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
 
-        let _ = tokio_rt.block_on(async move {
-            let local_set = tokio::task::LocalSet::new();
+        tokio_rt.block_on(async move {
             let mr = metrics_reporter.clone();
-            let _exporter_fut = local_set.spawn_local(async move {
+            let exporter_handle = tokio::task::spawn_local(async move {
                 let _ = exporter
                     .start(
                         runtime_ctrl_msg_tx,
@@ -2129,7 +2138,7 @@ mod tests {
                     .await;
             });
 
-            tokio::join!(local_set, async {
+            async {
                 server_ready_rx
                     .await
                     .expect("server should bind before exporter traffic starts");
@@ -2173,7 +2182,9 @@ mod tests {
 
                 release_response_for_test.notify_waiters();
                 server_shutdown_tx.send(true).unwrap();
-            })
+            }
+            .await;
+            exporter_handle.await.expect("exporter task should join");
         });
 
         tokio_rt
@@ -2229,7 +2240,7 @@ mod tests {
         let grpc_addr = "127.0.0.1";
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
-        let tokio_rt = Runtime::new().unwrap();
+        let tokio_rt = local_runtime("otap-exporter-grpc-error-test");
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
@@ -2270,7 +2281,7 @@ mod tests {
 
         // Start gRPC server that returns errors
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
-        let server_handle = tokio_rt.spawn(async move {
+        let server_handle = tokio_rt.spawn_local(async move {
             let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
             let _ = server_ready_tx.send(());
             let tcp_stream = TcpListenerStream::new(tcp_listener);
@@ -2289,10 +2300,9 @@ mod tests {
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
 
-        let _ = tokio_rt.block_on(async move {
-            let local_set = tokio::task::LocalSet::new();
+        tokio_rt.block_on(async move {
             let mr = metrics_reporter.clone();
-            let _exporter_fut = local_set.spawn_local(async move {
+            let exporter_handle = tokio::task::spawn_local(async move {
                 let _ = exporter
                     .start(
                         runtime_ctrl_msg_tx,
@@ -2303,7 +2313,7 @@ mod tests {
                     .await;
             });
 
-            tokio::join!(local_set, async {
+            async {
                 server_ready_rx
                     .await
                     .expect("server should bind before exporter traffic starts");
@@ -2344,7 +2354,9 @@ mod tests {
                     .await
                     .unwrap();
                 server_shutdown_tx.send(true).unwrap();
-            })
+            }
+            .await;
+            exporter_handle.await.expect("exporter task should join");
         });
 
         tokio_rt

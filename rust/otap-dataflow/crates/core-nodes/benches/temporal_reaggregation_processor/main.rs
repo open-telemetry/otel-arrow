@@ -63,11 +63,11 @@ criterion_group!(benches, bench_temporal_reaggregation);
 criterion_main!(benches);
 
 fn bench_temporal_reaggregation(c: &mut Criterion) {
-    // Single-threaded tokio runtime used for all benchmark iterations.
+    // Tokio local runtime used for all benchmark iterations.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()
-        .expect("failed to build Tokio runtime");
+        .build_local(tokio::runtime::LocalOptions::default())
+        .expect("failed to build Tokio local runtime");
 
     // Generate data once, outside the benchmark loop.
     let (otlp_messages, otap_messages) = generate_bench_data();
@@ -86,7 +86,7 @@ fn bench_temporal_reaggregation(c: &mut Criterion) {
 /// Run a single named benchmark scenario within the group.
 fn bench_scenario(
     group: &mut BenchmarkGroup<'_, WallTime>,
-    rt: &tokio::runtime::Runtime,
+    rt: &tokio::runtime::LocalRuntime,
     label: &str,
     messages: &[OtapPdata],
 ) {
@@ -161,8 +161,8 @@ fn create_processor() -> ProcessorState {
     // Prepare the runtime to get the processor + effect handler.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()
-        .expect("failed to build setup runtime");
+        .build_local(tokio::runtime::LocalOptions::default())
+        .expect("failed to build setup local runtime");
 
     let runtime = rt
         .block_on(wrapper.prepare_runtime(reporter, Interests::empty()))

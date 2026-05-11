@@ -22,8 +22,7 @@ use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use tokio::runtime::Builder;
-use tokio::task::LocalSet;
+use tokio::runtime::{Builder, LocalOptions, LocalRuntime};
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod dst;
@@ -195,9 +194,9 @@ impl Default for CtrlMsgCounters {
     }
 }
 
-/// Creates a single-threaded runtime with a local task set for testing components.
+/// Creates a local runtime for testing components.
 #[must_use]
-pub fn setup_test_runtime() -> (tokio::runtime::Runtime, LocalSet) {
+pub fn setup_test_runtime() -> LocalRuntime {
     // Check if we're already inside a Tokio runtime
     if tokio::runtime::Handle::try_current().is_ok() {
         panic!(
@@ -205,12 +204,11 @@ pub fn setup_test_runtime() -> (tokio::runtime::Runtime, LocalSet) {
         );
     }
 
-    let rt = Builder::new_current_thread()
+    Builder::new_current_thread()
         .enable_all()
-        .build()
-        .expect("Failed to create new runtime");
-    let local_tasks = LocalSet::new();
-    (rt, local_tasks)
+        .name("otap-test-local-runtime")
+        .build_local(LocalOptions::default())
+        .expect("Failed to create new local runtime")
 }
 
 /// Helper to create `!Send` MPSC channels with a specific capacity.

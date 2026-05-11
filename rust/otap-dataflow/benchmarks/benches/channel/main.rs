@@ -12,7 +12,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use futures::{SinkExt, StreamExt};
 use futures_channel::mpsc as futures_mpsc;
 use std::rc::Rc;
-use tokio::task::LocalSet;
+use tokio::runtime::LocalOptions;
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
@@ -25,11 +25,11 @@ const MSG_COUNT: usize = 100_000;
 const CHANNEL_SIZE: usize = 256;
 
 fn bench_compare(c: &mut Criterion) {
-    // Use a single-threaded Tokio runtime
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()
-        .expect("failed to build Tokio runtime");
+        .name("async-channel-bench")
+        .build_local(LocalOptions::default())
+        .expect("failed to build local Tokio runtime");
 
     // Pin the current thread to a core
     let cores = core_affinity::get_core_ids().expect("couldn't get core IDs");
@@ -41,138 +41,138 @@ fn bench_compare(c: &mut Criterion) {
 
     // Benchmark tokio mpsc channel
     let _ = group.bench_function(BenchmarkId::new("tokio_mpsc", MSG_COUNT), |b| {
-        b.to_async(&rt).iter(|| async {
-            let (mut tx, mut rx) = futures_mpsc::channel(CHANNEL_SIZE);
-            let pdata = Rc::new("test".to_string());
+        b.iter(|| {
+            rt.block_on(async {
+                let (mut tx, mut rx) = futures_mpsc::channel(CHANNEL_SIZE);
+                let pdata = Rc::new("test".to_string());
 
-            let local = LocalSet::new();
-            _ = local.spawn_local(async move {
-                for _ in 0..MSG_COUNT {
-                    _ = tx.send(pdata.clone()).await;
-                }
-            });
+                let send_handle = tokio::task::spawn_local(async move {
+                    for _ in 0..MSG_COUNT {
+                        _ = tx.send(pdata.clone()).await;
+                    }
+                });
 
-            _ = local.run_until(async {
                 let mut _sum = 0;
                 while let Some(_v) = rx.next().await {
                     _sum += 1;
                 }
                 assert_eq!(_sum, MSG_COUNT);
+                send_handle.await.expect("sender task should join");
             });
         });
     });
 
     // Benchmark flume mpsc channel
     let _ = group.bench_function(BenchmarkId::new("flume_mpsc", MSG_COUNT), |b| {
-        b.to_async(&rt).iter(|| async {
-            let (tx, rx) = flume::bounded(CHANNEL_SIZE);
-            let pdata = Rc::new("test".to_string());
+        b.iter(|| {
+            rt.block_on(async {
+                let (tx, rx) = flume::bounded(CHANNEL_SIZE);
+                let pdata = Rc::new("test".to_string());
 
-            let local = LocalSet::new();
-            _ = local.spawn_local(async move {
-                for _ in 0..MSG_COUNT {
-                    _ = tx.send_async(pdata.clone()).await;
-                }
-            });
+                let send_handle = tokio::task::spawn_local(async move {
+                    for _ in 0..MSG_COUNT {
+                        _ = tx.send_async(pdata.clone()).await;
+                    }
+                });
 
-            _ = local.run_until(async {
                 let mut _sum = 0;
                 while let Ok(_v) = rx.recv_async().await {
                     _sum += 1;
                 }
                 assert_eq!(_sum, MSG_COUNT);
+                send_handle.await.expect("sender task should join");
             });
         });
     });
 
     // Benchmark local mpsc channel
     let _ = group.bench_function(BenchmarkId::new("local_mpsc", MSG_COUNT), |b| {
-        b.to_async(&rt).iter(|| async {
-            let (tx, rx) = otap_df_channel::mpsc::Channel::new(CHANNEL_SIZE);
-            let pdata = Rc::new("test".to_string());
+        b.iter(|| {
+            rt.block_on(async {
+                let (tx, rx) = otap_df_channel::mpsc::Channel::new(CHANNEL_SIZE);
+                let pdata = Rc::new("test".to_string());
 
-            let local = LocalSet::new();
-            _ = local.spawn_local(async move {
-                for _ in 0..MSG_COUNT {
-                    _ = tx.send_async(pdata.clone()).await;
-                }
-            });
+                let send_handle = tokio::task::spawn_local(async move {
+                    for _ in 0..MSG_COUNT {
+                        _ = tx.send_async(pdata.clone()).await;
+                    }
+                });
 
-            _ = local.run_until(async {
                 let mut _sum = 0;
                 while let Ok(_v) = rx.recv().await {
                     _sum += 1;
                 }
                 assert_eq!(_sum, MSG_COUNT);
+                send_handle.await.expect("sender task should join");
             });
         });
     });
 
     // Benchmark local-sync (monoio) mpsc channel
     let _ = group.bench_function(BenchmarkId::new("local_sync_mpsc", MSG_COUNT), |b| {
-        b.to_async(&rt).iter(|| async {
-            let (tx, mut rx) = local_sync::mpsc::bounded::channel(CHANNEL_SIZE);
-            let pdata = Rc::new("test".to_string());
+        b.iter(|| {
+            rt.block_on(async {
+                let (tx, mut rx) = local_sync::mpsc::bounded::channel(CHANNEL_SIZE);
+                let pdata = Rc::new("test".to_string());
 
-            let local = LocalSet::new();
-            _ = local.spawn_local(async move {
-                for _ in 0..MSG_COUNT {
-                    _ = tx.send(pdata.clone()).await;
-                }
-            });
+                let send_handle = tokio::task::spawn_local(async move {
+                    for _ in 0..MSG_COUNT {
+                        _ = tx.send(pdata.clone()).await;
+                    }
+                });
 
-            _ = local.run_until(async {
                 let mut _sum = 0;
                 while let Some(_v) = rx.recv().await {
                     _sum += 1;
                 }
                 assert_eq!(_sum, MSG_COUNT);
+                send_handle.await.expect("sender task should join");
             });
         });
     });
 
     // Benchmark async unsync mpsc channel
     let _ = group.bench_function(BenchmarkId::new("async_unsync_mpsc", MSG_COUNT), |b| {
-        b.to_async(&rt).iter(|| async {
-            let (tx, mut rx) = async_unsync::bounded::channel(CHANNEL_SIZE).into_split();
-            let pdata = Rc::new("test".to_string());
+        b.iter(|| {
+            rt.block_on(async {
+                let (tx, mut rx) = async_unsync::bounded::channel(CHANNEL_SIZE).into_split();
+                let pdata = Rc::new("test".to_string());
 
-            let local = LocalSet::new();
-            _ = local.spawn_local(async move {
-                for _ in 0..MSG_COUNT {
-                    _ = tx.send(pdata.clone());
-                }
-            });
+                let send_handle = tokio::task::spawn_local(async move {
+                    for _ in 0..MSG_COUNT {
+                        _ = tx.send(pdata.clone());
+                    }
+                });
 
-            _ = local.run_until(async {
                 let mut _sum = 0;
                 while let Some(_v) = rx.recv().await {
                     _sum += 1;
                 }
                 assert_eq!(_sum, MSG_COUNT);
+                send_handle.await.expect("sender task should join");
             });
         });
     });
 
     // Benchmark unsync mpsc channel
     let _ = group.bench_function(BenchmarkId::new("unsync_mpsc", MSG_COUNT), |b| {
-        b.to_async(&rt).iter(|| async {
-            let (mut tx, mut rx) = unsync::spsc::channel(CHANNEL_SIZE);
-            let pdata = Rc::new("test".to_string());
+        b.iter(|| {
+            rt.block_on(async {
+                let (mut tx, mut rx) = unsync::spsc::channel(CHANNEL_SIZE);
+                let pdata = Rc::new("test".to_string());
 
-            let local = LocalSet::new();
-            _ = local.spawn_local(async move {
-                for _ in 0..MSG_COUNT {
-                    _ = tx.send(pdata.clone());
-                }
-            });
+                let send_handle = tokio::task::spawn_local(async move {
+                    for _ in 0..MSG_COUNT {
+                        _ = tx.send(pdata.clone());
+                    }
+                });
 
-            _ = local.run_until(async {
                 let mut _sum = 0;
                 while let Some(_v) = rx.recv().await {
                     _sum += 1;
                 }
                 assert_eq!(_sum, MSG_COUNT);
+                send_handle.await.expect("sender task should join");
             });
         });
     });

@@ -1229,7 +1229,7 @@ mod tests {
         let writer = SegmentWriter::new(seq, true);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build()
+            .build_local(tokio::runtime::LocalOptions::default())
             .unwrap();
         let (bytes_written, _) = rt
             .block_on(writer.write_segment(&path, open_segment))

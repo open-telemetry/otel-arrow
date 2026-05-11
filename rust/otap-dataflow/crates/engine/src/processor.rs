@@ -1264,7 +1264,7 @@ mod tests {
         assert!(metrics_rx.try_recv().is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn flow_metric_auto_measures_process_without_timed() {
         let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
         let attrs = FlowAttributeSet {
@@ -1320,82 +1320,77 @@ mod tests {
         let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(1);
         let (completion_tx, _completion_rx) = pipeline_completion_msg_channel(1);
 
-        let local_tasks = tokio::task::LocalSet::new();
-        local_tasks
-            .run_until(async move {
-                let processor_task = tokio::task::spawn_local(async move {
-                    processor
-                        .start_with_completion_metrics(
-                            runtime_ctrl_tx,
-                            completion_tx,
-                            metrics_reporter,
-                            crate::Interests::PROCESS_DURATION,
-                            None,
-                            true,
-                            true,
-                            Some(start_metric_set),
-                            Some(duration_metric_set),
-                            Some(outgoing_metric_set),
-                            true,
-                        )
-                        .await
-                });
-
-                input_tx
-                    .send(FlowMetricTestPData::default())
-                    .expect("test input should enqueue");
-                let _ = output_rx
-                    .recv()
+        async move {
+            let processor_task = tokio::task::spawn_local(async move {
+                processor
+                    .start_with_completion_metrics(
+                        runtime_ctrl_tx,
+                        completion_tx,
+                        metrics_reporter,
+                        crate::Interests::PROCESS_DURATION,
+                        None,
+                        true,
+                        true,
+                        Some(start_metric_set),
+                        Some(duration_metric_set),
+                        Some(outgoing_metric_set),
+                        true,
+                    )
                     .await
-                    .expect("processor should forward the test message");
-                control_sender
-                    .send(NodeControlMsg::CollectTelemetry {
-                        metrics_reporter: collect_metrics_reporter,
-                    })
-                    .await
-                    .expect("collect telemetry should enqueue");
+            });
 
-                let snapshot =
-                    tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
-                        .await
-                        .expect("flow_metric metric should be reported")
-                        .expect("metrics channel should remain open");
-                processor_task.abort();
-                let _ = processor_task.await;
+            input_tx
+                .send(FlowMetricTestPData::default())
+                .expect("test input should enqueue");
+            let _ = output_rx
+                .recv()
+                .await
+                .expect("processor should forward the test message");
+            control_sender
+                .send(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter: collect_metrics_reporter,
+                })
+                .await
+                .expect("collect telemetry should enqueue");
 
-                let [MetricValue::Mmsc(signals_incoming)] = snapshot.get_metrics() else {
-                    panic!("expected one start flow_metric MMSC metric");
-                };
-                assert_eq!(signals_incoming.count, 1);
-                assert!((signals_incoming.sum - 1.0).abs() < f64::EPSILON);
+            let snapshot = tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
+                .await
+                .expect("flow_metric metric should be reported")
+                .expect("metrics channel should remain open");
+            processor_task.abort();
+            let _ = processor_task.await;
 
-                let snapshot =
-                    tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
-                        .await
-                        .expect("flow_metric stop metric should be reported")
-                        .expect("metrics channel should remain open");
-                let [MetricValue::Mmsc(compute_duration)] = snapshot.get_metrics() else {
-                    panic!("expected flow duration MMSC metric");
-                };
-                assert!(
-                    compute_duration.count >= 1,
-                    "flow_metric compute duration should have at least one observation"
-                );
-                assert!(
-                    compute_duration.sum > 0.0,
-                    "flow_metric compute duration sum should be non-zero"
-                );
-                let snapshot =
-                    tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
-                        .await
-                        .expect("flow outgoing metric should be reported")
-                        .expect("metrics channel should remain open");
-                let [MetricValue::Mmsc(signals_outgoing)] = snapshot.get_metrics() else {
-                    panic!("expected flow outgoing MMSC metric");
-                };
-                assert_eq!(signals_outgoing.count, 1);
-                assert!((signals_outgoing.sum - 1.0).abs() < f64::EPSILON);
-            })
-            .await;
+            let [MetricValue::Mmsc(signals_incoming)] = snapshot.get_metrics() else {
+                panic!("expected one start flow_metric MMSC metric");
+            };
+            assert_eq!(signals_incoming.count, 1);
+            assert!((signals_incoming.sum - 1.0).abs() < f64::EPSILON);
+
+            let snapshot = tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
+                .await
+                .expect("flow_metric stop metric should be reported")
+                .expect("metrics channel should remain open");
+            let [MetricValue::Mmsc(compute_duration)] = snapshot.get_metrics() else {
+                panic!("expected flow duration MMSC metric");
+            };
+            assert!(
+                compute_duration.count >= 1,
+                "flow_metric compute duration should have at least one observation"
+            );
+            assert!(
+                compute_duration.sum > 0.0,
+                "flow_metric compute duration sum should be non-zero"
+            );
+            let snapshot = tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
+                .await
+                .expect("flow outgoing metric should be reported")
+                .expect("metrics channel should remain open");
+            let [MetricValue::Mmsc(signals_outgoing)] = snapshot.get_metrics() else {
+                panic!("expected flow outgoing MMSC metric");
+            };
+            assert_eq!(signals_outgoing.count, 1);
+            assert!((signals_outgoing.sum - 1.0).abs() < f64::EPSILON);
+        }
+        .await;
     }
 }

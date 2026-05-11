@@ -55,9 +55,9 @@ struct FlowState {
 async fn run_backpressure_interblock_seed(seed: u64) {
     let clock = SimClock::new();
     let _clock_guard = clock.install();
-    let (rt, local_tasks) = setup_dst_runtime();
+    let rt = setup_dst_runtime();
 
-    rt.block_on(local_tasks.run_until(async move {
+    rt.block_on(async move {
         let mut rng = DstRng::new(seed);
         let nodes = test_nodes(vec!["receiver", "processor", "exporter"]);
         let receiver_id = nodes[0].clone();
@@ -497,7 +497,7 @@ async fn run_backpressure_interblock_seed(seed: u64) {
             snapshot.runtime_noise_sent > 0,
             "seed={seed}: runtime noise was not generated"
         );
-    }));
+    });
 }
 
 // Drive a seeded heavy-ingress scenario with bounded pdata channels, processor

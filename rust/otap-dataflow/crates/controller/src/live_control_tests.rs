@@ -130,8 +130,9 @@ impl ObservedStateRunner {
         let join = thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
-                .build()
-                .expect("observed-state test runtime should build");
+                .name("observed-state-test")
+                .build_local(tokio::runtime::LocalOptions::default())
+                .expect("observed-state test local runtime should build");
             runtime
                 .block_on(store.run(cancel_clone))
                 .expect("observed-state consumer should exit cleanly");

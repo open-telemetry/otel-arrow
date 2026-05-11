@@ -15,9 +15,9 @@ use std::time::Duration;
 async fn run_closed_admission_deadline_seed(seed: u64) {
     let clock = SimClock::new();
     let _clock_guard = clock.install();
-    let (rt, local_tasks) = setup_dst_runtime();
+    let rt = setup_dst_runtime();
 
-    rt.block_on(local_tasks.run_until(async move {
+    rt.block_on(async move {
         let mut rng = DstRng::new(seed);
         let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<String>>::new(32);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(32);
@@ -89,7 +89,7 @@ async fn run_closed_admission_deadline_seed(seed: u64) {
             closed.is_err(),
             "seed={seed}: after forced shutdown the buffered pdata is no longer recoverable"
         );
-    }));
+    });
 }
 
 // Keep the known processor limitation explicit in the DST suite: if shutdown is

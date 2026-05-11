@@ -41,9 +41,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::time::Duration;
-use tokio::runtime::Builder;
+use tokio::runtime::{Builder, LocalOptions};
 use tokio::sync::watch;
-use tokio::task::LocalSet;
 
 /// Build produced-request metric sets indexed by sorted output port name,
 /// matching the `output_port_index` layout used in `RouteData`.
@@ -211,12 +210,18 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let metric_level = telemetry_policy.runtime_metrics;
         let node_interests = Interests::from_metric_level(metric_level);
 
-        // Single-threaded runtime so we can drive !Send node tasks on the core thread.
+        // Local runtime so we can drive !Send node tasks on the core thread.
         let rt = Builder::new_current_thread()
             .enable_all()
-            .build()
-            .expect("Failed to create runtime");
-        let local_tasks = LocalSet::new();
+            .name(format!(
+                "pipeline:{}:{}:core{}:gen{}",
+                pipeline_key.pipeline_group_id,
+                pipeline_key.pipeline_id,
+                pipeline_key.core_id,
+                pipeline_key.deployment_generation
+            ))
+            .build_local(LocalOptions::default())
+            .expect("Failed to create local runtime");
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
         let mut control_senders = ControlSenders::default();
@@ -296,12 +301,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 let output_keys = handle.output_channel_keys();
                 let node_ctx =
                     NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
                 let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
-                futures.push(local_tasks.spawn_local(fut));
+                futures.push(rt.spawn_local(fut));
             }
         }
         for processor in processors {
@@ -373,12 +378,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 let output_keys = handle.output_channel_keys();
                 let node_ctx =
                     NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
                 let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
-                futures.push(local_tasks.spawn_local(fut));
+                futures.push(rt.spawn_local(fut));
             }
         }
         for receiver in receivers {
@@ -421,12 +426,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 let output_keys = handle.output_channel_keys();
                 let node_ctx =
                     NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
                 let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
-                futures.push(local_tasks.spawn_local(fut));
+                futures.push(rt.spawn_local(fut));
             }
         }
 
@@ -461,7 +466,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let dispatcher_pipeline_context = pipeline_context.clone();
         let dispatcher_metrics_reporter = metrics_reporter.clone();
         let dispatcher_telemetry_policy = telemetry_policy.clone();
-        futures.push(local_tasks.spawn_local(async move {
+        futures.push(rt.spawn_local(async move {
             let manager = RuntimeCtrlMsgManager::new(
                 pipeline_key,
                 manager_pipeline_context,
@@ -478,7 +483,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             manager.run().await
         }));
 
-        futures.push(local_tasks.spawn_local(async move {
+        futures.push(rt.spawn_local(async move {
             let dispatcher = PipelineCompletionMsgDispatcher::new(
                 dispatcher_pipeline_context,
                 pipeline_completion_msg_rx,
@@ -493,44 +498,40 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
 
         // Drive all local tasks until completion, returning the first error if any.
         rt.block_on(async {
-            local_tasks
-                .run_until(async {
-                    let mut task_results = Vec::new();
+            let mut task_results = Vec::new();
 
-                    // Process each future as they complete and handle errors
-                    while let Some(result) = futures.next().await {
-                        match result {
-                            Ok(Ok(res)) => {
-                                // Task completed successfully, collect its result
-                                task_results.push(res);
-                            }
-                            Ok(Err(e)) => {
-                                // A task returned an error
-                                return Err(e);
-                            }
-                            Err(e) => {
-                                // JoinError (panic or cancellation)
-                                return Err(Error::JoinTaskError {
-                                    is_canceled: e.is_cancelled(),
-                                    is_panic: e.is_panic(),
-                                    error: e.to_string(),
-                                });
-                            }
-                        }
+            // Process each future as they complete and handle errors
+            while let Some(result) = futures.next().await {
+                match result {
+                    Ok(Ok(res)) => {
+                        // Task completed successfully, collect its result
+                        task_results.push(res);
                     }
-                    let mut final_metrics_reporter = final_metrics_reporter.clone();
-                    if let Err(err) = report_node_metrics_with_handles(
-                        &final_node_metric_handles,
-                        &mut final_metrics_reporter,
-                    ) {
-                        otap_df_telemetry::otel_warn!(
-                            "node.metrics.final.reporting.fail",
-                            error = err.to_string()
-                        );
+                    Ok(Err(e)) => {
+                        // A task returned an error
+                        return Err(e);
                     }
-                    Ok(task_results)
-                })
-                .await
+                    Err(e) => {
+                        // JoinError (panic or cancellation)
+                        return Err(Error::JoinTaskError {
+                            is_canceled: e.is_cancelled(),
+                            is_panic: e.is_panic(),
+                            error: e.to_string(),
+                        });
+                    }
+                }
+            }
+            let mut final_metrics_reporter = final_metrics_reporter.clone();
+            if let Err(err) = report_node_metrics_with_handles(
+                &final_node_metric_handles,
+                &mut final_metrics_reporter,
+            ) {
+                otap_df_telemetry::otel_warn!(
+                    "node.metrics.final.reporting.fail",
+                    error = err.to_string()
+                );
+            }
+            Ok(task_results)
         })
     }
 }

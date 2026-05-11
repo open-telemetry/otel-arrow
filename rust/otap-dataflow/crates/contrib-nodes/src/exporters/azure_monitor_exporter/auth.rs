@@ -424,7 +424,7 @@ mod tests {
         pending.start(auth2); // should panic
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_pending_token_refresh_completion_returns_token_and_auth() {
         let call_count = Arc::new(AtomicUsize::new(0));
         let credential = make_mock_credential(
@@ -434,44 +434,34 @@ mod tests {
         );
         let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
 
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let mut pending = PendingTokenRefresh::new();
-                pending.start(auth);
-                assert!(pending.is_pending());
+        let mut pending = PendingTokenRefresh::new();
+        pending.start(auth);
+        assert!(pending.is_pending());
 
-                let result = pending.next_completion().await;
-                assert!(!pending.is_pending());
-                assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        let result = pending.next_completion().await;
+        assert!(!pending.is_pending());
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
 
-                // Token was acquired successfully
-                let token = result.result.unwrap();
-                assert_eq!(token.token.secret(), "pending_test_token");
+        // Token was acquired successfully
+        let token = result.result.unwrap();
+        assert_eq!(token.token.secret(), "pending_test_token");
 
-                // Auth is returned for reuse
-                let token2 = result.auth.get_token().await.unwrap();
-                assert_eq!(token2.token.secret(), "pending_test_token");
-                assert_eq!(call_count.load(Ordering::SeqCst), 2);
-            })
-            .await;
+        // Auth is returned for reuse
+        let token2 = result.auth.get_token().await.unwrap();
+        assert_eq!(token2.token.secret(), "pending_test_token");
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_pending_token_refresh_next_completion_stays_pending_when_empty() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let mut pending = PendingTokenRefresh::new();
+        let mut pending = PendingTokenRefresh::new();
 
-                // next_completion should not resolve when nothing is pending
-                let result = tokio::time::timeout(std::time::Duration::from_millis(50), async {
-                    pending.next_completion().await
-                })
-                .await;
+        // next_completion should not resolve when nothing is pending
+        let result = tokio::time::timeout(std::time::Duration::from_millis(50), async {
+            pending.next_completion().await
+        })
+        .await;
 
-                assert!(result.is_err(), "should have timed out");
-            })
-            .await;
+        assert!(result.is_err(), "should have timed out");
     }
 }

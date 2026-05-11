@@ -37,8 +37,8 @@ fn make_test_pdata() -> OtapPdata {
 
 #[test]
 fn topic_exporter_to_topic_receiver_transfers_pdata() {
-    let (rt, local_tasks) = setup_test_runtime();
-    rt.block_on(local_tasks.run_until(async move {
+    let rt = setup_test_runtime();
+    rt.block_on(async move {
         let broker = TopicBroker::<OtapPdata>::new();
         let topic_name = TopicName::parse("ingress").expect("topic name should parse");
         let handle = broker
@@ -182,13 +182,13 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
         let receiver_result = receiver_task.await.expect("receiver task should join");
         assert!(exporter_result.is_ok(), "exporter should stop cleanly");
         assert!(receiver_result.is_ok(), "receiver should stop cleanly");
-    }));
+    });
 }
 
 #[test]
 fn topic_receiver_applies_source_tag_when_enabled() {
-    let (rt, local_tasks) = setup_test_runtime();
-    rt.block_on(local_tasks.run_until(async move {
+    let rt = setup_test_runtime();
+    rt.block_on(async move {
         let broker = TopicBroker::<OtapPdata>::new();
         let topic_name = TopicName::parse("ingress").expect("topic name should parse");
         let handle = broker
@@ -331,5 +331,5 @@ fn topic_receiver_applies_source_tag_when_enabled() {
         let receiver_result = receiver_task.await.expect("receiver task should join");
         assert!(exporter_result.is_ok(), "exporter should stop cleanly");
         assert!(receiver_result.is_ok(), "receiver should stop cleanly");
-    }));
+    });
 }

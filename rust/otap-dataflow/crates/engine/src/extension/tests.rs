@@ -251,8 +251,8 @@ fn test_control_msg_is_shutdown() {
 
 #[test]
 fn test_shared_start_shutdown() {
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let ctr = CtrlMsgCounters::new();
         let (n, u, c) = ext_config("ss");
         let w = ExtensionWrapper::builder(n, u, &c)
@@ -277,13 +277,13 @@ fn test_shared_start_shutdown() {
         .unwrap();
         assert!(h.await.unwrap().is_ok());
         ctr.assert(0, 0, 1, 1);
-    }));
+    });
 }
 
 #[test]
 fn test_local_start_shutdown() {
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let ctr = CtrlMsgCounters::new();
         let (n, u, c) = ext_config("ls");
         let w = ExtensionWrapper::builder(n, u, &c)
@@ -303,7 +303,7 @@ fn test_local_start_shutdown() {
         .unwrap();
         assert!(h.await.unwrap().is_ok());
         ctr.assert(0, 0, 0, 0);
-    }));
+    });
 }
 
 #[tokio::test]
@@ -450,8 +450,8 @@ fn test_passive_ctrl_metrics_noop() {
 
 #[test]
 fn test_start_with_telemetry() {
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let ctr = CtrlMsgCounters::new();
         let (n, u, c) = ext_config("st");
         let w = ExtensionWrapper::builder(n, u, &c)
@@ -481,7 +481,7 @@ fn test_start_with_telemetry() {
         .unwrap();
         assert!(h.await.unwrap().is_ok());
         ctr.assert(0, 0, 1, 1);
-    }));
+    });
 }
 
 #[test]

@@ -2194,8 +2194,8 @@ mod tests {
 
         #[test]
         fn test_metrics_routed_success() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2244,13 +2244,13 @@ mod tests {
                 assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         #[test]
         fn test_metrics_no_match_nacked() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2295,13 +2295,13 @@ mod tests {
                 assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         #[test]
         fn test_metrics_routed_to_default() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2354,7 +2354,7 @@ mod tests {
                 assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: a resource attribute resolves to a named route whose
@@ -2363,8 +2363,8 @@ mod tests {
         /// message, records route-full telemetry, and stays live.
         #[test]
         fn test_matched_route_full_nacks_locally_and_records_metrics() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2433,7 +2433,7 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: a resource attribute resolves to a named route whose
@@ -2442,8 +2442,8 @@ mod tests {
         /// message, records route-closed telemetry, and stays live.
         #[test]
         fn test_matched_route_closed_nacks_locally_and_records_metrics() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2511,7 +2511,7 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: no configured route matches, `default_output` is selected,
@@ -2520,8 +2520,8 @@ mod tests {
         /// retryable NACK contract as matched-route admission.
         #[test]
         fn test_default_route_full_nacks_locally_and_records_metrics() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2592,7 +2592,7 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: no configured route matches, `default_output` is selected,
@@ -2601,8 +2601,8 @@ mod tests {
         /// retryable NACK contract as matched-route admission.
         #[test]
         fn test_default_route_closed_nacks_locally_and_records_metrics() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2672,7 +2672,7 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: one matched route is saturated while another matched
@@ -2682,8 +2682,8 @@ mod tests {
         /// traffic.
         #[test]
         fn test_full_route_does_not_block_healthy_route() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2774,15 +2774,15 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         #[test]
         fn test_metrics_conversion_error_nacked() {
             use otap_df_pdata::otap::{Logs, OtapArrowRecords};
 
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2834,7 +2834,7 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
     }
 }

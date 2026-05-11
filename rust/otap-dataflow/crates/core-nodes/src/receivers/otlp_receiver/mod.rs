@@ -1054,9 +1054,9 @@ mod tests {
     async fn run_wait_for_result_dst_seed(seed: u64) {
         let sim_clock = SimClock::new();
         let _clock_guard = sim_clock.install();
-        let (rt, local_tasks) = otap_df_engine::testing::setup_test_runtime();
+        let rt = otap_df_engine::testing::setup_test_runtime();
 
-        rt.block_on(local_tasks.run_until(async move {
+        rt.block_on(async move {
             let scenario = seed % 4;
             let shutdown_reason = format!("dst shutdown seed {seed}");
 
@@ -1259,7 +1259,7 @@ mod tests {
                 .expect("receiver loop should finish")
                 .unwrap()
                 .expect("receiver loop should succeed");
-        }));
+        });
     }
 
     fn create_metrics_service_request() -> ExportMetricsServiceRequest {

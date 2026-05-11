@@ -2107,8 +2107,8 @@ mod telemetry_tests {
 
     #[test]
     fn udp_telemetry_success_and_failure_and_total() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             // Build pipeline context to register metrics on the receiver
             let telemetry_registry = TelemetryRegistryHandle::new();
             let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2204,14 +2204,14 @@ mod telemetry_tests {
             assert_eq!(m[4].to_u64_lossy(), 2, "total == 2");
             assert_eq!(m[0].to_u64_lossy(), 1, "forwarded == 1");
             assert_eq!(m[1].to_u64_lossy(), 1, "invalid == 1");
-        }));
+        });
     }
 
     #[test]
     fn udp_telemetry_refused_when_downstream_closed() {
         use otap_df_engine::testing::setup_test_runtime;
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             // Build pipeline context
             let telemetry_registry = TelemetryRegistryHandle::new();
             let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2298,13 +2298,13 @@ mod telemetry_tests {
             let snap = metrics_rx.recv_async().await.unwrap();
             let m = snap.get_metrics();
             assert_eq!(m[3].to_u64_lossy(), 1, "forward_failed == 1");
-        }));
+        });
     }
 
     #[test]
     fn udp_sheds_ingress_under_hard_memory_pressure() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let telemetry_registry = TelemetryRegistryHandle::new();
             let controller = ControllerContext::new(telemetry_registry.clone());
             let pipeline = controller.pipeline_context_with(
@@ -2394,6 +2394,6 @@ mod telemetry_tests {
                 0,
                 "tcp connection rejects == 0 for UDP"
             );
-        }));
+        });
     }
 }

@@ -30,7 +30,7 @@ pub type ControlChannel = crate::extension::ControlChannel<LocalReceiver<Extensi
 ///
 /// The local `Extension` trait does NOT require the `Send` bound, allowing
 /// use of `Rc`, `RefCell`, and other !Send types within a single-threaded
-/// `LocalSet`.
+/// `LocalRuntime`.
 ///
 /// # Ownership
 ///

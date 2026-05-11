@@ -31,9 +31,9 @@ const DST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL: Duration = Duration::from_millis
 async fn run_control_plane_seed(seed: u64) {
     let clock = SimClock::new();
     let _clock_guard = clock.install();
-    let (rt, local_tasks) = setup_dst_runtime();
+    let rt = setup_dst_runtime();
 
-    rt.block_on(local_tasks.run_until(async move {
+    rt.block_on(async move {
         let mut rng = DstRng::new(seed);
         let nodes = test_nodes(vec!["receiver", "processor", "exporter"]);
         let receiver_id = nodes[0].clone();
@@ -304,7 +304,7 @@ async fn run_control_plane_seed(seed: u64) {
             .expect("dispatcher should exit")
             .unwrap()
             .expect("dispatcher should succeed");
-    }));
+    });
 }
 
 // Exercise seeded control-plane mixes where runtime-control traffic, delayed

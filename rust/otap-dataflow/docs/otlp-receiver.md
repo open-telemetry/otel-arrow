@@ -606,8 +606,8 @@ documentation on service compatibility requirements.
 
 ### Thread-per-Core vs `Send` Tax
 
-- **Execution model today:** Each pipeline runs on a single-threaded Tokio runtime
-  (`new_current_thread` + `LocalSet`), so scheduling remains thread-per-core.
+- **Execution model today:** Each pipeline runs on Tokio `LocalRuntime`, so
+  scheduling remains thread-per-core.
 - **Why `Send` is required:** The gRPC path uses tonic, which requires `Send`
   futures/services. Shared metrics/state are therefore `Arc`-backed, and the HTTP
   path shares that state and uses `tokio::spawn` via `TaskTracker`, which also

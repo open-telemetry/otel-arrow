@@ -50,8 +50,7 @@ use otap_df_pdata::proto::opentelemetry::collector::{
 use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
-use tokio::runtime::Runtime;
-use tokio::task::LocalSet;
+use tokio::runtime::{LocalOptions, Runtime};
 use tokio::time::Duration;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
@@ -285,11 +284,11 @@ pub fn create_batch_arrow_record_helper(
 }
 
 fn bench_exporter(c: &mut Criterion) {
-    // Use a single-threaded Tokio runtime
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()
-        .expect("failed to build Tokio runtime");
+        .name("exporter-bench")
+        .build_local(LocalOptions::default())
+        .expect("failed to build local Tokio runtime");
 
     // Pin the current thread to a core
     let cores = core_affinity::get_core_ids().expect("couldn't get core IDs");
@@ -423,71 +422,75 @@ fn bench_exporter(c: &mut Criterion) {
             BenchmarkId::new("perf_exporter_full_config_enabled", size),
             &otap_signals,
             |b, otap_signals| {
-                b.to_async(&rt).iter(|| async {
-                    // start perf exporter
-                    let config = Config::new(1000, 0.3, true, true, true, true, true);
-                    let exporter_config = ExporterConfig::new("perf_exporter");
-                    let node_config =
-                        Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
+                b.iter(|| {
+                    rt.block_on(async {
+                        // start perf exporter
+                        let config = Config::new(1000, 0.3, true, true, true, true, true);
+                        let exporter_config = ExporterConfig::new("perf_exporter");
+                        let node_config =
+                            Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
 
-                    // Create a proper pipeline context for the benchmark
-                    let metrics_system = InternalTelemetrySystem::default();
-                    let metrics_registry_handle = metrics_system.registry();
-                    let metrics_reporter = metrics_system.reporter();
-                    let controller_ctx = ControllerContext::new(metrics_registry_handle);
-                    let pipeline_ctx = controller_ctx.pipeline_context_with(
-                        "grp".into(),
-                        "pipeline".into(),
-                        0,
-                        1,
-                        0,
-                    );
+                        // Create a proper pipeline context for the benchmark
+                        let metrics_system = InternalTelemetrySystem::default();
+                        let metrics_registry_handle = metrics_system.registry();
+                        let metrics_reporter = metrics_system.reporter();
+                        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+                        let pipeline_ctx = controller_ctx.pipeline_context_with(
+                            "grp".into(),
+                            "pipeline".into(),
+                            0,
+                            1,
+                            0,
+                        );
 
-                    let mut exporter = ExporterWrapper::local(
-                        PerfExporter::new(pipeline_ctx, config),
-                        test_node("exporter"),
-                        node_config,
-                        &exporter_config,
-                    );
+                        let mut exporter = ExporterWrapper::local(
+                            PerfExporter::new(pipeline_ctx, config),
+                            test_node("exporter"),
+                            node_config,
+                            &exporter_config,
+                        );
 
-                    // create necessary senders and receivers to communicate with the exporter
-                    let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                    let control_sender = exporter.control_sender();
-                    let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
-                    let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
-                    let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
-                    let (pipeline_completion_tx, _pipeline_completion_rx) =
-                        pipeline_completion_msg_channel(10);
+                        // create necessary senders and receivers to communicate with the exporter
+                        let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
+                        let control_sender = exporter.control_sender();
+                        let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
+                        let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
+                        let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                        let (pipeline_completion_tx, _pipeline_completion_rx) =
+                            pipeline_completion_msg_channel(10);
 
-                    exporter
-                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
-                        .expect("Failed to set PData receiver");
-                    // start the exporter
-                    let local = LocalSet::new();
-                    let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(
-                                runtime_ctrl_tx,
-                                pipeline_completion_tx,
-                                metrics_reporter,
-                                Interests::empty(),
-                            )
+                            .set_pdata_receiver(test_node("exporter"), pdata_receiver)
+                            .expect("Failed to set PData receiver");
+                        // start the exporter
+                        let run_exporter_handle = tokio::task::spawn_local(async move {
+                            exporter
+                                .start(
+                                    runtime_ctrl_tx,
+                                    pipeline_completion_tx,
+                                    metrics_reporter,
+                                    Interests::empty(),
+                                )
+                                .await
+                                .expect("Exporter event loop failed")
+                        });
+
+                        // send signals to the exporter
+                        for signal in otap_signals {
+                            _ = pdata_sender.send(signal.clone()).await;
+                        }
+
+                        _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
+                        _ = control_sender
+                            .send(NodeControlMsg::Shutdown {
+                                deadline: std::time::Instant::now() + Duration::from_millis(2000),
+                                reason: "shutdown".to_string(),
+                            })
+                            .await;
+                        let _ = run_exporter_handle
                             .await
-                            .expect("Exporter event loop failed")
+                            .expect("exporter task should join");
                     });
-
-                    // send signals to the exporter
-                    for signal in otap_signals {
-                        _ = pdata_sender.send(signal.clone()).await;
-                    }
-
-                    _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
-                    _ = control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
-                            reason: "shutdown".to_string(),
-                        })
-                        .await;
                 });
             },
         );
@@ -495,72 +498,76 @@ fn bench_exporter(c: &mut Criterion) {
             BenchmarkId::new("perf_exporter_full_config_disabled", size),
             &otap_signals,
             |b, otap_signals| {
-                b.to_async(&rt).iter(|| async {
-                    // start perf exporter
-                    let config = Config::new(1000, 0.3, false, false, false, false, false);
-                    let exporter_config = ExporterConfig::new("perf_exporter");
-                    let node_config =
-                        Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
+                b.iter(|| {
+                    rt.block_on(async {
+                        // start perf exporter
+                        let config = Config::new(1000, 0.3, false, false, false, false, false);
+                        let exporter_config = ExporterConfig::new("perf_exporter");
+                        let node_config =
+                            Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
 
-                    // Create a proper pipeline context for the benchmark
-                    let metrics_system = InternalTelemetrySystem::default();
-                    let metrics_registry_handle = metrics_system.registry();
-                    let metrics_reporter = metrics_system.reporter();
-                    let controller_ctx = ControllerContext::new(metrics_registry_handle);
-                    let pipeline_ctx = controller_ctx.pipeline_context_with(
-                        "grp".into(),
-                        "pipeline".into(),
-                        0,
-                        1,
-                        0,
-                    );
+                        // Create a proper pipeline context for the benchmark
+                        let metrics_system = InternalTelemetrySystem::default();
+                        let metrics_registry_handle = metrics_system.registry();
+                        let metrics_reporter = metrics_system.reporter();
+                        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+                        let pipeline_ctx = controller_ctx.pipeline_context_with(
+                            "grp".into(),
+                            "pipeline".into(),
+                            0,
+                            1,
+                            0,
+                        );
 
-                    let mut exporter = ExporterWrapper::local(
-                        PerfExporter::new(pipeline_ctx, config),
-                        test_node("exporter"),
-                        node_config,
-                        &exporter_config,
-                    );
+                        let mut exporter = ExporterWrapper::local(
+                            PerfExporter::new(pipeline_ctx, config),
+                            test_node("exporter"),
+                            node_config,
+                            &exporter_config,
+                        );
 
-                    // create necessary senders and receivers to communicate with the exporter
-                    let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                    let control_sender = exporter.control_sender();
-                    let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
-                    let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
-                    let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
-                    let (pipeline_completion_tx, _pipeline_completion_rx) =
-                        pipeline_completion_msg_channel(10);
+                        // create necessary senders and receivers to communicate with the exporter
+                        let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
+                        let control_sender = exporter.control_sender();
+                        let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
+                        let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
+                        let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                        let (pipeline_completion_tx, _pipeline_completion_rx) =
+                            pipeline_completion_msg_channel(10);
 
-                    exporter
-                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
-                        .expect("Failed to set PData receiver");
-
-                    // start the exporter
-                    let local = LocalSet::new();
-                    let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(
-                                runtime_ctrl_tx,
-                                pipeline_completion_tx,
-                                metrics_reporter,
-                                Interests::empty(),
-                            )
+                            .set_pdata_receiver(test_node("exporter"), pdata_receiver)
+                            .expect("Failed to set PData receiver");
+
+                        // start the exporter
+                        let run_exporter_handle = tokio::task::spawn_local(async move {
+                            exporter
+                                .start(
+                                    runtime_ctrl_tx,
+                                    pipeline_completion_tx,
+                                    metrics_reporter,
+                                    Interests::empty(),
+                                )
+                                .await
+                                .expect("Exporter event loop failed")
+                        });
+
+                        // send signals to the exporter
+                        for otap_signal in otap_signals {
+                            _ = pdata_sender.send(otap_signal.clone()).await;
+                        }
+
+                        _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
+                        _ = control_sender
+                            .send(NodeControlMsg::Shutdown {
+                                deadline: std::time::Instant::now() + Duration::from_millis(2000),
+                                reason: "shutdown".to_string(),
+                            })
+                            .await;
+                        let _ = run_exporter_handle
                             .await
-                            .expect("Exporter event loop failed")
+                            .expect("exporter task should join");
                     });
-
-                    // send signals to the exporter
-                    for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone()).await;
-                    }
-
-                    _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
-                    _ = control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
-                            reason: "shutdown".to_string(),
-                        })
-                        .await;
                 });
             },
         );
@@ -569,75 +576,79 @@ fn bench_exporter(c: &mut Criterion) {
             BenchmarkId::new("otap_exporter", size),
             &(otap_signals, otap_grpc_port),
             |b, input| {
-                b.to_async(&rt).iter(|| async {
-                    // create otap exporter
-                    let exporter_config = ExporterConfig::new("otap_exporter");
-                    let grpc_addr = "127.0.0.1";
-                    let (otap_signals, otlp_grpc_port) = input;
-                    let grpc_endpoint = format!("http://{grpc_addr}:{otlp_grpc_port}");
-                    let node_config =
-                        Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
-                    let config = json!({
-                        "grpc_endpoint": grpc_endpoint,
-                    });
-                    // Create a proper pipeline context for the benchmark
-                    let metrics_system = InternalTelemetrySystem::default();
-                    let metrics_registry_handle = metrics_system.registry();
-                    let metrics_reporter = metrics_system.reporter();
-                    let controller_ctx = ControllerContext::new(metrics_registry_handle);
-                    let pipeline_ctx = controller_ctx.pipeline_context_with(
-                        "grp".into(),
-                        "pipeline".into(),
-                        0,
-                        1,
-                        0,
-                    );
-                    let mut exporter = ExporterWrapper::local(
-                        OTAPExporter::from_config(pipeline_ctx, &config)
-                            .expect("Failed to create OTAPExporter from config"),
-                        test_node("exporter"),
-                        node_config,
-                        &exporter_config,
-                    );
+                b.iter(|| {
+                    rt.block_on(async {
+                        // create otap exporter
+                        let exporter_config = ExporterConfig::new("otap_exporter");
+                        let grpc_addr = "127.0.0.1";
+                        let (otap_signals, otlp_grpc_port) = input;
+                        let grpc_endpoint = format!("http://{grpc_addr}:{otlp_grpc_port}");
+                        let node_config =
+                            Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+                        let config = json!({
+                            "grpc_endpoint": grpc_endpoint,
+                        });
+                        // Create a proper pipeline context for the benchmark
+                        let metrics_system = InternalTelemetrySystem::default();
+                        let metrics_registry_handle = metrics_system.registry();
+                        let metrics_reporter = metrics_system.reporter();
+                        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+                        let pipeline_ctx = controller_ctx.pipeline_context_with(
+                            "grp".into(),
+                            "pipeline".into(),
+                            0,
+                            1,
+                            0,
+                        );
+                        let mut exporter = ExporterWrapper::local(
+                            OTAPExporter::from_config(pipeline_ctx, &config)
+                                .expect("Failed to create OTAPExporter from config"),
+                            test_node("exporter"),
+                            node_config,
+                            &exporter_config,
+                        );
 
-                    // create necessary senders and receivers to communicate with the exporter
-                    let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                    let control_sender = exporter.control_sender();
-                    let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
-                    let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
-                    let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
-                    let (pipeline_completion_tx, _pipeline_completion_rx) =
-                        pipeline_completion_msg_channel(10);
+                        // create necessary senders and receivers to communicate with the exporter
+                        let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
+                        let control_sender = exporter.control_sender();
+                        let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
+                        let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
+                        let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                        let (pipeline_completion_tx, _pipeline_completion_rx) =
+                            pipeline_completion_msg_channel(10);
 
-                    exporter
-                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
-                        .expect("Failed to set PData receiver");
-
-                    // start the exporter
-                    let local = LocalSet::new();
-                    let _run_exporter_handle = local.spawn_local(async move {
                         exporter
-                            .start(
-                                runtime_ctrl_tx,
-                                pipeline_completion_tx,
-                                metrics_reporter,
-                                Interests::empty(),
-                            )
+                            .set_pdata_receiver(test_node("exporter"), pdata_receiver)
+                            .expect("Failed to set PData receiver");
+
+                        // start the exporter
+                        let run_exporter_handle = tokio::task::spawn_local(async move {
+                            exporter
+                                .start(
+                                    runtime_ctrl_tx,
+                                    pipeline_completion_tx,
+                                    metrics_reporter,
+                                    Interests::empty(),
+                                )
+                                .await
+                                .expect("Exporter event loop failed")
+                        });
+
+                        // send signals to the exporter
+                        for otap_signal in otap_signals {
+                            _ = pdata_sender.send(otap_signal.clone()).await;
+                        }
+
+                        _ = control_sender
+                            .send(NodeControlMsg::Shutdown {
+                                deadline: std::time::Instant::now() + Duration::from_millis(2000),
+                                reason: "shutdown".to_string(),
+                            })
+                            .await;
+                        let _ = run_exporter_handle
                             .await
-                            .expect("Exporter event loop failed")
+                            .expect("exporter task should join");
                     });
-
-                    // send signals to the exporter
-                    for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone()).await;
-                    }
-
-                    _ = control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
-                            reason: "shutdown".to_string(),
-                        })
-                        .await;
                 });
             },
         );

@@ -274,7 +274,7 @@ pub struct RuntimeCtrlMsgManager<PData> {
     /// Messages that could not be delivered because the target node's control
     /// channel was full. Buffered here instead of blocking the event loop,
     /// which would cause a circular-wait stall on the single-threaded
-    /// LocalSet runtime.
+    /// local runtime.
     pending_sends: VecDeque<(usize, NodeControlMsg<PData>)>,
     runtime_control_metrics: RuntimeControlMetricsState,
 }
@@ -935,7 +935,7 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                     // Completion delivery cannot block the dispatcher for the
                     // same reason runtime-control cannot: a full node-control
                     // inbox would otherwise stall unwinding for unrelated
-                    // upstream work on the same LocalSet.
+                    // upstream work on the same local runtime.
                     self.pending_sends.push_back((node_id, msg));
                     self.completion_metrics
                         .set_pending_sends_buffered(self.pending_sends.len());
@@ -1244,7 +1244,6 @@ mod tests {
     use std::collections::HashMap;
     use std::rc::Rc;
     use std::time::{Duration, Instant};
-    use tokio::task::LocalSet;
     use tokio::time::timeout;
 
     const TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL: Duration = Duration::from_millis(10);
@@ -1412,66 +1411,63 @@ mod tests {
     /// 2. Timer expiration after specified duration
     /// 3. TimerTick message delivery to the correct node
     /// 4. Automatic timer recurrence (key feature of the manager)
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_run_start_timer_integration() {
-        let local = LocalSet::new();
+        async {
+            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                setup_test_manager::<()>();
 
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<()>();
+            let node = nodes.first().expect("ok");
+            let duration = Duration::from_millis(100);
 
-                let node = nodes.first().expect("ok");
-                let duration = Duration::from_millis(100);
+            // Start the manager in the background using spawn_local (not Send)
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                // Start the manager in the background using spawn_local (not Send)
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            // Send StartTimer message to schedule a recurring timer
+            let start_msg = RuntimeControlMsg::StartTimer {
+                node_id: node.index,
+                duration,
+            };
+            pipeline_tx.send(start_msg).await.unwrap();
 
-                // Send StartTimer message to schedule a recurring timer
-                let start_msg = RuntimeControlMsg::StartTimer {
-                    node_id: node.index,
-                    duration,
-                };
-                pipeline_tx.send(start_msg).await.unwrap();
+            // Wait for the timer to expire and verify TimerTick delivery
+            let mut receiver = control_receivers.remove(&node.index).unwrap();
+            let tick_result =
+                timeout(Duration::from_millis(200), async { receiver.recv().await }).await;
 
-                // Wait for the timer to expire and verify TimerTick delivery
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let tick_result =
-                    timeout(Duration::from_millis(200), async { receiver.recv().await }).await;
-
-                assert!(
-                    tick_result.is_ok(),
-                    "Should receive TimerTick within timeout"
-                );
-                match tick_result.unwrap() {
-                    Ok(NodeControlMsg::TimerTick {}) => {
-                        // Success - received expected TimerTick
-                    }
-                    Ok(other) => panic!("Expected TimerTick, got {other:?}"),
-                    Err(e) => panic!("Failed to receive message: {e:?}"),
+            assert!(
+                tick_result.is_ok(),
+                "Should receive TimerTick within timeout"
+            );
+            match tick_result.unwrap() {
+                Ok(NodeControlMsg::TimerTick {}) => {
+                    // Success - received expected TimerTick
                 }
+                Ok(other) => panic!("Expected TimerTick, got {other:?}"),
+                Err(e) => panic!("Failed to receive message: {e:?}"),
+            }
 
-                // Verify automatic recurrence - should get another tick
-                let second_tick_result =
-                    timeout(Duration::from_millis(150), async { receiver.recv().await }).await;
+            // Verify automatic recurrence - should get another tick
+            let second_tick_result =
+                timeout(Duration::from_millis(150), async { receiver.recv().await }).await;
 
-                assert!(
-                    second_tick_result.is_ok(),
-                    "Should receive second TimerTick for recurring timer"
-                );
+            assert!(
+                second_tick_result.is_ok(),
+                "Should receive second TimerTick for recurring timer"
+            );
 
-                // Clean shutdown
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-                drop(pipeline_tx);
-                let _ = timeout(Duration::from_millis(100), manager_handle).await;
-            })
-            .await;
+            // Clean shutdown
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "".to_owned(),
+                })
+                .await
+                .unwrap();
+            drop(pipeline_tx);
+            let _ = timeout(Duration::from_millis(100), manager_handle).await;
+        }
+        .await;
     }
 
     /// Validates that:
@@ -1479,67 +1475,62 @@ mod tests {
     /// 2. CancelTimer messages properly prevent timer execution
     /// 3. No TimerTick messages are delivered for canceled timers
     /// 4. The cancellation is processed before the timer would naturally expire
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_run_cancel_timer_integration() {
-        let local = LocalSet::new();
+        async {
+            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                setup_test_manager::<()>();
 
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<()>();
+            let node = nodes.first().expect("ok");
+            let duration = Duration::from_millis(100);
 
-                let node = nodes.first().expect("ok");
-                let duration = Duration::from_millis(100);
+            // Start the manager in the background
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                // Start the manager in the background
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            // Schedule a timer
+            let start_msg = RuntimeControlMsg::StartTimer {
+                node_id: node.index,
+                duration,
+            };
+            pipeline_tx.send(start_msg).await.unwrap();
 
-                // Schedule a timer
-                let start_msg = RuntimeControlMsg::StartTimer {
-                    node_id: node.index,
-                    duration,
-                };
-                pipeline_tx.send(start_msg).await.unwrap();
+            // Immediately cancel the timer before it expires
+            let cancel_msg = RuntimeControlMsg::CancelTimer {
+                node_id: node.index,
+            };
+            pipeline_tx.send(cancel_msg).await.unwrap();
 
-                // Immediately cancel the timer before it expires
-                let cancel_msg = RuntimeControlMsg::CancelTimer {
-                    node_id: node.index,
-                };
-                pipeline_tx.send(cancel_msg).await.unwrap();
+            // Wait and verify no TimerTick is received (timeout expected)
+            let mut receiver = control_receivers.remove(&node.index).unwrap();
+            let tick_result =
+                timeout(Duration::from_millis(200), async { receiver.recv().await }).await;
 
-                // Wait and verify no TimerTick is received (timeout expected)
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let tick_result =
-                    timeout(Duration::from_millis(200), async { receiver.recv().await }).await;
+            assert!(
+                tick_result.is_err(),
+                "Should not receive TimerTick for canceled timer"
+            );
 
-                assert!(
-                    tick_result.is_err(),
-                    "Should not receive TimerTick for canceled timer"
-                );
-
-                // Clean shutdown
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-                drop(pipeline_tx);
-                let _ = timeout(Duration::from_millis(100), manager_handle).await;
-            })
-            .await;
+            // Clean shutdown
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "".to_owned(),
+                })
+                .await
+                .unwrap();
+            drop(pipeline_tx);
+            let _ = timeout(Duration::from_millis(100), manager_handle).await;
+        }
+        .await;
     }
 
     /// Validates the manager's ability to handle multiple timers simultaneously:
     /// 1. Multiple nodes can have active timers concurrently
     /// 2. Each timer fires independently based on its own duration
     /// 3. Timer messages are delivered to the correct recipients
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_run_multiple_timers_integration() {
-        let local = LocalSet::new();
-
-        local.run_until(async {
+        async {
             let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
                 setup_test_manager::<()>();
 
@@ -1626,7 +1617,8 @@ mod tests {
             }).await.unwrap();
             drop(pipeline_tx);
             let _ = timeout(Duration::from_millis(100), manager_handle).await;
-        }).await;
+        }
+        .await;
     }
 
     /// Validates that starting a new timer for an existing node properly replaces
@@ -1635,156 +1627,148 @@ mod tests {
     /// 2. Replacement timer is scheduled with shorter duration
     /// 3. The timer fires based on the new (shorter) duration, not the original
     /// 4. This tests the outdated timer detection logic in the run() method
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_run_timer_replacement_integration() {
-        let local = LocalSet::new();
+        async {
+            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                setup_test_manager::<()>();
 
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<()>();
+            let node = nodes.first().expect("ok");
+            let first_duration = Duration::from_millis(150); // Original (longer)
+            let second_duration = Duration::from_millis(80); // Replacement (shorter)
 
-		let node = nodes.first().expect("ok");
-                let first_duration = Duration::from_millis(150); // Original (longer)
-                let second_duration = Duration::from_millis(80); // Replacement (shorter)
+            // Start the manager in the background
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                // Start the manager in the background
-                let manager_handle = tokio::task::spawn_local(async move {
-                    manager.run().await
-                });
+            // Schedule initial timer
+            let start_msg1 = RuntimeControlMsg::StartTimer {
+                node_id: node.index,
+                duration: first_duration,
+            };
+            pipeline_tx.send(start_msg1).await.unwrap();
 
-                // Schedule initial timer
-                let start_msg1 = RuntimeControlMsg::StartTimer {
-                    node_id: node.index,
-                    duration: first_duration,
-                };
-                pipeline_tx.send(start_msg1).await.unwrap();
+            // Wait a bit, then replace with a shorter timer
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let start_msg2 = RuntimeControlMsg::StartTimer {
+                node_id: node.index,
+                duration: second_duration,
+            };
+            pipeline_tx.send(start_msg2).await.unwrap();
 
-                // Wait a bit, then replace with a shorter timer
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                let start_msg2 = RuntimeControlMsg::StartTimer {
-                    node_id: node.index,
-                    duration: second_duration,
-                };
-                pipeline_tx.send(start_msg2).await.unwrap();
+            // Measure timing to verify the replacement worked
+            let mut receiver = control_receivers.remove(&node.index).unwrap();
+            let start_time = Instant::now();
 
-                // Measure timing to verify the replacement worked
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let start_time = Instant::now();
+            let tick_result =
+                timeout(Duration::from_millis(200), async { receiver.recv().await }).await;
 
-                let tick_result =
-                    timeout(Duration::from_millis(200), async { receiver.recv().await }).await;
+            let elapsed = start_time.elapsed();
 
-                let elapsed = start_time.elapsed();
+            assert!(tick_result.is_ok(), "Should receive TimerTick");
+            // Should fire approximately after second_duration (80ms), not first_duration (150ms)
+            // Allow some tolerance for timing variations in test environment
+            assert!(
+                elapsed >= Duration::from_millis(70) && elapsed <= Duration::from_millis(130),
+                "Timer should fire based on second duration (~80ms), but fired after {elapsed:?}"
+            );
 
-                assert!(tick_result.is_ok(), "Should receive TimerTick");
-                // Should fire approximately after second_duration (80ms), not first_duration (150ms)
-                // Allow some tolerance for timing variations in test environment
-                assert!(
-                    elapsed >= Duration::from_millis(70) && elapsed <= Duration::from_millis(130),
-                    "Timer should fire based on second duration (~80ms), but fired after {elapsed:?}"
-                );
-
-                // Clean shutdown
-                pipeline_tx.send(RuntimeControlMsg::Shutdown {
+            // Clean shutdown
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
                     deadline: Instant::now() + Duration::from_secs(1),
-                    reason: "".to_owned()
-                }).await.unwrap();
-                drop(pipeline_tx);
-                let _ = timeout(Duration::from_millis(100), manager_handle).await;
-            })
-            .await;
+                    reason: "".to_owned(),
+                })
+                .await
+                .unwrap();
+            drop(pipeline_tx);
+            let _ = timeout(Duration::from_millis(100), manager_handle).await;
+        }
+        .await;
     }
 
     /// Validates that the manager responds properly to shutdown requests:
     /// 1. The run() method terminates cleanly when receiving a Shutdown message
     /// 2. No hanging tasks or resource leaks
     /// 3. Shutdown completes within reasonable time
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_run_shutdown_integration() {
-        let local = LocalSet::new();
+        async {
+            let (manager, pipeline_tx, _control_receivers, _, _pipeline_entity_guard) =
+                setup_test_manager::<()>();
 
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, _control_receivers, _, _pipeline_entity_guard) =
-                    setup_test_manager::<()>();
+            // Start the manager in the background
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                // Start the manager in the background
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            // Send shutdown message
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                // Send shutdown message
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "".to_owned(),
-                    })
-                    .await
-                    .unwrap();
+            // Drop the sender to allow the manager to exit draining mode.
+            // After shutdown, the manager continues running to allow cleanup messages
+            // until all senders are dropped.
+            drop(pipeline_tx);
 
-                // Drop the sender to allow the manager to exit draining mode.
-                // After shutdown, the manager continues running to allow cleanup messages
-                // until all senders are dropped.
-                drop(pipeline_tx);
-
-                // Manager should terminate cleanly within timeout
-                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
+            // Manager should terminate cleanly within timeout
+            let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+            assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+        }
+        .await;
     }
 
     /// Validates that a StartTelemetryTimer results in a CollectTelemetry control message delivered to the node.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_run_start_telemetry_timer_integration() {
-        let local = LocalSet::new();
+        async {
+            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                setup_test_manager::<()>();
 
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<()>();
+            let node = nodes.first().expect("ok");
+            let duration = Duration::from_millis(60);
 
-                let node = nodes.first().expect("ok");
-                let duration = Duration::from_millis(60);
+            // Start the manager in the background using spawn_local (not Send)
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                // Start the manager in the background using spawn_local (not Send)
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            // Send StartTelemetryTimer message to schedule a recurring telemetry timer
+            let start_msg = RuntimeControlMsg::StartTelemetryTimer {
+                node_id: node.index,
+                duration,
+            };
+            pipeline_tx.send(start_msg).await.unwrap();
 
-                // Send StartTelemetryTimer message to schedule a recurring telemetry timer
-                let start_msg = RuntimeControlMsg::StartTelemetryTimer {
-                    node_id: node.index,
-                    duration,
-                };
-                pipeline_tx.send(start_msg).await.unwrap();
+            // Wait for the telemetry timer to expire and verify CollectTelemetry delivery
+            let mut receiver = control_receivers.remove(&node.index).unwrap();
+            let telemetry_result =
+                timeout(Duration::from_millis(200), async { receiver.recv().await }).await;
 
-                // Wait for the telemetry timer to expire and verify CollectTelemetry delivery
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let telemetry_result =
-                    timeout(Duration::from_millis(200), async { receiver.recv().await }).await;
-
-                assert!(
-                    telemetry_result.is_ok(),
-                    "Should receive CollectTelemetry within timeout"
-                );
-                match telemetry_result.unwrap() {
-                    Ok(NodeControlMsg::CollectTelemetry { .. }) => {
-                        // Success - received expected CollectTelemetry
-                    }
-                    Ok(other) => panic!("Expected CollectTelemetry, got {other:?}"),
-                    Err(e) => panic!("Failed to receive message: {e:?}"),
+            assert!(
+                telemetry_result.is_ok(),
+                "Should receive CollectTelemetry within timeout"
+            );
+            match telemetry_result.unwrap() {
+                Ok(NodeControlMsg::CollectTelemetry { .. }) => {
+                    // Success - received expected CollectTelemetry
                 }
+                Ok(other) => panic!("Expected CollectTelemetry, got {other:?}"),
+                Err(e) => panic!("Failed to receive message: {e:?}"),
+            }
 
-                // Clean shutdown
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-                drop(pipeline_tx);
-                let _ = timeout(Duration::from_millis(100), manager_handle).await;
-            })
-            .await;
+            // Clean shutdown
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "".to_owned(),
+                })
+                .await
+                .unwrap();
+            drop(pipeline_tx);
+            let _ = timeout(Duration::from_millis(100), manager_handle).await;
+        }
+        .await;
     }
 
     /// Validates error resilience when the manager tries to send TimerTick
@@ -1793,96 +1777,93 @@ mod tests {
     /// 2. Manager doesn't crash when trying to send to missing sender
     /// 3. Manager continues operating normally after the error
     /// 4. This tests the defensive programming in the timer expiration logic
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_run_no_control_sender_integration() {
-        let local = LocalSet::new();
+        async {
+            let (pipeline_tx, pipeline_rx) = runtime_ctrl_msg_channel(10);
+            // Create a dummy MetricsReporter for testing
+            let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+            let metrics_reporter = metrics_system.reporter();
+            let observed_state_store = ObservedStateStore::new(
+                &ObservedStateSettings::default(),
+                metrics_system.registry(),
+            );
+            let pipeline_group_id: PipelineGroupId = Default::default();
+            let pipeline_id: PipelineId = Default::default();
+            let core_id = 0;
+            let pipeline_key = DeployedPipelineKey {
+                pipeline_group_id: pipeline_group_id.clone(),
+                pipeline_id: pipeline_id.clone(),
+                core_id,
+                deployment_generation: 0,
+            };
+            let controller_context = ControllerContext::new(metrics_system.registry());
+            let pipeline_context_params = PipelineContextParams {
+                pipeline_group_id: pipeline_group_id.clone(),
+                pipeline_id: pipeline_id.clone(),
+                core_id,
+                num_cores: 1,
+                thread_id: 0,
+            };
+            let pipeline_context =
+                PipelineContext::new(controller_context, pipeline_context_params);
+            let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+            let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+                pipeline_context.metrics_registry(),
+                pipeline_entity_key,
+            );
+            let (_memory_pressure_tx, memory_pressure_rx) =
+                watch::channel(MemoryPressureChanged::initial());
 
-        local
-            .run_until(async {
-                let (pipeline_tx, pipeline_rx) = runtime_ctrl_msg_channel(10);
-                // Create a dummy MetricsReporter for testing
-                let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
-                let metrics_reporter = metrics_system.reporter();
-                let observed_state_store = ObservedStateStore::new(
-                    &ObservedStateSettings::default(),
-                    metrics_system.registry(),
-                );
-                let pipeline_group_id: PipelineGroupId = Default::default();
-                let pipeline_id: PipelineId = Default::default();
-                let core_id = 0;
-                let pipeline_key = DeployedPipelineKey {
-                    pipeline_group_id: pipeline_group_id.clone(),
-                    pipeline_id: pipeline_id.clone(),
-                    core_id,
-                    deployment_generation: 0,
-                };
-                let controller_context = ControllerContext::new(metrics_system.registry());
-                let pipeline_context_params = PipelineContextParams {
-                    pipeline_group_id: pipeline_group_id.clone(),
-                    pipeline_id: pipeline_id.clone(),
-                    core_id,
-                    num_cores: 1,
-                    thread_id: 0,
-                };
-                let pipeline_context =
-                    PipelineContext::new(controller_context, pipeline_context_params);
-                let pipeline_entity_key = pipeline_context.register_pipeline_entity();
-                let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
-                    pipeline_context.metrics_registry(),
-                    pipeline_entity_key,
-                );
-                let (_memory_pressure_tx, memory_pressure_rx) =
-                    watch::channel(MemoryPressureChanged::initial());
+            // Create manager with empty control_senders map (no registered nodes)
+            let manager = RuntimeCtrlMsgManager::<()>::new(
+                pipeline_key,
+                pipeline_context,
+                pipeline_rx,
+                memory_pressure_rx,
+                ControlSenders::new(),
+                observed_state_store.reporter(SendPolicy::default()),
+                metrics_reporter,
+                TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
+                TelemetryPolicy::default(),
+                Vec::new(),
+                empty_node_metric_handles(),
+            );
+            let duration = Duration::from_millis(50);
 
-                // Create manager with empty control_senders map (no registered nodes)
-                let manager = RuntimeCtrlMsgManager::<()>::new(
-                    pipeline_key,
-                    pipeline_context,
-                    pipeline_rx,
-                    memory_pressure_rx,
-                    ControlSenders::new(),
-                    observed_state_store.reporter(SendPolicy::default()),
-                    metrics_reporter,
-                    TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
-                    TelemetryPolicy::default(),
-                    Vec::new(),
-                    empty_node_metric_handles(),
-                );
-                let duration = Duration::from_millis(50);
+            // Start the manager in the background
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                // Start the manager in the background
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            // Send StartTimer for node with no control sender
+            let start_msg = RuntimeControlMsg::StartTimer {
+                node_id: 1234,
+                duration,
+            };
+            pipeline_tx.send(start_msg).await.unwrap();
 
-                // Send StartTimer for node with no control sender
-                let start_msg = RuntimeControlMsg::StartTimer {
-                    node_id: 1234,
-                    duration,
-                };
-                pipeline_tx.send(start_msg).await.unwrap();
+            // Wait for timer to expire - manager should handle this gracefully
+            // (no way to verify TimerTick delivery since no receiver exists)
+            tokio::time::sleep(Duration::from_millis(100)).await;
 
-                // Wait for timer to expire - manager should handle this gracefully
-                // (no way to verify TimerTick delivery since no receiver exists)
-                tokio::time::sleep(Duration::from_millis(100)).await;
+            // Manager should still be responsive for shutdown
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                // Manager should still be responsive for shutdown
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "".to_owned(),
-                    })
-                    .await
-                    .unwrap();
+            // Drop the sender to let the manager exit draining mode
+            drop(pipeline_tx);
 
-                // Drop the sender to let the manager exit draining mode
-                drop(pipeline_tx);
-
-                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(
-                    shutdown_result.is_ok(),
-                    "Manager should handle missing control sender gracefully"
-                );
-            })
-            .await;
+            let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+            assert!(
+                shutdown_result.is_ok(),
+                "Manager should handle missing control sender gracefully"
+            );
+        }
+        .await;
     }
 
     /// Validates that timers fire in the correct chronological order regardless
@@ -1891,11 +1872,9 @@ mod tests {
     /// 2. They fire in chronological order (shortest duration first)
     /// 3. This tests the BinaryHeap priority queue implementation
     /// 4. Uses select! to handle timers in any order while validating proper sequencing
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_run_timer_ordering_integration() {
-        let local = LocalSet::new();
-
-        local.run_until(async {
+        async {
             let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
                 setup_test_manager::<()>();
 
@@ -2017,12 +1996,13 @@ mod tests {
             }).await.unwrap();
             drop(pipeline_tx);
             let _ = timeout(Duration::from_millis(100), manager_handle).await;
-        }).await;
+        }
+        .await;
     }
 
     /// Validates that the RuntimeCtrlMsgManager is created with correct
     /// initial state for all internal data structures.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_manager_creation() {
         let (manager, _pipeline_tx, _control_receivers, _, _pipeline_entity_guard) =
             setup_test_manager::<()>();
@@ -2060,7 +2040,7 @@ mod tests {
     /// 3. Multiple timers are ordered correctly regardless of insertion order
     ///
     /// This is a unit test of the data structure, separate from the run() method.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_timer_heap_ordering() {
         let (mut manager, _pipeline_tx, _control_receivers, nodes, _pipeline_entity_guard) =
             setup_test_manager::<()>();
@@ -2162,213 +2142,201 @@ mod tests {
         assert!(delayed_heap.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_delay_data_integration() {
-        let local = LocalSet::new();
+        async {
+            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                setup_test_manager::<String>();
 
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<String>();
+            let node = nodes.first().expect("ok");
+            let delay_duration = Duration::from_millis(100);
+            let test_data = Box::new("test_delayed_data".to_string());
+            let delay_time = Instant::now() + delay_duration;
 
-                let node = nodes.first().expect("ok");
-                let delay_duration = Duration::from_millis(100);
-                let test_data = Box::new("test_delayed_data".to_string());
-                let delay_time = Instant::now() + delay_duration;
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            let delay_msg = RuntimeControlMsg::DelayData {
+                node_id: node.index,
+                when: delay_time,
+                data: test_data.clone(),
+            };
+            pipeline_tx.send(delay_msg).await.unwrap();
 
-                let delay_msg = RuntimeControlMsg::DelayData {
-                    node_id: node.index,
-                    when: delay_time,
-                    data: test_data.clone(),
-                };
-                pipeline_tx.send(delay_msg).await.unwrap();
+            // Wait for delayed data to be delivered
+            let mut receiver = control_receivers.remove(&node.index).unwrap();
+            let delayed_result = async { receiver.recv().await };
 
-                // Wait for delayed data to be delivered
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let delayed_result = async { receiver.recv().await };
-
-                match delayed_result.await {
-                    Ok(NodeControlMsg::DelayedData { when, data }) => {
-                        assert_eq!(*data, *test_data);
-                        assert_eq!(when, delay_time);
-                    }
-                    Ok(other) => panic!("Expected DelayedData, got {other:?}"),
-                    Err(e) => panic!("Failed to receive message: {e:?}"),
+            match delayed_result.await {
+                Ok(NodeControlMsg::DelayedData { when, data }) => {
+                    assert_eq!(*data, *test_data);
+                    assert_eq!(when, delay_time);
                 }
+                Ok(other) => panic!("Expected DelayedData, got {other:?}"),
+                Err(e) => panic!("Failed to receive message: {e:?}"),
+            }
 
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "".to_owned(),
-                    })
-                    .await
-                    .unwrap();
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                // Drop the sender to let the manager exit draining mode
-                drop(pipeline_tx);
+            // Drop the sender to let the manager exit draining mode
+            drop(pipeline_tx);
 
-                let _ = manager_handle.await;
-            })
-            .await;
+            let _ = manager_handle.await;
+        }
+        .await;
     }
 
     // A due timer tick must still reach its node while the runtime-control lane
     // is busy with unrelated requests. This guards against control traffic
     // starving timer expiry handling inside the manager loop.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_due_timer_tick_progress_under_runtime_ctrl_burst() {
-        let local = LocalSet::new();
+        async {
+            let (
+                mut manager,
+                pipeline_tx,
+                _control_senders,
+                mut control_receivers,
+                nodes,
+                _pipeline_entity_guard,
+            ) = setup_test_manager_with_capacities::<String>(128, 10);
 
-        local
-            .run_until(async {
-                let (
-                    mut manager,
-                    pipeline_tx,
-                    _control_senders,
-                    mut control_receivers,
-                    nodes,
-                    _pipeline_entity_guard,
-                ) = setup_test_manager_with_capacities::<String>(128, 10);
+            let noisy_node = nodes[0].clone();
+            let target = nodes[1].clone();
+            manager
+                .tick_timers
+                .start(target.index, Duration::from_millis(1));
+            tokio::time::sleep(Duration::from_millis(5)).await;
 
-                let noisy_node = nodes[0].clone();
-                let target = nodes[1].clone();
-                manager
-                    .tick_timers
-                    .start(target.index, Duration::from_millis(1));
-                tokio::time::sleep(Duration::from_millis(5)).await;
-
-                for _ in 0..96 {
-                    pipeline_tx
-                        .send(RuntimeControlMsg::StartTimer {
-                            node_id: noisy_node.index,
-                            duration: Duration::from_secs(60),
-                        })
-                        .await
-                        .unwrap();
-                }
-
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-
-                let mut receiver = control_receivers.remove(&target.index).unwrap();
-                let msg = timeout(Duration::from_millis(500), receiver.recv())
+            for _ in 0..96 {
+                pipeline_tx
+                    .send(RuntimeControlMsg::StartTimer {
+                        node_id: noisy_node.index,
+                        duration: Duration::from_secs(60),
+                    })
                     .await
-                    .expect("TimerTick should make progress under runtime control burst")
-                    .expect("target control channel should stay open");
-                assert!(matches!(msg, NodeControlMsg::TimerTick {}));
+                    .unwrap();
+            }
 
-                drop(pipeline_tx);
-                let shutdown_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+            let mut receiver = control_receivers.remove(&target.index).unwrap();
+            let msg = timeout(Duration::from_millis(500), receiver.recv())
+                .await
+                .expect("TimerTick should make progress under runtime control burst")
+                .expect("target control channel should stay open");
+            assert!(matches!(msg, NodeControlMsg::TimerTick {}));
+
+            drop(pipeline_tx);
+            let shutdown_result = timeout(Duration::from_millis(200), manager_handle).await;
+            assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+        }
+        .await;
     }
 
     // CollectTelemetry shares the same due-work path as timers, so it must also
     // keep making progress under sustained runtime-control pressure instead of
     // being postponed behind a busy control lane.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_due_collect_telemetry_progress_under_runtime_ctrl_burst() {
-        let local = LocalSet::new();
+        async {
+            let (
+                mut manager,
+                pipeline_tx,
+                _control_senders,
+                mut control_receivers,
+                nodes,
+                _pipeline_entity_guard,
+            ) = setup_test_manager_with_capacities::<String>(128, 10);
 
-        local
-            .run_until(async {
-                let (
-                    mut manager,
-                    pipeline_tx,
-                    _control_senders,
-                    mut control_receivers,
-                    nodes,
-                    _pipeline_entity_guard,
-                ) = setup_test_manager_with_capacities::<String>(128, 10);
+            let noisy_node = nodes[0].clone();
+            let target = nodes[1].clone();
+            manager
+                .telemetry_timers
+                .start(target.index, Duration::from_millis(1));
+            tokio::time::sleep(Duration::from_millis(5)).await;
 
-                let noisy_node = nodes[0].clone();
-                let target = nodes[1].clone();
-                manager
-                    .telemetry_timers
-                    .start(target.index, Duration::from_millis(1));
-                tokio::time::sleep(Duration::from_millis(5)).await;
-
-                for _ in 0..96 {
-                    pipeline_tx
-                        .send(RuntimeControlMsg::StartTimer {
-                            node_id: noisy_node.index,
-                            duration: Duration::from_secs(60),
-                        })
-                        .await
-                        .unwrap();
-                }
-
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-
-                let mut receiver = control_receivers.remove(&target.index).unwrap();
-                let msg = timeout(Duration::from_millis(500), receiver.recv())
+            for _ in 0..96 {
+                pipeline_tx
+                    .send(RuntimeControlMsg::StartTimer {
+                        node_id: noisy_node.index,
+                        duration: Duration::from_secs(60),
+                    })
                     .await
-                    .expect("CollectTelemetry should make progress under runtime control burst")
-                    .expect("target control channel should stay open");
-                assert!(matches!(msg, NodeControlMsg::CollectTelemetry { .. }));
+                    .unwrap();
+            }
 
-                drop(pipeline_tx);
-                let shutdown_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+            let mut receiver = control_receivers.remove(&target.index).unwrap();
+            let msg = timeout(Duration::from_millis(500), receiver.recv())
+                .await
+                .expect("CollectTelemetry should make progress under runtime control burst")
+                .expect("target control channel should stay open");
+            assert!(matches!(msg, NodeControlMsg::CollectTelemetry { .. }));
+
+            drop(pipeline_tx);
+            let shutdown_result = timeout(Duration::from_millis(200), manager_handle).await;
+            assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+        }
+        .await;
     }
 
     // DelayedData wakeups are another due event handled by the manager.
     // This test ensures they are still dispatched promptly even when unrelated
     // runtime-control requests keep arriving in a burst.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_due_delayed_data_progress_under_runtime_ctrl_burst() {
-        let local = LocalSet::new();
+        async {
+            let (
+                mut manager,
+                pipeline_tx,
+                _control_senders,
+                mut control_receivers,
+                nodes,
+                _pipeline_entity_guard,
+            ) = setup_test_manager_with_capacities::<String>(128, 10);
 
-        local
-            .run_until(async {
-                let (
-                    mut manager,
-                    pipeline_tx,
-                    _control_senders,
-                    mut control_receivers,
-                    nodes,
-                    _pipeline_entity_guard,
-                ) = setup_test_manager_with_capacities::<String>(128, 10);
+            let noisy_node = nodes[0].clone();
+            let target = nodes[1].clone();
+            manager.delayed_data.push(Delayed {
+                node_id: target.index,
+                when: Instant::now(),
+                data: Box::new("burst_delayed".to_owned()),
+            });
 
-                let noisy_node = nodes[0].clone();
-                let target = nodes[1].clone();
-                manager.delayed_data.push(Delayed {
-                    node_id: target.index,
-                    when: Instant::now(),
-                    data: Box::new("burst_delayed".to_owned()),
-                });
-
-                for _ in 0..96 {
-                    pipeline_tx
-                        .send(RuntimeControlMsg::StartTimer {
-                            node_id: noisy_node.index,
-                            duration: Duration::from_secs(60),
-                        })
-                        .await
-                        .unwrap();
-                }
-
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-
-                let mut receiver = control_receivers.remove(&target.index).unwrap();
-                let msg = timeout(Duration::from_millis(500), receiver.recv())
+            for _ in 0..96 {
+                pipeline_tx
+                    .send(RuntimeControlMsg::StartTimer {
+                        node_id: noisy_node.index,
+                        duration: Duration::from_secs(60),
+                    })
                     .await
-                    .expect("DelayedData should make progress under runtime control burst")
-                    .expect("target control channel should stay open");
-                assert!(matches!(
-                    msg,
-                    NodeControlMsg::DelayedData { ref data, .. } if **data == "burst_delayed"
-                ));
+                    .unwrap();
+            }
 
-                drop(pipeline_tx);
-                let shutdown_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+            let mut receiver = control_receivers.remove(&target.index).unwrap();
+            let msg = timeout(Duration::from_millis(500), receiver.recv())
+                .await
+                .expect("DelayedData should make progress under runtime control burst")
+                .expect("target control channel should stay open");
+            assert!(matches!(
+                msg,
+                NodeControlMsg::DelayedData { ref data, .. } if **data == "burst_delayed"
+            ));
+
+            drop(pipeline_tx);
+            let shutdown_result = timeout(Duration::from_millis(200), manager_handle).await;
+            assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+        }
+        .await;
     }
 
     /// Validates that nodes can send cleanup messages (e.g., CancelTimer) after
@@ -2377,279 +2345,258 @@ mod tests {
     /// After receiving a Shutdown message, the manager enters "draining" mode where
     /// it continues to process cleanup messages until all senders drop their channel.
     /// This allows processors and exporters to cancel timers, etc. during cleanup.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_shutdown_allows_nodes_to_send_cleanup_messages() {
-        let local = LocalSet::new();
+        async {
+            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                setup_test_manager::<()>();
 
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<()>();
+            let node = nodes.first().expect("ok");
 
-                let node = nodes.first().expect("ok");
+            // Start the manager in the background
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                // Start the manager in the background
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            // Simulate a node starting a timer (like processors do for telemetry)
+            let start_msg = RuntimeControlMsg::StartTimer {
+                node_id: node.index,
+                duration: Duration::from_secs(1), // Long duration - won't fire during test
+            };
+            pipeline_tx.send(start_msg).await.unwrap();
 
-                // Simulate a node starting a timer (like processors do for telemetry)
-                let start_msg = RuntimeControlMsg::StartTimer {
+            // Small delay to ensure timer is registered
+            tokio::time::sleep(Duration::from_millis(10)).await;
+
+            // Send shutdown - the manager enters draining mode but continues running
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test shutdown".to_owned(),
+                })
+                .await
+                .unwrap();
+
+            // After shutdown, nodes should still be able to send cleanup messages
+            // (e.g., CancelTelemetryTimer). In a real pipeline, processors try to
+            // cancel their telemetry timers when their message channel closes.
+            // The manager is still running in draining mode, so this should succeed.
+            let cancel_result = pipeline_tx
+                .send(RuntimeControlMsg::CancelTimer {
                     node_id: node.index,
-                    duration: Duration::from_secs(1), // Long duration - won't fire during test
-                };
-                pipeline_tx.send(start_msg).await.unwrap();
+                })
+                .await;
 
-                // Small delay to ensure timer is registered
-                tokio::time::sleep(Duration::from_millis(10)).await;
-
-                // Send shutdown - the manager enters draining mode but continues running
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "test shutdown".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-
-                // After shutdown, nodes should still be able to send cleanup messages
-                // (e.g., CancelTelemetryTimer). In a real pipeline, processors try to
-                // cancel their telemetry timers when their message channel closes.
-                // The manager is still running in draining mode, so this should succeed.
-                let cancel_result = pipeline_tx
-                    .send(RuntimeControlMsg::CancelTimer {
-                        node_id: node.index,
-                    })
-                    .await;
-
-                // The channel should remain open until all nodes have completed.
-                assert!(
-                    cancel_result.is_ok(),
-                    "Nodes should be able to send control messages during cleanup, \
+            // The channel should remain open until all nodes have completed.
+            assert!(
+                cancel_result.is_ok(),
+                "Nodes should be able to send control messages during cleanup, \
                      but the channel was closed prematurely"
-                );
+            );
 
-                // Drop the sender to let the manager exit draining mode
-                drop(pipeline_tx);
+            // Drop the sender to let the manager exit draining mode
+            drop(pipeline_tx);
 
-                // Manager should terminate cleanly
-                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(
-                    shutdown_result.is_ok(),
-                    "Manager should shutdown cleanly after cleanup"
-                );
+            // Manager should terminate cleanly
+            let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+            assert!(
+                shutdown_result.is_ok(),
+                "Manager should shutdown cleanly after cleanup"
+            );
 
-                // Cleanup - drain the control receiver so it doesn't complain
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                while receiver.recv().await.is_ok() {}
-            })
-            .await;
+            // Cleanup - drain the control receiver so it doesn't complain
+            let mut receiver = control_receivers.remove(&node.index).unwrap();
+            while receiver.recv().await.is_ok() {}
+        }
+        .await;
     }
 
     /// Validates that duplicate shutdown messages are ignored during draining.
     ///
     /// Once the manager enters draining mode, subsequent Shutdown messages should
     /// be silently ignored to prevent re-triggering shutdown logic.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_duplicate_shutdown_ignored_during_draining() {
-        let local = LocalSet::new();
+        async {
+            let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
+                setup_test_manager::<()>();
 
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<()>();
+            // Start the manager in the background
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                // Start the manager in the background
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            // Send first shutdown
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "first shutdown".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                // Send first shutdown
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "first shutdown".to_owned(),
-                    })
-                    .await
-                    .unwrap();
+            // Small delay to ensure first shutdown is processed
+            tokio::time::sleep(Duration::from_millis(10)).await;
 
-                // Small delay to ensure first shutdown is processed
-                tokio::time::sleep(Duration::from_millis(10)).await;
+            // Send duplicate shutdown - should be ignored
+            let duplicate_result = pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "duplicate shutdown".to_owned(),
+                })
+                .await;
 
-                // Send duplicate shutdown - should be ignored
-                let duplicate_result = pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "duplicate shutdown".to_owned(),
-                    })
-                    .await;
+            // Channel should still be open (manager didn't crash)
+            assert!(
+                duplicate_result.is_ok(),
+                "Duplicate shutdown should be accepted (and ignored)"
+            );
 
-                // Channel should still be open (manager didn't crash)
-                assert!(
-                    duplicate_result.is_ok(),
-                    "Duplicate shutdown should be accepted (and ignored)"
-                );
+            // Drop the sender to let the manager exit draining mode
+            drop(pipeline_tx);
 
-                // Drop the sender to let the manager exit draining mode
-                drop(pipeline_tx);
-
-                // Manager should terminate cleanly
-                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
+            // Manager should terminate cleanly
+            let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+            assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+        }
+        .await;
     }
 
     /// Validates that DeliverAck messages are processed during draining.
     ///
     /// Ack messages should still be delivered to nodes during shutdown so that
     /// in-flight acknowledgments can complete.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_deliver_ack_during_draining() {
         use crate::control::AckMsg;
+        async {
+            let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
+                setup_test_manager::<String>();
+            let (return_tx, return_rx) = pipeline_completion_msg_channel(10);
+            let (dispatcher_context, dispatcher_guard) = create_test_pipeline_context();
+            let dispatcher = PipelineCompletionMsgDispatcher::new(
+                dispatcher_context,
+                return_rx,
+                ControlSenders::new(),
+                empty_node_metric_handles(),
+                MetricsReporter::create_new_and_receiver(16).1,
+                TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
+                TelemetryPolicy::default(),
+            );
 
-        let local = LocalSet::new();
+            // Start the manager in the background
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            let dispatcher_handle = tokio::task::spawn_local(async move { dispatcher.run().await });
 
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<String>();
-                let (return_tx, return_rx) = pipeline_completion_msg_channel(10);
-                let (dispatcher_context, dispatcher_guard) = create_test_pipeline_context();
-                let dispatcher = PipelineCompletionMsgDispatcher::new(
-                    dispatcher_context,
-                    return_rx,
-                    ControlSenders::new(),
-                    empty_node_metric_handles(),
-                    MetricsReporter::create_new_and_receiver(16).1,
-                    TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
-                    TelemetryPolicy::default(),
-                );
+            // Send shutdown first
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test shutdown".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                // Start the manager in the background
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-                let dispatcher_handle =
-                    tokio::task::spawn_local(async move { dispatcher.run().await });
+            // Small delay to ensure shutdown is processed and we're in draining mode
+            tokio::time::sleep(Duration::from_millis(10)).await;
 
-                // Send shutdown first
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "test shutdown".to_owned(),
-                    })
-                    .await
-                    .unwrap();
+            // Send DeliverAck during draining - should be processed
+            let ack = AckMsg::new("ack_data".to_owned());
+            return_tx
+                .send(PipelineCompletionMsg::DeliverAck { ack })
+                .await
+                .unwrap();
 
-                // Small delay to ensure shutdown is processed and we're in draining mode
-                tokio::time::sleep(Duration::from_millis(10)).await;
+            // String PData has no context stack, so unwind_ack is a no-op.
+            // Just verify the controller processes it without crashing.
 
-                // Send DeliverAck during draining - should be processed
-                let ack = AckMsg::new("ack_data".to_owned());
-                return_tx
-                    .send(PipelineCompletionMsg::DeliverAck { ack })
-                    .await
-                    .unwrap();
+            // Drop the sender to let the manager exit draining mode
+            drop(return_tx);
+            drop(pipeline_tx);
 
-                // String PData has no context stack, so unwind_ack is a no-op.
-                // Just verify the controller processes it without crashing.
+            let dispatcher_result = timeout(Duration::from_millis(100), dispatcher_handle).await;
+            assert!(
+                dispatcher_result.is_ok(),
+                "Return dispatcher should shutdown cleanly"
+            );
 
-                // Drop the sender to let the manager exit draining mode
-                drop(return_tx);
-                drop(pipeline_tx);
-
-                let dispatcher_result =
-                    timeout(Duration::from_millis(100), dispatcher_handle).await;
-                assert!(
-                    dispatcher_result.is_ok(),
-                    "Return dispatcher should shutdown cleanly"
-                );
-
-                // Manager should terminate cleanly
-                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-                drop(dispatcher_guard);
-            })
-            .await;
+            // Manager should terminate cleanly
+            let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+            assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+            drop(dispatcher_guard);
+        }
+        .await;
     }
 
     /// Validates that DeliverNack messages are processed during draining.
     ///
     /// Nack messages should still be delivered to nodes during shutdown so that
     /// in-flight negative acknowledgments can complete.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_deliver_nack_during_draining() {
         use crate::control::NackMsg;
+        async {
+            let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
+                setup_test_manager::<String>();
+            let (return_tx, return_rx) = pipeline_completion_msg_channel(10);
+            let (dispatcher_context, dispatcher_guard) = create_test_pipeline_context();
+            let dispatcher = PipelineCompletionMsgDispatcher::new(
+                dispatcher_context,
+                return_rx,
+                ControlSenders::new(),
+                empty_node_metric_handles(),
+                MetricsReporter::create_new_and_receiver(16).1,
+                TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
+                TelemetryPolicy::default(),
+            );
 
-        let local = LocalSet::new();
+            // Start the manager in the background
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            let dispatcher_handle = tokio::task::spawn_local(async move { dispatcher.run().await });
 
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<String>();
-                let (return_tx, return_rx) = pipeline_completion_msg_channel(10);
-                let (dispatcher_context, dispatcher_guard) = create_test_pipeline_context();
-                let dispatcher = PipelineCompletionMsgDispatcher::new(
-                    dispatcher_context,
-                    return_rx,
-                    ControlSenders::new(),
-                    empty_node_metric_handles(),
-                    MetricsReporter::create_new_and_receiver(16).1,
-                    TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
-                    TelemetryPolicy::default(),
-                );
+            // Send shutdown first
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test shutdown".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                // Start the manager in the background
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-                let dispatcher_handle =
-                    tokio::task::spawn_local(async move { dispatcher.run().await });
+            // Small delay to ensure shutdown is processed and we're in draining mode
+            tokio::time::sleep(Duration::from_millis(10)).await;
 
-                // Send shutdown first
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "test shutdown".to_owned(),
-                    })
-                    .await
-                    .unwrap();
+            // Send DeliverNack during draining - should be processed
+            let nack = NackMsg::new("test failure", "nack_data".to_owned());
+            return_tx
+                .send(PipelineCompletionMsg::DeliverNack { nack })
+                .await
+                .unwrap();
 
-                // Small delay to ensure shutdown is processed and we're in draining mode
-                tokio::time::sleep(Duration::from_millis(10)).await;
+            // String PData has no context stack, so unwind_nack is a no-op.
+            // Just verify the controller processes it without crashing.
 
-                // Send DeliverNack during draining - should be processed
-                let nack = NackMsg::new("test failure", "nack_data".to_owned());
-                return_tx
-                    .send(PipelineCompletionMsg::DeliverNack { nack })
-                    .await
-                    .unwrap();
+            // Drop the sender to let the manager exit draining mode
+            drop(return_tx);
+            drop(pipeline_tx);
 
-                // String PData has no context stack, so unwind_nack is a no-op.
-                // Just verify the controller processes it without crashing.
+            let dispatcher_result = timeout(Duration::from_millis(100), dispatcher_handle).await;
+            assert!(
+                dispatcher_result.is_ok(),
+                "Return dispatcher should shutdown cleanly"
+            );
 
-                // Drop the sender to let the manager exit draining mode
-                drop(return_tx);
-                drop(pipeline_tx);
-
-                let dispatcher_result =
-                    timeout(Duration::from_millis(100), dispatcher_handle).await;
-                assert!(
-                    dispatcher_result.is_ok(),
-                    "Return dispatcher should shutdown cleanly"
-                );
-
-                // Manager should terminate cleanly
-                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-                drop(dispatcher_guard);
-            })
-            .await;
+            // Manager should terminate cleanly
+            let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+            assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+            drop(dispatcher_guard);
+        }
+        .await;
     }
 
     /// Validates that the draining deadline is respected.
     ///
     /// If the draining deadline is exceeded, the manager should force shutdown
     /// even if there are still active senders.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_draining_deadline_forces_shutdown() {
-        let local = LocalSet::new();
-
-        local
-            .run_until(async {
+        async {
                 let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
                     setup_test_manager::<()>();
 
@@ -2673,325 +2620,310 @@ mod tests {
                     shutdown_result.is_ok(),
                     "Manager should shutdown when draining deadline is exceeded, even with active senders"
                 );
-            })
-            .await;
+        }
+        .await;
     }
 
     /// Validates that TimerTick messages are NOT fired during draining.
     ///
     /// When draining, the manager should not fire any new timer ticks - it should
     /// only process messages that help complete in-flight work (like Ack/Nack).
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_timer_tick_does_not_fire_during_draining() {
-        let local = LocalSet::new();
+        async {
+            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                setup_test_manager::<String>();
 
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<String>();
+            let node = nodes.first().expect("ok");
 
-                let node = nodes.first().expect("ok");
+            // Start the manager in the background
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                // Start the manager in the background
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            // Start a timer that would fire very soon
+            pipeline_tx
+                .send(RuntimeControlMsg::StartTimer {
+                    node_id: node.index,
+                    duration: Duration::from_millis(10),
+                })
+                .await
+                .unwrap();
 
-                // Start a timer that would fire very soon
-                pipeline_tx
-                    .send(RuntimeControlMsg::StartTimer {
-                        node_id: node.index,
-                        duration: Duration::from_millis(10),
-                    })
-                    .await
-                    .unwrap();
+            // Small delay to ensure timer is registered
+            tokio::time::sleep(Duration::from_millis(5)).await;
 
-                // Small delay to ensure timer is registered
-                tokio::time::sleep(Duration::from_millis(5)).await;
+            // Send shutdown before the timer fires
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_millis(500),
+                    reason: "test shutdown before timer fires".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                // Send shutdown before the timer fires
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_millis(500),
-                        reason: "test shutdown before timer fires".to_owned(),
-                    })
-                    .await
-                    .unwrap();
+            let mut receiver = control_receivers.remove(&node.index).unwrap();
+            let shutdown = timeout(Duration::from_millis(100), receiver.recv())
+                .await
+                .expect("processor should be shut down during draining")
+                .expect("processor control channel should stay open");
+            assert!(
+                matches!(shutdown, NodeControlMsg::Shutdown { .. }),
+                "Processors should receive Shutdown immediately during draining"
+            );
 
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let shutdown = timeout(Duration::from_millis(100), receiver.recv())
-                    .await
-                    .expect("processor should be shut down during draining")
-                    .expect("processor control channel should stay open");
-                assert!(
-                    matches!(shutdown, NodeControlMsg::Shutdown { .. }),
-                    "Processors should receive Shutdown immediately during draining"
-                );
+            // Wait longer than the timer interval - during draining, timer should NOT fire
+            tokio::time::sleep(Duration::from_millis(50)).await;
 
-                // Wait longer than the timer interval - during draining, timer should NOT fire
-                tokio::time::sleep(Duration::from_millis(50)).await;
+            // Verify no TimerTick was received during draining after ingress drain
+            let msg = timeout(Duration::from_millis(100), receiver.recv()).await;
+            assert!(
+                msg.is_err(),
+                "Should NOT receive TimerTick during draining - timer ticks are suppressed"
+            );
 
-                // Verify no TimerTick was received during draining after ingress drain
-                let msg = timeout(Duration::from_millis(100), receiver.recv()).await;
-                assert!(
-                    msg.is_err(),
-                    "Should NOT receive TimerTick during draining - timer ticks are suppressed"
-                );
+            // Drop the sender to let the manager exit draining mode
+            drop(pipeline_tx);
 
-                // Drop the sender to let the manager exit draining mode
-                drop(pipeline_tx);
-
-                // Manager should terminate cleanly
-                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
+            // Manager should terminate cleanly
+            let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+            assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+        }
+        .await;
     }
 
     /// Validates that StartTimer messages are ignored during draining.
     ///
     /// When draining, new timer registration requests should be silently ignored
     /// since we don't want to start new work during shutdown.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_start_timer_ignored_during_draining() {
-        let local = LocalSet::new();
+        async {
+            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                setup_test_manager::<String>();
 
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<String>();
+            let node = nodes.first().expect("ok");
 
-                let node = nodes.first().expect("ok");
+            // Start the manager in the background
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                // Start the manager in the background
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            // Send shutdown first to enter draining mode
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test shutdown".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                // Send shutdown first to enter draining mode
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "test shutdown".to_owned(),
-                    })
-                    .await
-                    .unwrap();
+            // Small delay to ensure shutdown is processed
+            tokio::time::sleep(Duration::from_millis(10)).await;
 
-                // Small delay to ensure shutdown is processed
-                tokio::time::sleep(Duration::from_millis(10)).await;
+            // Try to start a timer during draining - should be ignored
+            pipeline_tx
+                .send(RuntimeControlMsg::StartTimer {
+                    node_id: node.index,
+                    duration: Duration::from_millis(10),
+                })
+                .await
+                .unwrap();
 
-                // Try to start a timer during draining - should be ignored
-                pipeline_tx
-                    .send(RuntimeControlMsg::StartTimer {
-                        node_id: node.index,
-                        duration: Duration::from_millis(10),
-                    })
-                    .await
-                    .unwrap();
+            let mut receiver = control_receivers.remove(&node.index).unwrap();
+            let shutdown = timeout(Duration::from_millis(100), receiver.recv())
+                .await
+                .expect("processor should be shut down during draining")
+                .expect("processor control channel should stay open");
+            assert!(
+                matches!(shutdown, NodeControlMsg::Shutdown { .. }),
+                "Processors should receive Shutdown immediately during draining"
+            );
 
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let shutdown = timeout(Duration::from_millis(100), receiver.recv())
-                    .await
-                    .expect("processor should be shut down during draining")
-                    .expect("processor control channel should stay open");
-                assert!(
-                    matches!(shutdown, NodeControlMsg::Shutdown { .. }),
-                    "Processors should receive Shutdown immediately during draining"
-                );
+            // Wait longer than the timer interval
+            tokio::time::sleep(Duration::from_millis(50)).await;
 
-                // Wait longer than the timer interval
-                tokio::time::sleep(Duration::from_millis(50)).await;
+            // Verify no TimerTick was received - StartTimer should have been ignored during draining
+            let msg = timeout(Duration::from_millis(100), receiver.recv()).await;
+            assert!(
+                msg.is_err(),
+                "Should NOT receive TimerTick - StartTimer should be ignored during draining"
+            );
 
-                // Verify no TimerTick was received - StartTimer should have been ignored during draining
-                let msg = timeout(Duration::from_millis(100), receiver.recv()).await;
-                assert!(
-                    msg.is_err(),
-                    "Should NOT receive TimerTick - StartTimer should be ignored during draining"
-                );
+            // Drop the sender to let the manager exit draining mode
+            drop(pipeline_tx);
 
-                // Drop the sender to let the manager exit draining mode
-                drop(pipeline_tx);
-
-                // Manager should terminate cleanly
-                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
+            // Manager should terminate cleanly
+            let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+            assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+        }
+        .await;
     }
 
     // During draining, new telemetry collection work must not be started.
     // A StartTelemetryTimer sent after Shutdown is latched is ignored, and the
     // node only observes its Shutdown control message.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_start_telemetry_timer_ignored_during_draining() {
-        let local = LocalSet::new();
+        async {
+            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                setup_test_manager::<String>();
 
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<String>();
+            let node = nodes.first().expect("ok");
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                let node = nodes.first().expect("ok");
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test shutdown".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "test shutdown".to_owned(),
-                    })
-                    .await
-                    .unwrap();
+            tokio::time::sleep(Duration::from_millis(10)).await;
 
-                tokio::time::sleep(Duration::from_millis(10)).await;
+            pipeline_tx
+                .send(RuntimeControlMsg::StartTelemetryTimer {
+                    node_id: node.index,
+                    duration: Duration::from_millis(10),
+                })
+                .await
+                .unwrap();
 
-                pipeline_tx
-                    .send(RuntimeControlMsg::StartTelemetryTimer {
-                        node_id: node.index,
-                        duration: Duration::from_millis(10),
-                    })
-                    .await
-                    .unwrap();
+            let mut receiver = control_receivers.remove(&node.index).unwrap();
+            let shutdown = timeout(Duration::from_millis(100), receiver.recv())
+                .await
+                .expect("processor should be shut down during draining")
+                .expect("processor control channel should stay open");
+            assert!(matches!(shutdown, NodeControlMsg::Shutdown { .. }));
 
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let shutdown = timeout(Duration::from_millis(100), receiver.recv())
-                    .await
-                    .expect("processor should be shut down during draining")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(shutdown, NodeControlMsg::Shutdown { .. }));
+            let msg = timeout(Duration::from_millis(100), receiver.recv()).await;
+            assert!(
+                msg.is_err(),
+                "StartTelemetryTimer should be ignored during draining"
+            );
 
-                let msg = timeout(Duration::from_millis(100), receiver.recv()).await;
-                assert!(
-                    msg.is_err(),
-                    "StartTelemetryTimer should be ignored during draining"
-                );
-
-                drop(pipeline_tx);
-                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
+            drop(pipeline_tx);
+            let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+            assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+        }
+        .await;
     }
 
     // DelayData submitted after draining begins represents retry work that
     // should not stay hidden behind the delayed-data heap. The manager returns
     // it to the origin node immediately so the node can decide what to do next.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_new_delay_data_returned_immediately_during_draining() {
-        let local = LocalSet::new();
+        async {
+            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                setup_test_manager::<String>();
 
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<String>();
+            let node = nodes.first().expect("ok");
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                let node = nodes.first().expect("ok");
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test shutdown".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "test shutdown".to_owned(),
-                    })
-                    .await
-                    .unwrap();
+            let mut receiver = control_receivers.remove(&node.index).unwrap();
+            let shutdown = timeout(Duration::from_millis(100), receiver.recv())
+                .await
+                .expect("processor should receive shutdown during draining")
+                .expect("processor control channel should stay open");
+            assert!(matches!(shutdown, NodeControlMsg::Shutdown { .. }));
 
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let shutdown = timeout(Duration::from_millis(100), receiver.recv())
-                    .await
-                    .expect("processor should receive shutdown during draining")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(shutdown, NodeControlMsg::Shutdown { .. }));
+            let original_when = Instant::now() + Duration::from_secs(30);
+            pipeline_tx
+                .send(RuntimeControlMsg::DelayData {
+                    node_id: node.index,
+                    when: original_when,
+                    data: Box::new("drain_retry".to_owned()),
+                })
+                .await
+                .unwrap();
 
-                let original_when = Instant::now() + Duration::from_secs(30);
-                pipeline_tx
-                    .send(RuntimeControlMsg::DelayData {
-                        node_id: node.index,
-                        when: original_when,
-                        data: Box::new("drain_retry".to_owned()),
-                    })
-                    .await
-                    .unwrap();
+            let msg = timeout(Duration::from_millis(100), receiver.recv())
+                .await
+                .expect("DelayedData should be returned immediately during draining")
+                .expect("processor control channel should stay open");
 
-                let msg = timeout(Duration::from_millis(100), receiver.recv())
-                    .await
-                    .expect("DelayedData should be returned immediately during draining")
-                    .expect("processor control channel should stay open");
-
-                match msg {
-                    NodeControlMsg::DelayedData { when, data } => {
-                        assert_eq!(*data, "drain_retry");
-                        assert!(
-                            when < original_when,
-                            "DelayedData should be returned immediately, not at its original wake time"
-                        );
-                    }
-                    other => panic!("Expected DelayedData, got {other:?}"),
+            match msg {
+                NodeControlMsg::DelayedData { when, data } => {
+                    assert_eq!(*data, "drain_retry");
+                    assert!(
+                        when < original_when,
+                        "DelayedData should be returned immediately, not at its original wake time"
+                    );
                 }
+                other => panic!("Expected DelayedData, got {other:?}"),
+            }
 
-                drop(pipeline_tx);
-                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
+            drop(pipeline_tx);
+            let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+            assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+        }
+        .await;
     }
 
     // Draining must also flush retry work that was already queued before
     // shutdown. Once draining starts, delayed data is returned immediately
     // rather than waiting for its original wake time.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_queued_delayed_data_flushed_when_draining_begins() {
-        let local = LocalSet::new();
+        async {
+            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                setup_test_manager::<String>();
 
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<String>();
+            let node = nodes.first().expect("ok");
+            let original_when = Instant::now() + Duration::from_secs(30);
+            pipeline_tx
+                .send(RuntimeControlMsg::DelayData {
+                    node_id: node.index,
+                    when: original_when,
+                    data: Box::new("queued_retry".to_owned()),
+                })
+                .await
+                .unwrap();
 
-                let node = nodes.first().expect("ok");
-                let original_when = Instant::now() + Duration::from_secs(30);
-                pipeline_tx
-                    .send(RuntimeControlMsg::DelayData {
-                        node_id: node.index,
-                        when: original_when,
-                        data: Box::new("queued_retry".to_owned()),
-                    })
-                    .await
-                    .unwrap();
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            tokio::time::sleep(Duration::from_millis(10)).await;
 
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-                tokio::time::sleep(Duration::from_millis(10)).await;
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test shutdown".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "test shutdown".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let msg = timeout(Duration::from_millis(100), receiver.recv())
-                    .await
-                    .expect("Queued delayed data should flush when draining begins")
-                    .expect("processor control channel should stay open");
-                match msg {
-                    NodeControlMsg::DelayedData { when, data } => {
-                        assert_eq!(*data, "queued_retry");
-                        assert!(
-                            when < original_when,
-                            "Queued delayed data should be flushed immediately during shutdown"
-                        );
-                    }
-                    other => panic!("Expected DelayedData, got {other:?}"),
+            let mut receiver = control_receivers.remove(&node.index).unwrap();
+            let msg = timeout(Duration::from_millis(100), receiver.recv())
+                .await
+                .expect("Queued delayed data should flush when draining begins")
+                .expect("processor control channel should stay open");
+            match msg {
+                NodeControlMsg::DelayedData { when, data } => {
+                    assert_eq!(*data, "queued_retry");
+                    assert!(
+                        when < original_when,
+                        "Queued delayed data should be flushed immediately during shutdown"
+                    );
                 }
+                other => panic!("Expected DelayedData, got {other:?}"),
+            }
 
-                let shutdown = timeout(Duration::from_millis(100), receiver.recv())
-                    .await
-                    .expect("processor should receive shutdown after delayed-data flush")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(shutdown, NodeControlMsg::Shutdown { .. }));
+            let shutdown = timeout(Duration::from_millis(100), receiver.recv())
+                .await
+                .expect("processor should receive shutdown after delayed-data flush")
+                .expect("processor control channel should stay open");
+            assert!(matches!(shutdown, NodeControlMsg::Shutdown { .. }));
 
-                drop(pipeline_tx);
-                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
+            drop(pipeline_tx);
+            let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+            assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+        }
+        .await;
     }
 
     /// A test PData type that carries a real frame stack, allowing the
@@ -3769,55 +3701,51 @@ mod tests {
             key_labels,
             node_metric_handles,
         } = harness;
+        async {
+            let msgs = send_fn(&nodes);
+            let (return_tx, return_rx) = pipeline_completion_msg_channel(32);
+            let return_dispatcher = PipelineCompletionMsgDispatcher::new(
+                pipeline_context.clone(),
+                return_rx,
+                ControlSenders::new(),
+                node_metric_handles.clone(),
+                metrics_reporter.clone(),
+                TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
+                telemetry_policy.clone(),
+            );
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            let dispatcher_handle =
+                tokio::task::spawn_local(async move { return_dispatcher.run().await });
 
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let msgs = send_fn(&nodes);
-                let (return_tx, return_rx) = pipeline_completion_msg_channel(32);
-                let return_dispatcher = PipelineCompletionMsgDispatcher::new(
-                    pipeline_context.clone(),
-                    return_rx,
-                    ControlSenders::new(),
-                    node_metric_handles.clone(),
-                    metrics_reporter.clone(),
-                    TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
-                    telemetry_policy.clone(),
-                );
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-                let dispatcher_handle =
-                    tokio::task::spawn_local(async move { return_dispatcher.run().await });
+            for msg in msgs {
+                return_tx.send(msg).await.unwrap();
+            }
 
-                for msg in msgs {
-                    return_tx.send(msg).await.unwrap();
-                }
+            drop(return_tx);
+            drop(pipeline_tx);
 
-                drop(return_tx);
-                drop(pipeline_tx);
+            let dispatcher_result = timeout(Duration::from_millis(500), dispatcher_handle).await;
+            assert!(
+                dispatcher_result.is_ok(),
+                "Return dispatcher should shut down cleanly"
+            );
 
-                let dispatcher_result =
-                    timeout(Duration::from_millis(500), dispatcher_handle).await;
-                assert!(
-                    dispatcher_result.is_ok(),
-                    "Return dispatcher should shut down cleanly"
-                );
+            let result = timeout(Duration::from_millis(500), manager_handle).await;
+            assert!(result.is_ok(), "Manager should shut down cleanly");
 
-                let result = timeout(Duration::from_millis(500), manager_handle).await;
-                assert!(result.is_ok(), "Manager should shut down cleanly");
+            report_node_metrics_with_handles(&node_metric_handles, &mut metrics_reporter)
+                .expect("Final node metrics flush should succeed");
 
-                report_node_metrics_with_handles(&node_metric_handles, &mut metrics_reporter)
-                    .expect("Final node metrics flush should succeed");
-
-                // Keep _guard alive for the scope of this closure
-                drop(_guard);
-                collect_snapshots(&snapshot_rx, &key_labels)
-            })
-            .await
+            // Keep _guard alive for the scope of this closure
+            drop(_guard);
+            collect_snapshots(&snapshot_rx, &key_labels)
+        }
+        .await
     }
 
     /// Verify that ack correctly records consumed_success and produced_success
     /// via the full manager lifecycle and shutdown metrics flush.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_ack_lifecycle_consumed_produced_metrics() {
         let harness = setup_test_manager_with_metrics();
         let nodes_clone = harness.nodes.clone();
@@ -3854,7 +3782,7 @@ mod tests {
     }
 
     /// Verify that non-permanent nack records consumed_failure / produced_failure.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_nack_lifecycle_failure_metrics() {
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
@@ -3878,7 +3806,7 @@ mod tests {
     }
 
     /// Verify that permanent nack records consumed_refused / produced_refused.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_permanent_nack_lifecycle_refused_metrics() {
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
@@ -3903,7 +3831,7 @@ mod tests {
 
     /// Verify that consumed_duration_ns (Mmsc histogram) is recorded
     /// when entry_time_ns > 0 and return_time_ns > 0.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_ack_lifecycle_duration_histogram() {
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
@@ -3944,7 +3872,7 @@ mod tests {
     /// Verify that produced_duration_ns is recorded for producer-only frames
     /// (receiver) but NOT for frames that also have CONSUMER_METRICS (processor).
     /// Uses a no-subscriber pipeline so all frames are popped in a single unwind.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_ack_lifecycle_produced_duration_histogram() {
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
@@ -3988,7 +3916,7 @@ mod tests {
     }
 
     /// Verify that produced_duration_ns is NOT recorded when entry_time_ns is 0.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_produced_duration_not_recorded_without_timestamp() {
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
@@ -4009,7 +3937,7 @@ mod tests {
     }
 
     /// Verify that when entry_time_ns is 0 (or return_time_ns is 0), no duration histogram is recorded.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_ack_lifecycle_no_duration_without_timestamp() {
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
@@ -4036,7 +3964,7 @@ mod tests {
     }
 
     /// Verify multiple acks accumulate counters correctly through the lifecycle.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_multiple_acks_lifecycle_accumulate() {
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
@@ -4067,7 +3995,7 @@ mod tests {
     }
 
     /// Verify mixed ack and nack messages accumulate correctly.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_mixed_ack_nack_lifecycle() {
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
@@ -4112,7 +4040,7 @@ mod tests {
     ///         recording producer duration on the receiver's output.
     ///
     /// This is the scenario where producer.duration must be recorded for the receiver.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_two_pass_unwind_receiver_produced_duration() {
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
@@ -4172,635 +4100,642 @@ mod tests {
     // Shutdown of a receiver+processor pipeline should first stop ingress, then
     // wait for the receiver to report drained before sending downstream
     // shutdown. The runtime-control metrics should expose both phases.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_memory_pressure_updates_are_fanned_out_only_to_receivers() {
-        let local = LocalSet::new();
+        async {
+            let MemoryPressureFanoutHarness {
+                manager,
+                _pipeline_tx,
+                memory_pressure_tx,
+                mut control_receivers,
+                nodes,
+                _guard: _,
+            } = setup_memory_pressure_fanout_harness::<String>(vec![
+                ("receiver", NodeType::Receiver, 16),
+                ("processor", NodeType::Processor, 16),
+            ]);
 
-        local
-            .run_until(async {
-                let MemoryPressureFanoutHarness {
-                    manager,
-                    _pipeline_tx,
-                    memory_pressure_tx,
-                    mut control_receivers,
-                    nodes,
-                    _guard: _,
-                } = setup_memory_pressure_fanout_harness::<String>(vec![
-                    ("receiver", NodeType::Receiver, 16),
-                    ("processor", NodeType::Processor, 16),
-                ]);
+            let receiver = nodes[0].clone();
+            let processor = nodes[1].clone();
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                let receiver = nodes[0].clone();
-                let processor = nodes[1].clone();
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            memory_pressure_tx
+                .send(MemoryPressureChanged {
+                    generation: 1,
+                    level: crate::memory_limiter::MemoryPressureLevel::Hard,
+                    retry_after_secs: 5,
+                    usage_bytes: 123,
+                })
+                .expect("watch send should succeed");
 
-                memory_pressure_tx
-                    .send(MemoryPressureChanged {
+            let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
+            let receiver_msg = timeout(Duration::from_millis(100), receiver_ctrl.recv())
+                .await
+                .expect("receiver should get memory pressure update")
+                .expect("receiver control channel should stay open");
+            assert!(matches!(
+                receiver_msg,
+                NodeControlMsg::MemoryPressureChanged {
+                    update: MemoryPressureChanged {
                         generation: 1,
                         level: crate::memory_limiter::MemoryPressureLevel::Hard,
                         retry_after_secs: 5,
                         usage_bytes: 123,
-                    })
-                    .expect("watch send should succeed");
-
-                let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
-                let receiver_msg = timeout(Duration::from_millis(100), receiver_ctrl.recv())
-                    .await
-                    .expect("receiver should get memory pressure update")
-                    .expect("receiver control channel should stay open");
-                assert!(matches!(
-                    receiver_msg,
-                    NodeControlMsg::MemoryPressureChanged {
-                        update: MemoryPressureChanged {
-                            generation: 1,
-                            level: crate::memory_limiter::MemoryPressureLevel::Hard,
-                            retry_after_secs: 5,
-                            usage_bytes: 123,
-                        }
                     }
-                ));
+                }
+            ));
 
-                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
-                assert!(
-                    timeout(Duration::from_millis(50), processor_ctrl.recv())
-                        .await
-                        .is_err(),
-                    "non-receiver nodes should not get memory pressure updates"
-                );
+            let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+            assert!(
+                timeout(Duration::from_millis(50), processor_ctrl.recv())
+                    .await
+                    .is_err(),
+                "non-receiver nodes should not get memory pressure updates"
+            );
 
-                manager_handle.abort();
-            })
-            .await;
+            manager_handle.abort();
+        }
+        .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_runtime_control_metrics_track_receiver_first_drain() {
-        let local = LocalSet::new();
+        async {
+            let RuntimeControlTelemetryHarness {
+                manager,
+                pipeline_tx,
+                mut control_receivers,
+                nodes,
+                runtime_metrics_key,
+                snapshot_rx,
+                engine_rx,
+                _guard: _,
+            } = setup_runtime_control_telemetry_harness::<String>(
+                vec![
+                    ("receiver", NodeType::Receiver, 16),
+                    ("processor", NodeType::Processor, 16),
+                ],
+                MetricLevel::Detailed,
+            );
 
-        local
-            .run_until(async {
-                let RuntimeControlTelemetryHarness {
-                    manager,
-                    pipeline_tx,
-                    mut control_receivers,
-                    nodes,
-                    runtime_metrics_key,
-                    snapshot_rx,
-                    engine_rx,
-                    _guard: _,
-                } = setup_runtime_control_telemetry_harness::<String>(
-                    vec![
-                        ("receiver", NodeType::Receiver, 16),
-                        ("processor", NodeType::Processor, 16),
-                    ],
-                    MetricLevel::Detailed,
-                );
+            let receiver = nodes[0].clone();
+            let processor = nodes[1].clone();
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                let receiver = nodes[0].clone();
-                let processor = nodes[1].clone();
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "test shutdown".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "test shutdown".to_owned(),
-                    })
-                    .await
-                    .unwrap();
+            let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
+            let drain_msg = timeout(Duration::from_millis(100), receiver_ctrl.recv())
+                .await
+                .expect("receiver should get DrainIngress")
+                .expect("receiver control channel should stay open");
+            assert!(matches!(drain_msg, NodeControlMsg::DrainIngress { .. }));
 
-                let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
-                let drain_msg = timeout(Duration::from_millis(100), receiver_ctrl.recv())
-                    .await
-                    .expect("receiver should get DrainIngress")
-                    .expect("receiver control channel should stay open");
-                assert!(matches!(drain_msg, NodeControlMsg::DrainIngress { .. }));
-
-                let shutdown_start_metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    runtime_metrics_key,
-                    &[
-                        RUNTIME_DRAIN_ACTIVE,
-                        RUNTIME_DRAIN_PENDING_RECEIVERS,
-                        RUNTIME_PENDING_SENDS_BUFFERED,
-                        RUNTIME_TIMERS_ACTIVE,
-                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
-                    ],
-                )
-                .expect("runtime-control metrics should be exported");
-                assert_u64(
-                    &shutdown_start_metrics,
+            let shutdown_start_metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                runtime_metrics_key,
+                &[
                     RUNTIME_DRAIN_ACTIVE,
-                    1,
-                    "drain.active should latch on shutdown",
-                );
-                assert_u64(
-                    &shutdown_start_metrics,
                     RUNTIME_DRAIN_PENDING_RECEIVERS,
-                    1,
-                    "drain.pending_receivers should reflect the single receiver",
-                );
-                assert_u64(
-                    &shutdown_start_metrics,
-                    RUNTIME_SHUTDOWN_RECEIVED,
-                    1,
-                    "shutdown.received should increment once per shutdown request",
-                );
-                assert_u64(
-                    &shutdown_start_metrics,
-                    RUNTIME_DRAIN_INGRESS_SENT,
-                    1,
-                    "drain_ingress.sent should increment once when ingress drain starts",
-                );
+                    RUNTIME_PENDING_SENDS_BUFFERED,
+                    RUNTIME_TIMERS_ACTIVE,
+                    RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                    RUNTIME_DELAYED_DATA_QUEUED,
+                ],
+            )
+            .expect("runtime-control metrics should be exported");
+            assert_u64(
+                &shutdown_start_metrics,
+                RUNTIME_DRAIN_ACTIVE,
+                1,
+                "drain.active should latch on shutdown",
+            );
+            assert_u64(
+                &shutdown_start_metrics,
+                RUNTIME_DRAIN_PENDING_RECEIVERS,
+                1,
+                "drain.pending_receivers should reflect the single receiver",
+            );
+            assert_u64(
+                &shutdown_start_metrics,
+                RUNTIME_SHUTDOWN_RECEIVED,
+                1,
+                "shutdown.received should increment once per shutdown request",
+            );
+            assert_u64(
+                &shutdown_start_metrics,
+                RUNTIME_DRAIN_INGRESS_SENT,
+                1,
+                "drain_ingress.sent should increment once when ingress drain starts",
+            );
 
-                pipeline_tx
-                    .send(RuntimeControlMsg::ReceiverDrained {
-                        node_id: receiver.index,
-                    })
-                    .await
-                    .unwrap();
+            pipeline_tx
+                .send(RuntimeControlMsg::ReceiverDrained {
+                    node_id: receiver.index,
+                })
+                .await
+                .unwrap();
 
-                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
-                let shutdown_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should get Shutdown after receivers drain")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(shutdown_msg, NodeControlMsg::Shutdown { .. }));
+            let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+            let shutdown_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                .await
+                .expect("processor should get Shutdown after receivers drain")
+                .expect("processor control channel should stay open");
+            assert!(matches!(shutdown_msg, NodeControlMsg::Shutdown { .. }));
 
-                drop(pipeline_tx);
-                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(manager_result.is_ok(), "manager should stop cleanly");
+            drop(pipeline_tx);
+            let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+            assert!(manager_result.is_ok(), "manager should stop cleanly");
 
-                let drain_finish_metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    runtime_metrics_key,
-                    &[
-                        RUNTIME_DRAIN_ACTIVE,
-                        RUNTIME_DRAIN_PENDING_RECEIVERS,
-                        RUNTIME_PENDING_SENDS_BUFFERED,
-                        RUNTIME_TIMERS_ACTIVE,
-                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
-                    ],
-                )
-                .expect("runtime-control metrics should export receiver-drained transition");
-                assert_u64(
-                    &drain_finish_metrics,
-                    RUNTIME_RECEIVER_DRAINED_RECEIVED,
-                    1,
-                    "receiver_drained.received should increment once",
-                );
-                assert_u64(
-                    &drain_finish_metrics,
-                    RUNTIME_DOWNSTREAM_SHUTDOWN_SENT,
-                    1,
-                    "downstream_shutdown.sent should increment once receivers are drained",
-                );
-                let receiver_phase = assert_mmsc(
-                    &drain_finish_metrics,
-                    RUNTIME_DRAIN_RECEIVER_PHASE_DURATION_NS,
-                    "receiver-phase duration",
-                );
-                assert_eq!(
-                    receiver_phase.count, 1,
-                    "receiver phase duration should record once"
-                );
-                let total_drain = assert_mmsc(
-                    &drain_finish_metrics,
-                    RUNTIME_DRAIN_TOTAL_DURATION_NS,
-                    "total drain duration",
-                );
-                assert_eq!(
-                    total_drain.count, 1,
-                    "total drain duration should record once"
-                );
+            let drain_finish_metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                runtime_metrics_key,
+                &[
+                    RUNTIME_DRAIN_ACTIVE,
+                    RUNTIME_DRAIN_PENDING_RECEIVERS,
+                    RUNTIME_PENDING_SENDS_BUFFERED,
+                    RUNTIME_TIMERS_ACTIVE,
+                    RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                    RUNTIME_DELAYED_DATA_QUEUED,
+                ],
+            )
+            .expect("runtime-control metrics should export receiver-drained transition");
+            assert_u64(
+                &drain_finish_metrics,
+                RUNTIME_RECEIVER_DRAINED_RECEIVED,
+                1,
+                "receiver_drained.received should increment once",
+            );
+            assert_u64(
+                &drain_finish_metrics,
+                RUNTIME_DOWNSTREAM_SHUTDOWN_SENT,
+                1,
+                "downstream_shutdown.sent should increment once receivers are drained",
+            );
+            let receiver_phase = assert_mmsc(
+                &drain_finish_metrics,
+                RUNTIME_DRAIN_RECEIVER_PHASE_DURATION_NS,
+                "receiver-phase duration",
+            );
+            assert_eq!(
+                receiver_phase.count, 1,
+                "receiver phase duration should record once"
+            );
+            let total_drain = assert_mmsc(
+                &drain_finish_metrics,
+                RUNTIME_DRAIN_TOTAL_DURATION_NS,
+                "total drain duration",
+            );
+            assert_eq!(
+                total_drain.count, 1,
+                "total drain duration should record once"
+            );
 
-                let event_types = collect_engine_event_types(&engine_rx);
-                assert!(matches!(
-                    event_types.as_slice(),
-                    [
-                        EventType::Request(TelemetryRequestEvent::ShutdownRequested),
-                        EventType::Success(TelemetrySuccessEvent::IngressDrainStarted),
-                        EventType::Success(TelemetrySuccessEvent::ReceiversDrained),
-                        EventType::Success(TelemetrySuccessEvent::DownstreamShutdownStarted),
-                    ]
-                ));
-            })
-            .await;
+            let event_types = collect_engine_event_types(&engine_rx);
+            assert!(matches!(
+                event_types.as_slice(),
+                [
+                    EventType::Request(TelemetryRequestEvent::ShutdownRequested),
+                    EventType::Success(TelemetrySuccessEvent::IngressDrainStarted),
+                    EventType::Success(TelemetrySuccessEvent::ReceiversDrained),
+                    EventType::Success(TelemetrySuccessEvent::DownstreamShutdownStarted),
+                ]
+            ));
+        }
+        .await;
     }
 
     // A short shutdown deadline should surface both the forced-drain counter
     // and the dedicated DrainDeadlineReached engine event.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_runtime_control_metrics_record_forced_deadline() {
-        let local = LocalSet::new();
+        async {
+            let RuntimeControlTelemetryHarness {
+                manager,
+                pipeline_tx,
+                mut control_receivers,
+                nodes,
+                runtime_metrics_key,
+                snapshot_rx,
+                engine_rx,
+                _guard: _,
+            } = setup_runtime_control_telemetry_harness::<String>(
+                vec![("receiver", NodeType::Receiver, 16)],
+                MetricLevel::Detailed,
+            );
 
-        local
-            .run_until(async {
-                let RuntimeControlTelemetryHarness {
-                    manager,
-                    pipeline_tx,
-                    mut control_receivers,
-                    nodes,
-                    runtime_metrics_key,
-                    snapshot_rx,
-                    engine_rx,
-                    _guard: _,
-                } = setup_runtime_control_telemetry_harness::<String>(
-                    vec![("receiver", NodeType::Receiver, 16)],
-                    MetricLevel::Detailed,
-                );
+            let receiver = nodes[0].clone();
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                let receiver = nodes[0].clone();
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_millis(25),
+                    reason: "deadline test".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_millis(25),
-                        reason: "deadline test".to_owned(),
-                    })
-                    .await
-                    .unwrap();
+            let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
+            let drain_msg = timeout(Duration::from_millis(100), receiver_ctrl.recv())
+                .await
+                .expect("receiver should get DrainIngress")
+                .expect("receiver control channel should stay open");
+            assert!(matches!(drain_msg, NodeControlMsg::DrainIngress { .. }));
 
-                let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
-                let drain_msg = timeout(Duration::from_millis(100), receiver_ctrl.recv())
-                    .await
-                    .expect("receiver should get DrainIngress")
-                    .expect("receiver control channel should stay open");
-                assert!(matches!(drain_msg, NodeControlMsg::DrainIngress { .. }));
+            let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+            assert!(manager_result.is_ok(), "manager should stop on deadline");
 
-                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(manager_result.is_ok(), "manager should stop on deadline");
+            let forced_metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                runtime_metrics_key,
+                &[
+                    RUNTIME_DRAIN_ACTIVE,
+                    RUNTIME_DRAIN_PENDING_RECEIVERS,
+                    RUNTIME_PENDING_SENDS_BUFFERED,
+                    RUNTIME_TIMERS_ACTIVE,
+                    RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                    RUNTIME_DELAYED_DATA_QUEUED,
+                ],
+            )
+            .expect("runtime-control metrics should export forced-deadline snapshot");
+            assert_u64(
+                &forced_metrics,
+                RUNTIME_SHUTDOWN_DEADLINE_FORCED,
+                1,
+                "shutdown.deadline_forced should increment once",
+            );
+            let total_drain = assert_mmsc(
+                &forced_metrics,
+                RUNTIME_DRAIN_TOTAL_DURATION_NS,
+                "forced drain duration",
+            );
+            assert_eq!(
+                total_drain.count, 1,
+                "forced drain should still record total duration"
+            );
 
-                let forced_metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    runtime_metrics_key,
-                    &[
-                        RUNTIME_DRAIN_ACTIVE,
-                        RUNTIME_DRAIN_PENDING_RECEIVERS,
-                        RUNTIME_PENDING_SENDS_BUFFERED,
-                        RUNTIME_TIMERS_ACTIVE,
-                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
-                    ],
-                )
-                .expect("runtime-control metrics should export forced-deadline snapshot");
-                assert_u64(
-                    &forced_metrics,
-                    RUNTIME_SHUTDOWN_DEADLINE_FORCED,
-                    1,
-                    "shutdown.deadline_forced should increment once",
-                );
-                let total_drain = assert_mmsc(
-                    &forced_metrics,
-                    RUNTIME_DRAIN_TOTAL_DURATION_NS,
-                    "forced drain duration",
-                );
-                assert_eq!(
-                    total_drain.count, 1,
-                    "forced drain should still record total duration"
-                );
-
-                let event_types = collect_engine_event_types(&engine_rx);
-                assert!(matches!(
-                    event_types.as_slice(),
-                    [
-                        EventType::Request(TelemetryRequestEvent::ShutdownRequested),
-                        EventType::Success(TelemetrySuccessEvent::IngressDrainStarted),
-                        EventType::Error(TelemetryErrorEvent::DrainDeadlineReached),
-                    ]
-                ));
-            })
-            .await;
+            let event_types = collect_engine_event_types(&engine_rx);
+            assert!(matches!(
+                event_types.as_slice(),
+                [
+                    EventType::Request(TelemetryRequestEvent::ShutdownRequested),
+                    EventType::Success(TelemetrySuccessEvent::IngressDrainStarted),
+                    EventType::Error(TelemetryErrorEvent::DrainDeadlineReached),
+                ]
+            ));
+        }
+        .await;
     }
 
     // Pipelines without receivers should send downstream shutdown immediately
     // after shutdown is latched, without waiting for a ReceiversDrained phase.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_no_receiver_shutdown_emits_downstream_event_immediately() {
-        let local = LocalSet::new();
+        async {
+            let RuntimeControlTelemetryHarness {
+                manager,
+                pipeline_tx,
+                mut control_receivers,
+                nodes,
+                engine_rx,
+                ..
+            } = setup_runtime_control_telemetry_harness::<String>(
+                vec![("processor", NodeType::Processor, 16)],
+                MetricLevel::Normal,
+            );
 
-        local
-            .run_until(async {
-                let RuntimeControlTelemetryHarness {
-                    manager,
-                    pipeline_tx,
-                    mut control_receivers,
-                    nodes,
-                    engine_rx,
-                    ..
-                } = setup_runtime_control_telemetry_harness::<String>(
-                    vec![("processor", NodeType::Processor, 16)],
-                    MetricLevel::Normal,
-                );
+            let processor = nodes[0].clone();
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                let processor = nodes[0].clone();
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "no receiver".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "no receiver".to_owned(),
-                    })
-                    .await
-                    .unwrap();
+            let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+            let msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                .await
+                .expect("processor should get immediate Shutdown")
+                .expect("processor control channel should stay open");
+            assert!(matches!(msg, NodeControlMsg::Shutdown { .. }));
 
-                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
-                let msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should get immediate Shutdown")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(msg, NodeControlMsg::Shutdown { .. }));
+            drop(pipeline_tx);
+            let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+            assert!(manager_result.is_ok(), "manager should stop cleanly");
 
-                drop(pipeline_tx);
-                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(manager_result.is_ok(), "manager should stop cleanly");
-
-                let event_types = collect_engine_event_types(&engine_rx);
-                assert!(matches!(
-                    event_types.as_slice(),
-                    [
-                        EventType::Request(TelemetryRequestEvent::ShutdownRequested),
-                        EventType::Success(TelemetrySuccessEvent::IngressDrainStarted),
-                        EventType::Success(TelemetrySuccessEvent::DownstreamShutdownStarted),
-                    ]
-                ));
-            })
-            .await;
+            let event_types = collect_engine_event_types(&engine_rx);
+            assert!(matches!(
+                event_types.as_slice(),
+                [
+                    EventType::Request(TelemetryRequestEvent::ShutdownRequested),
+                    EventType::Success(TelemetrySuccessEvent::IngressDrainStarted),
+                    EventType::Success(TelemetrySuccessEvent::DownstreamShutdownStarted),
+                ]
+            ));
+        }
+        .await;
     }
 
     // Timer ticks, telemetry ticks, and delayed-data resumptions should all be
     // reflected in runtime-control counters when they become due.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_runtime_control_metrics_track_due_work_dispatch() {
-        let local = LocalSet::new();
+        async {
+            let RuntimeControlTelemetryHarness {
+                manager,
+                pipeline_tx,
+                mut control_receivers,
+                nodes,
+                runtime_metrics_key,
+                snapshot_rx,
+                _guard: _,
+                engine_rx: _,
+            } = setup_runtime_control_telemetry_harness::<String>(
+                vec![("processor", NodeType::Processor, 16)],
+                MetricLevel::Detailed,
+            );
 
-        local
-            .run_until(async {
-                let RuntimeControlTelemetryHarness {
-                    manager,
-                    pipeline_tx,
-                    mut control_receivers,
-                    nodes,
-                    runtime_metrics_key,
-                    snapshot_rx,
-                    _guard: _,
-                    engine_rx: _,
-                } = setup_runtime_control_telemetry_harness::<String>(
-                    vec![("processor", NodeType::Processor, 16)],
-                    MetricLevel::Detailed,
-                );
+            let processor = nodes[0].clone();
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                let processor = nodes[0].clone();
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            pipeline_tx
+                .send(RuntimeControlMsg::StartTimer {
+                    node_id: processor.index,
+                    duration: Duration::from_millis(5),
+                })
+                .await
+                .unwrap();
+            pipeline_tx
+                .send(RuntimeControlMsg::StartTelemetryTimer {
+                    node_id: processor.index,
+                    duration: Duration::from_millis(5),
+                })
+                .await
+                .unwrap();
+            pipeline_tx
+                .send(RuntimeControlMsg::DelayData {
+                    node_id: processor.index,
+                    when: Instant::now() + Duration::from_millis(5),
+                    data: Box::new("retry".to_owned()),
+                })
+                .await
+                .unwrap();
 
-                pipeline_tx
-                    .send(RuntimeControlMsg::StartTimer {
-                        node_id: processor.index,
-                        duration: Duration::from_millis(5),
-                    })
-                    .await
-                    .unwrap();
-                pipeline_tx
-                    .send(RuntimeControlMsg::StartTelemetryTimer {
-                        node_id: processor.index,
-                        duration: Duration::from_millis(5),
-                    })
-                    .await
-                    .unwrap();
-                pipeline_tx
-                    .send(RuntimeControlMsg::DelayData {
-                        node_id: processor.index,
-                        when: Instant::now() + Duration::from_millis(5),
-                        data: Box::new("retry".to_owned()),
-                    })
-                    .await
-                    .unwrap();
-
-                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
-                let mut timer_tick = false;
-                let mut collect_telemetry = false;
-                let mut delayed_data = false;
-                let deadline = tokio::time::Instant::now() + Duration::from_millis(250);
-                while !(timer_tick && collect_telemetry && delayed_data)
-                    && tokio::time::Instant::now() < deadline
-                {
-                    match timeout(Duration::from_millis(100), processor_ctrl.recv()).await {
-                        Ok(Ok(NodeControlMsg::TimerTick {})) => timer_tick = true,
-                        Ok(Ok(NodeControlMsg::CollectTelemetry { .. })) => collect_telemetry = true,
-                        Ok(Ok(NodeControlMsg::DelayedData { data, .. })) => {
-                            delayed_data = *data == "retry"
-                        }
-                        Ok(Ok(_)) => {}
-                        Ok(Err(_)) | Err(_) => break,
+            let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+            let mut timer_tick = false;
+            let mut collect_telemetry = false;
+            let mut delayed_data = false;
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(250);
+            while !(timer_tick && collect_telemetry && delayed_data)
+                && tokio::time::Instant::now() < deadline
+            {
+                match timeout(Duration::from_millis(100), processor_ctrl.recv()).await {
+                    Ok(Ok(NodeControlMsg::TimerTick {})) => timer_tick = true,
+                    Ok(Ok(NodeControlMsg::CollectTelemetry { .. })) => collect_telemetry = true,
+                    Ok(Ok(NodeControlMsg::DelayedData { data, .. })) => {
+                        delayed_data = *data == "retry"
                     }
+                    Ok(Ok(_)) => {}
+                    Ok(Err(_)) | Err(_) => break,
                 }
-                assert!(timer_tick, "due timer should reach the processor");
-                assert!(
-                    collect_telemetry,
-                    "due telemetry timer should reach the processor"
-                );
-                assert!(delayed_data, "due delayed data should be resumed");
+            }
+            assert!(timer_tick, "due timer should reach the processor");
+            assert!(
+                collect_telemetry,
+                "due telemetry timer should reach the processor"
+            );
+            assert!(delayed_data, "due delayed data should be resumed");
 
-                drop(pipeline_tx);
-                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(manager_result.is_ok(), "manager should stop cleanly");
+            drop(pipeline_tx);
+            let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+            assert!(manager_result.is_ok(), "manager should stop cleanly");
 
-                let due_metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    runtime_metrics_key,
-                    &[
-                        RUNTIME_DRAIN_ACTIVE,
-                        RUNTIME_DRAIN_PENDING_RECEIVERS,
-                        RUNTIME_PENDING_SENDS_BUFFERED,
-                        RUNTIME_TIMERS_ACTIVE,
-                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
-                    ],
-                )
-                .expect("runtime-control metrics should export due-work counters");
-                // Inbound request counters are deterministic: the test sends
-                // exactly one of each message type.
-                assert_u64(
-                    &due_metrics,
-                    RUNTIME_START_TIMER_RECEIVED,
-                    1,
-                    "start_timer.received should count timer requests",
-                );
-                assert_u64(
-                    &due_metrics,
-                    RUNTIME_START_TELEMETRY_TIMER_RECEIVED,
-                    1,
-                    "start_telemetry_timer.received should count telemetry timer requests",
-                );
-                assert_u64(
-                    &due_metrics,
-                    RUNTIME_DELAY_DATA_RECEIVED,
-                    1,
-                    "delay_data.received should count delayed-data requests",
-                );
-                assert_u64(
-                    &due_metrics,
-                    RUNTIME_DELAYED_DATA_SENT,
-                    1,
-                    "delayed_data.sent should count due delayed-data dispatches",
-                );
-                // Recurring timers reschedule immediately after firing, so
-                // the 5ms timer may fire more than once before `drop(pipeline_tx)`
-                // closes the manager. Unlike delayed data (one-shot), these are
-                // inherently non-deterministic — we only require at least one
-                // dispatch was recorded.
-                assert_u64_gte(
-                    &due_metrics,
-                    RUNTIME_TIMER_TICK_SENT,
-                    1,
-                    "timer_tick.sent should count due timer dispatches",
-                );
-                assert_u64_gte(
-                    &due_metrics,
-                    RUNTIME_COLLECT_TELEMETRY_SENT,
-                    1,
-                    "collect_telemetry.sent should count due telemetry dispatches",
-                );
-            })
-            .await;
+            let due_metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                runtime_metrics_key,
+                &[
+                    RUNTIME_DRAIN_ACTIVE,
+                    RUNTIME_DRAIN_PENDING_RECEIVERS,
+                    RUNTIME_PENDING_SENDS_BUFFERED,
+                    RUNTIME_TIMERS_ACTIVE,
+                    RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                    RUNTIME_DELAYED_DATA_QUEUED,
+                ],
+            )
+            .expect("runtime-control metrics should export due-work counters");
+            // Inbound request counters are deterministic: the test sends
+            // exactly one of each message type.
+            assert_u64(
+                &due_metrics,
+                RUNTIME_START_TIMER_RECEIVED,
+                1,
+                "start_timer.received should count timer requests",
+            );
+            assert_u64(
+                &due_metrics,
+                RUNTIME_START_TELEMETRY_TIMER_RECEIVED,
+                1,
+                "start_telemetry_timer.received should count telemetry timer requests",
+            );
+            assert_u64(
+                &due_metrics,
+                RUNTIME_DELAY_DATA_RECEIVED,
+                1,
+                "delay_data.received should count delayed-data requests",
+            );
+            assert_u64(
+                &due_metrics,
+                RUNTIME_DELAYED_DATA_SENT,
+                1,
+                "delayed_data.sent should count due delayed-data dispatches",
+            );
+            // Recurring timers reschedule immediately after firing, so
+            // the 5ms timer may fire more than once before `drop(pipeline_tx)`
+            // closes the manager. Unlike delayed data (one-shot), these are
+            // inherently non-deterministic — we only require at least one
+            // dispatch was recorded.
+            assert_u64_gte(
+                &due_metrics,
+                RUNTIME_TIMER_TICK_SENT,
+                1,
+                "timer_tick.sent should count due timer dispatches",
+            );
+            assert_u64_gte(
+                &due_metrics,
+                RUNTIME_COLLECT_TELEMETRY_SENT,
+                1,
+                "collect_telemetry.sent should count due telemetry dispatches",
+            );
+        }
+        .await;
     }
 
     // Once shutdown is latched, newly submitted DelayData requests should be
     // returned immediately and counted separately from ordinary delayed-data
     // scheduling.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_runtime_control_metrics_track_delay_data_returned_during_drain() {
-        let local = LocalSet::new();
+        async {
+            let RuntimeControlTelemetryHarness {
+                manager,
+                pipeline_tx,
+                mut control_receivers,
+                nodes,
+                runtime_metrics_key,
+                snapshot_rx,
+                engine_rx: _engine_rx,
+                ..
+            } = setup_runtime_control_telemetry_harness::<String>(
+                vec![("processor", NodeType::Processor, 16)],
+                MetricLevel::Normal,
+            );
 
-        local
-            .run_until(async {
-                let RuntimeControlTelemetryHarness {
-                    manager,
-                    pipeline_tx,
-                    mut control_receivers,
-                    nodes,
-                    runtime_metrics_key,
-                    snapshot_rx,
-                    engine_rx: _engine_rx,
-                    ..
-                } = setup_runtime_control_telemetry_harness::<String>(
-                    vec![("processor", NodeType::Processor, 16)],
-                    MetricLevel::Normal,
-                );
+            let processor = nodes[0].clone();
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                let processor = nodes[0].clone();
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "drain retry".to_owned(),
+                })
+                .await
+                .unwrap();
+            pipeline_tx
+                .send(RuntimeControlMsg::DelayData {
+                    node_id: processor.index,
+                    when: Instant::now() + Duration::from_secs(30),
+                    data: Box::new("retry".to_owned()),
+                })
+                .await
+                .unwrap();
 
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "drain retry".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-                pipeline_tx
-                    .send(RuntimeControlMsg::DelayData {
-                        node_id: processor.index,
-                        when: Instant::now() + Duration::from_secs(30),
-                        data: Box::new("retry".to_owned()),
-                    })
-                    .await
-                    .unwrap();
+            let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+            let first = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                .await
+                .expect("processor should get first control message")
+                .expect("processor control channel should stay open");
+            let second = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                .await
+                .expect("processor should get delayed data during drain")
+                .expect("processor control channel should stay open");
+            assert!(
+                matches!(first, NodeControlMsg::Shutdown { .. })
+                    || matches!(second, NodeControlMsg::Shutdown { .. })
+            );
+            assert!(
+                matches!(first, NodeControlMsg::DelayedData { .. })
+                    || matches!(second, NodeControlMsg::DelayedData { .. })
+            );
 
-                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
-                let first = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should get first control message")
-                    .expect("processor control channel should stay open");
-                let second = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should get delayed data during drain")
-                    .expect("processor control channel should stay open");
-                assert!(
-                    matches!(first, NodeControlMsg::Shutdown { .. })
-                        || matches!(second, NodeControlMsg::Shutdown { .. })
-                );
-                assert!(
-                    matches!(first, NodeControlMsg::DelayedData { .. })
-                        || matches!(second, NodeControlMsg::DelayedData { .. })
-                );
+            drop(pipeline_tx);
+            let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+            assert!(manager_result.is_ok(), "manager should stop cleanly");
 
-                drop(pipeline_tx);
-                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(manager_result.is_ok(), "manager should stop cleanly");
-
-                let drain_metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    runtime_metrics_key,
-                    &[
-                        RUNTIME_DRAIN_ACTIVE,
-                        RUNTIME_DRAIN_PENDING_RECEIVERS,
-                        RUNTIME_PENDING_SENDS_BUFFERED,
-                        RUNTIME_TIMERS_ACTIVE,
-                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
-                    ],
-                )
-                .expect("runtime-control metrics should export drain-time delay-data counters");
-                assert_u64(
-                    &drain_metrics,
-                    RUNTIME_DELAY_DATA_RECEIVED,
-                    1,
-                    "delay_data.received should count the drain-time request",
-                );
-                assert_u64(
-                    &drain_metrics,
-                    RUNTIME_DELAY_DATA_RETURNED_DURING_DRAIN,
-                    1,
-                    "delay_data.returned_during_drain should count immediate drain returns",
-                );
-            })
-            .await;
+            let drain_metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                runtime_metrics_key,
+                &[
+                    RUNTIME_DRAIN_ACTIVE,
+                    RUNTIME_DRAIN_PENDING_RECEIVERS,
+                    RUNTIME_PENDING_SENDS_BUFFERED,
+                    RUNTIME_TIMERS_ACTIVE,
+                    RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                    RUNTIME_DELAYED_DATA_QUEUED,
+                ],
+            )
+            .expect("runtime-control metrics should export drain-time delay-data counters");
+            assert_u64(
+                &drain_metrics,
+                RUNTIME_DELAY_DATA_RECEIVED,
+                1,
+                "delay_data.received should count the drain-time request",
+            );
+            assert_u64(
+                &drain_metrics,
+                RUNTIME_DELAY_DATA_RETURNED_DURING_DRAIN,
+                1,
+                "delay_data.returned_during_drain should count immediate drain returns",
+            );
+        }
+        .await;
     }
 
     // Ordinary runtime-control mutations should wait for the configured flush
     // interval, and unchanged state should not emit duplicate snapshots on
     // later intervals.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_runtime_control_metrics_flush_on_interval_without_repeated_snapshots() {
-        let local = LocalSet::new();
+        async {
+            let flush_interval = Duration::from_millis(200);
+            let RuntimeControlTelemetryHarness {
+                manager,
+                pipeline_tx,
+                nodes,
+                runtime_metrics_key,
+                snapshot_rx,
+                ..
+            } = setup_runtime_control_telemetry_harness_with_flush_interval::<String>(
+                vec![("processor", NodeType::Processor, 16)],
+                MetricLevel::Normal,
+                flush_interval,
+            );
 
-        local
-            .run_until(async {
-                let flush_interval = Duration::from_millis(200);
-                let RuntimeControlTelemetryHarness {
-                    manager,
-                    pipeline_tx,
-                    nodes,
-                    runtime_metrics_key,
-                    snapshot_rx,
-                    ..
-                } = setup_runtime_control_telemetry_harness_with_flush_interval::<String>(
-                    vec![("processor", NodeType::Processor, 16)],
-                    MetricLevel::Normal,
-                    flush_interval,
-                );
+            let processor = nodes[0].clone();
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                let processor = nodes[0].clone();
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            pipeline_tx
+                .send(RuntimeControlMsg::StartTimer {
+                    node_id: processor.index,
+                    duration: Duration::from_secs(60),
+                })
+                .await
+                .unwrap();
 
-                pipeline_tx
-                    .send(RuntimeControlMsg::StartTimer {
-                        node_id: processor.index,
-                        duration: Duration::from_secs(60),
-                    })
-                    .await
-                    .unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(
+                snapshot_rx.try_recv().is_err(),
+                "dirty runtime-control state should not flush before the configured interval"
+            );
 
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                assert!(
-                    snapshot_rx.try_recv().is_err(),
-                    "dirty runtime-control state should not flush before the configured interval"
-                );
+            tokio::time::sleep(flush_interval + Duration::from_millis(50)).await;
+            let metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                runtime_metrics_key,
+                &[
+                    RUNTIME_DRAIN_ACTIVE,
+                    RUNTIME_DRAIN_PENDING_RECEIVERS,
+                    RUNTIME_PENDING_SENDS_BUFFERED,
+                    RUNTIME_TIMERS_ACTIVE,
+                    RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                    RUNTIME_DELAYED_DATA_QUEUED,
+                ],
+            )
+            .expect("dirty runtime-control state should flush on the configured interval");
+            assert_u64(
+                &metrics,
+                RUNTIME_START_TIMER_RECEIVED,
+                1,
+                "periodic flush should include the timer-start counter",
+            );
+            assert_u64(
+                &metrics,
+                RUNTIME_TIMERS_ACTIVE,
+                1,
+                "periodic flush should include the updated timer gauge",
+            );
 
-                tokio::time::sleep(flush_interval + Duration::from_millis(50)).await;
-                let metrics = collect_metric_set_snapshots(
+            tokio::time::sleep(flush_interval + Duration::from_millis(50)).await;
+            assert!(
+                collect_metric_set_snapshots(
                     &snapshot_rx,
                     runtime_metrics_key,
                     &[
@@ -4812,1097 +4747,1011 @@ mod tests {
                         RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
-                .expect("dirty runtime-control state should flush on the configured interval");
-                assert_u64(
-                    &metrics,
-                    RUNTIME_START_TIMER_RECEIVED,
-                    1,
-                    "periodic flush should include the timer-start counter",
-                );
-                assert_u64(
-                    &metrics,
-                    RUNTIME_TIMERS_ACTIVE,
-                    1,
-                    "periodic flush should include the updated timer gauge",
-                );
+                .is_none(),
+                "unchanged runtime-control state should not emit on later intervals"
+            );
 
-                tokio::time::sleep(flush_interval + Duration::from_millis(50)).await;
-                assert!(
-                    collect_metric_set_snapshots(
-                        &snapshot_rx,
-                        runtime_metrics_key,
-                        &[
-                            RUNTIME_DRAIN_ACTIVE,
-                            RUNTIME_DRAIN_PENDING_RECEIVERS,
-                            RUNTIME_PENDING_SENDS_BUFFERED,
-                            RUNTIME_TIMERS_ACTIVE,
-                            RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                            RUNTIME_DELAYED_DATA_QUEUED,
-                        ],
-                    )
-                    .is_none(),
-                    "unchanged runtime-control state should not emit on later intervals"
-                );
-
-                drop(pipeline_tx);
-                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(manager_result.is_ok(), "manager should stop cleanly");
-            })
-            .await;
+            drop(pipeline_tx);
+            let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+            assert!(manager_result.is_ok(), "manager should stop cleanly");
+        }
+        .await;
     }
 
     // Shutdown phase boundaries are operationally important, so they should be
     // reported immediately instead of waiting for the periodic flush interval.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_runtime_control_metrics_shutdown_phase_flushes_immediately() {
-        let local = LocalSet::new();
+        async {
+            let RuntimeControlTelemetryHarness {
+                manager,
+                pipeline_tx,
+                mut control_receivers,
+                nodes,
+                runtime_metrics_key,
+                snapshot_rx,
+                ..
+            } = setup_runtime_control_telemetry_harness_with_flush_interval::<String>(
+                vec![
+                    ("receiver", NodeType::Receiver, 16),
+                    ("processor", NodeType::Processor, 16),
+                ],
+                MetricLevel::Normal,
+                Duration::from_secs(1),
+            );
 
-        local
-            .run_until(async {
-                let RuntimeControlTelemetryHarness {
-                    manager,
-                    pipeline_tx,
-                    mut control_receivers,
-                    nodes,
-                    runtime_metrics_key,
-                    snapshot_rx,
-                    ..
-                } = setup_runtime_control_telemetry_harness_with_flush_interval::<String>(
-                    vec![
-                        ("receiver", NodeType::Receiver, 16),
-                        ("processor", NodeType::Processor, 16),
-                    ],
-                    MetricLevel::Normal,
-                    Duration::from_secs(1),
-                );
+            let receiver = nodes[0].clone();
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-                let receiver = nodes[0].clone();
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(5),
+                    reason: "immediate-flush".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(5),
-                        reason: "immediate-flush".to_owned(),
-                    })
-                    .await
-                    .unwrap();
+            let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
+            let drain_msg = timeout(Duration::from_millis(100), receiver_ctrl.recv())
+                .await
+                .expect("receiver should get DrainIngress")
+                .expect("receiver control channel should stay open");
+            assert!(matches!(drain_msg, NodeControlMsg::DrainIngress { .. }));
 
-                let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
-                let drain_msg = timeout(Duration::from_millis(100), receiver_ctrl.recv())
-                    .await
-                    .expect("receiver should get DrainIngress")
-                    .expect("receiver control channel should stay open");
-                assert!(matches!(drain_msg, NodeControlMsg::DrainIngress { .. }));
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                runtime_metrics_key,
+                &[
+                    RUNTIME_DRAIN_ACTIVE,
+                    RUNTIME_DRAIN_PENDING_RECEIVERS,
+                    RUNTIME_PENDING_SENDS_BUFFERED,
+                    RUNTIME_TIMERS_ACTIVE,
+                    RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                    RUNTIME_DELAYED_DATA_QUEUED,
+                ],
+            )
+            .expect("shutdown latch should flush without waiting for the full interval");
+            assert_u64(
+                &metrics,
+                RUNTIME_SHUTDOWN_RECEIVED,
+                1,
+                "shutdown transition should flush immediately",
+            );
+            assert_u64(
+                &metrics,
+                RUNTIME_DRAIN_INGRESS_SENT,
+                1,
+                "ingress-drain transition should flush immediately",
+            );
 
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                let metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    runtime_metrics_key,
-                    &[
-                        RUNTIME_DRAIN_ACTIVE,
-                        RUNTIME_DRAIN_PENDING_RECEIVERS,
-                        RUNTIME_PENDING_SENDS_BUFFERED,
-                        RUNTIME_TIMERS_ACTIVE,
-                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
-                    ],
-                )
-                .expect("shutdown latch should flush without waiting for the full interval");
-                assert_u64(
-                    &metrics,
-                    RUNTIME_SHUTDOWN_RECEIVED,
-                    1,
-                    "shutdown transition should flush immediately",
-                );
-                assert_u64(
-                    &metrics,
-                    RUNTIME_DRAIN_INGRESS_SENT,
-                    1,
-                    "ingress-drain transition should flush immediately",
-                );
-
-                pipeline_tx
-                    .send(RuntimeControlMsg::ReceiverDrained {
-                        node_id: receiver.index,
-                    })
-                    .await
-                    .unwrap();
-                drop(pipeline_tx);
-                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(manager_result.is_ok(), "manager should stop cleanly");
-            })
-            .await;
+            pipeline_tx
+                .send(RuntimeControlMsg::ReceiverDrained {
+                    node_id: receiver.index,
+                })
+                .await
+                .unwrap();
+            drop(pipeline_tx);
+            let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+            assert!(manager_result.is_ok(), "manager should stop cleanly");
+        }
+        .await;
     }
 
     // `runtime_metrics = none` should suppress the pipeline-scoped runtime
     // control metric set entirely.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_runtime_control_metrics_gated_off_at_none() {
-        let local = LocalSet::new();
+        async {
+            let RuntimeControlTelemetryHarness {
+                manager,
+                pipeline_tx,
+                runtime_metrics_key,
+                snapshot_rx,
+                engine_rx: _engine_rx,
+                ..
+            } = setup_runtime_control_telemetry_harness::<String>(
+                vec![("processor", NodeType::Processor, 16)],
+                MetricLevel::None,
+            );
 
-        local
-            .run_until(async {
-                let RuntimeControlTelemetryHarness {
-                    manager,
-                    pipeline_tx,
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "none".to_owned(),
+                })
+                .await
+                .unwrap();
+            drop(pipeline_tx);
+            let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+            assert!(manager_result.is_ok(), "manager should stop cleanly");
+
+            assert!(
+                runtime_metrics_key.is_none(),
+                "runtime-control metrics should not be registered at level none"
+            );
+            assert!(
+                collect_metric_set_snapshots(
+                    &snapshot_rx,
                     runtime_metrics_key,
-                    snapshot_rx,
-                    engine_rx: _engine_rx,
-                    ..
-                } = setup_runtime_control_telemetry_harness::<String>(
-                    vec![("processor", NodeType::Processor, 16)],
-                    MetricLevel::None,
-                );
-
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "none".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-                drop(pipeline_tx);
-                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(manager_result.is_ok(), "manager should stop cleanly");
-
-                assert!(
-                    runtime_metrics_key.is_none(),
-                    "runtime-control metrics should not be registered at level none"
-                );
-                assert!(
-                    collect_metric_set_snapshots(
-                        &snapshot_rx,
-                        runtime_metrics_key,
-                        &[RUNTIME_DRAIN_ACTIVE]
-                    )
-                    .is_none(),
-                    "no runtime-control snapshots should be emitted at level none"
-                );
-            })
-            .await;
+                    &[RUNTIME_DRAIN_ACTIVE]
+                )
+                .is_none(),
+                "no runtime-control snapshots should be emitted at level none"
+            );
+        }
+        .await;
     }
 
     // `basic` should export state gauges but suppress per-message counters and
     // detailed drain durations.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_runtime_control_metrics_basic_only_exports_gauges() {
-        let local = LocalSet::new();
+        async {
+            let RuntimeControlTelemetryHarness {
+                manager,
+                pipeline_tx,
+                mut control_receivers,
+                nodes,
+                runtime_metrics_key,
+                snapshot_rx,
+                engine_rx: _engine_rx,
+                ..
+            } = setup_runtime_control_telemetry_harness::<String>(
+                vec![
+                    ("receiver", NodeType::Receiver, 16),
+                    ("processor", NodeType::Processor, 16),
+                ],
+                MetricLevel::Basic,
+            );
 
-        local
-            .run_until(async {
-                let RuntimeControlTelemetryHarness {
-                    manager,
-                    pipeline_tx,
-                    mut control_receivers,
-                    nodes,
-                    runtime_metrics_key,
-                    snapshot_rx,
-                    engine_rx: _engine_rx,
-                    ..
-                } = setup_runtime_control_telemetry_harness::<String>(
-                    vec![
-                        ("receiver", NodeType::Receiver, 16),
-                        ("processor", NodeType::Processor, 16),
-                    ],
-                    MetricLevel::Basic,
-                );
+            let receiver = nodes[0].clone();
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "basic".to_owned(),
+                })
+                .await
+                .unwrap();
 
-                let receiver = nodes[0].clone();
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "basic".to_owned(),
-                    })
-                    .await
-                    .unwrap();
+            let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
+            let _ = timeout(Duration::from_millis(100), receiver_ctrl.recv())
+                .await
+                .expect("receiver should get DrainIngress")
+                .expect("receiver control channel should stay open");
+            drop(pipeline_tx);
+            let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+            assert!(manager_result.is_ok(), "manager should stop cleanly");
 
-                let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
-                let _ = timeout(Duration::from_millis(100), receiver_ctrl.recv())
-                    .await
-                    .expect("receiver should get DrainIngress")
-                    .expect("receiver control channel should stay open");
-                drop(pipeline_tx);
-                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(manager_result.is_ok(), "manager should stop cleanly");
-
-                let metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    runtime_metrics_key,
-                    &[
-                        RUNTIME_DRAIN_ACTIVE,
-                        RUNTIME_DRAIN_PENDING_RECEIVERS,
-                        RUNTIME_PENDING_SENDS_BUFFERED,
-                        RUNTIME_TIMERS_ACTIVE,
-                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
-                    ],
-                )
-                .expect("basic runtime-control metrics should be exported");
-                assert_u64(
-                    &metrics,
+            let metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                runtime_metrics_key,
+                &[
                     RUNTIME_DRAIN_ACTIVE,
-                    1,
-                    "basic should export gauges",
-                );
-                assert_u64(
-                    &metrics,
                     RUNTIME_DRAIN_PENDING_RECEIVERS,
-                    1,
-                    "basic should export pending receiver gauge",
-                );
-                assert_u64(
-                    &metrics,
-                    RUNTIME_SHUTDOWN_RECEIVED,
-                    0,
-                    "basic should suppress normal counters",
-                );
-                let receiver_phase = assert_mmsc(
-                    &metrics,
-                    RUNTIME_DRAIN_RECEIVER_PHASE_DURATION_NS,
-                    "basic receiver-phase duration",
-                );
-                assert_eq!(
-                    receiver_phase.count, 0,
-                    "basic should suppress detailed durations"
-                );
-            })
-            .await;
+                    RUNTIME_PENDING_SENDS_BUFFERED,
+                    RUNTIME_TIMERS_ACTIVE,
+                    RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                    RUNTIME_DELAYED_DATA_QUEUED,
+                ],
+            )
+            .expect("basic runtime-control metrics should be exported");
+            assert_u64(
+                &metrics,
+                RUNTIME_DRAIN_ACTIVE,
+                1,
+                "basic should export gauges",
+            );
+            assert_u64(
+                &metrics,
+                RUNTIME_DRAIN_PENDING_RECEIVERS,
+                1,
+                "basic should export pending receiver gauge",
+            );
+            assert_u64(
+                &metrics,
+                RUNTIME_SHUTDOWN_RECEIVED,
+                0,
+                "basic should suppress normal counters",
+            );
+            let receiver_phase = assert_mmsc(
+                &metrics,
+                RUNTIME_DRAIN_RECEIVER_PHASE_DURATION_NS,
+                "basic receiver-phase duration",
+            );
+            assert_eq!(
+                receiver_phase.count, 0,
+                "basic should suppress detailed durations"
+            );
+        }
+        .await;
     }
 
     // `normal` should include phase/message counters while still suppressing
     // the detailed drain-duration summaries.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_runtime_control_metrics_normal_exports_counters_without_durations() {
-        let local = LocalSet::new();
+        async {
+            let RuntimeControlTelemetryHarness {
+                manager,
+                pipeline_tx,
+                mut control_receivers,
+                nodes,
+                runtime_metrics_key,
+                snapshot_rx,
+                engine_rx: _engine_rx,
+                ..
+            } = setup_runtime_control_telemetry_harness::<String>(
+                vec![
+                    ("receiver", NodeType::Receiver, 16),
+                    ("processor", NodeType::Processor, 16),
+                ],
+                MetricLevel::Normal,
+            );
 
-        local
-            .run_until(async {
-                let RuntimeControlTelemetryHarness {
-                    manager,
-                    pipeline_tx,
-                    mut control_receivers,
-                    nodes,
-                    runtime_metrics_key,
-                    snapshot_rx,
-                    engine_rx: _engine_rx,
-                    ..
-                } = setup_runtime_control_telemetry_harness::<String>(
-                    vec![
-                        ("receiver", NodeType::Receiver, 16),
-                        ("processor", NodeType::Processor, 16),
-                    ],
-                    MetricLevel::Normal,
-                );
+            let receiver = nodes[0].clone();
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            pipeline_tx
+                .send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                    reason: "normal".to_owned(),
+                })
+                .await
+                .unwrap();
+            let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
+            let _ = timeout(Duration::from_millis(100), receiver_ctrl.recv())
+                .await
+                .expect("receiver should get DrainIngress")
+                .expect("receiver control channel should stay open");
+            pipeline_tx
+                .send(RuntimeControlMsg::ReceiverDrained {
+                    node_id: receiver.index,
+                })
+                .await
+                .unwrap();
+            drop(pipeline_tx);
+            let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+            assert!(manager_result.is_ok(), "manager should stop cleanly");
 
-                let receiver = nodes[0].clone();
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "normal".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-                let mut receiver_ctrl = control_receivers.remove(&receiver.index).unwrap();
-                let _ = timeout(Duration::from_millis(100), receiver_ctrl.recv())
-                    .await
-                    .expect("receiver should get DrainIngress")
-                    .expect("receiver control channel should stay open");
-                pipeline_tx
-                    .send(RuntimeControlMsg::ReceiverDrained {
-                        node_id: receiver.index,
-                    })
-                    .await
-                    .unwrap();
-                drop(pipeline_tx);
-                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(manager_result.is_ok(), "manager should stop cleanly");
-
-                let metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    runtime_metrics_key,
-                    &[
-                        RUNTIME_DRAIN_ACTIVE,
-                        RUNTIME_DRAIN_PENDING_RECEIVERS,
-                        RUNTIME_PENDING_SENDS_BUFFERED,
-                        RUNTIME_TIMERS_ACTIVE,
-                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
-                    ],
-                )
-                .expect("normal runtime-control metrics should be exported");
-                assert_u64(
-                    &metrics,
-                    RUNTIME_SHUTDOWN_RECEIVED,
-                    1,
-                    "normal should export shutdown counter",
-                );
-                assert_u64(
-                    &metrics,
-                    RUNTIME_RECEIVER_DRAINED_RECEIVED,
-                    1,
-                    "normal should export receiver_drained counter",
-                );
-                assert_u64(
-                    &metrics,
-                    RUNTIME_DOWNSTREAM_SHUTDOWN_SENT,
-                    1,
-                    "normal should export downstream shutdown counter",
-                );
-                let total_drain = assert_mmsc(
-                    &metrics,
-                    RUNTIME_DRAIN_TOTAL_DURATION_NS,
-                    "normal total drain duration",
-                );
-                assert_eq!(
-                    total_drain.count, 0,
-                    "normal should suppress detailed durations"
-                );
-            })
-            .await;
+            let metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                runtime_metrics_key,
+                &[
+                    RUNTIME_DRAIN_ACTIVE,
+                    RUNTIME_DRAIN_PENDING_RECEIVERS,
+                    RUNTIME_PENDING_SENDS_BUFFERED,
+                    RUNTIME_TIMERS_ACTIVE,
+                    RUNTIME_TELEMETRY_TIMERS_ACTIVE,
+                    RUNTIME_DELAYED_DATA_QUEUED,
+                ],
+            )
+            .expect("normal runtime-control metrics should be exported");
+            assert_u64(
+                &metrics,
+                RUNTIME_SHUTDOWN_RECEIVED,
+                1,
+                "normal should export shutdown counter",
+            );
+            assert_u64(
+                &metrics,
+                RUNTIME_RECEIVER_DRAINED_RECEIVED,
+                1,
+                "normal should export receiver_drained counter",
+            );
+            assert_u64(
+                &metrics,
+                RUNTIME_DOWNSTREAM_SHUTDOWN_SENT,
+                1,
+                "normal should export downstream shutdown counter",
+            );
+            let total_drain = assert_mmsc(
+                &metrics,
+                RUNTIME_DRAIN_TOTAL_DURATION_NS,
+                "normal total drain duration",
+            );
+            assert_eq!(
+                total_drain.count, 0,
+                "normal should suppress detailed durations"
+            );
+        }
+        .await;
     }
 
     // Ack delivery with an interested upstream frame should increment the
     // completion receive/attempted/delivered counters and record how many
     // frames were unwound before the dispatcher found the upstream target.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_completion_metrics_track_ack_delivery_and_unwind_depth() {
-        let local = LocalSet::new();
+        async {
+            let CompletionTelemetryHarness {
+                dispatcher,
+                completion_tx,
+                mut control_receivers,
+                nodes,
+                completion_metrics_key,
+                snapshot_rx,
+                _guard: _,
+            } = setup_completion_telemetry_harness(MetricLevel::Detailed);
 
-        local
-            .run_until(async {
-                let CompletionTelemetryHarness {
-                    dispatcher,
-                    completion_tx,
-                    mut control_receivers,
-                    nodes,
-                    completion_metrics_key,
-                    snapshot_rx,
-                    _guard: _,
-                } = setup_completion_telemetry_harness(MetricLevel::Detailed);
+            let processor = nodes[1].clone();
+            let dispatcher_handle = tokio::task::spawn_local(async move { dispatcher.run().await });
 
-                let processor = nodes[1].clone();
-                let dispatcher_handle =
-                    tokio::task::spawn_local(async move { dispatcher.run().await });
+            completion_tx
+                .send(PipelineCompletionMsg::DeliverAck {
+                    ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                })
+                .await
+                .unwrap();
 
-                completion_tx
-                    .send(PipelineCompletionMsg::DeliverAck {
-                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
-                    })
-                    .await
-                    .unwrap();
+            let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+            let ack_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                .await
+                .expect("processor should receive Ack")
+                .expect("processor control channel should stay open");
+            assert!(matches!(ack_msg, NodeControlMsg::Ack(_)));
 
-                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
-                let ack_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should receive Ack")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(ack_msg, NodeControlMsg::Ack(_)));
+            drop(completion_tx);
+            let dispatcher_result = timeout(Duration::from_millis(200), dispatcher_handle).await;
+            assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
 
-                drop(completion_tx);
-                let dispatcher_result =
-                    timeout(Duration::from_millis(200), dispatcher_handle).await;
-                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
-
-                let metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    completion_metrics_key,
-                    &[COMPLETION_PENDING_SENDS_BUFFERED],
-                )
-                .expect("completion metrics should be exported");
-                assert_u64(
-                    &metrics,
-                    COMPLETION_DELIVER_ACK_RECEIVED,
-                    1,
-                    "deliver_ack.received should increment once",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_ACK_ATTEMPTED,
-                    1,
-                    "ack.attempted should increment once",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_ACK_DELIVERED,
-                    1,
-                    "ack.delivered should increment once for immediate delivery",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_ACK_DROPPED_NO_INTEREST,
-                    0,
-                    "ack.dropped_no_interest should stay at zero for interested unwind",
-                );
-                let unwind =
-                    assert_mmsc(&metrics, COMPLETION_UNWIND_DEPTH, "completion unwind depth");
-                assert_eq!(unwind.count, 1, "unwind depth should record one Ack unwind");
-                assert_eq!(
-                    unwind.min, 2.0,
-                    "Ack should unwind exporter+processor frames"
-                );
-                assert_eq!(unwind.max, 2.0, "single unwind depth should be exact");
-            })
-            .await;
+            let metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                completion_metrics_key,
+                &[COMPLETION_PENDING_SENDS_BUFFERED],
+            )
+            .expect("completion metrics should be exported");
+            assert_u64(
+                &metrics,
+                COMPLETION_DELIVER_ACK_RECEIVED,
+                1,
+                "deliver_ack.received should increment once",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_ACK_ATTEMPTED,
+                1,
+                "ack.attempted should increment once",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_ACK_DELIVERED,
+                1,
+                "ack.delivered should increment once for immediate delivery",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_ACK_DROPPED_NO_INTEREST,
+                0,
+                "ack.dropped_no_interest should stay at zero for interested unwind",
+            );
+            let unwind = assert_mmsc(&metrics, COMPLETION_UNWIND_DEPTH, "completion unwind depth");
+            assert_eq!(unwind.count, 1, "unwind depth should record one Ack unwind");
+            assert_eq!(
+                unwind.min, 2.0,
+                "Ack should unwind exporter+processor frames"
+            );
+            assert_eq!(unwind.max, 2.0, "single unwind depth should be exact");
+        }
+        .await;
     }
 
     // Nack delivery should report the receive/attempted/delivered counters on
     // the completion path in the same way as Ack delivery.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_completion_metrics_track_nack_delivery() {
-        let local = LocalSet::new();
+        async {
+            let CompletionTelemetryHarness {
+                dispatcher,
+                completion_tx,
+                mut control_receivers,
+                nodes,
+                completion_metrics_key,
+                snapshot_rx,
+                _guard: _,
+            } = setup_completion_telemetry_harness(MetricLevel::Normal);
 
-        local
-            .run_until(async {
-                let CompletionTelemetryHarness {
-                    dispatcher,
-                    completion_tx,
-                    mut control_receivers,
-                    nodes,
-                    completion_metrics_key,
-                    snapshot_rx,
-                    _guard: _,
-                } = setup_completion_telemetry_harness(MetricLevel::Normal);
+            let processor = nodes[1].clone();
+            let dispatcher_handle = tokio::task::spawn_local(async move { dispatcher.run().await });
 
-                let processor = nodes[1].clone();
-                let dispatcher_handle =
-                    tokio::task::spawn_local(async move { dispatcher.run().await });
+            completion_tx
+                .send(PipelineCompletionMsg::DeliverNack {
+                    nack: NackMsg::new("transient", build_3node_pdata(&nodes, false)),
+                })
+                .await
+                .unwrap();
 
-                completion_tx
-                    .send(PipelineCompletionMsg::DeliverNack {
-                        nack: NackMsg::new("transient", build_3node_pdata(&nodes, false)),
-                    })
-                    .await
-                    .unwrap();
+            let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+            let nack_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                .await
+                .expect("processor should receive Nack")
+                .expect("processor control channel should stay open");
+            assert!(matches!(nack_msg, NodeControlMsg::Nack(_)));
 
-                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
-                let nack_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should receive Nack")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(nack_msg, NodeControlMsg::Nack(_)));
+            drop(completion_tx);
+            let dispatcher_result = timeout(Duration::from_millis(200), dispatcher_handle).await;
+            assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
 
-                drop(completion_tx);
-                let dispatcher_result =
-                    timeout(Duration::from_millis(200), dispatcher_handle).await;
-                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
-
-                let metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    completion_metrics_key,
-                    &[COMPLETION_PENDING_SENDS_BUFFERED],
-                )
-                .expect("completion metrics should be exported");
-                assert_u64(
-                    &metrics,
-                    COMPLETION_DELIVER_NACK_RECEIVED,
-                    1,
-                    "deliver_nack.received should increment once",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_NACK_ATTEMPTED,
-                    1,
-                    "nack.attempted should increment once",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_NACK_DELIVERED,
-                    1,
-                    "nack.delivered should increment once for immediate delivery",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_NACK_DROPPED_NO_INTEREST,
-                    0,
-                    "nack.dropped_no_interest should stay at zero for interested unwind",
-                );
-                let unwind = assert_mmsc(
-                    &metrics,
-                    COMPLETION_UNWIND_DEPTH,
-                    "normal completion unwind depth",
-                );
-                assert_eq!(
-                    unwind.count, 0,
-                    "normal should suppress detailed unwind depth"
-                );
-            })
-            .await;
+            let metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                completion_metrics_key,
+                &[COMPLETION_PENDING_SENDS_BUFFERED],
+            )
+            .expect("completion metrics should be exported");
+            assert_u64(
+                &metrics,
+                COMPLETION_DELIVER_NACK_RECEIVED,
+                1,
+                "deliver_nack.received should increment once",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_NACK_ATTEMPTED,
+                1,
+                "nack.attempted should increment once",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_NACK_DELIVERED,
+                1,
+                "nack.delivered should increment once for immediate delivery",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_NACK_DROPPED_NO_INTEREST,
+                0,
+                "nack.dropped_no_interest should stay at zero for interested unwind",
+            );
+            let unwind = assert_mmsc(
+                &metrics,
+                COMPLETION_UNWIND_DEPTH,
+                "normal completion unwind depth",
+            );
+            assert_eq!(
+                unwind.count, 0,
+                "normal should suppress detailed unwind depth"
+            );
+        }
+        .await;
     }
 
     // If an upstream node-control inbox is temporarily full, the dispatcher
     // should count the completion as attempted immediately, keep it buffered,
     // then count it as delivered once the retry loop succeeds and clear the
     // pending-sends gauge back to zero.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_completion_metrics_track_buffered_retry_delivery() {
-        let local = LocalSet::new();
+        async {
+            let CompletionTelemetryHarness {
+                dispatcher,
+                completion_tx,
+                mut control_receivers,
+                nodes,
+                completion_metrics_key,
+                snapshot_rx,
+                _guard: _,
+            } = setup_completion_telemetry_harness_with_capacity(MetricLevel::Normal, 1);
 
-        local
-            .run_until(async {
-                let CompletionTelemetryHarness {
-                    dispatcher,
-                    completion_tx,
-                    mut control_receivers,
-                    nodes,
-                    completion_metrics_key,
-                    snapshot_rx,
-                    _guard: _,
-                } = setup_completion_telemetry_harness_with_capacity(MetricLevel::Normal, 1);
+            let processor = nodes[1].clone();
+            let dispatcher_handle = tokio::task::spawn_local(async move { dispatcher.run().await });
 
-                let processor = nodes[1].clone();
-                let dispatcher_handle =
-                    tokio::task::spawn_local(async move { dispatcher.run().await });
+            completion_tx
+                .send(PipelineCompletionMsg::DeliverAck {
+                    ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                })
+                .await
+                .unwrap();
+            completion_tx
+                .send(PipelineCompletionMsg::DeliverAck {
+                    ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                })
+                .await
+                .unwrap();
 
-                completion_tx
-                    .send(PipelineCompletionMsg::DeliverAck {
-                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
-                    })
-                    .await
-                    .unwrap();
-                completion_tx
-                    .send(PipelineCompletionMsg::DeliverAck {
-                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
-                    })
-                    .await
-                    .unwrap();
+            let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+            let first_ack = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                .await
+                .expect("processor should receive the first Ack")
+                .expect("processor control channel should stay open");
+            assert!(matches!(first_ack, NodeControlMsg::Ack(_)));
 
-                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
-                let first_ack = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should receive the first Ack")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(first_ack, NodeControlMsg::Ack(_)));
+            let second_ack = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                .await
+                .expect("buffered Ack should be retried and eventually delivered")
+                .expect("processor control channel should stay open");
+            assert!(matches!(second_ack, NodeControlMsg::Ack(_)));
 
-                let second_ack = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("buffered Ack should be retried and eventually delivered")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(second_ack, NodeControlMsg::Ack(_)));
+            drop(completion_tx);
+            let dispatcher_result = timeout(Duration::from_millis(200), dispatcher_handle).await;
+            assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
 
-                drop(completion_tx);
-                let dispatcher_result =
-                    timeout(Duration::from_millis(200), dispatcher_handle).await;
-                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
-
-                let metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    completion_metrics_key,
-                    &[COMPLETION_PENDING_SENDS_BUFFERED],
-                )
-                .expect("completion metrics should be exported");
-                assert_u64(
-                    &metrics,
-                    COMPLETION_DELIVER_ACK_RECEIVED,
-                    2,
-                    "two Ack completions should be received",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_ACK_ATTEMPTED,
-                    2,
-                    "both Ack completions should be counted as attempted",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_ACK_DELIVERED,
-                    2,
-                    "both Ack completions should be counted as delivered once the retry succeeds",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_PENDING_SENDS_BUFFERED,
-                    0,
-                    "pending_sends.buffered should return to zero after retry delivery",
-                );
-            })
-            .await;
+            let metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                completion_metrics_key,
+                &[COMPLETION_PENDING_SENDS_BUFFERED],
+            )
+            .expect("completion metrics should be exported");
+            assert_u64(
+                &metrics,
+                COMPLETION_DELIVER_ACK_RECEIVED,
+                2,
+                "two Ack completions should be received",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_ACK_ATTEMPTED,
+                2,
+                "both Ack completions should be counted as attempted",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_ACK_DELIVERED,
+                2,
+                "both Ack completions should be counted as delivered once the retry succeeds",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_PENDING_SENDS_BUFFERED,
+                0,
+                "pending_sends.buffered should return to zero after retry delivery",
+            );
+        }
+        .await;
     }
 
     // If no upstream frame subscribes to the completion, the dispatcher should
     // count a dropped-no-interest unwind instead of inventing a delivery.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_completion_metrics_track_dropped_no_interest() {
-        let local = LocalSet::new();
+        async {
+            let CompletionTelemetryHarness {
+                dispatcher,
+                completion_tx,
+                completion_metrics_key,
+                snapshot_rx,
+                nodes,
+                _guard: _,
+                control_receivers: _,
+            } = setup_completion_telemetry_harness(MetricLevel::Detailed);
 
-        local
-            .run_until(async {
-                let CompletionTelemetryHarness {
-                    dispatcher,
-                    completion_tx,
-                    completion_metrics_key,
-                    snapshot_rx,
-                    nodes,
-                    _guard: _,
-                    control_receivers: _,
-                } = setup_completion_telemetry_harness(MetricLevel::Detailed);
+            let dispatcher_handle = tokio::task::spawn_local(async move { dispatcher.run().await });
 
-                let dispatcher_handle =
-                    tokio::task::spawn_local(async move { dispatcher.run().await });
+            completion_tx
+                .send(PipelineCompletionMsg::DeliverAck {
+                    ack: AckMsg::new(build_3node_pdata_no_subscribers(&nodes, false)),
+                })
+                .await
+                .unwrap();
 
-                completion_tx
-                    .send(PipelineCompletionMsg::DeliverAck {
-                        ack: AckMsg::new(build_3node_pdata_no_subscribers(&nodes, false)),
-                    })
-                    .await
-                    .unwrap();
+            drop(completion_tx);
+            let dispatcher_result = timeout(Duration::from_millis(200), dispatcher_handle).await;
+            assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
 
-                drop(completion_tx);
-                let dispatcher_result =
-                    timeout(Duration::from_millis(200), dispatcher_handle).await;
-                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
-
-                let metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    completion_metrics_key,
-                    &[COMPLETION_PENDING_SENDS_BUFFERED],
-                )
-                .expect("completion metrics should be exported");
-                assert_u64(
-                    &metrics,
-                    COMPLETION_DELIVER_ACK_RECEIVED,
-                    1,
-                    "deliver_ack.received should increment once",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_ACK_ATTEMPTED,
-                    0,
-                    "ack.attempted should stay at zero when no frame is interested",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_ACK_DELIVERED,
-                    0,
-                    "ack.delivered should stay at zero when no frame is interested",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_ACK_DROPPED_NO_INTEREST,
-                    1,
-                    "ack.dropped_no_interest should count uninterested unwinds",
-                );
-                let unwind = assert_mmsc(
-                    &metrics,
-                    COMPLETION_UNWIND_DEPTH,
-                    "dropped-no-interest unwind depth",
-                );
-                assert_eq!(
-                    unwind.count, 1,
-                    "unwind depth should record dropped completion depth"
-                );
-                assert_eq!(unwind.min, 3.0, "all three frames should be popped");
-                assert_eq!(
-                    unwind.max, 3.0,
-                    "single dropped unwind depth should be exact"
-                );
-            })
-            .await;
+            let metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                completion_metrics_key,
+                &[COMPLETION_PENDING_SENDS_BUFFERED],
+            )
+            .expect("completion metrics should be exported");
+            assert_u64(
+                &metrics,
+                COMPLETION_DELIVER_ACK_RECEIVED,
+                1,
+                "deliver_ack.received should increment once",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_ACK_ATTEMPTED,
+                0,
+                "ack.attempted should stay at zero when no frame is interested",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_ACK_DELIVERED,
+                0,
+                "ack.delivered should stay at zero when no frame is interested",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_ACK_DROPPED_NO_INTEREST,
+                1,
+                "ack.dropped_no_interest should count uninterested unwinds",
+            );
+            let unwind = assert_mmsc(
+                &metrics,
+                COMPLETION_UNWIND_DEPTH,
+                "dropped-no-interest unwind depth",
+            );
+            assert_eq!(
+                unwind.count, 1,
+                "unwind depth should record dropped completion depth"
+            );
+            assert_eq!(unwind.min, 3.0, "all three frames should be popped");
+            assert_eq!(
+                unwind.max, 3.0,
+                "single dropped unwind depth should be exact"
+            );
+        }
+        .await;
     }
 
     // `runtime_metrics = none` should suppress the pipeline-scoped completion
     // metric set entirely, even though completion dispatch still works.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_completion_metrics_gated_off_at_none() {
-        let local = LocalSet::new();
+        async {
+            let CompletionTelemetryHarness {
+                dispatcher,
+                completion_tx,
+                completion_metrics_key,
+                snapshot_rx,
+                ..
+            } = setup_completion_telemetry_harness(MetricLevel::None);
 
-        local
-            .run_until(async {
-                let CompletionTelemetryHarness {
-                    dispatcher,
-                    completion_tx,
+            let dispatcher_handle = tokio::task::spawn_local(async move { dispatcher.run().await });
+
+            completion_tx
+                .send(PipelineCompletionMsg::DeliverAck {
+                    ack: AckMsg::new(TestPData::new()),
+                })
+                .await
+                .unwrap();
+
+            drop(completion_tx);
+            let dispatcher_result = timeout(Duration::from_millis(200), dispatcher_handle).await;
+            assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
+
+            assert!(
+                completion_metrics_key.is_none(),
+                "completion metrics should not be registered at level none"
+            );
+            assert!(
+                collect_metric_set_snapshots(
+                    &snapshot_rx,
                     completion_metrics_key,
-                    snapshot_rx,
-                    ..
-                } = setup_completion_telemetry_harness(MetricLevel::None);
-
-                let dispatcher_handle =
-                    tokio::task::spawn_local(async move { dispatcher.run().await });
-
-                completion_tx
-                    .send(PipelineCompletionMsg::DeliverAck {
-                        ack: AckMsg::new(TestPData::new()),
-                    })
-                    .await
-                    .unwrap();
-
-                drop(completion_tx);
-                let dispatcher_result =
-                    timeout(Duration::from_millis(200), dispatcher_handle).await;
-                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
-
-                assert!(
-                    completion_metrics_key.is_none(),
-                    "completion metrics should not be registered at level none"
-                );
-                assert!(
-                    collect_metric_set_snapshots(
-                        &snapshot_rx,
-                        completion_metrics_key,
-                        &[COMPLETION_PENDING_SENDS_BUFFERED],
-                    )
-                    .is_none(),
-                    "no completion snapshots should be emitted at level none"
-                );
-            })
-            .await;
+                    &[COMPLETION_PENDING_SENDS_BUFFERED],
+                )
+                .is_none(),
+                "no completion snapshots should be emitted at level none"
+            );
+        }
+        .await;
     }
 
     // `basic` should export only the completion backlog gauge while suppressing
     // per-message counters and detailed unwind-depth summaries.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_completion_metrics_basic_only_exports_gauge() {
-        let local = LocalSet::new();
+        async {
+            let CompletionTelemetryHarness {
+                dispatcher,
+                completion_tx,
+                mut control_receivers,
+                nodes,
+                completion_metrics_key,
+                snapshot_rx,
+                _guard: _,
+            } = setup_completion_telemetry_harness(MetricLevel::Basic);
 
-        local
-            .run_until(async {
-                let CompletionTelemetryHarness {
-                    dispatcher,
-                    completion_tx,
-                    mut control_receivers,
-                    nodes,
-                    completion_metrics_key,
-                    snapshot_rx,
-                    _guard: _,
-                } = setup_completion_telemetry_harness(MetricLevel::Basic);
+            let processor = nodes[1].clone();
+            let dispatcher_handle = tokio::task::spawn_local(async move { dispatcher.run().await });
 
-                let processor = nodes[1].clone();
-                let dispatcher_handle =
-                    tokio::task::spawn_local(async move { dispatcher.run().await });
+            completion_tx
+                .send(PipelineCompletionMsg::DeliverAck {
+                    ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                })
+                .await
+                .unwrap();
 
-                completion_tx
-                    .send(PipelineCompletionMsg::DeliverAck {
-                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
-                    })
-                    .await
-                    .unwrap();
+            let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+            let ack_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                .await
+                .expect("processor should receive Ack")
+                .expect("processor control channel should stay open");
+            assert!(matches!(ack_msg, NodeControlMsg::Ack(_)));
 
-                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
-                let ack_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should receive Ack")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(ack_msg, NodeControlMsg::Ack(_)));
+            drop(completion_tx);
+            let dispatcher_result = timeout(Duration::from_millis(200), dispatcher_handle).await;
+            assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
 
-                drop(completion_tx);
-                let dispatcher_result =
-                    timeout(Duration::from_millis(200), dispatcher_handle).await;
-                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
-
-                let metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    completion_metrics_key,
-                    &[COMPLETION_PENDING_SENDS_BUFFERED],
-                )
-                .expect("basic completion metrics should be exported");
-                assert_u64(
-                    &metrics,
-                    COMPLETION_PENDING_SENDS_BUFFERED,
-                    0,
-                    "basic should export the backlog gauge",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_DELIVER_ACK_RECEIVED,
-                    0,
-                    "basic should suppress completion counters",
-                );
-                let unwind = assert_mmsc(
-                    &metrics,
-                    COMPLETION_UNWIND_DEPTH,
-                    "basic completion unwind depth",
-                );
-                assert_eq!(
-                    unwind.count, 0,
-                    "basic should suppress unwind-depth details"
-                );
-            })
-            .await;
+            let metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                completion_metrics_key,
+                &[COMPLETION_PENDING_SENDS_BUFFERED],
+            )
+            .expect("basic completion metrics should be exported");
+            assert_u64(
+                &metrics,
+                COMPLETION_PENDING_SENDS_BUFFERED,
+                0,
+                "basic should export the backlog gauge",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_DELIVER_ACK_RECEIVED,
+                0,
+                "basic should suppress completion counters",
+            );
+            let unwind = assert_mmsc(
+                &metrics,
+                COMPLETION_UNWIND_DEPTH,
+                "basic completion unwind depth",
+            );
+            assert_eq!(
+                unwind.count, 0,
+                "basic should suppress unwind-depth details"
+            );
+        }
+        .await;
     }
 
     // `normal` should add Ack/Nack counters for the completion dispatcher
     // while still suppressing the detailed unwind-depth distribution.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_completion_metrics_normal_exports_counters_without_unwind_depth() {
-        let local = LocalSet::new();
+        async {
+            let CompletionTelemetryHarness {
+                dispatcher,
+                completion_tx,
+                mut control_receivers,
+                nodes,
+                completion_metrics_key,
+                snapshot_rx,
+                _guard: _,
+            } = setup_completion_telemetry_harness(MetricLevel::Normal);
 
-        local
-            .run_until(async {
-                let CompletionTelemetryHarness {
-                    dispatcher,
-                    completion_tx,
-                    mut control_receivers,
-                    nodes,
-                    completion_metrics_key,
-                    snapshot_rx,
-                    _guard: _,
-                } = setup_completion_telemetry_harness(MetricLevel::Normal);
+            let processor = nodes[1].clone();
+            let dispatcher_handle = tokio::task::spawn_local(async move { dispatcher.run().await });
 
-                let processor = nodes[1].clone();
-                let dispatcher_handle =
-                    tokio::task::spawn_local(async move { dispatcher.run().await });
+            completion_tx
+                .send(PipelineCompletionMsg::DeliverAck {
+                    ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                })
+                .await
+                .unwrap();
 
-                completion_tx
-                    .send(PipelineCompletionMsg::DeliverAck {
-                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
-                    })
-                    .await
-                    .unwrap();
+            let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+            let ack_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                .await
+                .expect("processor should receive Ack")
+                .expect("processor control channel should stay open");
+            assert!(matches!(ack_msg, NodeControlMsg::Ack(_)));
 
-                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
-                let ack_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should receive Ack")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(ack_msg, NodeControlMsg::Ack(_)));
+            drop(completion_tx);
+            let dispatcher_result = timeout(Duration::from_millis(200), dispatcher_handle).await;
+            assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
 
-                drop(completion_tx);
-                let dispatcher_result =
-                    timeout(Duration::from_millis(200), dispatcher_handle).await;
-                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
-
-                let metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    completion_metrics_key,
-                    &[COMPLETION_PENDING_SENDS_BUFFERED],
-                )
-                .expect("normal completion metrics should be exported");
-                assert_u64(
-                    &metrics,
-                    COMPLETION_DELIVER_ACK_RECEIVED,
-                    1,
-                    "normal should export completion receive counters",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_ACK_ATTEMPTED,
-                    1,
-                    "normal should export completion attempted counters",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_ACK_DELIVERED,
-                    1,
-                    "normal should export completion delivered counters",
-                );
-                let unwind = assert_mmsc(
-                    &metrics,
-                    COMPLETION_UNWIND_DEPTH,
-                    "normal completion unwind depth",
-                );
-                assert_eq!(
-                    unwind.count, 0,
-                    "normal should suppress unwind-depth details"
-                );
-            })
-            .await;
+            let metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                completion_metrics_key,
+                &[COMPLETION_PENDING_SENDS_BUFFERED],
+            )
+            .expect("normal completion metrics should be exported");
+            assert_u64(
+                &metrics,
+                COMPLETION_DELIVER_ACK_RECEIVED,
+                1,
+                "normal should export completion receive counters",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_ACK_ATTEMPTED,
+                1,
+                "normal should export completion attempted counters",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_ACK_DELIVERED,
+                1,
+                "normal should export completion delivered counters",
+            );
+            let unwind = assert_mmsc(
+                &metrics,
+                COMPLETION_UNWIND_DEPTH,
+                "normal completion unwind depth",
+            );
+            assert_eq!(
+                unwind.count, 0,
+                "normal should suppress unwind-depth details"
+            );
+        }
+        .await;
     }
 
     // Completion metrics should flush on the configured interval and remain
     // quiet on later intervals when no additional Ack/Nack work arrives.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_completion_metrics_flush_on_interval_without_repeated_snapshots() {
-        let local = LocalSet::new();
+        async {
+            let flush_interval = Duration::from_millis(200);
+            let CompletionTelemetryHarness {
+                dispatcher,
+                completion_tx,
+                mut control_receivers,
+                nodes,
+                completion_metrics_key,
+                snapshot_rx,
+                ..
+            } = setup_completion_telemetry_harness_with_capacity_and_flush_interval(
+                MetricLevel::Normal,
+                16,
+                flush_interval,
+            );
 
-        local
-            .run_until(async {
-                let flush_interval = Duration::from_millis(200);
-                let CompletionTelemetryHarness {
-                    dispatcher,
-                    completion_tx,
-                    mut control_receivers,
-                    nodes,
-                    completion_metrics_key,
-                    snapshot_rx,
-                    ..
-                } = setup_completion_telemetry_harness_with_capacity_and_flush_interval(
-                    MetricLevel::Normal,
-                    16,
-                    flush_interval,
-                );
+            let processor = nodes[1].clone();
+            let dispatcher_handle = tokio::task::spawn_local(async move { dispatcher.run().await });
 
-                let processor = nodes[1].clone();
-                let dispatcher_handle =
-                    tokio::task::spawn_local(async move { dispatcher.run().await });
+            completion_tx
+                .send(PipelineCompletionMsg::DeliverAck {
+                    ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                })
+                .await
+                .unwrap();
 
-                completion_tx
-                    .send(PipelineCompletionMsg::DeliverAck {
-                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
-                    })
-                    .await
-                    .unwrap();
+            let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+            let ack_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                .await
+                .expect("processor should receive Ack")
+                .expect("processor control channel should stay open");
+            assert!(matches!(ack_msg, NodeControlMsg::Ack(_)));
 
-                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
-                let ack_msg = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should receive Ack")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(ack_msg, NodeControlMsg::Ack(_)));
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(
+                snapshot_rx.try_recv().is_err(),
+                "completion metrics should not flush before the configured interval"
+            );
 
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                assert!(
-                    snapshot_rx.try_recv().is_err(),
-                    "completion metrics should not flush before the configured interval"
-                );
+            tokio::time::sleep(flush_interval + Duration::from_millis(50)).await;
+            let metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                completion_metrics_key,
+                &[COMPLETION_PENDING_SENDS_BUFFERED],
+            )
+            .expect("completion metrics should flush on the configured interval");
+            assert_u64(
+                &metrics,
+                COMPLETION_DELIVER_ACK_RECEIVED,
+                1,
+                "deliver_ack.received should flush on interval",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_ACK_ATTEMPTED,
+                1,
+                "ack.attempted should flush on interval",
+            );
+            assert_u64(
+                &metrics,
+                COMPLETION_ACK_DELIVERED,
+                1,
+                "ack.delivered should flush on interval",
+            );
 
-                tokio::time::sleep(flush_interval + Duration::from_millis(50)).await;
-                let metrics = collect_metric_set_snapshots(
+            tokio::time::sleep(flush_interval + Duration::from_millis(50)).await;
+            assert!(
+                collect_metric_set_snapshots(
                     &snapshot_rx,
                     completion_metrics_key,
                     &[COMPLETION_PENDING_SENDS_BUFFERED],
                 )
-                .expect("completion metrics should flush on the configured interval");
-                assert_u64(
-                    &metrics,
-                    COMPLETION_DELIVER_ACK_RECEIVED,
-                    1,
-                    "deliver_ack.received should flush on interval",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_ACK_ATTEMPTED,
-                    1,
-                    "ack.attempted should flush on interval",
-                );
-                assert_u64(
-                    &metrics,
-                    COMPLETION_ACK_DELIVERED,
-                    1,
-                    "ack.delivered should flush on interval",
-                );
+                .is_none(),
+                "unchanged completion state should not emit on later intervals"
+            );
 
-                tokio::time::sleep(flush_interval + Duration::from_millis(50)).await;
-                assert!(
-                    collect_metric_set_snapshots(
-                        &snapshot_rx,
-                        completion_metrics_key,
-                        &[COMPLETION_PENDING_SENDS_BUFFERED],
-                    )
-                    .is_none(),
-                    "unchanged completion state should not emit on later intervals"
-                );
-
-                drop(completion_tx);
-                let dispatcher_result =
-                    timeout(Duration::from_millis(200), dispatcher_handle).await;
-                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
-            })
-            .await;
+            drop(completion_tx);
+            let dispatcher_result = timeout(Duration::from_millis(200), dispatcher_handle).await;
+            assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
+        }
+        .await;
     }
 
     // If the metrics reporter channel is full, the completion dispatcher should
     // keep the state dirty and retry on the next flush interval.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_completion_metrics_retry_after_deferred_flush() {
-        let local = LocalSet::new();
+        async {
+            let flush_interval = Duration::from_millis(60);
+            let CompletionTelemetryHarness {
+                dispatcher,
+                completion_tx,
+                mut control_receivers,
+                nodes,
+                completion_metrics_key,
+                snapshot_rx,
+                ..
+            } = setup_completion_telemetry_harness_with_options(
+                MetricLevel::Normal,
+                16,
+                flush_interval,
+                1,
+            );
 
-        local
-            .run_until(async {
-                let flush_interval = Duration::from_millis(60);
-                let CompletionTelemetryHarness {
-                    dispatcher,
-                    completion_tx,
-                    mut control_receivers,
-                    nodes,
-                    completion_metrics_key,
-                    snapshot_rx,
-                    ..
-                } = setup_completion_telemetry_harness_with_options(
-                    MetricLevel::Normal,
-                    16,
-                    flush_interval,
-                    1,
-                );
+            let processor = nodes[1].clone();
+            let dispatcher_handle = tokio::task::spawn_local(async move { dispatcher.run().await });
 
-                let processor = nodes[1].clone();
-                let dispatcher_handle =
-                    tokio::task::spawn_local(async move { dispatcher.run().await });
+            completion_tx
+                .send(PipelineCompletionMsg::DeliverAck {
+                    ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                })
+                .await
+                .unwrap();
 
-                completion_tx
-                    .send(PipelineCompletionMsg::DeliverAck {
-                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
-                    })
-                    .await
-                    .unwrap();
+            let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
+            let first_ack = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                .await
+                .expect("processor should receive first Ack")
+                .expect("processor control channel should stay open");
+            assert!(matches!(first_ack, NodeControlMsg::Ack(_)));
 
-                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
-                let first_ack = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should receive first Ack")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(first_ack, NodeControlMsg::Ack(_)));
+            tokio::time::sleep(flush_interval + Duration::from_millis(30)).await;
+            assert_eq!(
+                snapshot_rx.len(),
+                1,
+                "first periodic flush should occupy the single-slot reporter channel"
+            );
 
-                tokio::time::sleep(flush_interval + Duration::from_millis(30)).await;
-                assert_eq!(
-                    snapshot_rx.len(),
-                    1,
-                    "first periodic flush should occupy the single-slot reporter channel"
-                );
+            completion_tx
+                .send(PipelineCompletionMsg::DeliverAck {
+                    ack: AckMsg::new(build_3node_pdata(&nodes, false)),
+                })
+                .await
+                .unwrap();
 
-                completion_tx
-                    .send(PipelineCompletionMsg::DeliverAck {
-                        ack: AckMsg::new(build_3node_pdata(&nodes, false)),
-                    })
-                    .await
-                    .unwrap();
+            let second_ack = timeout(Duration::from_millis(100), processor_ctrl.recv())
+                .await
+                .expect("processor should receive second Ack")
+                .expect("processor control channel should stay open");
+            assert!(matches!(second_ack, NodeControlMsg::Ack(_)));
 
-                let second_ack = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should receive second Ack")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(second_ack, NodeControlMsg::Ack(_)));
+            tokio::time::sleep(flush_interval + Duration::from_millis(30)).await;
+            assert_eq!(
+                snapshot_rx.len(),
+                1,
+                "deferred flush should keep the dirty snapshot pending instead of dropping it"
+            );
 
-                tokio::time::sleep(flush_interval + Duration::from_millis(30)).await;
-                assert_eq!(
-                    snapshot_rx.len(),
-                    1,
-                    "deferred flush should keep the dirty snapshot pending instead of dropping it"
-                );
+            let _first_snapshot = snapshot_rx
+                .try_recv()
+                .expect("first snapshot should be buffered");
 
-                let _first_snapshot = snapshot_rx
-                    .try_recv()
-                    .expect("first snapshot should be buffered");
+            tokio::time::sleep(flush_interval + Duration::from_millis(30)).await;
+            let retried_metrics = collect_metric_set_snapshots(
+                &snapshot_rx,
+                completion_metrics_key,
+                &[COMPLETION_PENDING_SENDS_BUFFERED],
+            )
+            .expect("dirty completion state should retry on the next interval");
+            assert_u64(
+                &retried_metrics,
+                COMPLETION_DELIVER_ACK_RECEIVED,
+                1,
+                "retried snapshot should preserve the second ack delta",
+            );
+            assert_u64(
+                &retried_metrics,
+                COMPLETION_ACK_ATTEMPTED,
+                1,
+                "retried snapshot should preserve the second attempted delta",
+            );
+            assert_u64(
+                &retried_metrics,
+                COMPLETION_ACK_DELIVERED,
+                1,
+                "retried snapshot should preserve the second delivered delta",
+            );
 
-                tokio::time::sleep(flush_interval + Duration::from_millis(30)).await;
-                let retried_metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    completion_metrics_key,
-                    &[COMPLETION_PENDING_SENDS_BUFFERED],
-                )
-                .expect("dirty completion state should retry on the next interval");
-                assert_u64(
-                    &retried_metrics,
-                    COMPLETION_DELIVER_ACK_RECEIVED,
-                    1,
-                    "retried snapshot should preserve the second ack delta",
-                );
-                assert_u64(
-                    &retried_metrics,
-                    COMPLETION_ACK_ATTEMPTED,
-                    1,
-                    "retried snapshot should preserve the second attempted delta",
-                );
-                assert_u64(
-                    &retried_metrics,
-                    COMPLETION_ACK_DELIVERED,
-                    1,
-                    "retried snapshot should preserve the second delivered delta",
-                );
-
-                drop(completion_tx);
-                let dispatcher_result =
-                    timeout(Duration::from_millis(200), dispatcher_handle).await;
-                assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
-            })
-            .await;
+            drop(completion_tx);
+            let dispatcher_result = timeout(Duration::from_millis(200), dispatcher_handle).await;
+            assert!(dispatcher_result.is_ok(), "dispatcher should stop cleanly");
+        }
+        .await;
     }
 
     // Completion traffic must remain live even when the runtime-control lane is
     // saturated with unrelated work. An Ack routed through the completion lane
     // should still reach its node promptly.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_return_lane_progress_while_runtime_ctrl_lane_is_busy() {
         use crate::control::AckMsg;
 
@@ -5919,76 +5768,70 @@ mod tests {
             });
             pdata
         }
+        async {
+            let (
+                manager,
+                pipeline_tx,
+                control_senders,
+                mut control_receivers,
+                nodes,
+                _pipeline_entity_guard,
+            ) = setup_test_manager_with_capacities::<TestPData>(128, 10);
+            let noisy_node = nodes[0].clone();
+            let target = nodes[1].clone();
 
-        let local = LocalSet::new();
-
-        local
-            .run_until(async {
-                let (
-                    manager,
-                    pipeline_tx,
-                    control_senders,
-                    mut control_receivers,
-                    nodes,
-                    _pipeline_entity_guard,
-                ) = setup_test_manager_with_capacities::<TestPData>(128, 10);
-                let noisy_node = nodes[0].clone();
-                let target = nodes[1].clone();
-
-                for _ in 0..96 {
-                    pipeline_tx
-                        .send(RuntimeControlMsg::StartTimer {
-                            node_id: noisy_node.index,
-                            duration: Duration::from_secs(60),
-                        })
-                        .await
-                        .unwrap();
-                }
-
-                let (return_tx, return_rx) = pipeline_completion_msg_channel(8);
-                return_tx
-                    .send(PipelineCompletionMsg::DeliverAck {
-                        ack: AckMsg::new(pdata_for_node(target.index)),
+            for _ in 0..96 {
+                pipeline_tx
+                    .send(RuntimeControlMsg::StartTimer {
+                        node_id: noisy_node.index,
+                        duration: Duration::from_secs(60),
                     })
                     .await
                     .unwrap();
+            }
 
-                let (dispatcher_context, dispatcher_guard) = create_test_pipeline_context();
-                let dispatcher = PipelineCompletionMsgDispatcher::new(
-                    dispatcher_context,
-                    return_rx,
-                    control_senders,
-                    empty_node_metric_handles(),
-                    MetricsReporter::create_new_and_receiver(16).1,
-                    TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
-                    TelemetryPolicy::default(),
-                );
+            let (return_tx, return_rx) = pipeline_completion_msg_channel(8);
+            return_tx
+                .send(PipelineCompletionMsg::DeliverAck {
+                    ack: AckMsg::new(pdata_for_node(target.index)),
+                })
+                .await
+                .unwrap();
 
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-                let dispatcher_handle =
-                    tokio::task::spawn_local(async move { dispatcher.run().await });
+            let (dispatcher_context, dispatcher_guard) = create_test_pipeline_context();
+            let dispatcher = PipelineCompletionMsgDispatcher::new(
+                dispatcher_context,
+                return_rx,
+                control_senders,
+                empty_node_metric_handles(),
+                MetricsReporter::create_new_and_receiver(16).1,
+                TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
+                TelemetryPolicy::default(),
+            );
 
-                let mut receiver = control_receivers.remove(&target.index).unwrap();
-                let msg = timeout(Duration::from_millis(500), receiver.recv())
-                    .await
-                    .expect("Ack should make progress while the runtime control lane is busy")
-                    .expect("target control channel should stay open");
-                assert!(matches!(msg, NodeControlMsg::Ack(_)));
+            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+            let dispatcher_handle = tokio::task::spawn_local(async move { dispatcher.run().await });
 
-                drop(return_tx);
-                drop(pipeline_tx);
+            let mut receiver = control_receivers.remove(&target.index).unwrap();
+            let msg = timeout(Duration::from_millis(500), receiver.recv())
+                .await
+                .expect("Ack should make progress while the runtime control lane is busy")
+                .expect("target control channel should stay open");
+            assert!(matches!(msg, NodeControlMsg::Ack(_)));
 
-                let dispatcher_result =
-                    timeout(Duration::from_millis(200), dispatcher_handle).await;
-                assert!(
-                    dispatcher_result.is_ok(),
-                    "Return dispatcher should shut down cleanly"
-                );
-                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(manager_result.is_ok(), "Manager should shut down cleanly");
-                drop(dispatcher_guard);
-            })
-            .await;
+            drop(return_tx);
+            drop(pipeline_tx);
+
+            let dispatcher_result = timeout(Duration::from_millis(200), dispatcher_handle).await;
+            assert!(
+                dispatcher_result.is_ok(),
+                "Return dispatcher should shut down cleanly"
+            );
+            let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
+            assert!(manager_result.is_ok(), "Manager should shut down cleanly");
+            drop(dispatcher_guard);
+        }
+        .await;
     }
 
     /// Demonstrates a realistic circular wait between the manager and an active
@@ -6030,7 +5873,7 @@ mod tests {
     /// `try_send` + `pending_sends` buffering in `send()` prevents the manager
     /// from blocking on Node A's full control channel, so Node B's ack is
     /// delivered promptly.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_circular_wait_between_node_and_manager() {
         use crate::control::AckMsg;
 
@@ -6048,124 +5891,119 @@ mod tests {
             });
             pdata
         }
+        async {
+            // --- Custom setup with specific channel capacities ---
+            let (return_tx, return_rx) = pipeline_completion_msg_channel(3);
+            let mut control_senders = ControlSenders::new();
 
-        let local = LocalSet::new();
+            let nodes = test_nodes(vec!["node_a", "node_b"]);
+            let node_a = nodes[0].clone();
+            let node_b = nodes[1].clone();
 
-        local
-            .run_until(async {
-                // --- Custom setup with specific channel capacities ---
-                let (return_tx, return_rx) = pipeline_completion_msg_channel(3);
-                let mut control_senders = ControlSenders::new();
+            // Node A: control channel capacity 1 — fills up after one message
+            let (tx_a, rx_a) = tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(1);
+            control_senders.register(
+                node_a.clone(),
+                NodeType::Processor,
+                Sender::Shared(SharedSender::mpsc(tx_a)),
+            );
 
-                let nodes = test_nodes(vec!["node_a", "node_b"]);
-                let node_a = nodes[0].clone();
-                let node_b = nodes[1].clone();
+            // Node B: control channel capacity 10 — plenty of room
+            let (tx_b, rx_b) = tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(10);
+            control_senders.register(
+                node_b.clone(),
+                NodeType::Processor,
+                Sender::Shared(SharedSender::mpsc(tx_b)),
+            );
 
-                // Node A: control channel capacity 1 — fills up after one message
-                let (tx_a, rx_a) = tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(1);
-                control_senders.register(
-                    node_a.clone(),
-                    NodeType::Processor,
-                    Sender::Shared(SharedSender::mpsc(tx_a)),
-                );
+            let (dispatcher_context, dispatcher_guard) = create_test_pipeline_context();
+            let dispatcher = PipelineCompletionMsgDispatcher::new(
+                dispatcher_context,
+                return_rx,
+                control_senders,
+                empty_node_metric_handles(),
+                MetricsReporter::create_new_and_receiver(16).1,
+                TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
+                TelemetryPolicy::default(),
+            );
 
-                // Node B: control channel capacity 10 — plenty of room
-                let (tx_b, rx_b) = tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(10);
-                control_senders.register(
-                    node_b.clone(),
-                    NodeType::Processor,
-                    Sender::Shared(SharedSender::mpsc(tx_b)),
-                );
+            // Pre-load the shared return channel: [DeliverAck{A}, DeliverAck{A}, DeliverAck{B}]
+            // This fills the channel (cap=3) before anyone starts consuming.
+            return_tx
+                .send(PipelineCompletionMsg::DeliverAck {
+                    ack: AckMsg::new(pdata_for_node(node_a.index)),
+                })
+                .await
+                .unwrap();
+            return_tx
+                .send(PipelineCompletionMsg::DeliverAck {
+                    ack: AckMsg::new(pdata_for_node(node_a.index)),
+                })
+                .await
+                .unwrap();
+            return_tx
+                .send(PipelineCompletionMsg::DeliverAck {
+                    ack: AckMsg::new(pdata_for_node(node_b.index)),
+                })
+                .await
+                .unwrap();
 
-                let (dispatcher_context, dispatcher_guard) = create_test_pipeline_context();
-                let dispatcher = PipelineCompletionMsgDispatcher::new(
-                    dispatcher_context,
-                    return_rx,
-                    control_senders,
-                    empty_node_metric_handles(),
-                    MetricsReporter::create_new_and_receiver(16).1,
-                    TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
-                    TelemetryPolicy::default(),
-                );
-
-                // Pre-load the shared return channel: [DeliverAck{A}, DeliverAck{A}, DeliverAck{B}]
-                // This fills the channel (cap=3) before anyone starts consuming.
-                return_tx
-                    .send(PipelineCompletionMsg::DeliverAck {
-                        ack: AckMsg::new(pdata_for_node(node_a.index)),
-                    })
-                    .await
-                    .unwrap();
-                return_tx
-                    .send(PipelineCompletionMsg::DeliverAck {
-                        ack: AckMsg::new(pdata_for_node(node_a.index)),
-                    })
-                    .await
-                    .unwrap();
-                return_tx
-                    .send(PipelineCompletionMsg::DeliverAck {
-                        ack: AckMsg::new(pdata_for_node(node_b.index)),
-                    })
-                    .await
-                    .unwrap();
-
-                // Spawn Node A: simulates an exporter that's acking a batch of
-                // messages in a tight loop (just like AzureMonitorExporter's
-                // `for msg in completed_messages { notify_ack(..).await; }` loop).
-                //
-                // Node A keeps sending DeliverAck to the shared return channel.
-                // When the channel is full, Node A blocks — and since it never
-                // drains its own control channel (rx_a), the dispatcher can't
-                // deliver acks to it either.
-                let node_a_tx = return_tx.clone();
-                let node_a_index = node_a.index;
-                let _node_a_handle = tokio::task::spawn_local(async move {
-                    let _rx_a = rx_a; // keep A's ctrl channel open (not closed)
-                    loop {
-                        if node_a_tx
-                            .send(PipelineCompletionMsg::DeliverAck {
-                                ack: AckMsg::new(pdata_for_node(node_a_index)),
-                            })
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
+            // Spawn Node A: simulates an exporter that's acking a batch of
+            // messages in a tight loop (just like AzureMonitorExporter's
+            // `for msg in completed_messages { notify_ack(..).await; }` loop).
+            //
+            // Node A keeps sending DeliverAck to the shared return channel.
+            // When the channel is full, Node A blocks — and since it never
+            // drains its own control channel (rx_a), the dispatcher can't
+            // deliver acks to it either.
+            let node_a_tx = return_tx.clone();
+            let node_a_index = node_a.index;
+            let _node_a_handle = tokio::task::spawn_local(async move {
+                let _rx_a = rx_a; // keep A's ctrl channel open (not closed)
+                loop {
+                    if node_a_tx
+                        .send(PipelineCompletionMsg::DeliverAck {
+                            ack: AckMsg::new(pdata_for_node(node_a_index)),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
                     }
-                });
+                }
+            });
 
-                // Start the dispatcher
-                let dispatcher_handle =
-                    tokio::task::spawn_local(async move { dispatcher.run().await });
+            // Start the dispatcher
+            let dispatcher_handle = tokio::task::spawn_local(async move { dispatcher.run().await });
 
-                // Assert Node B receives its ack within 500 ms.
-                // With the non-blocking try_send fix, the dispatcher buffers
-                // messages for Node A's full channel and keeps processing,
-                // so Node B's ack arrives promptly.
-                let mut receiver_b = Receiver::Shared(SharedReceiver::mpsc(rx_b));
-                let received = timeout(Duration::from_millis(500), receiver_b.recv()).await;
+            // Assert Node B receives its ack within 500 ms.
+            // With the non-blocking try_send fix, the dispatcher buffers
+            // messages for Node A's full channel and keeps processing,
+            // so Node B's ack arrives promptly.
+            let mut receiver_b = Receiver::Shared(SharedReceiver::mpsc(rx_b));
+            let received = timeout(Duration::from_millis(500), receiver_b.recv()).await;
 
-                assert!(
-                    received.is_ok(),
-                    "Node B should receive its Ack within 500 ms, but the \
+            assert!(
+                received.is_ok(),
+                "Node B should receive its Ack within 500 ms, but the \
                      dispatcher is stuck in a circular wait with Node A: the \
                      dispatcher is blocked sending to Node A's full control \
                      channel, while Node A is blocked sending to the full \
                      shared return channel"
-                );
+            );
 
-                // Cleanup
-                drop(return_tx);
-                dispatcher_handle.abort();
-                drop(dispatcher_guard);
-            })
-            .await;
+            // Cleanup
+            drop(return_tx);
+            dispatcher_handle.abort();
+            drop(dispatcher_guard);
+        }
+        .await;
     }
 
     // The converse isolation should also hold: a busy completion lane must not
     // prevent the runtime-control manager from dispatching due work such as a
     // timer tick to another node.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_runtime_ctrl_progress_while_return_lane_is_busy() {
         use crate::control::AckMsg;
 
@@ -6182,11 +6020,7 @@ mod tests {
             });
             pdata
         }
-
-        let local = LocalSet::new();
-
-        local
-            .run_until(async {
+        async {
                 let mut control_senders = ControlSenders::new();
                 let nodes = test_nodes(vec!["node_a", "node_timer"]);
                 let node_a = nodes[0].clone();
@@ -6276,7 +6110,7 @@ mod tests {
                 let manager_result = timeout(Duration::from_millis(500), manager_handle).await;
                 assert!(manager_result.is_ok(), "Manager should shut down cleanly");
                 drop(dispatcher_guard);
-            })
-            .await;
+        }
+        .await;
     }
 }

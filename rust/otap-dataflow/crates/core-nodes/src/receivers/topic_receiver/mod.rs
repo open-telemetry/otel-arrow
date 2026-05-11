@@ -820,8 +820,8 @@ mod tests {
 
     #[test]
     fn bridges_downstream_ack_to_topic_outcome_when_enabled() {
-        let (rt, local_tasks) = setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let broker = TopicBroker::<OtapPdata>::new();
             let topic_name =
                 otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
@@ -920,13 +920,13 @@ mod tests {
 
             let receiver_result = receiver_task.await.expect("receiver task should join");
             assert!(receiver_result.is_ok(), "receiver should stop cleanly");
-        }));
+        });
     }
 
     #[test]
     fn broadcast_receiver_stops_when_disconnected_on_lag() {
-        let (rt, local_tasks) = setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let broker = TopicBroker::<OtapPdata>::new();
             let topic_name =
                 otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
@@ -1010,7 +1010,7 @@ mod tests {
                 receiver_result.is_ok(),
                 "receiver should stop cleanly after lag disconnect"
             );
-        }));
+        });
     }
 
     /// Scenario: receiver-first shutdown drains a topic receiver whose default
@@ -1019,8 +1019,8 @@ mod tests {
     /// exits promptly without waiting for downstream terminal outcomes.
     #[test]
     fn drain_ingress_exits_promptly_when_ack_propagation_is_disabled() {
-        let (rt, local_tasks) = setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let broker = TopicBroker::<OtapPdata>::new();
             let topic_name =
                 otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
@@ -1104,7 +1104,7 @@ mod tests {
                 terminal_state.deadline() > Instant::now(),
                 "receiver should return the drain deadline terminal state"
             );
-        }));
+        });
     }
 
     /// Scenario: receiver-first shutdown hits a topic receiver after it has
@@ -1113,8 +1113,8 @@ mod tests {
     /// until the downstream terminal outcome is bridged, then exits promptly.
     #[test]
     fn drain_ingress_waits_for_forwarded_tracked_message_then_exits() {
-        let (rt, local_tasks) = setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let broker = TopicBroker::<OtapPdata>::new();
             let topic_name =
                 otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
@@ -1222,7 +1222,7 @@ mod tests {
                 .expect("receiver should exit once the tracked outcome is bridged")
                 .expect("receiver task should join");
             assert!(receiver_result.is_ok(), "receiver should stop cleanly");
-        }));
+        });
     }
 
     /// Scenario: receiver-first shutdown reaches a topic receiver while it is
@@ -1232,8 +1232,8 @@ mod tests {
     /// blocked send.
     #[test]
     fn drain_ingress_interrupts_blocked_forward_when_ack_propagation_is_disabled() {
-        let (rt, local_tasks) = setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let broker = TopicBroker::<OtapPdata>::new();
             let topic_name =
                 otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
@@ -1325,6 +1325,6 @@ mod tests {
                 .expect("receiver should exit promptly after interrupting a blocked forward")
                 .expect("receiver task should join");
             assert!(receiver_result.is_ok(), "receiver should stop cleanly");
-        }));
+        });
     }
 }

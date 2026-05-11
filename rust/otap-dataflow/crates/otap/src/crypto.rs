@@ -82,14 +82,30 @@ pub fn ensure_crypto_provider() {
             let _ = install_crypto_provider();
         }
 
-        #[cfg(not(any(
-            feature = "crypto-ring",
-            feature = "crypto-aws-lc",
-            feature = "crypto-symcrypt",
-            feature = "crypto-openssl"
-        )))]
+        #[cfg(all(
+            feature = "test-utils",
+            not(any(
+                feature = "crypto-ring",
+                feature = "crypto-aws-lc",
+                feature = "crypto-symcrypt",
+                feature = "crypto-openssl"
+            ))
+        ))]
         {
             let _ = rustls::crypto::ring::default_provider().install_default();
+        }
+
+        #[cfg(all(
+            not(feature = "test-utils"),
+            not(any(
+                feature = "crypto-ring",
+                feature = "crypto-aws-lc",
+                feature = "crypto-symcrypt",
+                feature = "crypto-openssl"
+            ))
+        ))]
+        {
+            let _ = install_crypto_provider();
         }
     });
 }

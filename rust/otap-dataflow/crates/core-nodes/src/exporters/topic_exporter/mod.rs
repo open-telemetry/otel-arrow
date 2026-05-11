@@ -653,8 +653,8 @@ mod tests {
 
     #[test]
     fn bridges_topic_ack_event_back_to_upstream_when_enabled() {
-        let (rt, local_tasks) = setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let broker = TopicBroker::<OtapPdata>::new();
             let topic_name =
                 otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
@@ -784,7 +784,7 @@ mod tests {
                 .expect("exporter shutdown should be sent");
             let exporter_result = exporter_task.await.expect("exporter task should join");
             assert!(exporter_result.is_ok(), "exporter should stop cleanly");
-        }));
+        });
     }
 
     /// Scenario: shutdown reaches a topic exporter while one untracked publish
@@ -793,8 +793,8 @@ mod tests {
     /// upstream pdata, and exits promptly.
     #[test]
     fn shutdown_interrupts_blocked_untracked_publish_with_block_policy() {
-        let (rt, local_tasks) = setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let broker = TopicBroker::<OtapPdata>::new();
             let topic_name =
                 otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
@@ -948,7 +948,7 @@ mod tests {
                 .expect("exporter should exit promptly after shutdown")
                 .expect("exporter task should join");
             assert!(exporter_result.is_ok(), "exporter should stop cleanly");
-        }));
+        });
     }
 
     /// Scenario: shutdown reaches a topic exporter while one untracked publish
@@ -958,8 +958,8 @@ mod tests {
     /// panicking the exporter loop, and the exporter exits cleanly.
     #[test]
     fn shutdown_nacks_force_drained_buffered_pdata_while_blocked_publish_is_in_flight() {
-        let (rt, local_tasks) = setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let broker = TopicBroker::<OtapPdata>::new();
             let topic_name =
                 otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
@@ -1127,7 +1127,7 @@ mod tests {
                 .expect("exporter should exit promptly after shutdown")
                 .expect("exporter task should join");
             assert!(exporter_result.is_ok(), "exporter should stop cleanly");
-        }));
+        });
     }
 
     /// Scenario: shutdown reaches a topic exporter while one tracked publish is
@@ -1137,8 +1137,8 @@ mod tests {
     /// already-admitted tracked publish, then exits promptly.
     #[test]
     fn shutdown_interrupts_blocked_tracked_publish_with_block_policy() {
-        let (rt, local_tasks) = setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let broker = TopicBroker::<OtapPdata>::new();
             let topic_name =
                 otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
@@ -1280,6 +1280,6 @@ mod tests {
                 .expect("exporter should exit promptly after shutdown")
                 .expect("exporter task should join");
             assert!(exporter_result.is_ok(), "exporter should stop cleanly");
-        }));
+        });
     }
 }

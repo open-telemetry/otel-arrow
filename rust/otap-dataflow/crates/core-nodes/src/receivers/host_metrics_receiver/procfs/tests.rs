@@ -35,7 +35,7 @@ use weaver_semconv::{
 
 fn block_on_scrape(source: &mut ProcfsSource, due: ProcfsFamilies) -> io::Result<HostScrape> {
     tokio::runtime::Builder::new_current_thread()
-        .build()
+        .build_local(tokio::runtime::LocalOptions::default())
         .expect("runtime")
         .block_on(source.scrape_due(due))
 }
