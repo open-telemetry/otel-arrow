@@ -57,7 +57,7 @@ jobs:
           SIZE_MB=$(docker cp "$cid":/home/nonroot/df_engine - | wc -c | numfmt --to-unit=1048576 --format='%.2f')
           docker container rm "$cid"
           echo "Binary size for ${{ matrix.platform.name }}: $SIZE_MB MB"
-           
+
           mkdir -p size-reports
           cat > size-reports/${{ matrix.platform.name }}.json << EOF
           [
