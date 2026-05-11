@@ -12,7 +12,7 @@ engine:
                 path: "/metrics"
       views:
         - selector:
-            scope_name: "traffic_generator.receiver.metrics"
+            scope_name: "traffic_generator.receiver"
             instrument_name: "logs.produced"
           stream:
             name: "otlp.logs.produced.count"

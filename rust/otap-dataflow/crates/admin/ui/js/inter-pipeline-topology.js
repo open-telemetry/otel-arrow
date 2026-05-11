@@ -149,7 +149,7 @@ export function buildInterPipelineTopology(metricSets) {
   const endpointIds = new Set();
 
   for (const set of metricSets || []) {
-    if (set.name !== "topic.exporter.metrics" && set.name !== "topic.receiver.metrics") {
+    if (set.name !== "topic.exporter.metrics" && set.name !== "topic.receiver") {
       continue;
     }
 
