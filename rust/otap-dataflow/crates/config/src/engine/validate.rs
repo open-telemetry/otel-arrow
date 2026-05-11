@@ -45,6 +45,15 @@ impl OtelDataflowSpec {
             errors.push(e);
         }
 
+        errors.extend(
+            self.engine
+                .runtime
+                .local_runtime
+                .validation_errors("engine.runtime.local_runtime")
+                .into_iter()
+                .map(|error| Error::InvalidUserConfig { error }),
+        );
+
         if let Some(observability_pipeline) = self.engine.observability.pipeline.clone() {
             if let Some(policies) = &observability_pipeline.policies {
                 errors.extend(

@@ -32,6 +32,7 @@ use crate::runtime::build_local_runtime;
 use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
+use otap_df_config::engine::LocalRuntimeSettings;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::ObservedEventReporter;
@@ -117,6 +118,8 @@ pub struct RuntimePipeline<PData: Debug> {
     channel_metrics: Vec<ChannelMetricsHandle>,
     /// Flags controlling pipeline-internal metrics collection/reporting.
     telemetry_policy: TelemetryPolicy,
+    /// Settings applied when creating this pipeline's Tokio `LocalRuntime`.
+    local_runtime_settings: LocalRuntimeSettings,
 }
 
 fn report_terminal_metrics(metrics_reporter: &MetricsReporter, terminal_state: TerminalState) {
@@ -157,7 +160,13 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             nodes,
             channel_metrics: Default::default(),
             telemetry_policy,
+            local_runtime_settings: LocalRuntimeSettings::default(),
         }
+    }
+
+    /// Overrides the settings used when this pipeline creates its Tokio `LocalRuntime`.
+    pub fn set_local_runtime_settings(&mut self, settings: LocalRuntimeSettings) {
+        self.local_runtime_settings = settings;
     }
 
     pub(crate) fn set_channel_metrics(&mut self, channel_metrics: Vec<ChannelMetricsHandle>) {
@@ -205,20 +214,26 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             nodes: _nodes,
             channel_metrics,
             telemetry_policy,
+            local_runtime_settings,
         } = self;
 
         let metric_level = telemetry_policy.runtime_metrics;
         let node_interests = Interests::from_metric_level(metric_level);
 
         // Local runtime so we can drive !Send node tasks on the core thread.
-        let rt = build_local_runtime(format!(
-            "pipeline:{}:{}:core{}:gen{}",
-            pipeline_key.pipeline_group_id,
-            pipeline_key.pipeline_id,
-            pipeline_key.core_id,
-            pipeline_key.deployment_generation
-        ))
-        .expect("Failed to create local runtime");
+        let rt = build_local_runtime(
+            format!(
+                "pipeline:{}:{}:core{}:gen{}",
+                pipeline_key.pipeline_group_id,
+                pipeline_key.pipeline_id,
+                pipeline_key.core_id,
+                pipeline_key.deployment_generation
+            ),
+            &local_runtime_settings,
+        )
+        .map_err(|err| Error::InternalError {
+            message: format!("failed to create local runtime: {err}"),
+        })?;
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
         let mut control_senders = ControlSenders::default();

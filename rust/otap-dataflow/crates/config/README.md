@@ -169,6 +169,14 @@ Resolution semantics:
   omitted families are populated with defaults at that scope (they do not
   inherit from upper scopes)
 
+## Engine Runtime Settings
+
+Engine-wide runtime settings are configured under `engine.runtime`.
+
+- `engine.runtime.local_runtime.event_interval` is optional.
+- When unset, Tokio's built-in `LocalRuntime` default is used.
+- When set, it must be greater than `0`.
+
 ## Topic Declarations
 
 Topics can be declared in two scopes:

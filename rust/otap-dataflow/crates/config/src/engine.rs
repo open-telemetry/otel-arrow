@@ -75,6 +75,10 @@ pub struct EngineConfig {
     #[serde(default)]
     pub topics: EngineTopicsConfig,
 
+    /// Engine-wide runtime settings.
+    #[serde(default)]
+    pub runtime: EngineRuntimeConfig,
+
     /// Engine observability declarations.
     #[serde(default)]
     pub observability: EngineObservabilityConfig,
@@ -96,6 +100,39 @@ pub struct EngineTopicsConfig {
     /// Default topic implementation selection policy.
     #[serde(default)]
     pub impl_selection: TopicImplSelectionPolicy,
+}
+
+/// Engine-wide runtime settings.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EngineRuntimeConfig {
+    /// Settings for pipeline-local Tokio `LocalRuntime` instances.
+    #[serde(default)]
+    pub local_runtime: LocalRuntimeSettings,
+}
+
+/// Settings for pipeline-local Tokio `LocalRuntime` instances.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LocalRuntimeSettings {
+    /// Number of scheduler ticks before Tokio polls timers and I/O events.
+    ///
+    /// When omitted, Tokio's own default is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_interval: Option<u32>,
+}
+
+impl LocalRuntimeSettings {
+    #[must_use]
+    pub(crate) fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
+        let mut errors = Vec::new();
+        if matches!(self.event_interval, Some(0)) {
+            errors.push(format!(
+                "{path_prefix}.event_interval must be greater than 0"
+            ));
+        }
+        errors
+    }
 }
 
 /// Engine observability declarations.
@@ -381,6 +418,75 @@ groups:
         let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
         let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
         assert!(config.engine.custom.is_empty());
+    }
+
+    #[test]
+    fn local_runtime_event_interval_defaults_to_tokio_default() {
+        let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
+        let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
+        assert_eq!(config.engine.runtime.local_runtime.event_interval, None);
+    }
+
+    #[test]
+    fn from_yaml_accepts_local_runtime_event_interval() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  runtime:
+    local_runtime:
+      event_interval: 127
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        assert_eq!(
+            config.engine.runtime.local_runtime.event_interval,
+            Some(127)
+        );
+    }
+
+    #[test]
+    fn from_yaml_rejects_zero_local_runtime_event_interval() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  runtime:
+    local_runtime:
+      event_interval: 0
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml).expect_err("should reject zero interval");
+        assert!(
+            err.to_string()
+                .contains("engine.runtime.local_runtime.event_interval must be greater than 0")
+        );
     }
 
     #[test]

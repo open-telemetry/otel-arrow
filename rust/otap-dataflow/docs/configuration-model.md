@@ -163,6 +163,7 @@ Important behavior:
 - `topics`
 - `http_admin`
 - `telemetry`
+- `runtime`
 - `observed_state`
 - `observability`
 - `custom`
@@ -177,6 +178,27 @@ Engine-wide topic runtime defaults are declared at `engine.topics`.
     mixed implementation
 
 Per-topic `topics.*.impl_selection` overrides this engine-wide default when set.
+
+### Engine Runtime Settings
+
+Engine-wide runtime tuning is declared at `engine.runtime`.
+
+- `engine.runtime.local_runtime.event_interval` (optional): number of Tokio
+  scheduler ticks before each pipeline `LocalRuntime` polls timers and I/O
+  events. When omitted, Tokio's built-in default is used.
+
+Example:
+
+```yaml
+engine:
+  runtime:
+    local_runtime:
+      event_interval: 127
+```
+
+Use this only after workload-specific validation. Higher values can reduce
+scheduler and I/O polling overhead for hot pipelines, but may increase timer and
+I/O readiness latency under sustained ready-task load.
 
 ### Observability Pipeline
 

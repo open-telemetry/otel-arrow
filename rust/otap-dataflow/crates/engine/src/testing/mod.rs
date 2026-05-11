@@ -18,6 +18,7 @@ use crate::context::{ControllerContext, PipelineContext};
 use crate::control::NodeControlMsg;
 use crate::runtime::build_local_runtime;
 use otap_df_channel::mpsc;
+use otap_df_config::engine::LocalRuntimeSettings;
 use otap_df_config::node::NodeKind;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use std::collections::HashMap;
@@ -205,7 +206,8 @@ pub fn setup_test_runtime() -> LocalRuntime {
         );
     }
 
-    build_local_runtime("otap-test-local-runtime").expect("Failed to create new local runtime")
+    build_local_runtime("otap-test-local-runtime", &LocalRuntimeSettings::default())
+        .expect("Failed to create new local runtime")
 }
 
 /// Helper to create `!Send` MPSC channels with a specific capacity.
