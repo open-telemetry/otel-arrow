@@ -38,7 +38,7 @@ ENV FEATURES=${FEATURES}
 RUN ./cross-arch-build.sh
 
 # Runtime image
-FROM gcr.io/distroless/cc-debian13:nonroot
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:8f960b7fc6a5d6e28bb07f982655925d6206678bd9a6cde2ad00ddb5e2077d78
 LABEL maintainer="The OpenTelemetry Authors"
 
 WORKDIR /home/nonroot
