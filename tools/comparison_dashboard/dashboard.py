@@ -45,9 +45,12 @@ DEFAULT_DATA_SUBDIR = Path("data")
 DEFAULT_COMPARE_SUBDIR = Path("compare")
 DEFAULT_DATA_DIR = DEFAULT_SITE_ROOT / DEFAULT_DATA_SUBDIR
 
-# Source location of static assets (CSS/JS) relative to the manifest's
-# parent directory. Copied into <site-root>/shared/ at build time.
-SHARED_SOURCE_SUBDIR = Path("shared")
+# Name of the static-assets directory. The source lives at
+# <manifest-dir>/<SHARED_DIR_NAME>/ and is copied into
+# <compare-dir>/<SHARED_DIR_NAME>/ at build time. The name is also reserved
+# as a comparison slug so it can't collide with a generated page directory.
+SHARED_DIR_NAME = "shared"
+SHARED_SOURCE_SUBDIR = Path(SHARED_DIR_NAME)
 
 # File extensions included when scanning test directories during build
 ALLOWED_EXTENSIONS = {".toml", ".yaml", ".yml", ".json", ".txt"}
@@ -520,7 +523,10 @@ class BuildPaths:
     data_dir: Path         # absolute, subdir of site_root
     compare_dir: Path      # absolute, subdir of site_root
     shared_src: Path       # absolute, source location of shared/ assets
-    shared_dst: Path       # absolute, = compare_dir / "shared"
+
+    @property
+    def shared_dst(self) -> Path:
+        return self.compare_dir / SHARED_DIR_NAME
 
     def compare_page_dir(self, slug: str) -> Path:
         return self.compare_dir / slug
@@ -538,9 +544,7 @@ def resolve_build_paths(args, manifest: Manifest) -> BuildPaths:
     # data_dir and compare_dir must live inside site_root so the generated
     # relative paths in HTML resolve correctly when the site is served.
     for name, path in (("--data-dir", data_dir), ("--compare-dir", compare_dir)):
-        try:
-            path.relative_to(site_root)
-        except ValueError:
+        if not path.is_relative_to(site_root):
             print(
                 f"ERROR: {name} must be a subdirectory of --site-root.\n"
                 f"  site-root: {site_root}\n"
@@ -559,7 +563,6 @@ def resolve_build_paths(args, manifest: Manifest) -> BuildPaths:
         data_dir=data_dir,
         compare_dir=compare_dir,
         shared_src=shared_src,
-        shared_dst=compare_dir / "shared",
     )
 
 
@@ -585,9 +588,9 @@ def cmd_build(args) -> int:
     print(f"  Copied {paths.shared_src} -> {paths.shared_dst}")
     print()
 
-    comparisons = validate_all(manifest)
+    comparisons, parsed_suites = validate_all(manifest)
 
-    manifest_slugs = collect_manifest_suite_slugs(manifest)
+    manifest_slugs = {s["slug"] for _, s in parsed_suites if s.get("slug")}
     comparison_slugs = {c["slug"] for c in comparisons}
 
     print("Reconciling data and compare directories...")
@@ -596,11 +599,11 @@ def cmd_build(args) -> int:
     print()
 
     print("Regenerating suite.yaml files from manifest suites...")
-    regenerate_suite_yamls(manifest, paths)
+    regenerate_suite_yamls(parsed_suites, paths)
     print()
 
     print("Building suite data...")
-    suites = build_suites(manifest, paths)
+    suites = build_suites(parsed_suites, paths)
     print()
 
     if suites:
@@ -625,15 +628,15 @@ def cmd_build(args) -> int:
     return 0
 
 
-def collect_manifest_suite_slugs(manifest: Manifest) -> set[str]:
-    """Read each suite file and return the set of declared slugs."""
-    slugs: set[str] = set()
+def load_parsed_suites(manifest: Manifest) -> list[tuple[Path, dict]]:
+    """Parse every suite YAML listed in the manifest. The build, validation,
+    and regeneration steps all consume the result; reading once avoids
+    re-parsing each file three or four times per build."""
+    parsed: list[tuple[Path, dict]] = []
     for suite_file in manifest.suite_files:
         with open(suite_file) as f:
-            slug = yaml.safe_load(f).get("slug")
-        if slug:
-            slugs.add(slug)
-    return slugs
+            parsed.append((suite_file, yaml.safe_load(f) or {}))
+    return parsed
 
 
 def reconcile_data_dir(data_dir: Path, manifest_slugs: set[str]) -> None:
@@ -655,7 +658,7 @@ def reconcile_compare_dir(paths: BuildPaths, comparison_slugs: set[str]) -> None
     `shared/` subtree and not a manifested comparison slug. The compare-dir
     is dashboard-owned territory.
     """
-    reserved = {"shared"}
+    reserved = {SHARED_DIR_NAME}
     for child in sorted(paths.compare_dir.iterdir()):
         if not child.is_dir():
             continue
@@ -665,15 +668,15 @@ def reconcile_compare_dir(paths: BuildPaths, comparison_slugs: set[str]) -> None
         print(f"  Pruned stale comparison page: {child}")
 
 
-def regenerate_suite_yamls(manifest: Manifest, paths: BuildPaths) -> None:
+def regenerate_suite_yamls(
+    parsed_suites: list[tuple[Path, dict]],
+    paths: BuildPaths,
+) -> None:
     """
     Regenerate <data_dir>/suite/<slug>/suite.yaml from the full suite
     definitions listed in the manifest.
     """
-    for suite_file in manifest.suite_files:
-        with open(suite_file) as f:
-            suite = yaml.safe_load(f)
-
+    for _, suite in parsed_suites:
         slug = suite.get("slug")
         if not slug:
             continue
@@ -741,7 +744,10 @@ def scan_test_directory(test_dir: Path) -> dict:
     }
 
 
-def build_suites(manifest: Manifest, paths: BuildPaths) -> dict:
+def build_suites(
+    parsed_suites: list[tuple[Path, dict]],
+    paths: BuildPaths,
+) -> dict:
     """
     Build suite data structures.
 
@@ -794,10 +800,7 @@ def build_suites(manifest: Manifest, paths: BuildPaths) -> dict:
 
         print(f"  {slug}: {len(tests)} tests")
 
-    for suite_file in manifest.suite_files:
-        with open(suite_file) as f:
-            suite = yaml.safe_load(f)
-
+    for _, suite in parsed_suites:
         slug = suite.get("slug")
         if not slug or slug in suites:
             continue
@@ -841,27 +844,32 @@ def load_comparisons(manifest: Manifest) -> list:
     return comparisons
 
 
-def validate_all(manifest: Manifest) -> list:
+def validate_all(manifest: Manifest) -> tuple[list, list[tuple[Path, dict]]]:
     """
     Single validation entry point used by both `build` and `validate` verbs.
 
-    Loads comparisons and runs every manifest-level check. Aborts with
-    sys.exit(1) on any failure. Returns the loaded comparisons list so the
-    caller doesn't have to reload them.
+    Returns (comparisons, parsed_suites) so callers can reuse both without
+    re-reading the suite or comparison files. Aborts via sys.exit(1) on any
+    validation failure.
     """
-    print("Loading comparisons...")
+    print("Loading suites and comparisons...")
+    parsed_suites = load_parsed_suites(manifest)
     comparisons = load_comparisons(manifest)
     print()
 
     print("Validating manifest...")
-    validate_manifest(manifest, comparisons)
+    validate_manifest(manifest, comparisons, parsed_suites)
     print("  OK")
     print()
 
-    return comparisons
+    return comparisons, parsed_suites
 
 
-def validate_manifest(manifest: Manifest, comparisons: list) -> None:
+def validate_manifest(
+    manifest: Manifest,
+    comparisons: list,
+    parsed_suites: list[tuple[Path, dict]],
+) -> None:
     """
     Validate slug uniqueness and cross-references. Aborts on any failure.
 
@@ -876,9 +884,7 @@ def validate_manifest(manifest: Manifest, comparisons: list) -> None:
     errors: list[str] = []
 
     suite_slug_sources: dict[str, list[Path]] = {}
-    for suite_file in manifest.suite_files:
-        with open(suite_file) as f:
-            suite = yaml.safe_load(f)
+    for suite_file, suite in parsed_suites:
         slug = suite.get("slug")
         if not slug:
             errors.append(f"suite missing 'slug' field: {suite_file}")
@@ -921,7 +927,7 @@ def validate_manifest(manifest: Manifest, comparisons: list) -> None:
 
     # Comparison slugs become directories under <compare-dir>/<slug>/.
     # `shared/` is reserved there for static assets.
-    reserved_slugs = {"shared"}
+    reserved_slugs = {SHARED_DIR_NAME}
     for slug, sources in comp_slug_sources.items():
         if slug in reserved_slugs:
             joined = ", ".join(sources)
@@ -1037,23 +1043,22 @@ def _strip_internal(comp: dict) -> dict:
 
 
 def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths) -> None:
-    """Generate <site_root>/<slug>/index.html stub pages.
+    """Generate <compare_dir>/<slug>/index.html stub pages."""
+    # Per-comparison pages are all siblings under compare_dir, so the
+    # relpaths to shared/ and data/ are identical for every slug.
+    sample_stub = paths.compare_page_dir("_")
+    shared_rel = os.path.relpath(paths.shared_dst, sample_stub)
+    data_rel = os.path.relpath(paths.data_dir, sample_stub)
 
-    Per-comparison pages sit one level under the site root. Asset URLs are
-    computed via `os.path.relpath` so the page works regardless of where
-    `data_dir` sits relative to `site_root` (as long as it's under it).
-    """
     for comp in comparisons:
         comp_slug = comp["slug"]
         stub_dir = paths.compare_page_dir(comp_slug)
-        # Clean-slate this comparison's directory; reconcile_site_root
-        # already removed unmanifested ones.
+        # Clear any prior contents (renamed/removed files within a still-
+        # manifested slug). Unmanifested slug dirs are dropped earlier by
+        # reconcile_compare_dir.
         if stub_dir.exists():
             shutil.rmtree(stub_dir)
         stub_dir.mkdir(parents=True, exist_ok=True)
-
-        shared_rel = os.path.relpath(paths.shared_dst, stub_dir)
-        data_rel = os.path.relpath(paths.data_dir, stub_dir)
 
         title = comp.get("name", comp_slug)
 
