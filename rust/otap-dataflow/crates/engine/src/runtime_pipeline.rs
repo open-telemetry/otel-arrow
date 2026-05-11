@@ -28,6 +28,7 @@ use crate::pipeline_ctrl::{
     report_node_metrics_with_handles,
 };
 use crate::processor::FlowMetricHook;
+use crate::runtime::build_local_runtime;
 use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
@@ -41,7 +42,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::time::Duration;
-use tokio::runtime::{Builder, LocalOptions};
 use tokio::sync::watch;
 
 /// Build produced-request metric sets indexed by sorted output port name,
@@ -211,17 +211,14 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let node_interests = Interests::from_metric_level(metric_level);
 
         // Local runtime so we can drive !Send node tasks on the core thread.
-        let rt = Builder::new_current_thread()
-            .enable_all()
-            .name(format!(
-                "pipeline:{}:{}:core{}:gen{}",
-                pipeline_key.pipeline_group_id,
-                pipeline_key.pipeline_id,
-                pipeline_key.core_id,
-                pipeline_key.deployment_generation
-            ))
-            .build_local(LocalOptions::default())
-            .expect("Failed to create local runtime");
+        let rt = build_local_runtime(format!(
+            "pipeline:{}:{}:core{}:gen{}",
+            pipeline_key.pipeline_group_id,
+            pipeline_key.pipeline_id,
+            pipeline_key.core_id,
+            pipeline_key.deployment_generation
+        ))
+        .expect("Failed to create local runtime");
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
         let mut control_senders = ControlSenders::default();
