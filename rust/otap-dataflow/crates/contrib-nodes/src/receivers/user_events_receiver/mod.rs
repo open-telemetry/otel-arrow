@@ -388,8 +388,12 @@ async fn flush_batch(
     let item_count = payload.num_items() as u64;
     let pdata = OtapPdata::new_todo_context(payload.into());
     let send_started = Instant::now();
+    // Await the send after a select! branch has already won; do not race this
+    // future inside select!, where cancellation could drop a ready batch.
     effect_handler.send_message_with_source_node(pdata).await?;
     let send_elapsed_ns = send_started.elapsed().as_nanos();
+    // Practically unreachable, but keep the metric saturated instead of
+    // failing the receiver if the elapsed duration ever exceeds u64::MAX ns.
     let send_elapsed_ns = u64::try_from(send_elapsed_ns).unwrap_or(u64::MAX);
 
     let mut guard = metrics.borrow_mut();
@@ -516,6 +520,10 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
 
         loop {
             tokio::select! {
+                // Control traffic is expected to be occasional, not per-drain
+                // or per-record. Prioritize it so shutdown, memory pressure,
+                // and telemetry requests are handled promptly on the
+                // current-thread runtime.
                 biased;
 
                 ctrl = ctrl_chan.recv() => {

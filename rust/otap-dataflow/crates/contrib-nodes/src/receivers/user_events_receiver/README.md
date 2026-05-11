@@ -502,6 +502,7 @@ The receiver reports these counters under `user_events.receiver.metrics`:
 | `downstream_send_blocked_ns` | Time spent waiting for downstream channel capacity. |
 | `dropped_memory_pressure` | Records or batches dropped because process memory pressure requested ingress shedding. |
 | `dropped_no_subscription` | Samples that did not map to a configured subscription index. This should normally stay zero. |
+| `dropped_pending_overflow` | Samples dropped before allocation because the adapter pending queue reached its configured event or byte cap. |
 | `lost_perf_samples` | Lost sample count reported by the perf ring. |
 | `late_registration_retries` | Late-registration retry attempts while waiting for tracepoints. |
 | `sessions_started` | Receiver perf sessions successfully opened. |

@@ -21,6 +21,14 @@
 //! attributes, not the original raw tracepoint sample bytes. Unknown static
 //! fields may be preserved as per-field base64 string attributes.
 //!
+//! Tracefs field values are currently decoded from live same-host samples, so
+//! numeric conversion uses the host byte order. Cross-endian perf data should
+//! move this path to `tracepoint_decode` so field extraction can use the
+//! sample's source byte order.
+//! TODO: Revisit tracefs decoding with `tracepoint_decode` and add explicit
+//! `data_loc`, `rel_loc`, and cross-endian coverage before supporting offline
+//! or cross-host perf data.
+//!
 //! References:
 //! - Linux `user_events` registration and write ABI:
 //!   <https://docs.kernel.org/trace/user_events.html>
