@@ -25,7 +25,7 @@ use std::sync::Arc;
 /// URN that identifies the temporary fanout processor used in validation pipelines.
 pub const FANOUT_PROCESSOR_URN: &str = "urn:otel:processor:fanout_temp";
 
-#[metric_set(name = "fanout.processor.metrics")]
+#[metric_set(name = "fanout.processor")]
 #[derive(Debug, Default, Clone)]
 struct FanoutMetrics {
     /// Number of messages forwarded.

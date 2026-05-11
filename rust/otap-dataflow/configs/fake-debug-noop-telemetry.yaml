@@ -19,7 +19,7 @@ engine:
             name: "otlp.logs.produced.count"
             description: "Count of logs produced"
         - selector:
-            scope_name: "debug.processor.pdata.metrics"
+            scope_name: "debug.processor.pdata"
             instrument_name: "logs.consumed"
           stream:
             name: "debug.logs.consumed.count"
