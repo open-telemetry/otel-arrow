@@ -14,6 +14,9 @@ use otap_df_pdata::testing::round_trip::otlp_to_otap;
 use otap_df_query_engine::pipeline::Pipeline;
 use tokio::runtime::LocalRuntime;
 
+#[path = "support/local_runtime.rs"]
+mod local_runtime;
+
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
 
@@ -60,10 +63,7 @@ fn bench_log_pipeline(
 }
 
 fn bench_assign_attribute_pipelines(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build_local(tokio::runtime::LocalOptions::default())
-        .expect("can build tokio local runtime");
+    let rt = local_runtime::build_local_runtime("query-assign-attributes-bench");
 
     let batch_sizes = [128, 1536, 8192];
 

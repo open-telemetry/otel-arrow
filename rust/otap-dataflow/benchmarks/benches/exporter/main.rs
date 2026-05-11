@@ -50,7 +50,7 @@ use otap_df_pdata::proto::opentelemetry::collector::{
 use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
-use tokio::runtime::{LocalOptions, Runtime};
+use tokio::runtime::Runtime;
 use tokio::time::Duration;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
@@ -68,6 +68,9 @@ use serde_json::json;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio_stream::Stream;
+
+#[path = "../support/local_runtime.rs"]
+mod local_runtime;
 use tokio_stream::wrappers::ReceiverStream;
 
 #[cfg(not(windows))]
@@ -284,11 +287,7 @@ pub fn create_batch_arrow_record_helper(
 }
 
 fn bench_exporter(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .name("exporter-bench")
-        .build_local(LocalOptions::default())
-        .expect("failed to build local Tokio runtime");
+    let rt = local_runtime::build_local_runtime("exporter-bench");
 
     // Pin the current thread to a core
     let cores = core_affinity::get_core_ids().expect("couldn't get core IDs");

@@ -35,6 +35,9 @@ use otap_df_pdata::{OtapPayload, proto::OtlpProtoMessage};
 use otap_df_telemetry::InternalTelemetrySystem;
 use serde_json::json;
 
+#[path = "../support/local_runtime.rs"]
+mod local_runtime;
+
 use otap_df_core_nodes::processors::temporal_reaggregation_processor::{
     TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY, TEMPORAL_REAGGREGATION_PROCESSOR_URN,
 };
@@ -64,10 +67,7 @@ criterion_main!(benches);
 
 fn bench_temporal_reaggregation(c: &mut Criterion) {
     // Tokio local runtime used for all benchmark iterations.
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build_local(tokio::runtime::LocalOptions::default())
-        .expect("failed to build Tokio local runtime");
+    let rt = local_runtime::build_local_runtime("temporal-reaggregation-bench");
 
     // Generate data once, outside the benchmark loop.
     let (otlp_messages, otap_messages) = generate_bench_data();
@@ -159,10 +159,7 @@ fn create_processor() -> ProcessorState {
     let _ = wrapper.set_pdata_receiver(test_node("temporal_reaggregation_bench"), dummy_receiver);
 
     // Prepare the runtime to get the processor + effect handler.
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build_local(tokio::runtime::LocalOptions::default())
-        .expect("failed to build setup local runtime");
+    let rt = local_runtime::build_local_runtime("temporal-reaggregation-setup");
 
     let runtime = rt
         .block_on(wrapper.prepare_runtime(reporter, Interests::empty()))

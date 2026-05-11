@@ -23,7 +23,9 @@ use std::future::{Future, poll_fn};
 use std::hint::black_box;
 use std::pin::Pin;
 use std::task::Poll;
-use tokio::runtime::{Builder, LocalOptions};
+
+#[path = "../support/local_runtime.rs"]
+mod local_runtime;
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
@@ -316,18 +318,21 @@ async fn run_control_aware_canceled_sender_churn() -> usize {
     let (tx, mut rx) =
         node_channel(control_aware_channel_config()).expect("control-aware channel config valid");
 
-    let _ = tx
-        .try_send(ControlCmd::Ack(ControlAwareAckMsg::new(0)))
-        .expect("seed completion should enqueue");
+    for idx in 0..CHANNEL_CAPACITY {
+        let _ = tx
+            .try_send(ControlCmd::Ack(ControlAwareAckMsg::new(idx)))
+            .expect("seed completion should enqueue");
+    }
 
     for idx in 0..CANCELED_BLOCKED_SENDS {
-        let mut blocked =
-            std::pin::pin!(tx.send(ControlCmd::Ack(ControlAwareAckMsg::new(idx + 1))));
+        let mut blocked = std::pin::pin!(tx.send(ControlCmd::Ack(ControlAwareAckMsg::new(
+            CHANNEL_CAPACITY + idx,
+        ))));
         assert!(is_pending_once(blocked.as_mut()).await);
     }
 
     let mut live = std::pin::pin!(tx.send(ControlCmd::Ack(ControlAwareAckMsg::new(
-        CANCELED_BLOCKED_SENDS + 1,
+        CHANNEL_CAPACITY + CANCELED_BLOCKED_SENDS,
     ))));
     assert!(is_pending_once(live.as_mut()).await);
 
@@ -349,11 +354,7 @@ async fn run_control_aware_canceled_sender_churn() -> usize {
 }
 
 fn bench_control_channels(c: &mut Criterion) {
-    let rt = Builder::new_current_thread()
-        .enable_all()
-        .name("control-channel-bench")
-        .build_local(LocalOptions::default())
-        .expect("failed to build local tokio runtime");
+    let rt = local_runtime::build_local_runtime("control-channel-bench");
 
     let cores = core_affinity::get_core_ids().expect("couldn't get core IDs");
     let core = cores.iter().last().expect("no cores found");
