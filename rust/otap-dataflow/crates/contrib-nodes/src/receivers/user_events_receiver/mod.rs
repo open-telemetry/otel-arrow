@@ -849,6 +849,18 @@ mod linux_integration_tests {
             return;
         }
 
+        // The smoke test opens the perf session on CPU 0, but
+        // `tokio::test(flavor = "current_thread")` does not pin the test thread
+        // to a specific CPU. If the OS schedules the writer thread off CPU 0
+        // during `tracepoint_state.write(...)`, the sample lands in a different
+        // ring than the receiver is watching and `drain_ready` times out. Pin
+        // the test thread to CPU 0 to keep the writer and reader on the same
+        // ring buffer.
+        if !core_affinity::set_for_current(core_affinity::CoreId { id: 0 }) {
+            eprintln!("user_events smoke skipped: could not pin to CPU 0");
+            return;
+        }
+
         let tracefs_event_name = format!("otap_df_tracefs_ci_{}", std::process::id());
         let tracefs_tracepoint = format!("user_events:{tracefs_event_name}");
         let tracefs_definition = CString::new(format!(

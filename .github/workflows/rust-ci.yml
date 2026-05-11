@@ -849,6 +849,7 @@ jobs:
       - no_default_features_check
       - pipeline_perf_test
       - host-metrics-semconv
+      - user_events_linux_smoke
     steps:
       - name: Check if all required jobs succeeded
         run: |
@@ -890,6 +891,10 @@ jobs:
           fi
           if [[ "${{ needs.host-metrics-semconv.result }}" != "success" ]]; then
             echo "host-metrics-semconv failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.user_events_linux_smoke.result }}" != "success" ]]; then
+            echo "user_events_linux_smoke failed or was cancelled"
             exit 1
           fi
           echo "All required checks passed!"

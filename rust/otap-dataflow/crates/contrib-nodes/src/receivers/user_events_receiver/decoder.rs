@@ -823,6 +823,86 @@ mod tests {
 
     #[cfg(feature = "user_events-eventheader")]
     #[test]
+    fn eventheader_decodes_float_and_boolean_scalar_paths() {
+        let mut meta = Vec::new();
+        let mut data = Vec::new();
+
+        // ENC_VALUE32 + FMT_FLOAT -> f32 reinterpreted from raw bits
+        add_value_field_meta(&mut meta, "f32_val", ENC_VALUE32, FMT_FLOAT);
+        let f32_value: f32 = -3.5e10;
+        data.extend_from_slice(&f32_value.to_bits().to_le_bytes());
+
+        // ENC_VALUE64 + FMT_FLOAT -> f64 reinterpreted from raw bits
+        add_value_field_meta(&mut meta, "f64_val", ENC_VALUE64, FMT_FLOAT);
+        let f64_value: f64 = std::f64::consts::PI;
+        data.extend_from_slice(&f64_value.to_bits().to_le_bytes());
+
+        // Negative float to make sure we are not accidentally going through
+        // a signed-integer path (which would produce a wildly different value).
+        add_value_field_meta(&mut meta, "f64_neg", ENC_VALUE64, FMT_FLOAT);
+        let f64_neg: f64 = -1.5;
+        data.extend_from_slice(&f64_neg.to_bits().to_le_bytes());
+
+        // ENC_VALUE8 + FMT_BOOLEAN
+        add_value_field_meta(&mut meta, "bool8_true", ENC_VALUE8, FMT_BOOLEAN);
+        data.push(1);
+        add_value_field_meta(&mut meta, "bool8_false", ENC_VALUE8, FMT_BOOLEAN);
+        data.push(0);
+
+        // ENC_VALUE32 + FMT_BOOLEAN
+        add_value_field_meta(&mut meta, "bool32_true", ENC_VALUE32, FMT_BOOLEAN);
+        data.extend_from_slice(&1u32.to_le_bytes());
+        add_value_field_meta(&mut meta, "bool32_false", ENC_VALUE32, FMT_BOOLEAN);
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // A non-zero, non-one value should still decode to true.
+        add_value_field_meta(&mut meta, "bool32_other", ENC_VALUE32, FMT_BOOLEAN);
+        data.extend_from_slice(&0xdead_beefu32.to_le_bytes());
+
+        let payload = build_eventheader_payload("ScalarPaths", 4, &meta, &data);
+        let mut event_data = vec![0; 8];
+        event_data.extend_from_slice(&payload);
+        let decoded = DecodedUserEventsRecord::from_raw(
+            "user_events:scalars_L4K1",
+            raw_record(Vec::new(), event_data),
+            &FormatConfig::EventHeader,
+        );
+
+        assert_eq!(
+            attr(&decoded, "f32_val"),
+            Some(&DecodedAttrValue::Double(f64::from(f32_value)))
+        );
+        assert_eq!(
+            attr(&decoded, "f64_val"),
+            Some(&DecodedAttrValue::Double(f64_value))
+        );
+        assert_eq!(
+            attr(&decoded, "f64_neg"),
+            Some(&DecodedAttrValue::Double(f64_neg))
+        );
+        assert_eq!(
+            attr(&decoded, "bool8_true"),
+            Some(&DecodedAttrValue::Bool(true))
+        );
+        assert_eq!(
+            attr(&decoded, "bool8_false"),
+            Some(&DecodedAttrValue::Bool(false))
+        );
+        assert_eq!(
+            attr(&decoded, "bool32_true"),
+            Some(&DecodedAttrValue::Bool(true))
+        );
+        assert_eq!(
+            attr(&decoded, "bool32_false"),
+            Some(&DecodedAttrValue::Bool(false))
+        );
+        assert_eq!(
+            attr(&decoded, "bool32_other"),
+            Some(&DecodedAttrValue::Bool(true))
+        );
+    }
+
+    #[cfg(feature = "user_events-eventheader")]
+    #[test]
     fn eventheader_invalid_payload_is_preserved_as_attribute() {
         let decoded = DecodedUserEventsRecord::from_raw(
             "user_events:my_event",
