@@ -17,7 +17,7 @@ const LOADGEN_METRIC_SET: &str = "traffic_generator.receiver";
 const LOADGEN_METRIC_NAME_LOGS: &str = "logs.produced";
 const LOADGEN_METRIC_NAME_METRICS: &str = "metrics.produced";
 const LOADGEN_TRACE_NAME_SPANS: &str = "spans.produced";
-const VALIDATION_METRIC_SET: &str = "validation.exporter.metrics";
+const VALIDATION_METRIC_SET: &str = "validation.exporter";
 const VALIDATION_METRIC_NAME: &str = "valid";
 const VALIDATION_FINISHED_METRIC_NAME: &str = "finished";
 

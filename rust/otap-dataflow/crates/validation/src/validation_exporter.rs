@@ -59,7 +59,7 @@ fn default_idle_timeout_secs() -> u64 {
     DEFAULT_IDLE_TIMEOUT_SECS
 }
 
-#[metric_set(name = "validation.exporter.metrics")]
+#[metric_set(name = "validation.exporter")]
 #[derive(Debug, Default, Clone)]
 struct ValidationExporterMetrics {
     /// Number of validation checks that did not match expectation
