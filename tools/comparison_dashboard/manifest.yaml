@@ -18,7 +18,11 @@ variables:
 # Allowed values for every meta key a suite may declare. Validation rejects
 # any meta key not listed here, and any value (or list element) outside the
 # allowed set.
-meta: {}
+meta:
+  binary: [dfe]
+  protocols: [otap, otlp, otlphttp]
+  signals: [logs, metrics]
+  compression: [none, gzip, zstd]
 
 # Suite definitions, listed by path. Each entry must point at an existing
 # YAML file with at least `name`, `slug`, `variables`, and `orchestrator_template`.
