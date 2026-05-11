@@ -23,17 +23,6 @@ pub(crate) struct CollectedEvent {
     pub event_data: Vec<u8>,
     pub user_data_offset: usize,
     pub fields: Arc<[TracefsField]>,
-    pub source: EventSource,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub(crate) enum EventSource {
-    UserEvents(UserEventsSource),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UserEventsSource {
     pub subscription_index: usize,
 }
 
@@ -274,7 +263,7 @@ impl OneCollectUserEventsSession {
                     event_data,
                     user_data_offset,
                     fields: Arc::clone(&event_fields),
-                    source: EventSource::UserEvents(UserEventsSource { subscription_index }),
+                    subscription_index,
                 });
                 event_pending_bytes.set(current_pending_bytes.saturating_add(payload_len));
                 Ok(())

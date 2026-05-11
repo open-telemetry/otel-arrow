@@ -9,8 +9,7 @@ use std::time::Duration;
 use tokio::time;
 
 use super::one_collect_adapter::{
-    CollectInitError, EventSource, OneCollectUserEventsSession, UserEventsSessionConfig,
-    UserEventsSubscription,
+    CollectInitError, OneCollectUserEventsSession, UserEventsSessionConfig, UserEventsSubscription,
 };
 use super::{DrainConfig, SessionConfig, SubscriptionConfig};
 
@@ -136,17 +135,16 @@ impl UsereventsSession {
             dropped_pending_overflow: drained.dropped_pending_overflow,
         };
         for event in drained.events {
-            let EventSource::UserEvents(source) = event.source;
             // This should be unreachable with today's adapter: subscription
             // indices are captured from the fixed subscription list when the
             // session opens. Keep the guard as defense-in-depth in case future
             // adapter changes ever decouple callbacks from that list.
-            if source.subscription_index >= self.inner.subscription_count() {
+            if event.subscription_index >= self.inner.subscription_count() {
                 stats.dropped_no_subscription += 1;
                 continue;
             }
             out.push(RawUsereventsRecord {
-                subscription_index: source.subscription_index,
+                subscription_index: event.subscription_index,
                 timestamp_unix_nano: event.timestamp_unix_nano,
                 process_id: event.process_id,
                 thread_id: event.thread_id,

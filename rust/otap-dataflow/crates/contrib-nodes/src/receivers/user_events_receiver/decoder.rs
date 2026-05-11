@@ -281,7 +281,10 @@ fn tracefs_field_bytes<'a>(field: &TracefsField, event_data: &'a [u8]) -> Option
             let end = field.offset.checked_add(field.size)?;
             event_data.get(field.offset..end)
         }
-        TracefsFieldLocation::StaticString => event_data.get(field.offset..).map(until_nul),
+        TracefsFieldLocation::StaticString => {
+            let end = field.offset.checked_add(field.size)?;
+            event_data.get(field.offset..end).map(until_nul)
+        }
         TracefsFieldLocation::StaticUtf16String => {
             let end = field.offset.checked_add(field.size)?;
             event_data.get(field.offset..end)
@@ -295,11 +298,11 @@ fn tracefs_field_bytes<'a>(field: &TracefsField, event_data: &'a [u8]) -> Option
             event_data.get(len_end..end)
         }
         TracefsFieldLocation::DynAbsolute | TracefsFieldLocation::DynRelative => {
-            let loc_end = field.offset.checked_add(field.size)?;
-            let loc_bytes = event_data.get(field.offset..loc_end)?;
-            if loc_bytes.len() != 4 {
+            if field.size != 4 {
                 return None;
             }
+            let loc_end = field.offset.checked_add(field.size)?;
+            let loc_bytes = event_data.get(field.offset..loc_end)?;
             let loc = u32::from_ne_bytes(loc_bytes.try_into().ok()?);
             let len = (loc >> 16) as usize;
             let mut start = (loc & 0xFFFF) as usize;
@@ -551,7 +554,7 @@ mod tests {
                 "char",
                 TracefsFieldLocation::StaticString,
                 12,
-                0,
+                10,
             ),
         ];
 
@@ -633,6 +636,44 @@ mod tests {
             attr(&decoded, "endpoint"),
             Some(&DecodedAttrValue::Str("/dynamic".to_owned()))
         );
+    }
+
+    #[test]
+    fn tracefs_bounds_static_string_by_field_size() {
+        let mut event_data = vec![0; 8];
+        event_data.extend_from_slice(b"abcd");
+        event_data.extend_from_slice(b"efgh\0");
+        let fields = vec![field(
+            "endpoint",
+            "char",
+            TracefsFieldLocation::StaticString,
+            8,
+            4,
+        )];
+
+        let decoded = decode_tracefs(fields, event_data);
+
+        assert_eq!(
+            attr(&decoded, "endpoint"),
+            Some(&DecodedAttrValue::Str("abcd".to_owned()))
+        );
+    }
+
+    #[test]
+    fn tracefs_rejects_dynamic_location_with_unexpected_size() {
+        let mut event_data = vec![0; 8];
+        event_data.extend_from_slice(&0u16.to_ne_bytes());
+        let fields = vec![field(
+            "endpoint",
+            "char",
+            TracefsFieldLocation::DynRelative,
+            8,
+            2,
+        )];
+
+        let decoded = decode_tracefs(fields, event_data);
+
+        assert!(decoded.attributes.is_empty());
     }
 
     #[test]
