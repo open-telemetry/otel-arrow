@@ -1,15 +1,15 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Metrics for the Linux userevents receiver.
+//! Metrics for the Linux user_events receiver.
 
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
-/// Internal telemetry for the Linux userevents receiver.
+/// Internal telemetry for the Linux user_events receiver.
 #[metric_set(name = "user_events.receiver.metrics")]
 #[derive(Debug, Default, Clone)]
-pub(super) struct UsereventsReceiverMetrics {
+pub(super) struct UserEventsReceiverMetrics {
     /// Number of perf samples received from the kernel ring.
     #[metric(unit = "{item}")]
     pub received_samples: Counter<u64>,

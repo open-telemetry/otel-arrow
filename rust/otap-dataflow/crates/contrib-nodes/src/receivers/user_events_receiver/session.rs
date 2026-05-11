@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Session wrapper for Linux userevents collection.
+//! Session wrapper for Linux user_events collection.
 
 use std::io;
 use std::time::Duration;
@@ -33,7 +33,7 @@ pub(crate) struct TracefsField {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RawUsereventsRecord {
+pub(crate) struct RawUserEventsRecord {
     pub subscription_index: usize,
     pub timestamp_unix_nano: u64,
     /// Process id from perf `PERF_SAMPLE_TID` metadata, when present.
@@ -110,15 +110,15 @@ impl From<io::Error> for SessionInitError {
     }
 }
 
-pub(crate) struct UsereventsSession {
+pub(crate) struct UserEventsSession {
     inner: OneCollectUserEventsSession,
 }
 
-impl UsereventsSession {
+impl UserEventsSession {
     fn drain_once_impl(
         &mut self,
         config: &DrainConfig,
-        out: &mut Vec<RawUsereventsRecord>,
+        out: &mut Vec<RawUserEventsRecord>,
     ) -> io::Result<SessionDrainStats> {
         let drained = self.inner.drain(
             config.max_records_per_turn,
@@ -143,7 +143,7 @@ impl UsereventsSession {
                 stats.dropped_no_subscription += 1;
                 continue;
             }
-            out.push(RawUsereventsRecord {
+            out.push(RawUserEventsRecord {
                 subscription_index: event.subscription_index,
                 timestamp_unix_nano: event.timestamp_unix_nano,
                 process_id: event.process_id,
@@ -198,7 +198,7 @@ impl UsereventsSession {
     pub(crate) async fn drain_ready(
         &mut self,
         config: &DrainConfig,
-        out: &mut Vec<RawUsereventsRecord>,
+        out: &mut Vec<RawUserEventsRecord>,
     ) -> io::Result<SessionDrainStats> {
         let poll_interval = Duration::from_millis(1);
 
@@ -222,7 +222,7 @@ impl UsereventsSession {
     pub(crate) fn drain_once(
         &mut self,
         config: &DrainConfig,
-        out: &mut Vec<RawUsereventsRecord>,
+        out: &mut Vec<RawUserEventsRecord>,
     ) -> io::Result<SessionDrainStats> {
         self.drain_once_impl(config, out)
     }

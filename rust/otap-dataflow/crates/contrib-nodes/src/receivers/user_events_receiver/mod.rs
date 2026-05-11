@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Linux userevents receiver.
+//! Linux user_events receiver.
 
 mod arrow_records_encoder;
 mod decoder;
@@ -35,10 +35,10 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use self::arrow_records_encoder::ArrowRecordsBuilder;
-use self::decoder::DecodedUsereventsRecord;
-use self::metrics::UsereventsReceiverMetrics;
+use self::decoder::DecodedUserEventsRecord;
+use self::metrics::UserEventsReceiverMetrics;
 use self::session::SessionInitError;
-use self::session::{RawUsereventsRecord, SessionDrainStats, UsereventsSession};
+use self::session::{RawUserEventsRecord, SessionDrainStats, UserEventsSession};
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_telemetry::{otel_info, otel_warn};
 use tokio::time::{self, MissedTickBehavior};
@@ -180,7 +180,7 @@ struct BatchConfig {
 /// User-supplied configuration for the Linux user_events receiver.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-struct UsereventsReceiverConfig {
+struct UserEventsReceiverConfig {
     /// Required non-empty list of tracepoints to subscribe to.
     subscriptions: Vec<SubscriptionConfig>,
     /// Tracepoint session setup and late-registration settings.
@@ -195,7 +195,7 @@ struct UsereventsReceiverConfig {
 }
 
 /// Runtime state for one local user_events receiver task.
-struct UsereventsReceiver {
+struct UserEventsReceiver {
     /// Tracepoint subscriptions owned by this receiver instance.
     subscriptions: Vec<SubscriptionConfig>,
     /// Low-level session configuration used when opening tracepoint readers.
@@ -207,17 +207,17 @@ struct UsereventsReceiver {
     /// Local pipeline CPU/shard assigned by the engine.
     cpu_id: usize,
     /// Receiver metric set shared with the local pipeline task.
-    metrics: Rc<RefCell<MetricSet<UsereventsReceiverMetrics>>>,
+    metrics: Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>>,
     /// Local admission state used to coordinate with memory limiting.
     admission_state: LocalReceiverAdmissionState,
 }
 
-impl UsereventsReceiver {
+impl UserEventsReceiver {
     fn from_config(
         pipeline: PipelineContext,
         config: &Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-        let mut config: UsereventsReceiverConfig =
+        let mut config: UserEventsReceiverConfig =
             serde_json::from_value(config.clone()).map_err(|e| {
                 otap_df_config::error::Error::InvalidUserConfig {
                     error: e.to_string(),
@@ -252,7 +252,7 @@ impl UsereventsReceiver {
             batching,
             cpu_id: pipeline.core_id(),
             metrics: Rc::new(RefCell::new(
-                pipeline.register_metrics::<UsereventsReceiverMetrics>(),
+                pipeline.register_metrics::<UserEventsReceiverMetrics>(),
             )),
             admission_state: LocalReceiverAdmissionState::from_process_state(
                 &pipeline.memory_pressure_state(),
@@ -265,7 +265,7 @@ impl UsereventsReceiver {
     ) -> Result<(), otap_df_config::error::Error> {
         if subscriptions.is_empty() {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "userevents receiver requires at least one subscription".to_owned(),
+                error: "user_events receiver requires at least one subscription".to_owned(),
             });
         }
         for subscription in subscriptions {
@@ -278,7 +278,7 @@ impl UsereventsReceiver {
         let tracepoint = tracepoint.trim();
         if tracepoint.is_empty() {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "userevents receiver tracepoint must not be empty".to_owned(),
+                error: "user_events receiver tracepoint must not be empty".to_owned(),
             });
         }
         if let Some((group, event_name)) = tracepoint.split_once(':') {
@@ -287,7 +287,7 @@ impl UsereventsReceiver {
             }
             return Err(otap_df_config::error::Error::InvalidUserConfig {
                 error: format!(
-                    "userevents receiver tracepoint `{tracepoint}` must be an event name or `user_events:<event>`"
+                    "user_events receiver tracepoint `{tracepoint}` must be an event name or `user_events:<event>`"
                 ),
             });
         }
@@ -297,13 +297,14 @@ impl UsereventsReceiver {
     fn validate_session(session: &SessionConfig) -> Result<(), otap_df_config::error::Error> {
         if session.max_pending_events == 0 {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "userevents receiver `session.max_pending_events` must be greater than zero"
-                    .to_owned(),
+                error:
+                    "user_events receiver `session.max_pending_events` must be greater than zero"
+                        .to_owned(),
             });
         }
         if session.max_pending_bytes == 0 {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "userevents receiver `session.max_pending_bytes` must be greater than zero"
+                error: "user_events receiver `session.max_pending_bytes` must be greater than zero"
                     .to_owned(),
             });
         }
@@ -312,7 +313,7 @@ impl UsereventsReceiver {
             .is_some_and(|poll_interval| poll_interval.is_zero())
         {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "userevents receiver `session.late_registration_poll_interval` must be greater than zero"
+                error: "user_events receiver `session.late_registration_poll_interval` must be greater than zero"
                     .to_owned(),
             });
         }
@@ -322,19 +323,20 @@ impl UsereventsReceiver {
     fn validate_drain(drain: &DrainConfig) -> Result<(), otap_df_config::error::Error> {
         if drain.max_records_per_turn == 0 {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "userevents receiver `drain.max_records_per_turn` must be greater than zero"
-                    .to_owned(),
+                error:
+                    "user_events receiver `drain.max_records_per_turn` must be greater than zero"
+                        .to_owned(),
             });
         }
         if drain.max_bytes_per_turn == 0 {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "userevents receiver `drain.max_bytes_per_turn` must be greater than zero"
+                error: "user_events receiver `drain.max_bytes_per_turn` must be greater than zero"
                     .to_owned(),
             });
         }
         if drain.max_drain_ns.is_zero() {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "userevents receiver `drain.max_drain_ns` must be greater than zero; \
+                error: "user_events receiver `drain.max_drain_ns` must be greater than zero; \
                         a zero budget would starve either parsing or the pending-queue \
                         pop phase under continuous load"
                     .to_owned(),
@@ -346,7 +348,7 @@ impl UsereventsReceiver {
     fn validate_batching(batching: &BatchConfig) -> Result<(), otap_df_config::error::Error> {
         if batching.max_duration.is_zero() {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "userevents receiver `batching.max_duration` must be greater than zero"
+                error: "user_events receiver `batching.max_duration` must be greater than zero"
                     .to_owned(),
             });
         }
@@ -355,7 +357,7 @@ impl UsereventsReceiver {
 }
 
 fn drop_batch(
-    metrics: &Rc<RefCell<MetricSet<UsereventsReceiverMetrics>>>,
+    metrics: &Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>>,
     builder: &mut ArrowRecordsBuilder,
 ) {
     let dropped = u64::from(builder.len());
@@ -369,7 +371,7 @@ fn drop_batch(
 
 async fn flush_batch(
     effect_handler: &local::EffectHandler<OtapPdata>,
-    metrics: &Rc<RefCell<MetricSet<UsereventsReceiverMetrics>>>,
+    metrics: &Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>>,
     builder: &mut ArrowRecordsBuilder,
 ) -> Result<(), Error> {
     if builder.is_empty() {
@@ -381,7 +383,7 @@ async fn flush_batch(
         .map_err(|error| Error::ReceiverError {
             receiver: effect_handler.receiver_id(),
             kind: ReceiverErrorKind::Transport,
-            error: "failed to build userevents Arrow batch".to_owned(),
+            error: "failed to build user_events Arrow batch".to_owned(),
             source_detail: format_error_sources(&error),
         })?;
 
@@ -409,9 +411,9 @@ async fn process_drained_records(
     effect_handler: &local::EffectHandler<OtapPdata>,
     subscriptions: &[SubscriptionConfig],
     admission_state: &LocalReceiverAdmissionState,
-    metrics: &Rc<RefCell<MetricSet<UsereventsReceiverMetrics>>>,
+    metrics: &Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>>,
     builder: &mut ArrowRecordsBuilder,
-    drained_records: &mut Vec<RawUsereventsRecord>,
+    drained_records: &mut Vec<RawUserEventsRecord>,
     drain_stats: SessionDrainStats,
     batch_cfg: &BatchConfig,
 ) -> Result<(), Error> {
@@ -430,7 +432,7 @@ async fn process_drained_records(
             continue;
         };
 
-        let decoded = DecodedUsereventsRecord::from_raw(
+        let decoded = DecodedUserEventsRecord::from_raw(
             subscription.tracepoint.as_str(),
             raw,
             &subscription.format,
@@ -473,18 +475,18 @@ pub static USER_EVENTS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig| {
         Ok(ReceiverWrapper::local(
-            UsereventsReceiver::from_config(pipeline, &node_config.config)?,
+            UserEventsReceiver::from_config(pipeline, &node_config.config)?,
             node,
             node_config,
             receiver_config,
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<UsereventsReceiverConfig>,
+    validate_config: otap_df_config::validation::validate_typed_config::<UserEventsReceiverConfig>,
 };
 
 #[async_trait(?Send)]
-impl local::Receiver<OtapPdata> for UsereventsReceiver {
+impl local::Receiver<OtapPdata> for UserEventsReceiver {
     async fn start(
         self: Box<Self>,
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
@@ -507,7 +509,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
         let mut retry_interval = time::interval(retry_period.max(Duration::from_millis(1)));
         retry_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        let mut session: Option<UsereventsSession> = None;
+        let mut session: Option<UserEventsSession> = None;
         let mut builder = ArrowRecordsBuilder::new();
         let mut drained_records = Vec::with_capacity(drain_cfg.max_records_per_turn);
         let node_name = effect_handler.receiver_id().name.as_ref().to_owned();
@@ -515,7 +517,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
             "user_events_receiver.start",
             node = node_name.as_str(),
             pipeline_core = self.cpu_id,
-            message = "Linux userevents receiver started"
+            message = "Linux user_events receiver started"
         );
 
         loop {
@@ -544,7 +546,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                                         .map_err(|error| Error::ReceiverError {
                                             receiver: effect_handler.receiver_id(),
                                             kind: ReceiverErrorKind::Transport,
-                                            error: "failed to drain Linux userevents perf ring during ingress drain".to_owned(),
+                                            error: "failed to drain Linux user_events perf ring during ingress drain".to_owned(),
                                             source_detail: format_error_sources(&error),
                                         })?;
 
@@ -590,14 +592,14 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
 
                 _ = retry_interval.tick(), if session.is_none() && late_registration_enabled => {
                     self.metrics.borrow_mut().late_registration_retries.inc();
-                    match UsereventsSession::open(&self.subscriptions, &session_cfg, self.cpu_id) {
+                    match UserEventsSession::open(&self.subscriptions, &session_cfg, self.cpu_id) {
                         Ok(opened) => {
                             self.metrics.borrow_mut().sessions_started.inc();
                             otel_info!(
                                 "user_events_receiver.session_opened",
                                 node = node_name.as_str(),
                                 subscriptions = opened.subscription_count(),
-                                message = "Opened Linux userevents perf session"
+                                message = "Opened Linux user_events perf session"
                             );
                             session = Some(opened);
                         }
@@ -621,7 +623,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                             return Err(Error::ReceiverError {
                                 receiver: effect_handler.receiver_id(),
                                 kind: ReceiverErrorKind::Configuration,
-                                error: "failed to open Linux userevents perf session".to_owned(),
+                                error: "failed to open Linux user_events perf session".to_owned(),
                                 source_detail,
                             });
                         }
@@ -631,7 +633,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                 drained = async {
                     let Some(session) = session.as_mut() else {
                         return Err(std::io::Error::other(
-                            "userevents session branch selected without an active session",
+                            "user_events session branch selected without an active session",
                         ));
                     };
                     session.drain_ready(&drain_cfg, &mut drained_records).await
@@ -643,7 +645,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                     let drain_stats = drained.map_err(|error| Error::ReceiverError {
                         receiver: effect_handler.receiver_id(),
                         kind: ReceiverErrorKind::Transport,
-                        error: "failed to drain Linux userevents perf ring".to_owned(),
+                        error: "failed to drain Linux user_events perf ring".to_owned(),
                         source_detail: format_error_sources(&error),
                     })?;
 
@@ -662,7 +664,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
             }
 
             if session.is_none() && !late_registration_enabled {
-                match UsereventsSession::open(&self.subscriptions, &session_cfg, self.cpu_id) {
+                match UserEventsSession::open(&self.subscriptions, &session_cfg, self.cpu_id) {
                     Ok(opened) => {
                         self.metrics.borrow_mut().sessions_started.inc();
                         session = Some(opened);
@@ -671,7 +673,7 @@ impl local::Receiver<OtapPdata> for UsereventsReceiver {
                         return Err(Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
                             kind: ReceiverErrorKind::Configuration,
-                            error: "failed to open Linux userevents perf session".to_owned(),
+                            error: "failed to open Linux user_events perf session".to_owned(),
                             source_detail: format_error_sources(&error),
                         });
                     }
@@ -757,13 +759,13 @@ mod linux_integration_tests {
         }
     }
 
-    fn open_session_or_skip(tracepoint: &str, format: FormatConfig) -> Option<UsereventsSession> {
+    fn open_session_or_skip(tracepoint: &str, format: FormatConfig) -> Option<UserEventsSession> {
         let subscriptions = vec![SubscriptionConfig {
             tracepoint: tracepoint.to_owned(),
             format,
         }];
 
-        match UsereventsSession::open(&subscriptions, &test_session_config(), 0) {
+        match UserEventsSession::open(&subscriptions, &test_session_config(), 0) {
             Ok(session) => Some(session),
             Err(SessionInitError::MissingTracepoint(tracepoint)) => {
                 fail_user_events_e2e(format!(
@@ -889,7 +891,7 @@ mod linux_integration_tests {
         let decoded_tracefs = tracefs_records
             .into_iter()
             .map(|record| {
-                DecodedUsereventsRecord::from_raw(
+                DecodedUserEventsRecord::from_raw(
                     &tracefs_tracepoint,
                     record,
                     &FormatConfig::Tracefs,
@@ -981,7 +983,7 @@ mod linux_integration_tests {
             let decoded = eventheader_records
                 .into_iter()
                 .map(|record| {
-                    DecodedUsereventsRecord::from_raw(
+                    DecodedUserEventsRecord::from_raw(
                         &tracepoint,
                         record,
                         &FormatConfig::EventHeader,
@@ -1023,10 +1025,10 @@ mod config_tests {
     use otap_df_pdata::OtapPayload;
     use otap_df_telemetry::reporter::MetricsReporter;
 
-    fn test_metrics() -> Rc<RefCell<MetricSet<UsereventsReceiverMetrics>>> {
+    fn test_metrics() -> Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>> {
         let (pipeline_ctx, _) = test_pipeline_ctx();
         Rc::new(RefCell::new(
-            pipeline_ctx.register_metrics::<UsereventsReceiverMetrics>(),
+            pipeline_ctx.register_metrics::<UserEventsReceiverMetrics>(),
         ))
     }
 
@@ -1073,8 +1075,8 @@ mod config_tests {
         }
     }
 
-    fn test_raw_record(subscription_index: usize) -> RawUsereventsRecord {
-        RawUsereventsRecord {
+    fn test_raw_record(subscription_index: usize) -> RawUserEventsRecord {
+        RawUserEventsRecord {
             subscription_index,
             timestamp_unix_nano: 123,
             process_id: None,
@@ -1142,7 +1144,7 @@ mod config_tests {
         let (effect_handler, rx) = test_effect_handler(1, true);
         let metrics = test_metrics();
         let mut builder = ArrowRecordsBuilder::new();
-        builder.append(DecodedUsereventsRecord::from_raw(
+        builder.append(DecodedUserEventsRecord::from_raw(
             "user_events:test",
             test_raw_record(0),
             &FormatConfig::Tracefs,
@@ -1179,7 +1181,7 @@ mod config_tests {
         let (effect_handler, rx) = test_effect_handler(1, true);
         let metrics = test_metrics();
         let mut builder = ArrowRecordsBuilder::new();
-        builder.append(DecodedUsereventsRecord::from_raw(
+        builder.append(DecodedUserEventsRecord::from_raw(
             "user_events:test",
             test_raw_record(0),
             &FormatConfig::Tracefs,
@@ -1293,7 +1295,7 @@ mod config_tests {
             format: FormatConfig::Tracefs,
         }];
 
-        UsereventsReceiver::normalize_subscriptions(&mut subscriptions)
+        UserEventsReceiver::normalize_subscriptions(&mut subscriptions)
             .expect("subscriptions accepted");
         assert_eq!(subscriptions[0].tracepoint, "user_events:example_L5K1");
     }
@@ -1305,14 +1307,14 @@ mod config_tests {
             format: FormatConfig::Tracefs,
         }];
 
-        UsereventsReceiver::normalize_subscriptions(&mut subscriptions)
+        UserEventsReceiver::normalize_subscriptions(&mut subscriptions)
             .expect("subscriptions accepted");
         assert_eq!(subscriptions[0].tracepoint, "user_events:example_L5K1");
     }
 
     #[test]
     fn deserialize_config_rejects_legacy_tracepoint_shorthand() {
-        let error = serde_json::from_value::<UsereventsReceiverConfig>(serde_json::json!({
+        let error = serde_json::from_value::<UserEventsReceiverConfig>(serde_json::json!({
             "tracepoint": "user_events:example_L5K1"
         }))
         .expect_err("legacy shorthand rejected");
@@ -1326,7 +1328,7 @@ mod config_tests {
     #[cfg(not(feature = "user_events-eventheader"))]
     #[test]
     fn deserialize_config_rejects_event_header_without_feature() {
-        let error = serde_json::from_value::<UsereventsReceiverConfig>(serde_json::json!({
+        let error = serde_json::from_value::<UserEventsReceiverConfig>(serde_json::json!({
             "subscriptions": [
                 {
                     "tracepoint": "user_events:example_L5K1",
@@ -1346,7 +1348,7 @@ mod config_tests {
 
     #[test]
     fn validate_subscriptions_rejects_empty_list() {
-        let config = UsereventsReceiverConfig {
+        let config = UserEventsReceiverConfig {
             subscriptions: Vec::new(),
             session: None,
             drain: None,
@@ -1354,7 +1356,7 @@ mod config_tests {
         };
 
         let mut subscriptions = config.subscriptions;
-        let error = UsereventsReceiver::normalize_subscriptions(&mut subscriptions)
+        let error = UserEventsReceiver::normalize_subscriptions(&mut subscriptions)
             .expect_err("config rejected");
         assert!(
             error.to_string().contains("at least one subscription"),
@@ -1363,8 +1365,8 @@ mod config_tests {
     }
 
     #[test]
-    fn validate_subscriptions_rejects_non_userevents_tracepoint_group() {
-        let config = UsereventsReceiverConfig {
+    fn validate_subscriptions_rejects_non_user_events_tracepoint_group() {
+        let config = UserEventsReceiverConfig {
             subscriptions: vec![SubscriptionConfig {
                 tracepoint: "foo:example_L2K1".to_owned(),
                 format: FormatConfig::Tracefs,
@@ -1375,7 +1377,7 @@ mod config_tests {
         };
 
         let mut subscriptions = config.subscriptions;
-        let error = UsereventsReceiver::normalize_subscriptions(&mut subscriptions)
+        let error = UserEventsReceiver::normalize_subscriptions(&mut subscriptions)
             .expect_err("config rejected");
         assert!(
             error
@@ -1392,7 +1394,7 @@ mod config_tests {
             format: FormatConfig::Tracefs,
         }];
 
-        let error = UsereventsReceiver::normalize_subscriptions(&mut subscriptions)
+        let error = UserEventsReceiver::normalize_subscriptions(&mut subscriptions)
             .expect_err("config rejected");
         assert!(
             error.to_string().contains("must not be empty"),
@@ -1409,7 +1411,7 @@ mod config_tests {
             max_pending_bytes: default_max_pending_bytes(),
             late_registration_poll_interval: None,
         };
-        let error = UsereventsReceiver::validate_session(&session).expect_err("zero rejected");
+        let error = UserEventsReceiver::validate_session(&session).expect_err("zero rejected");
         assert!(
             error.to_string().contains("max_pending_events"),
             "unexpected error: {error}"
@@ -1425,7 +1427,7 @@ mod config_tests {
             max_pending_bytes: 0,
             late_registration_poll_interval: None,
         };
-        let error = UsereventsReceiver::validate_session(&session).expect_err("zero rejected");
+        let error = UserEventsReceiver::validate_session(&session).expect_err("zero rejected");
         assert!(
             error.to_string().contains("max_pending_bytes"),
             "unexpected error: {error}"
@@ -1441,7 +1443,7 @@ mod config_tests {
             max_pending_bytes: default_max_pending_bytes(),
             late_registration_poll_interval: Some(Duration::ZERO),
         };
-        let error = UsereventsReceiver::validate_session(&session).expect_err("zero rejected");
+        let error = UserEventsReceiver::validate_session(&session).expect_err("zero rejected");
         assert!(
             error
                 .to_string()
@@ -1457,7 +1459,7 @@ mod config_tests {
             max_bytes_per_turn: default_max_bytes_per_turn(),
             max_drain_ns: Duration::ZERO,
         };
-        let error = UsereventsReceiver::validate_drain(&drain).expect_err("zero rejected");
+        let error = UserEventsReceiver::validate_drain(&drain).expect_err("zero rejected");
         assert!(
             error.to_string().contains("max_drain_ns"),
             "unexpected error: {error}"
@@ -1471,7 +1473,7 @@ mod config_tests {
             max_bytes_per_turn: default_max_bytes_per_turn(),
             max_drain_ns: default_max_drain_ns(),
         };
-        let error = UsereventsReceiver::validate_drain(&drain).expect_err("zero rejected");
+        let error = UserEventsReceiver::validate_drain(&drain).expect_err("zero rejected");
         assert!(
             error.to_string().contains("max_records_per_turn"),
             "unexpected error: {error}"
@@ -1485,7 +1487,7 @@ mod config_tests {
             max_bytes_per_turn: 0,
             max_drain_ns: default_max_drain_ns(),
         };
-        let error = UsereventsReceiver::validate_drain(&drain).expect_err("zero rejected");
+        let error = UserEventsReceiver::validate_drain(&drain).expect_err("zero rejected");
         assert!(
             error.to_string().contains("max_bytes_per_turn"),
             "unexpected error: {error}"
@@ -1499,7 +1501,7 @@ mod config_tests {
             max_bytes_per_turn: default_max_bytes_per_turn(),
             max_drain_ns: Duration::from_millis(2),
         };
-        UsereventsReceiver::validate_drain(&drain).expect("non-zero accepted");
+        UserEventsReceiver::validate_drain(&drain).expect("non-zero accepted");
     }
 
     #[test]
@@ -1508,7 +1510,7 @@ mod config_tests {
             max_size: default_batch_max_size(),
             max_duration: Duration::ZERO,
         };
-        let error = UsereventsReceiver::validate_batching(&batching).expect_err("zero rejected");
+        let error = UserEventsReceiver::validate_batching(&batching).expect_err("zero rejected");
         assert!(
             error.to_string().contains("max_duration"),
             "unexpected error: {error}"
@@ -1521,6 +1523,6 @@ mod config_tests {
             max_size: default_batch_max_size(),
             max_duration: default_batch_max_duration(),
         };
-        UsereventsReceiver::validate_batching(&batching).expect("non-zero accepted");
+        UserEventsReceiver::validate_batching(&batching).expect("non-zero accepted");
     }
 }

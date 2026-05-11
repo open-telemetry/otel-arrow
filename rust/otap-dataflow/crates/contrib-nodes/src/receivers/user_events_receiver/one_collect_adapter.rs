@@ -322,7 +322,7 @@ impl OneCollectUserEventsSession {
         let pending_len = self.pending.borrow().len();
         // TODO(perf): Avoid allocating this temporary events Vec on every drain
         // turn. The session wrapper immediately moves these records into its
-        // caller-owned RawUsereventsRecord buffer, so the adapter should
+        // caller-owned RawUserEventsRecord buffer, so the adapter should
         // eventually drain directly into a reusable caller-provided output
         // buffer once the adapter/session ownership boundary is revisited.
         let mut events = Vec::with_capacity(max_records.min(pending_len));

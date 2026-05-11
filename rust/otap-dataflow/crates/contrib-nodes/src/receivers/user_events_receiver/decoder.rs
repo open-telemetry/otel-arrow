@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Decoding helpers for Linux userevents samples.
+//! Decoding helpers for Linux user_events samples.
 //!
 //! The receiver handles two wire/layout layers:
 //!
@@ -62,7 +62,7 @@
 //! particular struct or field name. Schema-specific interpretation, such as
 //! Microsoft Common Schema `PartA`/`PartB`/`PartC` promotion, belongs in a
 //! processor. If EventHeader decoding fails, only the user payload region is
-//! preserved as `linux.userevents.payload_base64`.
+//! preserved as `linux.user_events.payload_base64`.
 
 use std::borrow::Cow;
 
@@ -74,7 +74,7 @@ use tracepoint_decode::{
 };
 
 use super::FormatConfig;
-use super::session::{RawUsereventsRecord, TracefsField, TracefsFieldLocation};
+use super::session::{RawUserEventsRecord, TracefsField, TracefsFieldLocation};
 
 // FieldEncoding raw values (from eventheader_types, avoids a new dep)
 #[cfg(feature = "user_events-eventheader")]
@@ -96,7 +96,7 @@ const FMT_BOOLEAN: u8 = 7;
 #[cfg(feature = "user_events-eventheader")]
 const FMT_FLOAT: u8 = 8;
 
-/// Typed attribute value carried on a decoded userevents record.
+/// Typed attribute value carried on a decoded user_events record.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum DecodedAttrValue {
     Str(String),
@@ -117,7 +117,7 @@ impl PartialEq<&str> for DecodedAttrValue {
     }
 }
 
-/// A decoded userevents record ready for Arrow encoding.
+/// A decoded user_events record ready for Arrow encoding.
 ///
 /// This intentionally keeps the decoder independent from the Arrow builders for
 /// now, but it also means decoded strings and attributes are staged in owned
@@ -126,7 +126,7 @@ impl PartialEq<&str> for DecodedAttrValue {
 /// `ArrowRecordsBuilder`/`LogAttrs` builders and avoid these temporary
 /// allocations on the hot path.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct DecodedUsereventsRecord {
+pub(super) struct DecodedUserEventsRecord {
     /// Event timestamp in Unix epoch nanoseconds.
     pub time_unix_nano: i64,
     /// Optional log body string.
@@ -147,10 +147,10 @@ pub(super) struct DecodedUsereventsRecord {
     pub attributes: Vec<(Cow<'static, str>, DecodedAttrValue)>,
 }
 
-impl DecodedUsereventsRecord {
+impl DecodedUserEventsRecord {
     pub(super) fn from_raw(
         tracepoint: &str,
-        value: RawUsereventsRecord,
+        value: RawUserEventsRecord,
         format: &FormatConfig,
     ) -> Self {
         match format {
@@ -162,18 +162,18 @@ impl DecodedUsereventsRecord {
 
     fn base_record(
         tracepoint: &str,
-        value: RawUsereventsRecord,
+        value: RawUserEventsRecord,
         mut attributes: Vec<(Cow<'static, str>, DecodedAttrValue)>,
     ) -> Self {
         if let Some(process_id) = value.process_id {
             attributes.push((
-                Cow::Borrowed("linux.userevents.process.pid"),
+                Cow::Borrowed("linux.user_events.process.pid"),
                 DecodedAttrValue::Int(i64::from(process_id)),
             ));
         }
         if let Some(thread_id) = value.thread_id {
             attributes.push((
-                Cow::Borrowed("linux.userevents.thread.id"),
+                Cow::Borrowed("linux.user_events.thread.id"),
                 DecodedAttrValue::Int(i64::from(thread_id)),
             ));
         }
@@ -191,7 +191,7 @@ impl DecodedUsereventsRecord {
         }
     }
 
-    fn from_tracefs(tracepoint: &str, value: RawUsereventsRecord) -> Self {
+    fn from_tracefs(tracepoint: &str, value: RawUserEventsRecord) -> Self {
         let mut attributes = Vec::with_capacity(value.fields.len());
         for field in value.fields.iter() {
             // Receiver-internal transport fields are intentionally not emitted
@@ -209,7 +209,7 @@ impl DecodedUsereventsRecord {
     }
 
     #[cfg(feature = "user_events-eventheader")]
-    fn from_eventheader(tracepoint: &str, value: RawUsereventsRecord) -> Self {
+    fn from_eventheader(tracepoint: &str, value: RawUserEventsRecord) -> Self {
         let payload = value
             .event_data
             .get(value.user_data_offset..)
@@ -335,7 +335,7 @@ fn decode_eventheader_attrs(
         EventHeaderEnumeratorContext::MOVE_NEXT_LIMIT_DEFAULT,
     ) else {
         attrs.push((
-            Cow::Borrowed("linux.userevents.payload_base64"),
+            Cow::Borrowed("linux.user_events.payload_base64"),
             DecodedAttrValue::Str(BASE64_STANDARD.encode(payload)),
         ));
         return attrs;
@@ -440,7 +440,7 @@ mod tests {
     #[cfg(feature = "user_events-eventheader")]
     const FMT_DEFAULT: u8 = 0;
 
-    fn raw_record(fields: Vec<TracefsField>, event_data: Vec<u8>) -> RawUsereventsRecord {
+    fn raw_record(fields: Vec<TracefsField>, event_data: Vec<u8>) -> RawUserEventsRecord {
         raw_record_with_sample_metadata(fields, event_data, None, None)
     }
 
@@ -449,8 +449,8 @@ mod tests {
         event_data: Vec<u8>,
         process_id: Option<u32>,
         thread_id: Option<u32>,
-    ) -> RawUsereventsRecord {
-        RawUsereventsRecord {
+    ) -> RawUserEventsRecord {
+        RawUserEventsRecord {
             subscription_index: 0,
             timestamp_unix_nano: 42,
             process_id,
@@ -477,15 +477,15 @@ mod tests {
         }
     }
 
-    fn decode_tracefs(fields: Vec<TracefsField>, event_data: Vec<u8>) -> DecodedUsereventsRecord {
-        DecodedUsereventsRecord::from_raw(
+    fn decode_tracefs(fields: Vec<TracefsField>, event_data: Vec<u8>) -> DecodedUserEventsRecord {
+        DecodedUserEventsRecord::from_raw(
             "user_events:my_event",
             raw_record(fields, event_data),
             &FormatConfig::Tracefs,
         )
     }
 
-    fn attr<'a>(decoded: &'a DecodedUsereventsRecord, key: &str) -> Option<&'a DecodedAttrValue> {
+    fn attr<'a>(decoded: &'a DecodedUserEventsRecord, key: &str) -> Option<&'a DecodedAttrValue> {
         decoded
             .attributes
             .iter()
@@ -577,15 +577,15 @@ mod tests {
         let raw = raw_record_with_sample_metadata(fields, event_data, Some(123), Some(456));
 
         let decoded =
-            DecodedUsereventsRecord::from_raw("user_events:my_event", raw, &FormatConfig::Tracefs);
+            DecodedUserEventsRecord::from_raw("user_events:my_event", raw, &FormatConfig::Tracefs);
 
         assert_eq!(attr(&decoded, "status"), Some(&DecodedAttrValue::Int(200)));
         assert_eq!(
-            attr(&decoded, "linux.userevents.process.pid"),
+            attr(&decoded, "linux.user_events.process.pid"),
             Some(&DecodedAttrValue::Int(123))
         );
         assert_eq!(
-            attr(&decoded, "linux.userevents.thread.id"),
+            attr(&decoded, "linux.user_events.thread.id"),
             Some(&DecodedAttrValue::Int(456))
         );
     }
@@ -755,7 +755,7 @@ mod tests {
         let payload = build_eventheader_payload("Log", 4, &meta, &data);
         let mut event_data = vec![0; 8];
         event_data.extend_from_slice(&payload);
-        let decoded = DecodedUsereventsRecord::from_raw(
+        let decoded = DecodedUserEventsRecord::from_raw(
             "user_events:myprovider_L4K1",
             raw_record(Vec::new(), event_data),
             &FormatConfig::EventHeader,
@@ -824,7 +824,7 @@ mod tests {
     #[cfg(feature = "user_events-eventheader")]
     #[test]
     fn eventheader_invalid_payload_is_preserved_as_attribute() {
-        let decoded = DecodedUsereventsRecord::from_raw(
+        let decoded = DecodedUserEventsRecord::from_raw(
             "user_events:my_event",
             raw_record(Vec::new(), vec![0, 1, 2]),
             &FormatConfig::EventHeader,
@@ -832,6 +832,6 @@ mod tests {
 
         assert!(decoded.body.is_none());
         assert_eq!(decoded.attributes.len(), 1);
-        assert_eq!(decoded.attributes[0].0, "linux.userevents.payload_base64");
+        assert_eq!(decoded.attributes[0].0, "linux.user_events.payload_base64");
     }
 }

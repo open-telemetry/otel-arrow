@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Arrow encoding for Linux userevents logs.
+//! Arrow encoding for Linux user_events logs.
 
 use otap_df_pdata::encode::Result;
 use otap_df_pdata::encode::record::{
@@ -11,9 +11,9 @@ use otap_df_pdata::otap::{Logs, OtapArrowRecords};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::{SpanId, TraceId};
 
-use super::decoder::{DecodedAttrValue, DecodedUsereventsRecord};
+use super::decoder::{DecodedAttrValue, DecodedUserEventsRecord};
 
-/// Builder for creating Arrow record batches from decoded userevents messages.
+/// Builder for creating Arrow record batches from decoded user_events messages.
 pub(super) struct ArrowRecordsBuilder {
     curr_log_id: u16,
     logs: LogsRecordBatchBuilder,
@@ -49,8 +49,8 @@ impl ArrowRecordsBuilder {
         self.curr_log_id == 0
     }
 
-    /// Appends a decoded userevents record.
-    pub(super) fn append(&mut self, record: DecodedUsereventsRecord) {
+    /// Appends a decoded user_events record.
+    pub(super) fn append(&mut self, record: DecodedUserEventsRecord) {
         self.logs.append_time_unix_nano(record.time_unix_nano);
         self.logs
             .append_observed_time_unix_nano(record.time_unix_nano);
@@ -88,7 +88,7 @@ impl ArrowRecordsBuilder {
         self.curr_log_id += 1;
     }
 
-    /// Builds the Arrow records from the buffered userevents logs.
+    /// Builds the Arrow records from the buffered user_events logs.
     pub(super) fn build(mut self) -> Result<OtapArrowRecords> {
         let log_record_count = self.curr_log_id.into();
 
@@ -132,7 +132,7 @@ impl ArrowRecordsBuilder {
 mod tests {
     use super::*;
     use crate::receivers::user_events_receiver::decoder::{
-        DecodedAttrValue, DecodedUsereventsRecord,
+        DecodedAttrValue, DecodedUserEventsRecord,
     };
     use arrow::array::{
         Array, AsArray, DictionaryArray, Int32Array, StringArray, StructArray, UInt32Array,
@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn build_creates_logs_and_attributes_batches() {
         let mut builder = ArrowRecordsBuilder::new();
-        builder.append(DecodedUsereventsRecord {
+        builder.append(DecodedUserEventsRecord {
             time_unix_nano: 1234,
             body: Some("QUJD".to_owned()),
             event_name: Some("example-event".to_owned()),
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn build_preserves_non_null_flags() {
         let mut builder = ArrowRecordsBuilder::new();
-        builder.append(DecodedUsereventsRecord {
+        builder.append(DecodedUserEventsRecord {
             time_unix_nano: 1234,
             body: None,
             event_name: Some("example-event".to_owned()),
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn build_omits_all_null_body_column() {
         let mut builder = ArrowRecordsBuilder::new();
-        builder.append(DecodedUsereventsRecord {
+        builder.append(DecodedUserEventsRecord {
             time_unix_nano: 1234,
             body: None,
             event_name: Some("example-event".to_owned()),

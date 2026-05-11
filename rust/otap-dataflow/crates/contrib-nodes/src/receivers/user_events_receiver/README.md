@@ -348,7 +348,7 @@ Unknown static fields may be preserved as per-field base64 string attributes.
 Decodes EventHeader self-describing fields into typed log attributes. Nested
 EventHeader structs are flattened with dot-separated attribute names. If an
 EventHeader payload cannot be decoded, the raw user payload is preserved in the
-`linux.userevents.payload_base64` attribute.
+`linux.user_events.payload_base64` attribute.
 
 This decoder is optional and requires the `user_events-eventheader` feature.
 
@@ -380,7 +380,7 @@ and `time_unix_nano` and `observed_time_unix_nano` use the perf sample
 timestamp. Processors may later replace `time_unix_nano` with a producer-provided
 event time, for example Common Schema `PartA.time`, while preserving the perf
 sample timestamp as observed time. The receiver also emits
-`linux.userevents.process.pid` and `linux.userevents.thread.id` from perf sample
+`linux.user_events.process.pid` and `linux.user_events.thread.id` from perf sample
 metadata when available, because multiple processes or threads can emit the same
 tracepoint. Schema-specific promotion to typed OTLP fields is intentionally left
 to processors. The original raw tracepoint sample is not part of the normal
