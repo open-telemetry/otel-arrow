@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
   schedule:
     # Run daily at 00:00 UTC
-    - cron: '0 0 * * *'
+    - cron: "0 0 * * *"
 
 jobs:
   build-multiarch:
@@ -53,11 +53,10 @@ jobs:
 
       - name: Get binary size and create report
         run: |
-          SIZE=$(docker run --rm --entrypoint stat df_engine:${{ matrix.platform.name }} -c %s /home/nonroot/df_engine)
-          SIZE_HR=$(numfmt --to=iec-i --suffix=B $SIZE)
-          SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
-          echo "Binary size for ${{ matrix.platform.name }}: $SIZE_HR ($SIZE_MB MB)"
-
+          cid=$(docker create df_engine:latest)
+          SIZE_MB=$(docker cp "$cid":/home/nonroot/df_engine - | wc -c | numfmt --to-unit=1048576 --format='%.2f')
+          docker container rm "$cid"
+           
           mkdir -p size-reports
           cat > size-reports/${{ matrix.platform.name }}.json << EOF
           [
