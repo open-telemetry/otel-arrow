@@ -287,7 +287,7 @@ impl Config {
         match self.data_source {
             DataSource::Static => Ok(None),
             DataSource::SemanticConventions => {
-                let registry_repo = RegistryRepo::try_new("main", &self.registry_path)
+                let registry_repo = RegistryRepo::try_new(None, &self.registry_path, &mut vec![])
                     .map_err(|err| err.to_string())?;
 
                 // Load the semantic convention registry.

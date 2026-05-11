@@ -78,12 +78,13 @@ mod test {
 
     fn get_registry() -> ResolvedRegistry {
         let registry_repo = RegistryRepo::try_new(
-            "main",
+            None,
             &VirtualDirectoryPath::GitRepo {
                 url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
                 sub_folder: Some("model".to_owned()),
                 refspec: None,
             },
+            &mut vec![],
         )
         .expect("all registries are definied under the model folder in semantic convention repo");
 

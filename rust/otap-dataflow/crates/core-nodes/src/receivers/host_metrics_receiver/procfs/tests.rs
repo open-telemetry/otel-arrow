@@ -1414,7 +1414,8 @@ fn load_semconv_registry() -> ResolvedRegistry {
         });
 
     let registry_repo =
-        RegistryRepo::try_new("main", &registry_path).expect("semantic convention registry");
+        RegistryRepo::try_new(None, &registry_path, &mut vec![])
+            .expect("semantic convention registry");
     let registry = match SchemaResolver::load_semconv_repository(registry_repo, false) {
         WResult::Ok(registry) | WResult::OkWithNFEs(registry, _) => registry,
         WResult::FatalErr(err) => panic!("failed to load semantic convention registry: {err}"),
