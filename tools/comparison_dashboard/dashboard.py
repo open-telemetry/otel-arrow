@@ -42,6 +42,7 @@ STAGING_DIR = Path(".data")
 # Default build output layout, used when no explicit paths are passed.
 DEFAULT_SITE_ROOT = Path(".site")
 DEFAULT_DATA_SUBDIR = Path("data")
+DEFAULT_COMPARE_SUBDIR = Path("compare")
 DEFAULT_DATA_DIR = DEFAULT_SITE_ROOT / DEFAULT_DATA_SUBDIR
 
 # Source location of static assets (CSS/JS) relative to the manifest's
@@ -503,14 +504,26 @@ def publish_results(staging_dir: Path, suite: dict, publish_dir: Path) -> None:
 # ===========================================================================
 @dataclass
 class BuildPaths:
-    """Resolved output paths for a single build invocation."""
+    """Resolved output paths for a single build invocation.
+
+    Layout:
+      <site_root>/
+        <compare_dir basename>/        # the compare-dir
+          index.html                   # landing
+          shared/                      # static assets (copied each build)
+          <comparison-slug>/index.html # per-comparison pages
+        <data_dir basename>/           # the data-dir
+          suite/<slug>/data.js
+          suite/<slug>/<test>/...
+    """
     site_root: Path        # absolute, dashboard-owned territory
     data_dir: Path         # absolute, subdir of site_root
+    compare_dir: Path      # absolute, subdir of site_root
     shared_src: Path       # absolute, source location of shared/ assets
-    shared_dst: Path       # absolute, = site_root / "shared"
+    shared_dst: Path       # absolute, = compare_dir / "shared"
 
     def compare_page_dir(self, slug: str) -> Path:
-        return self.site_root / slug
+        return self.compare_dir / slug
 
     def suite_dir(self, slug: str) -> Path:
         return self.data_dir / "suite" / slug
@@ -520,19 +533,21 @@ def resolve_build_paths(args, manifest: Manifest) -> BuildPaths:
     """Resolve build paths from CLI args, applying defaults relative to cwd."""
     site_root = (args.site_root or DEFAULT_SITE_ROOT).resolve()
     data_dir = (args.data_dir or (site_root / DEFAULT_DATA_SUBDIR)).resolve()
+    compare_dir = (args.compare_dir or (site_root / DEFAULT_COMPARE_SUBDIR)).resolve()
 
-    # data_dir must live inside site_root so the generated relative paths
-    # in HTML resolve correctly when the site is served.
-    try:
-        data_dir.relative_to(site_root)
-    except ValueError:
-        print(
-            f"ERROR: --data-dir must be a subdirectory of --site-root.\n"
-            f"  site-root: {site_root}\n"
-            f"  data-dir:  {data_dir}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    # data_dir and compare_dir must live inside site_root so the generated
+    # relative paths in HTML resolve correctly when the site is served.
+    for name, path in (("--data-dir", data_dir), ("--compare-dir", compare_dir)):
+        try:
+            path.relative_to(site_root)
+        except ValueError:
+            print(
+                f"ERROR: {name} must be a subdirectory of --site-root.\n"
+                f"  site-root: {site_root}\n"
+                f"  {name}:    {path}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     shared_src = (manifest.base_dir / SHARED_SOURCE_SUBDIR).resolve()
     if not shared_src.exists():
@@ -542,8 +557,9 @@ def resolve_build_paths(args, manifest: Manifest) -> BuildPaths:
     return BuildPaths(
         site_root=site_root,
         data_dir=data_dir,
+        compare_dir=compare_dir,
         shared_src=shared_src,
-        shared_dst=site_root / "shared",
+        shared_dst=compare_dir / "shared",
     )
 
 
@@ -554,10 +570,12 @@ def cmd_build(args) -> int:
 
     paths.site_root.mkdir(parents=True, exist_ok=True)
     paths.data_dir.mkdir(parents=True, exist_ok=True)
+    paths.compare_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Using manifest: {manifest.path}")
     print(f"Site root:      {paths.site_root}")
     print(f"Data dir:       {paths.data_dir}")
+    print(f"Compare dir:    {paths.compare_dir}")
     print()
 
     # Copy static assets fresh each build so changes to shared/ propagate.
@@ -572,9 +590,9 @@ def cmd_build(args) -> int:
     manifest_slugs = collect_manifest_suite_slugs(manifest)
     comparison_slugs = {c["slug"] for c in comparisons}
 
-    print("Reconciling data and site directories...")
+    print("Reconciling data and compare directories...")
     reconcile_data_dir(paths.data_dir, manifest_slugs)
-    reconcile_site_root(paths, comparison_slugs)
+    reconcile_compare_dir(paths, comparison_slugs)
     print()
 
     print("Regenerating suite.yaml files from manifest suites...")
@@ -631,16 +649,14 @@ def reconcile_data_dir(data_dir: Path, manifest_slugs: set[str]) -> None:
             print(f"  Pruned stale data: {child}")
 
 
-def reconcile_site_root(paths: BuildPaths, comparison_slugs: set[str]) -> None:
+def reconcile_compare_dir(paths: BuildPaths, comparison_slugs: set[str]) -> None:
     """
-    Delete any directory child of `site_root` that is not a reserved name
-    (`shared`, the data-dir's basename) and not a manifested comparison
-    slug. Site root is dashboard-owned territory.
+    Delete any directory child of `compare_dir` that is not the reserved
+    `shared/` subtree and not a manifested comparison slug. The compare-dir
+    is dashboard-owned territory.
     """
-    # The first path component of data_dir relative to site_root is reserved.
-    data_first = paths.data_dir.relative_to(paths.site_root).parts[0]
-    reserved = {"shared", data_first}
-    for child in sorted(paths.site_root.iterdir()):
+    reserved = {"shared"}
+    for child in sorted(paths.compare_dir.iterdir()):
         if not child.is_dir():
             continue
         if child.name in reserved or child.name in comparison_slugs:
@@ -903,14 +919,14 @@ def validate_manifest(manifest: Manifest, comparisons: list) -> None:
             joined = ", ".join(sources)
             errors.append(f"duplicate comparison slug '{slug}' in: {joined}")
 
-    # Comparison slugs become top-level directories under the site root.
-    # Reject any that would collide with the reserved static/data subtrees.
-    reserved_slugs = {"shared", "data"}
+    # Comparison slugs become directories under <compare-dir>/<slug>/.
+    # `shared/` is reserved there for static assets.
+    reserved_slugs = {"shared"}
     for slug, sources in comp_slug_sources.items():
         if slug in reserved_slugs:
             joined = ", ".join(sources)
             errors.append(
-                f"comparison slug '{slug}' is reserved (collides with <site>/{slug}/): {joined}"
+                f"comparison slug '{slug}' is reserved (collides with <compare-dir>/{slug}/): {joined}"
             )
 
     for comp in comparisons:
@@ -950,9 +966,9 @@ def generate_suite_data_js(suites: dict, paths: BuildPaths) -> None:
 
 
 def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> None:
-    """Generate <site_root>/index.html with comparison sections."""
-    shared_rel = os.path.relpath(paths.shared_dst, paths.site_root)
-    data_rel = os.path.relpath(paths.data_dir, paths.site_root)
+    """Generate <compare_dir>/index.html with comparison sections."""
+    shared_rel = os.path.relpath(paths.shared_dst, paths.compare_dir)
+    data_rel = os.path.relpath(paths.data_dir, paths.compare_dir)
 
     referenced_slugs = set()
     for comp in comparisons:
@@ -1010,7 +1026,7 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> N
     ]
     html = "\n".join(lines) + "\n"
 
-    index_path = paths.site_root / "index.html"
+    index_path = paths.compare_dir / "index.html"
     index_path.write_text(html)
     print(f"  Generated {index_path}")
 
@@ -1136,15 +1152,9 @@ def cmd_serve(args) -> int:
         print("Hint: run `dashboard.py build` first.", file=sys.stderr)
         return 1
 
-    if not (site_dir / "index.html").exists():
-        print(
-            "Warning: index.html not found in site root. "
-            "Run `dashboard.py build` first.",
-            file=sys.stderr,
-        )
-
     print(f"Site dir:    {site_dir}")
     print(f"Serving at:  http://localhost:{args.port}")
+    print(f"Landing:     http://localhost:{args.port}/{DEFAULT_COMPARE_SUBDIR}/")
     print()
 
     handler = lambda *a, **kw: _DashboardHandler(*a, directory=str(site_dir), **kw)
@@ -1235,6 +1245,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Per-suite data directory; must be a subdirectory of --site-root. "
             f"Default: <site-root>/{DEFAULT_DATA_SUBDIR}. Layout: "
             "<data-dir>/suite/<slug>/<test>/{metrics.json,timeseries.json,*.yaml}."
+        ),
+    )
+    p_build.add_argument(
+        "--compare-dir", type=Path, default=None,
+        help=(
+            "Compare directory; must be a subdirectory of --site-root. "
+            f"Default: <site-root>/{DEFAULT_COMPARE_SUBDIR}. Holds the "
+            "landing page at <compare-dir>/index.html and per-comparison "
+            "pages at <compare-dir>/<slug>/index.html, plus the copied "
+            "shared/ static assets."
         ),
     )
     p_build.set_defaults(func=cmd_build)
