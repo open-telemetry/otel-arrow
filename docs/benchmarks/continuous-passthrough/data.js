@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778564966026,
+  "lastUpdate": 1778569146033,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "129437996+c1ly@users.noreply.github.com",
-            "name": "c1ly",
-            "username": "c1ly"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "495588ee584201ea956c15c6fc102dc3465de675",
-          "message": "update container config to allow configurable wait_for setting (#2672)\n\n# Change Summary\n\nUpdate ContainerConfig struct to have a wait_for field of type WaitFor\nfrom the test container crate. Added additional functions to allow a\nuser to configure the WaitFor enum variant to use for a test container\n\n## What issue does this PR close?\n\n* Closes #2668\n\n## How are these changes tested?\n\nunit tests\n\n## Are there any user-facing changes?\n\nno\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
-          "timestamp": "2026-04-17T12:32:22Z",
-          "tree_id": "725b68172fbb97867a29dddbd980bee3aea2c180",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/495588ee584201ea956c15c6fc102dc3465de675"
-        },
-        "date": 1776433986377,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0.32701370120048523,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 99.93951455172969,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.24600604323236,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 29.229557291666666,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 30.2890625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 644512.943078666,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 642405.2973531401,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002494,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 16930647.308015116,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 16938935.96388002,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 177296.54200919686,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "33842784+JakeDern@users.noreply.github.com",
+            "name": "Jake Dern",
+            "username": "JakeDern"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "efe20b16b73d998aae70fab9ed7769406eac27fa",
+          "message": "task(comparison_dashboard): Decouple the site directories from the manifest (#2929)\n\n# Change Summary\n\nThis PR generalizes the site directories a little bit so that we can\npublish them into the benchmarks folder relatively easily for #2901.\n\n## What issue does this PR close?\n\n* Closes #2927\n\n## How are these changes tested?\n\nRe-checking the site locally:\n\n<img width=\"1843\" height=\"517\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/51617898-d550-4393-804a-138bacca235e\"\n/>\n\n\n## Are there any user-facing changes?\n\nNo.\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
+          "timestamp": "2026-05-12T05:58:12Z",
+          "tree_id": "ac408429e6e91f1923925422260dc3ce04059ded",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/efe20b16b73d998aae70fab9ed7769406eac27fa"
+        },
+        "date": 1778569145524,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1088.3333740234375,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 5.792230448334187,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 6.348819798917246,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 16.506510416666668,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 17.8125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 511.92674328303616,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 6083.39613268008,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.008586,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 214928.72861750895,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 176337.87273662846,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
