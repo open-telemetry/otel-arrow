@@ -9,8 +9,11 @@ groups:
         #
         # Build:    cargo build --features user_events-receiver
         # Run:      ./target/debug/df_engine --config configs/user-events-tracefs-debug.yaml --num-cores 1
-        # Produce:  cargo run -p otap-df-contrib-nodes --features user_events-receiver --example user_events_tracefs_producer
+        # Produce:  taskset -c 0 cargo run -p otap-df-contrib-nodes --features user_events-receiver --example user_events_tracefs_producer
         # Verify:   cat /tmp/user_events_tracefs_debug.log
+        #
+        # With --num-cores 1, df_engine drains CPU 0 only. Keep the producer on
+        # CPU 0 too, or run df_engine with host-wide CPU coverage.
 
         policies:
           channel_capacity:
