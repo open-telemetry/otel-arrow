@@ -229,7 +229,7 @@ jobs:
 
   # Checks that Pest grammar files are properly formatted using pestfmt.
   # Only runs if opl.pest has been modified in PRs, or on pushes to main.
-  # To format locally: cargo install pest_fmt && pestfmt rust/otap-dataflow/crates/opl/src/opl.pest
+  # To format locally: cargo install pest_fmt && pestfmt rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest
   pest-fmt:
     runs-on: ubuntu-latest
     steps:
@@ -244,7 +244,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" == "pull_request" ]; then
             # For PRs, check if the file was changed
-            git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q "rust/otap-dataflow/crates/opl/src/opl.pest" && echo "changed=true" >> $GITHUB_OUTPUT || echo "changed=false" >> $GITHUB_OUTPUT
+            git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q "rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest" && echo "changed=true" >> $GITHUB_OUTPUT || echo "changed=false" >> $GITHUB_OUTPUT
           else
             # For pushes to main, always check
             echo "changed=true" >> $GITHUB_OUTPUT
@@ -258,20 +258,20 @@ jobs:
           # Create a backup of the original file before formatting.
           # pestfmt modifies files in-place, so we need to preserve the original
           # to compare and detect if any formatting changes are needed.
-          cp rust/otap-dataflow/crates/opl/src/opl.pest /tmp/opl.pest.original
+          cp rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest /tmp/opl.pest.original
 
           # Run pestfmt to format the file
-          pestfmt rust/otap-dataflow/crates/opl/src/opl.pest
+          pestfmt rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest
 
           # Compare with original
-          if ! diff -q /tmp/opl.pest.original rust/otap-dataflow/crates/opl/src/opl.pest > /dev/null; then
+          if ! diff -q /tmp/opl.pest.original rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest > /dev/null; then
             echo "opl.pest is not formatted correctly"
             echo ""
             echo "Please run the following command to format it:"
-            echo "  pestfmt rust/otap-dataflow/crates/opl/src/opl.pest"
+            echo "  pestfmt rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest"
             echo ""
             echo "Diff:"
-            diff -u /tmp/opl.pest.original rust/otap-dataflow/crates/opl/src/opl.pest || true
+            diff -u /tmp/opl.pest.original rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest || true
             exit 1
           else
             echo "opl.pest is correctly formatted"
