@@ -536,7 +536,21 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
         run_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         _ = run_ticker.tick().await;
 
-        match self.config.get_traffic_config().production_mode {
+        // When signals_per_second is None (uncapped), always use Open mode
+        // regardless of the configured production_mode, since Smooth pacing
+        // is meaningless without a target rate.
+        let effective_mode = if self
+            .config
+            .get_traffic_config()
+            .signals_per_second
+            .is_none()
+        {
+            config::ProductionMode::Open
+        } else {
+            self.config.get_traffic_config().production_mode.clone()
+        };
+
+        match effective_mode {
             config::ProductionMode::Smooth => {
                 if let Some(batch_duration) = smooth_batch_interval(run_len) {
                     self.metrics.smooth_run_batches.set(run_len as u64);
