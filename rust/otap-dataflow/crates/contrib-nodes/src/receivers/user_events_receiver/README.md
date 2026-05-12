@@ -503,6 +503,7 @@ The receiver reports these counters under `receiver.user_events`:
 | `dropped_memory_pressure` | Records or batches dropped because process memory pressure requested ingress shedding. |
 | `dropped_no_subscription` | Samples that did not map to a configured subscription index. This should normally stay zero. |
 | `dropped_pending_overflow` | Samples dropped before allocation because the adapter pending queue reached its configured event or byte cap. |
+| `dropped_send_error` | Records dropped because a downstream send failed. |
 | `lost_perf_samples` | Lost sample count reported by the perf ring. |
 | `late_registration_retries` | Late-registration retry attempts while waiting for tracepoints. |
 | `sessions_started` | Receiver perf sessions successfully opened. |

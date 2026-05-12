@@ -29,6 +29,9 @@ pub(super) struct UserEventsReceiverMetrics {
     /// queue reached its configured event or byte cap.
     #[metric(unit = "{item}")]
     pub dropped_pending_overflow: Counter<u64>,
+    /// Number of records dropped because a downstream send failed.
+    #[metric(unit = "{item}")]
+    pub dropped_send_error: Counter<u64>,
     /// Number of lost samples reported by the perf ring.
     #[metric(unit = "{item}")]
     pub lost_perf_samples: Counter<u64>,

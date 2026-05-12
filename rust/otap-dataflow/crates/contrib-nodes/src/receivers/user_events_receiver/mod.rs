@@ -369,6 +369,15 @@ fn drop_batch(
     metrics.borrow_mut().dropped_memory_pressure.add(dropped);
 }
 
+fn add_dropped_send_error(
+    metrics: &Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>>,
+    dropped: u64,
+) {
+    if dropped > 0 {
+        metrics.borrow_mut().dropped_send_error.add(dropped);
+    }
+}
+
 async fn flush_batch(
     effect_handler: &local::EffectHandler<OtapPdata>,
     metrics: &Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>>,
@@ -392,7 +401,10 @@ async fn flush_batch(
     let send_started = Instant::now();
     // Await the send after a select! branch has already won; do not race this
     // future inside select!, where cancellation could drop a ready batch.
-    effect_handler.send_message_with_source_node(pdata).await?;
+    if let Err(error) = effect_handler.send_message_with_source_node(pdata).await {
+        add_dropped_send_error(metrics, item_count);
+        return Err(error.into());
+    }
     let send_elapsed_ns = send_started.elapsed().as_nanos();
     // Practically unreachable, but keep the metric saturated instead of
     // failing the receiver if the elapsed duration ever exceeds u64::MAX ns.
@@ -421,7 +433,8 @@ async fn process_drained_records(
     let mut dropped_memory_pressure: u64 = 0;
     let mut dropped_no_subscription = drain_stats.dropped_no_subscription;
 
-    for raw in drained_records.drain(..) {
+    let mut drained = drained_records.drain(..);
+    while let Some(raw) = drained.next() {
         if admission_state.should_shed_ingress() {
             dropped_memory_pressure = dropped_memory_pressure.saturating_add(1);
             continue;
@@ -439,7 +452,11 @@ async fn process_drained_records(
         );
         builder.append(decoded);
         if builder.len() >= batch_cfg.max_size {
-            flush_batch(effect_handler, metrics, builder).await?;
+            if let Err(error) = flush_batch(effect_handler, metrics, builder).await {
+                let remaining = u64::try_from(drained.count()).unwrap_or(u64::MAX);
+                add_dropped_send_error(metrics, remaining);
+                return Err(error);
+            }
         }
     }
 
@@ -1223,6 +1240,7 @@ mod config_tests {
         let metrics = metrics.borrow();
         assert_eq!(metrics.forwarded_samples.get(), 0);
         assert_eq!(metrics.flushed_batches.get(), 0);
+        assert_eq!(metrics.dropped_send_error.get(), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1258,6 +1276,46 @@ mod config_tests {
         assert_eq!(metrics.received_samples.get(), 1);
         assert_eq!(metrics.forwarded_samples.get(), 1);
         assert_eq!(metrics.flushed_batches.get(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn process_drained_records_counts_remaining_records_on_mid_batch_send_error() {
+        let (effect_handler, rx) = test_effect_handler(1, false);
+        drop(rx);
+        let subscriptions = vec![test_subscription()];
+        let admission_state = normal_admission_state();
+        let metrics = test_metrics();
+        let mut builder = ArrowRecordsBuilder::new();
+        let mut drained_records = vec![test_raw_record(0), test_raw_record(0), test_raw_record(0)];
+        let drain_stats = SessionDrainStats {
+            received_samples: 3,
+            ..Default::default()
+        };
+
+        let error = process_drained_records(
+            &effect_handler,
+            &subscriptions,
+            &admission_state,
+            &metrics,
+            &mut builder,
+            &mut drained_records,
+            drain_stats,
+            &test_batch_config(2),
+        )
+        .await
+        .expect_err("closed downstream should fail the mid-batch flush");
+
+        assert!(
+            matches!(error, Error::ChannelSendError { closed: true, .. }),
+            "unexpected error: {error}"
+        );
+
+        let metrics = metrics.borrow();
+        assert!(builder.is_empty());
+        assert!(drained_records.is_empty());
+        assert_eq!(metrics.forwarded_samples.get(), 0);
+        assert_eq!(metrics.flushed_batches.get(), 0);
+        assert_eq!(metrics.dropped_send_error.get(), 3);
     }
 
     #[tokio::test(flavor = "current_thread")]
