@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dataflow Engine Baselines - Benchmark Dashboard</title>
+  <link rel="stylesheet" href="../shared/styles.css">
+</head>
+<body>
+  <div class="wip-banner" role="alert">
+    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>
+    <span class="wip-text">All benchmarks are WIP and not final. Inaccuracies may exist.</span>
+    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>
+  </div>
+  <div class="wrap">
+    <div id="app"></div>
+  </div>
+
+  <div id="run-detail-modal" class="modal-backdrop" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <div id="run-detail-title" class="modal-title"></div>
+        <button id="run-detail-close" class="modal-close" type="button">Close</button>
+      </div>
+      <div id="run-detail-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>
+  <script>window.DATA_PATH = "../../comparison_data/suite";</script>
+  <script>window.COMPARISON_SLUG = "dfe_baselines";</script>
+  <script src="../../comparison_data/suite/dfe_logs_otap_none_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/dfe_logs_otap_gzip_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/dfe_logs_otap_zstd_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/dfe_logs_otlp_none_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/dfe_logs_otlp_gzip_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/dfe_logs_otlp_zstd_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/dfe_logs_otlphttp_none_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/dfe_logs_otlphttp_gzip_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/dfe_logs_otlphttp_zstd_baseline/data.js"></script>
+  <script>window.COMPARISON = {
+  "slug": "dfe_baselines",
+  "name": "Dataflow Engine Baselines",
+  "description": "Baseline DFE logs runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.",
+  "suites": [
+    {
+      "name": "DFE OTAP Baseline (None)",
+      "slug": "dfe_logs_otap_none_baseline",
+      "short": "OTAP/None"
+    },
+    {
+      "name": "DFE OTAP Baseline (Gzip)",
+      "slug": "dfe_logs_otap_gzip_baseline",
+      "short": "OTAP/Gzip"
+    },
+    {
+      "name": "DFE OTAP Baseline (Zstd)",
+      "slug": "dfe_logs_otap_zstd_baseline",
+      "short": "OTAP/Zstd"
+    },
+    {
+      "name": "DFE OTLP Baseline (None)",
+      "slug": "dfe_logs_otlp_none_baseline",
+      "short": "OTLP/None"
+    },
+    {
+      "name": "DFE OTLP Baseline (Gzip)",
+      "slug": "dfe_logs_otlp_gzip_baseline",
+      "short": "OTLP/Gzip"
+    },
+    {
+      "name": "DFE OTLP Baseline (Zstd)",
+      "slug": "dfe_logs_otlp_zstd_baseline",
+      "short": "OTLP/Zstd"
+    },
+    {
+      "name": "DFE OTLP/HTTP Baseline (None)",
+      "slug": "dfe_logs_otlphttp_none_baseline",
+      "short": "OTLP-HTTP/None"
+    },
+    {
+      "name": "DFE OTLP/HTTP Baseline (Gzip)",
+      "slug": "dfe_logs_otlphttp_gzip_baseline",
+      "short": "OTLP-HTTP/Gzip"
+    },
+    {
+      "name": "DFE OTLP/HTTP Baseline (Zstd)",
+      "slug": "dfe_logs_otlphttp_zstd_baseline",
+      "short": "OTLP-HTTP/Zstd"
+    }
+  ]
+};</script>
+  <script type="module" src="../shared/app.js"></script>
+</body>
+</html>
