@@ -19,7 +19,7 @@
 //!
 //! - Methods with `&self` or `&mut self` receivers (sync and async;
 //!   explicit lifetimes like `&'a self` are also accepted)
-//! - Method-level generics, lifetimes, and where clauses
+//! - Method-level lifetime parameters and where clauses
 //! - Default method bodies (preserved in generated local/shared traits)
 //! - Doc attributes on the trait (propagated to generated traits)
 //! - Visibility modifiers on the trait
@@ -31,8 +31,7 @@
 //!
 //! - **Trait-level generics or lifetime parameters** — e.g.
 //!   `#[capability] trait Foo<T>` or `#[capability] trait Bar<'a>`.
-//!   Method-level generics (one bullet up) *are* supported because the
-//!   trait object `dyn Foo` exists for the trait as a whole. Trait-level
+//!   Method-level lifetimes (one bullet up) *are* supported. Trait-level
 //!   parameters, by contrast, mean the trait isn't one type but a
 //!   *family* — `Foo<u32>`, `Foo<String>`, etc. — each with its own
 //!   `TypeId::of::<Foo<T>>()`. The registry keys entries by a single
@@ -41,6 +40,13 @@
 //!   parameter at the trait definition (e.g. work over `String` or a
 //!   sealed enum) or split the family into separate `#[capability]`
 //!   traits.
+//! - **Method-level generic type or const parameters** — e.g.
+//!   `fn get<T>(&self, key: T) -> T` or `fn pad<const N: usize>(&self)`.
+//!   The macro generates `Box<dyn local::Trait>` / `Box<dyn shared::Trait>`
+//!   handles, and dyn-compatibility (object safety) forbids generic type
+//!   or const parameters on dispatchable methods because each
+//!   monomorphization would need its own vtable slot. Use a concrete type
+//!   (or a sealed enum) at the trait method signature instead.
 //! - **Supertraits** (`trait Foo: Bar`) — the `SharedAsLocal` adapter only
 //!   delegates methods defined directly on the `#[capability]` trait. It cannot
 //!   auto-implement supertrait methods. Define all methods directly on the
@@ -68,7 +74,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    FnArg, Ident, ItemTrait, LitStr, Meta, TraitItem, TraitItemFn,
+    FnArg, GenericParam, Ident, ItemTrait, LitStr, Meta, TraitItem, TraitItemFn,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
     token::Comma,
@@ -173,14 +179,48 @@ fn validate_trait(trait_item: &ItemTrait) -> Result<(), TokenStream> {
                 )
                 .to_compile_error());
             }
-            TraitItem::Fn(_) => {
-                // No macro-side receiver validation. Any unsupported
-                // receiver shape (consuming `self`, arbitrary self
-                // types, no-`self` associated functions) will be
-                // rejected by the compiler when the macro-generated
-                // `Box<dyn shared::Trait>` field on `SharedAsLocal`
-                // (or its delegating method bodies) is type-checked,
-                // with clearer errors than the macro could synthesize.
+            TraitItem::Fn(f) => {
+                // Reject method-level generic type and const parameters.
+                // The macro generates `Box<dyn local::Trait>` /
+                // `Box<dyn shared::Trait>` handles, and dyn-compatibility
+                // (object safety) forbids generic type or const parameters
+                // on dispatchable methods. Lifetimes are fine — they
+                // don't affect dyn-compatibility.
+                for gp in &f.sig.generics.params {
+                    match gp {
+                        GenericParam::Type(_) | GenericParam::Const(_) => {
+                            return Err(syn::Error::new_spanned(
+                                gp,
+                                "#[capability] does not support method-level generic type \
+                                 or const parameters; the generated `Box<dyn Trait>` handles \
+                                 require dyn-compatibility. Use a concrete type (or sealed \
+                                 enum) in the method signature instead.",
+                            )
+                            .to_compile_error());
+                        }
+                        GenericParam::Lifetime(_) => {}
+                    }
+                }
+
+                // Reject non-ident parameter patterns (e.g. destructured
+                // arguments like `(a, b): (u64, u64)`). The adapter
+                // delegation requires simple ident parameters so it can
+                // forward by name. Catching this here gives a clear
+                // compile error instead of a proc-macro panic deeper in
+                // codegen.
+                for arg in &f.sig.inputs {
+                    if let FnArg::Typed(pat_type) = arg
+                        && !matches!(&*pat_type.pat, syn::Pat::Ident(_))
+                    {
+                        return Err(syn::Error::new_spanned(
+                            &pat_type.pat,
+                            "#[capability] requires simple identifier parameters; \
+                             destructured patterns (e.g. `(a, b): (u64, u64)`) are not \
+                             supported because the generated adapter delegates by parameter name.",
+                        )
+                        .to_compile_error());
+                    }
+                }
             }
             _ => {}
         }
@@ -268,11 +308,15 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
                         if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
                             Some(&pat_ident.ident)
                         } else {
-                            // Non-ident patterns (e.g., destructuring) would
-                            // silently break delegation. This can't happen for
-                            // capability traits validated above (no associated
-                            // types, simple &self methods), but panic defensively.
-                            panic!("#[capability] adapter delegation requires simple ident parameters, got a pattern")
+                            // validate_trait rejects non-ident parameter
+                            // patterns up-front with a syn::Error, so this
+                            // branch is unreachable in practice. Kept as a
+                            // belt-and-suspenders panic in case a future
+                            // change to validation lets one slip through.
+                            unreachable!(
+                                "#[capability] adapter delegation requires simple ident parameters; \
+                                 should have been rejected by validate_trait"
+                            )
                         }
                     } else {
                         None
@@ -513,5 +557,48 @@ mod tests {
     #[test]
     fn accepts_async_mut_self() {
         assert!(validate("trait Cap { async fn set(&mut self); }").is_none());
+    }
+
+    #[test]
+    fn accepts_method_lifetime_param() {
+        // Lifetime parameters do not affect dyn-compatibility, so they
+        // are allowed.
+        assert!(validate("trait Cap { fn get<'a>(&'a self) -> &'a str; }").is_none());
+    }
+
+    #[test]
+    fn rejects_method_generic_type_param() {
+        // Generic type parameters break dyn-compatibility of the
+        // generated `Box<dyn local/shared::Trait>` handles.
+        let err = validate("trait Cap { fn get<T>(&self, key: T) -> T; }").expect("should reject");
+        assert!(
+            err.contains("method-level generic type"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_method_generic_const_param() {
+        // Const generics likewise break dyn-compatibility.
+        let err = validate("trait Cap { fn pad<const N: usize>(&self) -> [u8; N]; }")
+            .expect("should reject");
+        assert!(
+            err.contains("method-level generic type"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_destructured_parameter_pattern() {
+        // Destructured arg patterns (e.g. `(a, b): (u64, u64)`) cannot
+        // be forwarded by name through the SharedAsLocal adapter; we
+        // reject them with a syn::Error rather than panicking deep in
+        // codegen.
+        let err =
+            validate("trait Cap { fn set(&self, (a, b): (u64, u64)); }").expect("should reject");
+        assert!(
+            err.contains("simple identifier parameters"),
+            "unexpected error: {err}"
+        );
     }
 }
