@@ -1,6 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+#![allow(
+    clippy::print_stdout,
+    clippy::unwrap_used,
+    clippy::explicit_into_iter_loop,
+    elided_lifetimes_in_paths
+)]
+
 use data_engine_recordset::*;
 use otap_df_contrib_nodes::processors::recordset_kql_processor::otlp_bridge::BridgePipeline;
 

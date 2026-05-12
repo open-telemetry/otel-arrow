@@ -332,7 +332,7 @@ mod tests {
         run_test(
             (
                 "key1",
-                AnyValue::Native(crate::OtlpAnyValue::StringValue(StringValueStorage::new(
+                AnyValue::Native(crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::StringValue(StringValueStorage::new(
                     "value1".into(),
                 ))),
             ),
@@ -360,87 +360,109 @@ mod tests {
         run_test(AnyValue::Null, OtlpAnyValue { value: None });
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::StringValue(StringValueStorage::new(
-                "".into(),
-            ))),
+            AnyValue::Native(
+                crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::StringValue(
+                    StringValueStorage::new("".into()),
+                ),
+            ),
             OtlpAnyValue {
                 value: Some(OtlpValue::StringValue("".into())),
             },
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::StringValue(StringValueStorage::new(
-                "hello world".into(),
-            ))),
+            AnyValue::Native(
+                crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::StringValue(
+                    StringValueStorage::new("hello world".into()),
+                ),
+            ),
             OtlpAnyValue {
                 value: Some(OtlpValue::StringValue("hello world".into())),
             },
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::BoolValue(BooleanValueStorage::new(
-                true,
-            ))),
+            AnyValue::Native(
+                crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::BoolValue(
+                    BooleanValueStorage::new(true),
+                ),
+            ),
             OtlpAnyValue {
                 value: Some(OtlpValue::BoolValue(true)),
             },
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::BoolValue(BooleanValueStorage::new(
-                false,
-            ))),
+            AnyValue::Native(
+                crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::BoolValue(
+                    BooleanValueStorage::new(false),
+                ),
+            ),
             OtlpAnyValue {
                 value: Some(OtlpValue::BoolValue(false)),
             },
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(18))),
+            AnyValue::Native(
+                crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::IntValue(
+                    IntegerValueStorage::new(18),
+                ),
+            ),
             OtlpAnyValue {
                 value: Some(OtlpValue::IntValue(18)),
             },
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(-18))),
+            AnyValue::Native(
+                crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::IntValue(
+                    IntegerValueStorage::new(-18),
+                ),
+            ),
             OtlpAnyValue {
                 value: Some(OtlpValue::IntValue(-18)),
             },
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::DoubleValue(DoubleValueStorage::new(
-                18.0,
-            ))),
+            AnyValue::Native(
+                crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::DoubleValue(
+                    DoubleValueStorage::new(18.0),
+                ),
+            ),
             OtlpAnyValue {
                 value: Some(OtlpValue::DoubleValue(18.0)),
             },
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::DoubleValue(DoubleValueStorage::new(
-                -18.0,
-            ))),
+            AnyValue::Native(
+                crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::DoubleValue(
+                    DoubleValueStorage::new(-18.0),
+                ),
+            ),
             OtlpAnyValue {
                 value: Some(OtlpValue::DoubleValue(-18.0)),
             },
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::ArrayValue(ArrayValueStorage::new(
-                Vec::new(),
-            ))),
+            AnyValue::Native(
+                crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::ArrayValue(
+                    ArrayValueStorage::new(Vec::new()),
+                ),
+            ),
             OtlpAnyValue {
                 value: Some(OtlpValue::ArrayValue(OtlpArrayValue { values: Vec::new() })),
             },
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::ArrayValue(ArrayValueStorage::new(
+            AnyValue::Native(crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::ArrayValue(ArrayValueStorage::new(
                 vec![
                     AnyValue::Null,
-                    AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(18))),
+                    AnyValue::Native(crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::IntValue(IntegerValueStorage::new(18))),
                 ],
             ))),
             OtlpAnyValue {
@@ -456,9 +478,11 @@ mod tests {
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::KvlistValue(MapValueStorage::new(
-                HashMap::new(),
-            ))),
+            AnyValue::Native(
+                crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::KvlistValue(
+                    MapValueStorage::new(HashMap::new()),
+                ),
+            ),
             OtlpAnyValue {
                 value: Some(OtlpValue::KvlistValue(OtlpKeyValueList {
                     values: Vec::new(),
@@ -467,13 +491,13 @@ mod tests {
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::KvlistValue(MapValueStorage::new(
+            AnyValue::Native(crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::KvlistValue(MapValueStorage::new(
                 HashMap::from([
                     ("".into(), AnyValue::Null),
                     ("key1".into(), AnyValue::Null),
                     (
                         "key2".into(),
-                        AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(
+                        AnyValue::Native(crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::IntValue(IntegerValueStorage::new(
                             18,
                         ))),
                     ),
@@ -502,21 +526,25 @@ mod tests {
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::BytesValue(ByteArrayValueStorage::new(
-                Vec::new(),
-            ))),
+            AnyValue::Native(
+                crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::BytesValue(
+                    ByteArrayValueStorage::new(Vec::new()),
+                ),
+            ),
             OtlpAnyValue {
                 value: Some(OtlpValue::BytesValue(Vec::new())),
             },
         );
 
         run_test(
-            AnyValue::Native(crate::OtlpAnyValue::BytesValue(ByteArrayValueStorage::new(
-                vec![
-                    IntegerValueStorage::new(0x00),
-                    IntegerValueStorage::new(0xFF),
-                ],
-            ))),
+            AnyValue::Native(
+                crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::BytesValue(
+                    ByteArrayValueStorage::new(vec![
+                        IntegerValueStorage::new(0x00),
+                        IntegerValueStorage::new(0xFF),
+                    ]),
+                ),
+            ),
             OtlpAnyValue {
                 value: Some(OtlpValue::BytesValue(vec![0x00, 0xFF])),
             },
@@ -572,7 +600,7 @@ mod tests {
                     ("key1".into(), AnyValue::Null),
                     (
                         "key2".into(),
-                        AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(
+                        AnyValue::Native(crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::IntValue(IntegerValueStorage::new(
                             18,
                         ))),
                     ),
@@ -666,7 +694,7 @@ mod tests {
                     ("key1".into(), AnyValue::Null),
                     (
                         "key2".into(),
-                        AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(
+                        AnyValue::Native(crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::IntValue(IntegerValueStorage::new(
                             18,
                         ))),
                     ),
@@ -781,9 +809,13 @@ mod tests {
             LogRecord::new()
                 .with_attribute("key1", AnyValue::Null)
                 .with_attribute(
-                    "key2",
-                    AnyValue::Native(crate::OtlpAnyValue::IntValue(IntegerValueStorage::new(18))),
+                "key2",
+                AnyValue::Native(
+                    crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::IntValue(
+                        IntegerValueStorage::new(18),
+                    ),
                 ),
+            ),
             OtlpLogRecord {
                 time_unix_nano: 0,
                 observed_time_unix_nano: 0,

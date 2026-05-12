@@ -1,7 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Benchmarks for the OTLP bridge extend pipeline.
+
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use data_engine_recordset::RecordSetEngineDiagnosticLevel;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};

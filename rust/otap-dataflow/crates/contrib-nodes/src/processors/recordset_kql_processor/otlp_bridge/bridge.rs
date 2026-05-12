@@ -1066,7 +1066,7 @@ mod tests {
             ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(
                 LogRecord::new().with_attribute(
                     "TimeGenerated",
-                    AnyValue::Native(crate::OtlpAnyValue::StringValue(StringValueStorage::new(
+                    AnyValue::Native(crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::StringValue(StringValueStorage::new(
                         "10/22/2025".into(),
                     ))),
                 ),
