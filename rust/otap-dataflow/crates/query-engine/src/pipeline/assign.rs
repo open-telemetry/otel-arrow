@@ -4863,6 +4863,27 @@ mod test {
         ]);
 
         let query = r#"logs | extend attributes["str_attr"] = fnv(attributes["str_attr"])"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new(
+                "str_attr",
+                // FNV-1a 64-bit of "hello" interpreted as i64
+                AnyValue::new_int(-6615550055289275125_i64)
+            )]
+        );
+    }
+
     async fn test_update_attr_to_log_function_call_result<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
@@ -4887,14 +4908,31 @@ mod test {
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
             panic!("invalid signal type");
         };
+
         let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
-        assert_eq!(
-            log_0.attributes,
-            vec![KeyValue::new(
-                "str_attr",
-                AnyValue::new_int(-6615550055289275125_i64)
-            )]
-        );
+        assert_eq!(log_0.attributes.len(), 4);
+
+        let log_duration_ms = log_0
+            .attributes
+            .iter()
+            .find(|kv| kv.key == "log10_duration_ms")
+            .and_then(|kv| kv.value.as_ref())
+            .and_then(|value| value.value.as_ref());
+        let Some(any_value::Value::DoubleValue(log_duration_ms)) = log_duration_ms else {
+            panic!("expected log10_duration_ms to be a double attribute");
+        };
+        assert_eq!(*log_duration_ms, 10.0f64.log10());
+
+        let log_ratio = log_0
+            .attributes
+            .iter()
+            .find(|kv| kv.key == "log10_ratio")
+            .and_then(|kv| kv.value.as_ref())
+            .and_then(|value| value.value.as_ref());
+        let Some(any_value::Value::DoubleValue(log_ratio)) = log_ratio else {
+            panic!("expected log10_ratio to be a double attribute");
+        };
+        assert_eq!(*log_ratio, 100.0f64.log10());
     }
 
     #[tokio::test]
@@ -5117,35 +5155,6 @@ mod test {
     #[tokio::test]
     async fn test_update_attr_to_xxh128_hash_function_call_result_kql_parser() {
         test_update_attr_to_xxh128_hash_function_call_result::<KqlParser>().await
-
-        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
-            panic!("invalid signal type");
-        };
-
-        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
-        assert_eq!(log_0.attributes.len(), 4);
-
-        let log_duration_ms = log_0
-            .attributes
-            .iter()
-            .find(|kv| kv.key == "log10_duration_ms")
-            .and_then(|kv| kv.value.as_ref())
-            .and_then(|value| value.value.as_ref());
-        let Some(any_value::Value::DoubleValue(log_duration_ms)) = log_duration_ms else {
-            panic!("expected log10_duration_ms to be a double attribute");
-        };
-        assert_eq!(*log_duration_ms, 10.0f64.log10());
-
-        let log_ratio = log_0
-            .attributes
-            .iter()
-            .find(|kv| kv.key == "log10_ratio")
-            .and_then(|kv| kv.value.as_ref())
-            .and_then(|value| value.value.as_ref());
-        let Some(any_value::Value::DoubleValue(log_ratio)) = log_ratio else {
-            panic!("expected log10_ratio to be a double attribute");
-        };
-        assert_eq!(*log_ratio, 100.0f64.log10());
     }
 
     #[tokio::test]
