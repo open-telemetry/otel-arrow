@@ -1006,7 +1006,7 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> N
         '<head>',
         '  <meta charset="utf-8">',
         '  <meta name="viewport" content="width=device-width, initial-scale=1">',
-        '  <title>Telemetry Engine Benchmark Dashboard</title>',
+        '  <title>Telemetry Engine Benchmarks</title>',
         f'  <link rel="stylesheet" href="{shared_rel}/styles.css">',
         '</head>',
         '<body>',
