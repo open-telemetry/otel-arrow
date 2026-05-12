@@ -1,16 +1,7 @@
-# Rebuilds the comparison dashboard site from data on the `benchmarks`
-# branch and pushes the rebuilt `docs/compare/` straight back to that
-# branch (no PR, mirroring how `benchmark-action/github-action-benchmark`
-# publishes today). Pages, sourced from `benchmarks`, serves the update
-# within a minute or two.
-#
-# Triggers:
-#   - workflow_dispatch:        manual run, also used by the relay stub on
-#                               the `benchmarks` branch when new per-suite
-#                               data lands under `docs/comparison_data/`.
-#   - push on `main` (paths):   any non-markdown change under
-#                               `tools/comparison_dashboard/**` (site
-#                               code, manifest, suite defs, etc.).
+# Rebuilds the comparison dashboard site taking data from the `benchmarks`
+# branch and the rest of the manifests/code from main. Pushes the rebuilt 
+# `docs/compare/` back to benchmarks/ to publish similar to the existing
+# continuous/nightly benchmark publishing flow.
 name: Comparison Dashboard - Publish Site
 
 on:
@@ -26,7 +17,7 @@ permissions:
 
 concurrency:
   group: comparison-dashboard-publish
-  cancel-in-progress: false   # serialize pushes; never cancel mid-push
+  cancel-in-progress: false
 
 jobs:
   publish:
