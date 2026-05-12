@@ -14,29 +14,30 @@ workspace = true
 
 [dependencies]
 # Workspace crates (likely used by most/all features)
+otap-df-channel = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-engine = { workspace = true }
 otap-df-otap = { workspace = true }
 otap-df-pdata = { workspace = true }
 otap-df-pdata-views = { workspace = true }
 otap-df-telemetry = { workspace = true }
-otap-df-channel = { workspace = true }
 otap-df-telemetry-macros = { workspace = true }
 
 arrow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
-tokio.workspace = true
-tracing.workspace = true
 bytes.workspace = true
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 linkme.workspace = true
+tokio.workspace = true
+tracing.workspace = true
 chrono = { workspace = true, optional = true }
-geneva-uploader = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
+itoa = { workspace = true, optional = true }
+geneva-uploader = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
 data_engine_recordset_otlp_bridge = { workspace = true, optional = true }
@@ -45,7 +46,6 @@ azure_core = { workspace = true, optional = true, features = ["reqwest"] }
 azure_identity = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
-itoa = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 ryu = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
@@ -79,9 +79,13 @@ azure-monitor-exporter = [
 ]
 
 contrib-processors = [
+    "microsoft-common-schema-processor",
     "condense-attributes-processor",
     "recordset-kql-processor",
     "resource-validator-processor",
+]
+microsoft-common-schema-processor = [
+    "dep:chrono",
 ]
 condense-attributes-processor = []
 recordset-kql-processor = [
