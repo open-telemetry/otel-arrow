@@ -52,7 +52,7 @@ use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 // Geneva uploader dependencies
 use futures::StreamExt;
