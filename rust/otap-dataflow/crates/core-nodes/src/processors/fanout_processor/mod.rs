@@ -362,7 +362,7 @@ struct Inflight {
     next_send_queue: DestinationIndexQueue,
 }
 
-#[metric_set(name = "fanout.processor.metrics")]
+#[metric_set(name = "fanout.processor")]
 #[derive(Debug, Default, Clone)]
 struct FanoutMetrics {
     /// Requests dispatched. Note: This is a convenience metric that overlaps with

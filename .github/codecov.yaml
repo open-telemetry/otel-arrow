@@ -1,11 +1,34 @@
+codecov:
+  notify:
+    # Wait for all coverage uploads before posting status. Without this,
+    # codecov posts a (failing) partial status as soon as the first
+    # upload arrives, before the other test jobs have even finished.
+    #
+    # IMPORTANT: this number must match the total count of
+    # `codecov/codecov-action` upload invocations across all workflows
+    # AFTER matrix expansion. A single upload step inside a matrix job
+    # counts once per matrix combination that actually executes it.
+    # Currently:
+    #   - .github/workflows/rust-ci.yml `experimental_tests`
+    #     (gated on `matrix.os == 'ubuntu-latest'`, expands across the
+    #      `folder` matrix): 2 uploads
+    #       * experimental/query_abstraction
+    #       * experimental/query_engine
+    #   - .github/workflows/rust-ci.yml `coverage`:                 1 upload
+    #   - .github/workflows/go-ci.yml   `test_and_coverage`:        1 upload
+    # If you add or remove a codecov upload, or change a matrix that
+    # contains one, update this number.
+    after_n_builds: 4
+
 coverage:
   status:
     project: # Overall repo coverage
       default:
-        target: 85%
+        target: auto      # compare against the base commit
+        threshold: 1%     # allow a small drop without failing
     patch: # Changed lines in PR
       default:
-        target: 70%
+        target: 80%
 
 ignore:
   - "rust/otap-dataflow/crates/quiver-e2e/**" # Test tool, not production code

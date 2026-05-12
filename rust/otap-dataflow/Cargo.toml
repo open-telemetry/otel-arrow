@@ -122,6 +122,7 @@ tikv-jemalloc-sys = "0.6.1"
 memchr = "2.8.0"
 memmap2 = "0.9"
 memory-stats = "1"
+libc = "0.2"
 nix = { version = "0.31.0", features = ["process", "signal", "fs", "mman"] }
 notify = "8.0"  # Uses platform-native backend: inotify (Linux), kqueue (macOS), ReadDirectoryChanges (Windows)
 num_enum = "0.7"
@@ -172,12 +173,12 @@ crc32fast = "1.4.2"
 replace_with = "0.1.8"
 simdutf8 = "0.1.5"
 slotmap = "1.0.7"
-smallvec = { version = "1.15" , features = ["union"] }
+smallvec = { version = "1.15" , features = ["union", "const_new"] }
 socket2 = { version = "0.6.1", features = ["all"] }
 ipnet = "2.11.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 zstd = "0.13"
-sysinfo = "0.38"
+sysinfo = "0.39"
 tempfile = "3"
 thiserror = "2.0.17"
 tracing = { version = ">=0.1.40", default-features = false }
@@ -206,11 +207,11 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2" }
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc"}
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc" }
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc"}
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc"}
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc"}
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
@@ -246,11 +247,16 @@ testcontainers = "0.27"
 toml = "1.0.0"
 tonic-prost-build = "0.14"
 urlencoding = "2"
-geneva-uploader = "0.4.0"
+# Pinned to open-telemetry/opentelemetry-rust-contrib main on 2026-04-25.
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "ce866b48a1645f1fb222bdea19c42821a2b48d5a" }
+
+[patch."https://github.com/open-telemetry/otel-arrow"]
+otap-df-pdata = { path = "crates/pdata" }
+otap-df-pdata-views = { path = "crates/pdata-views" }
 
 [features]
 # ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof
-default = ["jemalloc", "crypto-ring", "dev-tools"]
+default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws"]
 jemalloc = ["dep:tikv-jemallocator", "otap-df-engine/jemalloc"]
 mimalloc = ["dep:mimalloc"]
 azure = ["otap-df-otap/azure"]
@@ -262,8 +268,15 @@ dhat-heap = [
     "dep:dhat",
 ]
 
-# Dev/test tooling (fake data generator).
-dev-tools = ["otap-df-core-nodes/dev-tools"]
+# Dev/test tooling (traffic generator) and the otap integration tests
+# that exercise it. Activating this from the workspace default keeps
+# `cargo test` running the full suite locally; CI jobs that drop
+# `dev-tools` (e.g. the Linux ARM `build_nonrequired` job) avoid the
+# weaver / gix / reqwest / native-tls / openssl-sys C build.
+dev-tools = ["otap-df-core-nodes/dev-tools", "otap-df-otap/integration-tests"]
+
+# Admin UI live log streaming over WebSocket.
+admin-live-logs-ws = ["otap-df-controller/admin-live-logs-ws"]
 
 # Cryptographic provider selection (mutually exclusive).
 # Exactly one must be enabled when using TLS or any rustls-backed dependency (e.g. reqwest).

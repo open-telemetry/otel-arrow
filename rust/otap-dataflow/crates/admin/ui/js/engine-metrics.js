@@ -9,8 +9,8 @@ import {
 // Aggregate engine-level signals and infer group/pipeline cardinality from attributes.
 export function extractEngineSummary(metricSets, options = {}) {
   const skipAllZeroSnapshots = options.skipAllZeroSnapshots ?? true;
-  const engineSets = metricSets.filter((ms) => ms.name === "engine.metrics");
-  const pipelineSets = metricSets.filter((ms) => ms.name === "pipeline.metrics");
+  const engineSets = metricSets.filter((ms) => ms.name === "engine");
+  const pipelineSets = metricSets.filter((ms) => ms.name === "pipeline");
   const groupIds = new Set();
   const pipelineIds = new Set();
   const summary = {

@@ -180,7 +180,7 @@ fail.
 
 A simple component that returns success. All requests succeed.
 
-#### Fake Data Generator
+#### Traffic Generator
 
 A simple component to produce synthetic data from semantic convention registries.
 
@@ -259,7 +259,7 @@ establish the performance of the OTAP Dataflow system.
   `content_router`, `debug_processor`, `delay_processor`,
   `durable_buffer_processor`, `fanout_processor`, `filter_processor`,
   `retry_processor`, `signal_type_router`, `transform_processor`
-- Receivers: `fake_data_generator`, `internal_telemetry_receiver`,
+- Receivers: `traffic_generator`, `internal_telemetry_receiver`,
   `otap_receiver`, `otlp_receiver`, `syslog_cef_receiver`,
   `topic_receiver`
 

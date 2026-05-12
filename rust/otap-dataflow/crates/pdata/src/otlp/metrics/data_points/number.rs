@@ -8,6 +8,7 @@ use crate::arrays::{
 use crate::error::{Error, Result};
 use crate::otlp::ProtoBuffer;
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
+use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
 use crate::otlp::metrics::exemplar::{ExemplarArrays, proto_encode_exemplar};
 use crate::proto::consts::field_num::metrics::{
@@ -15,7 +16,6 @@ use crate::proto::consts::field_num::metrics::{
     NUMBER_DP_FLAGS, NUMBER_DP_START_TIME_UNIX_NANO, NUMBER_DP_TIME_UNIX_NANO,
 };
 use crate::proto::consts::wire_types;
-use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{
     Float64Array, Int64Array, RecordBatch, TimestampNanosecondArray, UInt16Array, UInt32Array,
@@ -72,26 +72,24 @@ pub(crate) fn proto_encode_number_data_point(
         if let Some(id) = number_dp_arrays.id.value_at(index) {
             let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
             for attrs_index in attrs_index_iter {
-                proto_encode_len_delimited_unknown_size!(
-                    NUMBER_DP_ATTRIBUTES,
-                    encode_key_value(attrs, attrs_index, result_buf)?,
-                    result_buf
-                );
+                result_buf.encode_len_delimited(NUMBER_DP_ATTRIBUTES, |result_buf| {
+                    encode_key_value(attrs, attrs_index, result_buf)
+                })?;
             }
         }
     }
 
     if let Some(col) = number_dp_arrays.start_time_unix_nano {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(NUMBER_DP_START_TIME_UNIX_NANO, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(NUMBER_DP_START_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if let Some(col) = number_dp_arrays.time_unix_nano {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(NUMBER_DP_TIME_UNIX_NANO, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(NUMBER_DP_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
@@ -99,16 +97,16 @@ pub(crate) fn proto_encode_number_data_point(
     if let Some(col) = number_dp_arrays.double_value {
         if let Some(val) = col.value_at(index) {
             value_is_double = true;
-            result_buf.encode_field_tag(NUMBER_DP_AS_DOUBLE, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(NUMBER_DP_AS_DOUBLE, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if !value_is_double {
         if let Some(col) = number_dp_arrays.int_value {
             if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(NUMBER_DP_AS_INT, wire_types::FIXED64);
-                result_buf.extend_from_slice(&val.to_le_bytes());
+                result_buf.encode_field_tag(NUMBER_DP_AS_INT, wire_types::FIXED64)?;
+                result_buf.extend_from_slice(&val.to_le_bytes())?;
             }
         }
     }
@@ -118,25 +116,23 @@ pub(crate) fn proto_encode_number_data_point(
             let exemplar_index_iter =
                 ChildIndexIter::new(id, &exemplar_arrays.parent_id, exemplar_cursor);
             for exemplar_index in exemplar_index_iter {
-                proto_encode_len_delimited_unknown_size!(
-                    NUMBER_DP_EXEMPLARS,
+                result_buf.encode_len_delimited(NUMBER_DP_EXEMPLARS, |result_buf| {
                     proto_encode_exemplar(
                         exemplar_index,
                         exemplar_arrays,
                         exemplar_attr_arrays,
                         exemplar_attrs_cursor,
-                        result_buf
-                    )?,
-                    result_buf
-                );
+                        result_buf,
+                    )
+                })?;
             }
         }
     }
 
     if let Some(col) = number_dp_arrays.flags {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(NUMBER_DP_FLAGS, wire_types::VARINT);
-            result_buf.encode_varint(val as u64);
+            result_buf.encode_field_tag(NUMBER_DP_FLAGS, wire_types::VARINT)?;
+            result_buf.encode_varint(val as u64)?;
         }
     }
 
