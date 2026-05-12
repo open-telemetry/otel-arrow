@@ -120,10 +120,7 @@ fn hash_array(arr: &dyn Array) -> Result<Int64Array> {
             ))
         }
         DataType::Binary => {
-            let arr = arr
-                .as_any()
-                .downcast_ref::<BinaryArray>()
-                .expect("Binary");
+            let arr = arr.as_any().downcast_ref::<BinaryArray>().expect("Binary");
             Ok(Int64Array::from_iter(
                 arr.iter().map(|v| v.map(|b| xxh3_64(b) as i64)),
             ))

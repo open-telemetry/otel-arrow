@@ -20,9 +20,9 @@ mod regexp_substr;
 #[cfg(feature = "sha1-hash")]
 mod sha1;
 mod substring;
+mod uuidv7;
 mod xxh128;
 mod xxh3;
-mod uuidv7;
 
 make_udf_function!(contains::ExtendedContainsFunc, contains);
 make_udf_function!(fnv::FnvHashFunc, fnv_hash);
