@@ -1,0 +1,10 @@
+name: OTC OTAP Baseline (Logs)
+slug: otc_logs_otap_none_baseline
+description: OpenTelemetry Collector baseline for OTAP logs with no compression
+meta:
+  binary: otc
+  protocols:
+  - otap
+  signals:
+  - logs
+  compression: none

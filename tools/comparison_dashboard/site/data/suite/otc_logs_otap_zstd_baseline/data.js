@@ -1,0 +1,17 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["otc_logs_otap_zstd_baseline"] = {
+  "name": "OTC OTAP Baseline w/ Zstd (Logs)",
+  "slug": "otc_logs_otap_zstd_baseline",
+  "description": "OpenTelemetry Collector baseline for OTAP logs with zstd compression",
+  "meta": {
+    "binary": "otc",
+    "protocols": [
+      "otap"
+    ],
+    "signals": [
+      "logs"
+    ],
+    "compression": "zstd"
+  },
+  "tests": []
+};
