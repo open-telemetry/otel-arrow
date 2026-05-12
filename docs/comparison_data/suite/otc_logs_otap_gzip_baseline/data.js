@@ -1,0 +1,17 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["otc_logs_otap_gzip_baseline"] = {
+  "name": "OTC OTAP Baseline w/ Gzip (Logs)",
+  "slug": "otc_logs_otap_gzip_baseline",
+  "description": "OpenTelemetry Collector baseline for OTAP logs with gzip compression",
+  "meta": {
+    "binary": "otc",
+    "protocols": [
+      "otap"
+    ],
+    "signals": [
+      "logs"
+    ],
+    "compression": "gzip"
+  },
+  "tests": []
+};
