@@ -1,28 +1,32 @@
-# Rebuilds the comparison dashboard site on the `benchmarks` branch whenever
-# new per-suite data lands under `docs/comparison_data/` and opens a PR back
-# to `benchmarks` with the rebuilt `docs/compare/` tree. Once that PR merges,
-# Pages (sourced from the `benchmarks` branch) serves the updated site.
+# Rebuilds the comparison dashboard site from data on the `benchmarks`
+# branch and pushes the rebuilt `docs/compare/` straight back to that
+# branch (no PR, mirroring how `benchmark-action/github-action-benchmark`
+# publishes today). Pages, sourced from `benchmarks`, serves the update
+# within a minute or two.
 #
-# This workflow does not deploy to Pages directly -- the repo's Pages source
-# is "Deploy from a branch: benchmarks" so that the existing
-# `benchmark-action/github-action-benchmark` flow can keep publishing under
-# `docs/benchmarks/` from the same branch.
+# Triggers:
+#   - workflow_dispatch:        manual run, also used by the relay stub on
+#                               the `benchmarks` branch when new per-suite
+#                               data lands under `docs/comparison_data/`.
+#   - push on `main` (paths):   any non-markdown change under
+#                               `tools/comparison_dashboard/**` (site
+#                               code, manifest, suite defs, etc.).
 name: Comparison Dashboard - Publish Site
 
 on:
   workflow_dispatch:
   push:
-    branches: [benchmarks]
+    branches: [main]
     paths:
-      - 'docs/comparison_data/**'
+      - 'tools/comparison_dashboard/**'
+      - '!tools/comparison_dashboard/**/*.md'
 
 permissions:
-  contents: write          # the PR action creates a branch on this repo
-  pull-requests: write     # ...and opens a PR from it
+  contents: write
 
 concurrency:
   group: comparison-dashboard-publish
-  cancel-in-progress: true
+  cancel-in-progress: false   # serialize pushes; never cancel mid-push
 
 jobs:
   publish:
@@ -42,13 +46,14 @@ jobs:
           path: source
 
       # The benchmarks branch holds the published per-suite data and is the
-      # PR target. Check it out into ./target/.
+      # push target. Check it out into ./target/.
       - name: Check out benchmarks (target)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: benchmarks
           path: target
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -71,16 +76,21 @@ jobs:
             --data-dir ../../../target/docs/comparison_data \
             --compare-dir ../../../target/docs/compare
 
-      - name: Open PR with rebuilt site
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
-        with:
-          path: target
-          base: benchmarks
-          branch: comparison-dashboard/auto-publish-${{ github.run_id }}
-          title: "auto: rebuild comparison dashboard site"
-          commit-message: "auto: rebuild comparison dashboard site"
-          body: |
-            Automated rebuild triggered by changes under
-            `docs/comparison_data/`. Review the `docs/compare/` diff before
-            merging.
-          delete-branch: true
+      - name: Commit and push to benchmarks
+        working-directory: target
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Stage both the regenerated site shell and any derived
+          # data.js / suite.yaml files that `build` writes alongside the
+          # raw per-suite data.
+          git add docs/compare docs/comparison_data
+
+          if git diff --cached --quiet; then
+            echo "No site changes; skipping push."
+            exit 0
+          fi
+
+          git commit -m "auto: rebuild comparison dashboard site"
+          git push origin benchmarks
