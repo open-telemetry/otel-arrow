@@ -92,6 +92,7 @@ use crate::pipeline::expr::join::{join, multi_join};
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
+use crate::pipeline::functions::is_type::IsTypeFunc;
 #[cfg(feature = "sha1-hash")]
 use crate::pipeline::functions::sha1_hash;
 use crate::pipeline::functions::{
@@ -882,9 +883,20 @@ impl ExprPhysicalPlanner {
 
 /// Determines if we can evaluate the AnyValue column as a struct column
 fn can_evaluate_anyval_as_struct(expr: &Expr) -> bool {
-    // if we're simply returning the column, keep the column as an AnyValue struct and let
-    // consumers expressions project it into a concrete type if they need to
-    matches!(expr, Expr::Column(_))
+    match expr {
+        // if we're simply returning the column, keep the column as an AnyValue struct and let
+        // consumers expressions project it into a concrete type if they need to
+        Expr::Column(_) => true,
+        // `is_type(col)` resolves the type check directly from the AnyValue discriminator
+        // column, so we want to keep the input as a struct rather than partition it by
+        // concrete subtype, evaluate, and stitch.
+        Expr::ScalarFunction(sf) => {
+            sf.args.len() == 1
+                && matches!(sf.args[0], Expr::Column(_))
+                && sf.func.inner().as_any().is::<IsTypeFunc>()
+        }
+        _ => false,
+    }
 }
 
 /// A node in the expression tree used for expression evaluation.
