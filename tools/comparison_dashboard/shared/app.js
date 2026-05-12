@@ -23,9 +23,12 @@ const BASE = (() => {
   return m ? `${m[1]}/compare` : p;
 })();
 
-// `DATA_BASE` points at the `comparison_data/` directory that lives as a
-// sibling of `compare/` on the deployed site (and locally under `site/`).
-const DATA_BASE = BASE.replace(/\/compare$/, "/comparison_data");
+// `DATA_PATH` is injected by `dashboard.py build` into each generated
+// page. It is the relative URL from the current page to the per-suite
+// data root (e.g. `../data/suite` for a landing page sitting at
+// `compare/index.html` with data under `data/suite/`). Per-suite test
+// files live at `${DATA_PATH}/<slug>/<test>/<file>`.
+const DATA_PATH = window.DATA_PATH || "";
 
 // ── Metric display config ──────────────────────────────────────────────────
 
@@ -795,7 +798,7 @@ function renderComparisonDetail(suiteData, comparison, testNames, initialSuiteId
 // ── File viewer modal ──────────────────────────────────────────────────────
 
 async function loadConfigFile(suiteSlug, testName, fileName) {
-  const url = `${DATA_BASE}/${encodeURIComponent(suiteSlug)}/${encodeURIComponent(testName)}/${encodeURIComponent(fileName)}`;
+  const url = `${DATA_PATH}/${encodeURIComponent(suiteSlug)}/${encodeURIComponent(testName)}/${encodeURIComponent(fileName)}`;
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Failed to load ${fileName}: ${resp.status}`);
   return resp.text();

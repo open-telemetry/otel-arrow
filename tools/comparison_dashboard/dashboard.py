@@ -161,7 +161,6 @@ def cmd_run(args) -> int:
         print()
 
     manifest = load_manifest(args.manifest)
-    publish_dir = (args.publish_dir or manifest.default_data_dir()).resolve()
     suite_paths = resolve_suites_from_manifest_obj(args.suites, manifest)
     total = len(suite_paths)
 
@@ -617,10 +616,6 @@ def cmd_build(args) -> int:
     print(f"  {len(comparisons)} comparisons")
     print()
 
-    print("Copying shared assets...")
-    copy_shared_assets(site_out_dir)
-    print()
-
     print("Generating index.html...")
     generate_index_html(comparisons, suites, paths)
     print()
@@ -1030,6 +1025,7 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> N
         '',
         '  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>',
         data_script_tags,
+        f'  <script>window.DATA_PATH = "{data_rel}/suite";</script>',
         f'  <script>window.COMPARISONS = {comparisons_json};</script>',
         f'  <script type="module" src="{shared_rel}/app.js"></script>',
         '</body>',
@@ -1109,6 +1105,7 @@ def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths) -
             '  </div>',
             '',
             '  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>',
+            f'  <script>window.DATA_PATH = "{data_rel}/suite";</script>',
             f'  <script>window.COMPARISON_SLUG = "{comp_slug}";</script>',
             suite_scripts,
             f'  <script>window.COMPARISON = {comp_json};</script>',
@@ -1205,14 +1202,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--manifest", type=Path, default=DEFAULT_MANIFEST,
         help=f"Path to dashboard manifest.yaml (default: {DEFAULT_MANIFEST})",
-    )
-    p_run.add_argument(
-        "--publish-dir", type=Path, default=None,
-        help=(
-            f"Directory under which per-suite results are published as "
-            f"<publish-dir>/<slug>/. "
-            f"Default: <site_root>/{DEFAULT_DATA_SUBDIR}."
-        ),
     )
     p_run.add_argument(
         "--tests", default=None,
