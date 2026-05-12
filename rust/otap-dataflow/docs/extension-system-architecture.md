@@ -189,6 +189,24 @@ themselves, and they never touch pipeline data directly.
    spawn until they signal ready, while non-participating
    extensions keep today's behavior unchanged.
 
+   *Runtime cost.* `start()` runs on the same per-core
+   async runtime as the data path -- the runtime that
+   drives every node, channel, and extension on this
+   core. Blocking calls (synchronous I/O, lock
+   contention, file reads without `tokio::fs`) and
+   CPU-heavy work (compression, large
+   serialization/deserialization, cryptographic
+   operations) inside `start()` -- or inside any
+   capability method dispatched on that runtime --
+   stall every other future on the core, including the
+   data path itself. Extensions that need such work
+   must move it off the per-core runtime: a bounded
+   `tokio::task::spawn_blocking` for blocking I/O, a
+   dedicated worker thread for sustained CPU work, or
+   a Rayon pool for parallel compute. The same
+   guidance applies to background extensions, whose
+   `start()` body shares the same runtime.
+
 2. **PData-free.** Extensions are completely decoupled from
    the pipeline data type. They use `ExtensionControlMsg`
    through a dedicated control channel.
