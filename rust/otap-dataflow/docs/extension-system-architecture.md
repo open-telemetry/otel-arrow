@@ -23,7 +23,7 @@ is addressed in the Phase 1 implementation:
 | Multiple implementations of same capability | `CapabilityRegistry` keyed by `(extension_name, TypeId)` -- different extensions can provide the same capability |
 | Multiple configured instances | `extensions:` section in YAML, each with a unique name; nodes bind by name in `capabilities:` |
 | Existing config model integration | Extensions are siblings to `nodes` in the pipeline config hierarchy |
-| Preserve performance model (thread-per-core) | Local extensions use `Rc<RefCell<T>>` for shared state (no locks); shared extensions use `Clone + Send` with `Arc`-wrapped state |
+| Preserve performance model (thread-per-core) | Local extensions use `Rc<RefCell<T>>` for shared state (no locks); shared extensions use `Clone + Send` with `Arc`-wrapped state. Both are still instantiated per pipeline instance (per core) at pipeline scope -- see *Pipeline-scoped extensions are per-core* below. |
 | Background tasks | Active extensions get their own event loop via `Extension::start()` |
 | Explicit capability binding | Nodes declare `capabilities: { name: extension_instance }` -- no implicit discovery |
 | No hot-path registry lookup | Capabilities resolved once at factory time; nodes hold typed handles for their lifetime |
