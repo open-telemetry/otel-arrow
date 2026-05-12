@@ -1,0 +1,39 @@
+# tools/comparison_dashboard publishing - trigger relay.
+#
+# This file lives on the `benchmarks` branch only. Its sole job is to
+# dispatch the main-side `comparison-dashboard.yml` workflow when new
+# per-suite data lands under `docs/comparison_data/`. All real build/PR
+# logic stays on `main` -- this file rarely needs to change.
+name: Comparison Dashboard - Trigger Relay
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [benchmarks]
+    paths:
+      - 'docs/comparison_data/**'
+
+permissions:
+  actions: write    # required to dispatch other workflows
+  contents: read
+
+concurrency:
+  group: comparison-dashboard-trigger
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      - name: Dispatch publish workflow on main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run comparison-dashboard.yml \
+            --repo "${{ github.repository }}" \
+            --ref main
