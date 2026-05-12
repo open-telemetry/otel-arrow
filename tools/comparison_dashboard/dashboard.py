@@ -1017,7 +1017,7 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> N
         '  </div>',
         '  <div class="wrap">',
         '    <h1>Telemetry Engine Benchmark Dashboard</h1>',
-        '    <div class="sub">Suite-based comparison of OTel Dataflow Engine (DFE) and OTel Collector (OTC) benchmark results.</div>',
+        '    <div class="sub">Compare telemetry engines across a variety of use-cases and protocols.</div>',
         '    <div id="app"></div>',
         '    <div id="comparison-cards"></div>',
         '  </div>',
