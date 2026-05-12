@@ -1,5 +1,5 @@
 # Rebuilds the comparison dashboard site taking data from the `benchmarks`
-# branch and the rest of the manifests/code from main. Pushes the rebuilt 
+# branch and the rest of the manifests/code from main. Pushes the rebuilt
 # `docs/compare/` back to benchmarks/ to publish similar to the existing
 # continuous/nightly benchmark publishing flow.
 name: Comparison Dashboard - Publish Site
