@@ -8,13 +8,13 @@ use crate::arrays::{
 use crate::error::{Error, Result};
 use crate::otlp::ProtoBuffer;
 use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
+use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
 use crate::proto::consts::field_num::metrics::{
     EXEMPLAR_AS_DOUBLE, EXEMPLAR_AS_INT, EXEMPLAR_FILTERED_ATTRIBUTES, EXEMPLAR_SPAN_ID,
     EXEMPLAR_TIME_UNIX_NANO, EXEMPLAR_TRACE_ID,
 };
 use crate::proto::consts::wire_types;
-use crate::proto_encode_len_delimited_unknown_size;
 use crate::schema::consts;
 use arrow::array::{Float64Array, Int64Array, RecordBatch, TimestampNanosecondArray, UInt32Array};
 
@@ -73,19 +73,17 @@ pub(crate) fn proto_encode_exemplar(
         if let Some(id) = exemplar_arrays.id.value_at(index) {
             let attr_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
             for attrs_index in attr_index_iter {
-                proto_encode_len_delimited_unknown_size!(
-                    EXEMPLAR_FILTERED_ATTRIBUTES,
-                    encode_key_value(attrs, attrs_index, result_buf)?,
-                    result_buf
-                );
+                result_buf.encode_len_delimited(EXEMPLAR_FILTERED_ATTRIBUTES, |result_buf| {
+                    encode_key_value(attrs, attrs_index, result_buf)
+                })?;
             }
         }
     }
 
     if let Some(col) = exemplar_arrays.time_unix_nano {
         if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(EXEMPLAR_TIME_UNIX_NANO, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(EXEMPLAR_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
@@ -93,29 +91,29 @@ pub(crate) fn proto_encode_exemplar(
     if let Some(col) = exemplar_arrays.double_value {
         if let Some(val) = col.value_at(index) {
             value_is_double = true;
-            result_buf.encode_field_tag(EXEMPLAR_AS_DOUBLE, wire_types::FIXED64);
-            result_buf.extend_from_slice(&val.to_le_bytes());
+            result_buf.encode_field_tag(EXEMPLAR_AS_DOUBLE, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
     }
 
     if !value_is_double {
         if let Some(col) = exemplar_arrays.int_value {
             if let Some(val) = col.value_at(index) {
-                result_buf.encode_field_tag(EXEMPLAR_AS_INT, wire_types::FIXED64);
-                result_buf.extend_from_slice(&val.to_le_bytes());
+                result_buf.encode_field_tag(EXEMPLAR_AS_INT, wire_types::FIXED64)?;
+                result_buf.extend_from_slice(&val.to_le_bytes())?;
             }
         }
     }
 
     if let Some(col) = &exemplar_arrays.span_id {
         if let Some(val) = col.slice_at(index) {
-            result_buf.encode_bytes(EXEMPLAR_SPAN_ID, val);
+            result_buf.encode_bytes(EXEMPLAR_SPAN_ID, val)?;
         }
     }
 
     if let Some(col) = &exemplar_arrays.trace_id {
         if let Some(val) = col.slice_at(index) {
-            result_buf.encode_bytes(EXEMPLAR_TRACE_ID, val);
+            result_buf.encode_bytes(EXEMPLAR_TRACE_ID, val)?;
         }
     }
 

@@ -189,9 +189,11 @@ We meet weekly, alternating between Tuesday at 4:00 PM PT and Thursday
 at 8:00 AM PT. Check the [OpenTelemetry community calendar][OTELCAL]
 for dates and Zoom links.
 
-Whether you're a seasoned OpenTelemetry developer, just starting your
-journey, or simply curious about the work we do, you're more than
-welcome to participate!
+The meeting is open for all to join. We invite everyone to join our
+meeting, regardless of your experience level. Whether you're a
+seasoned OpenTelemetry developer, just starting your journey, or
+simply curious about the work we do, you're more than welcome to
+participate!
 
 - [Contribution guidelines](CONTRIBUTING.md)
 - [Meeting notes](https://docs.google.com/document/d/1z8_Ra-ALDaYNa88mMj1gOZtOpLZLRk0-dZEmDjPmcUs)

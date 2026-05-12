@@ -32,6 +32,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--config", "-c", required=True, help="Path to test suite YAML config."
     )
     parser.add_argument(
+        "--tests",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated list of test names to run "
+            "(e.g. 'OTLP-ATTR-OTLP,OTAP-BATCH-OTAP'). "
+            "If omitted, all tests in the config are run."
+        ),
+    )
+    parser.add_argument(
         "--debug", action="store_true", help="Enable debug mode (verbose output, etc.)."
     )
     otlp = parser.add_argument_group("OTLP Export")

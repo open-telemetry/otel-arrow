@@ -59,9 +59,12 @@ use data_engine_expressions::{
 };
 use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::functions::crypto::sha256;
+use datafusion::functions::crypto::{md5, sha256, sha512};
+use datafusion::functions::datetime::to_char;
 use datafusion::functions::encoding::encode;
-use datafusion::functions::string::{concat, concat_ws, replace};
+
+use datafusion::functions::math::log10;
+use datafusion::functions::string::{concat, concat_ws, lower, ltrim, replace, rtrim, upper, uuid};
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{
     BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit,
@@ -76,13 +79,24 @@ use otap_df_pdata::arrays::{
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
-use crate::consts::{ENCODE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
+#[cfg(feature = "sha1-hash")]
+use crate::consts::SHA1_FUNC_NAME;
+use crate::consts::{
+    ENCODE_FUNC_NAME, FNV_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOG_FUNC_NAME,
+    LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME,
+    REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME,
+    UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME, UUIDV7_FUNC_NAME, XXH3_FUNC_NAME, XXH128_FUNC_NAME,
+};
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::{join, multi_join};
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
-use crate::pipeline::functions::{arity_range, regexp_substr, substring};
+#[cfg(feature = "sha1-hash")]
+use crate::pipeline::functions::sha1_hash;
+use crate::pipeline::functions::{
+    arity_range, fnv_hash, murmur3_hash, regexp_substr, substring, uuidv7, xxh3_hash, xxh128_hash,
+};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::anyval::{
     find_any_value_columns, project_any_value_columns, stitch_partitioned_results,
@@ -310,7 +324,7 @@ impl ExprLogicalPlanner {
             ScalarExpression::Static(static_scalar_expr) => {
                 let (logical_expr, expr_type) = match static_scalar_expr {
                     StaticScalarExpression::Integer(int_expr) => {
-                        (lit(int_expr.get_value()), ExprLogicalType::ScalarInt)
+                        (lit(int_expr.get_value()), ExprLogicalType::AnyInt)
                     }
                     StaticScalarExpression::Double(double_expr) => {
                         (lit(double_expr.get_value()), ExprLogicalType::Float64)
@@ -546,11 +560,17 @@ impl ExprLogicalPlanner {
             }
         }
 
-        if invoke_arg_exprs.is_empty() {
-            // TODO: support functions with zero arguments, such as `now()`.
-            Err(Error::NotYetSupportedError {
-                message: "Only functions with one or more arguments currently supported".into(),
-            })
+        let (arg_exprs, source_scope, source_requires_dict_downcast) = if invoke_arg_exprs
+            .is_empty()
+        {
+            // For zero-arg functions (e.g. `uuid()`, `uuidv7()`), evaluate against the root
+            // batch so that volatile UDFs produce one value per row rather than a single
+            // scalar that gets broadcast across rows.
+            (
+                Vec::new(),
+                LogicalExprDataSource::DataSource(DataScope::Root),
+                false,
+            )
         } else {
             let scalar_arg_exprs = invoke_arg_exprs
                 .iter()
@@ -564,30 +584,28 @@ impl ExprLogicalPlanner {
                 })
                 .collect::<Result<Vec<_>>>()?;
 
-            let (arg_exprs, source_scope, source_requires_dict_downcast) =
-                self.plan_function_args(scalar_arg_exprs.into_iter(), functions)?;
+            self.plan_function_args(scalar_arg_exprs.into_iter(), functions)?
+        };
 
-            let mut logical_expr =
-                Expr::ScalarFunction(ScalarFunction::new_udf(df_udf.scalar_udf, arg_exprs));
+        let mut logical_expr =
+            Expr::ScalarFunction(ScalarFunction::new_udf(df_udf.scalar_udf, arg_exprs));
 
-            if let Some(data_type) = df_udf.cast_result_to {
-                logical_expr = cast(logical_expr, data_type)
-            }
-
-            // TODO: currently this will eagerly remove dictionary encoding when projecting the
-            // source if dictionary encoding is not supported by the function being invoked.
-            // However there may be cases where the overall expression may evaluate faster on
-            // dict-encoded data and we may wish to defer removing the dict encoding.
-            let requires_dict_downcast =
-                source_requires_dict_downcast | df_udf.requires_dict_downcast;
-
-            Ok(ScopedLogicalExpr {
-                logical_expr,
-                expr_type: df_udf.return_type,
-                source: source_scope,
-                requires_dict_downcast,
-            })
+        if let Some(data_type) = df_udf.cast_result_to {
+            logical_expr = cast(logical_expr, data_type)
         }
+
+        // TODO: currently this will eagerly remove dictionary encoding when projecting the
+        // source if dictionary encoding is not supported by the function being invoked.
+        // However there may be cases where the overall expression may evaluate faster on
+        // dict-encoded data and we may wish to defer removing the dict encoding.
+        let requires_dict_downcast = source_requires_dict_downcast | df_udf.requires_dict_downcast;
+
+        Ok(ScopedLogicalExpr {
+            logical_expr,
+            expr_type: df_udf.return_type,
+            source: source_scope,
+            requires_dict_downcast,
+        })
     }
 
     fn plan_function_args<'a>(
@@ -823,10 +841,26 @@ impl DataFusionFunctionDef {
         // upstream in datafusion_functions)
         Some(match func_name {
             ENCODE_FUNC_NAME => Self::new(encode(), ExprLogicalType::String, false, None),
+            LOG_FUNC_NAME => Self::new(log10(), ExprLogicalType::Float64, true, None),
+            LTRIM_FUNC_NAME => Self::new(ltrim(), ExprLogicalType::String, true, None),
             REGEXP_SUBSTR_FUNC_NAME => {
                 Self::new(regexp_substr(), ExprLogicalType::String, false, None)
             }
+            FORMAT_DATETIME_FUNC_NAME => Self::new(to_char(), ExprLogicalType::String, false, None),
+            RTRIM_FUNC_NAME => Self::new(rtrim(), ExprLogicalType::String, true, None),
             SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
+            MD5_FUNC_NAME => Self::new(md5(), ExprLogicalType::String, true, Some(DataType::Utf8)),
+            FNV_FUNC_NAME => Self::new(fnv_hash(), ExprLogicalType::Int64, true, None),
+            MURMUR3_FUNC_NAME => Self::new(murmur3_hash(), ExprLogicalType::Int64, true, None),
+            #[cfg(feature = "sha1-hash")]
+            SHA1_FUNC_NAME => Self::new(sha1_hash(), ExprLogicalType::Binary, true, None),
+            SHA512_FUNC_NAME => Self::new(sha512(), ExprLogicalType::Binary, true, None),
+            XXH3_FUNC_NAME => Self::new(xxh3_hash(), ExprLogicalType::Int64, true, None),
+            XXH128_FUNC_NAME => Self::new(xxh128_hash(), ExprLogicalType::Binary, true, None),
+            UUID_FUNC_NAME => Self::new(uuid(), ExprLogicalType::String, false, None),
+            UUIDV7_FUNC_NAME => Self::new(uuidv7(), ExprLogicalType::String, false, None),
+            UPPER_CASE_FUNC_NAME => Self::new(upper(), ExprLogicalType::String, true, None),
+            LOWER_CASE_FUNC_NAME => Self::new(lower(), ExprLogicalType::String, true, None),
             _ => return None,
         })
     }
@@ -1290,7 +1324,8 @@ impl PhysicalExprEvalResult {
 mod test {
     use super::*;
     use arrow::array::{
-        BinaryArray, DictionaryArray, Float64Array, Int32Array, Int64Array, StructArray, UInt8Array,
+        BinaryArray, DictionaryArray, Float64Array, Int32Array, Int64Array, StringArray,
+        StructArray, UInt8Array,
     };
     use data_engine_expressions::{
         BinaryMathematicalScalarExpression, IntegerScalarExpression,
@@ -3385,6 +3420,100 @@ mod test {
         assert_eq!(result_arr.as_ref(), &expected);
     }
 
+    #[test]
+    fn test_function_invocation_upper_case() {
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "event_name",
+                        )),
+                    )]),
+                ),
+            ))],
+        ));
+
+        let functions = [PipelineFunction::new_external("upper_case", vec![], None)];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("hello").finish(),
+            LogRecord::build().event_name("World").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = StringArray::from_iter([None, Some("HELLO"), Some("WORLD")]);
+
+        assert_eq!(result_arr.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_function_invocation_lower_case() {
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "event_name",
+                        )),
+                    )]),
+                ),
+            ))],
+        ));
+
+        let functions = [PipelineFunction::new_external("lower_case", vec![], None)];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("HELLO").finish(),
+            LogRecord::build().event_name("World").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = StringArray::from_iter([None, Some("hello"), Some("world")]);
+
+        assert_eq!(result_arr.as_ref(), &expected);
+    }
+
     // ----- Tests for multi-scope function arguments (MultiJoin) -----
 
     /// Tests concat(severity_text, attributes["k1"]) where args come from Root and Attributes
@@ -3812,5 +3941,68 @@ mod test {
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
         let expected_col = Arc::new(StringArray::from(vec!["hello rust", "foo qux baz"]));
         run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
+    }
+
+    fn run_uuid_function_test(func_name: &str, expected_version: usize) {
+        use std::collections::HashSet;
+
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![],
+        ));
+
+        let functions = [PipelineFunction::new_external(func_name, vec![], None)];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+        ]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_arr = match result.map(|r| r.values) {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => panic!("expected Array, got {otherwise:?}"),
+        };
+
+        let str_arr = result_arr
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap_or_else(|| panic!("expected StringArray, got {result_arr:?}"));
+        assert_eq!(str_arr.len(), 3);
+
+        let unique: HashSet<&str> = str_arr.iter().map(|v| v.unwrap()).collect();
+        assert_eq!(
+            unique.len(),
+            3,
+            "expected one distinct UUID per row from {func_name}, got {unique:?}"
+        );
+
+        for value in str_arr.iter().flatten() {
+            let parsed = ::uuid::Uuid::parse_str(value)
+                .unwrap_or_else(|e| panic!("expected valid UUID from {func_name}: {value}: {e}"));
+            assert_eq!(
+                parsed.get_version_num(),
+                expected_version,
+                "expected v{expected_version} UUID from {func_name}, got {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_function_invocation_uuid_v4() {
+        run_uuid_function_test(UUID_FUNC_NAME, 4);
+    }
+
+    #[test]
+    fn test_function_invocation_uuid_v7() {
+        run_uuid_function_test(UUIDV7_FUNC_NAME, 7);
     }
 }

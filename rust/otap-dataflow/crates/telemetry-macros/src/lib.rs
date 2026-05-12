@@ -683,7 +683,7 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
 /// Attribute macro that injects `#[repr(C, align(64))]` and wires up the MetricSetHandler derive
 /// and descriptor name via a container attribute.
 /// Usage:
-///   #[otap_df_telemetry_macros::metric_set(name = "my.metrics")]
+///   #[otap_df_telemetry_macros::metric_set(name = "my")]
 ///   pub struct MyMetrics { #[metric(name = "x", unit = "{unit}")] x: Counter<u64>, ... }
 #[proc_macro_attribute]
 pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {

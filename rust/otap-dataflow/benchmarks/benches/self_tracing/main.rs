@@ -255,6 +255,27 @@ macro_rules! emit_log {
             "benchmark message"
         )
     };
+    // Realistic event: long-ish body and several string attributes whose
+    // total encoded size exceeds the upstream initial Vec capacity (256B).
+    // This forces upstream's ProtoBuffer Vec to reallocate at least once
+    // (256 -> 512), which the benchmark using 0/3/10 short-attr variants
+    // does not exercise. Our bounded inline path stays at one terminal
+    // alloc + memcpy regardless.
+    (realistic) => {
+        tracing::info!(
+            request_id = "req-7f3a2c91-4b8e-11ee-be56-0242ac120002",
+            user_id = "user-9c2d1f8a4b3e5d6c7e8f9a0b1c2d3e4f",
+            endpoint = "/api/v2/observability/pipelines/ingest/batch",
+            method = "POST",
+            status_code = 200i64,
+            duration_ms = 123.456,
+            client_ip = "203.0.113.42",
+            tenant = "tenant-acme-prod-us-west-2",
+            trace_id = "4bf92f3577b34da6a3ce929d0e0e4736",
+            span_id = "00f067aa0ba902b7",
+            "Processed batch of 1024 records from upstream pipeline in 123ms with status OK"
+        )
+    };
 }
 
 /// Run a benchmark with the given layer, invoking the log emitter.
@@ -322,6 +343,35 @@ fn bench_format_with_entity(c: &mut Criterion) {
     bench_op(c, "format_with_entity", BenchOp::FormatWithEntity);
 }
 
+/// Benchmark a single realistic event (oversized attrs) across all ops.
+/// Designed to exercise the buffer-growth path in upstream and the bounded
+/// truncation path here — the body+attrs encode to ~300+ bytes, exceeding
+/// upstream's 256B initial Vec capacity.
+fn bench_realistic(c: &mut Criterion) {
+    let mut group = c.benchmark_group("realistic");
+    let iterations = 1000usize;
+
+    for &(op, op_label) in &[
+        (BenchOp::NewRecord, "new_record"),
+        (BenchOp::EncodeAndFormat, "encode_and_format"),
+        (BenchOp::EncodeProto, "encode_proto"),
+        (BenchOp::EncodeProtoWithScope, "encode_proto_with_scope"),
+        (BenchOp::FormatWithEntity, "format_with_entity"),
+    ] {
+        let id = BenchmarkId::new(op_label, format!("{}_events", iterations));
+        let _ = group.bench_with_input(id, &iterations, |b, &iters| {
+            let layer = if op.needs_entity() {
+                BenchLayer::with_entity(iters, op)
+            } else {
+                BenchLayer::new(iters, op)
+            };
+            run_bench(b, layer, || emit_log!(realistic));
+        });
+    }
+
+    group.finish();
+}
+
 #[allow(missing_docs)]
 mod bench_entry {
     use super::*;
@@ -330,7 +380,7 @@ mod bench_entry {
         name = benches;
         config = Criterion::default();
         targets = bench_new_record, bench_format, bench_format_new_record, bench_encode_proto,
-                  bench_encode_proto_with_scope, bench_format_with_entity
+                  bench_encode_proto_with_scope, bench_format_with_entity, bench_realistic
     );
 }
 

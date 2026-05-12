@@ -154,7 +154,7 @@ use nix::sys::resource::{UsageWho, getrusage};
 /// - net_allocation_rate = net_allocated_delta / interval_s            [{By/s}]
 /// - cpu_utilization_ratio = (cpu_time_delta_s / wall_time_delta_s)    [{1}]
 ///   where cpu_time_delta_s is the per-interval increase in cpu_time.
-#[metric_set(name = "pipeline.metrics")]
+#[metric_set(name = "pipeline")]
 #[derive(Debug, Default, Clone)]
 pub struct PipelineMetrics {
     /// The time the pipeline instance has been running.

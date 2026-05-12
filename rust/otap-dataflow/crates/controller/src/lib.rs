@@ -80,6 +80,7 @@ use otap_df_engine::memory_limiter::{
     EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureChanged,
     MemoryPressureLevel,
 };
+use otap_df_engine::processor::FlowMetricHook;
 use otap_df_engine::topic::{
     InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
     TopicSet,
@@ -273,8 +274,9 @@ fn engine_context() -> LogContext {
     }
 }
 
-impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
-    Controller<PData>
+impl<
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
+> Controller<PData>
 {
     /// Creates a new controller with the given pipeline factory.
     pub const fn new(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
@@ -1180,7 +1182,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             .logs
             .providers
             .uses_console_async_provider()
-            .then(|| obs_state_store.reporter(engine.observed_state.logging_events));
+            .then(|| obs_state_store.reporter(engine.observed_state.logging_events.clone()));
 
         // Create the telemetry system. The console_async_reporter is passed when any
         // providers use ConsoleAsync. The its_logs_receiver is passed when any
@@ -1189,6 +1191,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
             telemetry_config,
             telemetry_registry.clone(),
             console_async_reporter,
+            engine.observed_state.logging_events.clone(),
             engine_context,
             log_tap_handle.clone(),
         )?;
@@ -1524,6 +1527,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + U
                     telemetry_registry,
                     memory_pressure_state,
                     log_tap_handle,
+                    engine_config.engine.telemetry.resource.clone(),
                     cancellation_token,
                 )
             },
