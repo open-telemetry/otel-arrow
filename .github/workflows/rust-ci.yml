@@ -57,13 +57,13 @@ jobs:
           if (Test-Path "C:\SeleniumWebDrivers") { Remove-Item -Recurse -Force "C:\SeleniumWebDrivers" }
           if (Test-Path "C:\imagemagick") { Remove-Item -Recurse -Force "C:\imagemagick" }
       - name: install cargo-llvm-cov and nextest
-        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        uses: taiki-e/install-action@51cd0b8c0499559d9a4d75c0f5c67bec3a894ec8 # v2.75.28
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         if: runner.os == 'Linux'
         with:
-          go-version: "1.26.1"
+          go-version: "1.26.2"
       - name: Build the test collector
         if: runner.os == 'Linux'
         run: make otelarrowcol
@@ -83,6 +83,9 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo nextest run --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
+      # NOTE: when adding or removing a codecov upload step anywhere in
+      # the repo, update `codecov.notify.after_n_builds` in
+      # .github/codecov.yaml so codecov waits for the new total.
       - name: Upload to codecov.io
         if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
@@ -91,8 +94,10 @@ jobs:
         with:
           fail_ci_if_error: true
 
-  # otap-dataflow on ARM and macOS (non-required): build once per OS, fan out tests.
-  # Uses default features only -- full feature coverage is handled by the required x86/Windows jobs.
+  # otap-dataflow on ARM and macOS (non-required): build once per OS,
+  # fan out tests.  macOS uses the workspace default features. Linux
+  # ARM uses a reduced feature set Full feature coverage and
+  # validation tests are handled by the required x86 jobs.
   build_nonrequired:
     strategy:
       fail-fast: false
@@ -107,7 +112,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/${{ matrix.folder }}
       - name: Free disk space (Linux)
@@ -117,14 +122,24 @@ jobs:
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
       - name: install nextest
-        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        uses: taiki-e/install-action@51cd0b8c0499559d9a4d75c0f5c67bec3a894ec8 # v2.75.28
         with:
           tool: cargo-nextest
-      - name: Build and archive tests (default features)
+      - name: Build and archive tests (Complete)
+        if: matrix.os != 'ubuntu-24.04-arm'
         run: cargo nextest archive --workspace --archive-file nextest-archive.tar.zst
         working-directory: ./rust/${{ matrix.folder }}
+      - name: Build and archive tests (Incomplete)
+        if: matrix.os == 'ubuntu-24.04-arm'
+        run: |
+          cargo nextest archive \
+            --no-default-features \
+            --features=crypto-ring,jemalloc,azure,aws,azure-monitor-exporter,contrib-processors,unsafe-optimizations \
+            --workspace --exclude otap-df-validation --exclude benchmarks \
+            --archive-file nextest-archive.tar.zst
+        working-directory: ./rust/${{ matrix.folder }}
       - name: Upload nextest archive
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nextest-archive-${{ matrix.os }}
           path: ./rust/${{ matrix.folder }}/nextest-archive.tar.zst
@@ -147,7 +162,7 @@ jobs:
         with:
           toolchain: stable
       - name: install nextest
-        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        uses: taiki-e/install-action@51cd0b8c0499559d9a4d75c0f5c67bec3a894ec8 # v2.75.28
         with:
           tool: cargo-nextest
       - name: Free disk space (Linux)
@@ -172,7 +187,7 @@ jobs:
             > ./rust/${{ matrix.folder }}/target/nextest/ci/metadata.json
       - name: Upload JUnit XML results
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: junit-xml-nonrequired-${{ matrix.os }}-${{ matrix.partition }}
           path: |
@@ -289,7 +304,7 @@ jobs:
         with:
           toolchain: stable
           components: clippy
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/${{ matrix.folder }}
       - name: cargo clippy ${{ matrix.folder }}
@@ -315,25 +330,25 @@ jobs:
           toolchain: stable
       - name: advisories
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check advisories
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
       - name: licenses
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check licenses
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
       - name: bans
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check bans
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
       - name: sources
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check sources
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
@@ -449,7 +464,7 @@ jobs:
       - name: Install SymCrypt (Windows)
         if: runner.os == 'Windows'
         uses: ./.github/actions/install-symcrypt
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/${{ matrix.folder }}
       - name: Free disk space (Linux)
@@ -466,7 +481,7 @@ jobs:
           if (Test-Path "C:\SeleniumWebDrivers") { Remove-Item -Recurse -Force "C:\SeleniumWebDrivers" }
           if (Test-Path "C:\imagemagick") { Remove-Item -Recurse -Force "C:\imagemagick" }
       - name: install nextest
-        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        uses: taiki-e/install-action@51cd0b8c0499559d9a4d75c0f5c67bec3a894ec8 # v2.75.28
         with:
           tool: cargo-nextest
       - name: Build and archive tests (Incomplete)
@@ -478,7 +493,7 @@ jobs:
         run: cargo nextest archive --all-features --workspace --archive-file nextest-archive.tar.zst
         working-directory: ./rust/${{ matrix.folder }}
       - name: Upload nextest archive
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nextest-archive-${{ matrix.os }}
           path: ./rust/${{ matrix.folder }}/nextest-archive.tar.zst
@@ -505,7 +520,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: ./.github/actions/install-symcrypt
       - name: install nextest
-        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        uses: taiki-e/install-action@51cd0b8c0499559d9a4d75c0f5c67bec3a894ec8 # v2.75.28
         with:
           tool: cargo-nextest
       - name: Free disk space (Linux)
@@ -517,7 +532,7 @@ jobs:
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         if: runner.os == 'Linux'
         with:
-          go-version: "1.26.1"
+          go-version: "1.26.2"
       - name: Build the test collector
         if: runner.os == 'Linux'
         run: make otelarrowcol
@@ -537,7 +552,7 @@ jobs:
             > ./rust/${{ matrix.folder }}/target/nextest/ci/metadata.json
       - name: Upload JUnit XML results
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: junit-xml-required-${{ matrix.os }}-${{ matrix.partition }}
           path: |
@@ -557,7 +572,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/otap-dataflow
       - name: Free disk space
@@ -566,17 +581,20 @@ jobs:
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
       - name: install cargo-llvm-cov and nextest
-        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        uses: taiki-e/install-action@51cd0b8c0499559d9a4d75c0f5c67bec3a894ec8 # v2.75.28
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
-          go-version: "1.26.1"
+          go-version: "1.26.2"
       - name: Build the test collector
         run: make otelarrowcol
       - name: Run tests with coverage
         run: cargo llvm-cov nextest --profile ci --all-features --workspace --lcov --output-path lcov.info
         working-directory: ./rust/otap-dataflow
+      # NOTE: when adding or removing a codecov upload step anywhere in
+      # the repo, update `codecov.notify.after_n_builds` in
+      # .github/codecov.yaml so codecov waits for the new total.
       - name: Upload to codecov.io
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
         env:
@@ -620,7 +638,7 @@ jobs:
         with:
           toolchain: stable
           components: clippy
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/${{ matrix.folder }}
       - name: Install OpenSSL (Windows)
@@ -638,6 +656,32 @@ jobs:
           cargo clippy --all-targets --all-features --workspace -- -D warnings
         working-directory: ./rust/${{ matrix.folder }}
 
+  host-metrics-semconv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: open-telemetry/semantic-conventions
+          ref: v1.41.0
+          path: semantic-conventions
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: ./rust/otap-dataflow
+      - name: Run host metrics semconv drift check
+        env:
+          OTAP_HOST_METRICS_SEMCONV_REGISTRY: ${{ github.workspace }}/semantic-conventions/model
+        run: |
+          cargo test -p otap-df-core-nodes \
+            --features dev-tools,otap-df-otap/crypto-ring \
+            emitted_phase1_metric_shapes_match_weaver_semconv --lib -- --ignored
+        working-directory: ./rust/otap-dataflow
+
   # Required matrix combinations for deny: otap-dataflow only
   deny_required:
     runs-on: ubuntu-latest
@@ -650,25 +694,25 @@ jobs:
           toolchain: stable
       - name: advisories
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check advisories
           manifest-path: ./rust/otap-dataflow/Cargo.toml
       - name: licenses
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check licenses
           manifest-path: ./rust/otap-dataflow/Cargo.toml
       - name: bans
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check bans
           manifest-path: ./rust/otap-dataflow/Cargo.toml
       - name: sources
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check sources
           manifest-path: ./rust/otap-dataflow/Cargo.toml
@@ -729,7 +773,7 @@ jobs:
           pattern: junit-xml-*
           path: junit-results
       - name: Publish test results
-        uses: dorny/test-reporter@df6247429542221bc30d46a036ee47af1102c451 # v2.7.0
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
         if: always()
         with:
           name: Rust Test Results
@@ -786,6 +830,7 @@ jobs:
       - pest-fmt
       - no_default_features_check
       - pipeline_perf_test
+      - host-metrics-semconv
     steps:
       - name: Check if all required jobs succeeded
         run: |
@@ -823,6 +868,10 @@ jobs:
           fi
           if [[ "${{ needs.pipeline_perf_test.result }}" != "success" ]]; then
             echo "pipeline_perf_test failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.host-metrics-semconv.result }}" != "success" ]]; then
+            echo "host-metrics-semconv failed or was cancelled"
             exit 1
           fi
           echo "All required checks passed!"

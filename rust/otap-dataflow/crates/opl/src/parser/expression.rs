@@ -7,7 +7,7 @@ use data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
     CaptureTextScalarExpression, CollectionScalarExpression, CombineScalarExpression,
     ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression, DoubleValue,
-    EqualToLogicalExpression, Expression, GetRecordTypeScalarExpression,
+    EqualToLogicalExpression, Expression, GetRecordTypeScalarExpression, GetTypeScalarExpression,
     GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression,
     IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
     ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
@@ -237,11 +237,27 @@ pub(crate) fn parse_type_check_expression(
         // If there are three rules, we have an expression like (<field> is <Type>) meaning we're
         // checking that some field on the stream element is some type
         3 => {
-            // TODO - we will support this soon
-            Err(ParserError::SyntaxNotSupported(
-                type_check_rule_query_location,
-                "Checking if a field of stream element is a type is not yet supported".into(),
+            let source_rule = inner_rules.next().expect("there are rules");
+            let source_scalar_expr = parse_rel_expression(source_rule, pipeline_builder)?.into();
+            let get_source_type_expr = ScalarExpression::GetType(GetTypeScalarExpression::new(
+                type_check_rule_query_location.clone(),
+                source_scalar_expr,
+            ));
+
+            let type_name_rule = inner_rules.nth(1).expect("there are rules");
+            let type_check_expected_type = ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    to_query_location(&type_name_rule),
+                    type_name_rule.as_str(),
+                )),
+            );
+            Ok(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                type_check_rule_query_location.clone(),
+                get_source_type_expr,
+                type_check_expected_type,
+                false,
             ))
+            .into())
         }
 
         other_len => Err(ParserError::SyntaxError(

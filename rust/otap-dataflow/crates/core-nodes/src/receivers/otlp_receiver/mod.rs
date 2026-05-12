@@ -23,6 +23,8 @@ use otap_df_otap::otap_grpc::otlp::server_new::{
 };
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
+#[cfg(test)]
+use otap_df_pdata::TryIntoWithOptions;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -1761,7 +1763,7 @@ mod tests {
                 let logs_proto: OtlpProtoBytes = logs_pdata
                     .clone()
                     .payload()
-                    .try_into()
+                    .try_into_with_default()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
 
@@ -1787,7 +1789,7 @@ mod tests {
                 let metrics_proto: OtlpProtoBytes = metrics_pdata
                     .clone()
                     .payload()
-                    .try_into()
+                    .try_into_with_default()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(
                     metrics_proto,
@@ -1816,7 +1818,7 @@ mod tests {
                 let trace_proto: OtlpProtoBytes = trace_pdata
                     .clone()
                     .payload()
-                    .try_into()
+                    .try_into_with_default()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(
                     trace_proto,
@@ -1953,7 +1955,7 @@ mod tests {
                 let logs_proto: OtlpProtoBytes = logs_pdata
                     .clone()
                     .payload()
-                    .try_into()
+                    .try_into_with_default()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
 
@@ -2046,7 +2048,7 @@ mod tests {
                 let logs_proto: OtlpProtoBytes = logs_pdata
                     .clone()
                     .payload()
-                    .try_into()
+                    .try_into_with_default()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
 

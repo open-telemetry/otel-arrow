@@ -23,6 +23,7 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_pdata::TryFromWithOptions;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_telemetry::metrics::MetricSet;
@@ -58,7 +59,7 @@ fn default_idle_timeout_secs() -> u64 {
     DEFAULT_IDLE_TIMEOUT_SECS
 }
 
-#[metric_set(name = "validation.exporter.metrics")]
+#[metric_set(name = "validation.exporter")]
 #[derive(Debug, Default, Clone)]
 struct ValidationExporterMetrics {
     /// Number of validation checks that did not match expectation
@@ -220,7 +221,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     let (context, payload) = pdata.into_parts();
                     let source_node = context.source_node();
                     let transport_headers = context.transport_headers().cloned();
-                    let msg = OtlpProtoBytes::try_from(payload)
+                    let msg = OtlpProtoBytes::try_from_with_default(payload)
                         .ok()
                         .and_then(|bytes| OtlpProtoMessage::try_from(bytes).ok());
 

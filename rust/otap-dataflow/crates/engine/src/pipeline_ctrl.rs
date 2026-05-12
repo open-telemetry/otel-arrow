@@ -3444,6 +3444,7 @@ mod tests {
                 pipeline_metrics: false,
                 tokio_metrics: false,
                 runtime_metrics: metric_level,
+                flow_metrics: Vec::new(),
             },
             Vec::new(),
             empty_node_metric_handles(),
@@ -3521,6 +3522,7 @@ mod tests {
                 pipeline_metrics: false,
                 tokio_metrics: false,
                 runtime_metrics: MetricLevel::None,
+                flow_metrics: Vec::new(),
             },
             Vec::new(),
             empty_node_metric_handles(),
@@ -3629,6 +3631,7 @@ mod tests {
                 pipeline_metrics: false,
                 tokio_metrics: false,
                 runtime_metrics: metric_level,
+                flow_metrics: Vec::new(),
             },
         );
         let completion_metrics_key = dispatcher.completion_metrics.metric_set_key();

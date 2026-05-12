@@ -42,6 +42,7 @@ object_store = {workspace = true, features = ["fs"]}
 parquet.workspace = true
 prost.workspace = true
 rand.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 slotmap.workspace = true
@@ -64,6 +65,10 @@ weaver_forge = { workspace = true, optional = true }
 weaver_resolved_schema = { workspace = true, optional = true }
 weaver_resolver = { workspace = true, optional = true }
 weaver_semconv = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+nix.workspace = true
 
 [features]
 dev-tools = ["dep:weaver_common", "dep:weaver_forge", "dep:weaver_resolved_schema", "dep:weaver_resolver", "dep:weaver_semconv"]
