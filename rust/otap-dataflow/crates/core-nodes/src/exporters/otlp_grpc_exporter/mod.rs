@@ -10,8 +10,13 @@
 //! progress.
 
 use async_trait::async_trait;
+
+use futures_timer::Delay;
+use std::io::ErrorKind;
+
 use bytes::Bytes;
 use futures::future::FutureExt;
+use futures::pin_mut;
 use futures::stream::{FuturesUnordered, StreamExt};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -46,10 +51,13 @@ use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde::Deserialize;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
+
+use std::pin::Pin;
+use std::task;
 
 /// The URN for the OTLP gRPC exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_grpc";
@@ -169,6 +177,13 @@ impl Exporter<OtapPdata> for OTLPExporter {
         let mut inflight_exports = InFlightExports::new();
         let mut pending_msg: Option<Message<OtapPdata>> = None;
 
+        let timer_cancel_fut = async {
+            let _ = timer_cancel_handle.cancel().await;
+            futures::future::pending::<()>().await
+        }
+        .fuse();
+        pin_mut!(timer_cancel_fut);
+
         // Main loop: 1) finish ready completions, 2) biased wait for either a completion
         // or the next message, 3) dispatch work while respecting the in-flight budget.
         loop {
@@ -235,19 +250,45 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         pending_msg.is_none(),
                         "pending message should have been drained before shutdown"
                     );
-                    while !inflight_exports.is_empty() {
-                        if let Some(completed) = inflight_exports.next_completion().await {
-                            let client = finalize_completed_export(
-                                completed,
-                                &effect_handler,
-                                &mut self.pdata_metrics,
-                            )
-                            .await;
-                            grpc_clients.release(client);
+
+                    let mut timeout = Delay::new(deadline.duration_since(Instant::now())).fuse();
+
+                    // Stop telemetry loop concurrently with flushing; do not block shutdown on cancel
+                    let mut timer_cancelled = false;
+
+                    loop {
+                        // If the exports are completed in time, we exit the loop to evaluate the
+                        // rest of the possible races
+                        if inflight_exports.is_empty() && timer_cancelled {
+                            break;
                         }
+
+                        futures::select_biased! {
+                            completed = inflight_exports.next_completion().fuse() => {
+                                if let Some(completed) = completed {
+                                    let client = finalize_completed_export(
+                                        completed,
+                                        &effect_handler,
+                                        &mut self.pdata_metrics,
+                                    )
+                                    .await;
+                                    grpc_clients.release(client);
+                                }
+                            },
+                            _ = timer_cancel_fut => {
+                                timer_cancelled = true
+                            }
+                            _timeout = timeout => {
+                                for signal_type in inflight_exports.pending_signal_types() {
+                                    self.pdata_metrics.add_failed(signal_type, 1);
+                                }
+                                return Err(Error::IoError {
+                                    node: exporter_id.clone(),
+                                    error: std::io::Error::from(ErrorKind::TimedOut),
+                                })
+                            },
+                        };
                     }
-                    _ = timer_cancel_handle.cancel().await;
-                    return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
@@ -362,7 +403,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 }
                             };
                             let future = make_export_future(prepared, client);
-                            inflight_exports.push(future);
+                            inflight_exports.push(signal_type, future);
                         }
                     }
                 }
@@ -506,12 +547,12 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
     proto_buffer: &mut ProtoBuffer,
     encoder: &mut Enc,
     make_future: MakeFuture,
-    inflight: &mut InFlightExports<Fut, CompletedExport>,
+    inflight: &mut InFlightExports<CompletedExport>,
     failed_counter: &mut Counter<u64>,
     effect_handler: &EffectHandler<OtapPdata>,
 ) where
     Enc: ProtoBytesEncoder,
-    Fut: Future<Output = CompletedExport>,
+    Fut: Future<Output = CompletedExport> + 'static,
     MakeFuture: FnOnce(EncodedExport) -> Fut,
 {
     match prepare_otap_export(
@@ -524,7 +565,7 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
         signal_type,
     ) {
         Ok(encoded) => {
-            inflight.push(make_future(encoded));
+            inflight.push(signal_type, make_future(encoded));
         }
         Err(error) => {
             failed_counter.inc();
@@ -709,18 +750,28 @@ fn make_export_future(
     }
 }
 
-/// FIFO-ish wrapper around the in-flight export RPCs.
-pub(crate) struct InFlightExports<Fut, Output>
-where
-    Fut: Future<Output = Output>,
-{
-    futures: FuturesUnordered<Fut>,
+/// Wrapper designed to be able to properly get the signal type of an export in case of shutdown.
+/// [`FuturesUnordered`] provides no way to inspect pending futures, so without this wrapper
+/// there is no way to know which signal types are still in flight at any given point.
+struct InFlightExport<Output> {
+    signal_type: SignalType,
+    fut: Pin<Box<dyn Future<Output = Output>>>,
 }
 
-impl<Fut, Output> InFlightExports<Fut, Output>
-where
-    Fut: Future<Output = Output>,
-{
+impl<Output> Future for InFlightExport<Output> {
+    type Output = Output;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
+        self.fut.as_mut().poll(cx)
+    }
+}
+
+/// FIFO-ish wrapper around the in-flight export RPCs.
+pub(crate) struct InFlightExports<Output> {
+    futures: FuturesUnordered<InFlightExport<Output>>,
+}
+
+impl<Output> InFlightExports<Output> {
     pub(crate) fn new() -> Self {
         Self {
             futures: FuturesUnordered::new(),
@@ -735,8 +786,19 @@ where
         self.futures.is_empty()
     }
 
-    pub(crate) fn push(&mut self, future: Fut) {
-        self.futures.push(future);
+    pub(crate) fn push(
+        &mut self,
+        signal_type: SignalType,
+        future: impl Future<Output = Output> + 'static,
+    ) {
+        self.futures.push(InFlightExport {
+            signal_type,
+            fut: Box::pin(future),
+        });
+    }
+
+    pub(crate) fn pending_signal_types(&self) -> impl Iterator<Item = SignalType> + '_ {
+        self.futures.iter().map(|e| e.signal_type)
     }
 
     /// Returns a future that resolves once the next export finishes.

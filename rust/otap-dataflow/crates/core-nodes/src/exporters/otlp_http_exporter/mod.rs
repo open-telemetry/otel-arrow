@@ -13,14 +13,16 @@
 //! - Allow endpoint overrides for each signal type (similar to Go collector implementation)
 //! - Unit test metrics reporting
 
+use std::io::ErrorKind;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use futures::{FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt, pin_mut};
+use futures_timer::Delay;
 use http::{HeaderMap, HeaderValue, StatusCode};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -249,6 +251,18 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         let mut traces_proto_encoder = TracesProtoBytesEncoder::new();
         let mut proto_buffer = ProtoBuffer::default();
 
+        let exporter_id = effect_handler.exporter_id();
+
+        // Stop telemetry loop concurrently with flushing; do not block shutdown on
+        // cancel
+        let mut tel_timer_cancelled = false;
+        let tel_timer_cancel_fut = async {
+            let _ = telemetry_timer_cancel.cancel().await;
+            futures::future::pending::<()>().await
+        }
+        .fuse();
+        pin_mut!(tel_timer_cancel_fut);
+
         loop {
             // Opportunistically drain completions before we park on a recv.
             while let Some(completed) = inflight_exports.next_completion().now_or_never().flatten()
@@ -299,17 +313,39 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, reason }) => {
                     otel_info!("otlp.exporter.http.shutdown", reason = reason);
-                    while !inflight_exports.is_empty() {
-                        if let Some(completed) = inflight_exports.next_completion().await {
-                            finalize_completed_export(
-                                completed,
-                                &effect_handler,
-                                &mut self.pdata_metrics,
-                            )
-                            .await;
+
+                    let mut timeout = Delay::new(deadline.duration_since(Instant::now())).fuse();
+
+                    loop {
+                        // If the exports are completed in time, we exit the loop to evaluate the
+                        // rest of the possible races
+                        if inflight_exports.is_empty() && tel_timer_cancelled {
+                            break;
                         }
+
+                        futures::select_biased! {
+                            completed = inflight_exports.next_completion().fuse() => {
+                                if let Some(completed) = completed {
+                                    let _client = finalize_completed_export(
+                                        completed,
+                                        &effect_handler,
+                                        &mut self.pdata_metrics
+                                    )
+                                    .await;
+                                }
+                            },
+                            _ = tel_timer_cancel_fut => {
+                                tel_timer_cancelled = true
+                            }
+                            _timeout = timeout => {
+                                for signal_type in inflight_exports.pending_signal_types() {
+                                    self.pdata_metrics.add_failed(signal_type, 1);
+                                }
+                                return Err(EngineError::IoError {node: exporter_id.clone(), error: std::io::Error::from(ErrorKind::TimedOut)})
+                            },
+                        };
                     }
-                    _ = telemetry_timer_cancel.cancel().await;
+
                     return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
@@ -379,7 +415,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     let max_response_body_len = self.config.max_response_body_length;
 
                     let client = client_pool.get_client();
-                    inflight_exports.push(async move {
+                    inflight_exports.push(signal_type, async move {
                         let result = client.post(endpoint.as_str()).body(body).send().await;
 
                         CompletedExport {
