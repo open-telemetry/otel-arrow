@@ -539,56 +539,90 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         // `extension_lifecycle`) run concurrently. When the data-path
         // drains, broadcast `Shutdown` to extensions so they can
         // terminate gracefully, then continue draining extension
-        // futures. Errors from either side short-circuit and abort.
+        // futures.
+        //
+        // Errors from either side short-circuit out of the inner
+        // async block. The outer code then unconditionally
+        // broadcasts `Shutdown` and bounded-drains extensions before
+        // propagating the error. This guarantees that extensions
+        // owning sockets, files, or background work get the same
+        // cleanup signal on the error path that they would on the
+        // normal path, and that a misbehaving extension that ignores
+        // `Shutdown` cannot hang the pipeline beyond
+        // `EXTENSION_SHUTDOWN_GRACE`.
         rt.block_on(async {
             local_tasks
                 .run_until(async {
-                    let mut task_results = Vec::new();
-
-                    loop {
-                        // `biased;`: prefer data-path completions when both
-                        // arms are simultaneously ready. Functionally
-                        // optional — kept to make intent explicit.
-                        tokio::select! {
-                            biased;
-                            Some(result) = futures.next(), if !futures.is_empty() => {
-                                match result {
-                                    Ok(Ok(res)) => task_results.push(res),
-                                    Ok(Err(e)) => return Err(e),
-                                    Err(e) => return Err(Error::JoinTaskError {
-                                        is_canceled: e.is_cancelled(),
-                                        is_panic: e.is_panic(),
-                                        error: e.to_string(),
-                                    }),
+                    // Inner async block isolates the loop's
+                    // `return Err(...)` short-circuits from the
+                    // outer cleanup, giving us an "async finally"
+                    // shape: cleanup always runs, then the loop's
+                    // result is propagated.
+                    let loop_result: Result<Vec<_>, Error> = async {
+                        let mut task_results = Vec::new();
+                        loop {
+                            // `biased;`: prefer data-path completions when both
+                            // arms are simultaneously ready. Functionally
+                            // optional — kept to make intent explicit.
+                            tokio::select! {
+                                biased;
+                                Some(result) = futures.next(), if !futures.is_empty() => {
+                                    match result {
+                                        Ok(Ok(res)) => task_results.push(res),
+                                        Ok(Err(e)) => return Err(e),
+                                        Err(e) => return Err(Error::JoinTaskError {
+                                            is_canceled: e.is_cancelled(),
+                                            is_panic: e.is_panic(),
+                                            error: e.to_string(),
+                                        }),
+                                    }
                                 }
-                            }
-                            Some(result) = extension_lifecycle.next_completion(), if !extension_lifecycle.is_empty() => {
-                                match result {
-                                    Ok(Ok(())) => {}
-                                    Ok(Err(e)) => return Err(e),
-                                    Err(e) => return Err(Error::JoinTaskError {
-                                        is_canceled: e.is_cancelled(),
-                                        is_panic: e.is_panic(),
-                                        error: e.to_string(),
-                                    }),
+                                Some(result) = extension_lifecycle.next_completion(), if !extension_lifecycle.is_empty() => {
+                                    match result {
+                                        Ok(Ok(())) => {}
+                                        Ok(Err(e)) => return Err(e),
+                                        Err(e) => return Err(Error::JoinTaskError {
+                                            is_canceled: e.is_cancelled(),
+                                            is_panic: e.is_panic(),
+                                            error: e.to_string(),
+                                        }),
+                                    }
                                 }
+                                else => break,
                             }
-                            else => break,
-                        }
 
-                        // Once data-path is drained, fire the shutdown
-                        // broadcast exactly once. The lifecycle holder
-                        // gates on its own one-shot latch and uses a
-                        // local `now() + EXTENSION_SHUTDOWN_GRACE`
-                        // deadline — extensions shut down after every
-                        // data-path task has terminated, so this is
-                        // the start of a fresh extension cleanup
-                        // window, not a continuation of the
-                        // pipeline-wide deadline.
-                        if futures.is_empty() {
-                            extension_lifecycle.broadcast_shutdown();
+                            // Once data-path is drained, fire the shutdown
+                            // broadcast exactly once. The lifecycle holder
+                            // gates on its own one-shot latch and uses a
+                            // local `now() + EXTENSION_SHUTDOWN_GRACE`
+                            // deadline — extensions shut down after every
+                            // data-path task has terminated, so this is
+                            // the start of a fresh extension cleanup
+                            // window, not a continuation of the
+                            // pipeline-wide deadline.
+                            if futures.is_empty() {
+                                extension_lifecycle.broadcast_shutdown();
+                            }
                         }
+                        Ok(task_results)
                     }
+                    .await;
+
+                    // "Async finally": unconditional cleanup that
+                    // runs on both the normal and error paths.
+                    // `broadcast_shutdown` is idempotent (latched by
+                    // `shutdown_broadcast_fired`), so a no-op on the
+                    // normal path; on the error path it ensures
+                    // already-started extensions still receive
+                    // `Shutdown` before the pipeline exits, so they
+                    // can release sockets, files, or background work
+                    // cleanly. `drain_until_deadline` then bounds the
+                    // wait so a misbehaving extension can't hang the
+                    // runtime.
+                    extension_lifecycle.broadcast_shutdown();
+                    extension_lifecycle.drain_until_deadline().await;
+
+                    let task_results = loop_result?;
                     let mut final_metrics_reporter = final_metrics_reporter.clone();
                     if let Err(err) = report_node_metrics_with_handles(
                         &final_node_metric_handles,

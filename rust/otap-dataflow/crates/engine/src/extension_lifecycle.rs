@@ -31,12 +31,27 @@ use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::time::{Duration, Instant};
 use tokio::task::{JoinError, JoinHandle, LocalSet};
+use tokio::time::Instant as TokioInstant;
 
 /// Cleanup window granted to extensions after the data path has
 /// drained. Extensions that don't terminate within this window will
 /// be left to the runtime's natural drop semantics when
 /// `run_forever` returns.
 pub(crate) const EXTENSION_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
+/// Slack added past `EXTENSION_SHUTDOWN_GRACE` before the runtime
+/// hard-stops draining extension tasks. The cooperative deadline that
+/// `broadcast_shutdown` puts on the wire and the deadline the runtime
+/// waits on are intentionally different: extensions get exactly
+/// `EXTENSION_SHUTDOWN_GRACE` to wind down (matching the contract in
+/// the `Shutdown` message), and the runtime waits a small additional
+/// window to absorb the time it takes the
+/// [`crate::extension::ControlChannel`] adapter to deliver the
+/// `Shutdown` message through to the extension's `recv()` and for the
+/// extension's task to return. Without this slack a well-behaved
+/// extension that wakes up exactly at the deadline races against the
+/// runtime's drain timeout.
+pub(crate) const EXTENSION_SHUTDOWN_DRAIN_SLACK: Duration = Duration::from_millis(500);
 
 const SHUTDOWN_REASON: &str = "pipeline data-path drained";
 
@@ -57,6 +72,11 @@ pub(crate) struct ExtensionLifecycle {
     /// One-shot latch: `true` after `Shutdown` has been broadcast.
     /// Prevents re-firing on subsequent loop iterations.
     shutdown_broadcast_fired: bool,
+    /// Deadline established when [`Self::broadcast_shutdown`] fires.
+    /// Used by [`Self::drain_until_deadline`] to bound how long the
+    /// runtime will wait for extensions to honour `Shutdown` so a
+    /// misbehaving extension can't hang the pipeline indefinitely.
+    shutdown_deadline: Option<Instant>,
 }
 
 impl ExtensionLifecycle {
@@ -105,6 +125,7 @@ impl ExtensionLifecycle {
             shutdown_senders,
             _passive: passive,
             shutdown_broadcast_fired: false,
+            shutdown_deadline: None,
         }
     }
 
@@ -135,6 +156,7 @@ impl ExtensionLifecycle {
         self.shutdown_broadcast_fired = true;
 
         let deadline = Instant::now() + EXTENSION_SHUTDOWN_GRACE;
+        self.shutdown_deadline = Some(deadline);
         for sender in &self.shutdown_senders {
             // `try_send` is intentional: the extension's control
             // channel is a small mpsc and we don't want shutdown
@@ -146,6 +168,65 @@ impl ExtensionLifecycle {
                 deadline,
                 reason: SHUTDOWN_REASON.to_string(),
             });
+        }
+    }
+
+    /// Drain remaining active+background extension tasks, but never
+    /// past the shutdown deadline.
+    ///
+    /// `Shutdown` is cooperative — extensions may ignore it or take
+    /// longer than the grace window to exit. Without this bound, an
+    /// extension that never returns from `start()` would hang the
+    /// pipeline forever. After the deadline elapses, any still-running
+    /// futures are dropped with a warning; the runtime's natural drop
+    /// semantics take over once the lifecycle holder itself is dropped.
+    ///
+    /// No-op if there are no remaining futures or if shutdown has not
+    /// been broadcast (in which case there is no deadline yet).
+    pub async fn drain_until_deadline(&mut self) {
+        if self.futures.is_empty() {
+            return;
+        }
+        // If the caller invokes drain without a prior broadcast there
+        // is no deadline yet — synthesize one from the same grace
+        // window so we still bound the wait.
+        let deadline = self
+            .shutdown_deadline
+            .get_or_insert_with(|| Instant::now() + EXTENSION_SHUTDOWN_GRACE);
+        // Wait slightly past the cooperative deadline to absorb the
+        // time it takes the ControlChannel adapter to deliver the
+        // queued `Shutdown` to the extension and for the extension's
+        // task to return.
+        let drain_deadline = TokioInstant::from_std(*deadline + EXTENSION_SHUTDOWN_DRAIN_SLACK);
+
+        let drain = async {
+            while let Some(result) = self.futures.next().await {
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        otel_warn!("extension.shutdown.task.error", error = format!("{e}"));
+                    }
+                    Err(e) => {
+                        otel_warn!(
+                            "extension.shutdown.task.join_error",
+                            is_canceled = e.is_cancelled(),
+                            is_panic = e.is_panic(),
+                            error = e.to_string()
+                        );
+                    }
+                }
+            }
+        };
+
+        if tokio::time::timeout_at(drain_deadline, drain)
+            .await
+            .is_err()
+        {
+            otel_warn!(
+                "extension.shutdown.timeout",
+                grace_secs = EXTENSION_SHUTDOWN_GRACE.as_secs(),
+                remaining = self.futures.len()
+            );
         }
     }
 }

@@ -2240,6 +2240,101 @@ connections:
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Error-path shutdown hygiene — when one active extension errors out,
+// any *other* already-started extensions must still receive `Shutdown`
+// before the pipeline returns, so they can release sockets, files, or
+// background work cleanly. Regression test for review feedback on
+// PR #2860 (discussion_r3228775534).
+// ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_other_extensions_receive_shutdown_when_pipeline_errors() {
+    let receiver_key = "err-shutdown-recv";
+    let ext_probe_key = "err-shutdown-ext-probe";
+    let _probe = make_probe(receiver_key, CallSequence::Local);
+
+    let ext_shutdown_at: Arc<parking_lot::Mutex<Option<Instant>>> =
+        Arc::new(parking_lot::Mutex::new(None));
+    register_shutdown_recording_probe(
+        ext_probe_key,
+        ShutdownRecordingProbe {
+            shutdown_at: Arc::clone(&ext_shutdown_at),
+        },
+    );
+
+    // Both extensions must be bound by some node so neither gets
+    // pruned as "defined-but-unbound" before the run starts. We use
+    // two probe receivers, each binding a distinct extension, fanning
+    // into the same exporter. The failing extension errors at start
+    // → pipeline aborts → the recording extension must still receive
+    // `Shutdown` on the way out.
+    let receiver_b_key = "err-shutdown-recv-b";
+    let _probe_b = make_probe(receiver_b_key, CallSequence::Local);
+    let yaml = format!(
+        r#"
+nodes:
+  receiver-a:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{receiver_key}"
+    capabilities:
+      no_op_stateless: "shutdown-rec"
+  receiver-b:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{receiver_b_key}"
+    capabilities:
+      no_op_stateless: "failing"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  shutdown-rec:
+    type: "{SHUTDOWN_RECORDING_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_probe_key}"
+  failing:
+    type: "{FAILING_EXTENSION_URN}"
+
+connections:
+  - from: receiver-a
+    to: exporter
+  - from: receiver-b
+    to: exporter
+"#
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_test_runtime_pipeline(&yaml);
+
+    // Generous outer shutdown grace — the test must return well before
+    // it because the pipeline aborts on the failing extension's error
+    // and then bounded-drains the recording extension within
+    // `EXTENSION_SHUTDOWN_GRACE` (5s).
+    let started_at = Instant::now();
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        Duration::from_secs(60),
+    );
+    let elapsed = started_at.elapsed();
+
+    assert!(
+        result.is_err(),
+        "pipeline should propagate the failing extension's error: {result:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "pipeline should not hang after the error path; took {elapsed:?}"
+    );
+    let shutdown = ext_shutdown_at.lock();
+    assert!(
+        shutdown.is_some(),
+        "recording extension must receive Shutdown on the error path"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Test 5 — shutdown ordering: extension records Shutdown timestamp
 //          inside the pipeline run window
 // ─────────────────────────────────────────────────────────────────────
