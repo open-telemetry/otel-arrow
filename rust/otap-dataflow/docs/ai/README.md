@@ -24,7 +24,7 @@ controlled, reviewable, and accountable:
 - Keep changes small enough to review and validate.
 - Document assumptions, unsupported behavior, and intentional divergences.
 - Preserve human ownership of correctness, maintainability, and security.
-- Validate changes with tests, fixtures, benchmarks, or documented rationale.
+- Validate changes with tests, fixtures, benchmarks, and/or documented rationale.
 - Avoid exposing secrets, private data, or unsuitable third-party content.
 - Respect licensing, provenance, and attribution requirements.
 
