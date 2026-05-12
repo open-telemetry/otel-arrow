@@ -11,18 +11,6 @@
 // (detail page).
 // ============================================================================
 
-// `BASE` is the URL of the comparison-dashboard site root (compare/).
-// Computed at runtime so the same bundle works for project Pages, user
-// Pages, custom domains, and a local serve without a build-time knob.
-//
-// On the landing page,    `location.pathname` is `<...>/compare/`        -> BASE = `<...>/compare`.
-// On a comparison stub,   `location.pathname` is `<...>/compare/<slug>/` -> BASE = `<...>/compare`.
-const BASE = (() => {
-  const p = location.pathname.replace(/\/$/, "");
-  const m = p.match(/^(.*)\/compare\/[^\/]+$/);
-  return m ? `${m[1]}/compare` : p;
-})();
-
 // `DATA_PATH` is injected by `dashboard.py build` into each generated
 // page. It is the relative URL from the current page to the per-suite
 // data root (e.g. `../data/suite` for a landing page sitting at
@@ -575,7 +563,7 @@ function renderComparisonSection(suiteData, comparison) {
   const filterHtml = hasFilters ? buildFilterHtml(categories, filterState) : "";
   const anyBP = (filtered.suites || []).some((r) => getSuiteTests(suiteData, r.slug).some((t) => { const rm = t.name.match(/^(\d+)k$/); return hasBackpressure(t.metrics, rm ? parseInt(rm[1])*1000 : null); }));
   const bpHtml = anyBP ? '<div class="chart-backpressure-legend">\u26A0 Backpressure detected</div>' : "";
-  const link = `${BASE}${encodeURIComponent(slug)}/`;
+  const link = `${encodeURIComponent(slug)}/`;
   return `
     <section class="scenario-section" data-comparison-id="${escapeHtml(slug)}">
       <div class="scenario-section-head">
@@ -635,7 +623,7 @@ function renderComparisonPage(compSlug) {
 
   app.innerHTML = `
     <div class="scenario-header">
-      <a class="back-link" href="${BASE}/">&larr; All Comparisons</a>
+      <a class="back-link" href="../">&larr; All Comparisons</a>
       <h1>${escapeHtml(comparison.name || compSlug)}</h1>
       <div class="sub">${escapeHtml(comparison.description || "")}</div>
     </div>
