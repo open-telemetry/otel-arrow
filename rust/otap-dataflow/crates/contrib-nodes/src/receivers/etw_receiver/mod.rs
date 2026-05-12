@@ -5,6 +5,9 @@
 //!
 //! Receives ETW events from Windows ETW sessions and emits OTAP Arrow log records.
 //!
+//! This module is compiled only on Windows (`#[cfg(target_os = "windows")]`
+//! in the parent `receivers/mod.rs`).
+//!
 //! ## Quick start
 //!
 //! ```yaml
@@ -16,10 +19,8 @@
 //!         level: information
 //! ```
 
-#[cfg(target_os = "windows")]
 mod session;
 
-#[cfg(target_os = "windows")]
 use session::EtwEventData;
 
 use async_trait::async_trait;
@@ -184,11 +185,10 @@ impl EtwReceiver {
     }
 }
 
-// ── Platform-specific run loops ──────────────────────────────────────────────
+// ── Event processing loop ────────────────────────────────────────────────────
 
-#[cfg(target_os = "windows")]
 impl EtwReceiver {
-    /// Main event loop when an ETW session is active (Windows only).
+    /// Main event loop when an ETW session is active.
     ///
     /// Consumes events from the ETW session channel and processes control
     /// messages. Returns when a shutdown or drain-ingress control message is
@@ -202,6 +202,7 @@ impl EtwReceiver {
         telemetry_timer_handle: TelemetryTimerCancelHandle<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let mut event_count: u64 = 0;
+        let mut session_alive = true;
 
         loop {
             tokio::select! {
@@ -243,7 +244,9 @@ impl EtwReceiver {
                 }
 
                 // Receive event data from the ETW session thread.
-                event_data = event_rx.recv() => {
+                // Only poll when the session is still alive to avoid
+                // spinning on a closed channel.
+                event_data = event_rx.recv(), if session_alive => {
                     match event_data {
                         Some(event) => {
                             self.metrics.borrow_mut().received_events_total.inc();
@@ -269,52 +272,17 @@ impl EtwReceiver {
                         }
                         None => {
                             // Channel closed — the ETW session thread has
-                            // exited. Continue the loop to handle any pending
-                            // control messages (the select will still work on
-                            // ctrl_chan).
+                            // exited. Stop polling event_rx; only handle
+                            // control messages from now on.
+                            session_alive = false;
                             otel_info!(
                                 "etw_receiver.session_ended",
                                 message = "ETW session event channel closed",
+                                total_events = event_count,
                             );
                         }
                     }
                 }
-            }
-        }
-    }
-}
-
-impl EtwReceiver {
-    /// Control-message-only loop used on non-Windows platforms (or when no ETW
-    /// session is available). The receiver simply waits for shutdown.
-    #[cfg(not(target_os = "windows"))]
-    async fn run_without_session(
-        &self,
-        ctrl_chan: &mut local::ControlChannel<OtapPdata>,
-        _effect_handler: &local::EffectHandler<OtapPdata>,
-        telemetry_timer_handle: TelemetryTimerCancelHandle<OtapPdata>,
-    ) -> Result<TerminalState, Error> {
-        loop {
-            match ctrl_chan.recv().await {
-                Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
-                    let _ = telemetry_timer_handle.cancel().await;
-                    _effect_handler.notify_receiver_drained().await?;
-                    let snapshot = self.metrics.borrow().snapshot();
-                    return Ok(TerminalState::new(deadline, [snapshot]));
-                }
-                Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                    let _ = telemetry_timer_handle.cancel().await;
-                    let snapshot = self.metrics.borrow().snapshot();
-                    return Ok(TerminalState::new(deadline, [snapshot]));
-                }
-                Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                    let mut m = self.metrics.borrow_mut();
-                    let _ = metrics_reporter.report(&mut m);
-                }
-                Err(e) => {
-                    return Err(Error::ChannelRecvError(e));
-                }
-                _ => {}
             }
         }
     }
@@ -362,22 +330,17 @@ impl local::Receiver<OtapPdata> for EtwReceiver {
             provider_count = self.config.providers.len(),
         );
 
-        // Platform-specific ETW session startup.
-        #[cfg(target_os = "windows")]
         let (session_handle, mut event_rx) =
             session::start_etw_session(&self.config, self.metrics.clone())?;
 
-        #[cfg(target_os = "windows")]
-        return self
-            .run_with_session(session_handle, &mut event_rx, &mut ctrl_chan, &effect_handler, telemetry_timer_handle)
-            .await;
-
-        // On non-Windows platforms the receiver has no data source; it enters
-        // a control-message-only loop and shuts down when asked.
-        #[cfg(not(target_os = "windows"))]
-        return self
-            .run_without_session(&mut ctrl_chan, &effect_handler, telemetry_timer_handle)
-            .await;
+        self.run_with_session(
+            session_handle,
+            &mut event_rx,
+            &mut ctrl_chan,
+            &effect_handler,
+            telemetry_timer_handle,
+        )
+        .await
     }
 }
 

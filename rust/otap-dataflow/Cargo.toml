@@ -295,6 +295,8 @@ contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
 condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]
 recordset-kql-processor = ["otap-df-contrib-nodes/recordset-kql-processor"]
 resource-validator-processor = ["otap-df-contrib-nodes/resource-validator-processor"]
+# Contrib receivers (opt-in) - Windows-only
+etw-receiver = ["otap-df-contrib-nodes/etw-receiver"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

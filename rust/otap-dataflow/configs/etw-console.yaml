@@ -29,12 +29,10 @@ groups:
                 # Microsoft-Windows-Kernel-Process
                 - guid: "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716"
                   level: information
-          # Console exporter — uncomment once Arrow encoding (Step 4) is
-          # implemented and the ETW receiver sends data downstream.
-          # console:
-          #   type: exporter:console
-          #   config: {}
+          console:
+            type: exporter:console
+            config: {}
 
-        # connections:
-        #   - from: etw
-        #     to: console
+        connections:
+          - from: etw
+            to: console

@@ -65,9 +65,6 @@ weaver_resolved_schema = { workspace = true, optional = true }
 weaver_resolver = { workspace = true, optional = true }
 weaver_semconv = { workspace = true, optional = true }
 
-[target.'cfg(windows)'.dependencies]
-one_collect = { workspace = true }
-
 [features]
 dev-tools = ["dep:weaver_common", "dep:weaver_forge", "dep:weaver_resolved_schema", "dep:weaver_resolver", "dep:weaver_semconv"]
 bench = []
