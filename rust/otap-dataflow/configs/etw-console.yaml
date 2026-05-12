@@ -6,7 +6,8 @@
 #   cargo run -- -c configs/etw-console.yaml
 #
 # The receiver captures raw ETW events from the configured providers
-# and logs a summary to stdout. Full Arrow encoding is a TODO.
+# and emits summary as an internal log/event. Full Arrow encoding is a TODO.
+
 
 version: otel_dataflow/v1
 engine: { }
@@ -28,9 +29,6 @@ groups:
                 # Microsoft-Windows-Kernel-Process
                 - guid: "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716"
                   level: information
-                # Windows DNS Client (generates frequent events)
-                - guid: "1c95126e-7eea-49a9-a3fe-a378b03ddb4d"
-                  level: verbose
           # Console exporter — uncomment once Arrow encoding (Step 4) is
           # implemented and the ETW receiver sends data downstream.
           # console:

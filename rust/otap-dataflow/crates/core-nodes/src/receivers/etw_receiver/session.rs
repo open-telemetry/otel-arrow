@@ -110,7 +110,7 @@ fn parse_guid(s: &str) -> Result<Guid, Error> {
 }
 
 /// Map the receiver's [`TraceLevel`] to the `one_collect` ETW level constant.
-fn trace_level_to_etw(level: &TraceLevel) -> u8 {
+const fn trace_level_to_etw(level: &TraceLevel) -> u8 {
     match level {
         TraceLevel::Critical => etw::LEVEL_CRITICAL,
         TraceLevel::Error => etw::LEVEL_ERROR,
