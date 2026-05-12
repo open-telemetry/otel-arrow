@@ -79,15 +79,15 @@ pub fn apply_cli_overrides(
     }
 }
 
-/// Validates that every node in a single pipeline references a component URN
-/// registered in the given [`PipelineFactory`], and runs per-component config
-/// validation.
+/// Validates that every node and extension in a single pipeline references a
+/// component URN registered in the given [`PipelineFactory`], and runs
+/// per-component config validation.
 ///
 /// Structural config validation (connections, node references, policies) is
 /// already performed during config deserialization
 /// ([`OtelDataflowSpec::from_file`]).  This function adds the semantic check
 /// that all referenced components are actually compiled into the binary, and
-/// validates their node-specific config statically.
+/// validates their node/extension-specific config statically.
 ///
 /// **Scope:** This is *static* validation only -- it checks that config values
 /// can be deserialized into the expected types.  It does **not** detect runtime
@@ -142,6 +142,39 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
                         pipeline_group_id.as_ref(),
                         pipeline_id.as_ref(),
                         node_id.as_ref(),
+                        e
+                    ))
+                })?;
+            }
+        }
+    }
+
+    // Mirror the per-node validation pass for extensions. Extensions are no
+    // longer `NodeKind::Extension` (they live in `pipeline_cfg.extensions`,
+    // not `pipeline_cfg.nodes`), so they would otherwise slip past static
+    // validation entirely and only fail at runtime when the engine tries to
+    // resolve them in `get_extension_factory_map()`.
+    for (ext_id, ext_cfg) in pipeline_cfg.extension_iter() {
+        let urn_str = ext_cfg.r#type.as_str();
+        match factory.get_extension_factory_map().get(urn_str) {
+            None => {
+                return Err(std::io::Error::other(format!(
+                    "Unknown extension component `{}` in pipeline_group={} pipeline={} extension={}",
+                    urn_str,
+                    pipeline_group_id.as_ref(),
+                    pipeline_id.as_ref(),
+                    ext_id.as_ref()
+                ))
+                .into());
+            }
+            Some(factory) => {
+                (factory.validate_config)(&ext_cfg.config).map_err(|e| {
+                    std::io::Error::other(format!(
+                        "Invalid config for extension `{}` in pipeline_group={} pipeline={} extension={}: {}",
+                        urn_str,
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                        ext_id.as_ref(),
                         e
                     ))
                 })?;
@@ -321,6 +354,40 @@ groups:
     #[test]
     fn http_admin_bind_override_none_keeps_config_value() {
         assert!(http_admin_bind_override(None).is_none());
+    }
+
+    #[test]
+    fn validate_pipeline_components_rejects_unknown_extension() {
+        // Pipeline with no nodes and one extension referencing a URN
+        // that is NOT registered in the empty PipelineFactory below.
+        // Mirrors the validation behaviour we already give to unknown
+        // node URNs: caught at static validation, not at runtime.
+        let yaml = r#"
+extensions:
+  not-registered:
+    type: "urn:test:extension:does-not-exist"
+"#;
+        let pipeline_cfg =
+            PipelineConfig::from_yaml("g".into(), "p".into(), yaml).expect("yaml parses");
+        let factory: PipelineFactory<()> = PipelineFactory::new(&[], &[], &[], &[]);
+
+        let err = validate_pipeline_components(
+            &PipelineGroupId::from("g"),
+            &PipelineId::from("p"),
+            &pipeline_cfg,
+            &factory,
+        )
+        .expect_err("unknown extension URN must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Unknown extension component"),
+            "unexpected error: {msg}"
+        );
+        assert!(
+            msg.contains("urn:test:extension:does-not-exist"),
+            "unexpected error: {msg}"
+        );
+        assert!(msg.contains("not-registered"), "unexpected error: {msg}");
     }
 
     #[test]
