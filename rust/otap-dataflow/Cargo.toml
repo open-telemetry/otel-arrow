@@ -212,6 +212,7 @@ weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "37
 weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc"}
 weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc"}
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc"}
+sha1 = { version = "0.10" }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }

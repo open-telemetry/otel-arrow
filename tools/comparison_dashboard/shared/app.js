@@ -11,7 +11,18 @@
 // (detail page).
 // ============================================================================
 
-const BASE = "";  // set to "/<repo-name>" for GitHub Pages project sites
+// `DATA_PATH` is injected by `dashboard.py build` into each generated
+// page. It is the relative URL from the current page to the per-suite
+// data root (e.g. `../data/suite` for a landing page sitting at
+// `compare/index.html` with data under `data/suite/`). Per-suite test
+// files live at `${DATA_PATH}/<slug>/<test>/<file>`.
+const DATA_PATH = window.DATA_PATH;
+if (!DATA_PATH) {
+  console.warn(
+    "window.DATA_PATH not set; file viewer fetches will fail. " +
+    "This page should be served alongside the build-generated index/stub HTML."
+  );
+}
 
 // ── Metric display config ──────────────────────────────────────────────────
 
@@ -558,7 +569,7 @@ function renderComparisonSection(suiteData, comparison) {
   const filterHtml = hasFilters ? buildFilterHtml(categories, filterState) : "";
   const anyBP = (filtered.suites || []).some((r) => getSuiteTests(suiteData, r.slug).some((t) => { const rm = t.name.match(/^(\d+)k$/); return hasBackpressure(t.metrics, rm ? parseInt(rm[1])*1000 : null); }));
   const bpHtml = anyBP ? '<div class="chart-backpressure-legend">\u26A0 Backpressure detected</div>' : "";
-  const link = `${BASE}${encodeURIComponent(slug)}/`;
+  const link = `${encodeURIComponent(slug)}/`;
   return `
     <section class="scenario-section" data-comparison-id="${escapeHtml(slug)}">
       <div class="scenario-section-head">
@@ -618,7 +629,7 @@ function renderComparisonPage(compSlug) {
 
   app.innerHTML = `
     <div class="scenario-header">
-      <a class="back-link" href="${BASE}/">&larr; All Comparisons</a>
+      <a class="back-link" href="../">&larr; All Comparisons</a>
       <h1>${escapeHtml(comparison.name || compSlug)}</h1>
       <div class="sub">${escapeHtml(comparison.description || "")}</div>
     </div>
@@ -781,7 +792,7 @@ function renderComparisonDetail(suiteData, comparison, testNames, initialSuiteId
 // ── File viewer modal ──────────────────────────────────────────────────────
 
 async function loadConfigFile(suiteSlug, testName, fileName) {
-  const url = `${BASE}/data/suite/${encodeURIComponent(suiteSlug)}/${encodeURIComponent(testName)}/${encodeURIComponent(fileName)}`;
+  const url = `${DATA_PATH}/${encodeURIComponent(suiteSlug)}/${encodeURIComponent(testName)}/${encodeURIComponent(fileName)}`;
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Failed to load ${fileName}: ${resp.status}`);
   return resp.text();
