@@ -17,7 +17,7 @@ Kinds (for -k / --kind):
     pipeline   per-pipeline metrics (memory, CPU, uptime, context switches)
     tokio      per-pipeline Tokio runtime stats
     channel    inter-node channel sender/receiver counters
-    receiver   receiver component metrics (otap, syslog/cef, fake_data_gen, ...)
+    receiver   receiver component metrics (otap, syslog/cef, traffic_generator, ...)
     processor  processor component metrics (batch, retry, router, filter, ...)
     exporter   exporter component metrics (otap, parquet, geneva, ...)
 
@@ -266,21 +266,21 @@ ALL_KINDS = ("engine", "pipeline", "tokio", "channel", "receiver", "processor", 
 def classify(name):
     """Map a metric-set *name* to a kind string.
 
-    >>> classify('engine.metrics')
+    >>> classify('engine')
     'engine'
     >>> classify('channel.sender')
     'channel'
-    >>> classify('syslog_cef.receiver.metrics')
+    >>> classify('syslog_cef.receiver')
     'receiver'
     >>> classify('otap.processor.batch')
     'processor'
-    >>> classify('azure_monitor_exporter.metrics')
+    >>> classify('azure_monitor_exporter')
     'exporter'
     """
     n = name.lower()
-    if n == "engine.metrics":
+    if n == "engine":
         return "engine"
-    if n == "pipeline.metrics":
+    if n == "pipeline":
         return "pipeline"
     if n == "tokio.runtime":
         return "tokio"
@@ -524,7 +524,7 @@ def main():
             # of --kind / --filter selection.
             parts = []
             eng = next(
-                (g for g in all_groups.values() if g["name"] == "engine.metrics"),
+                (g for g in all_groups.values() if g["name"] == "engine"),
                 None,
             )
             if eng:
@@ -548,7 +548,7 @@ def main():
                 parts.append(f"cpu(os)={os_cpu / (os.cpu_count() or 1):.1f}%")
 
             for pg in (
-                g for g in all_groups.values() if g["name"] == "pipeline.metrics"
+                g for g in all_groups.values() if g["name"] == "pipeline"
             ):
                 pt = _agg(pg)
                 heap = pt.get("memory.usage", 0)

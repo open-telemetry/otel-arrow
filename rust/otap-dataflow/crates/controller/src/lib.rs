@@ -1526,6 +1526,7 @@ impl<
                     telemetry_registry,
                     memory_pressure_state,
                     log_tap_handle,
+                    engine_config.engine.telemetry.resource.clone(),
                     cancellation_token,
                 )
             },

@@ -37,7 +37,7 @@ test("deriveClientDeltas handles counter resets without negative spikes", () => 
   deriveClientDeltas(
     [
       {
-        name: "pipeline.metrics",
+        name: "pipeline",
         attributes: attrs,
         metrics: [{ name: "memory.allocated.delta", value: 100 }],
       },
@@ -49,7 +49,7 @@ test("deriveClientDeltas handles counter resets without negative spikes", () => 
   const afterReset = deriveClientDeltas(
     [
       {
-        name: "pipeline.metrics",
+        name: "pipeline",
         attributes: attrs,
         metrics: [{ name: "memory.allocated.delta", value: 5 }],
       },
@@ -62,7 +62,7 @@ test("deriveClientDeltas handles counter resets without negative spikes", () => 
   const recovered = deriveClientDeltas(
     [
       {
-        name: "pipeline.metrics",
+        name: "pipeline",
         attributes: attrs,
         metrics: [{ name: "memory.allocated.delta", value: 13 }],
       },

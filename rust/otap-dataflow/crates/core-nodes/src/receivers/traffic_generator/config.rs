@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Implementation of the configuration of the fake signal receiver
+//! Implementation of the traffic generator receiver configuration
 
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
@@ -284,11 +284,13 @@ impl Config {
     /// Provide a reference to the ResolvedRegistry.
     /// Returns None if data_source is Static.
     pub fn get_registry(&self) -> Result<Option<ResolvedRegistry>, String> {
+        let mut semconv_errors = Vec::new();
         match self.data_source {
             DataSource::Static => Ok(None),
             DataSource::SemanticConventions => {
-                let registry_repo = RegistryRepo::try_new("main", &self.registry_path)
-                    .map_err(|err| err.to_string())?;
+                let registry_repo =
+                    RegistryRepo::try_new(None, &self.registry_path, &mut semconv_errors)
+                        .map_err(|err| err.to_string())?;
 
                 // Load the semantic convention registry.
                 let registry = match SchemaResolver::load_semconv_repository(registry_repo, false) {

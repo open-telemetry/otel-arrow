@@ -1,0 +1,36 @@
+# Comparison dashboard manifest.
+#
+# Single source of truth for what the dashboard knows about. All paths are
+# resolved relative to this file's directory.
+#
+# Consumed by dashboard.py:
+#   - `dashboard.py validate` (manifest checks only)
+#   - `dashboard.py build`    (builds the static site)
+#   - `dashboard.py run`      (resolves which suites are runnable)
+#   - `dashboard.py serve`    (serves a built site directory)
+
+# Variables passed straight through to Jinja template rendering at the top
+# level. The scripts have no special knowledge of these keys -- add them as
+# orchestrator templates require.
+variables:
+  df_engine_image: df_engine:latest
+
+# Allowed values for every meta key a suite may declare. Validation rejects
+# any meta key not listed here, and any value (or list element) outside the
+# allowed set.
+meta:
+  binary: [dfe]
+  protocols: [otap, otlp, otlphttp]
+  signals: [logs, metrics]
+  compression: [none, gzip, zstd]
+
+# Suite definitions, listed by path. Each entry must point at an existing
+# YAML file with at least `name`, `slug`, `variables`, and `orchestrator_template`.
+suites:
+  - suites/dfe/dfe-logs-otap-none-baseline.yaml
+  - suites/dfe/dfe-logs-otap-gzip-baseline.yaml
+  - suites/dfe/dfe-logs-otap-zstd-baseline.yaml
+
+# Comparison definitions, listed by path. Each entry must point at an
+# existing YAML file with `slug` and `suites` (a list of suite refs).
+comparisons: []

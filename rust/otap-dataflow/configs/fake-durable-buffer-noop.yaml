@@ -6,7 +6,7 @@ groups:
       main:
         # Fake Data -> Durable Buffer -> Noop pipeline for throughput testing
         #
-        # This configuration uses the fake data generator to produce synthetic OTAP data,
+        # This configuration uses the traffic generator to produce synthetic OTAP data,
         # persists it through Quiver, and sends to noop exporter.
         #
         # Build with: cargo build --release

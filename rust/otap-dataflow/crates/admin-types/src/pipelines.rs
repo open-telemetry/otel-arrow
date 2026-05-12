@@ -857,7 +857,7 @@ mod tests {
                 "type": "otap",
                 "nodes": {
                     "recv": {
-                        "type": "urn:otel:receiver:fake",
+                        "type": "urn:otel:receiver:traffic_generator",
                         "config": {}
                     }
                 }
@@ -881,7 +881,7 @@ mod tests {
                 "type": "otap",
                 "nodes": {
                     "recv": {
-                        "type": "urn:otel:receiver:fake",
+                        "type": "urn:otel:receiver:traffic_generator",
                         "config": {}
                     }
                 }

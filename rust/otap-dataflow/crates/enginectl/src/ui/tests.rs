@@ -566,7 +566,7 @@ fn extract_engine_vitals_maps_cpu_rss_and_pressure() {
     let metrics = telemetry::CompactMetricsResponse {
         timestamp: "2026-01-01T00:00:00Z".to_string(),
         metric_sets: vec![telemetry::MetricSet {
-            name: "engine.metrics".to_string(),
+            name: "engine".to_string(),
             attributes: BTreeMap::new(),
             metrics: BTreeMap::from([
                 (
@@ -621,7 +621,7 @@ fn extract_engine_vitals_accepts_legacy_underscore_names() {
     let metrics = telemetry::CompactMetricsResponse {
         timestamp: "2026-01-01T00:00:00Z".to_string(),
         metric_sets: vec![telemetry::MetricSet {
-            name: "engine.metrics".to_string(),
+            name: "engine".to_string(),
             attributes: BTreeMap::new(),
             metrics: BTreeMap::from([
                 (
