@@ -921,8 +921,12 @@ fn test_end_to_end_shared_constructed_policy_mints_independent_instances() {
     // ConstructedImpl: each `start()` increments a shared counter so
     // we can confirm the factory ran per-consumer.
     #[derive(Clone)]
-    #[allow(dead_code)] // counter Arc is held to keep refcount-based debugging easy
-    struct ConstructedImpl(Arc<AtomicUsize>, &'static str);
+    struct ConstructedImpl(
+        // Held to extend the counter Arc's lifetime for refcount-based
+        // debugging; never read directly.
+        #[allow(dead_code)] Arc<AtomicUsize>,
+        &'static str,
+    );
     impl TestCapShared for ConstructedImpl {
         fn value(&self) -> &str {
             self.1
