@@ -42,7 +42,7 @@ use std::time::Duration;
 pub const TOPIC_EXPORTER_URN: &str = "urn:otel:exporter:topic";
 
 /// Telemetry metrics for the topic exporter.
-#[metric_set(name = "topic.exporter")]
+#[metric_set(name = "exporter.topic")]
 #[derive(Debug, Default, Clone)]
 pub struct TopicExporterMetrics {
     /// Number of messages published to the topic.

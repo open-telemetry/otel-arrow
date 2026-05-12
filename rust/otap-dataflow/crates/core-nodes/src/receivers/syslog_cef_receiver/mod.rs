@@ -953,7 +953,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 }
 
 /// RFC-aligned metrics for Syslog CEF receiver.
-#[metric_set(name = "syslog_cef.receiver")]
+#[metric_set(name = "receiver.syslog_cef")]
 #[derive(Debug, Default, Clone)]
 pub struct SyslogCefReceiverMetrics {
     /// Number of log records successfully forwarded downstream
