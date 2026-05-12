@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778569146033,
+  "lastUpdate": 1778605588645,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "jmacd@users.noreply.github.com",
-            "name": "Joshua MacDonald",
-            "username": "jmacd"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "1afaa2bddbff3ea3f40880dc3bb1389319c96361",
-          "message": "cargo xtask check: synchronize rust-ci.yaml and clippy settings, fix default malloc selection (#2695)\n\n# Change Summary\n\nEnables clippy in the conditional for Jemalloc in src/main.rs, with\n@sapatrjv.\n\n## What issue does this PR close?\n\nIntroduced in #2420.\n\nAdds `--all-features --workspace -- -D warnings` to the clippy step in\n`cargo xtask check`.\n\nhttps://cloud-native.slack.com/archives/C08RRSJR7FD/p1776408892537689\n\n## How are these changes tested?\n\nRan `cargo xtask clippy` on Ubuntu, not sure this actually works in\nWindows.\n\n## Are there any user-facing changes?\n\nNo",
-          "timestamp": "2026-04-17T22:10:02Z",
-          "tree_id": "c2ae98058d83346ce13cecc2fefd15cb5abf9fc8",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/1afaa2bddbff3ea3f40880dc3bb1389319c96361"
-        },
-        "date": 1776468346051,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1.8432753086090088,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 100.06698970140056,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.41421024091719,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 29.271484375,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 30.00390625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 644843.3648246033,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 656729.603209199,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003508,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 16992634.86769098,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 16999502.529401045,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 176337.87273662846,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "33842784+JakeDern@users.noreply.github.com",
+            "name": "Jake Dern",
+            "username": "JakeDern"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c35370ab3b764eb3265eefcece1900f138761f5e",
+          "message": "feat(comparison_dashboard): OTC Logs baseline suites (#2934)\n\n# Change Summary\n\nThis PR adds all of the OTC baseline logs suites for OTAP, OTLP, and\nOTLP HTTP.\n\n## What issue does this PR close?\n\n* Closes #2932\n\n## How are these changes tested?\n\nExecuted the 100k for all suites: \n\n```\n  ┌─────────────────────────────────┬────────────┬────────────┬───────┬───────┐\n  │              suite              │ produced/s │ received/s │ drop% │  dur  │\n  ├─────────────────────────────────┼────────────┼────────────┼───────┼───────┤\n  │ otc_logs_otap_gzip_baseline     │ 99,288     │ 101,901    │ -2.6  │ 20.0s │\n  ├─────────────────────────────────┼────────────┼────────────┼───────┼───────┤\n  │ otc_logs_otap_none_baseline     │ 99,360     │ 101,974    │ -2.6  │ 20.0s │\n  ├─────────────────────────────────┼────────────┼────────────┼───────┼───────┤\n  │ otc_logs_otap_zstd_baseline     │ 99,163     │ 99,163     │ 0.00  │ 20.0s │\n  ├─────────────────────────────────┼────────────┼────────────┼───────┼───────┤\n  │ otc_logs_otlp_gzip_baseline     │ 99,017     │ 99,017     │ 0.00  │ 20.0s │\n  ├─────────────────────────────────┼────────────┼────────────┼───────┼───────┤\n  │ otc_logs_otlp_none_baseline     │ 99,269     │ 99,269     │ 0.00  │ 20.0s │\n  ├─────────────────────────────────┼────────────┼────────────┼───────┼───────┤\n  │ otc_logs_otlp_zstd_baseline     │ 99,343     │ 99,343     │ 0.00  │ 20.0s │\n  ├─────────────────────────────────┼────────────┼────────────┼───────┼───────┤\n  │ otc_logs_otlphttp_none_baseline │ 99,480     │ 99,428     │ 0.05  │ 20.0s │\n  └─────────────────────────────────┴────────────┴────────────┴───────┴───────┘\n```\n\n## Are there any user-facing changes?\n\nNone.\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
+          "timestamp": "2026-05-12T15:30:01Z",
+          "tree_id": "e80876f179a9400bb87392c53908e21d442a6927",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c35370ab3b764eb3265eefcece1900f138761f5e"
+        },
+        "date": 1778605588206,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1100,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 5.78365026171154,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 6.3462392108508014,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 16.863020833333334,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.05078125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 503.4141773484418,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 6040.970128181301,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.006256,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 213810.102919456,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 175855.20895237048,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
