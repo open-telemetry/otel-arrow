@@ -164,7 +164,7 @@ def cmd_run(args) -> int:
     suite_paths = resolve_suites_from_manifest_obj(args.suites, manifest)
     total = len(suite_paths)
 
-    publish_dir = (args.publish_dir or DEFAULT_DATA_DIR).resolve()
+    publish_dir = (args.data_dir or DEFAULT_DATA_DIR).resolve()
 
     print(f"Resolved {total} suite(s):")
     for p in suite_paths:
@@ -541,8 +541,8 @@ def resolve_build_paths(args, manifest: Manifest) -> BuildPaths:
     data_dir = (args.data_dir or (site_root / DEFAULT_DATA_SUBDIR)).resolve()
     compare_dir = (args.compare_dir or (site_root / DEFAULT_COMPARE_SUBDIR)).resolve()
 
-    # data_dir and compare_dir must live inside site_root so the generated
-    # relative paths in HTML resolve correctly when the site is served.
+    # data_dir and compare_dir must live inside site_root so that a single
+    # `dashboard.py serve <site_root>` can serve the entire generated site.
     for name, path in (("--data-dir", data_dir), ("--compare-dir", compare_dir)):
         if not path.is_relative_to(site_root):
             print(
@@ -971,10 +971,19 @@ def generate_suite_data_js(suites: dict, paths: BuildPaths) -> None:
         print(f"  Generated {data_js_path}")
 
 
+def _url_relpath(target: Path, start: Path) -> str:
+    """
+    Like os.path.relpath, but always returns POSIX-style separators so the
+    result is usable as a URL inside generated HTML/JS even when build runs
+    on a non-POSIX OS.
+    """
+    return Path(os.path.relpath(target, start)).as_posix()
+
+
 def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> None:
     """Generate <compare_dir>/index.html with comparison sections."""
-    shared_rel = os.path.relpath(paths.shared_dst, paths.compare_dir)
-    data_rel = os.path.relpath(paths.data_dir, paths.compare_dir)
+    shared_rel = _url_relpath(paths.shared_dst, paths.compare_dir)
+    data_rel = _url_relpath(paths.data_dir, paths.compare_dir)
 
     referenced_slugs = set()
     for comp in comparisons:
@@ -1048,8 +1057,8 @@ def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths) -
     # Per-comparison pages are all siblings under compare_dir, so the
     # relpaths to shared/ and data/ are identical for every slug.
     sample_stub = paths.compare_page_dir("_")
-    shared_rel = os.path.relpath(paths.shared_dst, sample_stub)
-    data_rel = os.path.relpath(paths.data_dir, sample_stub)
+    shared_rel = _url_relpath(paths.shared_dst, sample_stub)
+    data_rel = _url_relpath(paths.data_dir, sample_stub)
 
     for comp in comparisons:
         comp_slug = comp["slug"]
@@ -1220,11 +1229,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Remove all old staging directories in .data/ before running.",
     )
     p_run.add_argument(
-        "--publish-dir", type=Path, default=None,
+        "--data-dir", type=Path, default=None,
         help=(
             "Directory to publish per-test results into "
             f"(default: {DEFAULT_DATA_DIR}). Results land at "
-            "<publish-dir>/suite/<slug>/<test>/."
+            "<data-dir>/suite/<slug>/<test>/."
         ),
     )
     p_run.set_defaults(func=cmd_run)

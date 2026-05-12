@@ -16,7 +16,13 @@
 // data root (e.g. `../data/suite` for a landing page sitting at
 // `compare/index.html` with data under `data/suite/`). Per-suite test
 // files live at `${DATA_PATH}/<slug>/<test>/<file>`.
-const DATA_PATH = window.DATA_PATH || "";
+const DATA_PATH = window.DATA_PATH;
+if (!DATA_PATH) {
+  console.warn(
+    "window.DATA_PATH not set; file viewer fetches will fail. " +
+    "This page should be served alongside the build-generated index/stub HTML."
+  );
+}
 
 // ── Metric display config ──────────────────────────────────────────────────
 
