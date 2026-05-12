@@ -33,7 +33,8 @@ jobs:
       - name: Dispatch publish workflow on main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # FIXME: change the ref to main
         run: |
           gh workflow run comparison-dashboard.yml \
             --repo "${{ github.repository }}" \
-            --ref main
+            --ref comparison-dashboard-gh-pages
