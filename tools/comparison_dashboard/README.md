@@ -46,14 +46,19 @@ truth. It declares:
 
 ## Setup
 
-The dashboard reuses the orchestrator's Python environment. Set it up once from
-the repo root:
+From the repo root:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
+pip install -r tools/comparison_dashboard/requirements.txt
+# Only needed if you want to use `dashboard.py run` (which spawns the orchestrator):
 pip install -r tools/pipeline_perf_test/orchestrator/requirements.txt
 ```
+
+The dashboard's own deps (`pyyaml`, `jinja2`) are sufficient for `validate`,
+`build`, and `serve`. The orchestrator deps are only needed for `run` because
+that subcommand invokes the orchestrator as a subprocess in the same env.
 
 Run all `dashboard.py` commands from `tools/comparison_dashboard/` with that
 environment active.

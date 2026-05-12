@@ -7,9 +7,7 @@
 #   - `dashboard.py validate` (manifest checks only)
 #   - `dashboard.py build`    (builds the static site)
 #   - `dashboard.py run`      (resolves which suites are runnable)
-#   - `dashboard.py serve`    (locates the site root)
-
-site_root: site
+#   - `dashboard.py serve`    (serves a built site directory)
 
 # Variables passed straight through to Jinja template rendering at the top
 # level. The scripts have no special knowledge of these keys -- add them as
@@ -20,7 +18,11 @@ variables:
 # Allowed values for every meta key a suite may declare. Validation rejects
 # any meta key not listed here, and any value (or list element) outside the
 # allowed set.
-meta: {}
+meta:
+  binary: [dfe]
+  protocols: [otap, otlp, otlphttp]
+  signals: [logs, metrics]
+  compression: [none, gzip, zstd]
 
 # Suite definitions, listed by path. Each entry must point at an existing
 # YAML file with at least `name`, `slug`, `variables`, and `orchestrator_template`.
