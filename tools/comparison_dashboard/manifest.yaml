@@ -31,6 +31,12 @@ suites:
   - suites/dfe/dfe-logs-otap-none-baseline.yaml
   - suites/dfe/dfe-logs-otap-gzip-baseline.yaml
   - suites/dfe/dfe-logs-otap-zstd-baseline.yaml
+  - suites/dfe/dfe-logs-otlp-none-baseline.yaml
+  - suites/dfe/dfe-logs-otlp-gzip-baseline.yaml
+  - suites/dfe/dfe-logs-otlp-zstd-baseline.yaml
+  - suites/dfe/dfe-logs-otlphttp-none-baseline.yaml
+  - suites/dfe/dfe-logs-otlphttp-gzip-baseline.yaml
+  - suites/dfe/dfe-logs-otlphttp-zstd-baseline.yaml
   - suites/otc/otc-logs-otap-none-baseline.yaml
   - suites/otc/otc-logs-otap-gzip-baseline.yaml
   - suites/otc/otc-logs-otap-zstd-baseline.yaml
@@ -41,4 +47,5 @@ suites:
 
 # Comparison definitions, listed by path. Each entry must point at an
 # existing YAML file with `slug` and `suites` (a list of suite refs).
-comparisons: []
+comparisons:
+  - comparisons/dfe_baselines.yaml
