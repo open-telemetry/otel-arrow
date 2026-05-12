@@ -481,10 +481,6 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
         })?;
         let mut scheduler = FamilyScheduler::new(&config, Instant::now());
 
-        let _ = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         loop {
             tokio::select! {
                 biased;
