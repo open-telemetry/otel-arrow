@@ -20,7 +20,7 @@ pub enum PipelinePhase {
     Starting,
     /// The pipeline is currently running and actively processing telemetry data.
     Running,
-    /// A graceful stop has been requested. Ingress is quiescing and in-flight
+    /// A graceful stop has been requested. Ingress is draining and in-flight
     /// data is draining, possibly with a deadline.
     Draining,
     /// The pipeline has been stopped.

@@ -194,6 +194,12 @@ impl PipelineRuntimeStatus {
                     );
                 }
             }
+            EventType::Success(
+                OkEv::IngressDrainStarted
+                | OkEv::ReceiversDrained
+                | OkEv::DownstreamShutdownStarted,
+            )
+            | EventType::Error(ErrEv::DrainDeadlineReached) => {}
             EventType::Error(err) => {
                 let (reason, message) = error_reason_and_message(err, event);
                 _ = self.ready_condition.update(
@@ -263,22 +269,31 @@ impl PipelineRuntimeStatus {
         }
     }
 
+    /// Returns the current Accepted condition for this runtime instance.
     #[must_use]
-    pub(crate) const fn accepted_condition(&self) -> &ConditionState {
+    pub const fn accepted_condition(&self) -> &ConditionState {
         &self.accepted_condition
     }
 
     #[must_use]
-    pub(crate) const fn ready_condition(&self) -> &ConditionState {
+    /// Returns the current Ready condition for this runtime instance.
+    pub const fn ready_condition(&self) -> &ConditionState {
         &self.ready_condition
     }
 
     #[must_use]
-    pub(crate) fn conditions(&self) -> [Condition; 2] {
+    /// Returns the serialized condition pair for this runtime instance.
+    pub fn conditions(&self) -> [Condition; 2] {
         [
             Condition::from_state(ConditionKind::Accepted, &self.accepted_condition),
             Condition::from_state(ConditionKind::Ready, &self.ready_condition),
         ]
+    }
+
+    /// Returns the current phase for this runtime instance.
+    #[must_use]
+    pub const fn phase(&self) -> PipelinePhase {
+        self.phase
     }
 
     /// Apply a single observed event to this pipeline.
@@ -376,6 +391,9 @@ impl PipelineRuntimeStatus {
             (PipelinePhase::Draining, EventType::Error(ErrEv::DrainError(_))) => {
                 self.goto(PipelinePhase::Failed(FailReason::DrainError))
             }
+            (PipelinePhase::Draining, EventType::Error(ErrEv::RuntimeError(_))) => {
+                self.goto(PipelinePhase::Failed(FailReason::RuntimeError))
+            }
             (PipelinePhase::Draining, EventType::Request(Req::DeleteRequested)) => {
                 if !self.delete_pending {
                     self.delete_pending = true;
@@ -447,6 +465,14 @@ impl PipelineRuntimeStatus {
             | (PipelinePhase::Running, EventType::Success(OkEv::Ready))
             | (PipelinePhase::Updating, EventType::Success(OkEv::UpdateAdmitted))
             | (PipelinePhase::RollingBack, EventType::Error(ErrEv::UpdateFailed(_)))
+            | (PipelinePhase::Starting, EventType::Success(OkEv::IngressDrainStarted))
+            | (PipelinePhase::Running, EventType::Success(OkEv::IngressDrainStarted))
+            | (PipelinePhase::Updating, EventType::Success(OkEv::IngressDrainStarted))
+            | (PipelinePhase::RollingBack, EventType::Success(OkEv::IngressDrainStarted))
+            | (PipelinePhase::Draining, EventType::Success(OkEv::IngressDrainStarted))
+            | (PipelinePhase::Draining, EventType::Success(OkEv::ReceiversDrained))
+            | (PipelinePhase::Draining, EventType::Success(OkEv::DownstreamShutdownStarted))
+            | (PipelinePhase::Draining, EventType::Error(ErrEv::DrainDeadlineReached))
             | (PipelinePhase::Draining, EventType::Request(Req::ShutdownRequested))
             | (PipelinePhase::Stopped, EventType::Success(OkEv::Drained)) => ApplyOutcome::NoChange,
 
@@ -522,6 +548,7 @@ fn error_reason_and_message(err: &ErrEv, event: &EngineEvent) -> (ConditionReaso
         ErrEv::UpdateFailed(_) => ConditionReason::UpdateFailed,
         ErrEv::RollbackFailed(_) => ConditionReason::RollbackFailed,
         ErrEv::DrainError(_) => ConditionReason::DrainError,
+        ErrEv::DrainDeadlineReached => ConditionReason::DrainError,
         ErrEv::RuntimeError(_) => ConditionReason::RuntimeError,
         ErrEv::DeleteError(_) => ConditionReason::DeleteError,
     };
@@ -534,6 +561,10 @@ fn error_reason_and_message(err: &ErrEv, event: &EngineEvent) -> (ConditionReaso
         | ErrEv::DrainError(summary)
         | ErrEv::RuntimeError(summary)
         | ErrEv::DeleteError(summary) => summary_message(summary),
+        ErrEv::DrainDeadlineReached => event
+            .message
+            .clone()
+            .or_else(|| Some("Drain deadline reached before natural completion.".to_string())),
     });
 
     (reason, message)
@@ -659,6 +690,29 @@ mod tests {
             )))
             .unwrap();
         assert_eq!(p2.phase, PipelinePhase::Failed(FailReason::DeleteError));
+    }
+
+    #[test]
+    fn draining_runtime_error_becomes_terminal_failure() {
+        let mut p = PipelineRuntimeStatus::default();
+        p.apply_many([
+            EventType::Success(OkEv::Admitted),
+            EventType::Success(OkEv::Ready),
+            EventType::Request(Req::ShutdownRequested),
+        ])
+        .unwrap();
+
+        _ = p
+            .apply(EventType::Error(ErrEv::RuntimeError(
+                ErrorSummary::Pipeline {
+                    error_kind: "".to_string(),
+                    message: "late send failed during shutdown".to_string(),
+                    source: None,
+                },
+            )))
+            .unwrap();
+
+        assert_eq!(p.phase, PipelinePhase::Failed(FailReason::RuntimeError));
     }
 
     #[test]

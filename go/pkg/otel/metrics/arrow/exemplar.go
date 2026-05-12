@@ -25,13 +25,13 @@ import (
 var (
 	// ExemplarSchema is the Arrow schema representing an OTLP metric exemplar.
 	ExemplarSchema = arrow.NewSchema([]arrow.Field{
-		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding)},
+		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding), Nullable: true},
 		{Name: constants.ParentID, Type: arrow.PrimitiveTypes.Uint32},
-		{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
-		{Name: constants.IntValue, Type: arrow.PrimitiveTypes.Int64, Metadata: schema.Metadata(schema.Optional)},
-		{Name: constants.DoubleValue, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
-		{Name: constants.SpanId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 8}, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		{Name: constants.TraceId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 16}, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
+		{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
+		{Name: constants.IntValue, Type: arrow.PrimitiveTypes.Int64, Metadata: schema.Metadata(schema.Optional), Nullable: true},
+		{Name: constants.DoubleValue, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional), Nullable: true},
+		{Name: constants.SpanId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 8}, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8), Nullable: true},
+		{Name: constants.TraceId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 16}, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8), Nullable: true},
 	}, nil)
 )
 

@@ -81,8 +81,8 @@ pub fn concatenate<const N: usize>(
     }
 
     if items.len() == 1 {
-        for i in 0..N {
-            result[i] = items[0][i].take();
+        for (i, item) in result.iter_mut().enumerate().take(N) {
+            *item = items[0][i].take();
         }
         return Ok(result);
     }
@@ -161,7 +161,7 @@ fn concatenate_with_def<const N: usize>(
     Ok(result)
 }
 
-/// Convert the columns from one schema to another. The arguments deal in in
+/// Convert the columns from one schema to another. The arguments deal in
 /// fields and columns rather than schemas and record batches so that this
 /// code can work with either struct arrays or record batches.
 fn convert(

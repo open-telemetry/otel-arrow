@@ -5,6 +5,7 @@ use arc_swap::ArcSwap;
 use base64::prelude::*;
 use futures::{Stream, StreamExt};
 use notify::{Event, RecursiveMode, Watcher};
+use otap_df_config::tls::TlsClientConfig;
 use otap_df_config::tls::TlsServerConfig;
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use rustls::RootCertStore;
@@ -25,16 +26,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
-use tonic::transport::{Identity, ServerTlsConfig};
-
-#[cfg(feature = "experimental-tls")]
 use tokio::sync::OnceCell;
-
-#[cfg(feature = "experimental-tls")]
-use otap_df_config::tls::TlsClientConfig;
-
-#[cfg(feature = "experimental-tls")]
 use tonic::transport::{Certificate, ClientTlsConfig};
+use tonic::transport::{Identity, ServerTlsConfig};
 
 /// Maximum allowed size for TLS certificate and key files (4MB).
 /// This limit is chosen to be generous enough for typical certificate chains (which are usually < 10KB)
@@ -173,7 +167,6 @@ pub async fn load_server_tls_config(
 ///   with tonic's transport layer)
 ///
 /// Consider implementing certificate hot reload if this becomes an operational requirement.
-#[cfg(feature = "experimental-tls")]
 pub(crate) async fn load_client_tls_config(
     config: Option<&TlsClientConfig>,
     endpoint_uri: &str,
@@ -325,7 +318,6 @@ pub(crate) async fn load_client_tls_config(
     Ok(Some(tls))
 }
 
-#[cfg(feature = "experimental-tls")]
 async fn add_system_trust_anchors_if_enabled(
     tls: ClientTlsConfig,
     include_system: bool,
@@ -1282,9 +1274,18 @@ fn get_file_identity(path: &Path) -> Result<u64, io::Error> {
     Ok(metadata.ino())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn get_file_identity(path: &Path) -> Result<u64, io::Error> {
-    // On non-Unix platforms, fall back to mtime
+    // On Windows, use last_write_time() which has 100-nanosecond precision (FILETIME),
+    // unlike get_mtime() which truncates to seconds and can miss rapid file replacements.
+    use std::os::windows::fs::MetadataExt;
+    let metadata = std::fs::metadata(path)?;
+    Ok(metadata.last_write_time())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn get_file_identity(path: &Path) -> Result<u64, io::Error> {
+    // On other platforms, fall back to mtime
     get_mtime(path)
 }
 
@@ -1665,7 +1666,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_lazy_reload_resolver() {
         crate::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -1704,11 +1705,19 @@ mod tests {
         let reloaded = resolver.check_and_reload_if_interval_expired();
         assert!(!reloaded, "Async reload returns false immediately");
 
-        // 6. Wait for async reload to complete
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let new_cert = resolver.current_cert_key();
-        assert_ne!(initial_cert.cert, new_cert.cert, "Cert should have changed");
+        // 6. Poll for async reload to complete (avoids flaky fixed-duration sleep)
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let new_cert = resolver.current_cert_key();
+            if initial_cert.cert != new_cert.cert {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "Cert should have changed within 5s timeout"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
 
         // 7. Trigger again immediately - should not reload (interval not expired)
         let reloaded_again = resolver.check_and_reload_if_interval_expired();
@@ -1818,9 +1827,7 @@ mod tests {
         assert!(result.unwrap().is_some());
     }
 
-    // Skipping on macOS due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[tokio::test]
-    #[cfg_attr(target_os = "macos", ignore = "Skipping on macOS due to flakiness")]
     async fn test_reloadable_client_ca_verifier_file_watch() {
         crate::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -1855,12 +1862,7 @@ mod tests {
         assert!(verifier.client_auth_mandatory());
     }
 
-    // Skipping on Windows and macOS due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[tokio::test]
-    #[cfg_attr(
-        any(target_os = "windows", target_os = "macos"),
-        ignore = "Skipping on Windows and macOS due to flakiness"
-    )]
     async fn test_reloadable_client_ca_verifier_from_pem() {
         crate::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -1878,12 +1880,7 @@ mod tests {
         assert!(verifier.client_auth_mandatory());
     }
 
-    // Skipping on Windows and macOS due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[tokio::test]
-    #[cfg_attr(
-        any(target_os = "windows", target_os = "macos"),
-        ignore = "Skipping on Windows and macOS due to flakiness"
-    )]
     async fn test_build_reloadable_server_config_with_mtls() {
         crate::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");

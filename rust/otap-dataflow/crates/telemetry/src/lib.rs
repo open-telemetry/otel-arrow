@@ -45,6 +45,8 @@ pub mod event;
 pub mod instrument;
 /// Internal logs/events module for engine.
 pub mod internal_events;
+/// Internal log tap for admin-side log queries.
+pub mod log_tap;
 pub mod metrics;
 /// OpenTelemetry SDK provider configuration.
 pub mod otel_sdk;
@@ -57,6 +59,50 @@ pub mod tracing_init;
 
 // Re-export tracing setup types for per-thread subscriber configuration.
 pub use tracing_init::TracingSetup;
+
+#[cfg(test)]
+#[allow(unsafe_code)] // std::env mutation is synchronized and restored for test isolation.
+/// Runs a test closure with `RUST_LOG` temporarily cleared so tracing setup tests
+/// are not influenced by the developer's ambient shell configuration.
+///
+/// The helper serializes access because `RUST_LOG` is process-global and restores
+/// the previous value even if the closure panics.
+pub(crate) fn with_cleared_rust_log<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R + std::panic::UnwindSafe,
+{
+    use std::env;
+    use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+    use std::sync::{Mutex, OnceLock};
+
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+
+    let _guard = GUARD
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let previous = env::var_os("RUST_LOG");
+    unsafe {
+        env::remove_var("RUST_LOG");
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(f));
+
+    match previous {
+        Some(value) => unsafe {
+            env::set_var("RUST_LOG", value);
+        },
+        None => unsafe {
+            env::remove_var("RUST_LOG");
+        },
+    }
+
+    match result {
+        Ok(value) => value,
+        Err(payload) => resume_unwind(payload),
+    }
+}
 
 // Re-export _private module from internal_events for macro usage.
 // This allows the otel_info!, otel_warn!, etc. macros to work in other crates
@@ -97,6 +143,8 @@ pub struct InternalTelemetrySettings {
     pub resource_bytes: bytes::Bytes,
     /// Handle to the telemetry registry for looking up entity attributes.
     pub registry: TelemetryRegistryHandle,
+    /// Optional retained-log sink shared with admin consumers.
+    pub log_tap: Option<log_tap::InternalLogTapHandle>,
 }
 
 impl std::fmt::Debug for InternalTelemetrySettings {
@@ -157,6 +205,9 @@ pub struct InternalTelemetrySystem {
     /// Event reporter for ITS mode (Internal Telemetry System).
     its_reporter: Option<ObservedEventReporter>,
 
+    /// Optional handle for querying retained internal logs.
+    log_tap_handle: Option<log_tap::InternalLogTapHandle>,
+
     /// Internal telemetry pipeline setup.
     its_settings: Option<InternalTelemetrySettings>,
 }
@@ -183,7 +234,9 @@ impl InternalTelemetrySystem {
         config: &TelemetryConfig,
         telemetry_registry: TelemetryRegistryHandle,
         console_async_reporter: Option<ObservedEventReporter>,
+        logging_send_policy: SendPolicy,
         context_fn: LogContextFn,
+        log_tap_handle: Option<log_tap::InternalLogTapHandle>,
     ) -> Result<Self, Error> {
         // Validate logs config
         config
@@ -208,7 +261,12 @@ impl InternalTelemetrySystem {
         // 3. Create ITS channel if any provider uses ITS mode
         let (its_reporter, its_settings) = if config.logs.providers.uses_its_provider() {
             let (sender, logs_receiver) = flume::bounded(config.reporting_channel_size);
-            let reporter = ObservedEventReporter::new(SendPolicy::default(), sender);
+            let reporter = if let Some(log_tap) = &log_tap_handle {
+                ObservedEventReporter::new(logging_send_policy.clone(), sender)
+                    .with_drop_counter(log_tap.ingest_drop_counter())
+            } else {
+                ObservedEventReporter::new(logging_send_policy.clone(), sender)
+            };
             let resource_bytes = otel_sdk::encode_resource_bytes(&config.resource);
             (
                 Some(reporter),
@@ -216,6 +274,7 @@ impl InternalTelemetrySystem {
                     logs_receiver,
                     resource_bytes,
                     registry: telemetry_registry.clone(),
+                    log_tap: log_tap_handle.clone(),
                 }),
             )
         } else {
@@ -234,6 +293,7 @@ impl InternalTelemetrySystem {
             context_fn,
             console_async_reporter,
             its_reporter,
+            log_tap_handle,
             its_settings,
         })
     }
@@ -304,6 +364,19 @@ impl InternalTelemetrySystem {
         self.its_settings.clone()
     }
 
+    /// Returns a shareable handle to the internal log tap, if enabled.
+    #[must_use]
+    pub fn log_tap_handle(&self) -> Option<log_tap::InternalLogTapHandle> {
+        self.log_tap_handle.clone()
+    }
+
+    /// Test-only accessor for the ITS reporter, used to verify that the
+    /// configured logging send policy is threaded through during construction.
+    #[cfg(test)]
+    pub(crate) fn its_reporter(&self) -> Option<&ObservedEventReporter> {
+        self.its_reporter.as_ref()
+    }
+
     /// Returns the configured log level.
     #[must_use]
     pub const fn log_level(&self) -> &LogLevel {
@@ -358,7 +431,9 @@ impl Default for InternalTelemetrySystem {
             &config,
             TelemetryRegistryHandle::new(),
             Some(dummy_reporter),
+            SendPolicy::default(),
             LogContext::new,
+            None,
         )
         .expect("default telemetry config should be valid")
     }
@@ -370,13 +445,16 @@ mod tests {
     use otap_df_config::pipeline::telemetry::{
         AttributeValue::I64 as OTelI64, AttributeValue::String as OTelString,
     };
-    use otap_df_config::settings::telemetry::logs::{LoggingProviders, LogsConfig, ProviderMode};
+    use otap_df_config::settings::telemetry::logs::{
+        InternalLogTapConfig, LoggingProviders, LogsConfig, ProviderMode,
+    };
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
     use otap_df_pdata::proto::opentelemetry::logs::{v1::LogsData, v1::ResourceLogs};
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use prost::Message;
+    use std::time::Duration;
 
     fn test_reporter() -> ObservedEventReporter {
         let (sender, _receiver) = flume::bounded(16);
@@ -395,49 +473,124 @@ mod tests {
 
     #[test]
     fn its_receiver_presence_depends_on_provider_mode() {
-        // Default (no ITS) -> no receiver
-        let its = InternalTelemetrySystem::new(
-            &TelemetryConfig::default(),
-            TelemetryRegistryHandle::new(),
-            Some(test_reporter()),
-            LogContext::new,
-        )
-        .expect("should create");
-        assert!(
-            its.internal_telemetry_settings().is_none(),
-            "no ITS mode -> no receiver"
-        );
+        with_cleared_rust_log(|| {
+            // Default (no ITS) -> no receiver
+            let its = InternalTelemetrySystem::new(
+                &TelemetryConfig::default(),
+                TelemetryRegistryHandle::new(),
+                Some(test_reporter()),
+                SendPolicy::default(),
+                LogContext::new,
+                None,
+            )
+            .expect("should create");
+            assert!(
+                its.internal_telemetry_settings().is_none(),
+                "no ITS mode -> no receiver"
+            );
 
-        // ITS mode on engine -> receiver present and receives logs
-        let providers = LoggingProviders {
-            global: ProviderMode::Noop,
-            engine: ProviderMode::ITS,
-            internal: ProviderMode::Noop,
-            admin: ProviderMode::Noop,
-        };
-        let its = InternalTelemetrySystem::new(
-            &config_with_providers(providers),
-            TelemetryRegistryHandle::new(),
-            Some(test_reporter()),
-            LogContext::new,
-        )
-        .expect("should create");
-        let its_settings = its.internal_telemetry_settings();
-        let rx = its_settings
-            .expect("ITS mode should provide receiver")
-            .logs_receiver;
-        assert!(rx.is_empty(), "receiver starts empty");
+            // ITS mode on engine -> receiver present and receives logs
+            let providers = LoggingProviders {
+                global: ProviderMode::Noop,
+                engine: ProviderMode::ITS,
+                internal: ProviderMode::Noop,
+                admin: ProviderMode::Noop,
+            };
+            let its = InternalTelemetrySystem::new(
+                &config_with_providers(providers),
+                TelemetryRegistryHandle::new(),
+                Some(test_reporter()),
+                SendPolicy::default(),
+                LogContext::new,
+                None,
+            )
+            .expect("should create");
+            let its_settings = its.internal_telemetry_settings();
+            let rx = its_settings
+                .expect("ITS mode should provide receiver")
+                .logs_receiver;
+            assert!(rx.is_empty(), "receiver starts empty");
 
-        // Emit a log using the engine tracing setup (which uses ITS)
-        its.engine_tracing_setup().with_subscriber(|| {
-            crate::otel_info!("test log message");
+            // Emit a log using the engine tracing setup (which uses ITS)
+            its.engine_tracing_setup().with_subscriber_ignoring_env(|| {
+                crate::otel_info!("test log message");
+            });
+
+            // Receiver should have the log
+            let recv = rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("receiver should have log after emit");
+            assert!(matches!(recv, ObservedEvent::Log(_)));
+            let text = recv.to_string();
+            assert!(text.contains("test log message"), "log message is {}", text);
         });
+    }
 
-        // Receiver should have the log
-        let recv = rx.recv().expect("receiver should have log after emit");
-        assert!(matches!(recv, ObservedEvent::Log(_)));
-        let text = recv.to_string();
-        assert!(text.contains("test log message"), "log message is {}", text);
+    #[test]
+    fn its_reporter_honors_configured_logging_send_policy() {
+        // Verifies the fix that threads `engine.observed_state.logging_events`
+        // through to the ITS reporter, covering both code paths:
+        //   1. log_tap_handle: None
+        //   2. log_tap_handle: Some(_)  (sets the drop counter on the reporter)
+        //
+        // Before the fix, both paths constructed the ITS reporter with
+        // `SendPolicy::default()` (which has `console_fallback: true`),
+        // so a user-provided `console_fallback: false` was silently ignored.
+        with_cleared_rust_log(|| {
+            let providers = LoggingProviders {
+                global: ProviderMode::Noop,
+                engine: ProviderMode::ITS,
+                internal: ProviderMode::Noop,
+                admin: ProviderMode::Noop,
+            };
+            let custom_policy = SendPolicy {
+                blocking_timeout: Some(Duration::from_millis(7)),
+                console_fallback: false,
+            };
+
+            // Case 1: no log tap handle.
+            let its = InternalTelemetrySystem::new(
+                &config_with_providers(providers.clone()),
+                TelemetryRegistryHandle::new(),
+                Some(test_reporter()),
+                custom_policy.clone(),
+                LogContext::new,
+                None,
+            )
+            .expect("should create");
+            let policy = its
+                .its_reporter()
+                .expect("ITS provider configured")
+                .policy();
+            assert_eq!(
+                policy, &custom_policy,
+                "ITS reporter (no log tap) must use configured logging_events policy"
+            );
+
+            // Case 2: with a log tap handle (reporter additionally gets the drop counter).
+            let log_tap = log_tap::build(&InternalLogTapConfig {
+                enabled: true,
+                max_entries: 1,
+                max_bytes: usize::MAX,
+            });
+            let its = InternalTelemetrySystem::new(
+                &config_with_providers(providers),
+                TelemetryRegistryHandle::new(),
+                Some(test_reporter()),
+                custom_policy.clone(),
+                LogContext::new,
+                Some(log_tap),
+            )
+            .expect("should create");
+            let policy = its
+                .its_reporter()
+                .expect("ITS provider configured")
+                .policy();
+            assert_eq!(
+                policy, &custom_policy,
+                "ITS reporter (with log tap) must use configured logging_events policy"
+            );
+        });
     }
 
     #[test]
@@ -456,7 +609,9 @@ mod tests {
             &config,
             TelemetryRegistryHandle::new(),
             Some(test_reporter()),
+            SendPolicy::default(),
             LogContext::new,
+            None,
         )
         .expect("should create");
 

@@ -111,12 +111,12 @@ impl ArrowRecordsBuilder {
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
 
         // append logs record
-        otap_batch.set(ArrowPayloadType::Logs, self.logs.finish()?);
+        otap_batch.set(ArrowPayloadType::Logs, self.logs.finish()?)?;
 
         // append log attrs record batch if there is one
         let log_attrs_rb = self.log_attrs.finish()?;
         if log_attrs_rb.num_rows() > 0 {
-            otap_batch.set(ArrowPayloadType::LogAttrs, log_attrs_rb);
+            otap_batch.set(ArrowPayloadType::LogAttrs, log_attrs_rb)?;
         }
 
         Ok(otap_batch)
@@ -179,7 +179,7 @@ mod tests {
 
     fn otap_logs_to_otlp(mut logs_otap_batch: OtapArrowRecords) -> ExportLogsServiceRequest {
         let mut logs_encoder = LogsProtoBytesEncoder::new();
-        let mut buffer = ProtoBuffer::new();
+        let mut buffer = ProtoBuffer::default();
         logs_encoder
             .encode(&mut logs_otap_batch, &mut buffer)
             .unwrap();

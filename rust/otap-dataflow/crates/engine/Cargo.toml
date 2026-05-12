@@ -14,21 +14,20 @@ workspace = true
 
 [features]
 testing = []
-jemalloc = ["dep:tikv-jemalloc-ctl"]
+jemalloc = ["dep:tikv-jemalloc-ctl", "dep:tikv-jemalloc-sys"]
 jemalloc-testing = ["jemalloc"]
 test-utils = []
 
 [dependencies]
-otap-df-channel = { path = "../channel" }
-otap-df-pdata = { path = "../pdata" }
-otap-df-config = { path = "../config" }
-otap-df-state = { path = "../state" }
-otap-df-telemetry = { path = "../telemetry" }
-otap-df-telemetry-macros = { path = "../telemetry-macros" }
+otap-df-channel = { workspace = true }
+otap-df-pdata = { workspace = true }
+otap-df-config = { workspace = true }
+otap-df-state = { workspace = true }
+otap-df-telemetry = { workspace = true }
+otap-df-telemetry-macros = { workspace = true }
 
 thiserror = { workspace = true }
 serde_json = { workspace = true }
-serde = { workspace = true }
 tokio = { workspace = true }
 linkme = { workspace = true }
 async-trait = { workspace = true }
@@ -36,14 +35,11 @@ futures = { workspace = true }
 flume = { workspace = true }
 bitflags = { workspace = true }
 bytemuck = { workspace = true }
-bytes = { workspace = true }
 smallvec = { workspace = true }
 socket2 = { workspace = true }
 uuid = { workspace = true }
-once_cell = { workspace = true }
 data-encoding = { workspace = true }
 prost = { workspace = true }
-byte-unit = { workspace = true }
 cpu-time = { workspace = true }
 memory-stats = { workspace = true }
 nix = { workspace = true, features = ["resource"] }
@@ -53,9 +49,10 @@ async-channel = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemalloc-ctl = { workspace = true, optional = true }
+tikv-jemalloc-sys = { workspace = true, optional = true }
 
 [dev-dependencies]
-otap-df-engine = { path = ".", features = ["test-utils"] }
+otap-df-engine = { workspace = true, features = ["test-utils"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }

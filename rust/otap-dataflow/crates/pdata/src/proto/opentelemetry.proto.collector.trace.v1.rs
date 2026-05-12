@@ -3,23 +3,23 @@
 #[derive(crate::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExportTraceServiceRequest {
-    #[prost(message, repeated, tag="1")]
+    #[prost(message, repeated, tag = "1")]
     pub resource_spans: ::prost::alloc::vec::Vec<super::super::super::trace::v1::ResourceSpans>,
 }
 #[crate::otlp::qualified("opentelemetry.proto.collector.trace.v1.ExportTraceServiceResponse")]
 #[derive(crate::otlp::Message)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExportTraceServiceResponse {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub partial_success: ::core::option::Option<ExportTracePartialSuccess>,
 }
 #[crate::otlp::qualified("opentelemetry.proto.collector.trace.v1.ExportTracePartialSuccess")]
 #[derive(crate::otlp::Message)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExportTracePartialSuccess {
-    #[prost(int64, tag="1")]
+    #[prost(int64, tag = "1")]
     pub rejected_spans: i64,
-    #[prost(string, tag="2")]
+    #[prost(string, tag = "2")]
     pub error_message: ::prost::alloc::string::String,
 }
 /// Generated client implementations.

@@ -30,23 +30,26 @@ Each component lives in its own subfolder within a category:
         durable_buffer_processor/
         fanout_processor/
         filter_processor/
+        log_sampling_processor/
         retry_processor/
+        temporal_reaggregation_processor/
         signal_type_router/
         transform_processor/
       receivers/
         mod.rs (category exports)
-        fake_data_generator/
         internal_telemetry_receiver/
         otap_receiver/
         otlp_receiver/
         syslog_cef_receiver/
         topic_receiver/
+        traffic_generator/
       lib.rs
 
 ## Components
 
 ### Exporters
 
+<!-- markdownlint-disable MD013 -->
 | Node | URN | Module |
 | ---- | --- | ------ |
 | console_exporter | `urn:otel:exporter:console` | `src/exporters/console_exporter/` |
@@ -58,6 +61,7 @@ Each component lives in its own subfolder within a category:
 | parquet_exporter | `urn:otel:exporter:parquet` | `src/exporters/parquet_exporter/` |
 | perf_exporter | `urn:otel:exporter:perf` | `src/exporters/perf_exporter/` |
 | topic_exporter | `urn:otel:exporter:topic` | `src/exporters/topic_exporter/` |
+<!-- markdownlint-enable MD013 -->
 
 #### console_exporter
 
@@ -113,6 +117,7 @@ Each component lives in its own subfolder within a category:
 
 ### Processors
 
+<!-- markdownlint-disable MD013 -->
 | Node | URN | Module |
 | ---- | --- | ------ |
 | attributes_processor | `urn:otel:processor:attribute` | `src/processors/attributes_processor/` |
@@ -123,9 +128,12 @@ Each component lives in its own subfolder within a category:
 | durable_buffer_processor | `urn:otel:processor:durable_buffer` | `src/processors/durable_buffer_processor/` |
 | fanout_processor | `urn:otel:processor:fanout` | `src/processors/fanout_processor/` |
 | filter_processor | `urn:otel:processor:filter` | `src/processors/filter_processor/` |
+| log_sampling_processor | `urn:otel:processor:log_sampling` | `src/processors/log_sampling_processor/` |
 | retry_processor | `urn:otel:processor:retry` | `src/processors/retry_processor/` |
 | signal_type_router | `urn:otel:processor:type_router` | `src/processors/signal_type_router/` |
+| temporal_reaggregation_processor | `urn:otel:processor:temporal_reaggregation` | `src/processors/temporal_reaggregation_processor/` |
 | transform_processor | `urn:otel:processor:transform` | `src/processors/transform_processor/` |
+<!-- markdownlint-enable MD013 -->
 
 #### attributes_processor
 
@@ -135,7 +143,12 @@ Each component lives in its own subfolder within a category:
 #### content_router
 
 - Routes telemetry to named output ports based on resource attribute values
-- Supports default routing and mixed-batch validation
+- Supports configurable selected-route admission for matched and default routes
+  with `reject_immediately` (default) or `backpressure`
+- Always emits a route-local retryable NACK when the selected route is closed,
+  and uses the configured policy when the selected route is full
+- Supports default routing and mixed-batch validation; see
+  [Content Router Processor](src/processors/content_router/README.md)
 
 #### batch_processor
 
@@ -173,6 +186,11 @@ Each component lives in its own subfolder within a category:
 - Tracks consumed and filtered signal metrics for telemetry
 - Useful for reducing data volume before downstream processing
 
+#### log_sampling_processor
+
+- Discards a portion of incoming logs according to a configurable sampling policy
+- Useful for reducing data volume in a telemetry backend
+
 #### retry_processor
 
 - Retries downstream delivery with exponential backoff using Ack/Nack handling
@@ -181,26 +199,38 @@ Each component lives in its own subfolder within a category:
 #### signal_type_router
 
 - Routes signals by type (logs, metrics, traces) to named output ports
-- Falls back to default routing when a type-specific port is not connected
-- Exposes per-signal routing and drop telemetry counters
+- Falls back to default routing only when a type-specific port is not connected
+- Supports configurable selected-route admission with `reject_immediately`
+  (default) or `backpressure`
+- Always emits a route-local retryable NACK when the selected named or default
+  route is closed, and uses the configured policy when the selected route is
+  full
+- Exposes per-signal routing and route-rejection telemetry; see
+  [Signal Type Router Processor](src/processors/signal_type_router/README.md)
 
 #### transform_processor
 
 - Applies KQL or OPL transformations to OTAP batches via the query engine
 - Supports routed outputs while preserving upstream Ack/Nack semantics
 
+#### temporal_reaggregation_processor
+
+- Reaggregates metrics at a lower frequency to reduce telemetry volume
+
 ### Receivers
 
+<!-- markdownlint-disable MD013 -->
 | Node | URN | Module |
 | ---- | --- | ------ |
-| fake_data_generator | `urn:otel:receiver:traffic_generator` | `src/receivers/fake_data_generator/` |
 | internal_telemetry_receiver | `urn:otel:receiver:internal_telemetry` | `src/receivers/internal_telemetry_receiver/` |
 | otap_receiver | `urn:otel:receiver:otap` | `src/receivers/otap_receiver/` |
 | otlp_receiver | `urn:otel:receiver:otlp` | `src/receivers/otlp_receiver/` |
 | syslog_cef_receiver | `urn:otel:receiver:syslog_cef` | `src/receivers/syslog_cef_receiver/` |
 | topic_receiver | `urn:otel:receiver:topic` | `src/receivers/topic_receiver/` |
+| traffic_generator | `urn:otel:receiver:traffic_generator` | `src/receivers/traffic_generator/` |
+<!-- markdownlint-enable MD013 -->
 
-#### fake_data_generator
+#### traffic_generator
 
 - Generates synthetic OTAP/OTLP signals for testing and benchmarking
 - Configurable signal generation strategies and volume constraints

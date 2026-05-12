@@ -11,7 +11,7 @@ use arrow::datatypes::SchemaRef;
 use futures::TryStreamExt;
 use futures::stream::FuturesUnordered;
 use object_store::ObjectStore;
-use otap_df_pdata::otap::{OtapArrowRecords, child_payload_types};
+use otap_df_pdata::otap::child_payload_types;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use parquet::arrow::AsyncArrowWriter;
 use parquet::arrow::async_writer::ParquetObjectWriter;
@@ -20,6 +20,7 @@ use parquet::file::properties::WriterProperties;
 
 use super::config::WriterOptions;
 use super::partition::PartitionAttribute;
+use super::records::OtapParquetRecords;
 
 /// Aggregated stats returned by a write/flush cycle. Useful for internal telemetry and tests.
 #[derive(Debug, Default, Clone, Copy)]
@@ -50,7 +51,7 @@ struct FlushAttemptStats {
 
 pub struct WriteBatch<'a> {
     pub batch_id: i64,
-    pub otap_batch: &'a OtapArrowRecords,
+    pub otap_batch: &'a OtapParquetRecords,
     pub partition_attributes: Option<&'a [PartitionAttribute]>,
 }
 
@@ -58,7 +59,7 @@ impl<'a> WriteBatch<'a> {
     #[must_use]
     pub const fn new(
         batch_id: i64,
-        otap_batch: &'a OtapArrowRecords,
+        otap_batch: &'a OtapParquetRecords,
         partition_attributes: Option<&'a [PartitionAttribute]>,
     ) -> Self {
         Self {
@@ -479,7 +480,7 @@ mod test {
     use arrow::compute::concat_batches;
     use futures::StreamExt;
     use object_store::local::LocalFileSystem;
-    use otap_df_pdata::otap::from_record_messages;
+    use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
     use otap_df_pdata::{Consumer, proto::opentelemetry::arrow::v1::BatchArrowRecords};
     use parquet::arrow::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
@@ -488,14 +489,17 @@ mod test {
         SimpleDataGenOptions, create_simple_logs_arrow_record_batches,
     };
     use crate::exporters::parquet_exporter::partition::PartitionAttributeValue;
+    use crate::exporters::parquet_exporter::records::OtapParquetRecords;
 
-    fn to_logs_record_batch(mut bar: BatchArrowRecords) -> OtapArrowRecords {
+    fn to_logs_record_batch(mut bar: BatchArrowRecords) -> OtapParquetRecords {
         let mut consumer = Consumer::default();
         let record_messages = consumer.consume_bar(&mut bar).unwrap();
-        OtapArrowRecords::Logs(from_record_messages(record_messages))
+        let otap: OtapArrowRecords =
+            OtapArrowRecords::Logs(from_record_messages(record_messages).unwrap());
+        otap.into()
     }
 
-    fn sum_rows(batch: &OtapArrowRecords) -> u64 {
+    fn sum_rows(batch: &OtapParquetRecords) -> u64 {
         batch
             .allowed_payload_types()
             .iter()

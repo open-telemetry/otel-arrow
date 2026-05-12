@@ -6,8 +6,8 @@
 # In order to include these in the build context, and to avoid conflicting
 # with the arrow enabled go collector build files in the repo root, the image
 # must be built with additional --build-context flags as follows:
-# docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
-FROM --platform=$BUILDPLATFORM docker.io/rust:1.94@sha256:0e6da0c8f06f25e9591f21c0f741cd4ff1086e271c3330f29f6e4e95869c7843 AS dataflow-build
+# docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+FROM --platform=$BUILDPLATFORM docker.io/rust:1.95@sha256:a9cfb755b33f5bb872610cbdb25da61f527416b28fc9c052bbce4bef93e7799a AS dataflow-build
 WORKDIR /build/rust/dataflow
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
@@ -16,10 +16,11 @@ RUN apt-get update && apt-get install -y protobuf-compiler
 
 # The build process relies on these libraries outside of the current context.
 # Build command from the otap-dataflow directory:
-# docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+# docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
 COPY --from=otel-arrow /proto/opentelemetry/proto /build/proto/opentelemetry/proto
 COPY --from=otel-arrow /proto/opentelemetry-proto /build/proto/opentelemetry-proto
 COPY --from=otel-arrow /rust/experimental /build/rust/experimental
+COPY --from=otel-arrow /THIRD_PARTY_NOTICES.txt /build/THIRD_PARTY_NOTICES.txt
 
 COPY . /build/rust/dataflow/.
 
@@ -37,7 +38,7 @@ ENV FEATURES=${FEATURES}
 RUN ./cross-arch-build.sh
 
 # The runtime image
-FROM docker.io/alpine:3.23@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
+FROM docker.io/alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
 LABEL maintainer="The OpenTelemetry Authors"
 
 # Passing --build-arg BUILD=1 adds additional debugging features to the image.

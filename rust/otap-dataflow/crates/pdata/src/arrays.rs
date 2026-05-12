@@ -15,6 +15,8 @@ use arrow::datatypes::{
 };
 use paste::paste;
 
+pub mod sanitize;
+
 /// A trait for accessing elements in arrays that may contain null values.
 ///
 /// This is implemented for many arrow types to provide convenience in accessing possibly null

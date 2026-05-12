@@ -11,6 +11,7 @@ use arrow::datatypes::{DataType, Field, Fields, Schema};
 use std::sync::Arc;
 
 pub mod consts;
+pub mod error;
 pub mod payloads;
 #[allow(clippy::module_inception)]
 pub mod schema;

@@ -31,6 +31,13 @@ pub enum Error {
     #[error("Telemetry error: {0}")]
     TelemetryError(#[from] otap_df_telemetry::error::Error),
 
+    /// Memory limiter configuration or runtime initialization error.
+    #[error("Memory limiter error: {message}")]
+    MemoryLimiterError {
+        /// Human-readable error message.
+        message: String,
+    },
+
     /// Pipeline runtime error.
     #[error("Pipeline runtime error: {source}")]
     PipelineRuntimeError {

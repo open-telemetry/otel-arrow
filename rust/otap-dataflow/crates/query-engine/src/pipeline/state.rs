@@ -58,6 +58,17 @@ impl ExecutionState {
         let map = self.extensions.get_or_insert_with(ExtensionMap::default);
         _ = map.insert(TypeId::of::<T>(), Box::new(value));
     }
+
+    /// Remove the extension form the map and return it if it exists
+    pub fn remove_extension<T: 'static>(&mut self) -> Option<Box<T>> {
+        self.extensions
+            .as_mut()
+            .and_then(|map| {
+                map.remove(&TypeId::of::<T>())
+                    .and_then(|boxed| boxed.downcast::<T>().ok())
+            })
+            .and_then(|boxed| boxed.into())
+    }
 }
 
 /// Map that holds opaque objects indexed by their type.

@@ -1,0 +1,35 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              data_source: static
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: null
+                max_batch_size: 50
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+                log_body_size_bytes: 1024
+
+          exporter:
+            type: exporter:otlp_grpc
+            config:
+              grpc_endpoint: "http://127.0.0.1:4317"
+
+        connections:
+          - from: receiver
+            to: exporter

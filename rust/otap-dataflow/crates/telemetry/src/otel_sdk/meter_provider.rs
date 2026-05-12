@@ -15,8 +15,9 @@ use opentelemetry_sdk::{
 use otap_df_config::pipeline::telemetry::metrics::{
     MetricsConfig,
     readers::{
-        MetricsReaderConfig, periodic::MetricsPeriodicExporterConfig,
-        pull::MetricsPullExporterConfig,
+        MetricsReaderConfig,
+        periodic::{MetricsPeriodicExporterType, otlp::OtlpExporterConfig},
+        pull::{MetricsPullExporterType, PrometheusExporterConfig},
     },
 };
 
@@ -80,30 +81,41 @@ impl MeterProvider {
         match reader_config {
             MetricsReaderConfig::Periodic(periodic_config) => {
                 let interval = &periodic_config.interval;
-                match &periodic_config.exporter {
-                    MetricsPeriodicExporterConfig::Console => {
+                match &periodic_config.exporter.exporter_type {
+                    MetricsPeriodicExporterType::Console => {
                         sdk_meter_builder =
                             Self::configure_console_metric_exporter(sdk_meter_builder, interval)?;
                     }
-                    MetricsPeriodicExporterConfig::Otlp(otlp_config) => {
-                        (sdk_meter_builder, runtime) =
-                            OtlpExporterProvider::configure_otlp_metric_exporter(
-                                sdk_meter_builder,
-                                otlp_config,
-                                interval,
-                                runtime,
-                            )?;
+                    MetricsPeriodicExporterType::Otlp => {
+                        match OtlpExporterConfig::from_config(&periodic_config.exporter.config) {
+                            Ok(otlp_config) => {
+                                (sdk_meter_builder, runtime) =
+                                    OtlpExporterProvider::configure_otlp_metric_exporter(
+                                        sdk_meter_builder,
+                                        &otlp_config,
+                                        interval,
+                                        runtime,
+                                    )?;
+                            }
+                            Err(e) => return Err(Error::ConfigurationError(e.to_string())),
+                        }
                     }
                 }
                 Ok((sdk_meter_builder, runtime))
             }
-            MetricsReaderConfig::Pull(pull_config) => match &pull_config.exporter {
-                MetricsPullExporterConfig::Prometheus(prometheus_config) => {
-                    (sdk_meter_builder, runtime) = PrometheusExporterProvider::configure_exporter(
-                        sdk_meter_builder,
-                        prometheus_config,
-                        runtime,
-                    )?;
+            MetricsReaderConfig::Pull(pull_config) => match &pull_config.exporter.exporter_type {
+                MetricsPullExporterType::Prometheus => {
+                    match PrometheusExporterConfig::from_config(&pull_config.exporter.config) {
+                        Ok(prometheus_config) => {
+                            (sdk_meter_builder, runtime) =
+                                PrometheusExporterProvider::configure_exporter(
+                                    sdk_meter_builder,
+                                    &prometheus_config,
+                                    runtime,
+                                )?;
+                        }
+                        Err(e) => return Err(Error::ConfigurationError(e.to_string())),
+                    }
                     Ok((sdk_meter_builder, runtime))
                 }
             },
@@ -127,9 +139,9 @@ impl MeterProvider {
 mod tests {
     use super::*;
     use otap_df_config::pipeline::telemetry::metrics::readers::{
-        MetricsReaderPeriodicConfig, MetricsReaderPullConfig, Temporality,
-        periodic::otlp::{OtlpExporterConfig, OtlpProtocol},
-        pull::PrometheusExporterConfig,
+        MetricsReaderPeriodicConfig, MetricsReaderPullConfig,
+        periodic::MetricsPeriodicExporterConfig,
+        pull::{MetricsPullExporterConfig, MetricsPullExporterType},
     };
 
     #[test]
@@ -138,25 +150,34 @@ mod tests {
         let metric_readers = vec![
             MetricsReaderConfig::Periodic(MetricsReaderPeriodicConfig {
                 interval: std::time::Duration::from_secs(10),
-                exporter: MetricsPeriodicExporterConfig::Console,
+                exporter: MetricsPeriodicExporterConfig {
+                    exporter_type: MetricsPeriodicExporterType::Console,
+                    config: serde_json::Value::Null,
+                },
             }),
             MetricsReaderConfig::Periodic(MetricsReaderPeriodicConfig {
                 interval: std::time::Duration::from_secs(15),
-                exporter: MetricsPeriodicExporterConfig::Otlp(OtlpExporterConfig {
-                    protocol: OtlpProtocol::HttpBinary,
-                    endpoint: "http://localhost:4318/v1/metrics".to_string(),
-                    temporality: Temporality::Cumulative,
-                    tls: None,
-                }),
+                exporter: MetricsPeriodicExporterConfig {
+                    exporter_type: MetricsPeriodicExporterType::Otlp,
+                    config: serde_json::json!({
+                        "protocol": "http/protobuf",
+                        "endpoint": "http://localhost:4318/v1/metrics",
+                        "temporality": "cumulative",
+                        "tls": null
+                    }),
+                },
             }),
             MetricsReaderConfig::Periodic(MetricsReaderPeriodicConfig {
                 interval: std::time::Duration::from_secs(15),
-                exporter: MetricsPeriodicExporterConfig::Otlp(OtlpExporterConfig {
-                    protocol: OtlpProtocol::HttpJson,
-                    endpoint: "http://localhost:4318".to_string(),
-                    temporality: Temporality::Cumulative,
-                    tls: None,
-                }),
+                exporter: MetricsPeriodicExporterConfig {
+                    exporter_type: MetricsPeriodicExporterType::Otlp,
+                    config: serde_json::json!({
+                        "protocol": "http/json",
+                        "endpoint": "http://localhost:4318",
+                        "temporality": "cumulative",
+                        "tls": null
+                    }),
+                },
             }),
         ];
 
@@ -177,23 +198,32 @@ mod tests {
         let metric_readers = vec![
             MetricsReaderConfig::Periodic(MetricsReaderPeriodicConfig {
                 interval: std::time::Duration::from_secs(10),
-                exporter: MetricsPeriodicExporterConfig::Console,
+                exporter: MetricsPeriodicExporterConfig {
+                    exporter_type: MetricsPeriodicExporterType::Console,
+                    config: serde_json::Value::Null,
+                },
             }),
             MetricsReaderConfig::Periodic(MetricsReaderPeriodicConfig {
                 interval: std::time::Duration::from_secs(15),
-                exporter: MetricsPeriodicExporterConfig::Otlp(OtlpExporterConfig {
-                    protocol: OtlpProtocol::Grpc,
-                    endpoint: "http://localhost:4318".to_string(),
-                    temporality: Temporality::Cumulative,
-                    tls: None,
-                }),
+                exporter: MetricsPeriodicExporterConfig {
+                    exporter_type: MetricsPeriodicExporterType::Otlp,
+                    config: serde_json::json!({
+                        "protocol": "grpc/protobuf",
+                        "endpoint": "http://localhost:4317",
+                        "temporality": "cumulative",
+                        "tls": null
+                    }),
+                },
             }),
             MetricsReaderConfig::Pull(MetricsReaderPullConfig {
-                exporter: MetricsPullExporterConfig::Prometheus(PrometheusExporterConfig {
-                    host: "0.0.0.0".to_string(),
-                    port: 9090,
-                    path: "/metrics".to_string(),
-                }),
+                exporter: MetricsPullExporterConfig {
+                    exporter_type: MetricsPullExporterType::Prometheus,
+                    config: serde_json::json!({
+                        "host": "0.0.0.0",
+                        "port": 9090,
+                        "path": "/metrics"
+                    }),
+                },
             }),
         ];
         let metrics_config = MetricsConfig {

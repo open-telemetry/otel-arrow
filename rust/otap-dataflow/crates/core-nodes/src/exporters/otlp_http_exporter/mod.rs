@@ -32,11 +32,13 @@ use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error as EngineError, ExporterErrorKind};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::wiring_contract::WiringContract;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+#[cfg(test)]
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
 use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
@@ -52,12 +54,9 @@ use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
 };
 use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_debug, otel_info};
+use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use prost::Message as _;
 use reqwest::{Client, Response};
-
-#[cfg(feature = "experimental-tls")]
-use otap_df_telemetry::otel_warn;
 
 use self::config::Config;
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
@@ -138,47 +137,44 @@ impl OtlpHttpExporter {
             })?;
         }
 
-        #[cfg(feature = "experimental-tls")]
-        {
-            if let Some(tls) = &config.http.tls {
-                // server_name not currently supported
-                if let Some(_server_name) = &tls.server_name {
-                    return Err(ConfigError::InvalidUserConfig {
-                        error: "TLS configuration error: server_name_override is not supported by \
-                        the current Rust OTLP HTTP client implementation (reqwest/rustls) remove \
-                        server_name_override."
-                            .into(),
-                    });
-                }
+        if let Some(tls) = &config.http.tls {
+            // server_name not currently supported
+            if let Some(_server_name) = &tls.server_name {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: "TLS configuration error: server_name_override is not supported by \
+                    the current Rust OTLP HTTP client implementation (reqwest/rustls) remove \
+                    server_name_override."
+                        .into(),
+                });
+            }
 
-                if let Some(true) = tls.insecure {
-                    // Keeping with the same behaviour in the golang collector: if this is
-                    // configured, but the endpoints are start with https, we still send the
-                    // request using https. Just warn about the ignored config mismatch.
-                    let wants_https = config.endpoint.starts_with("https://")
-                        || config
-                            .logs_endpoint
-                            .as_ref()
-                            .map(|e| e.starts_with("https://"))
-                            .unwrap_or(false)
-                        || config
-                            .metrics_endpoint
-                            .as_ref()
-                            .map(|e| e.starts_with("https://"))
-                            .unwrap_or(false)
-                        || config
-                            .traces_endpoint
-                            .as_ref()
-                            .map(|e| e.starts_with("https://"))
-                            .unwrap_or(false);
-                    if wants_https {
-                        otel_warn!(
-                            "otlp.exporter.http.validate_insecure_flag",
-                            message = "config setting http.tls.insecure = true is ignored. \
-                                requests will still be sent with TLS to endpoints configured \
-                                with scheme https"
-                        )
-                    }
+            if let Some(true) = tls.insecure {
+                // Keeping with the same behaviour in the golang collector: if this is
+                // configured, but the endpoints are start with https, we still send the
+                // request using https. Just warn about the ignored config mismatch.
+                let wants_https = config.endpoint.starts_with("https://")
+                    || config
+                        .logs_endpoint
+                        .as_ref()
+                        .map(|e| e.starts_with("https://"))
+                        .unwrap_or(false)
+                    || config
+                        .metrics_endpoint
+                        .as_ref()
+                        .map(|e| e.starts_with("https://"))
+                        .unwrap_or(false)
+                    || config
+                        .traces_endpoint
+                        .as_ref()
+                        .map(|e| e.starts_with("https://"))
+                        .unwrap_or(false);
+                if wants_https {
+                    otel_warn!(
+                        "otlp.exporter.http.validate_insecure_flag",
+                        message = "config setting http.tls.insecure = true is ignored. \
+                            requests will still be sent with TLS to endpoints configured \
+                            with scheme https"
+                    )
                 }
             }
         }
@@ -202,7 +198,7 @@ struct CompletedExport {
 impl Exporter<OtapPdata> for OtlpHttpExporter {
     async fn start(
         mut self: Box<Self>,
-        mut msg_chan: MessageChannel<OtapPdata>,
+        mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
         let logs_endpoint = Rc::new(
@@ -251,7 +247,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         let mut logs_proto_encoder = LogsProtoBytesEncoder::new();
         let mut metrics_proto_encoder = MetricsProtoBytesEncoder::new();
         let mut traces_proto_encoder = TracesProtoBytesEncoder::new();
-        let mut proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
+        let mut proto_buffer = ProtoBuffer::default();
 
         loop {
             // Opportunistically drain completions before we park on a recv.
@@ -351,7 +347,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 };
 
                             if !context.may_return_payload() {
-                                // drop the original OTAP batch if the the context indicates it
+                                // drop the original OTAP batch if the context indicates it
                                 // does not wish it to be returned
                                 _ = otap_batch.take_payload();
                             }
@@ -636,6 +632,12 @@ async fn finalize_completed_export(
     let export_and_notify_success = match err {
         None => effect_handler.notify_ack(AckMsg::new(pdata)).await.is_ok(),
         Some((err_msg, retryable)) => {
+            otel_warn!(
+                "otlp.exporter.http.export_error",
+                message = err_msg,
+                retryable = retryable
+            );
+            pdata_metrics.add_failed(signal_type, 1);
             let mut nack = NackMsg::new(&err_msg, pdata);
             nack.permanent = !retryable;
             _ = effect_handler.notify_nack(nack).await;
@@ -713,8 +715,9 @@ mod test {
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
 
-    use arrow::array::{Int32Array, RecordBatch};
+    use arrow::array::Int32Array;
     use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
     use http_body_util::Full;
     use hyper::Response;
     use hyper::server::conn::http1;
@@ -723,10 +726,12 @@ mod test {
     use otap_df_config::PortName;
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
+    use otap_df_engine::control::{PipelineCompletionMsg, runtime_ctrl_msg_channel};
     use otap_df_engine::shared::message::SharedSender;
     use otap_df_engine::testing::exporter::TestRuntime;
     use otap_df_engine::testing::node::test_node;
+    use otap_df_pdata::OtapArrowRecords;
+    use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::otap::Logs;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -739,7 +744,6 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, TracesData};
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
-    use otap_df_pdata::{OtapArrowRecords, OtlpProtoBytes};
     use otap_df_telemetry::reporter::MetricsReporter;
 
     use parking_lot::lock_api::Mutex;
@@ -749,7 +753,6 @@ mod test {
     use tokio_util::sync::CancellationToken;
     use tokio_util::task::TaskTracker;
 
-    #[cfg(feature = "experimental-tls")]
     use {
         otap_df_config::tls::{TlsClientConfig, TlsConfig, TlsServerConfig},
         otap_test_tls_certs::{ExtendedKeyUsage, generate_ca},
@@ -778,14 +781,14 @@ mod test {
         let (pdata_tx, pdata_rx) = tokio::sync::mpsc::channel(10);
         _ = msg_senders.insert(port_name.clone(), SharedSender::mpsc(pdata_tx));
 
-        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
         let (_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(5);
         let server_effect_handler =
             otap_df_engine::shared::receiver::EffectHandler::<OtapPdata>::new(
                 server_node_id,
                 msg_senders,
                 Some(port_name),
-                pipeline_ctrl_msg_tx,
+                runtime_ctrl_msg_tx,
                 metrics_reporter,
             );
 
@@ -806,11 +809,17 @@ mod test {
                 server_settings,
                 ack_registry,
                 Arc::new(Mutex::new(server_metrics)),
+                otap_df_engine::memory_limiter::SharedReceiverAdmissionState::default(),
                 None,
                 server_cancellation_token,
             )
             .await
         });
+
+        // Wait for the server to be ready to accept connections. Without this,
+        // the exporter may attempt to connect before the server has bound,
+        // leading to a retryable NACK and the test hanging in validation.
+        wait_for_port_ready(endpoint_addr);
 
         (pdata_rx, server_cancellation_token2)
     }
@@ -919,10 +928,24 @@ mod test {
         let _ = tracker.close();
     }
 
+    /// Polls a TCP port until it accepts connections, or panics after 5 seconds.
+    fn wait_for_port_ready(addr: &str) {
+        let addr: std::net::SocketAddr = addr.parse().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if Instant::now() >= deadline {
+                panic!("Server did not become ready within 5 seconds on {addr}");
+            }
+            match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(50)) {
+                Ok(_) => return,
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+    }
+
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
     /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
     /// the test is finished), and a receiver that will emit any pdata that the server produces.
-    #[cfg(feature = "experimental-tls")]
     fn run_tls_server(
         tokio_rt: &Runtime,
         pipeline_ctx: &PipelineContext,
@@ -935,14 +958,14 @@ mod test {
         let (pdata_tx, pdata_rx) = tokio::sync::mpsc::channel(10);
         _ = msg_senders.insert(port_name.clone(), SharedSender::mpsc(pdata_tx));
 
-        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
         let (_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(5);
         let server_effect_handler =
             otap_df_engine::shared::receiver::EffectHandler::<OtapPdata>::new(
                 server_node_id,
                 msg_senders,
                 Some(port_name),
-                pipeline_ctrl_msg_tx,
+                runtime_ctrl_msg_tx,
                 metrics_reporter,
             );
 
@@ -964,11 +987,17 @@ mod test {
                 server_settings,
                 ack_registry,
                 Arc::new(Mutex::new(server_metrics)),
+                otap_df_engine::memory_limiter::SharedReceiverAdmissionState::default(),
                 None,
                 server_cancellation_token,
             )
             .await;
         });
+
+        // Wait for the server to be ready to accept connections. Without this,
+        // the exporter may attempt to connect before the server has bound,
+        // leading to a retryable NACK and the test hanging in validation.
+        wait_for_port_ready(endpoint_addr);
 
         (pdata_rx, server_cancellation_token2)
     }
@@ -1215,7 +1244,7 @@ mod test {
                         match pdata.signal_type() {
                             SignalType::Logs => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Logs(pdata_decoded)],
@@ -1224,7 +1253,7 @@ mod test {
                             }
                             SignalType::Metrics => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = MetricsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Metrics(pdata_decoded)],
@@ -1233,7 +1262,7 @@ mod test {
                             }
                             SignalType::Traces => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = TracesData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Traces(pdata_decoded)],
@@ -1244,25 +1273,23 @@ mod test {
                     }
 
                     let mut ack_count = 0;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
                     loop {
-                        let msg = match pipeline_ctrl_rx.recv().await {
+                        let msg = match pipeline_completion_rx.recv().await {
                             Ok(msg) => msg,
                             Err(_) => break, // channel closed, no more messages will be received
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineCompletionMsg::DeliverAck { .. } => {
                                 ack_count += 1;
                                 if ack_count >= num_expected_pdatas {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverNack { .. } => {
+                            PipelineCompletionMsg::DeliverNack { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -1314,15 +1341,16 @@ mod test {
 
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
                     loop {
-                        let msg = match pipeline_ctrl_rx.recv().await {
+                        let msg = match pipeline_completion_rx.recv().await {
                             Ok(msg) => msg,
                             Err(_) => break, // channel closed, no more messages will be received
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
+                            PipelineCompletionMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
                                 assert!(
@@ -1341,11 +1369,8 @@ mod test {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineCompletionMsg::DeliverAck { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -1403,15 +1428,16 @@ mod test {
 
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
                     loop {
-                        let msg = match pipeline_ctrl_rx.recv().await {
+                        let msg = match pipeline_completion_rx.recv().await {
                             Ok(msg) => msg,
                             Err(_) => break, // channel closed, no more messages will be received
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
+                            PipelineCompletionMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
                                 assert!(
@@ -1429,11 +1455,8 @@ mod test {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineCompletionMsg::DeliverAck { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -1499,15 +1522,16 @@ mod test {
 
                     let mut ack_count = 0;
                     let num_expected_nacks = 3;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
                     loop {
-                        let msg = match pipeline_ctrl_rx.recv().await {
+                        let msg = match pipeline_completion_rx.recv().await {
                             Ok(msg) => msg,
                             Err(_) => break, // channel closed, no more messages will be received
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
+                            PipelineCompletionMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
                                 assert!(
@@ -1525,11 +1549,8 @@ mod test {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineCompletionMsg::DeliverAck { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -1589,15 +1610,16 @@ mod test {
 
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
                     loop {
-                        let msg = match pipeline_ctrl_rx.recv().await {
+                        let msg = match pipeline_completion_rx.recv().await {
                             Ok(msg) => msg,
                             Err(_) => break, // channel closed, no more messages will be received
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
+                            PipelineCompletionMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
                                 assert!(
@@ -1615,11 +1637,8 @@ mod test {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineCompletionMsg::DeliverAck { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -1632,17 +1651,8 @@ mod test {
 
     #[test]
     fn test_handles_invalid_otap_payloads() {
-        let port = pick_unused_port().unwrap();
-        let endpoint_addr = format!("127.0.0.1:{}", port);
-        let endpoint = format!("http://{endpoint_addr}");
-
-        let config = default_test_config(endpoint);
-
-        let test_runtime = TestRuntime::<OtapPdata>::new();
-        let (_, exporter) = setup_exporter(&test_runtime, config);
-
-        // this is something we won't be able to serialize into a valid OTLP payload.
-        // it would expect "resource" to be a struct column
+        // Malformed structured OTAP payloads are rejected when inserted into `OtapArrowRecords`,
+        // so the exporter never receives this invalid batch shape.
         let invalid_record_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new(
                 "resource",
@@ -1653,71 +1663,15 @@ mod test {
         )
         .unwrap();
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
-        otap_batch.set(ArrowPayloadType::Logs, invalid_record_batch);
+        let err = otap_batch
+            .set(ArrowPayloadType::Logs, invalid_record_batch)
+            .expect_err("invalid OTAP batch should be rejected before export");
 
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otap_batch,
-        ))];
-
-        let pdatas = subscribe_pdatas(pdatas, false);
-
-        test_runtime
-            .set_exporter(exporter)
-            .run_test(|ctx| {
-                Box::pin(async move {
-                    for pdata in pdatas {
-                        ctx.send_pdata(pdata).await.unwrap();
-                    }
-
-                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
-                        .await
-                        .unwrap();
-                })
-            })
-            .run_validation(|mut ctx, result| {
-                Box::pin(async move {
-                    // ensure exit success
-                    result.unwrap();
-
-                    let mut ack_count = 0;
-                    let num_expected_nacks = 1;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
-                    loop {
-                        let msg = match pipeline_ctrl_rx.recv().await {
-                            Ok(msg) => msg,
-                            Err(_) => break, // channel closed, no more messages will be received
-                        };
-
-                        match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
-                                ack_count += 1;
-
-                                assert!(
-                                    nack.reason.contains("Column `resource` data type mismatch"),
-                                    "unexpected error message in Nack: {}",
-                                    nack.reason
-                                );
-
-                                assert!(
-                                    nack.permanent,
-                                    "expected malformed OTAP batch to be permanent nack"
-                                );
-
-                                if ack_count >= num_expected_nacks {
-                                    break;
-                                }
-                            }
-                            PipelineControlMsg::DeliverAck { .. } => {
-                                panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
-                            }
-                        }
-                    }
-                    assert_eq!(ack_count, num_expected_nacks);
-                })
-            })
+        assert!(
+            err.to_string().contains("Invalid schema for payload Logs")
+                && err.to_string().contains("Column `resource`"),
+            "unexpected validation error: {err}"
+        );
     }
 
     #[test]
@@ -1763,15 +1717,15 @@ mod test {
 
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_completion_rx = ctx.take_pipeline_completion_receiver().unwrap();
                     loop {
-                        let msg = match pipeline_ctrl_rx.recv().await {
+                        let msg = match pipeline_completion_rx.recv().await {
                             Ok(msg) => msg,
                             Err(_) => break, // channel closed, no more messages will be received
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
+                            PipelineCompletionMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
                                 match nack.refused.payload() {
@@ -1794,11 +1748,8 @@ mod test {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineCompletionMsg::DeliverAck { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -1853,15 +1804,15 @@ mod test {
 
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_completion_rx = ctx.take_pipeline_completion_receiver().unwrap();
                     loop {
-                        let msg = match pipeline_ctrl_rx.recv().await {
+                        let msg = match pipeline_completion_rx.recv().await {
                             Ok(msg) => msg,
                             Err(_) => break, // channel closed, no more messages will be received
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
+                            PipelineCompletionMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
                                 match nack.refused.payload() {
@@ -1883,11 +1834,8 @@ mod test {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineCompletionMsg::DeliverAck { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -1957,7 +1905,7 @@ mod test {
                         match pdata.signal_type() {
                             SignalType::Logs => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Logs(pdata_decoded)],
@@ -1966,7 +1914,7 @@ mod test {
                             }
                             SignalType::Metrics => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = MetricsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Metrics(pdata_decoded)],
@@ -1975,7 +1923,7 @@ mod test {
                             }
                             SignalType::Traces => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = TracesData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Traces(pdata_decoded)],
@@ -1986,25 +1934,23 @@ mod test {
                     }
 
                     let mut ack_count = 0;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
                     loop {
-                        let msg = match pipeline_ctrl_rx.recv().await {
+                        let msg = match pipeline_completion_rx.recv().await {
                             Ok(msg) => msg,
                             Err(_) => break, // channel closed, no more messages will be received
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineCompletionMsg::DeliverAck { .. } => {
                                 ack_count += 1;
                                 if ack_count >= num_expected_pdatas {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverNack { .. } => {
+                            PipelineCompletionMsg::DeliverNack { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -2079,7 +2025,8 @@ mod test {
                     // ensure we got back all the signals we expected, from the correct servers.
 
                     let mut pdata = logs_pdata_rx.recv().await.unwrap();
-                    let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into().unwrap();
+                    let otlp_bytes: OtlpProtoBytes =
+                        pdata.take_payload().try_into_with_default().unwrap();
                     let pdata_decoded = LogsData::decode(otlp_bytes.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Logs(pdata_decoded)],
@@ -2087,7 +2034,8 @@ mod test {
                     );
 
                     let mut pdata = metrics_pdata_rx.recv().await.unwrap();
-                    let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into().unwrap();
+                    let otlp_bytes: OtlpProtoBytes =
+                        pdata.take_payload().try_into_with_default().unwrap();
                     let pdata_decoded = MetricsData::decode(otlp_bytes.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Metrics(pdata_decoded)],
@@ -2095,7 +2043,8 @@ mod test {
                     );
 
                     let mut pdata = traces_pdata_rx.recv().await.unwrap();
-                    let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into().unwrap();
+                    let otlp_bytes: OtlpProtoBytes =
+                        pdata.take_payload().try_into_with_default().unwrap();
                     let pdata_decoded = TracesData::decode(otlp_bytes.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Traces(pdata_decoded)],
@@ -2109,7 +2058,6 @@ mod test {
             })
     }
 
-    #[cfg(feature = "experimental-tls")]
     fn run_tls_success_test(
         client_tls_config: TlsClientConfig,
         server_tls_config: TlsServerConfig,
@@ -2160,18 +2108,26 @@ mod test {
 
                     let num_expected_pdatas = 1;
                     let mut pdatas_received = Vec::new();
-                    while let Some(pdata) = pdata_rx.recv().await {
-                        pdatas_received.push(pdata);
-                        if pdatas_received.len() >= num_expected_pdatas {
-                            break;
+                    let recv_deadline = tokio::time::timeout(Duration::from_secs(10), async {
+                        while let Some(pdata) = pdata_rx.recv().await {
+                            pdatas_received.push(pdata);
+                            if pdatas_received.len() >= num_expected_pdatas {
+                                break;
+                            }
                         }
-                    }
+                    });
+                    recv_deadline.await.expect(
+                        "timed out waiting for server to receive pdata; \
+                         server may not have been ready in time",
+                    );
 
                     server_cancellation_token.cancel();
 
                     // assert the pdata sent was the pdata received
-                    let pdata: OtlpProtoBytes =
-                        pdatas_received[0].take_payload().try_into().unwrap();
+                    let pdata: OtlpProtoBytes = pdatas_received[0]
+                        .take_payload()
+                        .try_into_with_default()
+                        .unwrap();
                     let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Logs(pdata_decoded)],
@@ -2179,25 +2135,23 @@ mod test {
                     );
 
                     let mut ack_count = 0;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
                     loop {
-                        let msg = match pipeline_ctrl_rx.recv().await {
+                        let msg = match pipeline_completion_rx.recv().await {
                             Ok(msg) => msg,
                             Err(_) => break, // channel closed, no more messages will be received
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineCompletionMsg::DeliverAck { .. } => {
                                 ack_count += 1;
                                 if ack_count >= num_expected_pdatas {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverNack { .. } => {
+                            PipelineCompletionMsg::DeliverNack { .. } => {
                                 panic!("unexpected Nack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -2206,7 +2160,6 @@ mod test {
             })
     }
 
-    #[cfg(feature = "experimental-tls")]
     fn run_tls_failure_test(
         client_tls_config: TlsClientConfig,
         server_tls_config: TlsServerConfig,
@@ -2262,15 +2215,16 @@ mod test {
 
                     let mut nack_count = 0;
                     let expected_nacks = 1;
-                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
                     loop {
-                        let msg = match pipeline_ctrl_rx.recv().await {
+                        let msg = match pipeline_completion_rx.recv().await {
                             Ok(msg) => msg,
                             Err(_) => break, // channel closed, no more messages will be received
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { nack, .. } => {
+                            PipelineCompletionMsg::DeliverNack { nack } => {
                                 nack_count += 1;
 
                                 assert!(
@@ -2285,11 +2239,8 @@ mod test {
                                     break;
                                 }
                             }
-                            PipelineControlMsg::DeliverAck { .. } => {
+                            PipelineCompletionMsg::DeliverAck { .. } => {
                                 panic!("unexpected Ack message")
-                            }
-                            _ => {
-                                // ignore other control messages
                             }
                         }
                     }
@@ -2299,7 +2250,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_from_config_validates_server_name_override_set() {
         let invalid_config = serde_json::json!({
             "endpoint": "https://localhost",
@@ -2333,7 +2283,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_only_ca_pem_from_str() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2381,7 +2330,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_only_ca_pem_from_file() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2430,7 +2378,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_insecure_skip_verify_true() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2479,7 +2426,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_no_ca_configured() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2530,7 +2476,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_invalid_ca_configured() {
         otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -2581,7 +2526,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_server_name_mismatch() {
         otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -2630,7 +2574,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_mtls_success_cert_pem() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2683,7 +2626,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_mtls_success_cert_file() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2737,7 +2679,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_mtls_failure_wrong_client_cert() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2799,7 +2740,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_start_returns_error_if_mtls_cert_without_key() {
         otap_df_otap::crypto::ensure_crypto_provider();
 
@@ -2855,7 +2795,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_start_returns_error_if_mtls_key_without_cert() {
         otap_df_otap::crypto::ensure_crypto_provider();
 

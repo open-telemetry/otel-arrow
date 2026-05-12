@@ -25,7 +25,10 @@ use std::sync::atomic::AtomicUsize;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod dst;
 pub mod exporter;
+pub mod liveness;
 pub mod node;
 pub mod processor;
 pub mod receiver;
@@ -59,6 +62,8 @@ pub struct TestMsg(pub String);
 impl crate::ReceivedAtNode for TestMsg {
     fn received_at_node(&mut self, _node_id: usize, _node_interests: crate::Interests) {}
 }
+
+impl crate::processor::FlowMetricHook for TestMsg {}
 
 impl TestMsg {
     /// Creates a new test message with the given content.

@@ -66,7 +66,7 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
         arguments: Option<&'b dyn ExecutionContextArguments>,
     ) -> ExecutionContext<'a, 'b, MapValueStorage<OwnedValue>> {
         ExecutionContext::<MapValueStorage<OwnedValue>>::new(
-            self.diagnostic_level.clone(),
+            self.diagnostic_level,
             self.external_function_implementations,
             self.pipeline,
             self.get_variables().global_variables,

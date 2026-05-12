@@ -28,6 +28,7 @@ mod fixtures;
 pub mod idgen;
 pub mod metrics;
 pub mod partition;
+pub mod records;
 pub mod schema;
 pub mod writer;
 
@@ -47,12 +48,13 @@ use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{Message, MessageChannel};
+use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataMetrics;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use std::io::ErrorKind;
@@ -153,7 +155,7 @@ impl ParquetExporter {
 impl Exporter<OtapPdata> for ParquetExporter {
     async fn start(
         mut self: Box<Self>,
-        mut msg_chan: MessageChannel<OtapPdata>,
+        mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let exporter_id = effect_handler.exporter_id();
@@ -249,6 +251,19 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     deadline,
                     reason: _,
                 }) => {
+                    // If the deadline has already passed, return immediately.
+                    // `Delay::new(Duration::ZERO)` is not guaranteed to resolve
+                    // on the first poll on all platforms (Windows timer
+                    // granularity is ~15 ms), so an explicit check avoids a
+                    // race between the timeout and the flush future.
+                    if deadline.checked_duration_since(Instant::now()).is_none() {
+                        let _ = telemetry_cancel_handle.cancel().await;
+                        return Err(Error::IoError {
+                            node: exporter_id.clone(),
+                            error: std::io::Error::from(ErrorKind::TimedOut),
+                        });
+                    }
+
                     let mut timeout = Delay::new(deadline.duration_since(Instant::now())).fuse();
                     let flush_all = writer.flush_all().fuse();
                     pin_mut!(flush_all);
@@ -283,11 +298,29 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     }
 
                     let mut otap_batch: OtapArrowRecords =
-                        payload.try_into().inspect_err(|_| {
+                        payload.try_into_with_default().inspect_err(|_| {
                             if let Some(metrics) = self.pdata_metrics.as_mut() {
                                 metrics.inc_failed(signal_type);
                             }
                         })?;
+
+                    // decode the transport optimized IDs before converting
+                    // to unvalidated parquet records
+                    otap_batch.decode_transport_optimized_ids().map_err(|e| {
+                        if let Some(metrics) = self.pdata_metrics.as_mut() {
+                            metrics.inc_failed(signal_type);
+                        }
+                        let source_detail = format_error_sources(&e);
+                        Error::ExporterError {
+                            exporter: exporter_id.clone(),
+                            kind: ExporterErrorKind::Other,
+                            error: format!("Failed to decode transport optimized IDs: {e}"),
+                            source_detail,
+                        }
+                    })?;
+
+                    // convert to parquet-local records for unvalidated access
+                    let mut otap_batch: records::OtapParquetRecords = otap_batch.into();
 
                     // generate unique IDs
                     let id_gen_result = id_generator.generate_unique_ids(&mut otap_batch);
@@ -327,7 +360,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
 
                     // compute any partitions
                     let partitions = match self.config.partitioning_strategies.as_ref() {
-                        Some(strategies) => partition(&otap_batch, strategies),
+                        Some(strategies) => partition(otap_batch, strategies),
                         None => vec![Partition {
                             otap_batch,
                             attributes: None,
@@ -403,7 +436,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
 /// This calculates the period at which we instruct the [`WriterManager`] to flush any writers
 /// older than the threshold.
 fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Duration {
-    // try to choose a period that is relatively close the the configured threshold.
+    // try to choose a period that is relatively close the configured threshold.
     // this avoids the check happening long after the file writer is beyond the threshold.
     let period = configured_threshold / 60;
 
@@ -432,8 +465,8 @@ mod test {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::control::{
-        Controllable, PipelineControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
-        pipeline_ctrl_msg_channel,
+        Controllable, PipelineCompletionMsgSender, RuntimeControlMsg, RuntimeCtrlMsgReceiver,
+        RuntimeCtrlMsgSender, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
@@ -450,13 +483,14 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value::Value};
     use otap_df_pdata::schema::consts;
+    use otap_df_pdata::{TryFromWithOptions, TryIntoWithOptions};
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
     use tokio::time::sleep;
 
     fn logs_scenario(
         num_rows: usize,
-        shutdown_timeout: Instant,
+        shutdown_timeout: Duration,
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
@@ -471,12 +505,12 @@ mod test {
                     .unwrap();
 
                 ctx.send_pdata(OtapPdata::new_default(
-                    OtapArrowRecords::Logs(from_record_messages(otap_batch)).into(),
+                    OtapArrowRecords::Logs(from_record_messages(otap_batch).unwrap()).into(),
                 ))
                 .await
                 .expect("Failed to send  logs message");
 
-                ctx.send_shutdown(shutdown_timeout, "test completed")
+                ctx.send_shutdown(Instant::now().add(shutdown_timeout), "test completed")
                     .await
                     .unwrap();
             })
@@ -484,10 +518,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(
-        target_os = "windows",
-        ignore = "Skipping on Windows due to timing flakiness"
-    )]
     fn test_adaptive_schema_dict_upgrade_write() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
@@ -549,7 +579,7 @@ mod test {
                         })
                     }
                     let pdata3 = fixtures::create_single_logs_pdata_with_attrs(attrs3).payload();
-                    let mut otap_batch = OtapArrowRecords::try_from(pdata3).unwrap();
+                    let mut otap_batch = OtapArrowRecords::try_from_with_default(pdata3).unwrap();
                     let mut attrs_batch =
                         otap_batch.get(ArrowPayloadType::LogAttrs).unwrap().clone();
                     let old_column = attrs_batch.remove_column(
@@ -572,15 +602,17 @@ mod test {
                         DataType::Utf8,
                         true,
                     )));
-                    otap_batch.set(
-                        ArrowPayloadType::LogAttrs,
-                        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap(),
-                    );
+                    otap_batch
+                        .set(
+                            ArrowPayloadType::LogAttrs,
+                            RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap(),
+                        )
+                        .unwrap();
                     ctx.send_pdata(OtapPdata::new_default(otap_batch.into()))
                         .await
                         .unwrap();
 
-                    let deadline = Instant::now().add(Duration::from_millis(200));
+                    let deadline = Instant::now().add(Duration::from_secs(1));
                     ctx.send_shutdown(deadline, "test completed").await.unwrap();
                 })
             })
@@ -623,7 +655,7 @@ mod test {
                             value: Some(AnyValue::new_string("terry")),
                         }])
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .unwrap();
 
                     let batch2: OtapArrowRecords =
@@ -632,7 +664,7 @@ mod test {
                             value: Some(AnyValue::new_int(418)),
                         }])
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .unwrap();
 
                     // double check that these contain schemas that are not the same ...
@@ -647,12 +679,9 @@ mod test {
                         .await
                         .unwrap();
 
-                    ctx.send_shutdown(
-                        Instant::now().add(Duration::from_millis(200)),
-                        "test completed",
-                    )
-                    .await
-                    .unwrap();
+                    ctx.send_shutdown(Instant::now().add(Duration::from_secs(1)), "test completed")
+                        .await
+                        .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -764,10 +793,7 @@ mod test {
         let num_rows = 100;
         test_runtime
             .set_exporter(exporter)
-            .run_test(logs_scenario(
-                num_rows,
-                Instant::now().add(Duration::from_secs(1)),
-            ))
+            .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
                     exporter_result.unwrap();
@@ -852,10 +878,7 @@ mod test {
         let num_rows = 100;
         test_runtime
             .set_exporter(exporter)
-            .run_test(logs_scenario(
-                num_rows,
-                Instant::now().add(Duration::from_secs(1)),
-            ))
+            .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
                     exporter_result.unwrap();
@@ -874,19 +897,15 @@ mod test {
             });
     }
 
-    // Skipping on Windows and macOS due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[test]
-    #[cfg_attr(
-        any(target_os = "windows", target_os = "macos"),
-        ignore = "Skipping on Windows and macOS due to flakiness"
-    )]
     fn test_shutdown_timeout() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
+        let base_dir_url = base_dir.replace('\\', "/");
         let exporter = ParquetExporter::new(config::Config {
             storage: object_store::StorageType::File {
-                base_uri: format!("testdelayed://{base_dir}?delay=500ms"),
+                base_uri: format!("testdelayed:///{base_dir_url}?delay=500ms"),
             },
             partitioning_strategies: None,
             writer_options: Some(WriterOptions {
@@ -909,7 +928,9 @@ mod test {
         let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
-        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(10);
         // Keep the receiver alive so EffectHandler can send telemetry/timer requests without error.
 
         exporter
@@ -918,12 +939,18 @@ mod test {
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
+                .start(
+                    runtime_ctrl_msg_tx,
+                    pipeline_completion_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                )
                 .await
                 .map(|_| ())
         }
@@ -950,7 +977,8 @@ mod test {
                 ))
                 .unwrap();
 
-            let otap_batch = OtapArrowRecords::Logs(from_record_messages(logs_data)).into();
+            let otap_batch =
+                OtapArrowRecords::Logs(from_record_messages(logs_data).unwrap()).into();
             pdata_tx
                 .send(OtapPdata::new_default(otap_batch))
                 .await
@@ -964,15 +992,17 @@ mod test {
                     },
                 ))
                 .unwrap();
-            let mut otap_batch2 = OtapArrowRecords::Logs(from_record_messages(logs_data));
+            let mut otap_batch2 = OtapArrowRecords::Logs(from_record_messages(logs_data).unwrap());
             let log_attrs = otap_batch2.get(ArrowPayloadType::LogAttrs).unwrap();
             // adding extra attributes should just put us over the limit where this table will be
             // flushed on write
-            otap_batch2.set(
-                ArrowPayloadType::LogAttrs,
-                concat_batches(log_attrs.schema_ref(), vec![&log_attrs.clone(), log_attrs])
-                    .unwrap(),
-            );
+            otap_batch2
+                .set(
+                    ArrowPayloadType::LogAttrs,
+                    concat_batches(log_attrs.schema_ref(), vec![&log_attrs.clone(), log_attrs])
+                        .unwrap(),
+                )
+                .unwrap();
 
             pdata_tx
                 .send(OtapPdata::new_default(otap_batch2.into()))
@@ -998,10 +1028,10 @@ mod test {
                 );
             }
 
-            // shutdown faster than it could possibly flush
+            // Make timeout deterministic: deadline is already due when shutdown is handled.
             _ = ctrl_sender
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Instant::now().add(Duration::from_secs(1)),
+                    deadline: Instant::now(),
                     reason: "shutting down".into(),
                 })
                 .await;
@@ -1010,7 +1040,7 @@ mod test {
         // let the exporter's message handling loop and the message sending run concurrently
         let (exporter_result, _) = rt.block_on(async move {
             tokio::join!(
-                start_exporter(exporter, pipeline_ctrl_msg_tx),
+                start_exporter(exporter, runtime_ctrl_msg_tx, pipeline_completion_msg_tx),
                 send_messages(base_dir.as_str(), pdata_tx, control_sender)
             )
         });
@@ -1061,19 +1091,27 @@ mod test {
         let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
-        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(10);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)
             .expect("Failed to set PData Receiver");
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
+                .start(
+                    runtime_ctrl_msg_tx,
+                    pipeline_completion_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                )
                 .await
                 .map(|_| ())
         }
@@ -1082,7 +1120,7 @@ mod test {
             base_dir: &str,
             pdata_tx: Sender<OtapPdata>,
             ctrl_tx: Sender<NodeControlMsg<OtapPdata>>,
-            mut ctrl_rx: PipelineCtrlMsgReceiver<OtapPdata>,
+            mut ctrl_rx: RuntimeCtrlMsgReceiver<OtapPdata>,
         ) -> Result<(), Error> {
             // try to receive the first timer start message
             let msg = tokio::select! {
@@ -1091,7 +1129,7 @@ mod test {
                 }),
                 msg = ctrl_rx.recv() => msg?
             };
-            if let PipelineControlMsg::StartTimer {
+            if let RuntimeControlMsg::StartTimer {
                 node_id: _,
                 duration,
             } = msg
@@ -1099,7 +1137,7 @@ mod test {
                 assert_eq!(duration, Duration::from_secs(1));
             } else {
                 return Err(Error::InternalError {
-                    message: "wrong pipeline control message received. Expected StartTimer".into(),
+                    message: "wrong runtime-control message received. Expected StartTimer".into(),
                 });
             }
 
@@ -1115,7 +1153,7 @@ mod test {
                     },
                 ))
                 .unwrap();
-            let otap_batch = OtapArrowRecords::Logs(from_record_messages(otap_batch));
+            let otap_batch = OtapArrowRecords::Logs(from_record_messages(otap_batch).unwrap());
             pdata_tx
                 .send(OtapPdata::new_default(otap_batch.into()))
                 .await
@@ -1164,12 +1202,12 @@ mod test {
 
         let (exporter_result, test_run_result) = rt.block_on(async move {
             tokio::join!(
-                start_exporter(exporter, pipeline_ctrl_msg_tx),
+                start_exporter(exporter, runtime_ctrl_msg_tx, pipeline_completion_msg_tx),
                 run_test(
                     base_dir.as_str(),
                     pdata_tx,
                     control_sender,
-                    pipeline_ctrl_msg_rx
+                    runtime_ctrl_msg_rx
                 )
             )
         });
@@ -1181,7 +1219,7 @@ mod test {
 
     #[test]
     fn test_starts_telemetry_timer() {
-        use otap_df_engine::control::pipeline_ctrl_msg_channel;
+        use otap_df_engine::control::runtime_ctrl_msg_channel;
         use otap_df_engine::testing::test_node;
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
@@ -1208,7 +1246,9 @@ mod test {
         let _pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
         let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
-        let (pipeline_ctrl_msg_tx, mut pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (runtime_ctrl_msg_tx, mut runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(10);
 
         exporter
             .set_pdata_receiver(test_node("exp"), pdata_rx)
@@ -1216,41 +1256,50 @@ mod test {
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
+                .start(
+                    runtime_ctrl_msg_tx,
+                    pipeline_completion_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                )
                 .await
                 .map(|_| ())
         }
 
         let (_exporter_result, _ignored) = rt.block_on(async move {
-            tokio::join!(start_exporter(exporter, pipeline_ctrl_msg_tx), async move {
-                // Expect StartTelemetryTimer quickly after startup
-                let msg = tokio::time::timeout(Duration::from_millis(1500), async {
-                    pipeline_ctrl_msg_rx.recv().await
-                })
-                .await
-                .expect("timed out waiting for StartTelemetryTimer")
-                .expect("pipeline ctrl channel closed");
-
-                match msg {
-                    PipelineControlMsg::StartTelemetryTimer { duration, .. } => {
-                        assert_eq!(duration, Duration::from_secs(1));
-                    }
-                    other => panic!("Expected StartTelemetryTimer, got {other:?}"),
-                }
-
-                // Shutdown exporter to end the test
-                let _ = control_sender
-                    .send(NodeControlMsg::Shutdown {
-                        deadline: Instant::now(),
-                        reason: "done".into(),
+            tokio::join!(
+                start_exporter(exporter, runtime_ctrl_msg_tx, pipeline_completion_msg_tx),
+                async move {
+                    // Expect StartTelemetryTimer quickly after startup
+                    let msg = tokio::time::timeout(Duration::from_millis(1500), async {
+                        runtime_ctrl_msg_rx.recv().await
                     })
-                    .await;
-            })
+                    .await
+                    .expect("timed out waiting for StartTelemetryTimer")
+                    .expect("runtime-control channel closed");
+
+                    match msg {
+                        RuntimeControlMsg::StartTelemetryTimer { duration, .. } => {
+                            assert_eq!(duration, Duration::from_secs(1));
+                        }
+                        other => panic!("Expected StartTelemetryTimer, got {other:?}"),
+                    }
+
+                    // Shutdown exporter to end the test
+                    let _ = control_sender
+                        .send(NodeControlMsg::Shutdown {
+                            deadline: Instant::now(),
+                            reason: "done".into(),
+                        })
+                        .await;
+                }
+            )
         });
     }
 
@@ -1286,7 +1335,7 @@ mod test {
                 },
             ))
             .unwrap();
-        let otap_batch = OtapArrowRecords::Traces(from_record_messages(otap_batch));
+        let otap_batch = OtapArrowRecords::Traces(from_record_messages(otap_batch).unwrap());
         test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
@@ -1356,7 +1405,7 @@ mod test {
                 },
             ))
             .unwrap();
-        let otap_batch = OtapArrowRecords::Metrics(from_record_messages(otap_batch));
+        let otap_batch = OtapArrowRecords::Metrics(from_record_messages(otap_batch).unwrap());
         test_runtime
             .set_exporter(exporter)
             .run_test(move |ctx| {
@@ -1456,15 +1505,23 @@ mod test {
             .expect("Failed to set PData Receiver");
 
         // Keep pipeline ctrl receiver alive
-        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel::<OtapPdata>(10);
 
         async fn start_exporter(
             exporter: ExporterWrapper<OtapPdata>,
-            pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
+            runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
             metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
         ) -> Result<(), Error> {
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter, Interests::empty())
+                .start(
+                    runtime_ctrl_msg_tx,
+                    pipeline_completion_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                )
                 .await
                 .map(|_| ())
         }
@@ -1483,7 +1540,7 @@ mod test {
                     },
                 ))
                 .unwrap();
-            let otap_batch = OtapArrowRecords::Logs(from_record_messages(logs)).into();
+            let otap_batch = OtapArrowRecords::Logs(from_record_messages(logs).unwrap()).into();
             pdata_tx
                 .send(OtapPdata::new_default(otap_batch))
                 .await
@@ -1521,7 +1578,12 @@ mod test {
             let _handle = tokio::task::spawn_local(collector.run_collection_loop());
 
             tokio::join!(
-                start_exporter(exporter, pipeline_ctrl_msg_tx, reporter.clone()),
+                start_exporter(
+                    exporter,
+                    runtime_ctrl_msg_tx,
+                    pipeline_completion_msg_tx,
+                    reporter.clone(),
+                ),
                 drive_test(control_sender, pdata_tx, reporter.clone()),
             )
         }));
@@ -1582,15 +1644,17 @@ mod test {
                 },
             ))
             .unwrap();
-        let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(otap_batch));
+        let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(otap_batch).unwrap());
         // replace the logs ID column with nulls
         let logs = otap_batch.get(ArrowPayloadType::Logs).unwrap();
         let (schema, mut columns, _) = logs.clone().into_parts();
         columns[schema.index_of(consts::ID).unwrap()] = Arc::new(UInt16Array::new_null(num_rows));
-        otap_batch.set(
-            ArrowPayloadType::Logs,
-            RecordBatch::try_new(schema, columns).unwrap(),
-        );
+        otap_batch
+            .set(
+                ArrowPayloadType::Logs,
+                RecordBatch::try_new(schema, columns).unwrap(),
+            )
+            .unwrap();
 
         test_runtime
             .set_exporter(exporter)

@@ -7,7 +7,7 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
 /// OTLP receiver metrics.
-#[metric_set(name = "otlp.receiver.metrics")]
+#[metric_set(name = "receiver.otlp")]
 #[derive(Debug, Default, Clone)]
 pub struct OtlpReceiverMetrics {
     /// Number of acks received from downstream (routed back to the caller).
@@ -34,11 +34,15 @@ pub struct OtlpReceiverMetrics {
     #[metric(unit = "{requests}")]
     pub rejected_requests: Counter<u64>,
 
+    /// Number of OTLP RPCs rejected specifically because process-wide memory pressure was active.
+    #[metric(unit = "{requests}")]
+    pub refused_memory_pressure: Counter<u64>,
+
     /// Number of transport-level errors surfaced by tonic/server.
     #[metric(unit = "{errors}")]
     pub transport_errors: Counter<u64>,
 
-    /// Total bytes received across OTLP requests (payload bytes).
+    /// Total decompressed payload bytes for successfully received OTLP requests.
     #[metric(unit = "By")]
     pub request_bytes: Counter<u64>,
 }

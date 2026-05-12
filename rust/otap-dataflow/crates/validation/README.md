@@ -1,8 +1,15 @@
 # Validation Framework
 
+<!-- markdownlint-disable MD013 -->
+
 End-to-end harness for standing up a **system-under-validation (SUV)**
 pipeline, driving OTLP/OTAP traffic into it, capturing the output, and
 asserting invariants.
+
+This crate is one layer in the broader OTAP-dataflow testing strategy. For
+guidance on when to use validation scenarios versus unit tests, node harnesses,
+small pipeline liveness tests, or deterministic simulation testing, see the
+[Testing Guide](../../docs/testing-guide.md).
 
 ## Framework components
 
@@ -69,13 +76,12 @@ e.g. `receiver`, `exporter`.
 
    ```rust
    use otap_df_validation::scenario::Scenario;
-   use std::time::Duration;
 
    Scenario::new()
        .pipeline(pipeline)                      // add your system under validation pipeline
        .add_generator("traffic_gen", generator)       // add your configured generator pipeline
        .add_capture("validate", capture)          // add your configured capture pipeline
-       .expect_within(Duration::from_secs(200)) // optional timeout; default 140
+       .expect_within(30) // optional timeout; default 25
        .run()
        .expect("validation scenario failed");
    ```
@@ -86,13 +92,12 @@ e.g. `receiver`, `exporter`.
 
   ```rust
   use otap_df_validation::scenario::Scenario;
-  use std::time::Duration;
 
   Scenario::new()
       .pipeline(pipeline)               // required: rewired Pipeline
       .add_generator("traffic_gen", generator)                 // required: Generator config
       .add_capture("validate", capture)                 // required: Capture config
-      .expect_within(Duration::from_secs(180)) // optional; default 140s
+      .expect_within(30) // optional; default 25s
       .run()
       .expect("validation scenario failed");
   ```
@@ -110,8 +115,8 @@ e.g. `receiver`, `exporter`.
   - optional; used for test container scenarios
   - the label is referenced by `ContainerConnection` and `PipelineContainerConnection`
   - see [Test Containers](#test-containers) for details
-- `expect_within(Duration)` - set max runtime
-  - optional; default: 140s
+- `expect_within(u64)` - set max runtime in seconds
+  - optional; default: 25s
 - `run()` - renders template, launches pipelines, waits for readiness
   - required to run the validation stage
   - when containers are configured, they are started before the pipeline
@@ -137,6 +142,14 @@ e.g. `receiver`, `exporter`.
   - each `${KEY}` in the YAML is replaced with the corresponding value
   - returns an error if any `${...}` placeholders remain unresolved
   - useful for injecting TLS cert/key paths at test time (see [TLS / mTLS](#tls--mtls))
+- `with_transport_headers_policy(TransportHeadersPolicy)` - set a transport
+  headers policy on the SUV pipeline from a typed struct
+  - controls header capture at receivers and header propagation at exporters
+  - optional; see [Transport Headers](#transport-headers) for details
+- `with_transport_headers_policy_yaml(yaml_str)` - set a transport headers
+  policy from a YAML string
+  - returns `Result<Self, ValidationError>` (YAML parsing can fail)
+  - alternative to the typed struct method
 - `connect_container(PipelineContainerConnection)` - declare a connection between
   a node in the SUV pipeline and a test container
   - the framework rewrites the specified config key with the container's allocated
@@ -175,7 +188,13 @@ e.g. `receiver`, `exporter`.
   - default: 2-2
 - `with_tls(TlsConfig)` - enable TLS on the generator's exporter
   - optional; see [TLS / mTLS](#tls--mtls) for details
-  - requires the `experimental-tls` feature flag
+  - uses the built-in TLS support
+- `with_transport_headers(headers)` - configure transport headers to inject
+  into generated traffic
+  - each key is a header name; the value is an optional fixed string
+  - when the value is `None`, the traffic generator assigns a random value
+    at startup
+  - only meaningful when the pipeline uses OTLP receivers/exporters
 - `to_container(ContainerConnection)` - use a custom exporter that sends to a
   test container instead of directly to the SUV pipeline receiver
   - mutually exclusive with `otlp_grpc()` / `otap_grpc()`
@@ -186,7 +205,7 @@ the keys under `nodes:` in your pipeline YAML.
 
 ### TLS / mTLS
 
-> Requires the `experimental-tls` feature flag.
+> Uses the built-in TLS support.
 
 TLS support is configured on the **Generator** side. The generator's exporter
 connects to a TLS-enabled receiver in the SUV pipeline. Use `${VAR}` placeholders
@@ -249,7 +268,6 @@ Your SUV pipeline YAML should include TLS configuration on the receiver with
 use otap_df_validation::pipeline::Pipeline;
 use otap_df_validation::scenario::Scenario;
 use otap_df_validation::traffic::{Capture, Generator, TlsConfig};
-use std::time::Duration;
 
 let server_cert_path = "path/to/server.crt";
 let server_key_path = "path/to/server.key";
@@ -279,7 +297,7 @@ Scenario::new()
             .otlp_grpc("exporter")
             .control_streams(["traffic_gen"]),
     )
-    .expect_within(Duration::from_secs(140))
+    .expect_within(30)
     .run()
     .expect("TLS validation scenario failed");
 ```
@@ -290,7 +308,6 @@ Scenario::new()
 use otap_df_validation::pipeline::Pipeline;
 use otap_df_validation::scenario::Scenario;
 use otap_df_validation::traffic::{Capture, Generator, TlsConfig};
-use std::time::Duration;
 
 let server_cert_path = "path/to/server.crt";
 let server_key_path = "path/to/server.key";
@@ -323,7 +340,7 @@ Scenario::new()
             .otlp_grpc("exporter")
             .control_streams(["traffic_gen"]),
     )
-    .expect_within(Duration::from_secs(140))
+    .expect_within(30)
     .run()
     .expect("mTLS validation scenario failed");
 ```
@@ -332,24 +349,25 @@ Scenario::new()
 
 - **Capture example (with validations)**
 
-  ```rust
-  use otap_df_validation::traffic::Capture;
-  use otap_df_validation::ValidationInstructions;
-  use otap_df_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
+   ```rust
+   use otap_df_validation::traffic::Capture;
+   use otap_df_validation::ValidationInstructions;
+   use otap_df_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
 
-  let capture = Capture::default()
-      .otlp_grpc("node_name")   // required; must pass node name of exporter in your system-under-validation pipeline
-      .control_streams(["input"]) // optional; generator labels whose unmodified signals this capture receives
-      .core_range(3, 5)    // optional; default 1-1
-      .validate(vec![           // required; define your validation instructions
-          ValidationInstructions::Equivalence,
-          ValidationInstructions::SignalDrop { min_drop_ratio: None, max_drop_ratio: Some(0.5) },
-          ValidationInstructions::AttributeRequireKeyValue {
-              domains: vec![AttributeDomain::Signal],
-              pairs: vec![KeyValue::new("env".into(), AnyValue::String("prod".into()))],
-          },
-      ]);
-  ```
+   let capture = Capture::default()
+       .otlp_grpc("node_name")   // required; must pass node name of exporter in your system-under-validation pipeline
+       .control_streams(["input"]) // optional; generator labels whose unmodified signals this capture receives
+       .core_range(3, 5)    // optional; default 1-1
+       .idle_timeout(5)     // optional; seconds to wait for messages before validating; default 3
+       .validate(vec![           // required; define your validation instructions
+           ValidationInstructions::Equivalence,
+           ValidationInstructions::SignalDrop { min_drop_ratio: None, max_drop_ratio: Some(0.5) },
+           ValidationInstructions::AttributeRequireKeyValue {
+               domains: vec![AttributeDomain::Signal],
+               pairs: vec![KeyValue::new("env".into(), AnyValue::String("prod".into()))],
+           },
+       ]);
+   ```
 
 - `Capture::default()` - create a Capture
 - `otlp_grpc("node_name")` / `otap_grpc("node_name")` - connect to exporter
@@ -368,6 +386,15 @@ should receive control signals from
   - default: []
 - `core_range(start, end)` - set the core range to use for pipeline
   - default: 1-1
+- `idle_timeout(u8)` - set how long (in seconds) the validation exporter
+  waits without receiving any messages before declaring the data stream
+  settled and performing the final validation
+  - default: 3 seconds
+- `with_capture_header_keys(keys)` - configure transport header keys to capture
+  from inbound signals
+  - each key becomes a `match_names` rule in the capture pipeline's
+    `header_capture` policy
+  - required when using transport header validation instructions
 - `from_container(ContainerConnection)` - use a custom receiver that reads from
   a test container instead of directly from the SUV pipeline exporter
   - mutually exclusive with `otlp_grpc()` / `otap_grpc()`
@@ -375,6 +402,19 @@ should receive control signals from
 
 > NOTE: When using `otlp_grpc()` / `otap_grpc()`, the node names must match
 the keys under `nodes:` in your pipeline YAML.
+
+### How `idle_timeout` works
+
+The validation exporter tracks the timestamp of the last received message.
+On each periodic telemetry tick (every 1 second), it checks whether the
+elapsed time since the last message exceeds the configured idle timeout. If
+so, it considers the data stream settled, performs the final validation, and
+signals completion.
+
+A shorter timeout makes tests complete faster but may trigger validation
+prematurely if there are natural pauses in message delivery. A longer
+timeout is safer for pipelines with bursty or delayed output but increases
+overall test runtime.
 
 ### Validation instructions (used with `Capture::validate`)
 
@@ -396,8 +436,22 @@ count per message; `min/max` optional; `timeout` optional
   - `domains` accepts `AttributeDomain::Resource`, `Scope`, or `Signal`
   - `pairs` accepts `Vec<KeyValue>`
 - `AttributeNoDuplicate`: check that there are no duplicate attributes
+- `TransportHeaderRequireKey { keys }`: specified transport header keys must be
+  present on every SUV message. Fails if any message is missing transport
+  headers entirely.
+- `TransportHeaderRequireKeyValue { pairs }`: specified transport header
+  key/value pairs must be present on every SUV message. Values are compared as
+  UTF-8 text (case-sensitive). When duplicate header keys exist, the check
+  passes if any entry with that key matches the expected value.
+  - `pairs` accepts `Vec<TransportHeaderKeyValue>`
+- `TransportHeaderDeny { keys }`: specified transport header keys must NOT
+  appear on any SUV message. Messages without transport headers are acceptable
+  for this check.
 
-(see `validation_types::attributes` and `validation_types`)
+> See [Transport Headers](#transport-headers) for setup and a full example.
+
+(see `validation_types::attributes`, `validation_types::transport_headers`,
+and `validation_types`)
 
 > NOTE: Some ValidationInstructions require control signals. Use
 `control_streams` on the Capture to declare which generator(s) should
@@ -425,6 +479,97 @@ it should receive control signals from
   to receive from two generators
   - each generator label must match a label passed to `add_generator`
 
+### Transport Headers
+
+Validate that transport headers survive the full pipeline chain from generator
+through the system-under-validation to the capture pipeline.
+
+> **NOTE:** Only OTLP (`otlp_grpc`) receivers and exporters currently support
+> transport header capture and propagation. OTAP receivers/exporters do **not**
+> yet support transport headers.
+
+For these headers to flow through the pipeline chain, each
+stage needs to be appropriately configured:
+
+1. **Generator pipeline** -- automatically adds a `header_propagation` policy
+   (propagate all headers) when `with_transport_headers` is configured.
+2. **SUV pipeline** -- requires a `transport_headers` policy with both
+   `header_capture` (to extract headers from inbound gRPC metadata) and
+   `header_propagation` (to re-emit headers on the outbound gRPC connection).
+   Configure via `Pipeline::with_transport_headers_policy_yaml()` or
+   `Pipeline::with_transport_headers_policy()`.
+3. **Capture pipeline** -- requires `with_capture_header_keys` to specify which
+   headers to extract from inbound gRPC metadata for validation.
+
+#### Transport header validation instructions
+
+| Instruction | Behavior |
+| ----------- | -------- |
+| `TransportHeaderRequireKey { keys }` | Assert specified header keys exist on every SUV message |
+| `TransportHeaderRequireKeyValue { pairs }` | Assert specified key/value pairs exist on every SUV message |
+| `TransportHeaderDeny { keys }` | Assert specified header keys do NOT exist on any SUV message |
+
+For `RequireKey` and `RequireKeyValue`, every SUV message must carry transport
+headers (`Some`). A single message without headers causes immediate failure.
+
+For `Deny`, messages without transport headers are acceptable -- a signal that
+never received headers cannot contain a forbidden key.
+
+#### Example: transport headers validation
+
+```rust
+use otap_df_validation::ValidationInstructions;
+use otap_df_validation::pipeline::Pipeline;
+use otap_df_validation::scenario::Scenario;
+use otap_df_validation::traffic::{Capture, Generator};
+use otap_df_validation::validation_types::transport_headers::TransportHeaderKeyValue;
+
+Scenario::new()
+    .pipeline(
+        Pipeline::from_file("./validation_pipelines/no-processor.yaml")
+            .expect("load pipeline")
+            .with_transport_headers_policy_yaml(r#"
+header_capture:
+  headers:
+    - match_names: ["x-tenant-id"]
+header_propagation:
+  default:
+    selector:
+      type: all_captured
+    action: propagate
+"#)
+            .expect("parse policy"),
+    )
+    .add_generator(
+        "traffic_gen",
+        Generator::logs()
+            .fixed_count(500)
+            .otlp_grpc("receiver")
+            .static_signals()
+            .with_transport_headers([("x-tenant-id", Some("test-tenant"))]),
+    )
+    .add_capture(
+        "validate",
+        Capture::default()
+            .otlp_grpc("exporter")
+            .with_capture_header_keys(["x-tenant-id"])
+            .validate(vec![
+                ValidationInstructions::TransportHeaderRequireKey {
+                    keys: vec!["x-tenant-id".into()],
+                },
+                ValidationInstructions::TransportHeaderRequireKeyValue {
+                    pairs: vec![TransportHeaderKeyValue::new("x-tenant-id", "test-tenant")],
+                },
+                ValidationInstructions::TransportHeaderDeny {
+                    keys: vec!["x-should-not-exist".into()],
+                },
+            ])
+            .control_streams(["traffic_gen"]),
+    )
+    .run()
+    .expect("transport headers validation failed");
+```
+
 ### Test Containers
 
 Run Docker containers alongside your validation scenario using the
@@ -446,15 +591,72 @@ use otap_df_validation::ContainerConfig;
 
 let localstack = ContainerConfig::new("localstack/localstack", "3.4")
     .env("SERVICES", "s3")
-    .env("DEFAULT_REGION", "us-east-1");
+    .env("DEFAULT_REGION", "us-east-1")
+    .wait_for_log("Ready.");
 ```
 
 - `ContainerConfig::new(image, tag)` - create a container config for the given
   Docker image and tag
 - `.env(key, value)` - set an environment variable on the container
   - can be chained multiple times
+- `.env_host_port(key, value_template, internal_port)` - set an environment
+  variable whose value is a Jinja2 template; `{{ host_port }}` is replaced
+  with the host port mapped to `internal_port` after port allocation
+  - can be chained multiple times
+  - if no connection maps the given `internal_port`, the framework
+    auto-allocates a host port during config wiring
+  - the resolved host port is consistent with the port used for Docker
+    port mapping and any `ContainerConnection` or
+    `PipelineContainerConnection` referencing the same internal port
 - `.entrypoint(cmd)` - override the container's entrypoint
   - optional
+- `.wait_for_nothing()` - do not wait for any readiness condition (default)
+- `.wait_for_log(message)` - wait for the given message to appear on stdout or
+  stderr before considering the container ready
+- `.wait_for_log_stdout(message)` - wait for the message on stdout only
+- `.wait_for_log_stderr(message)` - wait for the message on stderr only
+- `.wait_for_duration(length)` - wait for the specified `Duration` before
+  considering the container ready
+- `.wait_for_seconds(seconds)` - convenience wrapper for waiting a number of
+  seconds
+- `.wait_for_millis(millis)` - convenience wrapper for waiting a number of
+  milliseconds
+- `.wait_for_healthcheck()` - wait for the container's Docker health check to
+  report healthy
+- `.wait_for_http(path)` - wait for an HTTP GET request to the given path to
+  return a 2xx response
+- `.wait_for_http_with_status(path, status_code)` - wait for an HTTP GET
+  request to return the specified status code
+- `.wait_for_exit()` - wait for the container to exit (any exit code)
+- `.wait_for_exit_with_code(expected_code)` - wait for the container to exit
+  with the specified exit code
+
+##### Templated environment variables
+
+Some containers require environment variables that reference the host port
+assigned to one of their exposed ports. For example, Kafka's advertised
+listeners must contain the host-reachable address so that clients outside
+the container can connect. Use `env_host_port` for this:
+
+```rust
+use otap_df_validation::ContainerConfig;
+
+let kafka = ContainerConfig::new("confluentinc/cp-kafka", "7.5.0")
+    .env("KAFKA_NODE_ID", "1")
+    .env_host_port(
+        "KAFKA_ADVERTISED_LISTENERS",
+        "PLAINTEXT://127.0.0.1:{{ host_port }}",
+        9092,
+    );
+```
+
+After config wiring, if host port 54321 was allocated for container port
+9092, the container starts with `KAFKA_ADVERTISED_LISTENERS` set to
+`PLAINTEXT://127.0.0.1:54321`.
+
+If a `PipelineContainerConnection` or `ContainerConnection` also
+references internal port 9092 on the same container, they all share the
+same allocated host port.
 
 Register the container on the scenario with `add_container`:
 
@@ -636,7 +838,6 @@ use otap_df_validation::ValidationInstructions;
 use otap_df_validation::pipeline::{Pipeline, PipelineContainerConnection};
 use otap_df_validation::scenario::Scenario;
 use otap_df_validation::traffic::{Capture, ContainerConnection, Generator};
-use std::time::Duration;
 
 Scenario::new()
     .pipeline(
@@ -653,7 +854,12 @@ Scenario::new()
         "localstack",
         ContainerConfig::new("localstack/localstack", "3.4")
             .env("SERVICES", "s3")
-            .env("DEFAULT_REGION", "us-east-1"),
+            .env("DEFAULT_REGION", "us-east-1")
+            .env_host_port(
+                "LOCALSTACK_HOST",
+                "127.0.0.1:{{ host_port }}",
+                4566,
+            ),
     )
     .add_generator(
         "gen",
@@ -668,6 +874,6 @@ Scenario::new()
             .validate(vec![ValidationInstructions::Equivalence])
             .control_streams(["gen"]),
     )
-    .expect_within(Duration::from_secs(140))
+    .expect_within(30)
     .run()?;
 ```

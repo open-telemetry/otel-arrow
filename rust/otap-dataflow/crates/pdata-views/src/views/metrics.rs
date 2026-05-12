@@ -134,6 +134,7 @@ pub trait MetricView {
 
 /// Enum representing the type of some DataType
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum DataType {
     /// Gauge represents the type of a scalar metric that always exports the "current value" for
     /// every data point.
@@ -153,6 +154,21 @@ pub enum DataType {
 
     /// Summary metric data are used to convey quantile summaries.
     Summary = 5,
+}
+
+impl DataType {
+    /// Get the matching data type if any based on a u8
+    #[must_use]
+    pub fn from_u8(val: u8) -> Option<DataType> {
+        match val {
+            1 => Some(DataType::Gauge),
+            2 => Some(DataType::Sum),
+            3 => Some(DataType::Histogram),
+            4 => Some(DataType::ExponentialHistogram),
+            5 => Some(DataType::Summary),
+            _ => None,
+        }
+    }
 }
 
 /// View for Data
@@ -444,6 +460,7 @@ impl DataPointFlags {
 /// AggregationTemporality defines how a metric aggregator reports aggregated values. It describes
 /// how those values relate to the time interval over which they are aggregated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum AggregationTemporality {
     /// UNSPECIFIED is the default AggregationTemporality, it MUST not be used.
     Unspecified = 0,

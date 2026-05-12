@@ -9,17 +9,16 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
-#[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::compression::CompressionMethod;
+use otap_df_otap::memory_pressure_layer::{MemoryPressureLayer, ReceiverRejectionMetrics};
 use otap_df_otap::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
 use otap_df_otap::otap_grpc::otlp::server::{RouteResponse, SharedState};
 use otap_df_otap::otap_grpc::{
     ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, Settings,
 };
 use otap_df_otap::pdata::OtapPdata;
-#[cfg(feature = "experimental-tls")]
 use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
 
 use async_trait::async_trait;
@@ -27,10 +26,12 @@ use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
+use otap_df_engine::clock;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
+use otap_df_engine::memory_limiter::SharedReceiverAdmissionState;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
@@ -43,12 +44,17 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
-use serde::Deserialize;
+use serde::de::Error as SerdeError;
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::ops::Add;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::Poll;
 use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 use tonic_middleware::MiddlewareLayer;
@@ -70,6 +76,13 @@ pub struct Config {
     #[serde(default = "default_max_concurrent_requests")]
     max_concurrent_requests: usize,
 
+    /// Maximum number of concurrent wait-for-result requests admitted from one OTAP stream. Clamped to `max_concurrent_requests` at runtime.
+    #[serde(
+        default = "default_max_concurrent_requests_per_stream",
+        deserialize_with = "deserialize_positive_max_concurrent_requests_per_stream"
+    )]
+    max_concurrent_requests_per_stream: NonZeroUsize,
+
     /// Whether to wait for the result (default: true)
     ///
     /// When enabled, the receiver will not send a response until the
@@ -89,12 +102,36 @@ pub struct Config {
     pub timeout: Option<Duration>,
 
     /// TLS configuration
-    #[cfg(feature = "experimental-tls")]
     pub tls: Option<TlsServerConfig>,
 }
 
 const fn default_max_concurrent_requests() -> usize {
     1000
+}
+
+fn default_max_concurrent_requests_per_stream() -> NonZeroUsize {
+    NonZeroUsize::new(16).expect("default per-stream concurrency must be non-zero")
+}
+
+fn deserialize_positive_usize<'de, D>(
+    deserializer: D,
+    field_name: &str,
+) -> Result<NonZeroUsize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = usize::deserialize(deserializer)?;
+    NonZeroUsize::new(value)
+        .ok_or_else(|| D::Error::custom(format!("{field_name} must be greater than 0")))
+}
+
+fn deserialize_positive_max_concurrent_requests_per_stream<'de, D>(
+    deserializer: D,
+) -> Result<NonZeroUsize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_positive_usize(deserializer, "max_concurrent_requests_per_stream")
 }
 
 const fn default_wait_for_result() -> bool {
@@ -107,6 +144,8 @@ const fn default_wait_for_result() -> bool {
 pub struct OTAPReceiver {
     config: Config,
     metrics: MetricSet<OtapReceiverMetrics>,
+    memory_pressure_metrics: Arc<SharedOtapMemoryPressureMetrics>,
+    admission_state: SharedReceiverAdmissionState,
 }
 
 /// Declares the OTAP receiver as a shared receiver factory
@@ -147,7 +186,14 @@ impl OTAPReceiver {
         // Register OTAP receiver metrics for this node.
         let metrics = pipeline_ctx.register_metrics::<OtapReceiverMetrics>();
 
-        Ok(OTAPReceiver { config, metrics })
+        Ok(OTAPReceiver {
+            config,
+            metrics,
+            memory_pressure_metrics: Arc::new(SharedOtapMemoryPressureMetrics::default()),
+            admission_state: SharedReceiverAdmissionState::from_process_state(
+                &pipeline_ctx.memory_pressure_state(),
+            ),
+        })
     }
 
     fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
@@ -200,10 +246,14 @@ impl OTAPReceiver {
             RouteResponse::None => {}
         }
     }
+
+    fn flush_memory_pressure_metrics(&mut self) {
+        self.memory_pressure_metrics.flush_into(&mut self.metrics);
+    }
 }
 
 /// OTAP receiver metrics.
-#[metric_set(name = "otap.receiver.metrics")]
+#[metric_set(name = "receiver.otap")]
 #[derive(Debug, Default, Clone)]
 pub struct OtapReceiverMetrics {
     /// Number of acks sent.
@@ -217,6 +267,45 @@ pub struct OtapReceiverMetrics {
     /// Number of invalid/expired acks/nacks.
     #[metric(unit = "{ack_or_nack}")]
     pub acks_nacks_invalid_or_expired: Counter<u64>,
+
+    /// Number of OTAP RPCs rejected before entering the pipeline.
+    #[metric(unit = "{requests}")]
+    pub rejected_requests: Counter<u64>,
+
+    /// Number of OTAP RPCs rejected specifically because memory pressure was active.
+    #[metric(unit = "{requests}")]
+    pub refused_memory_pressure: Counter<u64>,
+}
+
+#[derive(Default)]
+struct SharedOtapMemoryPressureMetrics {
+    rejected_requests: AtomicU64,
+    refused_memory_pressure: AtomicU64,
+}
+
+impl SharedOtapMemoryPressureMetrics {
+    fn flush_into(&self, metrics: &mut MetricSet<OtapReceiverMetrics>) {
+        let rejected_requests = self.rejected_requests.swap(0, Ordering::Relaxed);
+        if rejected_requests > 0 {
+            metrics.rejected_requests.add(rejected_requests);
+        }
+
+        let refused_memory_pressure = self.refused_memory_pressure.swap(0, Ordering::Relaxed);
+        if refused_memory_pressure > 0 {
+            metrics.refused_memory_pressure.add(refused_memory_pressure);
+        }
+    }
+}
+
+impl ReceiverRejectionMetrics for SharedOtapMemoryPressureMetrics {
+    fn record_rejection(&self) {
+        let _ = self.rejected_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_memory_pressure_rejection(&self) {
+        self.record_rejection();
+        let _ = self.refused_memory_pressure.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// State shared between gRPC server task and the effect handler.
@@ -224,6 +313,26 @@ struct SharedStates {
     logs: Option<SharedState>,
     metrics: Option<SharedState>,
     traces: Option<SharedState>,
+}
+
+impl SharedStates {
+    fn is_empty(&self) -> bool {
+        self.logs.as_ref().is_none_or(SharedState::is_empty)
+            && self.metrics.as_ref().is_none_or(SharedState::is_empty)
+            && self.traces.as_ref().is_none_or(SharedState::is_empty)
+    }
+
+    fn force_shutdown(&self, reason: &str) {
+        if let Some(state) = &self.logs {
+            state.force_shutdown(SignalType::Logs, reason);
+        }
+        if let Some(state) = &self.metrics {
+            state.force_shutdown(SignalType::Metrics, reason);
+        }
+        if let Some(state) = &self.traces {
+            state.force_shutdown(SignalType::Traces, reason);
+        }
+    }
 }
 
 // Use the async_trait due to the need for thread safety because of tonic requiring Send and Sync traits
@@ -248,7 +357,13 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let settings = Settings {
             response_stream_channel_size: self.config.response_stream_channel_size,
             max_concurrent_requests: self.config.max_concurrent_requests,
+            max_concurrent_requests_per_stream: self
+                .config
+                .max_concurrent_requests_per_stream
+                .get(),
             wait_for_result: self.config.wait_for_result,
+            admission_state: self.admission_state.clone(),
+            receiver_rejection_metrics: Some(self.memory_pressure_metrics.clone()),
         };
 
         //create services for the grpc server and clone the effect handler to pass message
@@ -288,7 +403,6 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             server_builder = server_builder.timeout(timeout);
         }
 
-        #[cfg(feature = "experimental-tls")]
         let maybe_tls_acceptor =
             build_tls_acceptor(self.config.tls.as_ref())
                 .await
@@ -299,90 +413,196 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                     source_detail: format_error_sources(&e),
                 })?;
 
-        #[cfg(feature = "experimental-tls")]
         let handshake_timeout = self.config.tls.as_ref().and_then(|t| t.handshake_timeout);
 
         let server = server_builder
+            .layer(MemoryPressureLayer::with_metrics(
+                self.admission_state.clone(),
+                self.memory_pressure_metrics.clone(),
+            ))
             .layer(MiddlewareLayer::new(ZstdRequestHeaderAdapter::default()))
             .add_service(logs_server)
             .add_service(metrics_server)
             .add_service(traces_server);
 
         // Start periodic telemetry collection
-        let telemetry_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
+        let mut telemetry_cancel_handle = Some(
+            effect_handler
+                .start_periodic_telemetry(Duration::from_secs(1))
+                .await?,
+        );
 
-        tokio::select! {
-            biased; //prioritize ctrl_msg over all other blocks
-
-            // Process internal events
-            ctrl_msg_result = async {
-                loop {
-                    match ctrl_msg_recv.recv().await {
-                        Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                            otap_df_telemetry::otel_info!("otap_receiver.shutdown");
-                            let snapshot = self.metrics.snapshot();
-                            _ = telemetry_cancel_handle.cancel().await;
-                            return Ok(TerminalState::new(deadline, [snapshot]));
-                        },
-                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                            // Report current receiver metrics.
-                            _ = metrics_reporter.report(&mut self.metrics);
-                        },
-                        Ok(NodeControlMsg::Ack(ack)) => {
-                            self.handle_ack_response(self.route_ack_response(&states, ack));
-                        },
-                        Ok(NodeControlMsg::Nack(nack)) => {
-                            self.handle_nack_response(self.route_nack_response(&states, nack));
-                        },
-                        Err(e) => {
-                            return Err(Error::ChannelRecvError(e));
-                        }
-                        _ => {
-                            // unknown control message do nothing
-                        }
-                    }
-                }
-            } => {
-                return ctrl_msg_result;
-            },
-
-            // Run server
-            // Note: Unlike otlp_receiver.rs, this uses an inline match because the server
-            // has a middleware layer applied which changes the Router type, making it
-            // incompatible with a shared helper function without complex generic bounds.
-            result = async {
-                #[cfg(feature = "experimental-tls")]
+        let grpc_shutdown = CancellationToken::new();
+        let server_task = {
+            let grpc_shutdown = grpc_shutdown.clone();
+            async {
                 match maybe_tls_acceptor {
                     Some(tls_acceptor) => {
-                        let tls_stream = create_tls_stream(listener_stream, tls_acceptor, handshake_timeout);
-                        server.serve_with_incoming(tls_stream).await
+                        let tls_stream =
+                            create_tls_stream(listener_stream, tls_acceptor, handshake_timeout);
+                        server
+                            .serve_with_incoming_shutdown(tls_stream, async move {
+                                grpc_shutdown.cancelled().await;
+                            })
+                            .await
                     }
-                    None => server.serve_with_incoming(listener_stream).await,
+                    None => {
+                        server
+                            .serve_with_incoming_shutdown(listener_stream, async move {
+                                grpc_shutdown.cancelled().await;
+                            })
+                            .await
+                    }
                 }
-                #[cfg(not(feature = "experimental-tls"))]
-                {
-                    server.serve_with_incoming(listener_stream).await
+            }
+        };
+        tokio::pin!(server_task);
+
+        let mut server_task_done = false;
+        let mut draining_deadline: Option<Instant> = None;
+        let mut draining_reason: Option<String> = None;
+        let mut drain_deadline_sleep: Option<clock::Sleep> = None;
+        let terminal_state: TerminalState;
+
+        loop {
+            if let Some(deadline) = draining_deadline {
+                // DrainIngress is receiver-first shutdown: stop accepting new RPCs
+                // immediately, but keep the event loop alive until the serving task
+                // has exited and all in-flight wait_for_result state has been
+                // resolved or force-failed at the deadline.
+                grpc_shutdown.cancel();
+
+                if clock::now() >= deadline {
+                    if let Some(reason) = draining_reason.as_deref() {
+                        states.force_shutdown(reason);
+                    }
+                    drain_deadline_sleep = None;
+                } else if drain_deadline_sleep.is_none() {
+                    drain_deadline_sleep = Some(clock::sleep_until(deadline));
                 }
-            } => {
-                if let Err(error) = result {
-                    // Report receiver error
-                    let source_detail = format_error_sources(&error);
-                    return Err(Error::ReceiverError {
-                        receiver: effect_handler.receiver_id(),
-                        kind: ReceiverErrorKind::Transport,
-                        error: error.to_string(),
-                        source_detail,
-                    });
+
+                if server_task_done && states.is_empty() {
+                    if let Some(handle) = telemetry_cancel_handle.take() {
+                        _ = handle.cancel().await;
+                    }
+                    effect_handler.notify_receiver_drained().await?;
+                    self.flush_memory_pressure_metrics();
+                    terminal_state = TerminalState::new(deadline, [self.metrics.snapshot()]);
+                    break;
+                }
+            } else {
+                drain_deadline_sleep = None;
+            }
+
+            let mut drain_sleep = std::pin::pin!(std::future::poll_fn(|cx| {
+                if let Some(sleep) = drain_deadline_sleep.as_mut() {
+                    sleep.as_mut().poll(cx)
+                } else {
+                    Poll::Pending
+                }
+            }));
+
+            tokio::select! {
+                biased;
+
+                ctrl_msg = ctrl_msg_recv.recv() => {
+                    match ctrl_msg {
+                        Ok(NodeControlMsg::DrainIngress { deadline, reason })
+                            if draining_deadline.is_none() => {
+                                otap_df_telemetry::otel_info!("otap_receiver.drain_ingress");
+                                // Latch the first drain request and close ingress.
+                                // This stops new admissions, but does not yet report
+                                // ReceiverDrained because previously admitted batches
+                                // may still need to finish their wait_for_result path.
+                                draining_deadline = Some(deadline);
+                                draining_reason = Some(reason);
+                                grpc_shutdown.cancel();
+                            }
+                        Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
+                            otap_df_telemetry::otel_info!("otap_receiver.shutdown");
+                            grpc_shutdown.cancel();
+                            states.force_shutdown(&reason);
+                            if let Some(handle) = telemetry_cancel_handle.take() {
+                                _ = handle.cancel().await;
+                            }
+                            self.flush_memory_pressure_metrics();
+                            terminal_state = TerminalState::new(deadline, [self.metrics.snapshot()]);
+                            break;
+                        }
+                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                            self.flush_memory_pressure_metrics();
+                            _ = metrics_reporter.report(&mut self.metrics);
+                        }
+                        Ok(NodeControlMsg::MemoryPressureChanged { update }) => {
+                            self.admission_state.apply(update);
+                        }
+                        Ok(NodeControlMsg::Ack(ack)) => {
+                            self.handle_ack_response(self.route_ack_response(&states, ack));
+                        }
+                        Ok(NodeControlMsg::Nack(nack)) => {
+                            self.handle_nack_response(self.route_nack_response(&states, nack));
+                        }
+                        Err(e) => {
+                            if let Some(handle) = telemetry_cancel_handle.take() {
+                                _ = handle.cancel().await;
+                            }
+                            return Err(Error::ChannelRecvError(e));
+                        }
+                        _ => {}
+                    }
+                }
+
+                result = &mut server_task, if !server_task_done => {
+                    server_task_done = true;
+                    if let Err(error) = result {
+                        let source_detail = format_error_sources(&error);
+                        return Err(Error::ReceiverError {
+                            receiver: effect_handler.receiver_id(),
+                            kind: ReceiverErrorKind::Transport,
+                            error: error.to_string(),
+                            source_detail,
+                        });
+                    }
+
+                    if draining_deadline.is_none() {
+                        if let Some(handle) = telemetry_cancel_handle.take() {
+                            _ = handle.cancel().await;
+                        }
+                        self.flush_memory_pressure_metrics();
+                        terminal_state = TerminalState::new(
+                            clock::now().add(Duration::from_secs(1)),
+                            [self.metrics.snapshot()],
+                        );
+                        break;
+                    }
+                }
+
+                _ = &mut drain_sleep => {
+                    if let Some(reason) = draining_reason.as_deref() {
+                        // The receiver missed the graceful-drain deadline. Force any
+                        // remaining in-flight wait_for_result subscriptions to fail so
+                        // the runtime can eventually observe ReceiverDrained.
+                        states.force_shutdown(reason);
+                    }
+                    drain_deadline_sleep = None;
                 }
             }
         }
 
-        Ok(TerminalState::new(
-            Instant::now().add(Duration::from_secs(1)),
-            [self.metrics],
-        ))
+        grpc_shutdown.cancel();
+        if !server_task_done {
+            if let Err(error) = server_task.await {
+                let source_detail = format_error_sources(&error);
+                return Err(Error::ReceiverError {
+                    receiver: effect_handler.receiver_id(),
+                    kind: ReceiverErrorKind::Transport,
+                    error: error.to_string(),
+                    source_detail,
+                });
+            }
+        }
+
+        Ok(terminal_state)
     }
 }
 
@@ -397,10 +617,12 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
+    use otap_df_otap::memory_pressure_layer::ReceiverRejectionMetrics;
     use otap_df_otap::otap_mock::create_otap_batch;
     use otap_df_otap::pdata::OtapPdata;
     use otap_df_otap::testing::{next_ack, next_nack};
     use otap_df_pdata::Producer;
+    use otap_df_pdata::TryIntoWithOptions;
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
@@ -412,6 +634,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
     use std::time::Instant;
     use tokio::time::{Duration, timeout};
 
@@ -434,7 +657,7 @@ mod tests {
                 let metrics_stream = stream! {
                     let mut producer = Producer::new();
                     for batch_id in 0..3 {
-                        let mut metrics_records = create_otap_batch(batch_id, ArrowPayloadType::MultivariateMetrics);
+                        let mut metrics_records = create_otap_batch(batch_id, ArrowPayloadType::UnivariateMetrics);
                         let bar = producer.produce_bar(&mut metrics_records).unwrap();
                         yield bar
                     }
@@ -448,6 +671,7 @@ mod tests {
                     metrics_response.into_inner(),
                     0,
                     "Successfully received",
+                    3,
                     "metrics",
                 )
                 .await;
@@ -473,6 +697,7 @@ mod tests {
                     logs_response.into_inner(),
                     0,
                     "Successfully received",
+                    3,
                     "logs",
                 )
                 .await;
@@ -499,6 +724,7 @@ mod tests {
                     traces_response.into_inner(),
                     0,
                     "Successfully received",
+                    3,
                     "traces",
                 )
                 .await;
@@ -530,12 +756,12 @@ mod tests {
                     let metrics_records: OtapArrowRecords = metrics_pdata
                         .clone()
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .expect("Could convert pdata to OTAPData");
 
                     // Assert that the message received is what the test client sent.
                     let _expected_metrics_message =
-                        create_otap_batch(batch_id, ArrowPayloadType::MultivariateMetrics);
+                        create_otap_batch(batch_id, ArrowPayloadType::UnivariateMetrics);
                     assert!(matches!(metrics_records, _expected_metrics_message));
 
                     // Send ACK if wait_for_result is enabled
@@ -556,7 +782,7 @@ mod tests {
                     let logs_records: OtapArrowRecords = logs_pdata
                         .clone()
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .expect("Could convert pdata to OTAPData");
 
                     // Assert that the message received is what the test client sent.
@@ -582,7 +808,7 @@ mod tests {
                     let traces_records: OtapArrowRecords = traces_pdata
                         .clone()
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .expect("Could convert pdata to OTAPData");
 
                     // Assert that the message received is what the test client sent.
@@ -617,7 +843,7 @@ mod tests {
                 let metrics_stream = stream! {
                     let mut producer = Producer::new();
                     for batch_id in 0..3 {
-                        let mut metrics_records = create_otap_batch(batch_id, ArrowPayloadType::MultivariateMetrics);
+                        let mut metrics_records = create_otap_batch(batch_id, ArrowPayloadType::UnivariateMetrics);
                         let bar = producer.produce_bar(&mut metrics_records).unwrap();
                         yield bar
                     }
@@ -635,6 +861,7 @@ mod tests {
                         "Pipeline processing failed: {}",
                         "Test NACK reason for metrics"
                     ),
+                    3,
                     "metrics",
                 )
                 .await;
@@ -666,6 +893,7 @@ mod tests {
                         "Pipeline processing failed: {}",
                         "Test NACK reason for logs"
                     ),
+                    3,
                     "logs",
                 )
                 .await;
@@ -698,6 +926,7 @@ mod tests {
                         "Pipeline processing failed: {}",
                         "Test NACK reason for traces"
                     ),
+                    3,
                     "traces",
                 )
                 .await;
@@ -768,6 +997,7 @@ mod tests {
         mut inbound_stream: S,
         expected_status_code: i32,
         expected_status_message: &str,
+        expected_batch_count: i64,
         signal_name: &str,
     ) where
         S: futures::Stream<
@@ -815,7 +1045,7 @@ mod tests {
         // Verify we received all expected batch IDs
         assert_eq!(
             received_batch_ids,
-            (0..3).collect::<HashSet<_>>(),
+            (0..expected_batch_count).collect::<HashSet<_>>(),
             "Did not receive responses for all expected batch IDs in {}. Got: {:?}",
             signal_name,
             received_batch_ids
@@ -889,6 +1119,7 @@ mod tests {
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4317");
         assert_eq!(receiver.config.response_stream_channel_size, 100);
         assert_eq!(receiver.config.max_concurrent_requests, 5000);
+        assert_eq!(receiver.config.max_concurrent_requests_per_stream.get(), 16);
         assert!(!receiver.config.wait_for_result);
         assert!(receiver.config.compression_method.is_none());
         assert!(receiver.config.timeout.is_none());
@@ -902,6 +1133,7 @@ mod tests {
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4318");
         assert_eq!(receiver.config.response_stream_channel_size, 200);
         assert_eq!(receiver.config.max_concurrent_requests, 1000);
+        assert_eq!(receiver.config.max_concurrent_requests_per_stream.get(), 16);
         assert!(!receiver.config.wait_for_result);
         assert!(receiver.config.compression_method.is_none());
         assert!(receiver.config.timeout.is_none());
@@ -912,6 +1144,7 @@ mod tests {
             "response_stream_channel_size": 150,
             "compression_method": "gzip",
             "max_concurrent_requests": 2500,
+            "max_concurrent_requests_per_stream": 32,
             "wait_for_result": true,
             "timeout": "30s"
         });
@@ -919,6 +1152,7 @@ mod tests {
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4319");
         assert_eq!(receiver.config.response_stream_channel_size, 150);
         assert_eq!(receiver.config.max_concurrent_requests, 2500);
+        assert_eq!(receiver.config.max_concurrent_requests_per_stream.get(), 32);
         assert!(receiver.config.wait_for_result);
         assert!(matches!(
             receiver.config.compression_method,
@@ -949,7 +1183,8 @@ mod tests {
             "response_stream_channel_size": 75,
             "compression_method": "deflate"
         });
-        let receiver = OTAPReceiver::from_config(pipeline_ctx, &config_with_deflate).unwrap();
+        let receiver =
+            OTAPReceiver::from_config(pipeline_ctx.clone(), &config_with_deflate).unwrap();
         assert_eq!(receiver.config.listening_addr.to_string(), "127.0.0.1:4321");
         assert_eq!(receiver.config.response_stream_channel_size, 75);
         assert!(matches!(
@@ -957,6 +1192,61 @@ mod tests {
             Some(CompressionMethod::Deflate)
         ));
         assert!(receiver.config.timeout.is_none());
+
+        let config_with_zero_per_stream_limit = json!({
+            "listening_addr": "127.0.0.1:4322",
+            "response_stream_channel_size": 75,
+            "max_concurrent_requests_per_stream": 0
+        });
+        let err = match OTAPReceiver::from_config(pipeline_ctx, &config_with_zero_per_stream_limit)
+        {
+            Ok(_) => panic!("zero per-stream in-flight limit should be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            format!("{err}").contains("max_concurrent_requests_per_stream must be greater than 0")
+        );
+    }
+
+    #[test]
+    fn shared_rejection_metrics_flush_into_reported_metric_set() {
+        use serde_json::json;
+
+        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let config = json!({
+            "listening_addr": "127.0.0.1:4317",
+            "response_stream_channel_size": 100
+        });
+        let mut receiver = OTAPReceiver::from_config(pipeline_ctx, &config).unwrap();
+
+        receiver.memory_pressure_metrics.record_rejection();
+        receiver
+            .memory_pressure_metrics
+            .record_memory_pressure_rejection();
+
+        receiver.flush_memory_pressure_metrics();
+
+        assert_eq!(receiver.metrics.rejected_requests.get(), 2);
+        assert_eq!(receiver.metrics.refused_memory_pressure.get(), 1);
+        assert_eq!(
+            receiver
+                .memory_pressure_metrics
+                .rejected_requests
+                .load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            receiver
+                .memory_pressure_metrics
+                .refused_memory_pressure
+                .load(Ordering::Relaxed),
+            0
+        );
     }
 
     #[test]
@@ -1035,5 +1325,111 @@ mod tests {
             .set_receiver(receiver)
             .run_test(nack_scenario(grpc_endpoint)) // Use NACK-specific scenario
             .run_validation_concurrent(nack_validation_procedure()); // Use NACK-specific validation
+    }
+
+    // When wait_for_result is enabled, shutdown must resolve every in-flight batch
+    // response stream to an explicit unavailable status instead of leaving the OTAP
+    // client hanging on the server-side wait path.
+    #[test]
+    fn test_otap_receiver_shutdown_completes_inflight_waits() {
+        let test_runtime = TestRuntime::new();
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
+
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use serde_json::json;
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let config = json!({
+            "listening_addr": addr.to_string(),
+            "response_stream_channel_size": 100,
+            "wait_for_result": true
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTAPReceiver::from_config(pipeline_ctx, &config).unwrap(),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let request_started = Arc::new(tokio::sync::Notify::new());
+        let scenario_started = request_started.clone();
+        let validation_started = request_started.clone();
+        let shutdown_reason = "shutdown while OTAP batches are waiting";
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            let request_started = scenario_started.clone();
+            Box::pin(async move {
+                let request_handle = tokio::spawn(async move {
+                    let mut client = ArrowLogsServiceClient::connect(grpc_endpoint.clone())
+                        .await
+                        .expect("connect otap receiver");
+
+                    #[allow(tail_expr_drop_order)]
+                    let logs_stream = stream! {
+                        let mut producer = Producer::new();
+                        for batch_id in 0..1 {
+                            let mut logs_records = create_otap_batch(batch_id, ArrowPayloadType::Logs);
+                            let bar = producer.produce_bar(&mut logs_records).unwrap();
+                            yield bar;
+                        }
+                    };
+
+                    let response = client
+                        .arrow_logs(logs_stream)
+                        .await
+                        .expect("arrow_logs request should succeed");
+
+                    validate_batch_responses(
+                        response.into_inner(),
+                        14,
+                        &format!("Pipeline processing failed: {shutdown_reason}"),
+                        1,
+                        "logs",
+                    )
+                    .await;
+                });
+
+                timeout(Duration::from_secs(3), request_started.notified())
+                    .await
+                    .expect("timed out waiting for OTAP request to reach the pipeline");
+
+                ctx.send_shutdown(Instant::now() + Duration::from_secs(1), shutdown_reason)
+                    .await
+                    .expect("failed to send shutdown");
+
+                timeout(Duration::from_secs(3), request_handle)
+                    .await
+                    .expect("OTAP wait_for_result request should complete on shutdown")
+                    .unwrap();
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = move |mut ctx: NotSendValidateContext<OtapPdata>| {
+            let request_started = validation_started.clone();
+            Box::pin(async move {
+                let _pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("timed out waiting for OTAP pdata")
+                    .expect("no OTAP pdata received");
+                request_started.notify_one();
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
     }
 }

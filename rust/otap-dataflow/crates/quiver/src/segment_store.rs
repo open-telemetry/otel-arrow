@@ -432,6 +432,16 @@ impl SegmentStore {
         Ok(())
     }
 
+    /// Schedules deferred cleanup of an orphaned segment file.
+    ///
+    /// This is used to clean up partially-written or uncompleted segment files
+    /// that exist on disk but are not tracked in the segment store's in-memory registry.
+    /// The file is not charged against the disk budget (since it was never successfully
+    /// registered), but will be retried periodically via the deferred delete mechanism.
+    pub fn defer_orphaned_segment_cleanup(&self, seq: SegmentSeq) {
+        self.defer_delete(seq, 0);
+    }
+
     /// Checks if an I/O error is a sharing violation (Windows-specific).
     ///
     /// On Windows, this occurs when trying to delete a file that's still open
@@ -763,6 +773,20 @@ impl SegmentStore {
             })
             .collect()
     }
+
+    /// Subtracts `offset` from every segment's `finalized_at` timestamp,
+    /// making them appear older for expiration tests without sleeping.
+    #[cfg(test)]
+    pub(crate) fn backdate_all_segments(&self, offset: Duration) {
+        let mut segments = self.segments.write();
+        for handle in segments.values_mut() {
+            let h = Arc::get_mut(handle).expect("segment handle has multiple owners");
+            h.finalized_at = h
+                .finalized_at
+                .checked_sub(offset)
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+        }
+    }
 }
 
 impl SegmentProvider for SegmentStore {
@@ -890,6 +914,8 @@ mod tests {
 
     #[test]
     fn is_file_before_cutoff_checks_mtime() {
+        use std::fs::FileTimes;
+
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test.txt");
         std::fs::write(&file_path, "test").unwrap();
@@ -903,10 +929,17 @@ mod tests {
             cutoff_1hr_ago
         ));
 
-        // With a very short max_age and sleep, file should be before cutoff
-        std::thread::sleep(Duration::from_millis(50));
-        let later = SystemTime::now();
-        let cutoff_10ms_ago = later.checked_sub(Duration::from_millis(10)).unwrap();
+        // Backdate file mtime to 1 second ago, then check with a 10ms cutoff
+        let old_time = now.checked_sub(Duration::from_secs(1)).unwrap();
+        let times = FileTimes::new().set_modified(old_time);
+        let f = std::fs::File::options()
+            .write(true)
+            .open(&file_path)
+            .unwrap();
+        f.set_times(times).unwrap();
+        drop(f);
+
+        let cutoff_10ms_ago = now.checked_sub(Duration::from_millis(10)).unwrap();
         assert!(SegmentStore::is_file_before_cutoff(
             &file_path,
             cutoff_10ms_ago
@@ -1516,5 +1549,65 @@ mod tests {
         );
         assert!(path.exists(), "file should still exist");
         assert_eq!(budget.used(), tracked_size, "budget should remain charged");
+    }
+
+    #[test]
+    fn defer_orphaned_segment_cleanup_schedules_without_budget() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+
+        let budget = Arc::new(DiskBudget::new(
+            10_000_000,
+            1_000_000,
+            RetentionPolicy::Backpressure,
+        ));
+        let store =
+            SegmentStore::with_budget(&segment_dir, SegmentReadMode::Standard, budget.clone());
+
+        // Create an orphaned segment file (not registered in the store).
+        // This simulates a partially-written segment from a failed flush.
+        let seq = SegmentSeq::new(999);
+        let path = segment_dir.join(format!("{}.qseg", seq.to_filename_component()));
+        std::fs::write(&path, vec![0u8; 5000]).unwrap();
+        assert!(path.exists(), "orphaned file should exist on disk");
+
+        // Verify the file is NOT in the segment registry (orphaned).
+        {
+            let segments = store.segments.read();
+            assert!(
+                !segments.contains_key(&seq),
+                "orphaned file should not be registered"
+            );
+        }
+
+        // Budget should be empty since the file was never registered.
+        assert_eq!(budget.used(), 0, "budget should not track orphaned files");
+
+        // Schedule deferred cleanup of the orphaned file.
+        store.defer_orphaned_segment_cleanup(seq);
+
+        // Verify the file is scheduled in pending_deletes with file_size = 0.
+        assert_eq!(
+            store.pending_delete_count(),
+            1,
+            "orphaned file should be scheduled for cleanup"
+        );
+
+        // Budget should remain 0 (orphaned files don't contribute to budget).
+        assert_eq!(
+            budget.used(),
+            0,
+            "budget should remain 0 for orphaned cleanup"
+        );
+
+        // Retry the pending delete — the orphaned file should be cleaned up.
+        let cleared = store.retry_pending_deletes();
+        assert_eq!(cleared, 1, "orphaned file should be successfully deleted");
+        assert_eq!(store.pending_delete_count(), 0);
+        assert!(!path.exists(), "orphaned file should be removed from disk");
+
+        // Budget should remain 0 throughout (no budget impact).
+        assert_eq!(budget.used(), 0, "budget should remain 0 after cleanup");
     }
 }

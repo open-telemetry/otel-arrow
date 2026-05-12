@@ -42,6 +42,27 @@ impl AckRegistry {
             traces,
         }
     }
+
+    /// Returns true when all subscription maps are empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.logs.as_ref().is_none_or(AckSlot::is_empty)
+            && self.metrics.as_ref().is_none_or(AckSlot::is_empty)
+            && self.traces.as_ref().is_none_or(AckSlot::is_empty)
+    }
+
+    /// Completes all outstanding wait-for-result slots with a shutdown Nack.
+    pub fn force_shutdown(&self, reason: &str) {
+        if let Some(slot) = &self.logs {
+            slot.force_shutdown(SignalType::Logs, reason);
+        }
+        if let Some(slot) = &self.metrics {
+            slot.force_shutdown(SignalType::Metrics, reason);
+        }
+        if let Some(slot) = &self.traces {
+            slot.force_shutdown(SignalType::Traces, reason);
+        }
+    }
 }
 
 /// Routes an Ack message to the appropriate signal's subscription map.

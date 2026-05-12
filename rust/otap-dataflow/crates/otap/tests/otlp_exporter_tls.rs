@@ -3,7 +3,6 @@
 
 //! Integration test validating exporter-side TLS/mTLS for the OTLP exporter.
 
-#![cfg(feature = "experimental-tls")]
 #![allow(missing_docs)]
 
 use otap_df_config::tls::{TlsClientConfig, TlsConfig};
@@ -190,6 +189,7 @@ async fn otlp_exporter_fails_with_invalid_ca_pem() {
 
 #[tokio::test]
 async fn otlp_exporter_allows_http_with_tls_config() {
+    otap_df_otap::crypto::ensure_crypto_provider();
     let settings = GrpcClientSettings {
         grpc_endpoint: "http://localhost:4317".to_string(),
         tls: Some(TlsClientConfig {
@@ -208,6 +208,7 @@ async fn otlp_exporter_allows_http_with_tls_config() {
 
 #[tokio::test]
 async fn otlp_exporter_fails_partial_mtls() {
+    otap_df_otap::crypto::ensure_crypto_provider();
     let settings = GrpcClientSettings {
         grpc_endpoint: "https://localhost:4317".to_string(),
         tls: Some(TlsClientConfig {

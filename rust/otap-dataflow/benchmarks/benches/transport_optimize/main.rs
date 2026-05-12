@@ -13,8 +13,8 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use otap_df_core_nodes::receivers::fake_data_generator::config::{Config, TrafficConfig};
-use otap_df_core_nodes::receivers::fake_data_generator::semconv_signal::semconv_otlp_logs;
+use otap_df_core_nodes::receivers::traffic_generator::config::{Config, TrafficConfig};
+use otap_df_core_nodes::receivers::traffic_generator::semconv_signal::semconv_otlp_logs;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::transform::materialize_parent_id_for_attributes;
 use otap_df_pdata::otlp::attributes::AttributeValueType;
@@ -120,7 +120,9 @@ fn read_logs_batch(batch_size: usize, with_nulls: bool) -> OtapArrowRecords {
         columns[str_col_idx] = Arc::new(new_str_dict);
         let new_attrs_batch =
             RecordBatch::try_new(attrs_batch.schema(), columns).expect("can create batch");
-        otap_batch.set(ArrowPayloadType::LogAttrs, new_attrs_batch);
+        otap_batch
+            .set(ArrowPayloadType::LogAttrs, new_attrs_batch)
+            .expect("can set LogAttrs batch");
     }
 
     otap_batch

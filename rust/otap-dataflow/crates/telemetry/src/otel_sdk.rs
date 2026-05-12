@@ -128,7 +128,7 @@ mod tests {
             MetricsConfig,
             readers::{
                 MetricsReaderConfig, MetricsReaderPeriodicConfig,
-                periodic::MetricsPeriodicExporterConfig,
+                periodic::{MetricsPeriodicExporterConfig, MetricsPeriodicExporterType},
             },
         },
     };
@@ -161,7 +161,10 @@ mod tests {
 
         let metrics_config = MetricsConfig {
             readers: vec![MetricsReaderConfig::Periodic(MetricsReaderPeriodicConfig {
-                exporter: MetricsPeriodicExporterConfig::Console,
+                exporter: MetricsPeriodicExporterConfig {
+                    exporter_type: MetricsPeriodicExporterType::Console,
+                    config: serde_json::Value::Null,
+                },
                 interval: Duration::from_millis(10),
             })],
             views: Vec::new(),

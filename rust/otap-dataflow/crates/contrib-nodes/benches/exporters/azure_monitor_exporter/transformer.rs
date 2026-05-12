@@ -27,7 +27,7 @@ use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceR
 
 fn create_config() -> Config {
     use otap_df_contrib_nodes::exporters::azure_monitor_exporter::config::{
-        ApiConfig, AuthConfig, SchemaConfig,
+        ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig,
     };
 
     Config {
@@ -62,8 +62,11 @@ fn create_config() -> Config {
                     ),
                 ]),
             },
+            azure_monitor_source_resourceid: None,
+            gzip_compression_level: 6,
         },
         auth: AuthConfig::default(),
+        heartbeat: HeartbeatConfig::default(),
     }
 }
 

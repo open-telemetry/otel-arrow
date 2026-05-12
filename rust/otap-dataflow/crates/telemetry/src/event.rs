@@ -3,6 +3,7 @@
 
 //! Definition of all signals/conditions that drive state transitions and log events.
 
+use crate::log_tap::InternalLogTapDropCounter;
 use crate::self_tracing::{LogRecord, format_log_record_to_string};
 use otap_df_config::{DeployedPipelineKey, NodeId, node::NodeKind, observed_state::SendPolicy};
 use serde::Serialize;
@@ -20,6 +21,7 @@ use std::time::SystemTime;
 pub struct ObservedEventReporter {
     policy: SendPolicy,
     sender: flume::Sender<ObservedEvent>,
+    drop_counter: Option<InternalLogTapDropCounter>,
     /// Dedicated reliable sender for engine lifecycle events.
     /// When `Some`, [`report`](Self::report) bypasses the lossy path and uses
     /// a blocking send on the unbounded engine channel.
@@ -37,6 +39,7 @@ impl ObservedEventReporter {
         Self {
             policy,
             sender,
+            drop_counter: None,
             engine_sender: None,
         }
     }
@@ -53,8 +56,23 @@ impl ObservedEventReporter {
         Self {
             policy,
             sender,
+            drop_counter: None,
             engine_sender: Some(engine_sender),
         }
+    }
+
+    /// Attach a counter for logs dropped before they reach retention.
+    #[must_use]
+    pub fn with_drop_counter(mut self, drop_counter: InternalLogTapDropCounter) -> Self {
+        self.drop_counter = Some(drop_counter);
+        self
+    }
+
+    /// Returns the configured send policy. Test-only accessor used to verify
+    /// that the policy was threaded through correctly during construction.
+    #[cfg(test)]
+    pub(crate) fn policy(&self) -> &SendPolicy {
+        &self.policy
     }
 
     /// Report an engine event.
@@ -82,10 +100,16 @@ impl ObservedEventReporter {
     }
 
     fn observe(&self, event: ObservedEvent) {
+        let is_log = matches!(event, ObservedEvent::Log(_));
         match self.policy.blocking_timeout {
             None => match self.sender.try_send(event) {
                 Ok(_) => {}
                 Err(err) => {
+                    if is_log {
+                        if let Some(drop_counter) = &self.drop_counter {
+                            drop_counter.increment();
+                        }
+                    }
                     if !self.policy.console_fallback {
                         return;
                     }
@@ -102,6 +126,11 @@ impl ObservedEventReporter {
             Some(timeout) => match self.sender.send_timeout(event, timeout) {
                 Ok(_) => {}
                 Err(err) => {
+                    if is_log {
+                        if let Some(drop_counter) = &self.drop_counter {
+                            drop_counter.increment();
+                        }
+                    }
                     if !self.policy.console_fallback {
                         return;
                     }
@@ -200,7 +229,7 @@ pub enum EventType {
 pub enum RequestEvent {
     /// A request to (re)start the pipeline lifecycle from a stopped state.
     StartRequested,
-    /// Begin graceful shutdown and quiesce existing work.
+    /// Begin graceful shutdown and drain existing work.
     ShutdownRequested,
     /// Request graceful deletion (drain if needed, then delete).
     DeleteRequested,
@@ -221,6 +250,12 @@ pub enum SuccessEvent {
     UpdateApplied,
     /// Rollback finished successfully; last known good is restored.
     RollbackComplete,
+    /// Graceful shutdown was latched and receivers were asked to stop new ingress.
+    IngressDrainStarted,
+    /// All receivers finished their drain work and downstream shutdown may proceed.
+    ReceiversDrained,
+    /// Shutdown has propagated from receivers to processors/exporters.
+    DownstreamShutdownStarted,
     /// All ongoing work has drained to zero; safe to stop or delete.
     Drained,
     /// Resource teardown has finished; nothing remains.
@@ -241,6 +276,8 @@ pub enum ErrorEvent {
     RollbackFailed(ErrorSummary),
     /// Draining failed or timed out according to policy.
     DrainError(ErrorSummary),
+    /// Graceful shutdown reached its deadline before natural drain completion.
+    DrainDeadlineReached,
     /// An unrecoverable runtime fault/crash occurred.
     RuntimeError(ErrorSummary),
     /// An error occurred during teardown.
@@ -339,6 +376,45 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::RollbackComplete),
+            message,
+        }
+    }
+
+    /// Create an `IngressDrainStarted` pipeline-level event.
+    #[must_use]
+    pub fn ingress_drain_started(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::IngressDrainStarted),
+            message,
+        }
+    }
+
+    /// Create a `ReceiversDrained` pipeline-level event.
+    #[must_use]
+    pub fn receivers_drained(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::ReceiversDrained),
+            message,
+        }
+    }
+
+    /// Create a `DownstreamShutdownStarted` pipeline-level event.
+    #[must_use]
+    pub fn downstream_shutdown_started(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::DownstreamShutdownStarted),
             message,
         }
     }
@@ -450,6 +526,19 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::DrainError(error)),
+            message,
+        }
+    }
+
+    /// Create a `DrainDeadlineReached` pipeline-level event.
+    #[must_use]
+    pub fn drain_deadline_reached(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Error(ErrorEvent::DrainDeadlineReached),
             message,
         }
     }

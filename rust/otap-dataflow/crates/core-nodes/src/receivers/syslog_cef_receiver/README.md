@@ -1,5 +1,7 @@
 # Syslog and CEF Receiver
 
+<!-- markdownlint-disable MD013 -->
+
 **URN:** `urn:otel:receiver:syslog_cef`
 
 A high-performance receiver for ingesting syslog messages (RFC 3164 and RFC 5424)
@@ -27,7 +29,7 @@ receivers:
       tcp:
         listening_addr: "0.0.0.0:514"
 
-        # Optional: TLS configuration (requires "experimental-tls" feature)
+        # Optional: TLS configuration
         tls:
           cert_file: "/path/to/server.crt"
           key_file: "/path/to/server.key"
@@ -90,7 +92,7 @@ receivers:
 
 ### TCP with TLS (RFC 5425)
 
-When the `experimental-tls` feature is enabled, the receiver supports
+The receiver supports
 Syslog over TLS:
 
 - Encrypted transport for sensitive log data
@@ -356,18 +358,17 @@ To optimize throughput and reduce per-message overhead, the receiver batches
 messages into Apache Arrow record batches before sending downstream:
 
 ```text
-+-------------------------------------------------------------+
-|                    Batching Logic                           |
-+-------------------------------------------------------------+
-|                                                             |
-|   Messages arrive  -->  ArrowRecordsBuilder  -->  Batch     |
-|                              |                     sent     |
-|                              |                              |
-|   Flush conditions:          |                              |
-|   +- Size: max_size messages +-------------------------->   |
-|   +- Time: max_batch_duration_ms  |                              |
-|                                                             |
-+-------------------------------------------------------------+
++-------------------------------------------------------------------+
+|                         Batching Logic                            |
++-------------------------------------------------------------------+
+|                                                                   |
+|   Messages arrive  -->  ArrowRecordsBuilder  -->  Batch sent      |
+|                              |                                    |
+|   Flush conditions:          |                                    |
+|   +- Size: max_size messages +------------------------------->    |
+|   +- Time: max_batch_duration_ms  +-------------------------->    |
+|                                                                   |
++-------------------------------------------------------------------+
 ```
 
 A batch is flushed when either:
@@ -406,7 +407,7 @@ The receiver exposes the following internal metrics:
 | ------- | ------ | ------------- |
 | `received_logs_total` | Counter | Total logs observed at socket |
 | `received_logs_forwarded` | Counter | Logs successfully sent downstream |
-| `received_logs_invalid` | Counter | Logs that failed to parse |
+| `received_logs_invalid` | Counter | Zero-length payloads rejected |
 | `received_logs_forward_failed` | Counter | Logs refused by downstream |
 | `tcp_connections_active` | UpDownCounter | Active TCP connections |
 | `tls_handshake_failures` | Counter | TLS handshake failures (TLS only) |
@@ -440,4 +441,4 @@ pipelines:
 
 | Feature | Description |
 | ------- | ----------- |
-| `experimental-tls` | Enables TLS support for secure TCP connections |
+| Built-in TLS support | Enables TLS support for secure TCP connections |

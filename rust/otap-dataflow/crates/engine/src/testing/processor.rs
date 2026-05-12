@@ -8,7 +8,7 @@
 
 use crate::Interests;
 use crate::config::ProcessorConfig;
-use crate::control::pipeline_ctrl_msg_channel;
+use crate::control::{NodeControlMsg, runtime_ctrl_msg_channel};
 use crate::effect_handler::SourceTagging;
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -23,7 +23,7 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::task::{JoinHandle, LocalSet};
 use tokio::time::sleep;
 
@@ -91,6 +91,40 @@ impl<PData> TestContext<PData> {
         sleep(duration).await;
     }
 
+    /// Returns the next scheduled local-control deadline, if any.
+    #[must_use]
+    pub fn next_local_control_deadline(&self) -> Option<Instant> {
+        match &self.runtime {
+            ProcessorWrapperRuntime::Local { effect_handler, .. } => effect_handler
+                .core
+                .local_scheduler
+                .as_ref()
+                .and_then(|scheduler| scheduler.next_expiry()),
+            ProcessorWrapperRuntime::Shared { effect_handler, .. } => effect_handler
+                .core
+                .local_scheduler
+                .as_ref()
+                .and_then(|scheduler| scheduler.next_expiry()),
+        }
+    }
+
+    /// Pops the next due local control message using the provided logical time.
+    #[must_use]
+    pub fn take_due_local_control(&mut self, now: Instant) -> Option<NodeControlMsg<PData>> {
+        match &mut self.runtime {
+            ProcessorWrapperRuntime::Local { effect_handler, .. } => effect_handler
+                .core
+                .local_scheduler
+                .as_ref()
+                .and_then(|scheduler| scheduler.pop_due(now)),
+            ProcessorWrapperRuntime::Shared { effect_handler, .. } => effect_handler
+                .core
+                .local_scheduler
+                .as_ref()
+                .and_then(|scheduler| scheduler.pop_due(now)),
+        }
+    }
+
     /// Sets whether outgoing messages need source node tagging on the effect handler.
     pub fn set_source_tagging(&mut self, value: SourceTagging) {
         match &mut self.runtime {
@@ -103,23 +137,81 @@ impl<PData> TestContext<PData> {
         }
     }
 
-    /// Sets the pipeline control message sender on the effect handler.
+    /// Sets the runtime control message sender on the effect handler.
     /// This is needed for processor ACK/NACK handling.
-    pub fn set_pipeline_ctrl_sender(
+    pub fn set_runtime_ctrl_sender(
         &mut self,
-        pipeline_ctrl_sender: crate::control::PipelineCtrlMsgSender<PData>,
+        runtime_ctrl_sender: crate::control::RuntimeCtrlMsgSender<PData>,
     ) {
         match &mut self.runtime {
             ProcessorWrapperRuntime::Local { effect_handler, .. } => {
                 effect_handler
                     .core
-                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_sender);
+                    .set_runtime_ctrl_msg_sender(runtime_ctrl_sender);
             }
             ProcessorWrapperRuntime::Shared { effect_handler, .. } => {
                 effect_handler
                     .core
-                    .set_pipeline_ctrl_msg_sender(pipeline_ctrl_sender);
+                    .set_runtime_ctrl_msg_sender(runtime_ctrl_sender);
             }
+        }
+    }
+
+    /// Sets the pipeline-completion message sender on the effect handler.
+    /// This is needed for processor ACK/NACK handling.
+    pub fn set_pipeline_completion_sender(
+        &mut self,
+        pipeline_completion_sender: crate::control::PipelineCompletionMsgSender<PData>,
+    ) {
+        match &mut self.runtime {
+            ProcessorWrapperRuntime::Local { effect_handler, .. } => {
+                effect_handler
+                    .core
+                    .set_pipeline_completion_msg_sender(pipeline_completion_sender);
+            }
+            ProcessorWrapperRuntime::Shared { effect_handler, .. } => {
+                effect_handler
+                    .core
+                    .set_pipeline_completion_msg_sender(pipeline_completion_sender);
+            }
+        }
+    }
+
+    /// Returns the result of the processor's [`accept_pdata`] method.
+    ///
+    /// This reflects whether the processor would accept new pdata in production,
+    /// where the engine checks this before delivering messages.
+    ///
+    /// [`accept_pdata`]: crate::local::Processor::accept_pdata
+    #[must_use]
+    pub fn accept_pdata(&self) -> bool {
+        match &self.runtime {
+            ProcessorWrapperRuntime::Local { processor, .. } => processor.accept_pdata(),
+            ProcessorWrapperRuntime::Shared { processor, .. } => processor.accept_pdata(),
+        }
+    }
+
+    /// Pop the next scheduled wakeup from the processor's local scheduler
+    /// and deliver it as a [`NodeControlMsg::Wakeup`] via [`Self::process`].
+    ///
+    /// Returns `Ok(true)` if a wakeup was delivered, `Ok(false)` if no
+    /// wakeup was pending, or `Err` if processing the wakeup message failed.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn fire_wakeup(&mut self) -> Result<bool, Error> {
+        let wakeup = match &self.runtime {
+            ProcessorWrapperRuntime::Local { effect_handler, .. } => effect_handler.pop_wakeup(),
+            ProcessorWrapperRuntime::Shared { effect_handler, .. } => effect_handler.pop_wakeup(),
+        };
+        if let Some((slot, when, revision)) = wakeup {
+            self.process(Message::Control(NodeControlMsg::Wakeup {
+                slot,
+                when,
+                revision,
+            }))
+            .await?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 }
@@ -187,6 +279,30 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     pub fn new() -> Self {
         let metrics_system = InternalTelemetrySystem::default();
         let config = ProcessorConfig::new("test_processor");
+        let (rt, local_tasks) = setup_test_runtime();
+
+        Self {
+            config,
+            rt,
+            local_tasks,
+            counter: CtrlMsgCounters::new(),
+            metrics_system,
+            _pd: PhantomData,
+        }
+    }
+
+    /// Creates a new test runtime with explicit channel capacities.
+    #[must_use]
+    pub fn with_channel_capacities(
+        control_channel_capacity: usize,
+        pdata_channel_capacity: usize,
+    ) -> Self {
+        let metrics_system = InternalTelemetrySystem::default();
+        let config = ProcessorConfig::with_channel_capacities(
+            "test_processor",
+            control_channel_capacity,
+            pdata_channel_capacity,
+        );
         let (rt, local_tasks) = setup_test_runtime();
 
         Self {
@@ -291,7 +407,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                 .await
                 .expect("Failed to prepare runtime");
 
-            let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+            let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
             match runtime {
                 ProcessorWrapperRuntime::Local {
                     ref mut effect_handler,
@@ -299,7 +415,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                 } => {
                     effect_handler
                         .core
-                        .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                        .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
                 }
                 ProcessorWrapperRuntime::Shared {
                     ref mut effect_handler,
@@ -307,7 +423,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                 } => {
                     effect_handler
                         .core
-                        .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
+                        .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
                 }
             }
             let mut context = TestContext::new(runtime);

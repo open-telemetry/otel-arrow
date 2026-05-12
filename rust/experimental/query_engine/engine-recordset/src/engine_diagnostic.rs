@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use data_engine_expressions::Expression;
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RecordSetEngineDiagnosticLevel {
     #[default]
     Verbose = 0,
@@ -80,7 +80,7 @@ impl<'a> RecordSetEngineDiagnostic<'a> {
     }
 
     pub fn get_diagnostic_level(&self) -> RecordSetEngineDiagnosticLevel {
-        self.diagnostic_level.clone()
+        self.diagnostic_level
     }
 
     pub fn get_expression(&self) -> &dyn Expression {

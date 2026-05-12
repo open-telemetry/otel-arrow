@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use core::str;
-
 use crate::receivers::syslog_cef_receiver::parser::ParseError;
 
 /// RFC 5424 message structure
@@ -20,22 +18,18 @@ pub struct Rfc5424Message<'a> {
     pub(super) input: &'a [u8],
 }
 
-/// Parse an RFC 5424 syslog message
-pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseError> {
-    // Check for empty input
-    if input.is_empty() {
-        return Err(ParseError::EmptyInput);
-    }
-
-    let (priority, mut remaining) =
-        crate::receivers::syslog_cef_receiver::parser::parse_priority(input)?;
-
+/// Parse an RFC 5424 message given a pre-parsed priority and the remaining bytes after `>`.
+pub(super) fn parse_rfc5424<'a>(
+    priority: crate::receivers::syslog_cef_receiver::parser::Priority,
+    mut remaining: &'a [u8],
+    input: &'a [u8],
+) -> Result<Rfc5424Message<'a>, ParseError> {
     // Check if we have anything after priority
     if remaining.is_empty() {
         return Err(ParseError::InvalidVersion);
     }
 
-    // Parse version
+    // Parse version: 1-3 ASCII digits terminated by space, directly from bytes.
     let version_end = remaining
         .iter()
         .position(|&b| b == b' ')
@@ -45,11 +39,16 @@ pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseErr
         return Err(ParseError::InvalidVersion);
     }
 
-    let version_bytes = &remaining[..version_end];
-    let version_str = str::from_utf8(version_bytes).map_err(|_| ParseError::InvalidUtf8)?;
-    let version: u8 = version_str
-        .parse()
-        .map_err(|_| ParseError::InvalidVersion)?;
+    let mut version: u8 = 0;
+    for &b in &remaining[..version_end] {
+        if !b.is_ascii_digit() {
+            return Err(ParseError::InvalidVersion);
+        }
+        version = version
+            .checked_mul(10)
+            .and_then(|v| v.checked_add(b - b'0'))
+            .ok_or(ParseError::InvalidVersion)?;
+    }
 
     // Safe slice: we know version_end < remaining.len()
     remaining = &remaining[version_end + 1..];
@@ -228,12 +227,23 @@ pub fn parse_rfc5424<'a>(input: &'a [u8]) -> Result<Rfc5424Message<'a>, ParseErr
 
 #[cfg(test)]
 mod tests {
-    use crate::receivers::syslog_cef_receiver::parser::*;
+    use super::*;
+    use crate::receivers::syslog_cef_receiver::parser::parse;
+    use crate::receivers::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessage;
+
+    /// Helper: parse through the production `parse()` entry point and unwrap the
+    /// RFC 5424 variant, panicking if a different variant (or error) is returned.
+    fn expect_rfc5424(input: &[u8]) -> Rfc5424Message<'_> {
+        match parse(input).expect("parse() returned an error") {
+            ParsedSyslogMessage::Rfc5424(msg) => msg,
+            other => panic!("expected Rfc5424 variant, got {other:?}"),
+        }
+    }
 
     #[test]
     fn test_rfc5424_parsing() {
         let input = b"<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
-        let result = parse_rfc5424(input).unwrap();
+        let result = expect_rfc5424(input);
 
         assert_eq!(result.priority.facility, 4);
         assert_eq!(result.priority.severity, 2);
@@ -262,7 +272,7 @@ mod tests {
         input.extend_from_slice(&[0xEF, 0xBB, 0xBF]); // UTF-8 BOM
         input.extend_from_slice(b"'su root' failed for lonvick on /dev/pts/8");
 
-        let result = parse_rfc5424(&input).unwrap();
+        let result = expect_rfc5424(&input);
 
         assert_eq!(result.priority.facility, 4);
         assert_eq!(result.priority.severity, 2);
@@ -286,7 +296,7 @@ mod tests {
     #[test]
     fn test_structured_data_rfc5424() {
         let input = b"<165>1 2003-08-24T05:14:15.000003-07:00 192.0.2.1 myproc 8710 - [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] An application event log entry";
-        let result = parse_rfc5424(input).unwrap();
+        let result = expect_rfc5424(input);
 
         assert_eq!(
             result.structured_data,
@@ -309,7 +319,7 @@ mod tests {
         input.extend_from_slice(&[0xEF, 0xBB, 0xBF]); // UTF-8 BOM
         input.extend_from_slice(b"An application event log entry");
 
-        let result = parse_rfc5424(&input).unwrap();
+        let result = expect_rfc5424(&input);
 
         assert_eq!(
             result.structured_data,
@@ -329,7 +339,7 @@ mod tests {
     fn test_rfc5424_minimal_message() {
         // Minimal valid RFC 5424 message
         let input = b"<34>1 - - - - - - ";
-        let result = parse_rfc5424(input).unwrap();
+        let result = expect_rfc5424(input);
 
         assert_eq!(result.version, 1);
         assert_eq!(result.timestamp, None);
@@ -344,7 +354,7 @@ mod tests {
     #[test]
     fn test_rfc5424_only_structured_data() {
         let input = b"<34>1 2003-10-11T22:14:15.003Z host app proc msgid [id@123 key=\"value\"]";
-        let result = parse_rfc5424(input).unwrap();
+        let result = expect_rfc5424(input);
 
         assert_eq!(result.priority.facility, 4);
         assert_eq!(result.priority.severity, 2);
@@ -367,7 +377,7 @@ mod tests {
     #[test]
     fn test_rfc5424_multiple_structured_data() {
         let input = b"<34>1 - - - - - [id1@123 key1=\"val1\"][id2@456 key2=\"val2\"] Message text";
-        let result = parse_rfc5424(input).unwrap();
+        let result = expect_rfc5424(input);
 
         assert_eq!(result.priority.facility, 4);
         assert_eq!(result.priority.severity, 2);
@@ -388,7 +398,7 @@ mod tests {
     #[test]
     fn test_rfc5424_multiple_structured_data_with_spaces() {
         let input = b"<34>1 - - - - - [id1@123 key1=\"val1\"] [id2@456 key2=\"val2\"] [id3@789 key3=\"val3\"] Message text";
-        let result = parse_rfc5424(input).unwrap();
+        let result = expect_rfc5424(input);
 
         assert_eq!(result.priority.facility, 4);
         assert_eq!(result.priority.severity, 2);
@@ -412,27 +422,24 @@ mod tests {
     #[test]
     fn test_rfc5424_escaped_characters_in_structured_data() {
         let input = b"<34>1 - - - - - [id@123 key=\"val\\\"ue with \\] and \\\\ chars\"] Message";
-        let result = parse_rfc5424(input);
         // This should handle escaped quotes, brackets, and backslashes
-        assert!(result.is_ok());
+        let msg = expect_rfc5424(input);
 
-        if let Ok(msg) = result {
-            assert_eq!(msg.priority.facility, 4);
-            assert_eq!(msg.priority.severity, 2);
-            assert_eq!(msg.version, 1);
-            assert_eq!(msg.timestamp, None);
-            assert_eq!(msg.hostname, None);
-            assert_eq!(msg.app_name, None);
-            assert_eq!(msg.proc_id, None);
-            assert_eq!(msg.msg_id, None);
-            // Parser correctly handles escaped characters in structured data
-            // The escaped bracket \] doesn't end the structured data element
-            assert_eq!(
-                msg.structured_data,
-                Some(b"[id@123 key=\"val\\\"ue with \\] and \\\\ chars\"]".as_slice())
-            );
-            assert_eq!(msg.message, Some(b"Message".as_slice()));
-        }
+        assert_eq!(msg.priority.facility, 4);
+        assert_eq!(msg.priority.severity, 2);
+        assert_eq!(msg.version, 1);
+        assert_eq!(msg.timestamp, None);
+        assert_eq!(msg.hostname, None);
+        assert_eq!(msg.app_name, None);
+        assert_eq!(msg.proc_id, None);
+        assert_eq!(msg.msg_id, None);
+        // Parser correctly handles escaped characters in structured data
+        // The escaped bracket \] doesn't end the structured data element
+        assert_eq!(
+            msg.structured_data,
+            Some(b"[id@123 key=\"val\\\"ue with \\] and \\\\ chars\"]".as_slice())
+        );
+        assert_eq!(msg.message, Some(b"Message".as_slice()));
     }
 
     #[test]
@@ -441,50 +448,45 @@ mod tests {
         let long_hostname = "a".repeat(300);
         let input =
             format!("<34>1 2003-10-11T22:14:15.003Z {long_hostname} app proc msgid - Message");
-        let result = parse_rfc5424(input.as_bytes());
         // Should either truncate or reject based on RFC compliance level desired
-        assert!(result.is_ok());
+        let msg = expect_rfc5424(input.as_bytes());
 
-        if let Ok(msg) = result {
-            assert_eq!(msg.priority.facility, 4);
-            assert_eq!(msg.priority.severity, 2);
-            assert_eq!(msg.version, 1);
-            assert_eq!(msg.timestamp, Some(b"2003-10-11T22:14:15.003Z".as_slice()));
-            assert_eq!(msg.hostname, Some(long_hostname.as_bytes()));
-            assert_eq!(msg.app_name, Some(b"app".as_slice()));
-            assert_eq!(msg.proc_id, Some(b"proc".as_slice()));
-            assert_eq!(msg.msg_id, Some(b"msgid".as_slice()));
-            assert_eq!(msg.structured_data, None);
-            assert_eq!(msg.message, Some(b"Message".as_slice()));
-        }
+        assert_eq!(msg.priority.facility, 4);
+        assert_eq!(msg.priority.severity, 2);
+        assert_eq!(msg.version, 1);
+        assert_eq!(msg.timestamp, Some(b"2003-10-11T22:14:15.003Z".as_slice()));
+        assert_eq!(msg.hostname, Some(long_hostname.as_bytes()));
+        assert_eq!(msg.app_name, Some(b"app".as_slice()));
+        assert_eq!(msg.proc_id, Some(b"proc".as_slice()));
+        assert_eq!(msg.msg_id, Some(b"msgid".as_slice()));
+        assert_eq!(msg.structured_data, None);
+        assert_eq!(msg.message, Some(b"Message".as_slice()));
     }
 
     #[test]
     fn test_rfc5424_invalid_characters() {
         // Test hostname with invalid characters
         let input = b"<34>1 2003-10-11T22:14:15.003Z host[name] app proc msgid - Message";
-        let result = parse_rfc5424(input);
         // Should handle or reject invalid characters in hostname
-        assert!(result.is_ok()); // Current implementation is permissive
+        // Current implementation is permissive
+        let msg = expect_rfc5424(input);
 
-        if let Ok(msg) = result {
-            assert_eq!(msg.priority.facility, 4);
-            assert_eq!(msg.priority.severity, 2);
-            assert_eq!(msg.version, 1);
-            assert_eq!(msg.timestamp, Some(b"2003-10-11T22:14:15.003Z".as_slice()));
-            assert_eq!(msg.hostname, Some(b"host[name]".as_slice()));
-            assert_eq!(msg.app_name, Some(b"app".as_slice()));
-            assert_eq!(msg.proc_id, Some(b"proc".as_slice()));
-            assert_eq!(msg.msg_id, Some(b"msgid".as_slice()));
-            assert_eq!(msg.structured_data, None);
-            assert_eq!(msg.message, Some(b"Message".as_slice()));
-        }
+        assert_eq!(msg.priority.facility, 4);
+        assert_eq!(msg.priority.severity, 2);
+        assert_eq!(msg.version, 1);
+        assert_eq!(msg.timestamp, Some(b"2003-10-11T22:14:15.003Z".as_slice()));
+        assert_eq!(msg.hostname, Some(b"host[name]".as_slice()));
+        assert_eq!(msg.app_name, Some(b"app".as_slice()));
+        assert_eq!(msg.proc_id, Some(b"proc".as_slice()));
+        assert_eq!(msg.msg_id, Some(b"msgid".as_slice()));
+        assert_eq!(msg.structured_data, None);
+        assert_eq!(msg.message, Some(b"Message".as_slice()));
     }
 
     #[test]
     fn test_rfc5424_multi_digit_version() {
         let input = b"<34>10 2003-10-11T22:14:15.003Z host app proc msgid - Message";
-        let result = parse_rfc5424(input).unwrap();
+        let result = expect_rfc5424(input);
 
         assert_eq!(result.priority.facility, 4);
         assert_eq!(result.priority.severity, 2);
@@ -505,7 +507,7 @@ mod tests {
     fn test_byte_slice_to_string_conversion() {
         // Test showing how consumers can convert byte slices to strings when needed
         let input = b"<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
-        let result = parse_rfc5424(input).unwrap();
+        let result = expect_rfc5424(input);
 
         // Test direct access to byte slices
         assert_eq!(
@@ -535,34 +537,15 @@ mod tests {
     #[test]
     fn test_empty_input() {
         let input = b"";
-        let result = parse_rfc5424(input);
+        let result = parse(input);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), ParseError::EmptyInput);
     }
 
     #[test]
-    fn test_priority_only() {
-        let input = b"<34>";
-        let result = parse_rfc5424(input);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), ParseError::InvalidVersion);
-    }
-
-    #[test]
-    fn test_priority_and_version_no_space() {
-        let input = b"<34>1";
-        let result = parse_rfc5424(input);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), ParseError::InvalidVersion);
-    }
-
-    #[test]
     fn test_malformed_structured_data_unclosed() {
         let input = b"<34>1 - - - - - [id@123 key=\"value\" ";
-        let result = parse_rfc5424(input);
-        assert!(result.is_ok());
-
-        let msg = result.unwrap();
+        let msg = expect_rfc5424(input);
         assert_eq!(msg.priority.facility, 4);
         assert_eq!(msg.priority.severity, 2);
         assert_eq!(msg.version, 1);
@@ -582,10 +565,7 @@ mod tests {
     #[test]
     fn test_structured_data_with_escaped_bracket() {
         let input = b"<34>1 - - - - - [id@123 key=\"val\\]ue\"] Message";
-        let result = parse_rfc5424(input);
-        assert!(result.is_ok());
-
-        let msg = result.unwrap();
+        let msg = expect_rfc5424(input);
         assert_eq!(msg.priority.facility, 4);
         assert_eq!(msg.priority.severity, 2);
         assert_eq!(msg.version, 1);
@@ -605,10 +585,7 @@ mod tests {
     #[test]
     fn test_single_bracket() {
         let input = b"<34>1 - - - - - [ Message";
-        let result = parse_rfc5424(input);
-        assert!(result.is_ok());
-
-        let msg = result.unwrap();
+        let msg = expect_rfc5424(input);
         assert_eq!(msg.priority.facility, 4);
         assert_eq!(msg.priority.severity, 2);
         assert_eq!(msg.version, 1);
@@ -625,10 +602,7 @@ mod tests {
     #[test]
     fn test_version_followed_by_eof() {
         let input = b"<34>1 ";
-        let result = parse_rfc5424(input);
-        assert!(result.is_ok());
-
-        let msg = result.unwrap();
+        let msg = expect_rfc5424(input);
         assert_eq!(msg.priority.facility, 4);
         assert_eq!(msg.priority.severity, 2);
         assert_eq!(msg.version, 1);
@@ -645,10 +619,7 @@ mod tests {
     #[test]
     fn test_incomplete_fields() {
         let input = b"<34>1 2003";
-        let result = parse_rfc5424(input);
-        assert!(result.is_ok());
-
-        let msg = result.unwrap();
+        let msg = expect_rfc5424(input);
         assert_eq!(msg.priority.facility, 4);
         assert_eq!(msg.priority.severity, 2);
         assert_eq!(msg.version, 1);
@@ -667,10 +638,7 @@ mod tests {
     fn test_structured_data_edge_cases() {
         // Test with empty structured data '[]'
         let input = b"<34>1 - - - - - [] Message";
-        let result = parse_rfc5424(input);
-        assert!(result.is_ok());
-
-        let msg = result.unwrap();
+        let msg = expect_rfc5424(input);
         assert_eq!(msg.priority.facility, 4);
         assert_eq!(msg.priority.severity, 2);
         assert_eq!(msg.version, 1);
@@ -684,10 +652,7 @@ mod tests {
 
         // Test with nested brackets (invalid but shouldn't panic)
         let input2 = b"<34>1 - - - - - [id@123 [nested] key=\"value\"] Message";
-        let result2 = parse_rfc5424(input2);
-        assert!(result2.is_ok());
-
-        let msg2 = result2.unwrap();
+        let msg2 = expect_rfc5424(input2);
         assert_eq!(msg2.priority.facility, 4);
         assert_eq!(msg2.priority.severity, 2);
         assert_eq!(msg2.version, 1);
@@ -707,10 +672,7 @@ mod tests {
     #[test]
     fn test_extreme_whitespace() {
         let input = b"<34>1                             -     -    -   -   -    Message";
-        let result = parse_rfc5424(input);
-        assert!(result.is_ok());
-
-        let msg = result.unwrap();
+        let msg = expect_rfc5424(input);
         assert_eq!(msg.priority.facility, 4);
         assert_eq!(msg.priority.severity, 2);
         assert_eq!(msg.version, 1);

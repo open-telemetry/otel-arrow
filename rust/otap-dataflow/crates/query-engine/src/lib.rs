@@ -5,5 +5,6 @@
 
 mod consts;
 pub mod error;
+pub mod parser;
 pub mod pipeline;
 mod table;

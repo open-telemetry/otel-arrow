@@ -15,6 +15,7 @@ use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest
 use arrow::array::RecordBatch;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
+use otap_df_config::ConversionOptions;
 use prost::Message;
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -55,6 +56,15 @@ pub struct Consumer {
 }
 
 impl Consumer {
+    /// Construct a consumer with conversion options.
+    #[must_use]
+    pub fn with_options(opts: ConversionOptions) -> Self {
+        Self {
+            proto_buffer: ProtoBuffer::new(opts),
+            ..Self::default()
+        }
+    }
+
     /// consume and deserialize record batches
     pub fn consume_bar(&mut self, bar: &mut BatchArrowRecords) -> Result<Vec<RecordMessage>> {
         let mut records = Vec::with_capacity(bar.arrow_payloads.len());
@@ -116,7 +126,7 @@ impl Consumer {
             ArrowPayloadType::UnivariateMetrics => {
                 let record_messages = self.consume_bar(records)?;
                 let mut otap_batch =
-                    OtapArrowRecords::Metrics(from_record_messages(record_messages));
+                    OtapArrowRecords::Metrics(from_record_messages(record_messages)?);
                 self.proto_buffer.clear();
                 self.metrics_proto_encoder
                     .encode(&mut otap_batch, &mut self.proto_buffer)?;
@@ -143,7 +153,7 @@ impl Consumer {
         match get_main_payload_type(records)? {
             ArrowPayloadType::Logs => {
                 let record_messages = self.consume_bar(records)?;
-                let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages));
+                let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages)?);
                 self.proto_buffer.clear();
                 self.logs_proto_encoder
                     .encode(&mut otap_batch, &mut self.proto_buffer)?;
@@ -169,7 +179,7 @@ impl Consumer {
             ArrowPayloadType::Spans => {
                 let record_messages = self.consume_bar(records)?;
                 let mut otap_batch =
-                    OtapArrowRecords::Traces(from_record_messages(record_messages));
+                    OtapArrowRecords::Traces(from_record_messages(record_messages)?);
                 self.proto_buffer.clear();
                 self.traces_proto_encoder
                     .encode(&mut otap_batch, &mut self.proto_buffer)?;

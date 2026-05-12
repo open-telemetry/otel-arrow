@@ -17,7 +17,7 @@ use crate::encode::record::array::{
 };
 
 use super::dictionary::{self, DictionaryArrayAppend};
-use super::{ArrayBuilder, ArrayBuilderConstructor};
+use super::{ArrayBuilder, ArrayBuilderConstructor, ArrayLen};
 
 impl ArrayAppend for BinaryBuilder {
     type Native = Vec<u8>;
@@ -70,6 +70,21 @@ impl DefaultValueProvider<Vec<u8>, NoArgs> for BinaryBuilder {
 impl ArrayBuilder for BinaryBuilder {
     fn finish(&mut self) -> ArrayRef {
         Arc::new(self.finish())
+    }
+}
+
+impl ArrayLen for BinaryBuilder {
+    fn len(&self) -> usize {
+        arrow::array::ArrayBuilder::len(self)
+    }
+}
+
+impl<K> ArrayLen for BinaryDictionaryBuilder<K>
+where
+    K: ArrowDictionaryKeyType,
+{
+    fn len(&self) -> usize {
+        arrow::array::ArrayBuilder::len(self)
     }
 }
 

@@ -22,6 +22,7 @@ use otap_df_engine::shared::receiver::EffectHandler;
 use otap_df_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
+use otap_df_pdata::OtapPayload;
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
@@ -45,6 +46,24 @@ pub struct SharedState(
 impl SharedState {
     pub(crate) fn new(max_size: usize) -> Self {
         Self(Arc::new(Mutex::new(SlotsState::new(max_size))))
+    }
+
+    /// Returns true when there are no outstanding wait-for-result slots.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.lock().map(|state| state.is_empty()).unwrap_or(true)
+    }
+
+    /// Completes all outstanding waiters with a shutdown Nack.
+    pub fn force_shutdown(&self, signal: SignalType, reason: &str) {
+        if let Ok(mut state) = self.0.lock() {
+            state.drain(|sender| {
+                let _ = sender.send(Err(NackMsg::new(
+                    reason,
+                    OtapPdata::new_todo_context(OtapPayload::empty(signal)),
+                )));
+            });
+        }
     }
 }
 

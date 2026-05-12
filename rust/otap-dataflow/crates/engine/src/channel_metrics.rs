@@ -7,7 +7,6 @@
 //! using channel endpoint attributes and can be correlated using `channel.id`
 //! and `channel.kind`.
 
-use crate::node::NodeId;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
 use otap_df_telemetry::metrics::MetricSet;
@@ -75,7 +74,7 @@ pub struct ChannelReceiverMetrics {
     pub capacity: Gauge<u64>,
 }
 
-/// Ack/nack metrics for consumed requests, owned exclusively by the pipeline controller.
+/// Ack/nack metrics for consumed requests, owned exclusively by the runtime control manager.
 /// Registered under the input channel entity key so they share the same
 /// channel attributes as the transport metrics.
 #[metric_set(name = "node.consumer")]
@@ -98,7 +97,7 @@ pub struct ConsumedMetrics {
     pub consumed_refused: Counter<u64>,
 }
 
-/// Ack/nack metrics for produced requests, owned exclusively by the pipeline controller.
+/// Ack/nack metrics for produced requests, owned exclusively by the runtime control manager.
 /// Registered under the output channel entity key so they share the same
 /// channel attributes as the transport metrics.
 #[metric_set(name = "node.producer")]
@@ -132,8 +131,8 @@ pub(crate) const CHANNEL_IMPL_INTERNAL: &str = "internal";
 pub(crate) const CHANNEL_IMPL_TOKIO: &str = "tokio";
 pub(crate) const CHANNEL_IMPL_FLUME: &str = "flume";
 
-pub(crate) fn control_channel_id(node_id: &NodeId) -> Cow<'static, str> {
-    format!("{}:{}", node_id.name, CHANNEL_KIND_CONTROL).into()
+pub(crate) fn control_channel_id(name: &str) -> Cow<'static, str> {
+    format!("{}:{}", name, CHANNEL_KIND_CONTROL).into()
 }
 
 pub(crate) struct ChannelSenderMetricsState {

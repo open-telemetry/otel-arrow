@@ -6,11 +6,11 @@
 use otap_df_telemetry::attributes::AttributeValue;
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
 pub use otap_df_telemetry::metrics::MetricValue;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Shape of /telemetry/metrics (format=json) response.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MetricsSnapshot {
     /// Time the snapshot was captured, as an RFC 3339 string.
     pub timestamp: String,
@@ -99,7 +99,7 @@ mod tests {
         let snapshot = MetricsSnapshot {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             metric_sets: vec![MetricSetSnapshot {
-                name: "fake_data_generator.receiver.metrics".into(),
+                name: "receiver.traffic_generator".into(),
                 brief: "loadgen metrics".into(),
                 attributes: HashMap::from([(
                     "role".into(),
@@ -119,14 +119,14 @@ mod tests {
 
         let rendered = format!("{snapshot}");
         assert!(rendered.contains("timestamp: 2024-01-01T00:00:00Z"));
-        assert!(rendered.contains("metric_set: fake_data_generator.receiver.metrics"));
+        assert!(rendered.contains("metric_set: receiver.traffic_generator"));
         assert!(rendered.contains("logs.produced [{log}]")); // unit shows up in brackets
         assert!(rendered.contains("value=123"));
     }
 }
 
 /// A single metric set emitted by the telemetry subsystem.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MetricSetSnapshot {
     /// Unique identifier of the metric set (usually a component name).
     pub name: String,
@@ -139,7 +139,7 @@ pub struct MetricSetSnapshot {
 }
 
 /// A single recorded metric, including its metadata and value.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MetricDataPoint {
     /// Metric name (e.g. `logs.produced`).
     pub name: String,

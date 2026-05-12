@@ -36,7 +36,7 @@ steps:
         post:
           # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
           - ready_check_http:
-              url: http://localhost:8087/telemetry/metrics?reset=false
+              url: http://localhost:8087/api/v1/telemetry/metrics?reset=false
               method: GET
               expected_status_code: 200
   - name: Deploy DF Engine
@@ -58,7 +58,7 @@ steps:
         post:
           # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
           - ready_check_http:
-              url: http://localhost:8086/telemetry/metrics?reset=false
+              url: http://localhost:8086/api/v1/telemetry/metrics?reset=false
               method: GET
               expected_status_code: 200
   - name: Deploy Load Generator

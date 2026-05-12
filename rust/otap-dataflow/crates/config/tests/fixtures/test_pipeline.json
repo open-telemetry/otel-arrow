@@ -36,7 +36,8 @@
     "channel_capacity": {
       "control": {
         "node": 100,
-        "pipeline": 100
+        "pipeline": 100,
+        "completion": 200
       },
       "pdata": 128
     }

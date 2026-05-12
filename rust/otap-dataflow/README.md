@@ -180,15 +180,15 @@ fail.
 
 A simple component that returns success. All requests succeed.
 
-#### Fake Data Generator
+#### Traffic Generator
 
 A simple component to produce synthetic data from semantic convention registries.
 
 #### Batch processor
 
-An batching processor that works directly with OTAP records. This is
-[based on lower-level support in the `otal_arrow_rust`
-crate](../otel-arrow-rust/src/otap/batching.rs).
+A batching processor that works directly with OTAP records. This is
+[based on lower-level support in the `otap-df-pdata`
+crate](./crates/pdata/src/otap/batching.rs).
 
 #### OTAP exporter
 
@@ -259,7 +259,7 @@ establish the performance of the OTAP Dataflow system.
   `content_router`, `debug_processor`, `delay_processor`,
   `durable_buffer_processor`, `fanout_processor`, `filter_processor`,
   `retry_processor`, `signal_type_router`, `transform_processor`
-- Receivers: `fake_data_generator`, `internal_telemetry_receiver`,
+- Receivers: `traffic_generator`, `internal_telemetry_receiver`,
   `otap_receiver`, `otlp_receiver`, `syslog_cef_receiver`,
   `topic_receiver`
 
@@ -351,6 +351,67 @@ The `views` sub-module contains zero-copy machinery for:
 - interpreting OTLP bytes using views to build OTAP records
 - interpreting OTAP records using views to encode OTLP bytes
 
+## Embedding in Custom Distributions
+
+The engine crates are designed as reusable libraries. A custom binary can
+link the same controller, factory, and node crates and register its own
+components via `linkme` distributed slices -- exactly how `src/main.rs` works.
+
+The `otap_df_controller::startup` module provides three helpers that every
+embedding binary typically needs:
+
+- **`validate_engine_components`** -- Checks that every node URN in a
+  config maps to a registered component and runs per-component config
+  validation.
+- **`apply_cli_overrides`** -- Merges core-allocation and HTTP-admin
+  bind overrides into an `OtelDataflowSpec`.
+- **`system_info`** -- Returns a formatted string with CPU/memory info
+  and all registered component URNs, useful for `--help` banners or
+  diagnostics.
+
+A minimal custom binary looks like this:
+
+```rust
+use otap_df_config::engine::OtelDataflowSpec;
+use otap_df_controller::{Controller, startup};
+
+// Side-effect imports to register components via linkme.
+use otap_df_core_nodes as _;
+// Bring your own contrib/custom nodes as needed.
+
+// Reference the pipeline factory (or define your own).
+use otap_df_otap::OTAP_PIPELINE_FACTORY;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    otap_df_otap::crypto::install_crypto_provider()?;
+
+    let mut cfg = OtelDataflowSpec::from_file("pipeline.yaml")?;
+
+    // Apply any CLI overrides (core count, admin bind address, etc.)
+    startup::apply_cli_overrides(&mut cfg, Some(4), None, None);
+
+    // Validate that every node URN in the config is registered.
+    startup::validate_engine_components(&cfg, &OTAP_PIPELINE_FACTORY)?;
+
+    // Print diagnostics.
+    // Pass "system" here for the minimal example; in practice, align this
+    // string with your binary's allocator feature (e.g. "jemalloc", "mimalloc").
+    println!("{}", startup::system_info(&OTAP_PIPELINE_FACTORY, "system"));
+
+    // Run the engine.
+    let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
+    controller.run_forever(cfg)?;
+    Ok(())
+}
+```
+
+This pattern is analogous to the builder approach used by projects like
+`bindplane-otel-collector` in the Go ecosystem. The default `src/main.rs`
+is itself a thin wrapper over these library calls.
+
+For a complete runnable example, see
+[`examples/custom_collector.rs`](examples/custom_collector.rs).
+
 ## Development Setup
 
 **Requirements**:
@@ -383,6 +444,10 @@ cargo run --example <example_name>
 ```bash
 docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
 ```
+
+## Profiling
+
+[Refer profiling Page](./PROFILING.md)
 
 ## Contributing
 

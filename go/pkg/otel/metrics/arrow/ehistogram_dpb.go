@@ -20,8 +20,8 @@ import (
 // EHistogramDataPointBucketsDT is the Arrow Data Type describing an exponential histogram data point buckets.
 var (
 	EHistogramDataPointBucketsDT = arrow.StructOf(
-		arrow.Field{Name: constants.ExpHistogramOffset, Type: arrow.PrimitiveTypes.Int32, Metadata: schema.Metadata(schema.Optional)},
-		arrow.Field{Name: constants.ExpHistogramBucketCounts, Type: arrow.ListOf(arrow.PrimitiveTypes.Uint64), Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.ExpHistogramOffset, Type: arrow.PrimitiveTypes.Int32, Metadata: schema.Metadata(schema.Optional), Nullable: true},
+		arrow.Field{Name: constants.ExpHistogramBucketCounts, Type: arrow.ListOf(arrow.PrimitiveTypes.Uint64), Metadata: schema.Metadata(schema.Optional), Nullable: true},
 	)
 )
 

@@ -12,7 +12,7 @@ use arrow::datatypes::{ArrowNativeType, UInt16Type, UInt32Type};
 use arrow_schema::{DataType, FieldRef, Schema, SortOptions};
 
 use crate::error::{Error, Result};
-use crate::otap::{POSITION_LOOKUP, UNUSED_INDEX};
+use crate::otap::raw_batch_store::{POSITION_LOOKUP, UNUSED_INDEX};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts::{ID, PARENT_ID};
 use crate::schema::{FieldExt, consts};
@@ -72,7 +72,7 @@ macro_rules! id_column_dispatch {
 pub(crate) use id_column_dispatch;
 
 /// Create a new record batch by taking the specified ranges from the provided record batch.
-pub(crate) fn take_record_batch_ranges(
+pub fn take_record_batch_ranges(
     rb: &RecordBatch,
     ranges: &[Range<usize>],
 ) -> arrow::error::Result<RecordBatch> {

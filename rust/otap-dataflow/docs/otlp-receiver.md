@@ -1,5 +1,7 @@
 # OTLP Receiver
 
+<!-- markdownlint-disable MD013 -->
+
 The OTLP Receiver ingests telemetry data via the OpenTelemetry Protocol (OTLP)
 and forwards it into the OTAP dataflow pipeline. It supports both gRPC (HTTP/2)
 and HTTP/1.1 protocols with unified concurrency control.
@@ -54,7 +56,8 @@ and HTTP/1.1 protocols with unified concurrency control.
        |              Shared Infrastructure (gRPC + HTTP)             |
        |  - AckRegistry (wait_for_result subscriptions)               |
        |  - Unified Metrics (requests, acks, nacks, errors)           |
-       |  - Control Loop (ACK/NACK routing, telemetry, shutdown)      |
+       |  - Receiver Control Loop                                     |
+       |    (ACK/NACK routing, telemetry, DrainIngress/Shutdown)      |
        +------------------------------+-------------------------------+
                                       |
                           +-----------v-----------+
@@ -342,8 +345,10 @@ nodes:
           # --- Concurrency limits ---
           # 0 = auto-tune to downstream channel capacity
           max_concurrent_requests: 0
-          max_concurrent_streams: null  # HTTP/2 streams per connection (null = auto)
-          transport_concurrency_limit: null  # Per-connection limit (null = auto)
+          # HTTP/2 streams per connection (null = auto)
+          max_concurrent_streams: null
+          # Per-connection limit (null = auto)
+          transport_concurrency_limit: null
           load_shed: true               # Fast reject when overloaded
 
           # --- Compression ---
@@ -505,7 +510,7 @@ match downstream channel capacity.
 
 ## TLS Support
 
-TLS is available via the `experimental-tls` feature flag. Each protocol has its
+TLS is available by default. Each protocol has its
 own independent TLS configuration:
 
 ```yaml
@@ -542,11 +547,13 @@ different certificates for each protocol.
 
 ## Wait-for-Result Mode
 
-When `wait_for_result: true`, the receiver waits for an ACK/NACK from the
-immediate downstream component before responding to the client:
+When `wait_for_result: true`, the receiver waits for a downstream-derived
+ACK/NACK routed back through the pipeline result path before responding to the
+client:
 
 ```text
-Client -> Receiver -> Pipeline -> [Downstream] -> ACK/NACK -> Receiver -> Client
+Client -> Receiver -> Pipeline -> [Downstream nodes]
+       -> Ack/Nack unwind -> Receiver -> Client
 ```
 
 This provides delivery confirmation but does NOT guarantee end-to-end delivery
@@ -630,18 +637,24 @@ significantly.
 
 ### Graceful Shutdown
 
-The receiver implements a robust shutdown mechanism to ensure no in-flight data
-is lost when the process terminates:
+The receiver participates in the engine's two-phase shutdown protocol:
 
-1. **Stop Accepting:** The listener loop is broken immediately, stopping new
-   connections.
-2. **Drain Idle:** HTTP/1.1 Keep-Alive connections are signaled to close after
-   their current request completes.
-3. **Wait for Active:** A `TaskTracker` waits for all currently executing
-   request handlers to finish (e.g., waiting for pipeline ACKs).
-4. **Timeout:** A hard deadline (default 30s) prevents the server from hanging
-   indefinitely if a handler stalls. The HTTP drain timeout is tied to the HTTP
-   request timeout (default 30s) and coded in sync with it; if the default
-   changes in code, update this doc accordingly.
+1. **Drain Ingress:** On `DrainIngress`, the receiver stops admitting new
+   external work immediately. gRPC and HTTP shutdown tokens are cancelled so
+   listeners stop accepting new requests, and HTTP/1.1 keep-alive connections
+   are signaled to close after their current request completes.
+2. **Drain Admitted Work:** Already-admitted requests continue to run. The
+   receiver keeps its control loop and `AckRegistry` alive so `wait_for_result`
+   requests can still be completed while transport tasks shut down.
+3. **Report `ReceiverDrained`:** Once transport ingress is closed and the
+   receiver has no remaining admitted work to resolve, it reports
+   `ReceiverDrained` to the pipeline runtime.
+4. **Deadline / Final Shutdown:** If the shutdown deadline expires first,
+   remaining waiters are force-resolved and the receiver exits. A later
+   `Shutdown` message still acts as an immediate terminal signal.
+
+For the HTTP path, the active-request drain remains bounded by the configured
+request timeout (default 30s). If that default changes in code, update this
+doc accordingly.
 
 [shared-concurrency]: ../crates/otap/src/shared_concurrency.rs

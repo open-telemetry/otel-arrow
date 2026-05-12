@@ -81,6 +81,27 @@ impl<UData> State<UData> {
         Some((key, ures))
     }
 
+    /// Like allocate(), however takes UData directly instead of a
+    /// function returning an optional value of type R.  In case the
+    /// map is full, the UData is returned.
+    pub fn allocate_with_data(&mut self, data: UData) -> Result<Key, UData> {
+        if self.slots.len() >= self.max_size {
+            return Err(data);
+        }
+
+        Ok(self.slots.insert(data))
+    }
+
+    /// Reserve a slot if available. Useful when needing to do multiple atomic
+    /// inserts across more than one [State].
+    pub fn reserve(&mut self) -> Option<Reservation<'_, UData>> {
+        if self.slots.len() >= self.max_size {
+            return None;
+        }
+
+        Some(Reservation { state: self })
+    }
+
     /// Get immutable reference to user data in a slot (if key is valid).
     #[must_use]
     pub fn get(&self, key: Key) -> Option<&UData> {
@@ -121,6 +142,65 @@ impl<UData> State<UData> {
     /// Take and drop the user data (if key is valid).
     pub fn cancel(&mut self, key: Key) {
         _ = self.take(key);
+    }
+
+    /// Returns the number of live slots.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// Returns true when there are no live slots.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    /// Returns true if there is at least one empty slot.
+    #[must_use]
+    pub fn has_capacity(&self) -> bool {
+        self.remaining_capacity() > 0
+    }
+
+    /// How much free capacity there is in this map.
+    #[must_use]
+    pub fn remaining_capacity(&self) -> usize {
+        self.max_size - self.len()
+    }
+
+    /// Iterate over all live slots.
+    pub fn iter(&self) -> impl Iterator<Item = (Key, &UData)> {
+        self.slots.iter()
+    }
+
+    /// Drains all live slots, invoking `f` for each user datum.
+    pub fn drain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(UData),
+    {
+        let keys: Vec<Key> = self.slots.keys().collect();
+        for key in keys {
+            if let Some(value) = self.slots.remove(key) {
+                f(value);
+            }
+        }
+    }
+}
+
+/// A reservation to insert a single item. It's guaranteed that having a
+/// Reservation means a slot in the map is available.
+///
+/// This holds an exclusive reference to [State] and the length was checked before
+/// handing it out, so it is not possible for another actor to take the reserved
+/// slot until this Reservation is consumed or dropped.
+pub struct Reservation<'a, UData> {
+    state: &'a mut State<UData>,
+}
+
+impl<'a, UData> Reservation<'a, UData> {
+    /// Consume the reservation to insert an element
+    pub fn insert(self, data: UData) -> Key {
+        self.state.slots.insert(data)
     }
 }
 
@@ -240,5 +320,43 @@ mod tests {
         state.cancel(key5);
 
         assert_eq!(state.slots.len(), 0);
+    }
+
+    #[test]
+    fn test_reserve_and_insert() {
+        let mut state: State<&'static str> = State::new(2);
+
+        let reservation = state.reserve().expect("capacity available");
+        let key = reservation.insert("hello");
+
+        assert_eq!(state.get(key), Some(&"hello"));
+        assert_eq!(state.len(), 1);
+    }
+
+    #[test]
+    fn test_reserve_full() {
+        let mut state: State<&'static str> = State::new(2);
+
+        let _ = state.allocate_with_data("a").unwrap();
+        let _ = state.allocate_with_data("b").unwrap();
+
+        assert!(state.reserve().is_none(), "should be at capacity");
+    }
+
+    #[test]
+    fn test_allocate_data() {
+        let mut state: State<&'static str> = State::new(3);
+
+        let _ = state.allocate_with_data("1").unwrap();
+        let _ = state.allocate_with_data("2").unwrap();
+        let _ = state.allocate_with_data("3").unwrap();
+
+        assert_eq!(state.slots.len(), 3);
+        assert_eq!(state.slots.capacity(), 3);
+
+        let result = state.allocate_with_data("4");
+
+        assert_eq!(result.expect_err("is_err"), "4");
+        assert_eq!(state.slots.len(), 3);
     }
 }

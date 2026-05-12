@@ -133,6 +133,17 @@ OTLP receiver over both protocols:
 - Receives OTLP/HTTP on `127.0.0.1:4318`
 - Exports OTLP/gRPC traffic to `http://127.0.0.1:4319`
 
+### `otlp-grpc-http-forward.yaml`
+
+OTLP forwarding proxy with separate gRPC and HTTP pipelines:
+
+- Receives OTLP/gRPC on `127.0.0.1:4315` and forwards to `http://127.0.0.1:4317`
+- Receives OTLP/HTTP on `127.0.0.1:4316` and forwards to `http://127.0.0.1:4318`
+
+Note: In this configuration, the pipeline does not decode or
+encode OTLP messages; they are simply forwarded from one port
+to another.
+
 ### `otlp-perf.yaml`
 
 OTLP receiver with performance metrics:
@@ -170,9 +181,19 @@ python loadgen.py --load-type syslog --syslog-server 127.0.0.1 --syslog-port 514
 You can use these configurations with the following CLI command:
 
 ```bash
-# Use a specific configuration
+# Use a specific configuration (bare path)
 cargo run -- --config configs/otlp-otlp.yaml
+
+# Explicit file: URI
+cargo run -- --config file:configs/otlp-otlp.yaml
+
+# Load config from an environment variable
+export MY_CONFIG=$(cat configs/otlp-otlp.yaml)
+cargo run -- --config env:MY_CONFIG
 
 # Validate a configuration without starting the engine
 cargo run -- --config configs/otlp-otlp.yaml --validate-and-exit
 ```
+
+The `--config` argument supports `file:`, `env:`, and bare path forms.
+See `src/README.md` for the full URI reference.

@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 /// Configuration for a single pipeline group.
 /// Contains group-specific policies and all its pipelines.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineGroupConfig {
     /// Optional policy set for this pipeline group.

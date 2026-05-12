@@ -7,14 +7,27 @@ use crate::Interests;
 use crate::ReceivedAtNode;
 use crate::Unwindable;
 use crate::channel_metrics::{ChannelMetricsHandle, ConsumedMetrics, ProducedMetrics};
+use crate::completion_emission_metrics::{
+    CompletionEmissionMetricsHandle, make_completion_emission_metrics,
+};
 use crate::context::PipelineContext;
 use crate::control::{
-    ControlSenders, Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
+    ControlSenders, Controllable, NodeControlMsg, PipelineCompletionMsgReceiver,
+    PipelineCompletionMsgSender, RuntimeCtrlMsgReceiver, RuntimeCtrlMsgSender,
 };
 use crate::entity_context::{NodeTaskContext, NodeTelemetryHandle, instrument_with_node_context};
 use crate::error::{Error, TypedError};
+use crate::flow_metrics::{
+    FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
+    build_flow_metric_state,
+};
+use crate::memory_limiter::MemoryPressureChanged;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
-use crate::pipeline_ctrl::{NodeMetricHandles, PipelineCtrlMsgManager};
+use crate::pipeline_ctrl::{
+    NodeMetricHandles, PipelineCompletionMsgDispatcher, RuntimeCtrlMsgManager,
+    report_node_metrics_with_handles,
+};
+use crate::processor::FlowMetricHook;
 use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
@@ -23,8 +36,13 @@ use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::ObservedEventReporter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
+use std::rc::Rc;
+use std::time::Duration;
 use tokio::runtime::Builder;
+use tokio::sync::watch;
 use tokio::task::LocalSet;
 
 /// Build produced-request metric sets indexed by sorted output port name,
@@ -47,7 +65,7 @@ fn make_produced_metrics(
         .unwrap_or_default()
 }
 
-/// Build per-node metric handles for the pipeline controller.
+/// Build per-node metric handles for the runtime control manager.
 ///
 /// - `has_input`: whether to register consumed-request metrics (false for receivers).
 /// - `has_outputs`: whether to register produced-request metrics (false for exporters).
@@ -56,6 +74,7 @@ fn make_node_metric_handles(
     pipeline_context: &PipelineContext,
     has_input: bool,
     has_outputs: bool,
+    completion_emission: Option<CompletionEmissionMetricsHandle>,
 ) -> NodeMetricHandles {
     let consumed = if has_input {
         telemetry_handle
@@ -74,6 +93,7 @@ fn make_node_metric_handles(
         registry: pipeline_context.metrics_registry(),
         input: consumed,
         outputs: produced,
+        completion_emission,
     }
 }
 
@@ -158,7 +178,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     }
 }
 
-impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeline<PData> {
+impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHook>
+    RuntimePipeline<PData>
+{
     /// Runs the pipeline forever, starting all nodes and handling their tasks.
     /// Returns an error if any node fails to start or if any task encounters an error.
     pub fn run_forever(
@@ -167,8 +189,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         pipeline_context: PipelineContext,
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
-        pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
-        pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
+        control_plane_metrics_flush_interval: Duration,
+        memory_pressure_rx: watch::Receiver<MemoryPressureChanged>,
+        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
+        runtime_ctrl_msg_rx: RuntimeCtrlMsgReceiver<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
+        pipeline_completion_msg_rx: PipelineCompletionMsgReceiver<PData>,
     ) -> Result<Vec<()>, Error> {
         use futures::stream::{FuturesUnordered, StreamExt};
 
@@ -182,7 +208,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             telemetry_policy,
         } = self;
 
-        let metric_level = telemetry_policy.channel_metrics;
+        let metric_level = telemetry_policy.runtime_metrics;
         let node_interests = Interests::from_metric_level(metric_level);
 
         // Single-threaded runtime so we can drive !Send node tasks on the core thread.
@@ -196,6 +222,30 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         let mut control_senders = ControlSenders::default();
         let mut node_metric_entries: Vec<(usize, NodeMetricHandles)> = Vec::new();
 
+        // Build a name→index map from NodeDefs so we can resolve flow_metric
+        // config before processors are spawned.
+        let node_name_to_index: HashMap<String, usize> = _nodes
+            .iter()
+            .map(|(nid, _)| (nid.name.to_string(), nid.index))
+            .collect();
+
+        // Collect local and shared processor node indices for flow_metric validation.
+        let processor_indices: HashSet<usize> = processors
+            .iter()
+            .map(|p| match p {
+                ProcessorWrapper::Local { node_id, .. }
+                | ProcessorWrapper::Shared { node_id, .. } => node_id.index,
+            })
+            .collect();
+
+        // Build flow_metric state and per-node role assignments up front.
+        let flow_metric_state = build_flow_metric_state(
+            &telemetry_policy,
+            &node_name_to_index,
+            &processor_indices,
+            &pipeline_context,
+        )?;
+
         // Spawn node tasks and register their control senders, scoping telemetry where available.
         for exporter in exporters {
             let mut exporter = exporter;
@@ -208,20 +258,31 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let telemetry_guard = exporter.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
+            let completion_emission_metrics =
+                make_completion_emission_metrics(&telemetry_handle, metric_level);
             // Collect per-node metrics for the controller (exporters have no output channels).
             node_metric_entries.push((
                 node_id.index,
-                make_node_metric_handles(&telemetry_handle, &pipeline_context, true, false),
+                make_node_metric_handles(
+                    &telemetry_handle,
+                    &pipeline_context,
+                    true,
+                    false,
+                    completion_emission_metrics.clone(),
+                ),
             ));
-            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
+            let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
+            let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = exporter
-                    .start(
-                        pipeline_ctrl_msg_tx,
+                    .start_with_completion_metrics(
+                        runtime_ctrl_msg_tx,
+                        pipeline_completion_msg_tx,
                         effect_metrics_reporter,
                         node_interests,
+                        completion_emission_metrics,
                     )
                     .await
                     .map(|terminal_state| {
@@ -254,16 +315,55 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             let telemetry_guard = processor.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
+            let completion_emission_metrics =
+                make_completion_emission_metrics(&telemetry_handle, metric_level);
             // Collect per-node metrics for the controller.
             node_metric_entries.push((
                 node_id.index,
-                make_node_metric_handles(&telemetry_handle, &pipeline_context, true, true),
+                make_node_metric_handles(
+                    &telemetry_handle,
+                    &pipeline_context,
+                    true,
+                    true,
+                    completion_emission_metrics.clone(),
+                ),
             ));
-            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
+            let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
+            let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let metrics_reporter = metrics_reporter.clone();
+            // Extract flow metric roles for this processor node.
+            let flow_is_start = flow_metric_state.start_nodes.contains_key(&node_id.index);
+            let flow_is_end = flow_metric_state.end_nodes.contains_key(&node_id.index);
+            let flow_signals_incoming_metric: Option<MetricSet<FlowSignalsIncomingMetrics>> =
+                flow_metric_state
+                    .start_nodes
+                    .get(&node_id.index)
+                    .and_then(|&id| flow_metric_state.signals_incoming_metrics[id].clone());
+            let flow_duration_metric: Option<MetricSet<FlowDurationMetrics>> = flow_metric_state
+                .end_nodes
+                .get(&node_id.index)
+                .and_then(|&id| flow_metric_state.duration_metrics[id].clone());
+            let flow_signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>> =
+                flow_metric_state
+                    .end_nodes
+                    .get(&node_id.index)
+                    .and_then(|&id| flow_metric_state.signals_outgoing_metrics[id].clone());
+            let flow_active = flow_metric_state.is_active();
             let fut = async move {
                 let result = processor
-                    .start(pipeline_ctrl_msg_tx, metrics_reporter, node_interests)
+                    .start_with_completion_metrics(
+                        runtime_ctrl_msg_tx,
+                        pipeline_completion_msg_tx,
+                        metrics_reporter,
+                        node_interests,
+                        completion_emission_metrics,
+                        flow_is_start,
+                        flow_is_end,
+                        flow_signals_incoming_metric,
+                        flow_duration_metric,
+                        flow_signals_outgoing_metric,
+                        flow_active,
+                    )
                     .await;
                 drop(telemetry_guard);
                 result
@@ -295,15 +395,17 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
             // Collect per-node metrics for the controller (receivers have no input data channel).
             node_metric_entries.push((
                 node_id.index,
-                make_node_metric_handles(&telemetry_handle, &pipeline_context, false, true),
+                make_node_metric_handles(&telemetry_handle, &pipeline_context, false, true, None),
             ));
-            let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
+            let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
+            let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let fut = async move {
                 let result = receiver
                     .start(
-                        pipeline_ctrl_msg_tx,
+                        runtime_ctrl_msg_tx,
+                        pipeline_completion_msg_tx,
                         effect_metrics_reporter,
                         node_interests,
                     )
@@ -339,26 +441,54 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
         for (id, handles) in node_metric_entries {
             node_metric_handles[id] = Some(handles);
         }
+        let node_metric_handles = Rc::new(RefCell::new(node_metric_handles));
 
         // Drop the original sender so the channel closes when all node tasks complete.
         // Each node holds its own clone and without this drop, the PipelinCtrlMsgManager
         // can only exit via a timeout.
-        drop(pipeline_ctrl_msg_tx);
+        drop(runtime_ctrl_msg_tx);
+        drop(pipeline_completion_msg_tx);
 
         // Spawn the control-plane task that routes node control messages to the pipeline engine.
+        let return_control_senders = control_senders.clone();
+        let return_node_metric_handles = node_metric_handles.clone();
+        let final_node_metric_handles = node_metric_handles.clone();
+        let final_metrics_reporter = metrics_reporter.clone();
+        let manager_pipeline_context = pipeline_context.clone();
+        let manager_metrics_reporter = metrics_reporter.clone();
+        let manager_telemetry_policy = telemetry_policy.clone();
+        let manager_memory_pressure_rx = memory_pressure_rx;
+        let dispatcher_pipeline_context = pipeline_context.clone();
+        let dispatcher_metrics_reporter = metrics_reporter.clone();
+        let dispatcher_telemetry_policy = telemetry_policy.clone();
         futures.push(local_tasks.spawn_local(async move {
-            let manager = PipelineCtrlMsgManager::new(
+            let manager = RuntimeCtrlMsgManager::new(
                 pipeline_key,
-                pipeline_context,
-                pipeline_ctrl_msg_rx,
+                manager_pipeline_context,
+                runtime_ctrl_msg_rx,
+                manager_memory_pressure_rx,
                 control_senders,
                 event_reporter,
-                metrics_reporter,
-                telemetry_policy,
+                manager_metrics_reporter,
+                control_plane_metrics_flush_interval,
+                manager_telemetry_policy,
                 channel_metrics,
                 node_metric_handles,
             );
             manager.run().await
+        }));
+
+        futures.push(local_tasks.spawn_local(async move {
+            let dispatcher = PipelineCompletionMsgDispatcher::new(
+                dispatcher_pipeline_context,
+                pipeline_completion_msg_rx,
+                return_control_senders,
+                return_node_metric_handles,
+                dispatcher_metrics_reporter,
+                control_plane_metrics_flush_interval,
+                dispatcher_telemetry_policy,
+            );
+            dispatcher.run().await
         }));
 
         // Drive all local tasks until completion, returning the first error if any.
@@ -387,6 +517,16 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable> RuntimePipeli
                                 });
                             }
                         }
+                    }
+                    let mut final_metrics_reporter = final_metrics_reporter.clone();
+                    if let Err(err) = report_node_metrics_with_handles(
+                        &final_node_metric_handles,
+                        &mut final_metrics_reporter,
+                    ) {
+                        otap_df_telemetry::otel_warn!(
+                            "node.metrics.final.reporting.fail",
+                            error = err.to_string()
+                        );
                     }
                     Ok(task_results)
                 })

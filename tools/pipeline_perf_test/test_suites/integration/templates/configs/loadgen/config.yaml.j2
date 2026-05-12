@@ -44,6 +44,11 @@ groups:
               {%- if exporter_type in ["otap", "otlp"] %}
               grpc_endpoint: "http://{{ engine_host }}:{{ exporter_port }}"
               compression_method: {{ compression }}
+              {%- if exporter_extra_config is defined %}
+              {%- for k, v in exporter_extra_config.items() %}
+              {{ k }}: {{ v }}
+              {%- endfor %}
+              {%- endif %}
               {% else %}
               error: "Unknown loadgen_exporter_type: {{ exporter_type }}"
               {% endif %}

@@ -44,3 +44,11 @@ impl From<DataFusionError> for Error {
         }
     }
 }
+
+impl From<otap_df_pdata::error::Error> for Error {
+    fn from(error: otap_df_pdata::error::Error) -> Self {
+        Self::ExecutionError {
+            cause: format!("PdataError: {error:?}"),
+        }
+    }
+}

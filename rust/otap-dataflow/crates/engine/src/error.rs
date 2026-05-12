@@ -14,6 +14,8 @@ use otap_df_telemetry::event::ErrorSummary;
 use std::borrow::Cow;
 use std::fmt;
 
+use otap_df_config::ExtensionId;
+
 /// High-level classification for exporter failures to aid troubleshooting.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ExporterErrorKind {
@@ -127,9 +129,9 @@ pub enum TypedError<T> {
     #[error("A channel error occurred: {0}")]
     ChannelSendError(SendError<T>),
 
-    /// A wrapper for the pipeline control message send errors.
-    #[error("A pipeline control channel error occurred: {0}")]
-    PipelineControlMsgError(SendError<T>),
+    /// A wrapper for send errors on the runtime channels.
+    #[error("A runtime channel error occurred: {0}")]
+    RuntimeMsgError(SendError<T>),
 
     /// A wrapper for the node control message send errors.
     #[error("A node control message send error occurred in node {node_id}: {error}")]
@@ -150,10 +152,14 @@ impl<T: Sized> From<TypedError<T>> for Error {
     /// This drops the SendError<T> field yielding an untyped error.
     fn from(value: TypedError<T>) -> Self {
         match value {
-            TypedError::ChannelSendError(e) => Error::ChannelSendError {
-                error: e.to_string(),
-            },
-            TypedError::PipelineControlMsgError(e) => Error::PipelineControlMsgError {
+            TypedError::ChannelSendError(e) => {
+                let closed = matches!(e, SendError::Closed(_));
+                Error::ChannelSendError {
+                    error: e.to_string(),
+                    closed,
+                }
+            }
+            TypedError::RuntimeMsgError(e) => Error::RuntimeMsgError {
                 error: e.to_string(),
             },
             TypedError::NodeControlMsgSendError { node_id, error } => {
@@ -181,13 +187,16 @@ pub enum Error {
     /// A wrapper for the channel errors.
     #[error("A data channel error occurred: {error}")]
     ChannelSendError {
-        /// The reason (e.g., channel full)
+        /// The reason (e.g., channel full or closed).
         error: String,
+        /// `true` when the channel was closed (receiver dropped), `false` when
+        /// the channel was merely full (backpressure).
+        closed: bool,
     },
 
-    /// A wrapper for the pipeline control message send errors.
-    #[error("A control channel error occurred: {error}")]
-    PipelineControlMsgError {
+    /// A wrapper for send errors on the runtime channels.
+    #[error("A runtime channel error occurred: {error}")]
+    RuntimeMsgError {
         /// The reason (e.g., channel closed)
         error: String,
     },
@@ -321,6 +330,20 @@ pub enum Error {
     UnknownExporter {
         /// The name of the unknown exporter plugin.
         plugin_urn: NodeUrn,
+    },
+
+    /// An extension was placed in the `nodes` section instead of `extensions`.
+    #[error("Extension `{node}` was placed in `nodes` but belongs in the `extensions` section")]
+    ExtensionInNodesSection {
+        /// The node name that was misconfigured.
+        node: NodeName,
+    },
+
+    /// The specified extension already exists in the pipeline.
+    #[error("The extension `{extension}` already exists")]
+    ExtensionAlreadyExists {
+        /// The name of the extension that already exists.
+        extension: ExtensionId,
     },
 
     /// Unknown node.
@@ -471,6 +494,38 @@ pub enum Error {
     /// disconnected by topic policy.
     #[error("subscription closed")]
     SubscriptionClosed,
+
+    /// A capability binding was claimed more than once on the same node.
+    ///
+    /// `require_local` / `require_shared` / `optional_local` /
+    /// `optional_shared` are intended to be called **exactly once per
+    /// capability per node**, at node construction. The handle they
+    /// return should be stored and shared within the node as needed.
+    #[error("capability '{capability}' has already been claimed on this node")]
+    CapabilityAlreadyConsumed {
+        /// The capability name.
+        capability: String,
+    },
+
+    /// A node factory called `require_local` / `require_shared` for a
+    /// capability that the node's own configuration did not bind.
+    ///
+    /// This almost always indicates a node-code / node-declaration
+    /// mismatch: either the node's factory signals a required
+    /// capability the node template forgot to declare, or the user's
+    /// pipeline config is missing the binding entry for an optional
+    /// provider the node expects. The message surfaces both
+    /// interpretations.
+    #[error(
+        "required {execution_model} capability '{capability}' is not bound for this node; \
+         add it to the node's capability bindings or switch to optional_{execution_model}"
+    )]
+    CapabilityNotBound {
+        /// The capability name.
+        capability: String,
+        /// Execution model requested by the caller: `"local"` or `"shared"`.
+        execution_model: &'static str,
+    },
 }
 
 impl Error {
@@ -494,7 +549,7 @@ impl Error {
             Error::PdataConversionError { .. } => "PdataConversionError",
             Error::PdataReceiverNotSupported => "PdataReceiverNotSupported",
             Error::PdataSenderNotSupported => "PdataSenderNotSupported",
-            Error::PipelineControlMsgError { .. } => "PipelineControlMsgError",
+            Error::RuntimeMsgError { .. } => "RuntimeMsgError",
             Error::ProcessorAlreadyExists { .. } => "ProcessorAlreadyExists",
             Error::ProcessorError { .. } => "ProcessorError",
             Error::ProtoEncodeError { .. } => "ProtoEncodeError",
@@ -503,6 +558,8 @@ impl Error {
             Error::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
             Error::TooManyNodes {} => "TooManyNodes",
             Error::UnknownExporter { .. } => "UnknownExporter",
+            Error::ExtensionInNodesSection { .. } => "ExtensionInNodesSection",
+            Error::ExtensionAlreadyExists { .. } => "ExtensionAlreadyExists",
             Error::UnknownNode { .. } => "UnknownNode",
             Error::UnknownOutputPort { .. } => "UnknownOutputPort",
             Error::UnknownProcessor { .. } => "UnknownProcessor",
@@ -517,6 +574,8 @@ impl Error {
             Error::SubscribeBroadcastNotSupported => "SubscribeBroadcastNotSupported",
             Error::SubscribeSingleGroupViolation => "SubscribeSingleGroupViolation",
             Error::SubscriptionClosed => "SubscriptionClosed",
+            Error::CapabilityAlreadyConsumed { .. } => "CapabilityAlreadyConsumed",
+            Error::CapabilityNotBound { .. } => "CapabilityNotBound",
         }
         .to_owned()
     }
@@ -580,6 +639,14 @@ impl From<prost::EncodeError> for Error {
 
 impl From<otap_df_pdata::error::Error> for Error {
     fn from(e: otap_df_pdata::error::Error) -> Self {
+        Self::PDataError {
+            reason: e.to_string(),
+        }
+    }
+}
+
+impl From<otap_df_pdata::encode::Error> for Error {
+    fn from(e: otap_df_pdata::encode::Error) -> Self {
         Self::PDataError {
             reason: e.to_string(),
         }

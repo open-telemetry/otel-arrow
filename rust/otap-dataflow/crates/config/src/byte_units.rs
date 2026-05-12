@@ -45,9 +45,30 @@ where
     Ok(Some(bytes as u32))
 }
 
+/// Deserialize an optional byte size as `u64`.
+pub fn deserialize_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    let bytes = match value {
+        Value::Number(value) => value,
+        Value::String(text) => {
+            let parsed: Byte = text.parse().map_err(DeError::custom)?;
+            parsed.as_u64()
+        }
+    };
+
+    Ok(Some(bytes))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::deserialize;
+    use super::{deserialize, deserialize_u64};
     use serde::Deserialize;
 
     #[derive(Debug, Deserialize)]
@@ -123,5 +144,18 @@ mod tests {
         // Binary unit with fraction (exact)
         let cfg = de_yaml("value: '0.5 KiB'").expect("should parse 0.5 KiB to 512 bytes");
         assert_eq!(cfg.value, Some(512));
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Holder64 {
+        #[serde(default, deserialize_with = "deserialize_u64")]
+        value: Option<u64>,
+    }
+
+    #[test]
+    fn deserialize_u64_supports_large_values() {
+        let cfg = serde_yaml::from_str::<Holder64>("value: 6 GiB")
+            .expect("should parse large byte values");
+        assert_eq!(cfg.value, Some(6 * 1024 * 1024 * 1024));
     }
 }

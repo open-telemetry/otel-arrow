@@ -17,7 +17,7 @@ use replace_with::replace_with_or_abort_and_return;
 
 use crate::{
     arrays::NullableArrayAccessor,
-    encode::record::array::{ArrayAppend, ArrayAppendNulls, CheckedArrayAppend},
+    encode::record::array::{ArrayAppend, ArrayAppendNulls, ArrayLen, CheckedArrayAppend},
 };
 
 use super::ArrayBuilderConstructor;
@@ -237,6 +237,20 @@ where
                 curr => (Err(DictionaryBuilderError::DictOverflow), curr),
             }
         })
+    }
+}
+
+impl<T8, T16> AdaptiveDictionaryBuilder<T8, T16>
+where
+    T8: ArrayLen,
+    T16: ArrayLen,
+{
+    /// Returns the number of elements appended to the dictionary builder.
+    pub fn len(&self) -> usize {
+        match &self.variant {
+            DictIndexVariant::UInt8(b) => b.len(),
+            DictIndexVariant::UInt16(b) => b.len(),
+        }
     }
 }
 

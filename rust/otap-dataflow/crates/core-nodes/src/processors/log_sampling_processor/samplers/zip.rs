@@ -1,0 +1,242 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Zip sampler -- emit at most N log records per time window.
+//!
+//! # Algorithm
+//!
+//! The zip sampler maintains a running `count` of records emitted in the
+//! current window.
+//!
+//! A `BooleanArray` selection vector is produced with the first `to_keep`
+//! entries set to `true` and the rest `false`.
+//!
+//! # Timer lifecycle
+//!
+//! On the first message, [`ZipSampler::ensure_init`] registers a periodic
+//! timer via the engine's effect handler. The engine delivers
+//! `NodeControlMsg::TimerTick` at a fixed cadence. On each tick,
+//! [`ZipSampler::notify_timer`] resets `count` to zero, opening a fresh
+//! budget for the next window.
+
+use super::Sampler;
+use arrow::array::{BooleanArray, BooleanBufferBuilder};
+use async_trait::async_trait;
+use otap_df_config::error::Error as ConfigError;
+use otap_df_engine::error::Error as EngineError;
+use otap_df_engine::local::processor as local;
+use otap_df_otap::pdata::OtapPdata;
+use otap_df_pdata::otap::OtapArrowRecords;
+use serde::Deserialize;
+use std::time::Duration;
+
+/// Configuration for zip sampling.
+///
+/// Emits at most `max_items` log records per `interval` time window.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ZipConfig {
+    /// Length of the sampling window (e.g., "60s", "1m").
+    #[serde(with = "humantime_serde")]
+    pub interval: Duration,
+    /// Maximum records to emit per window.
+    pub max_items: usize,
+}
+
+impl ZipConfig {
+    /// Validates the zip sampling configuration.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.interval.is_zero() {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "zip.interval must be greater than 0".to_string(),
+            });
+        }
+        if self.max_items == 0 {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "zip.max_items must be greater than 0".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Zip sampler state.
+///
+/// Keeps a running count of emitted records and resets on each timer tick.
+#[derive(Debug)]
+pub struct ZipSampler {
+    /// Maximum items to emit per window.
+    max_items: usize,
+    /// Count of items emitted in the current window.
+    count: usize,
+    /// Timer interval for the sampling window.
+    timer_interval: Duration,
+    /// Whether the periodic timer has been started.
+    timer_started: bool,
+}
+
+impl ZipSampler {
+    /// Creates a new zip sampler from configuration.
+    pub fn new(cfg: &ZipConfig) -> Self {
+        Self {
+            max_items: cfg.max_items,
+            count: 0,
+            timer_interval: cfg.interval,
+            timer_started: false,
+        }
+    }
+
+    /// Compute how many records to keep from a batch of the given size.
+    fn compute_to_keep(&mut self, batch_size: usize) -> usize {
+        let budget = self.max_items.saturating_sub(self.count);
+        let to_keep = budget.min(batch_size);
+        self.count += to_keep;
+        to_keep
+    }
+
+    /// Reset the count for a new time window.
+    fn reset(&mut self) {
+        self.count = 0;
+    }
+}
+
+#[async_trait(?Send)]
+impl Sampler for ZipSampler {
+    fn sample_arrow_records(
+        &mut self,
+        records: &OtapArrowRecords,
+        builder: &mut BooleanBufferBuilder,
+    ) -> BooleanArray {
+        let total = records.root_record_batch().map_or(0, |rb| rb.num_rows());
+        let to_keep = self.compute_to_keep(total);
+        builder.append_n(to_keep, true);
+        builder.append_n(total - to_keep, false);
+        BooleanArray::new(builder.finish(), None)
+    }
+
+    async fn ensure_init(
+        &mut self,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+    ) -> Result<(), EngineError> {
+        if !self.timer_started {
+            let _handle = effect_handler
+                .start_periodic_timer(self.timer_interval)
+                .await?;
+            self.timer_started = true;
+        }
+        Ok(())
+    }
+
+    fn notify_timer_tick(&mut self) {
+        self.reset();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processors::log_sampling_processor::samplers::testing::make_log_records;
+
+    #[test]
+    fn test_zip_within_budget() {
+        let cfg = ZipConfig {
+            interval: Duration::from_secs(60),
+            max_items: 100,
+        };
+        let mut sampler = ZipSampler::new(&cfg);
+
+        let records = make_log_records(30);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
+        assert_eq!(sel.true_count(), 30);
+
+        let records = make_log_records(50);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
+        assert_eq!(sel.true_count(), 50);
+    }
+
+    #[test]
+    fn test_zip_exceeds_budget() {
+        let cfg = ZipConfig {
+            interval: Duration::from_secs(60),
+            max_items: 100,
+        };
+        let mut sampler = ZipSampler::new(&cfg);
+
+        let records = make_log_records(90);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
+        assert_eq!(sel.true_count(), 90);
+
+        let records = make_log_records(50);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
+        assert_eq!(sel.true_count(), 10);
+    }
+
+    #[test]
+    fn test_zip_reset_via_notify_timer() {
+        let cfg = ZipConfig {
+            interval: Duration::from_secs(60),
+            max_items: 100,
+        };
+        let mut sampler = ZipSampler::new(&cfg);
+
+        // Fill budget
+        let records = make_log_records(100);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
+        assert_eq!(sel.true_count(), 100);
+
+        let records = make_log_records(50);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
+        assert_eq!(sel.true_count(), 0);
+
+        // Timer resets the budget
+        sampler.notify_timer_tick();
+
+        let records = make_log_records(50);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
+        assert_eq!(sel.true_count(), 50);
+    }
+
+    #[test]
+    fn test_zip_empty_batch() {
+        let cfg = ZipConfig {
+            interval: Duration::from_secs(60),
+            max_items: 100,
+        };
+        let mut sampler = ZipSampler::new(&cfg);
+
+        let records = make_log_records(0);
+        let sel = sampler.sample_arrow_records(&records, &mut BooleanBufferBuilder::new(0));
+        assert_eq!(sel.len(), 0);
+        assert_eq!(sel.true_count(), 0);
+    }
+
+    // ==================== Config Validation Tests ====================
+
+    #[test]
+    fn test_valid_config() {
+        let cfg = ZipConfig {
+            interval: Duration::from_secs(60),
+            max_items: 100,
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_interval_zero() {
+        let cfg = ZipConfig {
+            interval: Duration::ZERO,
+            max_items: 100,
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("interval"));
+    }
+
+    #[test]
+    fn test_invalid_max_items_zero() {
+        let cfg = ZipConfig {
+            interval: Duration::from_secs(60),
+            max_items: 0,
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("max_items"));
+    }
+}

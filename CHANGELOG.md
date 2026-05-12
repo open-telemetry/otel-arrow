@@ -9,6 +9,36 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## [0.47.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.47.0) - 2026-04-02
+
+- Upgrade various Go dependencies.
+  [#1767](https://github.com/open-telemetry/otel-arrow/pull/1767),
+  [#1802](https://github.com/open-telemetry/otel-arrow/pull/1802),
+  [#1826](https://github.com/open-telemetry/otel-arrow/pull/1826),
+  [#1890](https://github.com/open-telemetry/otel-arrow/pull/1890),
+  [#1894](https://github.com/open-telemetry/otel-arrow/pull/1894),
+  [#1959](https://github.com/open-telemetry/otel-arrow/pull/1959),
+  [#2007](https://github.com/open-telemetry/otel-arrow/pull/2007),
+  [#2009](https://github.com/open-telemetry/otel-arrow/pull/2009),
+  [#2044](https://github.com/open-telemetry/otel-arrow/pull/2044),
+  [#2046](https://github.com/open-telemetry/otel-arrow/pull/2046),
+  [#2025](https://github.com/open-telemetry/otel-arrow/pull/2025),
+  [#2090](https://github.com/open-telemetry/otel-arrow/pull/2090),
+  [#2092](https://github.com/open-telemetry/otel-arrow/pull/2092),
+  [#2097](https://github.com/open-telemetry/otel-arrow/pull/2097),
+  [#2196](https://github.com/open-telemetry/otel-arrow/pull/2196),
+  [#2236](https://github.com/open-telemetry/otel-arrow/pull/2236),
+  [#2287](https://github.com/open-telemetry/otel-arrow/pull/2287),
+  [#2373](https://github.com/open-telemetry/otel-arrow/pull/2373),
+  [#2399](https://github.com/open-telemetry/otel-arrow/pull/2399),
+  [#2456](https://github.com/open-telemetry/otel-arrow/pull/2456)
+- Mark `time_unix_nano` as required for metrics histogram dp tables.
+  [#2151](https://github.com/open-telemetry/otel-arrow/pull/2151)
+- Upgrade to v0.147.0/v1.53.0 of collector dependencies.
+  [#2171](https://github.com/open-telemetry/otel-arrow/pull/2171)
+- Upgrade to v0.149.0/v1.55.0 of collector dependencies.
+  [#2480](https://github.com/open-telemetry/otel-arrow/pull/2480)
+
 ## [0.46.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.46.0) - 2026-01-07
 
 - Upgrade various Go dependencies.

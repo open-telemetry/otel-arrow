@@ -26,6 +26,7 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
@@ -129,7 +130,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 // convert to arrow records
                 let (context, payload) = pdata.into_parts();
 
-                let mut arrow_records: OtapArrowRecords = payload.try_into()?;
+                let mut arrow_records: OtapArrowRecords = payload.try_into_with_default()?;
                 arrow_records.decode_transport_optimized_ids()?;
 
                 let (filtered_arrow_records, signals_consumed, signals_filtered): (
@@ -214,6 +215,7 @@ mod tests {
     use otap_df_engine::testing::test_node;
     use otap_df_otap::pdata::OtapPdata;
     use otap_df_pdata::OtlpProtoBytes;
+    use otap_df_pdata::TryIntoWithOptions;
     use otap_df_pdata::otap::filter::{
         AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, MatchType,
         logs::{LogFilter, LogMatchProperties, LogSeverityNumberMatchProperties},
@@ -493,8 +495,9 @@ mod tests {
                                 .finish(),
                         ])
                         .links(vec![
-                            // no trace_id/span_id
                             Link::build()
+                                .trace_id([1u8; 16])
+                                .span_id([1u8; 8])
                                 .trace_state("link-state-1")
                                 .attributes(vec![
                                     KeyValue::new("link_tag", AnyValue::new_string("internal")),
@@ -531,6 +534,8 @@ mod tests {
                         ])
                         .links(vec![
                             Link::build()
+                                .trace_id([2u8; 16])
+                                .span_id([2u8; 8])
                                 .trace_state("link-state-2")
                                 .attributes(vec![
                                     KeyValue::new("link_tag", AnyValue::new_string("external")),
@@ -565,6 +570,8 @@ mod tests {
                         ])
                         .links(vec![
                             Link::build()
+                                .trace_id([3u8; 16])
+                                .span_id([3u8; 8])
                                 .trace_state("link-state-3")
                                 .attributes(vec![
                                     KeyValue::new("link_tag", AnyValue::new_string("internal")),
@@ -619,6 +626,8 @@ mod tests {
                         ])
                         .links(vec![
                             Link::build()
+                                .trace_id([4u8; 16])
+                                .span_id([4u8; 8])
                                 .trace_state("link-state-s1")
                                 .attributes(vec![
                                     KeyValue::new("link_tag", AnyValue::new_string("internal")),
@@ -660,7 +669,7 @@ mod tests {
                 let received_logs_data = &msgs[0];
                 let (_, payload) = received_logs_data.clone().into_parts();
                 let otlp_bytes: OtlpProtoBytes = payload
-                    .try_into()
+                    .try_into_with_default()
                     .expect("failed to convert to OtlpProtoBytes");
                 let received_logs_data = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_ref())
@@ -696,7 +705,7 @@ mod tests {
                 let received_traces_data = &msgs[0];
                 let (_, payload) = received_traces_data.clone().into_parts();
                 let otlp_bytes: OtlpProtoBytes = payload
-                    .try_into()
+                    .try_into_with_default()
                     .expect("failed to convert to OtlpProtoBytes");
                 let received_traces_data = match otlp_bytes {
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
@@ -1322,6 +1331,8 @@ mod tests {
                         ])
                         .links(vec![
                             Link::build()
+                                .trace_id([1u8; 16])
+                                .span_id([1u8; 8])
                                 .trace_state("link-state-1")
                                 .attributes(vec![
                                     KeyValue::new("link_tag", AnyValue::new_string("internal")),
@@ -1428,6 +1439,8 @@ mod tests {
                         ])
                         .links(vec![
                             Link::build()
+                                .trace_id([1u8; 16])
+                                .span_id([1u8; 8])
                                 .trace_state("link-state-1")
                                 .attributes(vec![
                                     KeyValue::new("link_tag", AnyValue::new_string("internal")),
@@ -1466,6 +1479,8 @@ mod tests {
                         ])
                         .links(vec![
                             Link::build()
+                                .trace_id([2u8; 16])
+                                .span_id([2u8; 8])
                                 .trace_state("link-state-2")
                                 .attributes(vec![
                                     KeyValue::new("link_tag", AnyValue::new_string("external")),
@@ -1502,6 +1517,8 @@ mod tests {
                         ])
                         .links(vec![
                             Link::build()
+                                .trace_id([3u8; 16])
+                                .span_id([3u8; 8])
                                 .trace_state("link-state-3")
                                 .attributes(vec![
                                     KeyValue::new("link_tag", AnyValue::new_string("internal")),
@@ -1635,6 +1652,8 @@ mod tests {
                         ])
                         .links(vec![
                             Link::build()
+                                .trace_id([1u8; 16])
+                                .span_id([1u8; 8])
                                 .trace_state("link-state-1")
                                 .attributes(vec![
                                     KeyValue::new("link_tag", AnyValue::new_string("internal")),

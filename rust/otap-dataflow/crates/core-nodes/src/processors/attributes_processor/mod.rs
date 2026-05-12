@@ -48,11 +48,13 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_pdata::TryIntoWithOptions;
+use otap_df_pdata::otap::transform::apply_attribute_transform;
 use otap_df_pdata::otap::{
     OtapArrowRecords,
     transform::{
         AttributesTransform, DeleteTransform, InsertTransform, LiteralValue, RenameTransform,
-        UpsertTransform, transform_attributes_with_stats,
+        UpsertTransform,
     },
 };
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -313,19 +315,13 @@ impl AttributesProcessor {
         if !self.is_noop() {
             let payloads = self.attrs_payloads(signal);
             for &payload_ty in payloads {
-                if let Some(rb) = records.get(payload_ty) {
-                    let (rb, stats) = transform_attributes_with_stats(rb, &self.transform)
-                        .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
-                    deleted_total += stats.deleted_entries;
-                    renamed_total += stats.renamed_entries;
-                    inserted_total += stats.inserted_entries;
-                    upserted_total += stats.upserted_entries;
-                    if rb.num_rows() == 0 {
-                        records.remove(payload_ty);
-                    } else {
-                        records.set(payload_ty, rb);
-                    }
-                }
+                let stats = apply_attribute_transform(records, payload_ty, &self.transform, true)?
+                    .unwrap_or_default();
+
+                deleted_total += stats.deleted_entries;
+                renamed_total += stats.renamed_entries;
+                inserted_total += stats.inserted_entries;
+                upserted_total += stats.upserted_entries;
             }
         }
 
@@ -364,7 +360,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 let signal = pdata.signal_type();
                 let (context, payload) = pdata.into_parts();
 
-                let mut records: OtapArrowRecords = payload.try_into()?;
+                let mut records: OtapArrowRecords = payload.try_into_with_default()?;
 
                 // Update domain counters (count once per message when domains are enabled)
                 if self.has_resource_domain {
@@ -446,12 +442,6 @@ fn parse_apply_to(apply_to: Option<&Vec<String>>) -> HashSet<ApplyDomain> {
         }
     }
     set
-}
-
-fn engine_err(msg: &str) -> EngineError {
-    EngineError::PdataConversionError {
-        error: msg.to_string(),
-    }
 }
 
 /// Factory function to create an AttributesProcessor.
@@ -581,6 +571,10 @@ mod tests {
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
     use otap_df_otap::pdata::OtapPdata;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+        Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
+    };
     use otap_df_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -691,7 +685,8 @@ mod tests {
                 let first = out.into_iter().next().expect("one output").payload();
 
                 // Convert output to OTLP bytes for easy assertions
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -720,6 +715,72 @@ mod tests {
                 let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
                 assert!(log_attrs.iter().any(|kv| kv.key == "b"));
                 assert!(!log_attrs.iter().any(|kv| kv.key == "a"));
+            })
+            .validate(|_| async move {});
+    }
+    #[test]
+    fn test_rename_removes_duplicate_keys() {
+        // Prepare input with key "a" and "b"
+        let input = build_logs_with_attrs(
+            vec![],
+            vec![],
+            vec![
+                KeyValue::new("a", AnyValue::new_string("value_a")),
+                KeyValue::new("b", AnyValue::new_string("value_b")),
+            ],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "rename", "source_key": "a", "destination_key": "b"}
+            ]
+        });
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-test-dup");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+
+                // Expect no "a" and exactly one "b"
+                assert!(!log_attrs.iter().any(|kv| kv.key == "a"));
+                let b_count = log_attrs.iter().filter(|kv| kv.key == "b").count();
+                assert_eq!(
+                    b_count, 1,
+                    "There should be exactly one key 'b' (no duplicates)"
+                );
             })
             .validate(|_| async move {});
     }
@@ -771,7 +832,7 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes = first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -858,7 +919,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -891,6 +953,343 @@ mod tests {
                 let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
                 assert!(!log_attrs.iter().any(|kv| kv.key == "c"));
                 assert!(log_attrs.iter().any(|kv| kv.key == "b"));
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_insert_where_needs_nulls_filled_in_id_column() {
+        // in this case, the second log record will have a null in the ID column because
+        // there's no attributes associated with it. So we'll need to fill in this null
+        // so when we add the new attribute, the parent_id column in the attributes table
+        // will have something to point at
+        let input = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("a", AnyValue::new_string("b"))])
+                            .finish(),
+                        LogRecord::build().finish(),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = json!({
+            "actions": [
+                {"action": "insert", "key": "b", "value": "val"},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-insert-resource");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let log_0 = &decoded.resource_logs[0].scope_logs[0].log_records[0];
+                assert_eq!(
+                    log_0.attributes,
+                    vec![
+                        KeyValue::new("a", AnyValue::new_string("b")),
+                        KeyValue::new("b", AnyValue::new_string("val"))
+                    ]
+                );
+
+                let log_1 = &decoded.resource_logs[0].scope_logs[0].log_records[1];
+                assert_eq!(
+                    log_1.attributes,
+                    vec![KeyValue::new("b", AnyValue::new_string("val"))]
+                );
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_insert_where_no_existing_attrs() {
+        let input = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord::build().finish(), LogRecord::build().finish()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = json!({
+            "actions": [
+                {"action": "insert", "key": "b", "value": "val"},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-insert-resource");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let log_0 = &decoded.resource_logs[0].scope_logs[0].log_records[0];
+                assert_eq!(
+                    log_0.attributes,
+                    vec![KeyValue::new("b", AnyValue::new_string("val"))]
+                );
+
+                let log_1 = &decoded.resource_logs[0].scope_logs[0].log_records[1];
+                assert_eq!(
+                    log_1.attributes,
+                    vec![KeyValue::new("b", AnyValue::new_string("val"))]
+                );
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_insert_attrs_with_u32_parent_ids() {
+        let input = MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![
+                        Metric::build()
+                            .data_sum(Sum::new(
+                                0,
+                                true,
+                                vec![
+                                    // The relationship between number datapoints and their
+                                    // attributes involves a u32 ID for id/parent_id columns
+                                    NumberDataPoint::build()
+                                        .value_int(1)
+                                        .attributes(vec![KeyValue::new(
+                                            "existing",
+                                            AnyValue::new_int(514),
+                                        )])
+                                        .finish(),
+                                    NumberDataPoint::build().value_int(2).finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = json!({
+            "actions": [
+                {"action": "insert", "key": "b", "value": "val"},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-insert-resource");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportMetricsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = MetricsData::decode(bytes.as_ref()).expect("decode");
+
+                let metric_0 = &decoded.resource_metrics[0].scope_metrics[0].metrics[0];
+                let Data::Sum(sum) = metric_0.data.as_ref().unwrap() else {
+                    panic!("invalid data {:?}", metric_0.data)
+                };
+                assert_eq!(
+                    sum.data_points,
+                    vec![
+                        NumberDataPoint::build()
+                            .value_int(1)
+                            .attributes(vec![
+                                KeyValue::new("existing", AnyValue::new_int(514)),
+                                KeyValue::new("b", AnyValue::new_string("val"))
+                            ])
+                            .finish(),
+                        NumberDataPoint::build()
+                            .value_int(2)
+                            .attributes(vec![KeyValue::new("b", AnyValue::new_string("val"))])
+                            .finish(),
+                    ]
+                );
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_insert_attrs_with_u32_parent_ids_no_existing_attrs() {
+        let input = MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![
+                        Metric::build()
+                            .data_sum(Sum::new(
+                                0,
+                                true,
+                                vec![
+                                    NumberDataPoint::build().value_int(1).finish(),
+                                    NumberDataPoint::build().value_int(2).finish(),
+                                ],
+                            ))
+                            .finish(),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = json!({
+            "actions": [
+                {"action": "insert", "key": "b", "value": "val"},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-insert-resource");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportMetricsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = MetricsData::decode(bytes.as_ref()).expect("decode");
+
+                let metric_0 = &decoded.resource_metrics[0].scope_metrics[0].metrics[0];
+                let Data::Sum(sum) = metric_0.data.as_ref().unwrap() else {
+                    panic!("invalid data {:?}", metric_0.data)
+                };
+                assert_eq!(
+                    sum.data_points,
+                    vec![
+                        NumberDataPoint::build()
+                            .value_int(1)
+                            .attributes(vec![KeyValue::new("b", AnyValue::new_string("val"))])
+                            .finish(),
+                        NumberDataPoint::build()
+                            .value_int(2)
+                            .attributes(vec![KeyValue::new("b", AnyValue::new_string("val"))])
+                            .finish(),
+                    ]
+                );
             })
             .validate(|_| async move {});
     }
@@ -939,7 +1338,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1009,7 +1409,7 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes = first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1077,7 +1477,7 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes = first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1148,7 +1548,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1232,7 +1633,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1301,7 +1703,8 @@ mod tests {
 
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1377,7 +1780,8 @@ mod tests {
 
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1457,7 +1861,8 @@ mod tests {
 
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1594,7 +1999,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1661,7 +2067,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1747,7 +2154,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1909,7 +2317,7 @@ mod telemetry_tests {
                 let mut found_domain_signal = false;
 
                 telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
-                    if desc.name == "attributes.processor.metrics" {
+                    if desc.name == "processor.attributes" {
                         for (field, v) in iter {
                             match (field.name, v.to_u64_lossy()) {
                                 ("renamed.entries", x) if x >= 1 => found_renamed_entries = true,

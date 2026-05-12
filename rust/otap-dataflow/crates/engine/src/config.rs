@@ -7,6 +7,7 @@
 //! focuses instead on defining the interconnection of nodes within the DAG and each node’s specific
 //! settings.
 
+use otap_df_config::ExtensionId;
 use otap_df_config::NodeId;
 
 /// Default control channel capacity used by legacy constructor paths.
@@ -29,7 +30,6 @@ pub struct PdataChannelConfig {
 }
 
 /// Runtime configuration for a receiver.
-///
 #[derive(Clone, Debug)]
 pub struct ReceiverConfig {
     /// Name of the receiver.
@@ -62,6 +62,17 @@ pub struct ExporterConfig {
     pub control_channel: ControlChannelConfig,
     /// Configuration for input pdata channel.
     pub input_pdata_channel: PdataChannelConfig,
+}
+
+/// Runtime configuration for an extension.
+///
+/// Extensions only have a control channel — they do not process pipeline data.
+#[derive(Clone, Debug)]
+pub struct ExtensionConfig {
+    /// Name of the extension.
+    pub name: ExtensionId,
+    /// Configuration for control channel.
+    pub control_channel: ControlChannelConfig,
 }
 
 impl ReceiverConfig {
@@ -168,6 +179,31 @@ impl ExporterConfig {
             },
             input_pdata_channel: PdataChannelConfig {
                 capacity: pdata_channel_capacity,
+            },
+        }
+    }
+}
+
+impl ExtensionConfig {
+    /// Creates a new extension configuration with default channel capacities.
+    #[must_use]
+    pub fn new<T>(name: T) -> Self
+    where
+        T: Into<ExtensionId>,
+    {
+        Self::with_control_channel_capacity(name, DEFAULT_CONTROL_CHANNEL_CAPACITY)
+    }
+
+    /// Creates a new extension configuration with explicit control channel capacity.
+    #[must_use]
+    pub fn with_control_channel_capacity<T>(name: T, control_channel_capacity: usize) -> Self
+    where
+        T: Into<ExtensionId>,
+    {
+        ExtensionConfig {
+            name: name.into(),
+            control_channel: ControlChannelConfig {
+                capacity: control_channel_capacity,
             },
         }
     }

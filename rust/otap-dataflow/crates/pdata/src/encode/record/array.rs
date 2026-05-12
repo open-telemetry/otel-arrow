@@ -107,6 +107,11 @@ pub trait ArrayAppendNulls {
     fn append_nulls(&mut self, n: usize);
 }
 
+/// Returns the number of elements in the builder.
+pub trait ArrayLen {
+    fn len(&self) -> usize;
+}
+
 /// this trait can be implemented by types that can receive a value to append as a type of str.
 ///
 /// This is mainly useful to avoid copies when calling types that implement ArrayAppend with a
@@ -631,6 +636,23 @@ where
 impl<T, TArgs, TN, TD8, TD16> AdaptiveArrayBuilder<T, TArgs, TN, TD8, TD16>
 where
     T: Clone + PartialEq,
+    TN: ArrayLen,
+    TD8: ArrayLen,
+    TD16: ArrayLen,
+{
+    /// Returns the number of elements appended to the builder.
+    pub fn len(&self) -> usize {
+        match &self.inner {
+            InnerBuilder::Uninitialized(prefix) => prefix.len(),
+            InnerBuilder::Native(builder) => builder.len(),
+            InnerBuilder::Dictionary(builder) => builder.len(),
+        }
+    }
+}
+
+impl<T, TArgs, TN, TD8, TD16> AdaptiveArrayBuilder<T, TArgs, TN, TD8, TD16>
+where
+    T: Clone + PartialEq,
     TN: ArrayBuilder,
     TD8: DictionaryBuilder<UInt8Type>,
     TD16: DictionaryBuilder<UInt16Type>,
@@ -686,7 +708,6 @@ pub type Float64ArrayBuilder = PrimitiveArrayBuilder<Float64Type>;
 pub type UInt8ArrayBuilder = PrimitiveArrayBuilder<UInt8Type>;
 pub type UInt16ArrayBuilder = PrimitiveArrayBuilder<UInt16Type>;
 pub type UInt32ArrayBuilder = PrimitiveArrayBuilder<UInt32Type>;
-#[allow(dead_code)]
 pub type UInt64ArrayBuilder = PrimitiveArrayBuilder<UInt64Type>;
 #[allow(dead_code)]
 pub type Int8ArrayBuilder = PrimitiveArrayBuilder<Int8Type>;
@@ -695,7 +716,6 @@ pub type Int16ArrayBuilder = PrimitiveArrayBuilder<Int16Type>;
 pub type Int32ArrayBuilder = PrimitiveArrayBuilder<Int32Type>;
 pub type Int64ArrayBuilder = PrimitiveArrayBuilder<Int64Type>;
 pub type TimestampNanosecondArrayBuilder = PrimitiveArrayBuilder<TimestampNanosecondType>;
-#[allow(dead_code)]
 pub type DurationNanosecondArrayBuilder = PrimitiveArrayBuilder<DurationNanosecondType>;
 
 /// Convert an array containing binary data to one which contains UTF-8 Data. This will handle

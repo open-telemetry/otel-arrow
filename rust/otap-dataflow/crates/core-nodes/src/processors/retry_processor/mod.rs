@@ -198,7 +198,7 @@ impl RetryConfig {
 }
 
 /// Telemetry metrics for the RetryProcessor (RFC-aligned items + component counters).
-#[metric_set(name = "retry.processor.metrics")]
+#[metric_set(name = "processor.retry")]
 #[derive(Debug, Default, Clone)]
 pub struct RetryProcessorMetrics {
     // RFC-aligned: consumed items by signal and outcome
@@ -546,12 +546,12 @@ impl RetryProcessor {
 
         self.metrics.increment_retry_attempts(signal);
 
-        // Delay the data, we'll continue in the DelayedData branch next.
-        match effect_handler.delay_data(next_retry_time_i, rereq).await {
+        // Requeue the data onto this node, we'll continue in the DelayedData branch next.
+        match effect_handler.requeue_later(next_retry_time_i, rereq) {
             Ok(_) => Ok(()),
             Err(refused) => {
                 effect_handler
-                    .notify_nack(NackMsg::new("cannot delay", refused))
+                    .notify_nack(NackMsg::new("cannot requeue", refused))
                     .await?;
                 // This component failed.
                 self.metrics.add_consumed_failure(signal, num_items);
@@ -651,6 +651,9 @@ impl Processor<OtapPdata> for RetryProcessor {
                 NodeControlMsg::TimerTick { .. } => {
                     unreachable!("unused");
                 }
+                NodeControlMsg::Wakeup { .. } => Ok(()),
+                NodeControlMsg::MemoryPressureChanged { .. } => Ok(()),
+                NodeControlMsg::DrainIngress { .. } => Ok(()),
                 NodeControlMsg::Shutdown { .. } => Ok(()),
             },
         }
@@ -682,8 +685,9 @@ mod test {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::control::{
-        AckMsg, NackMsg, NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel,
+        AckMsg, NackMsg, NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
     };
+    use otap_df_engine::testing::liveness::next_completion;
     use otap_df_engine::testing::node::test_node;
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::{Interests, message::Message};
@@ -836,6 +840,176 @@ mod test {
         )
     }
 
+    // Downstream Nacks are only retryable when RETURN_DATA preserves the original
+    // payload. This test locks in that losing the payload produces a terminal Nack
+    // immediately instead of wedging the request in a retry loop.
+    #[test]
+    fn test_retry_processor_missing_return_data_nacks_without_retry() {
+        let pipeline_ctx = create_test_pipeline_context();
+        let node = test_node("retry-processor-missing-return-data");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+
+        let mut node_config = NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN);
+        node_config.config = create_test_config();
+
+        let proc = crate::processors::retry_processor::create_retry_processor(
+            pipeline_ctx,
+            node,
+            Arc::new(node_config),
+            rt.config(),
+        )
+        .expect("create processor");
+
+        rt.set_processor(proc)
+            .run_test(move |mut ctx| async move {
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                let pdata_in = create_test_pdata().test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::default().into(),
+                    4444,
+                );
+
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process initial message");
+
+                let mut output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 1);
+                let mut first_attempt = output.remove(0);
+                let _ = first_attempt.take_payload();
+
+                let (_, nack_msg) = next_nack(NackMsg::new("missing payload", first_attempt))
+                    .expect("expected nack subscriber");
+                ctx.process(Message::nack_ctrl_msg(nack_msg))
+                    .await
+                    .expect("process nack");
+
+                match next_completion(
+                    &mut pipeline_completion_rx,
+                    Duration::from_secs(1),
+                    "retry processor terminal nack for missing payload",
+                )
+                .await
+                {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
+                        assert_eq!(node_id, 4444);
+                        assert!(
+                            nack.reason.contains("retry lost payload"),
+                            "unexpected reason: {}",
+                            nack.reason
+                        );
+                        let calldata: TestCallData =
+                            nack.unwind.route.calldata.try_into().expect("my calldata");
+                        assert_eq!(TestCallData::default(), calldata);
+                    }
+                    other => panic!("expected terminal nack, got {other:?}"),
+                }
+            })
+            .validate(|ctx| async move {
+                ctx.counters().assert(0, 0, 0, 0);
+            });
+    }
+
+    /// Scenario: retry receives a transient downstream NACK while the
+    /// processor-local delayed-resume queue is already full.
+    /// Guarantees: the processor converts the rejected `requeue_later` request
+    /// into a terminal NACK instead of leaving retry state stranded.
+    #[test]
+    fn test_retry_processor_cannot_requeue_becomes_terminal_nack() {
+        let pipeline_ctx = create_test_pipeline_context();
+        let node = test_node("retry-processor-cannot-delay");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::with_channel_capacities(10, 1);
+
+        let mut node_config = NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN);
+        node_config.config = create_test_config();
+
+        let proc = crate::processors::retry_processor::create_retry_processor(
+            pipeline_ctx,
+            node,
+            Arc::new(node_config),
+            rt.config(),
+        )
+        .expect("create processor");
+
+        rt.set_processor(proc)
+            .run_test(move |mut ctx| async move {
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                let pdata_in = create_test_pdata().test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
+                    TestCallData::default().into(),
+                    4444,
+                );
+
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process initial message");
+
+                let mut output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 1);
+                let first_attempt = output.remove(0);
+
+                let (_, nack_msg) =
+                    next_nack(NackMsg::new("simulated downstream failure", first_attempt))
+                        .expect("expected nack subscriber");
+                ctx.process(Message::nack_ctrl_msg(nack_msg))
+                    .await
+                    .expect("process nack");
+
+                assert!(
+                    ctx.next_local_control_deadline().is_some(),
+                    "first retry should occupy the only local requeue slot"
+                );
+
+                let second_input = create_test_pdata().test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
+                    TestCallData::default().into(),
+                    4444,
+                );
+                ctx.process(Message::PData(second_input))
+                    .await
+                    .expect("process second input");
+
+                let mut output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 1);
+                let second_attempt = output.remove(0);
+
+                let (_, nack_msg) =
+                    next_nack(NackMsg::new("simulated downstream failure", second_attempt))
+                        .expect("expected nack subscriber");
+                ctx.process(Message::nack_ctrl_msg(nack_msg))
+                    .await
+                    .expect("process second nack");
+
+                match next_completion(
+                    &mut pipeline_completion_rx,
+                    Duration::from_secs(1),
+                    "retry processor terminal nack when requeue_later fails",
+                )
+                .await
+                {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        let (_node_id, nack) = next_nack(nack).expect("expected nack subscriber");
+                        assert!(
+                            nack.reason.contains("cannot requeue"),
+                            "unexpected reason: {}",
+                            nack.reason
+                        );
+                    }
+                    other => panic!("expected terminal nack, got {other:?}"),
+                }
+            })
+            .validate(|ctx| async move {
+                ctx.counters().assert(0, 0, 0, 0);
+            });
+    }
+
     fn test_retry_processor(
         config: serde_json::Value,
         number_of_nacks: usize,
@@ -862,9 +1036,9 @@ mod test {
 
         phase
             .run_test(move |mut ctx| async move {
-                // Set up test pipeline control channel
-                let (pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(pipeline_tx);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
                 let mut retry_count: usize = 0;
                 let pdata_in = create_test_pdata().test_subscribe_to(
@@ -885,11 +1059,11 @@ mod test {
 
                 // Simulate downstream failures and retry
                 let mut current_data = first_attempt;
-                // have_pmsg is the first non-DelayData message
+                // have_pmsg is the first non-requeue completion message
                 // received in the loop, this will happen when
                 // number_of_nacks is 4, i.e., the nack before the
                 // final retry attempt.
-                let mut have_pmsg: Option<PipelineControlMsg<OtapPdata>> = None;
+                let mut have_pmsg: Option<PipelineCompletionMsg<OtapPdata>> = None;
                 let mut nacks_delivered = 0;
                 while nacks_delivered < number_of_nacks {
                     let nack = if permanent_error {
@@ -903,32 +1077,37 @@ mod test {
                     ctx.process(Message::nack_ctrl_msg(nack_msg)).await.unwrap();
                     nacks_delivered += 1;
 
-                    // The processor should schedule a delayed retry via DelayData
-                    let resp = match pipeline_rx.recv().await {
-                        Ok(PipelineControlMsg::DelayData { when, data, .. }) => {
-                            retry_count += 1;
+                    let resp = if let Some(when) = ctx.next_local_control_deadline() {
+                        retry_count += 1;
 
-                            if working_clock {
-                                ctx.sleep(when.duration_since(Instant::now())).await;
-                            }
-
-                            ctx.process(Message::Control(NodeControlMsg::DelayedData {
-                                when,
-                                data,
-                            }))
-                            .await
-                            .unwrap();
-
-                            // The retry was sent downstream
-                            let mut retry_output = ctx.drain_pdata().await;
-                            assert_eq!(retry_output.len(), 1);
-                            current_data = retry_output.remove(0);
-                            None
+                        if working_clock {
+                            ctx.sleep(
+                                when.checked_duration_since(Instant::now())
+                                    .unwrap_or_default(),
+                            )
+                            .await;
                         }
-                        Ok(msg) => Some(msg),
-                        other => {
-                            panic!("unexpected pipeline control message: {:?}", other);
-                        }
+
+                        let control = ctx
+                            .take_due_local_control(when)
+                            .expect("scheduled local control");
+                        assert!(
+                            matches!(control, NodeControlMsg::DelayedData { .. }),
+                            "retry should requeue retained pdata as DelayedData"
+                        );
+                        ctx.process(Message::Control(control)).await.unwrap();
+
+                        let mut retry_output = ctx.drain_pdata().await;
+                        assert_eq!(retry_output.len(), 1);
+                        current_data = retry_output.remove(0);
+                        None
+                    } else {
+                        Some(
+                            pipeline_completion_rx
+                                .recv()
+                                .await
+                                .expect("pipeline-completion channel closed unexpectedly"),
+                        )
                     };
                     have_pmsg = have_pmsg.or(resp);
                 }
@@ -947,7 +1126,7 @@ mod test {
 
                     // Verify the processor sent the ACK or NACK upstream
                     have_pmsg = Some(
-                        tokio::time::timeout(Duration::from_secs(1), pipeline_rx.recv())
+                        tokio::time::timeout(Duration::from_secs(1), pipeline_completion_rx.recv())
                             .await
                             .expect("timeout waiting for final DeliverAck")
                             .expect("channel closed"),
@@ -955,7 +1134,7 @@ mod test {
                 }
 
                 match have_pmsg.expect("retry replied") {
-                    PipelineControlMsg::DeliverAck { ack } => {
+                    PipelineCompletionMsg::DeliverAck { ack } => {
                         let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
                         assert!(
                             outcome_failure.is_none(),
@@ -970,7 +1149,7 @@ mod test {
                         // Requested RETURN_DATA, check item count match
                         assert_eq!(create_test_pdata().num_items(), ack.accepted.num_items());
                     }
-                    PipelineControlMsg::DeliverNack { nack } => {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert!(
                             nack.reason
@@ -984,9 +1163,6 @@ mod test {
 
                         // Requested RETURN_DATA, check item count match
                         assert_eq!(create_test_pdata().num_items(), nack.refused.num_items());
-                    }
-                    other => {
-                        panic!("expected DeliverAck/Nack but got: {:?}", other);
                     }
                 }
 

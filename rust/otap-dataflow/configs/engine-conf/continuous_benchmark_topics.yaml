@@ -17,12 +17,12 @@ policies:
     control:
       node: 256
       pipeline: 256
-    pdata: 4096
+    pdata: 128
   health: {}
   telemetry:
     pipeline_metrics: true
     tokio_metrics: true
-    channel_metrics: basic
+    runtime_metrics: basic
   resources:
     core_allocation:
       type: all_cores
@@ -54,7 +54,7 @@ groups:
         control:
           node: 256
           pipeline: 256
-        pdata: 4096
+        pdata: 128
 
     # Topic declarations shared by all pipelines in this benchmark group.
     # These two topics replace the ingress and backend gRPC sockets used in

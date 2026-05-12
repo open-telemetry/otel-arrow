@@ -22,11 +22,13 @@ use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
 use http::{Request, Response};
 use otap_df_config::SignalType;
+use otap_df_config::transport_headers::TransportHeaders;
 use otap_df_engine::control::{CallData, NackMsg};
 use otap_df_engine::shared::receiver::EffectHandler;
 use otap_df_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
+use otap_df_pdata::OtapPayload;
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
@@ -51,11 +53,47 @@ pub struct AckSlot(
     pub(crate) Arc<Mutex<SlotsState<oneshot::Sender<Result<(), NackMsg<OtapPdata>>>>>>,
 );
 
+/// Receiver side of a wait-for-result subscription slot.
+pub type AckSlotReceiver = oneshot::Receiver<Result<(), NackMsg<OtapPdata>>>;
+
 impl AckSlot {
     /// Build a new per-signal slot map sized for the configured concurrency.
     #[must_use]
     pub fn new(max_size: usize) -> Self {
         Self(Arc::new(Mutex::new(SlotsState::new(max_size))))
+    }
+
+    /// Returns true when there are no outstanding wait-for-result slots.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.lock().is_empty()
+    }
+
+    /// Completes all outstanding waiters with a shutdown Nack.
+    pub fn force_shutdown(&self, signal: SignalType, reason: &str) {
+        self.0.lock().drain(|sender| {
+            let _ = sender.send(Err(NackMsg::new(
+                reason,
+                OtapPdata::new_todo_context(OtapPayload::empty(signal)),
+            )));
+        });
+    }
+
+    /// Allocate a raw slot key plus its paired receiver.
+    pub(crate) fn allocate_slot(&self) -> Option<(SlotKey, AckSlotReceiver)> {
+        let mut guard = self.0.lock();
+        guard.allocate(oneshot::channel)
+    }
+
+    /// Allocate a wait-for-result subscription in calldata form.
+    #[must_use]
+    pub fn allocate_waiter(&self) -> Option<(CallData, AckSlotReceiver)> {
+        self.allocate_slot().map(|(key, rx)| (key.into(), rx))
+    }
+
+    /// Cancel an outstanding wait-for-result subscription.
+    pub(crate) fn cancel_slot(&self, key: SlotKey) {
+        self.0.lock().cancel(key);
     }
 }
 
@@ -319,7 +357,7 @@ pub(crate) struct SlotGuard {
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
-        self.state.0.lock().cancel(self.key);
+        self.state.cancel_slot(self.key);
     }
 }
 
@@ -328,27 +366,55 @@ impl UnaryService<OtapPdata> for OtapBatchService {
     type Future = BoxFuture<'static, Result<tonic::Response<Self::Response>, Status>>;
 
     fn call(&mut self, request: tonic::Request<OtapPdata>) -> Self::Future {
-        let mut otap_batch = request.into_inner();
+        let (metadata, _extensions, mut otap_batch) = request.into_parts();
 
         let effect_handler = self
             .effect_handler
             .take()
             .expect("`OtapBatchService` is not reused for multiple calls");
+
+        // Capture transport headers synchronously before moving the effect handler
+        // into the async block, avoiding a clone of the capture policy.
+        if let Some(policy) = effect_handler.capture_policy() {
+            let mut transport_headers = TransportHeaders::new();
+
+            // Collect all metadata pairs, decoding binary values so we store
+            // raw bytes rather than the base64 wire encoding (which would be
+            // double-encoded on downstream gRPC propagation).
+            let pairs: Vec<(&str, Vec<u8>)> = metadata
+                .iter()
+                .filter_map(|kv| match kv {
+                    tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
+                        Some((key.as_str(), value.as_bytes().to_vec()))
+                    }
+                    tonic::metadata::KeyAndValueRef::Binary(key, value) => value
+                        .to_bytes()
+                        .ok()
+                        .map(|decoded| (key.as_str(), decoded.to_vec())),
+                })
+                .collect();
+
+            let _stats = policy.capture_from_pairs(
+                pairs.iter().map(|(k, v)| (*k, v.as_slice())),
+                &mut transport_headers,
+            );
+            if !transport_headers.is_empty() {
+                otap_batch.set_transport_headers(transport_headers);
+            }
+        }
+
         let state = self.state.clone();
         let metrics = self.metrics.clone();
         Box::pin(async move {
             metrics.lock().requests_started.inc();
             let cancel_rx = if let Some(state) = state {
-                // Try to allocate a slot (under the mutex) for calldata.
-                let mut guard = state.0.lock();
-                let (key, rx) = match guard.allocate(|| oneshot::channel()) {
+                let (key, rx) = match state.allocate_slot() {
                     None => {
                         metrics.lock().rejected_requests.inc();
                         return Err(Status::resource_exhausted("Too many concurrent requests"));
                     }
                     Some(pair) => pair,
                 };
-                drop(guard);
 
                 // Enter the subscription. Slot key becomes calldata.
                 effect_handler.subscribe_to(

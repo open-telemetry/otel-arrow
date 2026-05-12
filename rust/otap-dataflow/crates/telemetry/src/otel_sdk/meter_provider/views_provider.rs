@@ -4,6 +4,7 @@
 //! OpenTelemetry Metrics Views configuration.
 
 use opentelemetry_sdk::metrics::{Instrument, MeterProviderBuilder, Stream};
+use otap_df_config::pipeline::telemetry::AttributeValue;
 use otap_df_config::pipeline::telemetry::metrics::views::ViewConfig;
 
 use crate::error::Error;
@@ -43,10 +44,26 @@ impl DeclarativeView {
     ) -> impl Fn(&Instrument) -> Option<Stream> + Send + Sync + 'static {
         let config = self.config.clone();
         move |instrument: &Instrument| {
+            if let Some(scope_name) = &config.selector.scope_name
+                && instrument.scope().name() != scope_name
+            {
+                return None;
+            }
             if let Some(instrument_name) = &config.selector.instrument_name
                 && instrument.name() != instrument_name
             {
                 return None;
+            }
+
+            if !config.selector.scope_attributes.is_empty() {
+                for (key, value) in &config.selector.scope_attributes {
+                    let matched = instrument.scope().attributes().any(|kv| {
+                        kv.key.as_str() == key && attribute_value_matches(value, &kv.value)
+                    });
+                    if !matched {
+                        return None;
+                    }
+                }
             }
 
             let mut stream_builder = Stream::builder();
@@ -62,8 +79,34 @@ impl DeclarativeView {
     }
 }
 
+/// Checks if a config `AttributeValue` matches an OTel SDK `Value`.
+fn attribute_value_matches(
+    config_value: &AttributeValue,
+    otel_value: &opentelemetry::Value,
+) -> bool {
+    match config_value {
+        AttributeValue::String(s) => {
+            if let opentelemetry::Value::String(v) = otel_value {
+                v.as_ref() == s
+            } else {
+                false
+            }
+        }
+        AttributeValue::Bool(b) => otel_value == &opentelemetry::Value::Bool(*b),
+        AttributeValue::I64(i) => otel_value == &opentelemetry::Value::I64(*i),
+        AttributeValue::F64(f) => otel_value == &opentelemetry::Value::F64(*f),
+        AttributeValue::Array(_) => {
+            // Array matching is currently not supported for scope attribute selectors.
+            // TODO: implement array matching for scope attribute selectors if needed in the future
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use opentelemetry_sdk::metrics::SdkMeterProvider;
     use otap_df_config::pipeline::telemetry::metrics::views::{
@@ -75,6 +118,8 @@ mod tests {
         let view_config = ViewConfig {
             selector: MetricSelector {
                 instrument_name: Some("requests.total".to_string()),
+                scope_name: None,
+                scope_attributes: HashMap::new(),
             },
             stream: MetricStream {
                 name: Some("http.requests.total".to_string()),
@@ -92,6 +137,8 @@ mod tests {
         let view_config = ViewConfig {
             selector: MetricSelector {
                 instrument_name: Some("requests.total".to_string()),
+                scope_name: None,
+                scope_attributes: HashMap::new(),
             },
             stream: MetricStream {
                 name: Some("http.requests.total".to_string()),
@@ -115,6 +162,8 @@ mod tests {
         let view_config = ViewConfig {
             selector: MetricSelector {
                 instrument_name: Some("requests.total".to_string()),
+                scope_name: None,
+                scope_attributes: HashMap::new(),
             },
             stream: MetricStream {
                 name: Some("http.requests.total".to_string()),
@@ -123,5 +172,65 @@ mod tests {
         };
         let declarative_view = DeclarativeView::new(view_config);
         let _view_function = declarative_view.to_view_funtion();
+    }
+
+    #[test]
+    fn test_views_provider_configure_with_scope_name() {
+        let view_config = ViewConfig {
+            selector: MetricSelector {
+                instrument_name: Some("requests.total".to_string()),
+                scope_name: Some("my.scope".to_string()),
+                scope_attributes: HashMap::new(),
+            },
+            stream: MetricStream {
+                name: Some("http.requests.total".to_string()),
+                description: Some("Total number of HTTP requests".to_string()),
+            },
+        };
+        let views_config = vec![view_config];
+        let sdk_meter_builder = SdkMeterProvider::builder();
+        let result = ViewsProvider::configure(sdk_meter_builder, views_config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_views_provider_configure_with_scope_name_only() {
+        let view_config = ViewConfig {
+            selector: MetricSelector {
+                instrument_name: None,
+                scope_name: Some("exporter.azure_monitor".to_string()),
+                scope_attributes: HashMap::new(),
+            },
+            stream: MetricStream {
+                name: None,
+                description: Some("Scoped metrics".to_string()),
+            },
+        };
+        let views_config = vec![view_config];
+        let sdk_meter_builder = SdkMeterProvider::builder();
+        let result = ViewsProvider::configure(sdk_meter_builder, views_config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_views_provider_configure_with_scope_attributes() {
+        let view_config = ViewConfig {
+            selector: MetricSelector {
+                instrument_name: None,
+                scope_name: Some("my.library".to_string()),
+                scope_attributes: HashMap::from([(
+                    "feature_flag".to_string(),
+                    AttributeValue::String("experimental".to_string()),
+                )]),
+            },
+            stream: MetricStream {
+                name: None,
+                description: Some("Experimental library metrics".to_string()),
+            },
+        };
+        let views_config = vec![view_config];
+        let sdk_meter_builder = SdkMeterProvider::builder();
+        let result = ViewsProvider::configure(sdk_meter_builder, views_config);
+        assert!(result.is_ok());
     }
 }
