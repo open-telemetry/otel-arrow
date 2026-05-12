@@ -7,7 +7,7 @@ use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
 use otap_df_telemetry_macros::metric_set;
 
 /// Pdata-oriented metrics for the traffic generator receiver.
-#[metric_set(name = "traffic_generator.receiver.metrics")]
+#[metric_set(name = "traffic_generator.receiver")]
 #[derive(Debug, Default, Clone)]
 pub struct TrafficGeneratorReceiverMetrics {
     /// Number of logs generated.

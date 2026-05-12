@@ -656,6 +656,32 @@ jobs:
           cargo clippy --all-targets --all-features --workspace -- -D warnings
         working-directory: ./rust/${{ matrix.folder }}
 
+  host-metrics-semconv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: open-telemetry/semantic-conventions
+          ref: v1.41.0
+          path: semantic-conventions
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: ./rust/otap-dataflow
+      - name: Run host metrics semconv drift check
+        env:
+          OTAP_HOST_METRICS_SEMCONV_REGISTRY: ${{ github.workspace }}/semantic-conventions/model
+        run: |
+          cargo test -p otap-df-core-nodes \
+            --features dev-tools,otap-df-otap/crypto-ring \
+            emitted_phase1_metric_shapes_match_weaver_semconv --lib -- --ignored
+        working-directory: ./rust/otap-dataflow
+
   # Required matrix combinations for deny: otap-dataflow only
   deny_required:
     runs-on: ubuntu-latest
@@ -804,6 +830,7 @@ jobs:
       - pest-fmt
       - no_default_features_check
       - pipeline_perf_test
+      - host-metrics-semconv
     steps:
       - name: Check if all required jobs succeeded
         run: |
@@ -841,6 +868,10 @@ jobs:
           fi
           if [[ "${{ needs.pipeline_perf_test.result }}" != "success" ]]; then
             echo "pipeline_perf_test failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.host-metrics-semconv.result }}" != "success" ]]; then
+            echo "host-metrics-semconv failed or was cancelled"
             exit 1
           fi
           echo "All required checks passed!"

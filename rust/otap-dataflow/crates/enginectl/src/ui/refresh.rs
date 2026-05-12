@@ -634,14 +634,10 @@ pub(super) fn update_engine_vitals(
 
 /// Extracts engine CPU, memory, and pressure values from compact metrics.
 pub(super) fn extract_engine_vitals(metrics: &telemetry::CompactMetricsResponse) -> EngineVitals {
-    let Some(metric_set) = metrics
-        .metric_sets
-        .iter()
-        .find(|set| set.name == "engine.metrics")
-    else {
+    let Some(metric_set) = metrics.metric_sets.iter().find(|set| set.name == "engine") else {
         return EngineVitals {
             stale: false,
-            pressure_detail: Some("engine.metrics set not present".to_string()),
+            pressure_detail: Some("engine set not present".to_string()),
             ..EngineVitals::default()
         };
     };

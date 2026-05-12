@@ -68,6 +68,13 @@ impl ObservedEventReporter {
         self
     }
 
+    /// Returns the configured send policy. Test-only accessor used to verify
+    /// that the policy was threaded through correctly during construction.
+    #[cfg(test)]
+    pub(crate) fn policy(&self) -> &SendPolicy {
+        &self.policy
+    }
+
     /// Report an engine event.
     ///
     /// When a dedicated engine sender is configured, the event is delivered

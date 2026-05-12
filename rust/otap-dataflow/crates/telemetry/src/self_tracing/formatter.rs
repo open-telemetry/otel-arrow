@@ -4,7 +4,9 @@
 //! An alternative to Tokio fmt::layer().
 
 use super::encoder::level_to_severity_number;
-use super::{LogContext, LogContextFn, LogRecord, SavedCallsite};
+use super::{
+    BorrowedLogRecord, LOG_BUFFER_SIZE, LogContext, LogContextFn, LogRecord, SavedCallsite,
+};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use otap_df_pdata::views::otlp::bytes::logs::RawLogRecord;
 use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
@@ -14,12 +16,6 @@ use std::time::SystemTime;
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
-
-/// Default buffer size for log formatting.
-///
-/// TODO: Append a note to the log message when truncation occurs, otherwise
-/// today the log record is silently truncated.
-pub const LOG_BUFFER_SIZE: usize = 4096;
 
 /// ANSI codes a.k.a. "Select Graphic Rendition" codes.
 #[derive(Clone, Copy)]
@@ -56,19 +52,31 @@ pub enum ColorMode {
 
 /// A buffer writer with color mode for styled output.
 ///
-/// Combines a \`Cursor<&mut [u8]>\` buffer with a \`ColorMode\` so callbacks
+/// Combines a `Cursor<&mut [u8]>` buffer with a `ColorMode` so callbacks
 /// only need one argument that can both write bytes and apply ANSI styling.
+///
+/// One byte of the underlying buffer is reserved for a trailing newline
+/// (written by [`finish_line`](Self::finish_line)), so writers always have
+/// room to terminate the line even when content fills the buffer.
 pub struct StyledBufWriter<'a> {
     buf: Cursor<&'a mut [u8]>,
+    /// Logical capacity for content (always `underlying.len() - 1`, or 0 if empty).
+    /// The byte at `cap` is reserved for the trailing newline.
+    cap: usize,
     color_mode: ColorMode,
 }
 
 impl<'a> StyledBufWriter<'a> {
     /// Create a new styled buffer writer.
+    ///
+    /// One byte of `buf` is reserved for the trailing newline written by
+    /// [`finish_line`](Self::finish_line). Caller must size `buf` accordingly.
     #[inline]
     pub const fn new(buf: &'a mut [u8], color_mode: ColorMode) -> Self {
+        let cap = buf.len().saturating_sub(1);
         Self {
             buf: Cursor::new(buf),
+            cap,
             color_mode,
         }
     }
@@ -90,18 +98,30 @@ impl<'a> StyledBufWriter<'a> {
         self.buf.position() as usize
     }
 
-    /// Check if the buffer is full (position >= capacity).
+    /// Check if the buffer is full (position >= content capacity).
     #[inline]
     #[must_use]
     pub const fn is_full(&self) -> bool {
-        self.buf.position() as usize >= self.buf.get_ref().len()
+        self.buf.position() as usize >= self.cap
+    }
+
+    /// Finish the current line by writing the trailing newline.
+    ///
+    /// The reserved last byte guarantees that `\n` always fits — even when
+    /// callers tried to write more content than the buffer holds.
+    #[inline]
+    pub fn finish_line(&mut self) {
+        let _ = self.buf.write_all(b"\n");
     }
 }
 
 impl Write for StyledBufWriter<'_> {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.buf.write(buf)
+        let pos = self.buf.position() as usize;
+        let remaining = self.cap.saturating_sub(pos);
+        let n = buf.len().min(remaining);
+        self.buf.write(&buf[..n])
     }
 
     #[inline]
@@ -133,7 +153,7 @@ impl RawLoggingLayer {
     pub fn dispatch_event(&self, event: &Event<'_>) {
         let time = SystemTime::now();
         let record = LogRecord::new(event, (self.context_fn)());
-        self.writer.print_log_record(time, &record, |w| {
+        self.writer.print_log_record(time, &record.as_view(), |w| {
             w.format_entity_suffix_without_registry(&record.context);
         });
     }
@@ -160,6 +180,7 @@ impl ConsoleWriter {
 /// Format a LogRecord as a human-readable string (for testing/compatibility).
 ///
 /// Output format: `2026-01-06T10:30:45.123Z  INFO target::name (file.rs:42): body [attr=value, ...]`
+#[must_use]
 pub fn format_log_record_to_string(time: Option<SystemTime>, record: &LogRecord) -> String {
     let mut buf = [0u8; LOG_BUFFER_SIZE];
     let len = {
@@ -180,22 +201,26 @@ impl ConsoleWriter {
         self.color_mode
     }
 
-    /// Print a LogRecord directly to stdout or stderr (based on level).
+    /// Print a log record directly to stdout or stderr (based on level).
     ///
     /// The `scope_formatter` callback is invoked after the log body/attributes,
     /// before the newline. This allows callers to append scope information
     /// (e.g., entity context from a registry) atomically within the same write.
-    pub fn print_log_record<F>(&self, time: SystemTime, record: &LogRecord, scope_formatter: F)
-    where
+    pub fn print_log_record<F>(
+        &self,
+        time: SystemTime,
+        view: &BorrowedLogRecord<'_>,
+        scope_formatter: F,
+    ) where
         F: FnOnce(&mut StyledBufWriter<'_>),
     {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
         let len = {
             let mut w = StyledBufWriter::new(&mut buf, self.color_mode);
-            w.format_log_record(Some(time), record, scope_formatter);
+            w.format_log(Some(time), view, scope_formatter);
             w.position()
         };
-        self.write_line(record.callsite().level(), &buf[..len]);
+        self.write_line(view.callsite.level(), &buf[..len]);
     }
 }
 
@@ -213,9 +238,6 @@ pub fn write_event_name_to<W: Write>(w: &mut W, callsite: &SavedCallsite) {
 
 impl StyledBufWriter<'_> {
     /// Format a LogRecord with custom suffix formatter.
-    ///
-    /// This is the core formatting method for log records. The `write_suffix` callback
-    /// is invoked after the log body/attributes, before the newline.
     pub fn format_log_record<F>(
         &mut self,
         time: Option<SystemTime>,
@@ -224,17 +246,31 @@ impl StyledBufWriter<'_> {
     ) where
         F: FnOnce(&mut Self),
     {
-        let view = RawLogRecord::new(record.body_attrs_bytes.as_ref());
-        let level = *record.callsite().level();
+        self.format_log(time, &record.as_view(), write_suffix);
+    }
+
+    /// Format a log record view with custom suffix formatter.
+    ///
+    /// This is the core formatting method. It accepts a borrowed
+    /// [`BorrowedLogRecord`] so both owned `LogRecord` and zero-copy
+    /// stack paths can share the same logic.
+    pub fn format_log<F>(
+        &mut self,
+        time: Option<SystemTime>,
+        view: &BorrowedLogRecord<'_>,
+        write_suffix: F,
+    ) where
+        F: FnOnce(&mut Self),
+    {
+        let raw_view = RawLogRecord::new(view.body_attrs_bytes);
+        let level = *view.callsite.level();
 
         self.format_log_line(
             time,
-            &view,
+            &raw_view,
             |w| w.write_level(&level),
             |w| {
-                w.write_styled(AnsiCode::Bold, |w| {
-                    write_event_name_to(w, &record.callsite())
-                });
+                w.write_styled(AnsiCode::Bold, |w| write_event_name_to(w, &view.callsite));
             },
             write_suffix,
         );
@@ -263,6 +299,8 @@ impl StyledBufWriter<'_> {
     /// - If has_event_name and no body but attrs present: print ":" (attrs add " [")
     /// - Body prints directly
     /// - Attributes print " [...]" before themselves
+    /// - If `dropped_attributes_count` is non-zero, a " (N dropped)" suffix is
+    ///   appended to make truncations/drops visible to operators.
     fn write_body_and_attrs<V: LogRecordView>(&mut self, record: &V, has_event_name: bool) {
         let body = record.body();
         let mut attrs = record.attributes().peekable();
@@ -273,9 +311,10 @@ impl StyledBufWriter<'_> {
             .as_ref()
             .is_some_and(|v| v.as_string().is_none_or(|s| !s.is_empty()));
         let has_attrs = attrs.peek().is_some();
+        let dropped = record.dropped_attributes_count();
 
         // Print separator after event_name if there's content following
-        if has_event_name && (has_body || has_attrs) {
+        if has_event_name && (has_body || has_attrs || dropped > 0) {
             if has_body {
                 let _ = self.write_all(b": ");
             } else {
@@ -291,6 +330,11 @@ impl StyledBufWriter<'_> {
 
         // Write attributes if present (with leading " [")
         self.write_attrs(attrs);
+
+        // Surface dropped-attribute count if present.
+        if dropped > 0 {
+            let _ = write!(self, " ({dropped} dropped)");
+        }
     }
 
     /// Write attributes from any AttributeView iterator to buffer.
@@ -549,7 +593,8 @@ impl StyledBufWriter<'_> {
         // Write suffix (e.g., entity scope) before newline
         write_suffix(self);
 
-        let _ = self.write_all(b"\n");
+        // Always terminate the line, even when the buffer is full.
+        self.finish_line();
     }
 }
 
@@ -616,7 +661,7 @@ mod tests {
             *self.formatted.lock().unwrap() = format_log_record_to_string(Some(time), &record);
 
             // Capture full OTLP encoding
-            let mut buf = ProtoBuffer::with_capacity(512);
+            let mut buf = ProtoBuffer::default();
             let mut encoder = DirectLogRecordEncoder::new(&mut buf);
             let _ = encoder.encode_log_record(time, &record);
             *self.encoded.lock().unwrap() = buf.into_bytes();
@@ -777,6 +822,7 @@ mod tests {
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::new(),
+            dropped_attributes_count: 0,
             context: LogContext::new(),
         };
 
@@ -790,7 +836,7 @@ mod tests {
         );
 
         // Verify full OTLP encoding with known callsite
-        let mut buf = ProtoBuffer::with_capacity(256);
+        let mut buf = ProtoBuffer::default();
         let mut encoder = DirectLogRecordEncoder::new(&mut buf);
         let _ = encoder.encode_log_record(time, &record);
         let decoded = ProtoLogRecord::decode(buf.into_bytes().as_ref()).expect("decode failed");
@@ -827,6 +873,7 @@ mod tests {
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::from(encoded),
+            dropped_attributes_count: 0,
             context: LogContext::new(),
         };
 
@@ -863,6 +910,38 @@ mod tests {
             "got: {}",
             output
         );
+    }
+
+    #[test]
+    fn finish_line_guarantees_trailing_newline() {
+        // Even when callers attempt to write more content than fits, the
+        // reserved last byte ensures finish_line can always terminate the
+        // line so adjacent log lines never glom together on the console.
+        use std::io::Write;
+
+        // Tiny buffer; content is clamped to cap (= len-1).
+        let mut buf = [0u8; 8];
+        let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
+        let _ = w.write_all(b"AAAAAAAAAAAAAA"); // exceeds 8
+        assert!(w.is_full());
+        w.finish_line();
+        assert_eq!(&buf, b"AAAAAAA\n", "last byte is reserved newline");
+
+        // Non-full buffer: append newline normally.
+        let mut buf = [0u8; 16];
+        let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
+        let _ = w.write_all(b"abc");
+        w.finish_line();
+        let pos = w.position();
+        assert_eq!(&buf[..pos], b"abc\n");
+
+        // Filled to logical cap (= len-1): newline goes in reserved slot.
+        let mut buf = [0u8; 4];
+        let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
+        let _ = w.write_all(b"abcd");
+        assert!(w.is_full());
+        w.finish_line();
+        assert_eq!(&buf, b"abc\n");
     }
 
     static TEST_CALLSITE: TestCallsite = TestCallsite;
