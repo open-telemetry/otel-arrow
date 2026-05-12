@@ -13,8 +13,6 @@
 //! [`shared::capability`](crate::shared::capability).
 
 pub mod factory;
-pub mod no_op_stateful;
-pub mod no_op_stateless;
 pub mod registry;
 
 pub use factory::{LocalInstanceFactory, SharedInstanceFactory};
