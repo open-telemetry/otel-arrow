@@ -222,12 +222,8 @@ impl DecodedUserEventsRecord {
 fn decode_tracefs_field(field: &TracefsField, event_data: &[u8]) -> Option<DecodedAttrValue> {
     let bytes = tracefs_field_bytes(field, event_data)?;
     let type_name = field.type_name.trim();
-    if matches!(
-        field.location,
-        TracefsFieldLocation::StaticString
-            | TracefsFieldLocation::DynRelative
-            | TracefsFieldLocation::DynAbsolute
-    ) || (type_name == "char" && field.size != 1)
+    if matches!(field.location, TracefsFieldLocation::StaticString)
+        || (type_name == "char" && field.size != 1)
     {
         return std::str::from_utf8(bytes)
             .ok()
@@ -310,7 +306,7 @@ fn tracefs_field_bytes<'a>(field: &TracefsField, event_data: &'a [u8]) -> Option
                 start = start.checked_add(loc_end)?;
             }
             let end = start.checked_add(len)?;
-            event_data.get(start..end).map(until_nul)
+            event_data.get(start..end)
         }
     }
 }
@@ -674,6 +670,29 @@ mod tests {
         let decoded = decode_tracefs(fields, event_data);
 
         assert!(decoded.attributes.is_empty());
+    }
+
+    #[test]
+    fn tracefs_preserves_dynamic_non_string_bytes_without_nul_truncation() {
+        let mut event_data = vec![0; 8];
+        let value = [b'a', 0, b'b', 0];
+        let location = (value.len() as u32) << 16;
+        event_data.extend_from_slice(&location.to_ne_bytes());
+        event_data.extend_from_slice(&value);
+        let fields = vec![field(
+            "opaque",
+            "struct opaque",
+            TracefsFieldLocation::DynRelative,
+            8,
+            4,
+        )];
+
+        let decoded = decode_tracefs(fields, event_data);
+
+        assert_eq!(
+            attr(&decoded, "opaque"),
+            Some(&DecodedAttrValue::Str("YQBiAA==".to_owned()))
+        );
     }
 
     #[test]
