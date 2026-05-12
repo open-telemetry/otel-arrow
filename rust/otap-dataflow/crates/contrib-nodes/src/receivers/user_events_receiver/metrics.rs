@@ -7,7 +7,7 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
 /// Internal telemetry for the Linux user_events receiver.
-#[metric_set(name = "user_events.receiver.metrics")]
+#[metric_set(name = "receiver.user_events")]
 #[derive(Debug, Default, Clone)]
 pub(super) struct UserEventsReceiverMetrics {
     /// Number of perf samples received from the kernel ring.

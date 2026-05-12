@@ -493,7 +493,7 @@ extra drain/flush; use graceful drain when minimizing buffered data loss matters
 
 ## Metrics
 
-The receiver reports these counters under `user_events.receiver.metrics`:
+The receiver reports these counters under `receiver.user_events`:
 
 | Metric | Meaning |
 | --- | --- |
