@@ -558,7 +558,7 @@ function renderComparisonSection(suiteData, comparison) {
   const filterHtml = hasFilters ? buildFilterHtml(categories, filterState) : "";
   const anyBP = (filtered.suites || []).some((r) => getSuiteTests(suiteData, r.slug).some((t) => { const rm = t.name.match(/^(\d+)k$/); return hasBackpressure(t.metrics, rm ? parseInt(rm[1])*1000 : null); }));
   const bpHtml = anyBP ? '<div class="chart-backpressure-legend">\u26A0 Backpressure detected</div>' : "";
-  const link = `${BASE}/compare/${encodeURIComponent(slug)}/`;
+  const link = `${BASE}${encodeURIComponent(slug)}/`;
   return `
     <section class="scenario-section" data-comparison-id="${escapeHtml(slug)}">
       <div class="scenario-section-head">
