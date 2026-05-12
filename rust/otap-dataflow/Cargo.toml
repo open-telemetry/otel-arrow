@@ -231,14 +231,13 @@ wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
 data_engine_recordset = { path = '../experimental/query_engine/engine-recordset' }
-data_engine_recordset_otlp_bridge = { path = '../experimental/query_engine/engine-recordset-otlp-bridge' }
 include_dir = "0.7.4"
 mime_guess = "2.0.5"
 minijinja = "2"
 otap-df-admin = { path = 'crates/admin' }
 otap-df-channel = { path = 'crates/channel' }
 otap-df-engine-macros = { path = 'crates/engine-macros' }
-otap-df-opl = { path = 'crates/opl' }
+otap-df-query-engine-languages = { path = 'crates/query-engine-languages' }
 otap-df-query-engine = { path = 'crates/query-engine' }
 otap-df-quiver = { path = 'crates/quiver' }
 otap-df-state = { path = 'crates/state' }

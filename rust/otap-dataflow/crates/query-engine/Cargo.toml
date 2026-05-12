@@ -42,7 +42,7 @@ pretty_assertions = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true }
 
-otap-df-opl = { workspace = true }
+otap-df-query-engine-languages = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["testing"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]
