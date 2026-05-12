@@ -1,212 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778605586267,
+  "lastUpdate": 1778617279869,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "geukhanuslu@gmail.com",
-            "name": "Gokhan Uslu",
-            "username": "gouslu"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "edac122ab94fbf853f598bbd898c2065355c193d",
-          "message": "feat(engine): add ExtensionFactory, ExtensionWrapper, and extension lifecycle types (#2622)\n\n# Change Summary\n\nAdd the core engine types for the extension lifecycle system ([Phase 1,\nPR\n2](https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/docs/extension-system-architecture.md#pr-2----engine-extensionfactory--extensionwrapper--builder)).\n\nExtensions are PData-free components that provide cross-cutting services\n(e.g., authentication, storage) to data-path nodes. This PR introduces\nthe foundational types for defining, building, and starting extensions —\nfully separated from the node/DAG infrastructure.\n\n**New types (config crate):**\n- `ExtensionId` — separate ID namespace from `NodeId`\n- `ExtensionUrn` — 3-segment URN format (`urn:<namespace>:<id>`),\nsimpler than node's 4-segment `NodeUrn` (`urn:<namespace>:<kind>:<id>`)\nsince kind is implicit from the `extensions:` config section\n- `ExtensionUserConfig` — extension-specific config (`type`,\n`description`, `config` only — no output ports, wiring, or header\npolicies). Uses `#[serde(deny_unknown_fields)]` to reject node-specific\nfields at parse time\n- `PipelineExtensions` — collection type for pipeline extensions,\nparallel to `PipelineNodes`\n- `DuplicateExtension` — separate error variant for duplicate extension\nIDs (distinct from `DuplicateNode`)\n\n**New types (engine crate):**\n- `ExtensionFactory` — PData-free factory struct with `create` (returns\n`ExtensionBundle`) and `validate_config`\n- `ExtensionWrapper` — enum with `Local` / `Shared` variants (first\nlayer). Each variant holds an `ExtensionLifecycle<E, R>` with `Active` /\n`Passive` variants (second layer). This two-level structure makes\nimpossible states unrepresentable\n- `ExtensionLifecycle<E, R>` — generic lifecycle enum; `Active` bundles\nthe extension trait object with its control channel sender and receiver,\n`Passive` has no channels\n- `ExtensionBundle` — opaque return type from the builder, holding at\nmost one local and one shared `ExtensionWrapper`. Private fields enforce\nconstruction only via the builder\n- `ExtensionBundleBuilder` — builder with `with_local()` /\n`with_shared()` + `build()`. Enforces at least one variant present and\nrejects same-type dual registration via `TypeId` guard\n- `ControlChannel<R>` — generic shutdown-aware control channel. Concrete\ntypes `local::extension::ControlChannel` (with `LocalReceiver`) and\n`shared::extension::ControlChannel` (with `SharedReceiver`) are defined\nin their respective modules, matching how pipeline nodes handle control\nchannels\n- `ControlReceiver` — internal trait enabling the generic\n`ControlChannel<R>` to work with both local and shared receivers without\ncode duplication\n- `Active<E>` / `Passive<E>` — newtype wrappers that signal lifecycle\nintent at the type level\n- `EffectHandler` — extension identity and metrics reporter\n(forward-compatible extension point for the `start()` signature)\n- `ExtensionControlMsg` — PData-free control message enum (Config,\nCollectTelemetry, Shutdown)\n- `ExtensionControlSender` — control sender for extensions, using\n`ExtensionId`\n- `local::Extension` / `shared::Extension` — lifecycle traits\n(`Rc<Self>` vs `Box<Self>`), each taking their own `ControlChannel` type\n\n**Modified existing types:**\n- `ExtensionAlreadyExists` error variant added (uses `ExtensionId`, not\n`NodeId`)\n- `PipelineFactory::new()` now accepts extension factories as a 4th\nparameter\n- `pipeline_factory` proc macro generates `EXTENSION_FACTORIES`\ndistributed slice\n- `wrap_control_channel_metrics` generalized to accept `&str` name\ninstead of `&NodeId`, enabling reuse by both nodes and extensions\n- `control_channel_id()` similarly generalized from `&NodeId` to `&str`\n- `PipelineConfig` extensions field changed from `PipelineNodes` to\n`PipelineExtensions`\n- Extension URN validation moved from runtime `NodeKind` check to\nparse-time `ExtensionUrn` format enforcement\n- Removed redundant `canonicalize_plugin_urns` for extensions —\n`ExtensionUrn` normalizes at parse time via `#[serde(try_from)]`\n- `PipelineConfigBuilder` tracks `duplicate_extensions` separately from\n`duplicate_nodes`\n\n**Design decisions:**\n- Extensions are fully separated from nodes — zero `NodeType`, `NodeId`,\n`NodeUrn`, `NodeKind`, or `NodeUserConfig` references in extension code\n- `ExtensionUrn` uses a simpler 3-segment format (`urn:<ns>:<id>`) since\nthe `<kind>` segment is redundant for extensions. This also prevents\ncross-kind misconfiguration: a 4-segment node URN placed in\n`extensions:` is rejected at parse time\n- Two-level enum design: `ExtensionWrapper` (Local/Shared) ×\n`ExtensionLifecycle` (Active/Passive) — eliminates impossible states\nwithout `Option`s\n- `ExtensionBundle` replaces `Vec<ExtensionWrapper>` — exactly 0-1 local\n+ 0-1 shared, private fields, builder-enforced invariants\n- Same-type guard: runtime `TypeId` check prevents registering the same\nconcrete type as both local and shared (avoids duplicate lifecycles on\nshared `Arc` state)\n- Local extensions use local channels (`LocalSender`/`LocalReceiver` via\n`LocalMode`), shared extensions use shared channels\n(`SharedSender`/`SharedReceiver` via `SharedMode`) — matching how\npipeline nodes handle their control channels\n- Shutdown grace-period: `ControlChannel::recv()` continues delivering\nConfig/CollectTelemetry messages during the grace period, using a\n2-branch `select!` racing the deadline against incoming messages\n- `build()` and `start()` return `Result` with `Error::InternalError`\ninstead of panicking\n- `Clone` bound on `Active<E>` and `Passive<E>` shared providers is\nretained for the capability system (next PR) which needs `Box<dyn\nCloneAnySend>` for type-erased registration\n\n## What issue does this PR close?\n\n* Part of the extension system Phase 1 rollout (PR 2 of 8)\n\n## How are these changes tested?\n\n- 27 unit tests in `extension.rs` (engine) covering: all lifecycle\nvariants (local/shared × active/passive), builder validation (empty,\nsame-type guard), dual-type creation, start/shutdown for both local and\nshared, control channel behavior (immediate/delayed shutdown, config\nordering, grace-period message delivery, channel close), effect handler,\ncontrol sender, telemetry metrics for both active and passive paths,\n`ExtensionBundle` iteration\n- 10 unit tests in `extension_urn.rs` (config) covering: full URN\nparsing, short form expansion, case insensitivity, rejection of\n4-segment node URN format, empty/invalid segments, serde roundtrip,\n`From<&str>`\n- 2 unit tests in `extension.rs` (config) covering: YAML\ndeserialization, rejection of unknown fields\n- 4 unit tests in `lib.rs` (engine) covering: `ExtensionFactory`\nname/clone/validate_config, `ExtensionAlreadyExists` error variant\n- All existing engine tests and config tests pass\n- `cargo clippy` with `-D warnings` passes for both `otap-df-config` and\n`otap-df-engine`\n- `cargo fmt --all -- --check` passes\n\n## Are there any user-facing changes?\n\nExtension URN format changed from `urn:<namespace>:extension:<id>` to\n`urn:<namespace>:<id>`. This is a simplification — the `:extension:`\nsegment was redundant since extensions are always declared in the\n`extensions:` config section.",
-          "timestamp": "2026-04-17T23:00:50Z",
-          "tree_id": "700a5d935e56110c122d39f6502f6c5e13459998",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/edac122ab94fbf853f598bbd898c2065355c193d"
-        },
-        "date": 1776469795454,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.09904202211178566,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.23607006617360843,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 13.420758928571429,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 13.69140625,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.002152,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.2775609135149092,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.4541517370306902,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 18.239397321428573,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 18.3828125,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.002098,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.968258662478094,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 1.1742470020246067,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 34.911830357142854,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 34.953125,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.002183,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.47834120974724076,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.6698590232884181,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 24.635602678571427,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 24.6953125,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.002167,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.14019689009238984,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.2930468628366807,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 14.998325892857142,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 15.21484375,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.00222,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.1827237947702178,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.3309175884094096,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 15.786830357142858,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 15.90234375,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.002152,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -20398,6 +20194,210 @@ window.BENCHMARK_DATA = {
           {
             "name": "idle_test_duration",
             "value": 15.002109,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "3e94f1fa256d8ea5acf209853548d6d06efb6d2e",
+          "message": "Honor the console_fallback setting for engine.observed_state.logging_events send policy (#2914)\n\n# Change Summary\n\n`console_fallback: false`\n\nwould not disable telemetry from logging calls that overflow, due to a\ndefault setting.\n\nThe correct field `engine.observed_state.logging_events`.\n\nFixes https://github.com/open-telemetry/otel-arrow/issues/2916\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-05-12T17:04:42Z",
+          "tree_id": "2c63d0c929429a5106d76b9dfd6fd7ec16561003",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/3e94f1fa256d8ea5acf209853548d6d06efb6d2e"
+        },
+        "date": 1778617279236,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.2109779202717045,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.3596076599719757,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 13.705357142857142,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 13.95703125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002114,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.7006838428012654,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.8524032697547683,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 18.857700892857142,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 19.03515625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002402,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 2.366546824723682,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 2.7883722377840026,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 35.936941964285715,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 36.39453125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.007601,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 1.0849356952183813,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 1.5079561191939626,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 24.800223214285715,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 24.875,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002171,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.2572321993726334,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.4443337484433375,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 14.440290178571429,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 14.44140625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002278,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.39903366578592364,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.6052774966918347,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 15.852678571428571,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 16.0078125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.003488,
             "unit": "seconds",
             "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
           }
