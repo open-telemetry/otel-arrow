@@ -679,7 +679,7 @@ mod test {
                 let mut msgs_transformed = 0;
                 let mut msgs_transform_failed = 0;
                 telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
-                    if desc.name == "transform.processor" {
+                    if desc.name == "processor.transform" {
                         for (field, v) in iter {
                             let val = v.to_u64_lossy();
                             match field.name {
