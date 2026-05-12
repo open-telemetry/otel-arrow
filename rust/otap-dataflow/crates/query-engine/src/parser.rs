@@ -10,17 +10,20 @@ use data_engine_expressions::{
 };
 use data_engine_parser_abstractions::ParserOptions;
 
+#[cfg(feature = "sha1-hash")]
+use crate::consts::SHA1_FUNC_NAME;
 use crate::consts::{
-    ENCODE_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOG_FUNC_NAME, LOWER_CASE_FUNC_NAME,
-    LTRIM_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME, SHA256_FUNC_NAME,
-    UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME, UUIDV7_FUNC_NAME,
+    ENCODE_FUNC_NAME, FNV_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOG_FUNC_NAME,
+    LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME,
+    REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME,
+    UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME, UUIDV7_FUNC_NAME, XXH3_FUNC_NAME, XXH128_FUNC_NAME,
 };
 
 /// Create parser options that can be used when parsing an expression that will be executed with
 /// this query engine
 #[must_use]
 pub fn default_parser_options() -> ParserOptions {
-    ParserOptions::new()
+    let opts = ParserOptions::new()
         // Add placeholders for scalar UDFs supported by this engine - these are needed because
         // the invoke function expression in our expression AST references the function by an ID,
         // adding these will make a named function with some ID available in the parser. Only the
@@ -36,6 +39,12 @@ pub fn default_parser_options() -> ParserOptions {
         //
         .with_external_function(FORMAT_DATETIME_FUNC_NAME, param_placeholders(2), None)
         .with_external_function(SHA256_FUNC_NAME, param_placeholders(1), None)
+        .with_external_function(MD5_FUNC_NAME, param_placeholders(1), None)
+        .with_external_function(FNV_FUNC_NAME, param_placeholders(1), None)
+        .with_external_function(MURMUR3_FUNC_NAME, param_placeholders(1), None)
+        .with_external_function(SHA512_FUNC_NAME, param_placeholders(1), None)
+        .with_external_function(XXH3_FUNC_NAME, param_placeholders(1), None)
+        .with_external_function(XXH128_FUNC_NAME, param_placeholders(1), None)
         .with_external_function(ENCODE_FUNC_NAME, param_placeholders(2), None)
         .with_external_function(UUID_FUNC_NAME, param_placeholders(0), None)
         .with_external_function(UUIDV7_FUNC_NAME, param_placeholders(0), None)
@@ -105,7 +114,12 @@ pub fn default_parser_options() -> ParserOptions {
                 ),
             ],
             None,
-        )
+        );
+
+    #[cfg(feature = "sha1-hash")]
+    let opts = opts.with_external_function(SHA1_FUNC_NAME, param_placeholders(1), None);
+
+    opts
 }
 
 fn param_placeholders(

@@ -7,7 +7,7 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
 /// Pdata-oriented metrics for the OTAP DebugProcessor
-#[metric_set(name = "debug.processor.pdata")]
+#[metric_set(name = "processor.debug.pdata")]
 #[derive(Debug, Default, Clone)]
 pub struct DebugPdataMetrics {
     /// Number of log signals consumed

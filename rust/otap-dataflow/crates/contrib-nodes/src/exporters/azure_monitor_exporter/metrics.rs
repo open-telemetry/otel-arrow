@@ -19,7 +19,7 @@ use otap_df_telemetry_macros::metric_set;
 pub type AzureMonitorExporterMetricsRc = Rc<RefCell<AzureMonitorExporterMetricsTracker>>;
 
 /// Telemetry metrics for the Azure Monitor Exporter.
-#[metric_set(name = "azure_monitor_exporter")]
+#[metric_set(name = "exporter.azure_monitor")]
 #[derive(Debug, Default, Clone)]
 pub struct AzureMonitorExporterMetrics {
     /// Number of rows successfully exported.

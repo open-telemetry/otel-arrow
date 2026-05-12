@@ -12,13 +12,13 @@ engine:
                 path: "/metrics"
       views:
         - selector:
-            scope_name: "traffic_generator.receiver"
+            scope_name: "receiver.traffic_generator"
             instrument_name: "logs.produced"
           stream:
             name: "otlp.logs.produced.count"
             description: "Count of logs produced"
         - selector:
-            scope_name: "debug.processor.pdata"
+            scope_name: "processor.debug.pdata"
             instrument_name: "logs.consumed"
           stream:
             name: "debug.logs.consumed.count"
