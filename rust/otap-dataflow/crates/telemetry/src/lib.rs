@@ -234,6 +234,7 @@ impl InternalTelemetrySystem {
         config: &TelemetryConfig,
         telemetry_registry: TelemetryRegistryHandle,
         console_async_reporter: Option<ObservedEventReporter>,
+        logging_send_policy: SendPolicy,
         context_fn: LogContextFn,
         log_tap_handle: Option<log_tap::InternalLogTapHandle>,
     ) -> Result<Self, Error> {
@@ -261,10 +262,10 @@ impl InternalTelemetrySystem {
         let (its_reporter, its_settings) = if config.logs.providers.uses_its_provider() {
             let (sender, logs_receiver) = flume::bounded(config.reporting_channel_size);
             let reporter = if let Some(log_tap) = &log_tap_handle {
-                ObservedEventReporter::new(SendPolicy::default(), sender)
+                ObservedEventReporter::new(logging_send_policy.clone(), sender)
                     .with_drop_counter(log_tap.ingest_drop_counter())
             } else {
-                ObservedEventReporter::new(SendPolicy::default(), sender)
+                ObservedEventReporter::new(logging_send_policy.clone(), sender)
             };
             let resource_bytes = otel_sdk::encode_resource_bytes(&config.resource);
             (
@@ -369,6 +370,13 @@ impl InternalTelemetrySystem {
         self.log_tap_handle.clone()
     }
 
+    /// Test-only accessor for the ITS reporter, used to verify that the
+    /// configured logging send policy is threaded through during construction.
+    #[cfg(test)]
+    pub(crate) fn its_reporter(&self) -> Option<&ObservedEventReporter> {
+        self.its_reporter.as_ref()
+    }
+
     /// Returns the configured log level.
     #[must_use]
     pub const fn log_level(&self) -> &LogLevel {
@@ -423,6 +431,7 @@ impl Default for InternalTelemetrySystem {
             &config,
             TelemetryRegistryHandle::new(),
             Some(dummy_reporter),
+            SendPolicy::default(),
             LogContext::new,
             None,
         )
@@ -436,7 +445,9 @@ mod tests {
     use otap_df_config::pipeline::telemetry::{
         AttributeValue::I64 as OTelI64, AttributeValue::String as OTelString,
     };
-    use otap_df_config::settings::telemetry::logs::{LoggingProviders, LogsConfig, ProviderMode};
+    use otap_df_config::settings::telemetry::logs::{
+        InternalLogTapConfig, LoggingProviders, LogsConfig, ProviderMode,
+    };
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
     use otap_df_pdata::proto::opentelemetry::logs::{v1::LogsData, v1::ResourceLogs};
@@ -468,6 +479,7 @@ mod tests {
                 &TelemetryConfig::default(),
                 TelemetryRegistryHandle::new(),
                 Some(test_reporter()),
+                SendPolicy::default(),
                 LogContext::new,
                 None,
             )
@@ -488,6 +500,7 @@ mod tests {
                 &config_with_providers(providers),
                 TelemetryRegistryHandle::new(),
                 Some(test_reporter()),
+                SendPolicy::default(),
                 LogContext::new,
                 None,
             )
@@ -514,6 +527,73 @@ mod tests {
     }
 
     #[test]
+    fn its_reporter_honors_configured_logging_send_policy() {
+        // Verifies the fix that threads `engine.observed_state.logging_events`
+        // through to the ITS reporter, covering both code paths:
+        //   1. log_tap_handle: None
+        //   2. log_tap_handle: Some(_)  (sets the drop counter on the reporter)
+        //
+        // Before the fix, both paths constructed the ITS reporter with
+        // `SendPolicy::default()` (which has `console_fallback: true`),
+        // so a user-provided `console_fallback: false` was silently ignored.
+        with_cleared_rust_log(|| {
+            let providers = LoggingProviders {
+                global: ProviderMode::Noop,
+                engine: ProviderMode::ITS,
+                internal: ProviderMode::Noop,
+                admin: ProviderMode::Noop,
+            };
+            let custom_policy = SendPolicy {
+                blocking_timeout: Some(Duration::from_millis(7)),
+                console_fallback: false,
+            };
+
+            // Case 1: no log tap handle.
+            let its = InternalTelemetrySystem::new(
+                &config_with_providers(providers.clone()),
+                TelemetryRegistryHandle::new(),
+                Some(test_reporter()),
+                custom_policy.clone(),
+                LogContext::new,
+                None,
+            )
+            .expect("should create");
+            let policy = its
+                .its_reporter()
+                .expect("ITS provider configured")
+                .policy();
+            assert_eq!(
+                policy, &custom_policy,
+                "ITS reporter (no log tap) must use configured logging_events policy"
+            );
+
+            // Case 2: with a log tap handle (reporter additionally gets the drop counter).
+            let log_tap = log_tap::build(&InternalLogTapConfig {
+                enabled: true,
+                max_entries: 1,
+                max_bytes: usize::MAX,
+            });
+            let its = InternalTelemetrySystem::new(
+                &config_with_providers(providers),
+                TelemetryRegistryHandle::new(),
+                Some(test_reporter()),
+                custom_policy.clone(),
+                LogContext::new,
+                Some(log_tap),
+            )
+            .expect("should create");
+            let policy = its
+                .its_reporter()
+                .expect("ITS provider configured")
+                .policy();
+            assert_eq!(
+                policy, &custom_policy,
+                "ITS reporter (with log tap) must use configured logging_events policy"
+            );
+        });
+    }
+
+    #[test]
     fn resource_bytes() {
         let mut config = TelemetryConfig::default();
         let _ = config.resource.insert(
@@ -529,6 +609,7 @@ mod tests {
             &config,
             TelemetryRegistryHandle::new(),
             Some(test_reporter()),
+            SendPolicy::default(),
             LogContext::new,
             None,
         )
