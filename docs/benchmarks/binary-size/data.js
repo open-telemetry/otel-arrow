@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778546478214,
+  "lastUpdate": 1778632981071,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -4106,6 +4106,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 105.15,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cijo Thomas",
+            "username": "cijothomas",
+            "email": "cithomas@microsoft.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "0c37386ba3e4cc9957ddb5a2b6a95fd6e2fa1752",
+          "message": "fix(engine): centralize telemetry timer management in runtime manager (#2804)\n\nFixes https://github.com/open-telemetry/otel-arrow/issues/1305\n\n## Motivation\n\nOur idle perf tests were showing surprisingly high CPU usage.\nInvestigation revealed that each node was independently calling\n`start_periodic_telemetry(Duration::from_secs(1))`, triggering internal\nmetric collection (syscalls like `getrusage`, jemalloc stats, tokio\nworker metrics, channel snapshots) every second across all nodes. At 1s\nintervals, the telemetry overhead itself dominated idle CPU\nmeasurements, producing misleading results.\n\n## Changes\n\nCentralizes telemetry timer registration in the runtime control manager\nso all nodes use the configured `engine.telemetry.reporting_interval`\ninstead of each node managing its own timer independently. This removes\n~250 lines of per-node boilerplate across 15 nodes, with shutdown\ncancellation handled centrally.\n\nAlso bumps the idle perf test to `reporting_interval: 5s` (with matching\n5s Prometheus scrape) for a more realistic deployment baseline. With\ncentralized timing and the 5s interval, idle CPU numbers look\nsignificantly better — engine CPU drops ~2.3x and pipeline CPU drops\n~6.4x compared to the previous 1s configuration.\n\nAdds validation rejecting zero-duration `reporting_interval` to prevent\naccidental spin loops.\n\n**Notes**\n- `perf_exporter.config.frequency` is now silently ignored;\ndeprecation/cleanup is a follow-up.\n- `start_periodic_telemetry` API is still public — TBD whether to\nremove.\n- TODO comment added in `pipeline_ctrl.rs` for an\neager-timer-registration race flagged in review (telemetry can queue\nahead of `Shutdown` in a slow-starting node's bounded control channel);\nto be addressed via a node-ready signal in a follow-up.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
+          "timestamp": "2026-05-13T00:09:18Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/0c37386ba3e4cc9957ddb5a2b6a95fd6e2fa1752"
+        },
+        "date": 1778632972651,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 108.95,
             "unit": "MB"
           }
         ]
