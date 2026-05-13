@@ -1,0 +1,18 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["otc_traces_otlp_gzip_baseline"] = {
+  "name": "OTC OTLP Baseline w/ Gzip (Traces)",
+  "slug": "otc_traces_otlp_gzip_baseline",
+  "description": "OpenTelemetry Collector baseline for OTLP traces with gzip compression",
+  "meta": {
+    "binary": "otc",
+    "protocols": [
+      "otlp"
+    ],
+    "signals": [
+      "traces"
+    ],
+    "compression": "gzip"
+  },
+  "env": null,
+  "tests": []
+};
