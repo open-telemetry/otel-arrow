@@ -58,8 +58,11 @@ pub struct Consumer {
 impl Consumer {
     /// Construct a consumer with conversion options.
     #[must_use]
-    pub fn with_options(_opts: ConversionOptions) -> Self {
-        Self::default()
+    pub fn with_options(opts: ConversionOptions) -> Self {
+        Self {
+            proto_buffer: ProtoBuffer::new(opts),
+            ..Self::default()
+        }
     }
 
     /// consume and deserialize record batches

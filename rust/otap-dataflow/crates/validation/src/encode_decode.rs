@@ -61,7 +61,7 @@ impl Default for OtelProtoSimulator {
 #[cfg(test)]
 mod test {
     use super::*;
-    use otap_df_core_nodes::receivers::fake_data_generator::semconv_signal::{
+    use otap_df_core_nodes::receivers::traffic_generator::semconv_signal::{
         semconv_otlp_logs, semconv_otlp_metrics, semconv_otlp_traces,
     };
     use otap_df_pdata::testing::equiv::assert_equivalent;
@@ -77,13 +77,15 @@ mod test {
     const ITERATIONS: usize = 10;
 
     fn get_registry() -> ResolvedRegistry {
+        let mut semconv_errors = Vec::new();
         let registry_repo = RegistryRepo::try_new(
-            "main",
+            None,
             &VirtualDirectoryPath::GitRepo {
                 url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
                 sub_folder: Some("model".to_owned()),
                 refspec: None,
             },
+            &mut semconv_errors,
         )
         .expect("all registries are definied under the model folder in semantic convention repo");
 

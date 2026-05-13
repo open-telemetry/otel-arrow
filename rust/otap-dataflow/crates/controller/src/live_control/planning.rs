@@ -10,8 +10,9 @@
 
 use super::*;
 
-impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable>
-    ControllerRuntime<PData>
+impl<
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
+> ControllerRuntime<PData>
 {
     /// Resolves the concrete core ids selected by a pipeline resource policy.
     pub(super) fn assigned_cores_for_resolved(

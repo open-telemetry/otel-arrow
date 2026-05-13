@@ -63,7 +63,7 @@ impl crate::ReceivedAtNode for TestMsg {
     fn received_at_node(&mut self, _node_id: usize, _node_interests: crate::Interests) {}
 }
 
-impl crate::processor::ProcessorSendHook for TestMsg {}
+impl crate::processor::FlowMetricHook for TestMsg {}
 
 impl TestMsg {
     /// Creates a new test message with the given content.
