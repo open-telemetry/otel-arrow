@@ -58,6 +58,7 @@ use data_engine_expressions::{
     StaticScalarExpression, StringScalarExpression, StringValue, TextScalarExpression,
 };
 use datafusion::common::DFSchema;
+use datafusion::functions::core::coalesce::CoalesceFunc;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::crypto::{md5, sha256, sha512};
 use datafusion::functions::datetime::to_char;
@@ -66,8 +67,9 @@ use datafusion::functions::encoding::encode;
 use datafusion::functions::math::log10;
 use datafusion::functions::string::{concat, concat_ws, lower, ltrim, replace, rtrim, upper, uuid};
 use datafusion::logical_expr::expr::ScalarFunction;
+use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
 use datafusion::logical_expr::{
-    BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit, when,
+    BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, ScalarUDFImpl, cast, col, lit,
 };
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::SessionContext;
@@ -426,10 +428,21 @@ impl ExprLogicalPlanner {
         let (df_args, source_scope, _requires_dict_downcast) =
             self.plan_function_args(coalesce_expr.get_expressions().iter(), functions)?;
 
-        // DataFusion's `coalesce` UDF is simplified to CASE during logical optimization and does not
-        // support direct physical evaluation. Mirror that rewrite here (same shape as
-        // `CoalesceFunc::simplify` in Apache DataFusion).
-        let case_expr = Self::coalesce_args_to_case_expr(df_args)?;
+        // DataFusion's `coalesce` UDF does not support direct physical evaluation; the optimizer
+        // rewrites it via `CoalesceFunc::simplify`. Reuse that implementation here.
+        let coalesce_func = CoalesceFunc::new();
+        let simplify_result = coalesce_func
+            .simplify(df_args, &SimplifyContext::default())
+            .map_err(Error::from)?;
+        let case_expr = match simplify_result {
+            ExprSimplifyResult::Simplified(expr) => expr,
+            ExprSimplifyResult::Original(_) => {
+                return Err(Error::InvalidPipelineError {
+                    cause: "expected coalesce simplify to produce a single expression".into(),
+                    query_location: None,
+                });
+            }
+        };
 
         Ok(ScopedLogicalExpr {
             logical_expr: case_expr,
@@ -439,37 +452,6 @@ impl ExprLogicalPlanner {
             // dictionary downcasting before CASE can build a single array.
             requires_dict_downcast: true,
         })
-    }
-
-    /// Rewrites `coalesce(e1, …, eN)` to chained `WHEN eK IS NOT NULL THEN eK … ELSE eN`,
-    /// matching DataFusion's `coalesce` simplification.
-    fn coalesce_args_to_case_expr(mut args: Vec<Expr>) -> Result<Expr> {
-        match args.len() {
-            0 => Err(Error::InvalidPipelineError {
-                cause: "coalesce requires at least one argument".into(),
-                query_location: None,
-            }),
-            1 => Ok(args.pop().ok_or_else(|| Error::InvalidPipelineError {
-                cause: "coalesce internal error: empty args after len check".into(),
-                query_location: None,
-            })?),
-            _ => {
-                let last = args.pop().ok_or_else(|| Error::InvalidPipelineError {
-                    cause: "coalesce internal error: missing last argument".into(),
-                    query_location: None,
-                })?;
-                let first = args.first().ok_or_else(|| Error::InvalidPipelineError {
-                    cause: "coalesce internal error: missing first argument".into(),
-                    query_location: None,
-                })?;
-                let first = first.clone();
-                let mut builder = when(first.clone().is_not_null(), first);
-                for a in args.into_iter().skip(1) {
-                    builder = builder.when(a.clone().is_not_null(), a);
-                }
-                builder.otherwise(last).map_err(Error::from)
-            }
-        }
     }
 
     fn plan_binary_math_expr(
