@@ -599,6 +599,74 @@ fn format_lp_value(value: MetricValue, value_type: Option<MetricValueType>) -> S
     }
 }
 
+/// Metadata for a Prometheus metric family (HELP, UNIT, TYPE directives).
+struct PromMetricMetadata {
+    help: Option<String>,
+    unit: Option<String>,
+    prom_type: String,
+}
+
+/// A single metric family group: metadata + collected sample lines.
+struct PromMetricGroup {
+    metadata: PromMetricMetadata,
+    samples: Vec<String>,
+}
+
+/// Collects metric samples grouped by metric name, preserving insertion order.
+/// After all entities are visited, `emit` writes contiguous metric families.
+struct PromGroupedMetrics {
+    /// Metric names in insertion order.
+    order: Vec<String>,
+    /// Metric name → group.
+    groups: HashMap<String, PromMetricGroup>,
+}
+
+impl PromGroupedMetrics {
+    fn new() -> Self {
+        Self {
+            order: Vec::new(),
+            groups: HashMap::new(),
+        }
+    }
+
+    /// Returns a mutable reference to the group for `metric_name`, creating it
+    /// with the given metadata factory if it doesn't exist yet.
+    fn get_or_insert(
+        &mut self,
+        metric_name: &str,
+        metadata_fn: impl FnOnce() -> PromMetricMetadata,
+    ) -> &mut PromMetricGroup {
+        match self.groups.entry(metric_name.to_string()) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => {
+                self.order.push(metric_name.to_string());
+                e.insert(PromMetricGroup {
+                    metadata: metadata_fn(),
+                    samples: Vec::new(),
+                })
+            }
+        }
+    }
+
+    /// Emits all collected metrics as contiguous Prometheus text families.
+    fn emit(self, out: &mut String) {
+        for name in &self.order {
+            if let Some(group) = self.groups.get(name) {
+                if let Some(ref help) = group.metadata.help {
+                    let _ = writeln!(out, "# HELP {name} {help}");
+                }
+                if let Some(ref unit) = group.metadata.unit {
+                    let _ = writeln!(out, "# UNIT {name} {unit}");
+                }
+                let _ = writeln!(out, "# TYPE {name} {}", group.metadata.prom_type);
+                for sample in &group.samples {
+                    out.push_str(sample);
+                }
+            }
+        }
+    }
+}
+
 fn format_prom_value(value: MetricValue, value_type: Option<MetricValueType>) -> String {
     match value {
         MetricValue::U64(_) | MetricValue::F64(_) => {
@@ -700,10 +768,9 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
     out
 }
 
-/// Emits a single scalar metric sample (with optional HELP/UNIT/TYPE metadata).
-fn emit_scalar_metric(
-    out: &mut String,
-    seen: &mut HashSet<String>,
+/// Collects a single scalar metric sample into the grouped buffer.
+fn collect_scalar_metric(
+    groups: &mut PromGroupedMetrics,
     field: &MetricsField,
     value: MetricValue,
     base_labels: &str,
@@ -711,18 +778,7 @@ fn emit_scalar_metric(
 ) {
     let metric_name = build_prom_metric_name(field.name, field.unit, field.instrument);
 
-    if seen.insert(metric_name.clone()) {
-        if !field.brief.is_empty() {
-            let _ = writeln!(
-                out,
-                "# HELP {} {}",
-                metric_name,
-                escape_prom_help(field.brief)
-            );
-        }
-        if let Some(unit_word) = ucum_to_prometheus_unit(field.unit) {
-            let _ = writeln!(out, "# UNIT {metric_name} {unit_word}");
-        }
+    let group = groups.get_or_insert(&metric_name, || {
         let prom_type = match field.instrument {
             Instrument::Counter => "counter",
             Instrument::UpDownCounter => "gauge",
@@ -747,16 +803,31 @@ fn emit_scalar_metric(
             Instrument::Histogram => "gauge",
             Instrument::Mmsc => unreachable!("MMSC is not a scalar"),
         };
-        let _ = writeln!(out, "# TYPE {metric_name} {prom_type}");
-    }
+        PromMetricMetadata {
+            help: if field.brief.is_empty() {
+                None
+            } else {
+                Some(escape_prom_help(field.brief))
+            },
+            unit: ucum_to_prometheus_unit(field.unit).map(|u| u.to_string()),
+            prom_type: prom_type.to_string(),
+        }
+    });
+    let mut sample = String::new();
     let value_str = format_prom_value(value, Some(field.value_type));
-    emit_sample_line(out, &metric_name, base_labels, &value_str, ts_suffix);
+    emit_sample_line(
+        &mut sample,
+        &metric_name,
+        base_labels,
+        &value_str,
+        ts_suffix,
+    );
+    group.samples.push(sample);
 }
 
-/// Emits MMSC (min/max/sum/count) sub-metrics using histogram-family naming conventions.
-fn emit_mmsc_metric(
-    out: &mut String,
-    seen: &mut HashSet<String>,
+/// Collects MMSC (min/max/sum/count) sub-metrics into the grouped buffer.
+fn collect_mmsc_metric(
+    groups: &mut PromGroupedMetrics,
     field: &MetricsField,
     s: &otap_df_telemetry::instrument::MmscSnapshot,
     base_labels: &str,
@@ -766,63 +837,69 @@ fn emit_mmsc_metric(
         return;
     }
     let base_metric_name = build_prom_metric_name(field.name, field.unit, Instrument::Gauge);
-    let brief = escape_prom_help(field.brief);
-    let unit_word = ucum_to_prometheus_unit(field.unit);
+    let brief = if field.brief.is_empty() {
+        None
+    } else {
+        Some(escape_prom_help(field.brief))
+    };
+    let unit_word = ucum_to_prometheus_unit(field.unit).map(|u| u.to_string());
 
     // _min and _max as gauges
     for (suffix, prom_type, val) in [("_min", "gauge", s.min), ("_max", "gauge", s.max)] {
         let sub_name = format!("{base_metric_name}{suffix}");
-        if seen.insert(sub_name.clone()) {
-            if !field.brief.is_empty() {
-                let _ = writeln!(out, "# HELP {sub_name} {brief}");
-            }
-            if let Some(uw) = unit_word {
-                let _ = writeln!(out, "# UNIT {sub_name} {uw}");
-            }
-            let _ = writeln!(out, "# TYPE {sub_name} {prom_type}");
-        }
-        emit_sample_line(out, &sub_name, base_labels, &format!("{val}"), ts_suffix);
+        let group = groups.get_or_insert(&sub_name, || PromMetricMetadata {
+            help: brief.clone(),
+            unit: unit_word.clone(),
+            prom_type: prom_type.to_string(),
+        });
+        let mut sample = String::new();
+        emit_sample_line(
+            &mut sample,
+            &sub_name,
+            base_labels,
+            &format!("{val}"),
+            ts_suffix,
+        );
+        group.samples.push(sample);
     }
 
     // _sum uses same unit-bearing base name (histogram-family convention)
     let sum_name = format!("{base_metric_name}_sum");
-    if seen.insert(sum_name.clone()) {
-        if !field.brief.is_empty() {
-            let _ = writeln!(out, "# HELP {sum_name} {brief}");
-        }
-        if let Some(uw) = unit_word {
-            let _ = writeln!(out, "# UNIT {sum_name} {uw}");
-        }
-        let _ = writeln!(out, "# TYPE {sum_name} counter");
+    {
+        let group = groups.get_or_insert(&sum_name, || PromMetricMetadata {
+            help: brief.clone(),
+            unit: unit_word.clone(),
+            prom_type: "counter".to_string(),
+        });
+        let mut sample = String::new();
+        emit_sample_line(
+            &mut sample,
+            &sum_name,
+            base_labels,
+            &format!("{}", s.sum),
+            ts_suffix,
+        );
+        group.samples.push(sample);
     }
-    emit_sample_line(
-        out,
-        &sum_name,
-        base_labels,
-        &format!("{}", s.sum),
-        ts_suffix,
-    );
 
     // _count uses same unit-bearing base name (histogram-family convention).
-    // Although count is "number of observations", it shares the unit-bearing
-    // prefix for consistency with _sum and standard histogram naming.
     let count_name = format!("{base_metric_name}_count");
-    if seen.insert(count_name.clone()) {
-        if !field.brief.is_empty() {
-            let _ = writeln!(out, "# HELP {count_name} {brief}");
-        }
-        if let Some(uw) = unit_word {
-            let _ = writeln!(out, "# UNIT {count_name} {uw}");
-        }
-        let _ = writeln!(out, "# TYPE {count_name} counter");
+    {
+        let group = groups.get_or_insert(&count_name, || PromMetricMetadata {
+            help: brief,
+            unit: unit_word,
+            prom_type: "counter".to_string(),
+        });
+        let mut sample = String::new();
+        emit_sample_line(
+            &mut sample,
+            &count_name,
+            base_labels,
+            &format!("{}", s.count),
+            ts_suffix,
+        );
+        group.samples.push(sample);
     }
-    emit_sample_line(
-        out,
-        &count_name,
-        base_labels,
-        &format!("{}", s.count),
-        ts_suffix,
-    );
 }
 
 /// Writes a single sample line with optional labels and timestamp suffix.
@@ -890,7 +967,7 @@ fn agg_prometheus_text(
     let ts_suffix = timestamp_millis
         .map(|ms| format!(" {ms}"))
         .unwrap_or_default();
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut prom_groups = PromGroupedMetrics::new();
 
     out.push_str(target_info);
 
@@ -926,14 +1003,13 @@ fn agg_prometheus_text(
             let _ = write!(&mut base_labels, "{}=\"{}\"", k, escape_prom_label_value(v));
         }
 
-        // Emit metrics for this group
+        // Collect metrics for this group
         for field in g.brief.metrics.iter() {
             if let Some(value) = g.metrics.get(field.name) {
                 match value {
                     MetricValue::U64(_) | MetricValue::F64(_) => {
-                        emit_scalar_metric(
-                            &mut out,
-                            &mut seen,
+                        collect_scalar_metric(
+                            &mut prom_groups,
                             field,
                             *value,
                             &base_labels,
@@ -941,12 +1017,15 @@ fn agg_prometheus_text(
                         );
                     }
                     MetricValue::Mmsc(s) => {
-                        emit_mmsc_metric(&mut out, &mut seen, field, s, &base_labels, &ts_suffix);
+                        collect_mmsc_metric(&mut prom_groups, field, s, &base_labels, &ts_suffix);
                     }
                 }
             }
         }
     }
+
+    // Emit all metric families as contiguous groups (Prometheus spec requirement).
+    prom_groups.emit(&mut out);
 
     out
 }
@@ -1189,7 +1268,7 @@ fn format_prometheus_text(
     let ts_suffix = timestamp_millis
         .map(|ms| format!(" {ms}"))
         .unwrap_or_default();
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut groups = PromGroupedMetrics::new();
 
     out.push_str(target_info);
 
@@ -1234,10 +1313,10 @@ fn format_prometheus_text(
         for (field, value) in metrics_iter {
             match value {
                 MetricValue::U64(_) | MetricValue::F64(_) => {
-                    emit_scalar_metric(&mut out, &mut seen, field, value, &base_labels, &ts_suffix);
+                    collect_scalar_metric(&mut groups, field, value, &base_labels, &ts_suffix);
                 }
                 MetricValue::Mmsc(ref s) => {
-                    emit_mmsc_metric(&mut out, &mut seen, field, s, &base_labels, &ts_suffix);
+                    collect_mmsc_metric(&mut groups, field, s, &base_labels, &ts_suffix);
                 }
             }
         }
@@ -1248,6 +1327,9 @@ fn format_prometheus_text(
     } else {
         telemetry_registry.visit_current_metrics(|d, a, m| visit(d, a, m));
     }
+
+    // Emit all metric families as contiguous groups (Prometheus spec requirement).
+    groups.emit(&mut out);
 
     out
 }
@@ -3614,6 +3696,99 @@ mod tests {
         assert!(
             !output.contains("_total_total"),
             "should not double-add _total suffix"
+        );
+    }
+
+    /// Verifies that multi-entity metrics are emitted as contiguous groups
+    /// per the Prometheus exposition format spec: all samples for a given
+    /// metric name must appear together, preceded by at most one HELP/TYPE.
+    #[test]
+    fn test_format_prometheus_text_multi_entity_contiguous_grouping() {
+        let registry = TelemetryRegistryHandle::new();
+
+        // Register two entities sharing the same metric set (simulates
+        // multiple pipeline-thread cores).
+        let ms1 = registry.register_metric_set::<E2eMetricSet>(E2eAttributeSet {
+            values: vec![AttributeValue::String("core_0".to_string())],
+        });
+        let ms2 = registry.register_metric_set::<E2eMetricSet>(E2eAttributeSet {
+            values: vec![AttributeValue::String("core_1".to_string())],
+        });
+
+        registry.accumulate_metric_set_snapshot(
+            ms1.metric_set_key(),
+            &[
+                MetricValue::U64(100),
+                MetricValue::F64(1.0),
+                MetricValue::U64(512),
+            ],
+        );
+        registry.accumulate_metric_set_snapshot(
+            ms2.metric_set_key(),
+            &[
+                MetricValue::U64(200),
+                MetricValue::F64(2.0),
+                MetricValue::U64(1024),
+            ],
+        );
+
+        let output = format_prometheus_text(&registry, false, None, "");
+
+        // For each metric name, verify:
+        // 1. Exactly one HELP and one TYPE directive exists
+        // 2. All sample lines appear contiguously after the TYPE directive
+        for metric_name in [
+            "http_requests_total",
+            "http_request_duration_seconds_total",
+            "memory_usage_bytes",
+        ] {
+            let help_count = output.matches(&format!("# HELP {metric_name} ")).count();
+            let type_count = output.matches(&format!("# TYPE {metric_name} ")).count();
+            assert_eq!(
+                help_count, 1,
+                "expected exactly one HELP for {metric_name}, got {help_count}.\nOutput:\n{output}"
+            );
+            assert_eq!(
+                type_count, 1,
+                "expected exactly one TYPE for {metric_name}, got {type_count}.\nOutput:\n{output}"
+            );
+
+            // Verify contiguity: collect line indices for this metric's
+            // samples and directives; they must form a contiguous block.
+            let lines: Vec<(usize, &str)> = output
+                .lines()
+                .enumerate()
+                .filter(|(_, l)| {
+                    l.starts_with(&format!("{metric_name}{{"))
+                        || l.starts_with(&format!("{metric_name} "))
+                        || l.starts_with(&format!("# HELP {metric_name} "))
+                        || l.starts_with(&format!("# UNIT {metric_name} "))
+                        || l.starts_with(&format!("# TYPE {metric_name} "))
+                })
+                .collect();
+            assert!(
+                lines.len() >= 3,
+                "expected at least 3 lines (HELP, TYPE, 2 samples) for {metric_name}, got {}.\nOutput:\n{output}",
+                lines.len()
+            );
+            // Check that line indices are contiguous (no gaps).
+            for window in lines.windows(2) {
+                assert_eq!(
+                    window[1].0,
+                    window[0].0 + 1,
+                    "lines for {metric_name} are not contiguous: line {} '{}' and line {} '{}' have a gap.\nOutput:\n{output}",
+                    window[0].0,
+                    window[0].1,
+                    window[1].0,
+                    window[1].1
+                );
+            }
+        }
+
+        // Both core_0 and core_1 samples should be present
+        assert!(
+            output.contains("core_0") && output.contains("core_1"),
+            "output should contain samples from both entities.\nOutput:\n{output}"
         );
     }
 }
