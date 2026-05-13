@@ -20,12 +20,13 @@ import argparse
 import fnmatch
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
@@ -139,6 +140,198 @@ def simplify_suite_yaml(suite: dict) -> dict:
         if key in suite:
             result[key] = suite[key]
     return result
+
+
+# ---------------------------------------------------------------------------
+# Run environment capture
+#
+# Per-suite run metadata captured at `dashboard.py run` time. Written as
+# <staging>/run_env.json, published as <data-dir>/suite/<slug>/run_env.json,
+# and consumed by `build` to (a) surface env info in the UI and (b) reject
+# comparisons across suites whose env fingerprints disagree.
+#
+# Fingerprint fields used for equality (build-time mismatch check):
+#   cpu.model, cpu.architecture, cpu.physical_cores,
+#   memory.total_gib_rounded, os.release
+# Times are captured/displayed but not part of equality.
+# ---------------------------------------------------------------------------
+RUN_ENV_SCHEMA_VERSION = 1
+
+
+def now_utc_iso() -> str:
+    """Return the current UTC time as an ISO 8601 string with a 'Z' suffix."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def collect_run_env(started_at: str, ended_at: str) -> dict:
+    """
+    Collect hardware/OS metadata for the current process. `started_at` and
+    `ended_at` are ISO 8601 UTC strings (see `now_utc_iso`) bracketing the
+    test run.
+    """
+    assert isinstance(started_at, str) and started_at, "started_at must be a non-empty ISO 8601 string"
+    assert isinstance(ended_at, str) and ended_at, "ended_at must be a non-empty ISO 8601 string"
+    return {
+        "schema_version": RUN_ENV_SCHEMA_VERSION,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "cpu": _collect_cpu(),
+        "os": _collect_os(),
+        "memory": _collect_memory(),
+    }
+
+
+def _collect_cpu() -> dict:
+    """CPU details: model, arch, physical/logical cores, max frequency."""
+    psutil = _require_psutil()
+    physical = psutil.cpu_count(logical=False)
+    logical = psutil.cpu_count(logical=True)
+    try:
+        freq = psutil.cpu_freq()
+        max_freq_mhz = float(freq.max) if freq and freq.max else None
+    except Exception:
+        max_freq_mhz = None
+    return {
+        "model": _cpu_model(),
+        "architecture": platform.machine() or "unknown",
+        "physical_cores": int(physical) if physical else None,
+        "logical_cores": int(logical) if logical else None,
+        "max_freq_mhz": max_freq_mhz,
+    }
+
+
+def _cpu_model() -> str:
+    """Best-effort cross-platform CPU model name."""
+    system = platform.system()
+    if system == "Linux":
+        model = _cpu_model_from_proc_cpuinfo()
+        if model:
+            return model
+    elif system == "Darwin":
+        model = _cpu_model_from_sysctl()
+        if model:
+            return model
+    # Windows and fallback
+    return platform.processor() or "unknown"
+
+
+def _cpu_model_from_proc_cpuinfo() -> str | None:
+    """Read the first 'model name' entry from /proc/cpuinfo."""
+    path = Path("/proc/cpuinfo")
+    if not path.exists():
+        return None
+    try:
+        for line in path.read_text().splitlines():
+            if line.startswith("model name"):
+                _, _, value = line.partition(":")
+                value = value.strip()
+                if value:
+                    return value
+    except OSError:
+        return None
+    return None
+
+
+def _cpu_model_from_sysctl() -> str | None:
+    """Read `machdep.cpu.brand_string` via sysctl on macOS."""
+    try:
+        out = subprocess.check_output(
+            ["sysctl", "-n", "machdep.cpu.brand_string"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).strip()
+        return out or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _collect_os() -> dict:
+    """OS details: system name, kernel release/version, distro (Linux)."""
+    distro: dict | None = None
+    reader = getattr(platform, "freedesktop_os_release", None)
+    if callable(reader):
+        try:
+            info = reader()
+            distro = {
+                k: info[k]
+                for k in ("NAME", "VERSION", "VERSION_ID", "ID")
+                if k in info
+            }
+        except (OSError, AttributeError):
+            distro = None
+    return {
+        "system": platform.system() or "unknown",
+        "release": platform.release() or "unknown",
+        "version": platform.version() or "",
+        "distro": distro,
+    }
+
+
+def _collect_memory() -> dict:
+    """Total RAM in bytes plus a GiB-rounded bucket for fingerprinting."""
+    psutil = _require_psutil()
+    total = int(psutil.virtual_memory().total)
+    assert total > 0, "virtual_memory().total must be positive"
+    return {
+        "total_bytes": total,
+        "total_gib_rounded": int(round(total / (1024 ** 3))),
+    }
+
+
+def _require_psutil():
+    """Import psutil with an actionable error if missing.
+
+    The orchestrator already depends on psutil; `dashboard.py run` runs in
+    the same Python env, so the import is expected to succeed there. `build`
+    does not call this -- it only reads existing run_env.json files.
+    """
+    try:
+        import psutil  # noqa: WPS433 (local import is intentional)
+    except ImportError as exc:
+        print(
+            "ERROR: psutil is required for `dashboard.py run` (captures hardware info).\n"
+            "  pip install -r tools/comparison_dashboard/requirements.txt",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+    return psutil
+
+
+def env_fingerprint(env: dict | None) -> dict | None:
+    """Return the equality-check subset of an env dict, or None if `env` is None."""
+    if env is None:
+        return None
+    cpu = env.get("cpu") or {}
+    mem = env.get("memory") or {}
+    os_info = env.get("os") or {}
+    return {
+        "cpu_model": cpu.get("model"),
+        "architecture": cpu.get("architecture"),
+        "physical_cores": cpu.get("physical_cores"),
+        "total_gib_rounded": mem.get("total_gib_rounded"),
+        "os_release": os_info.get("release"),
+    }
+
+
+def env_fingerprint_str(fp: dict | None) -> str:
+    """Human-readable single-line summary used in CLI output and UI headers."""
+    if fp is None:
+        return "unknown environment"
+    parts = []
+    cpu = fp.get("cpu_model") or "unknown CPU"
+    arch = fp.get("architecture") or "?"
+    parts.append(f"{cpu} / {arch}")
+    cores = fp.get("physical_cores")
+    if cores is not None:
+        parts.append(f"{cores} cores")
+    gib = fp.get("total_gib_rounded")
+    if gib is not None:
+        parts.append(f"{gib} GiB")
+    release = fp.get("os_release")
+    if release:
+        parts.append(release)
+    return " / ".join(parts)
 
 
 # ===========================================================================
@@ -324,13 +517,25 @@ def run_single_suite(
         return True
 
     log_path = staging_dir / "orchestrator.log"
+    started_at = now_utc_iso()
     rc = run_orchestrator(config_path, log_path, tests=tests)
+    ended_at = now_utc_iso()
     if rc != 0:
         print(
             f"\nError: orchestrator exited with code {rc}\nFull log: {log_path}",
             file=sys.stderr,
         )
         return False
+
+    # Capture run-time environment for the dashboard. Written here (not in
+    # the orchestrator) because the orchestrator may also be invoked outside
+    # the dashboard, where this metadata is not desired.
+    env = collect_run_env(started_at, ended_at)
+    env_path = staging_dir / "run_env.json"
+    with open(env_path, "w") as f:
+        json.dump(env, f, indent=2)
+    print(f"  Captured run env: {env_path}")
+    print(f"  Environment:      {env_fingerprint_str(env_fingerprint(env))}")
 
     publish_results(staging_dir, suite, publish_dir)
     return True
@@ -457,6 +662,11 @@ def publish_results(staging_dir: Path, suite: dict, publish_dir: Path) -> None:
     with open(suite_dir / "suite.yaml", "w") as f:
         yaml.dump(simplified, f, default_flow_style=False, sort_keys=False)
     print(f"  Updated {suite_dir / 'suite.yaml'}")
+
+    env_src = staging_dir / "run_env.json"
+    if env_src.exists():
+        shutil.copy2(env_src, suite_dir / "run_env.json")
+        print(f"  Updated {suite_dir / 'run_env.json'}")
 
     staging_tests = staging_dir / "tests"
     if not staging_tests.exists():
@@ -604,6 +814,10 @@ def cmd_build(args) -> int:
 
     print("Building suite data...")
     suites = build_suites(parsed_suites, paths)
+    print()
+
+    print("Checking comparison env consistency...")
+    check_comparison_env_consistency(comparisons, suites, args.allow_env_mismatch)
     print()
 
     if suites:
@@ -774,6 +988,7 @@ def build_suites(
             suite = yaml.safe_load(f)
 
         slug = suite_dir.name
+        env = load_suite_env(suite_dir)
 
         tests = []
         for test_dir in sorted(suite_dir.iterdir()):
@@ -795,10 +1010,12 @@ def build_suites(
             "slug": slug,
             "description": suite.get("description", ""),
             "meta": suite.get("meta", {}),
+            "env": env,
             "tests": tests,
         }
 
-        print(f"  {slug}: {len(tests)} tests")
+        env_note = env_fingerprint_str(env_fingerprint(env)) if env else "no env recorded"
+        print(f"  {slug}: {len(tests)} tests [{env_note}]")
 
     for _, suite in parsed_suites:
         slug = suite.get("slug")
@@ -816,12 +1033,30 @@ def build_suites(
             "slug": slug,
             "description": suite.get("description", ""),
             "meta": suite.get("meta", {}),
+            "env": None,
             "tests": [],
         }
 
         print(f"  {slug}: 0 tests (no data yet)")
 
     return suites
+
+
+def load_suite_env(suite_dir: Path) -> dict | None:
+    """Load <suite_dir>/run_env.json if present; return None on absence or parse error."""
+    env_path = suite_dir / "run_env.json"
+    if not env_path.exists():
+        return None
+    try:
+        with open(env_path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  WARNING: failed to read {env_path}: {exc}")
+        return None
+    if not isinstance(data, dict):
+        print(f"  WARNING: {env_path} is not a JSON object; ignoring")
+        return None
+    return data
 
 
 def load_comparisons(manifest: Manifest) -> list:
@@ -953,6 +1188,94 @@ def validate_manifest(
         print("ERROR: manifest validation failed:")
         for msg in errors:
             print(f"  - {msg}")
+        sys.exit(1)
+
+
+def check_comparison_env_consistency(
+    comparisons: list,
+    suites: dict,
+    allow_mismatch: bool,
+) -> None:
+    """
+    Reject (or warn about) comparisons that mix suites collected on different
+    hardware. Issue #2949: "never compare across different hardware."
+
+    For each comparison, gather the env fingerprint of every referenced suite
+    that has a `run_env.json`. If any two fingerprints disagree -- or any
+    referenced suite is missing env data -- the comparison is flagged.
+
+    With `allow_mismatch=False` (default), flagged comparisons cause
+    sys.exit(1). With `allow_mismatch=True`, the function instead attaches
+    `comparison["envMismatch"]` (a dict consumed by the frontend banner)
+    and the build proceeds.
+    """
+    errors: list[str] = []
+
+    for comp in comparisons:
+        slug = comp.get("slug", "?")
+        refs = comp.get("suites", [])
+        per_suite: list[tuple[str, dict | None]] = []
+        for ref in refs:
+            ref_slug = ref.get("slug")
+            if ref_slug is None:
+                continue
+            suite = suites.get(ref_slug)
+            env = suite.get("env") if suite else None
+            per_suite.append((ref_slug, env))
+
+        missing = [s for s, e in per_suite if e is None]
+        fingerprints = {
+            s: env_fingerprint(e) for s, e in per_suite if e is not None
+        }
+        unique_fps = {json.dumps(fp, sort_keys=True) for fp in fingerprints.values()}
+
+        is_mismatch = len(unique_fps) > 1
+        is_missing = bool(missing) and fingerprints  # mix of known + unknown
+
+        if not is_mismatch and not is_missing:
+            continue
+
+        reasons = []
+        if is_mismatch:
+            reasons.append("differing hardware fingerprints")
+        if is_missing:
+            reasons.append(f"missing run_env.json for: {', '.join(missing)}")
+        reason_str = "; ".join(reasons)
+
+        # Build a human-readable per-suite summary used in CLI output AND
+        # passed through to the frontend so the mismatch banner can list
+        # exactly which suites disagree.
+        summary = [
+            {
+                "slug": s,
+                "fingerprint": env_fingerprint(e),
+                "fingerprintStr": env_fingerprint_str(env_fingerprint(e))
+                if e else "no env recorded",
+            }
+            for s, e in per_suite
+        ]
+
+        if allow_mismatch:
+            comp["envMismatch"] = {"reason": reason_str, "suites": summary}
+            print(f"  WARNING: comparison '{slug}': {reason_str}")
+            for entry in summary:
+                print(f"    - {entry['slug']}: {entry['fingerprintStr']}")
+        else:
+            errors.append(f"comparison '{slug}': {reason_str}")
+            for entry in summary:
+                errors.append(f"    {entry['slug']}: {entry['fingerprintStr']}")
+
+    if errors:
+        print(
+            "ERROR: build refused -- comparisons reference suites with mismatched envs.",
+            file=sys.stderr,
+        )
+        print(
+            "Pass --allow-env-mismatch to render a warning banner and proceed anyway.",
+            file=sys.stderr,
+        )
+        for msg in errors:
+            print(f"  - {msg}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -1271,6 +1594,15 @@ def build_parser() -> argparse.ArgumentParser:
             "landing page at <compare-dir>/index.html and per-comparison "
             "pages at <compare-dir>/<slug>/index.html, plus the copied "
             "shared/ static assets."
+        ),
+    )
+    p_build.add_argument(
+        "--allow-env-mismatch", action="store_true",
+        help=(
+            "Allow building comparisons whose referenced suites have "
+            "differing hardware/OS fingerprints (or are missing run_env.json). "
+            "Without this flag, such comparisons cause the build to fail. "
+            "When set, the affected comparison pages render a warning banner."
         ),
     )
     p_build.set_defaults(func=cmd_build)
