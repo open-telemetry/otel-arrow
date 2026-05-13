@@ -1366,12 +1366,6 @@ a.scenario-section-title:hover {
   font-family: "SF Mono", Menlo, monospace;
   font-size: 12px;
 }
-.env-summary-times {
-  margin-top: 2px;
-  color: #64748b;
-  font-size: 11px;
-  font-family: "SF Mono", Menlo, monospace;
-}
 .env-summary-unknown {
   background: #fef3c7;
   border-left-color: #f59e0b;

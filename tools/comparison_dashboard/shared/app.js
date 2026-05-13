@@ -813,8 +813,7 @@ function renderComparisonEnvHeader(suiteData, comparison) {
 
 function renderEnvSummary(env) {
   const line = envFingerprintLine(env);
-  const t = envTimesString(env);
-  return `<div class="env-summary"><span class="env-summary-label">Environment:</span> <span class="env-summary-value">${escapeHtml(line)}</span>${t ? `<div class="env-summary-times">${escapeHtml(t)}</div>` : ""}</div>`;
+  return `<div class="env-summary"><span class="env-summary-label">Environment:</span> <span class="env-summary-value">${escapeHtml(line)}</span></div>`;
 }
 
 function renderEnvMismatchBanner(mm) {
@@ -874,13 +873,6 @@ function envFingerprintLine(env) {
   if (distroLabel) parts.push(distroLabel);
   else if (os.system) parts.push(String(os.system));
   return parts.join(" / ");
-}
-
-function envTimesString(env) {
-  const s = env.started_at, e = env.ended_at;
-  if (!s && !e) return "";
-  if (s && e) return `Run: ${s} -> ${e}`;
-  return `Run: ${s || e}`;
 }
 
 // ── File viewer modal ──────────────────────────────────────────────────────
