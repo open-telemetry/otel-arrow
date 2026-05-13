@@ -336,9 +336,9 @@ expresses the *type constraints* the implementation accepts; the actual
 *sharing boundary* of an instance is determined by the scope at which it is
 declared (pipeline scope in Phase 1).
 
-| Execution Model | Type Constraints  | Phase 1 Sharing Boundary (pipeline scope) |
-|-----------------|-------------------|-------------------------------------------|
-| `local`         | `!Send`           | One instance per pipeline instance (per core) |
+| Execution Model | Type Constraints  | Phase 1 Sharing Boundary (pipeline scope)                     |
+|-----------------|-------------------|---------------------------------------------------------------|
+| `local`         | `!Send`           | One instance per pipeline instance (per core)                 |
 | `shared`        | `Send + Clone`    | One instance per pipeline instance (per core); cloned on bind |
 
 The supported model is declared by the extension provider implementation.
