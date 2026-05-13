@@ -3335,7 +3335,6 @@ mod test {
         test_insert_scalar_to_struct_col::<KqlParser>().await
     }
 
-    // struct.str = bigger_struct.str (resource > scope, resource.schema_url -> scope.name)
     async fn test_struct_str_assign_from_actual_bigger_struct_str<P: Parser>() {
         let logs_data = LogsData::new(vec![
             ResourceLogs::new(
@@ -3403,7 +3402,6 @@ mod test {
         test_struct_str_assign_from_actual_bigger_struct_str::<KqlParser>().await
     }
 
-    // struct.str = smaller_struct.str (scope < resource, scope.name -> resource.schema_url) <fail>
     #[tokio::test]
     async fn test_struct_str_assign_fails_from_smaller_struct_str() {
         let logs_data = to_logs_data(vec![LogRecord::build().event_name("event1").finish()]);
@@ -3422,7 +3420,6 @@ mod test {
         );
     }
 
-    // struct.str = root.str (log < scope, event_name -> scope.name) <fail>
     #[tokio::test]
     async fn test_struct_str_assign_fails_from_root_str() {
         let logs_data = to_logs_data(vec![LogRecord::build().event_name("event1").finish()]);
@@ -3440,7 +3437,6 @@ mod test {
         );
     }
 
-    // struct.str = self.attribute (scope.attrs -> scope.name) <ok>
     async fn test_struct_str_assign_from_self_attribute<P: Parser>() {
         let logs_data = LogsData::new(vec![ResourceLogs::new(
             Resource::default(),
@@ -3503,7 +3499,6 @@ mod test {
         test_struct_str_assign_from_self_attribute::<KqlParser>().await
     }
 
-    // struct.str = smaller.attribute (scope.attrs < resource, scope.attrs -> resource.schema_url) <fail>
     #[tokio::test]
     async fn test_struct_str_assign_fails_from_smaller_attribute() {
         let logs_data = to_logs_data(vec![LogRecord::build().event_name("event1").finish()]);
@@ -3522,7 +3517,6 @@ mod test {
         );
     }
 
-    // struct.str = bigger.attribute
     async fn test_struct_str_assign_from_bigger_struct_str<P: Parser>() {
         let logs_data = LogsData::new(vec![
             ResourceLogs::new(
@@ -3670,7 +3664,6 @@ mod test {
         assert_eq!(result_logs_data.resource_logs[0].schema_url, "");
     }
 
-    // assigning result of expr (func call: substring)
     async fn test_struct_col_assign_from_func_call_expr<P: Parser>() {
         let logs_data = LogsData::new(vec![ResourceLogs::new(
             Resource::default(),
@@ -3954,7 +3947,6 @@ mod test {
         test_struct_col_assign_from_anyvalue::<KqlParser>().await
     }
 
-    // exec on empty batch: struct col assignment on an empty OtapArrowRecords is a no-op
     #[tokio::test]
     async fn test_struct_col_assign_on_empty_batch() {
         let query = "logs | extend instrumentation_scope.name = \"new_name\"";
