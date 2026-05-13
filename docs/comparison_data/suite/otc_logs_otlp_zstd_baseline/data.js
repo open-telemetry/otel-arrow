@@ -13,5 +13,6 @@ window.SUITE_DATA["otc_logs_otlp_zstd_baseline"] = {
     ],
     "compression": "zstd"
   },
+  "env": null,
   "tests": []
 };

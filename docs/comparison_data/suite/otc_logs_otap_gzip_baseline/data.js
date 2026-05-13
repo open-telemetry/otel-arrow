@@ -13,5 +13,6 @@ window.SUITE_DATA["otc_logs_otap_gzip_baseline"] = {
     ],
     "compression": "gzip"
   },
+  "env": null,
   "tests": []
 };

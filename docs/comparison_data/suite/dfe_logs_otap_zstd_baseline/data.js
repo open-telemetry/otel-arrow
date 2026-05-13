@@ -13,5 +13,6 @@ window.SUITE_DATA["dfe_logs_otap_zstd_baseline"] = {
     ],
     "compression": "zstd"
   },
+  "env": null,
   "tests": []
 };

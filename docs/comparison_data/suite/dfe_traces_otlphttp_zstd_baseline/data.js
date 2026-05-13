@@ -13,5 +13,6 @@ window.SUITE_DATA["dfe_traces_otlphttp_zstd_baseline"] = {
     ],
     "compression": "zstd"
   },
+  "env": null,
   "tests": []
 };

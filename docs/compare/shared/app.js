@@ -327,10 +327,15 @@ function buildComparisonChartData(suiteData, comparison, testNames, selectedMetr
         missing.push(false);
       }
     }
+    // Fall back to a scalar color when no bars will be drawn (e.g. the
+    // comparison has zero published tests). Chart.js reads index 0 of
+    // backgroundColor for the legend swatch; an empty array yields black.
+    const bgColor = data.length ? data.map((_, i) => missing[i] ? pattern : color) : color;
+    const bdColor = data.length ? data.map((_, i) => missing[i] ? `${color}80` : color) : color;
     return {
       label: ref.short || ref.name, data, _hasBackpressure: bp, _missing: missing,
-      backgroundColor: data.map((_, i) => missing[i] ? pattern : color),
-      borderColor: data.map((_, i) => missing[i] ? `${color}80` : color),
+      backgroundColor: bgColor,
+      borderColor: bdColor,
       borderWidth: 1,
       borderRadius: 4, borderSkipped: "bottom",
     };
@@ -560,7 +565,6 @@ function renderComparisonSection(suiteData, comparison) {
   const categories = collectFilterCategories(suiteData, comparison);
   const filterState = getFilterState(slug, categories);
   const filtered = filterComparison(comparison, suiteData, filterState);
-  const testNames = collectTestNames(suiteData, filtered);
   const metrics = findAvailableMetrics(suiteData, filtered);
   if (!perComparisonMetrics.has(slug)) perComparisonMetrics.set(slug, metrics.includes("cpu_percentage_normalized_avg") ? "cpu_percentage_normalized_avg" : metrics[0] || "cpu_percentage_normalized_avg");
   const sel = perComparisonMetrics.get(slug);
@@ -592,7 +596,11 @@ function wireComparisonSection(suiteData, comparison) {
 
   function renderChart() {
     const filtered = filterComparison(comparison, suiteData, filterState);
-    const testNames = collectTestNames(suiteData, filtered);
+    // X-axis is the union of test names across the WHOLE comparison, not the
+    // filter-survivors. Keeps the chart stable when filters hide the only
+    // data-having suite -- remaining suites then render striped "missing"
+    // stubs in their proper colors instead of an empty black-legend chart.
+    const testNames = collectTestNames(suiteData, comparison);
     const sel = perComparisonMetrics.get(slug);
     if (activeCharts.has(slug)) { activeCharts.get(slug).destroy(); activeCharts.delete(slug); }
     const canvas = section.querySelector("canvas");
@@ -626,6 +634,7 @@ function renderComparisonPage(compSlug) {
   const filterState = getFilterState(compSlug, categories);
   const hasFilters = Object.keys(categories).length > 0;
   const filterHtml = hasFilters ? buildFilterHtml(categories, filterState) : "";
+  const envHeaderHtml = renderComparisonEnvHeader(suiteData, comparison);
 
   app.innerHTML = `
     <div class="scenario-header">
@@ -633,6 +642,7 @@ function renderComparisonPage(compSlug) {
       <h1>${escapeHtml(comparison.name || compSlug)}</h1>
       <div class="sub">${escapeHtml(comparison.description || "")}</div>
     </div>
+    ${envHeaderHtml}
     ${renderColorblindToggle()}
     ${filterHtml}
     <div id="comparison-chart"></div>
@@ -642,7 +652,11 @@ function renderComparisonPage(compSlug) {
 
   function renderAll() {
     const filtered = filterComparison(comparison, suiteData, filterState);
-    const testNames = collectTestNames(suiteData, filtered);
+    // X-axis is the union of test names across the WHOLE comparison, not the
+    // filter-survivors. Keeps the chart stable when filters hide the only
+    // data-having suite -- remaining suites then render striped "missing"
+    // stubs in their proper colors instead of an empty black-legend chart.
+    const testNames = collectTestNames(suiteData, comparison);
     if (detailSuiteIdx >= filtered.suites.length) detailSuiteIdx = 0;
     if (!testNames.includes(detailTestName)) detailTestName = testNames[0] || "";
 
@@ -739,6 +753,8 @@ function renderComparisonDetail(suiteData, comparison, testNames, initialSuiteId
       if (files.length) filesHtml = `<div class="files-flex">${files.map((f) => `<div class="file-list-item" data-file="${escapeHtml(f)}">${escapeHtml(f)}</div>`).join("")}</div>`;
     }
 
+    const envHtml = ref ? renderEnvDetail(suiteData[ref.slug] ? suiteData[ref.slug].env : null) : "";
+
     const rm = selTest.match(/^(\d+)k$/);
     const lr = rm ? parseInt(rm[1]) * 1000 : null;
     const bpBadge = hasBackpressure(metrics, lr) ? '<div class="detail-backpressure-badge">\u26A0 Backpressure detected</div>' : "";
@@ -764,9 +780,9 @@ function renderComparisonDetail(suiteData, comparison, testNames, initialSuiteId
     }
 
     if (!test) {
-      target.innerHTML = `<div class="scenario-section"><div class="scenario-section-head"><div class="scenario-section-title">Test Details</div></div><div class="detail-controls"><div class="detail-pills">${pillsHtml}</div><select class="detail-test-select">${testOptsHtml}</select></div><div class="muted" style="padding:12px 0">No data available for this selection.</div></div>`;
+      target.innerHTML = `<div class="scenario-section"><div class="scenario-section-head"><div class="scenario-section-title">Test Details</div></div><div class="detail-controls"><div class="detail-pills">${pillsHtml}</div><select class="detail-test-select">${testOptsHtml}</select></div>${envHtml}<div class="muted" style="padding:12px 0">No data available for this selection.</div></div>`;
     } else {
-      target.innerHTML = `<div class="scenario-section"><div class="scenario-section-head"><div class="scenario-section-title">Test Details</div></div><div class="detail-controls"><div class="detail-pills">${pillsHtml}</div><select class="detail-test-select">${testOptsHtml}</select></div>${bpBadge}<div class="files-section"><div class="detail-pane-title">Files</div>${filesHtml}</div><div class="detail-pane-title" style="margin-top:16px">Metrics</div>${scalarsHtml}${chartsHtml || '<div class="muted">No metrics available.</div>'}</div>`;
+      target.innerHTML = `<div class="scenario-section"><div class="scenario-section-head"><div class="scenario-section-title">Test Details</div></div><div class="detail-controls"><div class="detail-pills">${pillsHtml}</div><select class="detail-test-select">${testOptsHtml}</select></div>${bpBadge}<div class="files-section"><div class="detail-pane-title">Files</div>${filesHtml}</div>${envHtml}<div class="detail-pane-title" style="margin-top:16px">Metrics</div>${scalarsHtml}${chartsHtml || '<div class="muted">No metrics available.</div>'}</div>`;
     }
 
     for (const pill of target.querySelectorAll(".detail-pill")) pill.onclick = () => { selSuite = Number(pill.dataset.suiteIdx); if (onSelectionChange) onSelectionChange(selSuite, selTest); render(); };
@@ -787,6 +803,88 @@ function renderComparisonDetail(suiteData, comparison, testNames, initialSuiteId
 
   render();
   return setSelection;
+}
+
+// ── Environment summary / detail ───────────────────────────────────────────
+
+function renderComparisonEnvHeader(suiteData, comparison) {
+  // If the build flagged a mismatch (only happens with --allow-env-mismatch),
+  // surface the warning prominently with a per-suite breakdown.
+  if (comparison.envMismatch) return renderEnvMismatchBanner(comparison.envMismatch);
+
+  // No mismatch: every suite that has env data agrees on its fingerprint.
+  // Show the fingerprint once. If no suite has env data, say so.
+  const refs = comparison.suites || [];
+  for (const ref of refs) {
+    const suite = suiteData[ref.slug];
+    const env = suite && suite.env;
+    if (env) return renderEnvSummary(env);
+  }
+  return '<div class="env-summary env-summary-unknown">Environment: unknown (no run_env.json recorded)</div>';
+}
+
+function renderEnvSummary(env) {
+  const line = envFingerprintLine(env);
+  return `<div class="env-summary"><span class="env-summary-label">Environment:</span> <span class="env-summary-value">${escapeHtml(line)}</span></div>`;
+}
+
+function renderEnvMismatchBanner(mm) {
+  const ref = mm.reference || {};
+  const con = mm.conflict || {};
+  return `<div class="env-mismatch-banner" role="alert">
+    <div class="env-mismatch-title">&#9888;&#65039; Mismatched run environments</div>
+    <div class="env-mismatch-reason">This comparison mixes data collected on different hardware. Results are not apples-to-apples.</div>
+    <ul class="env-mismatch-list">
+      <li><span class="env-mismatch-slug">${escapeHtml(ref.slug || "?")}</span> (reference): ${escapeHtml(ref.fingerprintStr || "no env recorded")}</li>
+      <li><span class="env-mismatch-slug">${escapeHtml(con.slug || "?")}</span>: ${escapeHtml(con.fingerprintStr || "no env recorded")}</li>
+    </ul>
+    <div class="env-mismatch-note">Re-run the conflicting suite on the reference hardware, or omit it from the comparison.</div>
+  </div>`;
+}
+
+function renderEnvDetail(env) {
+  if (!env) {
+    return '<div class="detail-pane-title" style="margin-top:16px">Environment</div><div class="muted" style="padding:4px 0">No environment data recorded for this run.</div>';
+  }
+  const cpu = env.cpu || {};
+  const os = env.os || {};
+  const mem = env.memory || {};
+  const rows = [
+    ["CPU", cpu.model || "unknown"],
+    ["Architecture", cpu.architecture || "unknown"],
+    ["Cores", `${cpu.physical_cores ?? "?"} physical / ${cpu.logical_cores ?? "?"} logical`],
+    ["RAM", mem.total_gib_rounded != null ? `${mem.total_gib_rounded} GiB` : "unknown"],
+    ["OS", `${os.system || "unknown"} ${os.release || ""}`.trim()],
+  ];
+  if (cpu.max_freq_mhz) rows.push(["Max CPU freq", `${cpu.max_freq_mhz.toFixed(0)} MHz`]);
+  if (os.distro && os.distro.NAME) {
+    const ver = os.distro.VERSION_ID || os.distro.VERSION || "";
+    rows.push(["Distro", `${os.distro.NAME} ${ver}`.trim()]);
+  }
+  if (env.started_at) rows.push(["Started", env.started_at]);
+  if (env.ended_at) rows.push(["Ended", env.ended_at]);
+
+  const body = rows.map(([k, v]) =>
+    `<div class="env-detail-row"><div class="env-detail-key">${escapeHtml(k)}</div><div class="env-detail-val">${escapeHtml(String(v))}</div></div>`
+  ).join("");
+  return `<div class="detail-pane-title" style="margin-top:16px">Environment</div><div class="env-detail">${body}</div>`;
+}
+
+function envFingerprintLine(env) {
+  if (!env) return "unknown environment";
+  const cpu = env.cpu || {};
+  const os = env.os || {};
+  const mem = env.memory || {};
+  const parts = [`${cpu.model || "unknown CPU"} / ${cpu.architecture || "?"}`];
+  if (cpu.physical_cores != null) parts.push(`${cpu.physical_cores} cores`);
+  if (mem.total_gib_rounded != null) parts.push(`${mem.total_gib_rounded} GiB`);
+  // OS portion: prefer "Ubuntu 24.04" over kernel release (kernel is
+  // captured but is not part of the comparison-invalidation fingerprint).
+  const distro = os.distro || {};
+  const distroLabel = [distro.NAME, distro.VERSION_ID || distro.VERSION].filter(Boolean).join(" ");
+  if (distroLabel) parts.push(distroLabel);
+  else if (os.system) parts.push(String(os.system));
+  return parts.join(" / ");
 }
 
 // ── File viewer modal ──────────────────────────────────────────────────────

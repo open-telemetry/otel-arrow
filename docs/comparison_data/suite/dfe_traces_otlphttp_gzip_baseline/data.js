@@ -13,5 +13,6 @@ window.SUITE_DATA["dfe_traces_otlphttp_gzip_baseline"] = {
     ],
     "compression": "gzip"
   },
+  "env": null,
   "tests": []
 };

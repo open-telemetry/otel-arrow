@@ -13,5 +13,6 @@ window.SUITE_DATA["dfe_logs_otlphttp_none_baseline"] = {
     ],
     "compression": "none"
   },
+  "env": null,
   "tests": []
 };
