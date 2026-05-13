@@ -248,10 +248,11 @@
         for (const bench of benches) {
           const result = { commit, date, tool, bench };
 
-          let byExtraGroup = byGroup.get(bench.extra);
+          const groupKey = bench.extra ?? '';
+          let byExtraGroup = byGroup.get(groupKey);
           if (byExtraGroup === undefined) {
             byExtraGroup = new Map();
-            byGroup.set(bench.extra, byExtraGroup);
+            byGroup.set(groupKey, byExtraGroup);
           }
 
           let byBenchName = byExtraGroup.get(bench.name);
@@ -283,6 +284,7 @@
         }
 
         for (const bench of benches) {
+          if (!bench.extra) continue;
           const extraParts = bench.extra.split('/');
           if (extraParts.length !== 2) continue;
 
