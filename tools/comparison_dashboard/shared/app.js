@@ -818,14 +818,16 @@ function renderEnvSummary(env) {
 }
 
 function renderEnvMismatchBanner(mm) {
-  const rows = (mm.suites || []).map((s) =>
-    `<li><span class="env-mismatch-slug">${escapeHtml(s.slug)}</span>: ${escapeHtml(s.fingerprintStr || "no env recorded")}</li>`
-  ).join("");
+  const ref = mm.reference || {};
+  const con = mm.conflict || {};
   return `<div class="env-mismatch-banner" role="alert">
     <div class="env-mismatch-title">&#9888;&#65039; Mismatched run environments</div>
-    <div class="env-mismatch-reason">${escapeHtml(mm.reason || "")}</div>
-    <ul class="env-mismatch-list">${rows}</ul>
-    <div class="env-mismatch-note">Comparisons across hardware are not apples-to-apples. Treat results with caution.</div>
+    <div class="env-mismatch-reason">This comparison mixes data collected on different hardware. Results are not apples-to-apples.</div>
+    <ul class="env-mismatch-list">
+      <li><span class="env-mismatch-slug">${escapeHtml(ref.slug || "?")}</span> (reference): ${escapeHtml(ref.fingerprintStr || "no env recorded")}</li>
+      <li><span class="env-mismatch-slug">${escapeHtml(con.slug || "?")}</span>: ${escapeHtml(con.fingerprintStr || "no env recorded")}</li>
+    </ul>
+    <div class="env-mismatch-note">Re-run the conflicting suite on the reference hardware, or omit it from the comparison.</div>
   </div>`;
 }
 
@@ -865,7 +867,12 @@ function envFingerprintLine(env) {
   const parts = [`${cpu.model || "unknown CPU"} / ${cpu.architecture || "?"}`];
   if (cpu.physical_cores != null) parts.push(`${cpu.physical_cores} cores`);
   if (mem.total_gib_rounded != null) parts.push(`${mem.total_gib_rounded} GiB`);
-  if (os.release) parts.push(String(os.release));
+  // OS portion: prefer "Ubuntu 24.04" over kernel release (kernel is
+  // captured but is not part of the comparison-invalidation fingerprint).
+  const distro = os.distro || {};
+  const distroLabel = [distro.NAME, distro.VERSION_ID || distro.VERSION].filter(Boolean).join(" ");
+  if (distroLabel) parts.push(distroLabel);
+  else if (os.system) parts.push(String(os.system));
   return parts.join(" / ");
 }
 

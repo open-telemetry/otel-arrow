@@ -299,19 +299,42 @@ def _require_psutil():
 
 
 def env_fingerprint(env: dict | None) -> dict | None:
-    """Return the equality-check subset of an env dict, or None if `env` is None."""
+    """
+    Return the equality-check subset of an env dict, or None if `env` is None.
+
+    OS portion intentionally uses `system` + distro name+version (e.g.
+    "Linux" + "Ubuntu 24.04") rather than the kernel release. A kernel
+    point upgrade should not invalidate hours of comparison data; the
+    kernel release is still captured in `run_env.json` and shown in the
+    per-test detail pane.
+    """
     if env is None:
         return None
     cpu = env.get("cpu") or {}
     mem = env.get("memory") or {}
-    os_info = env.get("os") or {}
     return {
         "cpu_model": cpu.get("model"),
         "architecture": cpu.get("architecture"),
         "physical_cores": cpu.get("physical_cores"),
         "total_gib_rounded": mem.get("total_gib_rounded"),
-        "os_release": os_info.get("release"),
+        "os_system": (env.get("os") or {}).get("system"),
+        "os_distro": _distro_label(env.get("os") or {}),
     }
+
+
+def _distro_label(os_info: dict) -> str | None:
+    """Build a "NAME VERSION_ID" string from os.distro for fingerprinting.
+
+    Returns None if no distro info was captured (common on macOS / Windows
+    or pre-py3.10 Linux). Two None values compare equal -- so two macOS
+    runs on the same hardware still match.
+    """
+    distro = os_info.get("distro") or {}
+    name = distro.get("NAME")
+    version = distro.get("VERSION_ID") or distro.get("VERSION")
+    if not name and not version:
+        return None
+    return " ".join(part for part in (name, version) if part)
 
 
 def env_fingerprint_str(fp: dict | None) -> str:
@@ -328,9 +351,13 @@ def env_fingerprint_str(fp: dict | None) -> str:
     gib = fp.get("total_gib_rounded")
     if gib is not None:
         parts.append(f"{gib} GiB")
-    release = fp.get("os_release")
-    if release:
-        parts.append(release)
+    distro = fp.get("os_distro")
+    if distro:
+        parts.append(distro)
+    else:
+        system = fp.get("os_system")
+        if system:
+            parts.append(system)
     return " / ".join(parts)
 
 
@@ -1197,73 +1224,67 @@ def check_comparison_env_consistency(
     allow_mismatch: bool,
 ) -> None:
     """
-    Reject (or warn about) comparisons that mix suites collected on different
+    Reject (or warn about) comparisons that mix data collected on different
     hardware. Issue #2949: "never compare across different hardware."
 
-    For each comparison, gather the env fingerprint of every referenced suite
-    that has a `run_env.json`. If any two fingerprints disagree -- or any
-    referenced suite is missing env data -- the comparison is flagged.
-
-    With `allow_mismatch=False` (default), flagged comparisons cause
-    sys.exit(1). With `allow_mismatch=True`, the function instead attaches
-    `comparison["envMismatch"]` (a dict consumed by the frontend banner)
-    and the build proceeds.
+    Per-comparison single-pass check: every suite in the comparison that
+    actually has published test data must share one env fingerprint. Suites
+    with no published tests contribute no data points to the chart and are
+    skipped entirely. The first fingerprint encountered is the reference;
+    the first subsequent fingerprint that differs short-circuits the check
+    and identifies the offending pair (we do not enumerate every conflict).
     """
-    errors: list[str] = []
+    errors: list[tuple[str, dict]] = []
 
     for comp in comparisons:
         slug = comp.get("slug", "?")
-        refs = comp.get("suites", [])
-        per_suite: list[tuple[str, dict | None]] = []
-        for ref in refs:
+        reference: tuple[str, dict | None] | None = None
+        conflict: tuple[str, dict | None] | None = None
+
+        for ref in comp.get("suites", []):
             ref_slug = ref.get("slug")
             if ref_slug is None:
                 continue
-            suite = suites.get(ref_slug)
-            env = suite.get("env") if suite else None
-            per_suite.append((ref_slug, env))
+            suite = suites.get(ref_slug) or {}
+            if not suite.get("tests"):
+                # No data published -> the suite contributes nothing to the
+                # comparison's actual content; its env is irrelevant here.
+                continue
+            fp = env_fingerprint(suite.get("env"))
+            if reference is None:
+                reference = (ref_slug, fp)
+                continue
+            if fp != reference[1]:
+                conflict = (ref_slug, fp)
+                break
 
-        missing = [s for s, e in per_suite if e is None]
-        fingerprints = {
-            s: env_fingerprint(e) for s, e in per_suite if e is not None
-        }
-        unique_fps = {json.dumps(fp, sort_keys=True) for fp in fingerprints.values()}
-
-        is_mismatch = len(unique_fps) > 1
-        is_missing = bool(missing) and fingerprints  # mix of known + unknown
-
-        if not is_mismatch and not is_missing:
+        if conflict is None:
             continue
 
-        reasons = []
-        if is_mismatch:
-            reasons.append("differing hardware fingerprints")
-        if is_missing:
-            reasons.append(f"missing run_env.json for: {', '.join(missing)}")
-        reason_str = "; ".join(reasons)
-
-        # Build a human-readable per-suite summary used in CLI output AND
-        # passed through to the frontend so the mismatch banner can list
-        # exactly which suites disagree.
-        summary = [
-            {
-                "slug": s,
-                "fingerprint": env_fingerprint(e),
-                "fingerprintStr": env_fingerprint_str(env_fingerprint(e))
-                if e else "no env recorded",
-            }
-            for s, e in per_suite
-        ]
+        ref_slug, ref_fp = reference
+        con_slug, con_fp = conflict
+        payload = {
+            "reference": {
+                "slug": ref_slug,
+                "fingerprint": ref_fp,
+                "fingerprintStr": env_fingerprint_str(ref_fp)
+                if ref_fp is not None else "no env recorded",
+            },
+            "conflict": {
+                "slug": con_slug,
+                "fingerprint": con_fp,
+                "fingerprintStr": env_fingerprint_str(con_fp)
+                if con_fp is not None else "no env recorded",
+            },
+        }
 
         if allow_mismatch:
-            comp["envMismatch"] = {"reason": reason_str, "suites": summary}
-            print(f"  WARNING: comparison '{slug}': {reason_str}")
-            for entry in summary:
-                print(f"    - {entry['slug']}: {entry['fingerprintStr']}")
+            comp["envMismatch"] = payload
+            print(f"  WARNING: comparison '{slug}': env mismatch")
+            print(f"    reference: {ref_slug}: {payload['reference']['fingerprintStr']}")
+            print(f"    conflict:  {con_slug}: {payload['conflict']['fingerprintStr']}")
         else:
-            errors.append(f"comparison '{slug}': {reason_str}")
-            for entry in summary:
-                errors.append(f"    {entry['slug']}: {entry['fingerprintStr']}")
+            errors.append((slug, payload))
 
     if errors:
         print(
@@ -1274,8 +1295,16 @@ def check_comparison_env_consistency(
             "Pass --allow-env-mismatch to render a warning banner and proceed anyway.",
             file=sys.stderr,
         )
-        for msg in errors:
-            print(f"  - {msg}", file=sys.stderr)
+        for slug, p in errors:
+            print(f"  - comparison '{slug}':", file=sys.stderr)
+            print(
+                f"      reference: {p['reference']['slug']}: {p['reference']['fingerprintStr']}",
+                file=sys.stderr,
+            )
+            print(
+                f"      conflict:  {p['conflict']['slug']}: {p['conflict']['fingerprintStr']}",
+                file=sys.stderr,
+            )
         sys.exit(1)
 
 
