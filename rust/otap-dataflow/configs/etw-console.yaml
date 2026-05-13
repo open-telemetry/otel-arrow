@@ -1,0 +1,38 @@
+# ETW → Console pipeline
+#
+# Subscribes to Windows ETW providers and prints events to the console.
+#
+# Usage (run as Administrator for ETW access):
+#   cargo run -- -c configs/etw-console.yaml
+#
+# The receiver captures raw ETW events from the configured providers
+# and emits summary as an internal log/event. Full Arrow encoding is a TODO.
+
+
+version: otel_dataflow/v1
+engine: { }
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 4
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          etw:
+            type: receiver:etw
+            config:
+              session_name: "OtelArrowETW"
+              providers:
+                # Microsoft-Windows-Kernel-Process
+                - guid: "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716"
+                  level: information
+          console:
+            type: exporter:console
+            config: {}
+
+        connections:
+          - from: etw
+            to: console

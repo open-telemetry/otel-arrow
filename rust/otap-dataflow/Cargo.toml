@@ -217,6 +217,7 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
+one_collect = { git = "https://github.com/swashtek/one-collect.git", rev = "4657c63" }
 
 azure_core = {version = "0.35.0", default-features = false }
 azure_identity = {version = "0.35.0", default-features = false }
@@ -295,6 +296,8 @@ contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
 condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]
 recordset-kql-processor = ["otap-df-contrib-nodes/recordset-kql-processor"]
 resource-validator-processor = ["otap-df-contrib-nodes/resource-validator-processor"]
+# Contrib receivers (opt-in) - Windows-only
+etw-receiver = ["otap-df-contrib-nodes/etw-receiver"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

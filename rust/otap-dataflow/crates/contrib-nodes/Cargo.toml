@@ -54,7 +54,11 @@ reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"]
 sysinfo = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 
+[target.'cfg(windows)'.dependencies]
+one_collect = { workspace = true, optional = true }
+
 [features]
+etw-receiver = ["dep:one_collect"]
 contrib-exporters = [
     "geneva-exporter",
     "azure-monitor-exporter",
