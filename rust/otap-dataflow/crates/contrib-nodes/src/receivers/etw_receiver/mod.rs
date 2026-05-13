@@ -8,6 +8,28 @@
 //! This module is compiled only on Windows (`#[cfg(target_os = "windows")]`
 //! in the parent `receivers/mod.rs`).
 //!
+//! ## Multi-core fan-out
+//!
+//! Windows allows only one real-time ETW session per session name.  The engine
+//! may instantiate the receiver once per allocated core.  To reconcile these
+//! two models the ETW session is a **process-global singleton** with N consumer
+//! channels (one per core).  The `ProcessTrace` callback round-robins events
+//! across all channels so each core receives an even share of the event stream.
+//!
+//! ```text
+//! ProcessTrace OS thread  (singleton, lazily spawned)
+//! callback: txs[next].try_send(data); next = (next+1) % N
+//!       |          |          |
+//!     tx[0]      tx[1]      tx[2]
+//!       v          v          v
+//!      mpsc       mpsc       mpsc
+//!       v          v          v
+//!  +--------+ +--------+ +--------+
+//!  | core 0 | | core 1 | | core 2 |
+//!  | rx[0]  | | rx[1]  | | rx[2]  |
+//!  +--------+ +--------+ +--------+
+//! ```
+//!
 //! ## Quick start
 //!
 //! ```yaml
@@ -38,14 +60,15 @@ use otap_df_engine::{
     error::Error,
     local::receiver as local,
 };
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::otel_info;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -130,20 +153,24 @@ fn default_session_name() -> String {
 
 /// ETW receiver that subscribes to Windows ETW trace sessions and converts
 /// events into OTAP Arrow log records.
+///
+/// Each per-core instance holds its own `event_rx` obtained from the
+/// process-global singleton session at factory time.
 struct EtwReceiver {
     config: Config,
     metrics: Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
+    /// Per-core consumer channel from the singleton ETW session.
+    /// Wrapped in `Option` so it can be moved out in `start()`.
+    event_rx: Option<tokio::sync::mpsc::Receiver<EtwEventData>>,
 }
 
 impl EtwReceiver {
-    fn with_pipeline(pipeline: PipelineContext, config: Config) -> Self {
-        let metrics = pipeline.register_metrics::<EtwReceiverMetrics>();
-        EtwReceiver {
-            config,
-            metrics: Rc::new(RefCell::new(metrics)),
-        }
-    }
-
+    /// Create a new receiver, acquiring one consumer channel from the
+    /// process-global ETW session.
+    ///
+    /// Called at **factory time** (once per allocated core).  The first call
+    /// lazily initialises the singleton session and spawns the `ProcessTrace`
+    /// thread.
     fn from_config(
         pipeline: PipelineContext,
         config: &Value,
@@ -181,7 +208,24 @@ impl EtwReceiver {
             }
         }
 
-        Ok(EtwReceiver::with_pipeline(pipeline, cfg))
+        let num_cores = pipeline.num_cores();
+        let metrics = pipeline.register_metrics::<EtwReceiverMetrics>();
+
+        // Acquire this core's consumer channel from the singleton session.
+        // The first call initialises the session; subsequent calls pop from
+        // the pre-allocated pool.
+        let event_rx =
+            session::take_consumer(&cfg, num_cores).map_err(|e| {
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!("ETW session initialisation failed: {e}"),
+                }
+            })?;
+
+        Ok(EtwReceiver {
+            config: cfg,
+            metrics: Rc::new(RefCell::new(metrics)),
+            event_rx: Some(event_rx),
+        })
     }
 }
 
@@ -190,19 +234,18 @@ impl EtwReceiver {
 impl EtwReceiver {
     /// Main event loop when an ETW session is active.
     ///
-    /// Consumes events from the ETW session channel and processes control
-    /// messages. Returns when a shutdown or drain-ingress control message is
+    /// Consumes events from the per-core MPSC channel and processes control
+    /// messages.  Returns when a shutdown or drain-ingress control message is
     /// received.
-    async fn run_with_session(
+    async fn run_event_loop(
         &self,
-        session_handle: session::SessionHandle,
         event_rx: &mut tokio::sync::mpsc::Receiver<EtwEventData>,
         ctrl_chan: &mut local::ControlChannel<OtapPdata>,
         effect_handler: &local::EffectHandler<OtapPdata>,
         telemetry_timer_handle: TelemetryTimerCancelHandle<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let mut event_count: u64 = 0;
-        let mut session_alive = true;
+        let mut channel_alive = true;
 
         loop {
             tokio::select! {
@@ -212,7 +255,6 @@ impl EtwReceiver {
                     match ctrl_msg {
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             let _ = telemetry_timer_handle.cancel().await;
-                            session_handle.stop();
                             effect_handler.notify_receiver_drained().await?;
                             let snapshot = self.metrics.borrow().snapshot();
                             return Ok(TerminalState::new(deadline, [snapshot]));
@@ -223,7 +265,6 @@ impl EtwReceiver {
                                 "etw_receiver.shutdown",
                                 message = "ETW receiver shutting down",
                             );
-                            session_handle.stop();
                             let snapshot = self.metrics.borrow().snapshot();
                             return Ok(TerminalState::new(deadline, [snapshot]));
                         }
@@ -243,17 +284,17 @@ impl EtwReceiver {
                     }
                 }
 
-                // Receive event data from the ETW session thread.
-                // Only poll when the session is still alive to avoid
+                // Receive event data from the singleton ETW session.
+                // Only poll when the channel is still alive to avoid
                 // spinning on a closed channel.
-                event_data = event_rx.recv(), if session_alive => {
+                event_data = event_rx.recv(), if channel_alive => {
                     match event_data {
                         Some(event) => {
                             self.metrics.borrow_mut().received_events_total.inc();
                             event_count += 1;
 
-                            // Log first 10 events individually, then every 1000th.
-                            if event_count <= 10 || event_count % 1000 == 0 {
+                            // Log first 100 events individually, then every 1000th.
+                            if event_count <= 100 || event_count % 1000 == 0 {
                                 otel_info!(
                                     "etw_receiver.event",
                                     total = event_count,
@@ -272,9 +313,10 @@ impl EtwReceiver {
                         }
                         None => {
                             // Channel closed — the ETW session thread has
-                            // exited. Stop polling event_rx; only handle
-                            // control messages from now on.
-                            session_alive = false;
+                            // exited (process shutdown or unrecoverable error).
+                            // Stop polling event_rx; only handle control
+                            // messages from now on.
+                            channel_alive = false;
                             otel_info!(
                                 "etw_receiver.session_ended",
                                 message = "ETW session event channel closed",
@@ -315,7 +357,7 @@ pub static ETW_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for EtwReceiver {
     async fn start(
-        self: Box<Self>,
+        mut self: Box<Self>,
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
@@ -330,11 +372,13 @@ impl local::Receiver<OtapPdata> for EtwReceiver {
             provider_count = self.config.providers.len(),
         );
 
-        let (session_handle, mut event_rx) =
-            session::start_etw_session(&self.config, self.metrics.clone())?;
+        // Take the pre-acquired consumer channel.  The channel was obtained
+        // at factory time from the process-global singleton session.
+        let mut event_rx = self.event_rx.take().ok_or_else(|| Error::InternalError {
+            message: "ETW event channel already consumed (duplicate start?)".to_string(),
+        })?;
 
-        self.run_with_session(
-            session_handle,
+        self.run_event_loop(
             &mut event_rx,
             &mut ctrl_chan,
             &effect_handler,

@@ -15,7 +15,7 @@ policies:
   resources:
     core_allocation:
       type: core_count
-      count: 1
+      count: 4
 groups:
   default:
     pipelines:
