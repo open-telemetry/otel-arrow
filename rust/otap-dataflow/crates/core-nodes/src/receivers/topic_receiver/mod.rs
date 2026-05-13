@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 pub const TOPIC_RECEIVER_URN: &str = "urn:otel:receiver:topic";
 
 /// Telemetry metrics for the topic receiver.
-#[metric_set(name = "topic.receiver")]
+#[metric_set(name = "receiver.topic")]
 #[derive(Debug, Default, Clone)]
 pub struct TopicReceiverMetrics {
     /// Number of messages forwarded to downstream.

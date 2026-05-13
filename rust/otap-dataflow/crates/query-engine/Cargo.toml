@@ -19,6 +19,8 @@ datafusion = { workspace = true, features = [
 ] }
 futures-core = { workspace = true }
 memchr = { workspace = true }
+sha1 = { workspace = true, optional = true }
+xxhash-rust = { workspace = true }
 parking_lot = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
@@ -29,6 +31,9 @@ uuid = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["testing"] }
 
+[features]
+sha1-hash = ["dep:sha1"]
+
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }
 data_engine_kql_parser = { workspace = true }
@@ -37,7 +42,7 @@ pretty_assertions = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true }
 
-otap-df-opl = { workspace = true }
+otap-df-query-engine-languages = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["testing"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]
