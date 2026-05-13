@@ -36,6 +36,11 @@ pub struct TelemetryConfig {
 impl TelemetryConfig {
     /// Validates the telemetry configuration, including all metric readers.
     pub fn validate(&self) -> Result<(), crate::error::Error> {
+        if self.reporting_interval.is_zero() {
+            return Err(crate::error::Error::InvalidUserConfig {
+                error: "engine.telemetry.reporting_interval must be greater than zero".to_string(),
+            });
+        }
         self.metrics.validate()
     }
 }
@@ -416,6 +421,19 @@ mod tests {
         assert_eq!(config.reporting_interval, Duration::from_secs(1));
         assert!(config.resource.is_empty());
         assert_eq!(config.metrics.readers.len(), 0);
+    }
+
+    #[test]
+    fn test_zero_reporting_interval_rejected() {
+        let config = TelemetryConfig {
+            reporting_interval: Duration::ZERO,
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("greater than zero"),
+            "expected zero-interval error, got: {err}"
+        );
     }
 
     #[test]
