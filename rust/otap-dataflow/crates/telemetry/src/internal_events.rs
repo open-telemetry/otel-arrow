@@ -232,6 +232,7 @@ macro_rules! otel_event {
 #[macro_export]
 macro_rules! raw_error {
     ($name:expr $(, $($fields:tt)*)?) => {{
+        const _: () = $crate::_private::validate_event_name($name);
         use $crate::self_tracing::ConsoleWriter;
         let now = std::time::SystemTime::now();
         let record = $crate::__log_record_impl!($crate::_private::Level::ERROR, $name $(, $($fields)*)?);
@@ -276,8 +277,8 @@ mod tests {
     #[test]
     fn test_raw_error() {
         let err = Error::ConfigurationError("bad config".into());
-        raw_error!("raw error message", error = ?err);
-        raw_error!("simple error message");
+        raw_error!("test.raw_error", message = "raw error message", error = ?err);
+        raw_error!("test.raw_error.simple", message = "simple error message");
     }
 
     #[test]
