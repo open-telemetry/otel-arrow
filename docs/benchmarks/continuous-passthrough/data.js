@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778635198014,
+  "lastUpdate": 1778636464692,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "044a9084f0abaab469f17ea9da155c4a6ab2b010",
-          "message": "Include response body in RateLimited/ServerError Display for azure_monitor_exporter (#2716)\n\nThe `Display` impl for `Error::RateLimited` and `Error::ServerError`\npreviously omitted the HTTP response body, losing actionable details\nwhen these errors were logged at WARN level via Display formatting\n(`%`).\n\nFor example, when the main export path exhausts retries on a 429, the\nWARN log showed:\n```\nExport failed after 5 attempts: Rate limited\n```\n\nWith this change it now shows:\n```\nExport failed after 5 attempts: Rate limited: {\"error\":{\"code\":\"QuotaLimitExceeded\",\"message\":\"Allowed data-rate per data collection rule: 2GB/minute\"}}\n```\n\nThis lets operators identify *which* Azure Monitor quota was hit\n(data-rate vs request-rate per DCR) without enabling debug logging.\n\nAdditionally, the heartbeat failure WARN log in `exporter.rs` is changed\nfrom Debug format (`?e`) to Display format (`%e`), aligning with the\nproject's [events\nguide](rust/otap-dataflow/docs/telemetry/events-guide.md) recommendation\nto prefer Display for `thiserror` types at warn/error severity.\n\n**Changes:**\n- `error.rs`: Include `{body}` in `#[error(...)]` for `RateLimited` and\n`ServerError` variants; update corresponding test assertions.\n- `exporter.rs`: Change heartbeat send failure WARN log from `error =\n?e` (Debug) to `error = %e` (Display).",
-          "timestamp": "2026-04-20T21:32:46Z",
-          "tree_id": "fb081413ce25a0da69c1a02a5adf035bbda60685",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/044a9084f0abaab469f17ea9da155c4a6ab2b010"
-        },
-        "date": 1776728533786,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.9671982526779175,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 100.05419815547873,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.3662497100889,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 29.515234375,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 30.859375,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 637827.2218414781,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 643996.275263345,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.005316,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 16999612.54614763,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 17008909.307954,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 177127.6639120992,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "33842784+JakeDern@users.noreply.github.com",
+            "name": "Jake Dern",
+            "username": "JakeDern"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "db316a8aff1b939ad6fe495fca7d948f7e9d1218",
+          "message": "feat(comparison_dashboard): Run validate command on PRs (#2944)\n\n# Change Summary\n\nAdds a workflow for running some comparison dashboard validations.\nTriggered on PR, but I think still needs to be added as required in the\nrepo settings to actually block stuff unless we'd rather leave it as an\noptional check.\n\n## What issue does this PR close?\n\n* Closes #2869 \n\n## How are these changes tested?\n\nLoosely\n\n## Are there any user-facing changes?\n\nYes, new CI check.\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
+          "timestamp": "2026-05-12T23:56:23Z",
+          "tree_id": "f5abe104ab8ca7f109e8f2b265d2ce30212c97b3",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/db316a8aff1b939ad6fe495fca7d948f7e9d1218"
+        },
+        "date": 1778636463909,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1129.310302734375,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 5.7882575703090335,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 6.286868937689144,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.026692708333332,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.8359375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 494.87951518605684,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 6083.605074614802,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.006525,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 214619.1557834158,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 176022.9862742083,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
