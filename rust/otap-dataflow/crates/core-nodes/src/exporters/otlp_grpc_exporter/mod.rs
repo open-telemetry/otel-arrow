@@ -46,7 +46,6 @@ use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde::Deserialize;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
@@ -132,9 +131,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
         self.config.grpc.log_proxy_info();
 
         let exporter_id = effect_handler.exporter_id();
-        let timer_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
 
         let channel = self
             .config
@@ -246,7 +242,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             grpc_clients.release(client);
                         }
                     }
-                    _ = timer_cancel_handle.cancel().await;
                     return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {

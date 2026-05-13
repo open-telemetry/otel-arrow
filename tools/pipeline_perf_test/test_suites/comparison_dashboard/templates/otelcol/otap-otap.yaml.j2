@@ -1,0 +1,35 @@
+receivers:
+  otelarrow:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+exporters:
+  otelarrow:
+    endpoint: '{{backend_hostname}}:1235'
+    compression: {{ compression_method | default("none") }}
+    tls:
+      insecure: true
+    arrow:
+      payload_compression: {{ payload_compression | default("none") }}
+      disabled: false
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: '0.0.0.0'
+                port: 8086
+  pipelines:
+    logs/arrow:
+      receivers: [otelarrow]
+      exporters: [otelarrow]
+    metrics/arrow:
+      receivers: [otelarrow]
+      exporters: [otelarrow]
+    traces/arrow:
+      receivers: [otelarrow]
+      exporters: [otelarrow]

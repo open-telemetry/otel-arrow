@@ -1740,7 +1740,6 @@ mod test {
         datatypes::DataType,
     };
     use data_engine_kql_parser::{KqlParser, Parser};
-    use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
         OtapArrowRecords,
         otap::Logs,
@@ -1761,6 +1760,7 @@ mod test {
             otap_to_otlp, otlp_to_otap, to_logs_data, to_metrics_data, to_traces_data,
         },
     };
+    use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use crate::{
         parser::default_parser_options,
@@ -4805,6 +4805,85 @@ mod test {
         test_update_attr_to_hash_function_call_result_all_supported_types::<KqlParser>().await
     }
 
+    async fn test_update_attr_to_md5_function_call_result<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("str_attr", AnyValue::new_string("y")),
+                    KeyValue::new("binary_attr", AnyValue::new_bytes(b"418")),
+                ])
+                .finish(),
+        ]);
+        let query = r#"logs | extend
+          attributes["str_attr"] = md5(attributes["str_attr"]),
+          attributes["binary_attr"] = md5(attributes["binary_attr"])
+      "#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new(
+                    "str_attr",
+                    AnyValue::new_string("415290769594460e2e485922904f345d")
+                ),
+                KeyValue::new(
+                    "binary_attr",
+                    AnyValue::new_string("d1f255a373a3cef72e03aa9d980c7eca")
+                )
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_md5_function_call_result_opl_parser() {
+        test_update_attr_to_md5_function_call_result::<OplParser>().await
+    }
+    #[tokio::test]
+    async fn test_update_attr_to_md5_function_call_result_kql_parser() {
+        test_update_attr_to_md5_function_call_result::<KqlParser>().await
+    }
+
+    async fn test_update_attr_to_fnv_hash_function_call_result<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "str_attr",
+                    AnyValue::new_string("hello"),
+                )])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["str_attr"] = fnv(attributes["str_attr"])"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new(
+                "str_attr",
+                // FNV-1a 64-bit of "hello" interpreted as i64
+                AnyValue::new_int(-6615550055289275125_i64)
+            )]
+        );
+    }
+
     async fn test_update_attr_to_log_function_call_result<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
@@ -4826,7 +4905,6 @@ mod test {
 
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let result = pipeline.execute(input).await.unwrap();
-
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
             panic!("invalid signal type");
         };
@@ -4855,6 +4933,228 @@ mod test {
             panic!("expected log10_ratio to be a double attribute");
         };
         assert_eq!(*log_ratio, 100.0f64.log10());
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_fnv_hash_function_call_result_opl_parser() {
+        test_update_attr_to_fnv_hash_function_call_result::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_fnv_hash_function_call_result_kql_parser() {
+        test_update_attr_to_fnv_hash_function_call_result::<KqlParser>().await
+    }
+
+    async fn test_update_attr_to_murmur3_hash_function_call_result<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "str_attr",
+                    AnyValue::new_string("hello"),
+                )])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["str_attr"] = murmur3(attributes["str_attr"])"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new(
+                "str_attr",
+                // MurmurHash3 32-bit of "hello" with seed=0
+                AnyValue::new_int(613_153_351_i64)
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_murmur3_hash_function_call_result_opl_parser() {
+        test_update_attr_to_murmur3_hash_function_call_result::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_murmur3_hash_function_call_result_kql_parser() {
+        test_update_attr_to_murmur3_hash_function_call_result::<KqlParser>().await
+    }
+
+    #[cfg(feature = "sha1-hash")]
+    async fn test_update_attr_to_sha1_hash_function_call_result<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "str_attr",
+                    AnyValue::new_string("hello"),
+                )])
+                .finish(),
+        ]);
+
+        let query =
+            r#"logs | extend attributes["str_attr"] = encode(sha1(attributes["str_attr"]), "hex")"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new(
+                "str_attr",
+                AnyValue::new_string("aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d")
+            )]
+        );
+    }
+
+    #[cfg(feature = "sha1-hash")]
+    #[tokio::test]
+    async fn test_update_attr_to_sha1_hash_function_call_result_opl_parser() {
+        test_update_attr_to_sha1_hash_function_call_result::<OplParser>().await
+    }
+
+    #[cfg(feature = "sha1-hash")]
+    #[tokio::test]
+    async fn test_update_attr_to_sha1_hash_function_call_result_kql_parser() {
+        test_update_attr_to_sha1_hash_function_call_result::<KqlParser>().await
+    }
+
+    async fn test_update_attr_to_sha512_hash_function_call_result<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "str_attr",
+                    AnyValue::new_string("hello"),
+                )])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["str_attr"] = encode(sha512(attributes["str_attr"]), "hex")"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new(
+                "str_attr",
+                AnyValue::new_string(
+                    "9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043"
+                )
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_sha512_hash_function_call_result_opl_parser() {
+        test_update_attr_to_sha512_hash_function_call_result::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_sha512_hash_function_call_result_kql_parser() {
+        test_update_attr_to_sha512_hash_function_call_result::<KqlParser>().await
+    }
+
+    async fn test_update_attr_to_xxh3_hash_function_call_result<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "str_attr",
+                    AnyValue::new_string("hello"),
+                )])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["str_attr"] = xxh3(attributes["str_attr"])"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new(
+                "str_attr",
+                AnyValue::new_int(-7685981735718036227_i64)
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_xxh3_hash_function_call_result_opl_parser() {
+        test_update_attr_to_xxh3_hash_function_call_result::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_xxh3_hash_function_call_result_kql_parser() {
+        test_update_attr_to_xxh3_hash_function_call_result::<KqlParser>().await
+    }
+
+    async fn test_update_attr_to_xxh128_hash_function_call_result<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "str_attr",
+                    AnyValue::new_string("hello"),
+                )])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["str_attr"] = encode(xxh128(attributes["str_attr"]), "hex")"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![KeyValue::new(
+                "str_attr",
+                AnyValue::new_string("b5e9c1ad071b3e7fc779cfaa5e523818")
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_xxh128_hash_function_call_result_opl_parser() {
+        test_update_attr_to_xxh128_hash_function_call_result::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_to_xxh128_hash_function_call_result_kql_parser() {
+        test_update_attr_to_xxh128_hash_function_call_result::<KqlParser>().await
     }
 
     #[tokio::test]

@@ -40,13 +40,13 @@ use std::collections::HashSet;
 use std::future::{self, Future};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// URN for the topic receiver.
 pub const TOPIC_RECEIVER_URN: &str = "urn:otel:receiver:topic";
 
 /// Telemetry metrics for the topic receiver.
-#[metric_set(name = "topic.receiver")]
+#[metric_set(name = "receiver.topic")]
 #[derive(Debug, Default, Clone)]
 pub struct TopicReceiverMetrics {
     /// Number of messages forwarded to downstream.
@@ -248,11 +248,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
             ack_propagation = format!("{ack_propagation_mode:?}"),
             message = "Topic receiver started"
         );
-        let mut telemetry_cancel_handle = Some(
-            effect_handler
-                .start_periodic_telemetry(Duration::from_secs(1))
-                .await?,
-        );
         let mut draining_deadline: Option<Instant> = None;
         let mut draining_reason: Option<String> = None;
         // These represent two different handoff stages:
@@ -300,9 +295,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                     }
 
                     if pending_tracked_message_ids.is_empty() {
-                        if let Some(handle) = telemetry_cancel_handle.take() {
-                            _ = handle.cancel().await;
-                        }
                         effect_handler.notify_receiver_drained().await?;
                         return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
                     }
@@ -334,9 +326,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     }
                                 }
                             }
-                        }
-                        if let Some(handle) = telemetry_cancel_handle.take() {
-                            _ = handle.cancel().await;
                         }
                         effect_handler.notify_receiver_drained().await?;
                         return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
@@ -460,9 +449,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     }
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                    if let Some(handle) = telemetry_cancel_handle.take() {
-                                        _ = handle.cancel().await;
-                                    }
                                     return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
                                 }
                                 Ok(_) => {}
@@ -631,9 +617,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 }
                             }
                             Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                if let Some(handle) = telemetry_cancel_handle.take() {
-                                    _ = handle.cancel().await;
-                                }
                                 return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
                             }
                             Ok(_) => {}
@@ -738,9 +721,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
         }
         .await;
 
-        if let Some(handle) = telemetry_cancel_handle.take() {
-            _ = handle.cancel().await;
-        }
         run_result
     }
 }

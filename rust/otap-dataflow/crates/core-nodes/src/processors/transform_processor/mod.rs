@@ -32,7 +32,6 @@ use otap_df_engine::{
     node::NodeId,
     processor::ProcessorWrapper,
 };
-use otap_df_opl::parser::OplParser;
 use otap_df_otap::{
     OTAP_PROCESSOR_FACTORIES,
     accessory::slots::Key,
@@ -46,6 +45,7 @@ use otap_df_query_engine::{
     parser::default_parser_options,
     pipeline::{Pipeline, PipelineOptions, routing::RouterExtType, state::ExecutionState},
 };
+use otap_df_query_engine_languages::opl::parser::OplParser;
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use slotmap::Key as _;
@@ -679,7 +679,7 @@ mod test {
                 let mut msgs_transformed = 0;
                 let mut msgs_transform_failed = 0;
                 telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
-                    if desc.name == "transform.processor" {
+                    if desc.name == "processor.transform" {
                         for (field, v) in iter {
                             let val = v.to_u64_lossy();
                             match field.name {

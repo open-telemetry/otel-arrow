@@ -16,7 +16,6 @@
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -227,10 +226,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             traces_endpoint = traces_endpoint.as_str(),
         );
 
-        let telemetry_timer_cancel = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         let max_in_flight = self.config.max_in_flight.max(1);
         let mut client_pool =
             HttpClientPool::try_new(&self.config.http, self.config.client_pool_size)
@@ -309,7 +304,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             .await;
                         }
                     }
-                    _ = telemetry_timer_cancel.cancel().await;
                     return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
