@@ -59,7 +59,7 @@ urlencoding = { workspace = true, optional = true }
 # TODO: Remove this pinned git dependency once one-collect is upstream in the
 # normal dependency graph and no longer needs to be pulled directly here. The
 # pinned commit is from 2026-04-10.
-one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "2d33e674348168f4a19bd3ab40d92f1c556407ec", features = ["scripting"], optional = true }
+one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "9292caacaddf9ff9e4fbdf77bc62b5ec25494c84", features = ["scripting"], optional = true }
 tracepoint_decode = { workspace = true, optional = true }
 
 [features]
