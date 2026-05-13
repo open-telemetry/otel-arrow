@@ -1369,7 +1369,8 @@ impl<
             (false, true) => {
                 otel_warn!(
                     "controller.its_provider_without_pipeline",
-                    message = "ITS provider requested yet engine.observability.pipeline is not defined"
+                    message =
+                        "ITS provider requested yet engine.observability.pipeline is not defined"
                 )
             }
             (true, false) => {
