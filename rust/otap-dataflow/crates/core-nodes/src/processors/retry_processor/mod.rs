@@ -198,7 +198,7 @@ impl RetryConfig {
 }
 
 /// Telemetry metrics for the RetryProcessor (RFC-aligned items + component counters).
-#[metric_set(name = "retry.processor")]
+#[metric_set(name = "processor.retry")]
 #[derive(Debug, Default, Clone)]
 pub struct RetryProcessorMetrics {
     // RFC-aligned: consumed items by signal and outcome

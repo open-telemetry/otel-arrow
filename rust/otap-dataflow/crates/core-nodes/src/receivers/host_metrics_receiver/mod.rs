@@ -79,7 +79,7 @@ use config::{RuntimeFamily, effective_root_path, normalized_root_path};
 pub const HOST_METRICS_RECEIVER_URN: &str = "urn:otel:receiver:host_metrics";
 
 /// Telemetry metrics for the host metrics receiver.
-#[metric_set(name = "host_metrics.receiver")]
+#[metric_set(name = "receiver.host_metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct HostMetricsReceiverMetrics {
     /// Number of scrape ticks started.
@@ -486,10 +486,6 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
             source_detail: String::new(),
         })?;
         let mut scheduler = FamilyScheduler::new(&config, Instant::now());
-
-        let _ = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
 
         loop {
             tokio::select! {

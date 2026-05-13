@@ -164,7 +164,8 @@ pub struct TrafficConfig {
     #[serde(default)]
     pub production_mode: ProductionMode,
     /// Target number of signals to produce per second across all signal types.
-    /// When `None`, defaults to `max_batch_size` (one full batch per second).
+    /// When `None`, the generator runs in uncapped (open-loop) mode, producing
+    /// signals as fast as possible without rate limiting.
     #[serde(default = "default_signals_per_second")]
     pub signals_per_second: Option<usize>,
     /// Maximum total signals to produce before stopping. `None` means unlimited.

@@ -5,13 +5,13 @@ use super::config::RecordsetKqlProcessorConfig;
 use super::create_recordset_kql_processor;
 use otap_df_otap::pdata::OtapPdata;
 
-use async_trait::async_trait;
-use data_engine_recordset::RecordSetEngineDiagnosticLevel;
-use data_engine_recordset_otlp_bridge::{
+use super::otlp_bridge::{
     BridgeDiagnosticOptions, BridgeError, BridgeOptions, BridgePipeline,
     parse_kql_logs_query_into_pipeline,
     process_protobuf_otlp_export_logs_service_request_using_pipeline,
 };
+use async_trait::async_trait;
+use data_engine_recordset::RecordSetEngineDiagnosticLevel;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;

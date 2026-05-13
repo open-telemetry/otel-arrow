@@ -38,7 +38,6 @@ use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// FlowMetric-relevant slice of a processor `EffectHandler`'s surface.
 ///
@@ -621,11 +620,6 @@ impl<PData> ProcessorWrapper<PData> {
                     flow_metrics_active,
                 );
 
-                // Start periodic telemetry collection
-                let telemetry_cancel_handle = effect_handler
-                    .start_periodic_telemetry(Duration::from_secs(1))
-                    .await?;
-
                 while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
                     if effect_handler.flow_metrics_active() {
                         match &mut msg {
@@ -644,8 +638,6 @@ impl<PData> ProcessorWrapper<PData> {
                     }
                     processor.process(msg, &mut effect_handler).await?;
                 }
-                // Cancel periodic collection
-                _ = telemetry_cancel_handle.cancel().await;
                 // Collect final metrics before exiting
                 if effect_handler.is_flow_start() || effect_handler.is_flow_end() {
                     effect_handler.report_flow_metrics();
@@ -681,11 +673,6 @@ impl<PData> ProcessorWrapper<PData> {
                     flow_metrics_active,
                 );
 
-                // Start periodic telemetry collection
-                let telemetry_cancel_handle = effect_handler
-                    .start_periodic_telemetry(Duration::from_secs(1))
-                    .await?;
-
                 while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
                     if effect_handler.flow_metrics_active() {
                         match &mut msg {
@@ -704,8 +691,6 @@ impl<PData> ProcessorWrapper<PData> {
                     }
                     processor.process(msg, &mut effect_handler).await?;
                 }
-                // Cancel periodic collection
-                _ = telemetry_cancel_handle.cancel().await;
                 // Collect final metrics before exiting
                 if effect_handler.is_flow_start() || effect_handler.is_flow_end() {
                     effect_handler.report_flow_metrics();
