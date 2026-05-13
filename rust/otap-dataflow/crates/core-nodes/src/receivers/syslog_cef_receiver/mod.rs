@@ -33,11 +33,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, BufReader};
 
-#[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
-#[cfg(feature = "experimental-tls")]
 use otap_df_otap::tls_utils::{accept_tls_connection, build_tls_acceptor};
-#[cfg(feature = "experimental-tls")]
 use otap_df_telemetry::otel_debug;
 
 /// Arrow records encoder for syslog messages
@@ -79,7 +76,6 @@ struct TcpConfig {
     /// TLS configuration for secure TCP connections (Syslog over TLS, RFC 5425).
     ///
     /// When configured, TCP connections will require TLS.
-    #[cfg(feature = "experimental-tls")]
     tls: Option<TlsServerConfig>,
 }
 
@@ -136,30 +132,6 @@ struct Config {
 }
 
 impl Config {
-    /// Creates a new Config for TCP.
-    #[must_use]
-    #[allow(dead_code)]
-    const fn new_tcp(listening_addr: SocketAddr) -> Self {
-        Self {
-            protocol: Protocol::Tcp(TcpConfig {
-                listening_addr,
-                #[cfg(feature = "experimental-tls")]
-                tls: None,
-            }),
-            batch: None,
-        }
-    }
-
-    /// Creates a new Config for UDP.
-    #[must_use]
-    #[allow(dead_code)]
-    const fn new_udp(listening_addr: SocketAddr) -> Self {
-        Self {
-            protocol: Protocol::Udp(UdpConfig { listening_addr }),
-            batch: None,
-        }
-    }
-
     /// Returns the effective max batch duration, using the configured value or the default.
     fn max_batch_duration(&self) -> Duration {
         self.batch
@@ -316,11 +288,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        // Start periodic telemetry collection (1s), similar to other nodes
-        let telemetry_timer_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         match &self.config.protocol {
             Protocol::Tcp(tcp_config) => {
                 otel_info!(
@@ -332,7 +299,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 let listener = effect_handler.tcp_listener(tcp_config.listening_addr)?;
 
                 // Build TLS acceptor if TLS is configured
-                #[cfg(feature = "experimental-tls")]
                 let maybe_tls_acceptor = build_tls_acceptor(tcp_config.tls.as_ref())
                     .await
                     .map_err(|e| Error::ReceiverError {
@@ -343,13 +309,11 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                     })?;
 
                 // Extract handshake timeout from TLS config (if present)
-                #[cfg(feature = "experimental-tls")]
                 let maybe_handshake_timeout = tcp_config
                     .tls
                     .as_ref()
                     .and_then(|tls| tls.handshake_timeout);
 
-                #[cfg(feature = "experimental-tls")]
                 if maybe_tls_acceptor.is_some() {
                     otel_info!(
                         "syslog_cef_receiver.tls_enabled",
@@ -378,7 +342,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // for TCP we still wait for already accepted connection tasks
                                     // to flush their per-connection buffers before reporting
                                     // ReceiverDrained to the runtime.
-                                    let _ = telemetry_timer_handle.cancel().await;
                                     shutdown_flag.set(true); // Signal all connection tasks to flush and exit
 
                                     // Wait for active tasks to finish flushing.
@@ -408,7 +371,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                    let _ = telemetry_timer_handle.cancel().await;
                                     shutdown_flag.set(true);
                                     let snapshot = self.metrics.borrow().snapshot();
                                     return Ok(TerminalState::new(deadline, [snapshot]));
@@ -447,9 +409,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     let admission_state = self.admission_state.clone();
 
                                     // Clone TLS acceptor for the spawned task
-                                    #[cfg(feature = "experimental-tls")]
                                     let tls_acceptor = maybe_tls_acceptor.clone();
-                                    #[cfg(feature = "experimental-tls")]
                                     let tls_handshake_timeout = maybe_handshake_timeout;
 
                                     // Clone shutdown flag for the spawned task
@@ -470,7 +430,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         task_active_count.set(task_active_count.get() + 1);
 
                                         // Perform TLS handshake if configured, creating a unified reader type
-                                        #[cfg(feature = "experimental-tls")]
                                         let mut reader: Box<dyn AsyncBufRead + Unpin> = if let Some(acceptor) = tls_acceptor {
                                             // Use configured timeout or fall back to 10 seconds (the serde default)
                                             let timeout = tls_handshake_timeout
@@ -500,9 +459,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         } else {
                                             Box::new(BufReader::new(socket))
                                         };
-
-                                        #[cfg(not(feature = "experimental-tls"))]
-                                        let mut reader = BufReader::new(socket);
 
                                         // Suppress unused variable warning when TLS is disabled
                                         let _ = peer_addr;
@@ -820,7 +776,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // UDP has no long-lived connection tasks, so receiver-first
                                     // drain just means: stop ingesting new packets, flush the
                                     // current batch buffer once, then report ReceiverDrained.
-                                    let _ = telemetry_timer_handle.cancel().await;
 
                                     if arrow_records_builder.len() > 0 {
                                         let items = u64::from(arrow_records_builder.len());
@@ -848,7 +803,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                    let _ = telemetry_timer_handle.cancel().await;
                                     let snapshot = self.metrics.borrow().snapshot();
                                     return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
@@ -990,14 +944,14 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 }
 
 /// RFC-aligned metrics for Syslog CEF receiver.
-#[metric_set(name = "syslog_cef.receiver.metrics")]
+#[metric_set(name = "receiver.syslog_cef")]
 #[derive(Debug, Default, Clone)]
 pub struct SyslogCefReceiverMetrics {
     /// Number of log records successfully forwarded downstream
     #[metric(unit = "{item}")]
     pub received_logs_forwarded: Counter<u64>,
 
-    /// Number of log records that failed to be parsed
+    /// Number of log records rejected because their payload is zero-length
     #[metric(unit = "{item}")]
     pub received_logs_invalid: Counter<u64>,
 
@@ -1023,7 +977,6 @@ pub struct SyslogCefReceiverMetrics {
     pub tcp_connections_active: UpDownCounter<u64>,
 
     /// Number of TLS handshake failures
-    #[cfg(feature = "experimental-tls")]
     #[metric(unit = "{error}")]
     pub tls_handshake_failures: Counter<u64>,
 
@@ -1034,6 +987,30 @@ pub struct SyslogCefReceiverMetrics {
     /// Number of TCP connections rejected or closed due to process-wide memory pressure.
     #[metric(unit = "{conn}")]
     pub tcp_connections_rejected_memory_pressure: Counter<u64>,
+}
+
+#[cfg(test)]
+impl Config {
+    /// Creates a new Config for TCP. Test-only helper.
+    #[must_use]
+    const fn new_tcp(listening_addr: SocketAddr) -> Self {
+        Self {
+            protocol: Protocol::Tcp(TcpConfig {
+                listening_addr,
+                tls: None,
+            }),
+            batch: None,
+        }
+    }
+
+    /// Creates a new Config for UDP. Test-only helper.
+    #[must_use]
+    const fn new_udp(listening_addr: SocketAddr) -> Self {
+        Self {
+            protocol: Protocol::Udp(UdpConfig { listening_addr }),
+            batch: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1915,7 +1892,6 @@ mod config_tests {
         );
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[test]
     fn valid_tcp_with_tls() {
         let json = serde_json::json!({
@@ -1936,7 +1912,6 @@ mod config_tests {
         );
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[test]
     fn valid_tcp_with_tls_and_client_ca() {
         let json = serde_json::json!({
@@ -1958,7 +1933,6 @@ mod config_tests {
         );
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[test]
     fn valid_tcp_with_tls_handshake_timeout() {
         let json = serde_json::json!({
@@ -1980,7 +1954,6 @@ mod config_tests {
         );
     }
 
-    #[cfg(feature = "experimental-tls")]
     #[test]
     fn udp_with_tls_rejected() {
         let json = serde_json::json!({

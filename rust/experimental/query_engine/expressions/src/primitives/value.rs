@@ -220,15 +220,107 @@ impl Value<'_> {
         right: &Value,
         case_insensitive: bool,
     ) -> Result<bool, ExpressionError> {
-        let is_left_null = left.get_value_type() == ValueType::Null;
-        let is_right_null = right.get_value_type() == ValueType::Null;
+        match (left, right) {
+            (Value::Null, Value::Null) => Ok(true),
+            (Value::Null, _) => Ok(false),
+            (_, Value::Null) => Ok(false),
 
-        if is_left_null || is_right_null {
-            return Ok(is_left_null == is_right_null);
-        }
+            (Value::String(left_string), Value::String(right_string)) => Ok(if case_insensitive {
+                caseless::default_caseless_match_str(
+                    left_string.get_value(),
+                    right_string.get_value(),
+                )
+            } else {
+                left_string.get_value() == right_string.get_value()
+            }),
+            (Value::String(left_string), right) => Ok(Self::are_string_values_equal(
+                left_string.get_value(),
+                right,
+                case_insensitive,
+            )),
+            (left, Value::String(right_string)) => Ok(Self::are_string_values_equal(
+                right_string.get_value(),
+                left,
+                case_insensitive,
+            )),
 
-        match left {
-            Value::Array(left_array) => {
+            (Value::Integer(left_int), Value::Integer(right_int)) => {
+                Ok(left_int.get_value() == right_int.get_value())
+            }
+            (Value::Integer(left_int), right) => match right.convert_to_integer() {
+                Some(o) => Ok(left_int.get_value() == o),
+                None => Err(ExpressionError::TypeMismatch(
+                    query_location.clone(),
+                    format!(
+                        "Value of '{}' type on right side of equality operation could not be converted to int",
+                        right.get_value_type(),
+                    ),
+                )),
+            },
+
+            (Value::Double(left_double), Value::Double(right_double)) => {
+                Ok(left_double.get_value() == right_double.get_value())
+            }
+            (Value::Double(left_double), right) => match right.convert_to_double() {
+                Some(o) => Ok(left_double.get_value() == o),
+                None => Err(ExpressionError::TypeMismatch(
+                    query_location.clone(),
+                    format!(
+                        "Value of '{}' type on right side of equality operation could not be converted to double",
+                        right.get_value_type(),
+                    ),
+                )),
+            },
+
+            (Value::Boolean(left_bool), Value::Boolean(right_bool)) => {
+                Ok(left_bool.get_value() == right_bool.get_value())
+            }
+            (Value::Boolean(left_bool), right) => match right.convert_to_bool() {
+                Some(o) => Ok(left_bool.get_value() == o),
+                None => Err(ExpressionError::TypeMismatch(
+                    query_location.clone(),
+                    format!(
+                        "Value of '{}' type on right side of equality operation could not be converted to bool",
+                        right.get_value_type(),
+                    ),
+                )),
+            },
+
+            (Value::DateTime(left_datetime), Value::DateTime(right_datetime)) => {
+                Ok(left_datetime.get_value() == right_datetime.get_value())
+            }
+            (Value::DateTime(left_datetime), right) => match right.convert_to_datetime() {
+                Some(o) => Ok(left_datetime.get_value() == o),
+                None => Err(ExpressionError::TypeMismatch(
+                    query_location.clone(),
+                    format!(
+                        "Value of '{}' type on right side of equality operation could not be converted to DateTime",
+                        right.get_value_type(),
+                    ),
+                )),
+            },
+
+            (Value::TimeSpan(left_timespan), Value::TimeSpan(right_timespan)) => {
+                Ok(left_timespan.get_value() == right_timespan.get_value())
+            }
+            (Value::TimeSpan(left_timespan), right) => match right.convert_to_timespan() {
+                Some(o) => Ok(left_timespan.get_value() == o),
+                None => Err(ExpressionError::TypeMismatch(
+                    query_location.clone(),
+                    format!(
+                        "Value of '{}' type on right side of equality operation could not be converted to TimeSpan",
+                        right.get_value_type(),
+                    ),
+                )),
+            },
+
+            (Value::Regex(left_regex), right) => Ok(Self::are_string_values_equal(
+                left_regex.get_value().as_str(),
+                right,
+                case_insensitive,
+            )),
+
+            (Value::Array(left_array), right) => {
                 if let Value::Array(right_array) = right {
                     array_value::equal_to(
                         query_location,
@@ -236,102 +328,30 @@ impl Value<'_> {
                         *right_array,
                         case_insensitive,
                     )
-                } else if let Value::String(right_string) = right {
-                    Ok(Self::are_string_values_equal(
-                        right_string.get_value(),
-                        left,
-                        case_insensitive,
-                    ))
                 } else {
                     Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "Value of '{:?}' type on right side of equality operation could not be converted to an array",
+                            "Value of '{}' type on right side of equality operation could not be converted to an array",
                             right.get_value_type(),
                         ),
                     ))
                 }
             }
-            Value::Boolean(b) => match right.convert_to_bool() {
-                Some(o) => Ok(b.get_value() == o),
-                None => Err(ExpressionError::TypeMismatch(
-                    query_location.clone(),
-                    format!(
-                        "Value of '{:?}' type on right side of equality operation could not be converted to bool",
-                        right.get_value_type(),
-                    ),
-                )),
-            },
-            Value::DateTime(d) => match right.convert_to_datetime() {
-                Some(o) => Ok(d.get_value() == o),
-                None => Err(ExpressionError::TypeMismatch(
-                    query_location.clone(),
-                    format!(
-                        "Value of '{:?}' type on right side of equality operation could not be converted to DateTime",
-                        right.get_value_type(),
-                    ),
-                )),
-            },
-            Value::Double(d) => match right.convert_to_double() {
-                Some(o) => Ok(d.get_value() == o),
-                None => Err(ExpressionError::TypeMismatch(
-                    query_location.clone(),
-                    format!(
-                        "Value of '{:?}' type on right side of equality operation could not be converted to double",
-                        right.get_value_type(),
-                    ),
-                )),
-            },
-            Value::Integer(i) => match right.convert_to_integer() {
-                Some(o) => Ok(i.get_value() == o),
-                None => Err(ExpressionError::TypeMismatch(
-                    query_location.clone(),
-                    format!(
-                        "Value of '{:?}' type on right side of equality operation could not be converted to int",
-                        right.get_value_type(),
-                    ),
-                )),
-            },
-            Value::Map(left_map) => {
+
+            (Value::Map(left_map), right) => {
                 if let Value::Map(right_map) = right {
                     map_value::equal_to(query_location, *left_map, *right_map, case_insensitive)
-                } else if let Value::String(right_string) = right {
-                    Ok(Self::are_string_values_equal(
-                        right_string.get_value(),
-                        left,
-                        case_insensitive,
-                    ))
                 } else {
                     Err(ExpressionError::TypeMismatch(
                         query_location.clone(),
                         format!(
-                            "Value of '{:?}' type on right side of equality operation could not be converted to a map",
+                            "Value of '{}' type on right side of equality operation could not be converted to a map",
                             right.get_value_type(),
                         ),
                     ))
                 }
             }
-            Value::Null => panic!("Null equality should be handled before match"),
-            Value::Regex(r) => Ok(Self::are_string_values_equal(
-                r.get_value().as_str(),
-                right,
-                case_insensitive,
-            )),
-            Value::String(s) => Ok(Self::are_string_values_equal(
-                s.get_value(),
-                right,
-                case_insensitive,
-            )),
-            Value::TimeSpan(t) => match right.convert_to_timespan() {
-                Some(o) => Ok(t.get_value() == o),
-                None => Err(ExpressionError::TypeMismatch(
-                    query_location.clone(),
-                    format!(
-                        "Value of '{:?}' type on right side of equality operation could not be converted to TimeSpan",
-                        right.get_value_type(),
-                    ),
-                )),
-            },
         }
     }
 
@@ -1718,7 +1738,7 @@ mod tests {
             )),
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
-                "TRUE",
+                "true",
             )),
             false,
             true,
@@ -1734,7 +1754,7 @@ mod tests {
             false,
         );
 
-        run_test_failure(
+        run_test_success(
             Value::Boolean(&BooleanScalarExpression::new(
                 QueryLocation::new_fake(),
                 true,
@@ -1744,7 +1764,7 @@ mod tests {
                 "hello world",
             )),
             false,
-            "Value of 'String' type on right side of equality operation could not be converted to bool",
+            false,
         );
 
         run_test_success(
@@ -1761,14 +1781,14 @@ mod tests {
             false,
         );
 
-        run_test_failure(
+        run_test_success(
             Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
                 "hello world",
             )),
             false,
-            "Value of 'String' type on right side of equality operation could not be converted to int",
+            false,
         );
 
         run_test_success(
@@ -1785,14 +1805,24 @@ mod tests {
             false,
         );
 
-        run_test_failure(
+        run_test_success(
             Value::Double(&DoubleScalarExpression::new(QueryLocation::new_fake(), 1.0)),
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
                 "hello world",
             )),
             false,
-            "Value of 'String' type on right side of equality operation could not be converted to double",
+            false,
+        );
+
+        run_test_success(
+            Value::DateTime(&DateTimeScalarExpression::new(
+                QueryLocation::new_fake(),
+                Utc.timestamp_nanos(1).into(),
+            )),
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
+            false,
+            true,
         );
 
         run_test_success(
@@ -1800,25 +1830,35 @@ mod tests {
                 QueryLocation::new_fake(),
                 Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into(),
             )),
-            Value::DateTime(&DateTimeScalarExpression::new(
+            Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
-                Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into(),
+                "2025-06-29T00:00:00Z",
             )),
             false,
             true,
         );
 
-        run_test_failure(
-            Value::DateTime(&DateTimeScalarExpression::new(
+        run_test_success(
+            Value::TimeSpan(&TimeSpanScalarExpression::new(
                 QueryLocation::new_fake(),
-                Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into(),
+                TimeDelta::nanoseconds(1),
+            )),
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 1)),
+            false,
+            true,
+        );
+
+        run_test_success(
+            Value::TimeSpan(&TimeSpanScalarExpression::new(
+                QueryLocation::new_fake(),
+                TimeDelta::hours(1),
             )),
             Value::String(&StringScalarExpression::new(
                 QueryLocation::new_fake(),
-                "hello world",
+                "01:00:00",
             )),
             false,
-            "Value of 'String' type on right side of equality operation could not be converted to DateTime",
+            true,
         );
 
         run_test_success(
@@ -2314,6 +2354,94 @@ mod tests {
             Value::Null,
             false,
             false,
+        );
+
+        run_test_failure(
+            Value::Integer(&IntegerScalarExpression::new(QueryLocation::new_fake(), 18)),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            )),
+            false,
+            "Value of 'Array' type on right side of equality operation could not be converted to int",
+        );
+
+        run_test_failure(
+            Value::Double(&DoubleScalarExpression::new(
+                QueryLocation::new_fake(),
+                18.0,
+            )),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            )),
+            false,
+            "Value of 'Array' type on right side of equality operation could not be converted to double",
+        );
+
+        run_test_failure(
+            Value::Boolean(&BooleanScalarExpression::new(
+                QueryLocation::new_fake(),
+                true,
+            )),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            )),
+            false,
+            "Value of 'Array' type on right side of equality operation could not be converted to bool",
+        );
+
+        run_test_failure(
+            Value::DateTime(&DateTimeScalarExpression::new(
+                QueryLocation::new_fake(),
+                Utc.with_ymd_and_hms(2025, 6, 29, 0, 0, 0).unwrap().into(),
+            )),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            )),
+            false,
+            "Value of 'Array' type on right side of equality operation could not be converted to DateTime",
+        );
+
+        run_test_failure(
+            Value::TimeSpan(&TimeSpanScalarExpression::new(
+                QueryLocation::new_fake(),
+                TimeDelta::days(1),
+            )),
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            )),
+            false,
+            "Value of 'Array' type on right side of equality operation could not be converted to TimeSpan",
+        );
+
+        run_test_failure(
+            Value::Array(&ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            )),
+            Value::Boolean(&BooleanScalarExpression::new(
+                QueryLocation::new_fake(),
+                true,
+            )),
+            false,
+            "Value of 'Boolean' type on right side of equality operation could not be converted to an array",
+        );
+
+        run_test_failure(
+            Value::Map(&MapScalarExpression::new(
+                QueryLocation::new_fake(),
+                HashMap::new(),
+            )),
+            Value::Boolean(&BooleanScalarExpression::new(
+                QueryLocation::new_fake(),
+                true,
+            )),
+            false,
+            "Value of 'Boolean' type on right side of equality operation could not be converted to a map",
         );
     }
 

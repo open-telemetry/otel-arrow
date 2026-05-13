@@ -23,4 +23,7 @@ byte-unit = { workspace = true }
 humantime-serde = { workspace = true }
 
 [dev-dependencies]
+k8s-openapi = { workspace = true }
+kube = { workspace = true }
+schemars = { workspace = true }
 tempfile = { workspace = true }

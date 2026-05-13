@@ -83,7 +83,8 @@ nodes:
     # Override pipeline-level propagation for this exporter.
     header_propagation:
       default:
-        selector: all_captured
+        selector:
+          type: all_captured
       overrides:
         - match:
             stored_names: ["authorization"]
@@ -165,7 +166,8 @@ includes on outbound requests. It operates in two stages:
 ```yaml
 header_propagation:
   default:
-    selector: all_captured  # default: none
+    selector:
+      type: all_captured    # default: none
     action: propagate       # default: propagate
     name: preserve          # default: preserve
     on_error: drop          # default: drop
@@ -192,11 +194,11 @@ header_propagation:
 
 ### Selector Values
 
-| Value | Behavior |
+| `type` Value | Behavior |
 | --- | --- |
 | `all_captured` | Propagate all captured headers. |
 | `none` | Propagate nothing by default (default). |
-| `!named [list]` | Propagate only listed stored names. |
+| `named` | Propagate only headers whose stored names appear in the `named` list. |
 
 When `none` is used, only headers explicitly matched by an override
 with `action: propagate` are included on egress.
@@ -206,9 +208,11 @@ Example of the `named` selector:
 ```yaml
 header_propagation:
   default:
-    selector: !named
-      - tenant_id
-      - x-request-id
+    selector:
+      type: named
+      named:
+        - tenant_id
+        - x-request-id
 ```
 
 ### Name Strategy
@@ -258,7 +262,8 @@ policies:
           store_as: tenant_id
     header_propagation:
       default:
-        selector: all_captured
+        selector:
+          type: all_captured
 groups:
   default:
     pipelines:
@@ -301,7 +306,8 @@ policies:
           sensitive: true
     header_propagation:
       default:
-        selector: all_captured
+        selector:
+          type: all_captured
       overrides:
         - match:
             stored_names: ["authorization"]
@@ -327,9 +333,11 @@ policies:
         - match_names: ["x-debug-flags"]
     header_propagation:
       default:
-        selector: !named
-          - tenant_id
-          - x-request-id
+        selector:
+          type: named
+          named:
+            - tenant_id
+            - x-request-id
 ```
 
 In this example, `authorization` and `x-debug-flags` are captured
@@ -351,7 +359,8 @@ policies:
           store_as: tenant_id
     header_propagation:
       default:
-        selector: all_captured
+        selector:
+          type: all_captured
 
 groups:
   default:
@@ -379,7 +388,8 @@ groups:
             # Override: use stored name as wire name.
             header_propagation:
               default:
-                selector: all_captured
+                selector:
+                  type: all_captured
                 name: stored_name
         connections:
           - from: otlp/ingest

@@ -53,8 +53,8 @@ pub struct OutputRouter<S> {
     node_id: NodeId,
     /// Map of port name to sender and port_index.
     ports: HashMap<PortName, (S, u16)>,
-    /// The default port.
-    default: Option<(S, u16)>,
+    /// The default port name, sender, and port index.
+    default: Option<(PortName, S, u16)>,
 }
 
 impl<S: Clone> OutputRouter<S> {
@@ -74,9 +74,15 @@ impl<S: Clone> OutputRouter<S> {
             .collect();
 
         let default = if let Some(ref port) = default_port {
-            ports.get(port).cloned()
+            ports
+                .get(port)
+                .cloned()
+                .map(|(sender, idx)| (port.clone(), sender, idx))
         } else if ports.len() == 1 {
-            ports.values().next().cloned()
+            ports
+                .iter()
+                .next()
+                .map(|(name, (sender, idx))| (name.clone(), sender.clone(), *idx))
         } else {
             None
         };
@@ -95,6 +101,12 @@ impl<S: Clone> OutputRouter<S> {
         ports.sort();
         ports
     }
+
+    /// Returns the selected default output port name, if one exists.
+    #[must_use]
+    pub fn default_port(&self) -> Option<PortName> {
+        self.default.as_ref().map(|(name, _, _)| name.clone())
+    }
 }
 
 impl<S: OutputSend> OutputRouter<S> {
@@ -102,7 +114,7 @@ impl<S: OutputSend> OutputRouter<S> {
     #[inline]
     pub async fn send_default(&self, data: S::Data) -> Result<(), TypedError<S::Data>> {
         match &self.default {
-            Some((sender, _)) => sender
+            Some((_, sender, _)) => sender
                 .output_send(data)
                 .await
                 .map_err(TypedError::ChannelSendError),
@@ -116,7 +128,7 @@ impl<S: OutputSend> OutputRouter<S> {
     #[inline]
     pub fn try_send_default(&self, data: S::Data) -> Result<(), TypedError<S::Data>> {
         match &self.default {
-            Some((sender, _)) => sender
+            Some((_, sender, _)) => sender
                 .try_output_send(data)
                 .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::NoDefaultOutputPort {
@@ -173,7 +185,7 @@ where
     #[inline]
     pub async fn send_default_stamped(&self, mut data: S::Data) -> Result<(), TypedError<S::Data>> {
         match &self.default {
-            Some((sender, idx)) => {
+            Some((_, sender, idx)) => {
                 data.stamp_output_port_index(*idx);
                 sender
                     .output_send(data)
@@ -190,7 +202,7 @@ where
     #[inline]
     pub fn try_send_default_stamped(&self, mut data: S::Data) -> Result<(), TypedError<S::Data>> {
         match &self.default {
-            Some((sender, idx)) => {
+            Some((_, sender, idx)) => {
                 data.stamp_output_port_index(*idx);
                 sender
                     .try_output_send(data)

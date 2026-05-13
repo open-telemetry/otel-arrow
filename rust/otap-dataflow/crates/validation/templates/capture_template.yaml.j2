@@ -10,6 +10,7 @@
 {% set capture_core_start = capture_core_start | default(1) -%}
 {% set capture_core_end = capture_core_end | default(1) -%}
 {% set capture_label = capture_label | default("validation_exporter") -%}
+{% set capture_header_keys = capture_header_keys | default([]) -%}
 {{ capture_label }}:
   policies:
     resources:
@@ -18,6 +19,14 @@
         set:
           - start: {{ capture_core_start }}
             end: {{ capture_core_end }}
+{% if capture_header_keys | length > 0 %}
+    transport_headers:
+      header_capture:
+        headers:
+{% for key in capture_header_keys %}
+          - match_names: ["{{ key }}"]
+{% endfor %}
+{% endif %}
   nodes:
 {% if custom_suv_receiver %}
     suv_receiver:

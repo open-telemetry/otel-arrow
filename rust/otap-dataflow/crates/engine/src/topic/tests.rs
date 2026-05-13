@@ -24,17 +24,20 @@
 //!   remove-does-not-close, clone-shares-state.
 
 use crate::error::Error;
-use crate::topic::backend::InMemoryBackend;
+use crate::topic::backend::{InMemoryBackend, SubscriptionBackend};
+use crate::topic::subscription::{DeliveryBackend, DeliveryStorageKind};
 use crate::topic::types::{
-    PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode, TopicOptions,
+    Envelope, PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode, TopicOptions,
     TopicPublishOutcomeConfig, TrackedPublishOutcome, TrackedPublishPermit, TrackedPublishTracker,
     TrackedTryPublishOutcome,
 };
-use crate::topic::{TopicBroker, TopicSet};
+use crate::topic::{Delivery, RecvDelivery, Subscription, TopicBroker, TopicSet};
 use otap_df_config::topic::TopicBroadcastOnLagPolicy;
 use otap_df_config::{SubscriptionGroupName, TopicName};
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
@@ -457,10 +460,11 @@ async fn broadcast_disconnects_slow_subscriber_on_lag() {
     assert!(matches!(sub.recv().await, Err(Error::SubscriptionClosed)));
 }
 
-// In Mixed mode, broadcast delivery remains non-blocking even if balanced
-// consumer-group backpressure stalls publish completion.
+// In Mixed mode, async publish now waits for full topic admission. Balanced
+// backpressure therefore delays both publish completion and broadcast
+// visibility, while `try_publish` remains the non-blocking API.
 #[tokio::test]
-async fn mixed_broadcast_not_blocked_by_balanced_backpressure() {
+async fn mixed_async_publish_waits_for_balanced_admission_before_broadcast() {
     let broker = TopicBroker::new();
     let topic = broker
         .create_topic(
@@ -489,8 +493,8 @@ async fn mixed_broadcast_not_blocked_by_balanced_backpressure() {
     // Fill the balanced queue.
     topic.publish(Arc::new(1u64)).await.unwrap();
 
-    // Second publish should block on balanced delivery, but broadcast should
-    // still observe it promptly.
+    // Second publish should block on balanced delivery, so broadcast should
+    // not observe it until balanced admission succeeds.
     let topic_clone = topic.clone();
     let second_publish = tokio::spawn(async move {
         topic_clone.publish(Arc::new(2u64)).await.unwrap();
@@ -502,7 +506,33 @@ async fn mixed_broadcast_not_blocked_by_balanced_backpressure() {
         other => panic!("unexpected: {:?}", other),
     }
 
-    // Second message should arrive before balanced queue is drained.
+    // Second message should not arrive before balanced queue is drained.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), async {
+            loop {
+                match broadcast.recv().await {
+                    Ok(RecvItem::Message(env)) => break *env.payload,
+                    Ok(RecvItem::Lagged { .. }) => continue,
+                    Err(e) => panic!("unexpected recv error: {e:?}"),
+                }
+            }
+        })
+        .await
+        .is_err(),
+        "broadcast delivery should wait for balanced admission on async publish"
+    );
+
+    // Publisher task should still be blocked on balanced queue.
+    assert!(
+        !second_publish.is_finished(),
+        "second publish should still be blocked by balanced backpressure"
+    );
+
+    // Drain balanced queue to unblock publisher and then observe the second
+    // broadcast message.
+    _ = balanced.recv().await.unwrap();
+    second_publish.await.unwrap();
+
     let second = tokio::time::timeout(Duration::from_millis(200), async {
         loop {
             match broadcast.recv().await {
@@ -513,20 +543,430 @@ async fn mixed_broadcast_not_blocked_by_balanced_backpressure() {
         }
     })
     .await
-    .expect("broadcast delivery should not wait on balanced backpressure");
+    .expect("broadcast delivery should resume after balanced admission succeeds");
     assert_eq!(second, 2);
 
-    // Publisher task should still be blocked on balanced queue.
+    _ = balanced.recv().await.unwrap();
+    topic.close();
+}
+
+// A blocked mixed publish must not reserve capacity on balanced groups that
+// were otherwise ready to admit the message.
+#[tokio::test]
+async fn mixed_async_publish_does_not_reserve_free_groups_while_waiting() {
+    let broker = TopicBroker::<u64>::new();
+    let topic = broker
+        .create_topic(
+            "mixed-no-convoy",
+            TopicOptions::Mixed {
+                balanced_capacity: 1,
+                broadcast_capacity: 16,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+            },
+            InMemoryBackend,
+        )
+        .unwrap();
+
+    let mut fast = topic
+        .subscribe(
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("fast"),
+            },
+            SubscriberOptions::default(),
+        )
+        .unwrap();
+    let mut slow = topic
+        .subscribe(
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("slow"),
+            },
+            SubscriberOptions::default(),
+        )
+        .unwrap();
+
+    topic.publish(Arc::new(1u64)).await.unwrap();
+
+    match fast.recv().await.unwrap() {
+        RecvItem::Message(env) => assert_eq!(*env.payload, 1),
+        other => panic!("unexpected first fast item: {other:?}"),
+    }
+
+    let topic_clone = topic.clone();
+    let blocked_publish = tokio::spawn(async move {
+        topic_clone.publish(Arc::new(2u64)).await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
-        !second_publish.is_finished(),
-        "second publish should still be blocked by balanced backpressure"
+        !blocked_publish.is_finished(),
+        "publish should still be blocked by the slow group"
     );
 
-    // Drain balanced queue to unblock publisher.
-    _ = balanced.recv().await.unwrap();
-    _ = balanced.recv().await.unwrap();
-    second_publish.await.unwrap();
+    let mut permits = topic.debug_balanced_available_permits();
+    permits.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
+    assert_eq!(
+        permits,
+        vec![
+            (SubscriptionGroupName::from("fast"), 1),
+            (SubscriptionGroupName::from("slow"), 0),
+        ],
+        "blocked mixed publish should not hold the fast group's permit"
+    );
+
+    match slow.recv().await.unwrap() {
+        RecvItem::Message(env) => assert_eq!(*env.payload, 1),
+        other => panic!("unexpected first slow item: {other:?}"),
+    }
+
+    blocked_publish.await.unwrap();
+
+    match fast.recv().await.unwrap() {
+        RecvItem::Message(env) => assert_eq!(*env.payload, 2),
+        other => panic!("unexpected second fast item: {other:?}"),
+    }
+    match slow.recv().await.unwrap() {
+        RecvItem::Message(env) => assert_eq!(*env.payload, 2),
+        other => panic!("unexpected second slow item: {other:?}"),
+    }
+
     topic.close();
+}
+
+// Dropping a blocked async mixed-topic publish must not partially publish to
+// broadcast subscribers before balanced admission succeeds.
+#[tokio::test]
+async fn mixed_async_publish_drop_does_not_publish_to_broadcast() {
+    let broker = TopicBroker::<u64>::new();
+    let topic = broker
+        .create_topic(
+            "mixed-cancel-no-broadcast",
+            TopicOptions::Mixed {
+                balanced_capacity: 1,
+                broadcast_capacity: 16,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+            },
+            InMemoryBackend,
+        )
+        .unwrap();
+
+    let mut balanced = topic
+        .subscribe(
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
+            SubscriberOptions::default(),
+        )
+        .unwrap();
+    let mut broadcast = topic
+        .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
+        .unwrap();
+
+    topic.publish(Arc::new(1u64)).await.unwrap();
+
+    let mut publish = Box::pin(topic.publish(Arc::new(2u64)));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), publish.as_mut())
+            .await
+            .is_err(),
+        "second publish should block while balanced capacity is full"
+    );
+
+    match broadcast.recv().await.unwrap() {
+        RecvItem::Message(env) => assert_eq!(*env.payload, 1),
+        other => panic!("unexpected first broadcast item: {other:?}"),
+    }
+    drop(publish);
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), async {
+            loop {
+                match broadcast.recv().await {
+                    Ok(RecvItem::Message(env)) => break *env.payload,
+                    Ok(RecvItem::Lagged { .. }) => continue,
+                    Err(e) => panic!("unexpected recv error: {e:?}"),
+                }
+            }
+        })
+        .await
+        .is_err(),
+        "dropping a blocked publish must not leak a broadcast delivery"
+    );
+
+    match balanced.recv().await.unwrap() {
+        RecvItem::Message(env) => assert_eq!(*env.payload, 1),
+        other => panic!("unexpected balanced item: {other:?}"),
+    }
+}
+
+// Dropping a blocked tracked publish must release the publisher's in-flight
+// slot so later non-blocking attempts fail only on topic capacity, not leaked
+// tracked publisher capacity.
+#[tokio::test]
+async fn blocked_tracked_publish_drop_releases_in_flight_capacity() {
+    let broker = TopicBroker::<u64>::new();
+    let topic = broker
+        .create_topic(
+            "tracked-publish-drop",
+            TopicOptions::BalancedOnly { capacity: 1 },
+            InMemoryBackend,
+        )
+        .unwrap();
+
+    let _balanced = topic
+        .subscribe(
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
+            SubscriberOptions::default(),
+        )
+        .unwrap();
+    topic.publish(Arc::new(1u64)).await.unwrap();
+
+    let tracked = topic.tracked_publisher_with_config(TopicPublishOutcomeConfig {
+        max_in_flight: 1,
+        timeout: Duration::from_secs(30),
+    });
+    let mut blocked = Box::pin(tracked.publish(Arc::new(2u64)));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), blocked.as_mut())
+            .await
+            .is_err(),
+        "tracked publish should block while balanced capacity is full"
+    );
+    drop(blocked);
+
+    assert!(
+        matches!(
+            tracked.try_publish(Arc::new(3u64)).unwrap(),
+            TrackedTryPublishOutcome::DroppedOnFull
+        ),
+        "dropping the blocked tracked publish should release the in-flight slot"
+    );
+}
+
+// Broadcast delivery permits keep ownership of one message until the caller
+// commits it, preventing the subscription from advancing past the permitted item.
+#[tokio::test]
+async fn broadcast_delivery_commit_advances_to_next_message() {
+    let broker = TopicBroker::<u64>::new();
+    let topic = broker
+        .create_topic(
+            "broadcast-delivery-permit",
+            TopicOptions::BroadcastOnly {
+                capacity: 16,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+            },
+            InMemoryBackend,
+        )
+        .unwrap();
+
+    let mut sub = topic
+        .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
+        .unwrap();
+
+    topic.publish(Arc::new(1u64)).await.unwrap();
+    topic.publish(Arc::new(2u64)).await.unwrap();
+
+    let first = match sub.recv_delivery().await.unwrap() {
+        RecvDelivery::Message(delivery) => delivery,
+        RecvDelivery::Lagged { .. } => panic!("unexpected lag notification"),
+    };
+    assert_eq!(first.message_id(), 1);
+    assert_eq!(*first.envelope().payload, 1);
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), sub.recv_delivery())
+            .await
+            .is_err(),
+        "second delivery should stay blocked while the first delivery permit is held"
+    );
+
+    first.commit();
+
+    let second = match sub.recv_delivery().await.unwrap() {
+        RecvDelivery::Message(delivery) => delivery,
+        RecvDelivery::Lagged { .. } => panic!("unexpected lag notification"),
+    };
+    assert_eq!(second.message_id(), 2);
+    assert_eq!(*second.envelope().payload, 2);
+    second.commit();
+}
+
+// Balanced deliveries from the in-memory backend use the specialized inline
+// finalizer path instead of the opaque fallback.
+#[tokio::test]
+async fn balanced_delivery_uses_specialized_inline_storage() {
+    let broker = TopicBroker::<u64>::new();
+    let topic = broker
+        .create_topic(
+            "balanced-inline-delivery",
+            TopicOptions::default(),
+            InMemoryBackend,
+        )
+        .unwrap();
+
+    let mut sub = topic
+        .subscribe(
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
+            SubscriberOptions::default(),
+        )
+        .unwrap();
+
+    topic.publish(Arc::new(7u64)).await.unwrap();
+
+    let delivery = match sub.recv_delivery().await.unwrap() {
+        RecvDelivery::Message(delivery) => delivery,
+        RecvDelivery::Lagged { .. } => panic!("unexpected lag notification"),
+    };
+    assert_eq!(delivery.storage_kind(), DeliveryStorageKind::Balanced);
+    delivery.commit();
+}
+
+// Broadcast deliveries from the in-memory backend use the specialized inline
+// finalizer path instead of the opaque fallback.
+#[tokio::test]
+async fn broadcast_delivery_uses_specialized_inline_storage() {
+    let broker = TopicBroker::<u64>::new();
+    let topic = broker
+        .create_topic(
+            "broadcast-inline-delivery",
+            TopicOptions::BroadcastOnly {
+                capacity: 16,
+                on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+            },
+            InMemoryBackend,
+        )
+        .unwrap();
+
+    let mut sub = topic
+        .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
+        .unwrap();
+
+    topic.publish(Arc::new(11u64)).await.unwrap();
+
+    let delivery = match sub.recv_delivery().await.unwrap() {
+        RecvDelivery::Message(delivery) => delivery,
+        RecvDelivery::Lagged { .. } => panic!("unexpected lag notification"),
+    };
+    assert_eq!(delivery.storage_kind(), DeliveryStorageKind::Broadcast);
+    delivery.commit();
+}
+
+// Custom backends still work through the opaque delivery fallback even though
+// the in-memory backend now uses specialized inline storage.
+#[tokio::test]
+async fn opaque_delivery_fallback_still_works() {
+    struct OpaqueDelivery {
+        envelope: Envelope<u64>,
+        aborted: Arc<AtomicBool>,
+    }
+
+    impl DeliveryBackend<u64> for OpaqueDelivery {
+        fn envelope(&self) -> &Envelope<u64> {
+            &self.envelope
+        }
+
+        fn commit(&mut self) {}
+
+        fn abort(&mut self, _reason: Arc<str>) -> Result<(), Error> {
+            self.aborted.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn abandon(&mut self) {}
+    }
+
+    struct OpaqueSubscription {
+        yielded: bool,
+        aborted: Arc<AtomicBool>,
+    }
+
+    impl SubscriptionBackend<u64> for OpaqueSubscription {
+        fn poll_recv_delivery(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<RecvDelivery<u64>, Error>> {
+            if self.yielded {
+                Poll::Ready(Err(Error::SubscriptionClosed))
+            } else {
+                self.yielded = true;
+                Poll::Ready(Ok(RecvDelivery::Message(Delivery::new_opaque(Box::new(
+                    OpaqueDelivery {
+                        envelope: Envelope {
+                            id: 41,
+                            payload: Arc::new(99u64),
+                            tracked: false,
+                        },
+                        aborted: Arc::clone(&self.aborted),
+                    },
+                )))))
+            }
+        }
+
+        fn ack(&self, _id: u64) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn nack(&self, _id: u64, _reason: Arc<str>) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    let aborted = Arc::new(AtomicBool::new(false));
+    let mut subscription = Subscription::new(Box::new(OpaqueSubscription {
+        yielded: false,
+        aborted: Arc::clone(&aborted),
+    }));
+
+    let delivery = match subscription.recv_delivery().await.unwrap() {
+        RecvDelivery::Message(delivery) => delivery,
+        RecvDelivery::Lagged { .. } => panic!("unexpected lag notification"),
+    };
+    assert_eq!(delivery.storage_kind(), DeliveryStorageKind::Opaque);
+    delivery.abort("opaque fallback abort").unwrap();
+    assert!(aborted.load(Ordering::SeqCst));
+}
+
+// Aborting an unforwarded tracked delivery must resolve its tracked publish as
+// a Nack owned by the delivery object itself.
+#[tokio::test]
+async fn tracked_delivery_abort_resolves_publish_outcome() {
+    let broker = TopicBroker::<u64>::new();
+    let topic = broker
+        .create_topic(
+            "tracked-delivery-abort",
+            TopicOptions::default(),
+            InMemoryBackend,
+        )
+        .unwrap();
+
+    let tracked = topic.tracked_publisher();
+    let mut sub = topic
+        .subscribe(
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::from("g1"),
+            },
+            SubscriberOptions::default(),
+        )
+        .unwrap();
+
+    let receipt = tracked.publish(Arc::new(42u64)).await.unwrap();
+    let delivery = match sub.recv_delivery().await.unwrap() {
+        RecvDelivery::Message(delivery) => delivery,
+        RecvDelivery::Lagged { .. } => panic!("unexpected lag notification"),
+    };
+
+    delivery
+        .abort("downstream rejected before forward")
+        .unwrap();
+    assert_eq!(
+        receipt.wait_for_outcome().await,
+        TrackedPublishOutcome::Nack {
+            reason: Arc::from("downstream rejected before forward"),
+        }
+    );
 }
 
 // In Mixed mode, a lagging broadcast subscriber can be disconnected without
@@ -1441,11 +1881,11 @@ async fn try_publish_balanced_only_reports_drop_on_full() {
     );
 }
 
-// On mixed topics, broadcast delivery stays non-blocking even when balanced
-// queues are full: try_publish can return DroppedOnFull while broadcast
-// subscribers still receive the message.
+// On mixed topics, try_publish is all-or-nothing across balanced and
+// broadcast delivery. A balanced drop-on-full result must not leak a message
+// to broadcast subscribers.
 #[tokio::test]
-async fn try_publish_mixed_keeps_broadcast_non_blocking() {
+async fn try_publish_mixed_rejects_broadcast_when_balanced_is_full() {
     let broker = TopicBroker::<u64>::new();
     let topic = broker
         .create_topic(
@@ -1488,7 +1928,7 @@ async fn try_publish_mixed_keeps_broadcast_non_blocking() {
             received.push(*env.payload);
         }
     }
-    assert_eq!(received, vec![10, 20]);
+    assert_eq!(received, vec![10]);
 }
 
 // =========================================================================

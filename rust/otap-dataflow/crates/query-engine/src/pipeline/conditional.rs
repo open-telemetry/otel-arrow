@@ -407,7 +407,6 @@ mod test {
     };
     use arrow::array::UInt16Array;
     use data_engine_parser_abstractions::Parser;
-    use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
         proto::opentelemetry::{
             metrics::v1::Metric,
@@ -427,6 +426,7 @@ mod test {
         },
         testing::round_trip::{otlp_to_otap, to_metrics_data, to_traces_data},
     };
+    use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use super::*;
 
@@ -479,7 +479,7 @@ mod test {
         ];
 
         // internally, try_fold must be called on the match expression here to convert the string
-        // argument into a regex scalar expression. This test is is to help avoid regressions of
+        // argument into a regex scalar expression. This test is to help avoid regressions of
         // cases where try_fold might not be called on the condition statements
         let result = exec_logs_pipeline::<OplParser>(
             r#"

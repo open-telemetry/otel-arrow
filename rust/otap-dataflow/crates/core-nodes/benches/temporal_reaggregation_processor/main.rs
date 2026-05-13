@@ -14,7 +14,7 @@ use otap_df_channel::mpsc;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::Interests;
 use otap_df_engine::context::ControllerContext;
-use otap_df_engine::control::{RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel};
+use otap_df_engine::control::{NodeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::{Message, Receiver, Sender};
 use otap_df_engine::node::NodeWithPDataReceiver;
@@ -174,10 +174,9 @@ fn create_processor() -> ProcessorState {
             processor,
             ..
         } => {
-            // The processor calls start_periodic_timer on the first process()
-            // call, which needs a runtime control channel. The receiver must
-            // stay alive for the duration of the iteration so the channel
-            // remains open.
+            // The runtime control channel is required by the effect handler.
+            // The receiver must stay alive for the duration of the iteration
+            // so the channel remains open.
             let (ctrl_tx, ctrl_rx) = runtime_ctrl_msg_channel(10);
             effect_handler.set_runtime_ctrl_msg_sender(ctrl_tx);
 
@@ -206,12 +205,22 @@ async fn run_scenario(messages: Vec<OtapPdata>, state: &mut ProcessorState) {
             .expect("process failed");
     }
 
-    // Flush via timer tick.
-    state
-        .processor
-        .process(Message::timer_tick_ctrl_msg(), &mut state.effect_handler)
-        .await
-        .expect("timer tick failed");
+    // Flush via wakeup: pop the scheduled wakeup from the local scheduler
+    // and deliver it as a control message.
+    if let Some((slot, when, revision)) = state.effect_handler.pop_wakeup() {
+        state
+            .processor
+            .process(
+                Message::Control(NodeControlMsg::Wakeup {
+                    slot,
+                    when,
+                    revision,
+                }),
+                &mut state.effect_handler,
+            )
+            .await
+            .expect("wakeup flush failed");
+    }
 
     // Drain the output channel to prevent backpressure.
     let mut output = Vec::new();

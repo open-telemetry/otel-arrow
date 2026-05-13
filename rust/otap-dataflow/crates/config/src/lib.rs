@@ -19,10 +19,14 @@ use std::hash::Hash;
 pub mod byte_units;
 /// Config URI providers for resolving configuration from file:, env:, or bare paths.
 pub mod config_provider;
+pub mod conversion;
 pub mod engine;
 /// Environment variable substitution for raw config text.
 pub mod env_substitution;
 pub mod error;
+pub mod extension;
+/// Extension URN type.
+pub mod extension_urn;
 pub mod health;
 pub mod node;
 /// Node type URN value object.
@@ -46,6 +50,8 @@ pub use topic::{
 };
 /// Validation helpers for node configuration.
 pub mod validation;
+
+pub use conversion::ConversionOptions;
 
 /// Signal types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -77,6 +83,12 @@ pub type PipelineId = Cow<'static, str>;
 
 /// The id of a node in the pipeline.
 pub type NodeId = Cow<'static, str>;
+
+/// The id of an extension in the pipeline.
+///
+/// Extensions have a separate ID namespace from nodes — an extension and a
+/// node may share the same name without collision.
+pub type ExtensionId = Cow<'static, str>;
 
 /// The id of a capability binding (e.g., "bearer_token_provider").
 pub type CapabilityId = Cow<'static, str>;
@@ -144,7 +156,7 @@ impl Serialize for PipelineKey {
 }
 
 /// Unique key for identifying a pipeline running on a specific core.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Hash)]
 pub struct DeployedPipelineKey {
     /// The unique ID of the pipeline group the pipeline belongs to.
     pub pipeline_group_id: PipelineGroupId,
@@ -154,4 +166,11 @@ pub struct DeployedPipelineKey {
 
     /// The CPU core ID the pipeline is pinned to.
     pub core_id: CoreId,
+
+    /// Monotonic deployment generation for this logical pipeline.
+    ///
+    /// Generation `0` is the initial startup deployment. Higher generations are
+    /// created by live reconfiguration rollouts.
+    #[serde(default)]
+    pub deployment_generation: u64,
 }

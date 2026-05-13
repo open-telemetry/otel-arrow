@@ -88,6 +88,13 @@ async fn index() -> Response {
             .into_response();
     };
 
+    let live_logs_ws = if cfg!(feature = "live-logs-ws") {
+        "true"
+    } else {
+        "false"
+    };
+    let index_html = index_html.replace("__LIVE_LOGS_WS__", live_logs_ws);
+
     let headers = build_ui_headers(Some("text/html; charset=utf-8"));
     (headers, Html(index_html)).into_response()
 }

@@ -1,0 +1,87 @@
+# Rebuilds the comparison dashboard site taking data from the `benchmarks`
+# branch and the rest of the manifests/code from main. Pushes the rebuilt
+# `docs/compare/` back to benchmarks/ to publish similar to the existing
+# continuous/nightly benchmark publishing flow.
+name: Comparison Dashboard - Publish Site
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/comparison_dashboard/**'
+      - '!tools/comparison_dashboard/**/*.md'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: comparison-dashboard-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      # Source code (dashboard.py, manifest, suite/comparison defs) lives on
+      # main. Check it out into ./source/.
+      - name: Check out main (source)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          path: source
+
+      # The benchmarks branch holds the published per-suite data and is the
+      # push target. Check it out into ./target/.
+      - name: Check out benchmarks (target)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: benchmarks
+          path: target
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: source/tools/comparison_dashboard/requirements.txt
+
+      - name: Install dashboard dependencies
+        run: pip install -r source/tools/comparison_dashboard/requirements.txt
+
+      # Build directly into the target tree: read data from
+      # target/docs/comparison_data, write site to target/docs/compare.
+      # `working-directory` is source/tools/comparison_dashboard, so paths
+      # are three levels up to reach the workflow workspace.
+      - name: Build comparison dashboard site
+        working-directory: source/tools/comparison_dashboard
+        run: |
+          python dashboard.py build \
+            --site-root ../../../target/docs \
+            --data-dir ../../../target/docs/comparison_data \
+            --compare-dir ../../../target/docs/compare
+
+      - name: Commit and push to benchmarks
+        working-directory: target
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Stage both the regenerated site shell and any derived
+          # data.js / suite.yaml files that `build` writes alongside the
+          # raw per-suite data.
+          git add docs/compare docs/comparison_data
+
+          if git diff --cached --quiet; then
+            echo "No site changes; skipping push."
+            exit 0
+          fi
+
+          git commit -m "auto: rebuild comparison dashboard site"
+          git push origin benchmarks

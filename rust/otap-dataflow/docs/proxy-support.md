@@ -1,5 +1,7 @@
 # HTTP Proxy Support for OTLP/OTAP Exporters
 
+<!-- markdownlint-disable MD013 -->
+
 ## Overview
 
 This document describes the HTTP CONNECT proxy tunneling implementation for OTLP
@@ -54,7 +56,7 @@ If the proxy URL is `https://...`, the exporter first establishes TLS to the
 proxy, then sends CONNECT over that TLS channel:
 
 > Note: `https://` proxy transport requires building with the
-> `experimental-tls` feature.
+> built-in TLS support.
 
 ```text
 +-----------+                                          +-----------+
@@ -136,7 +138,7 @@ export NO_PROXY=localhost,127.0.0.1,*.internal,192.168.0.0/16
 `HTTPS_PROXY` (and `proxy.https_proxy` in YAML) may be either:
 
 - `http://...` for plaintext exporter-to-proxy transport
-- `https://...` for TLS exporter-to-proxy transport (requires `experimental-tls`)
+- `https://...` for TLS exporter-to-proxy transport
 
 **Note**: Variable names are case-insensitive. Both `HTTP_PROXY` and
 `http_proxy` are recognized.
@@ -145,11 +147,8 @@ export NO_PROXY=localhost,127.0.0.1,*.internal,192.168.0.0/16
 
 Explicit proxy configuration in YAML overrides environment variables:
 
-`proxy.tls` and `https://` proxy URLs require building with the
-`experimental-tls` feature.
-`proxy.tls` is only used for `https://` proxy URLs; with `http://` proxy URLs it
-is ignored. In non-`experimental-tls` builds, `proxy.tls` is an unknown field
-and configuration deserialization fails (due to `deny_unknown_fields`).
+`proxy.tls` is only used with `https://` proxy URLs.
+With `http://` proxy URLs, `proxy.tls` is ignored.
 
 ```yaml
 grpc_client:

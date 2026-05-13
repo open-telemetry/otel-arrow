@@ -30,6 +30,7 @@ use otap_df_engine::{ConsumerEffectHandlerExtension, MessageSourceLocalEffectHan
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::OtlpProtoBytes;
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::proto::opentelemetry::{
     logs::v1::LogsData,
     metrics::v1::{MetricsData, metric::Data},
@@ -336,7 +337,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                 }
 
                 let (_context, payload) = pdata.into_parts();
-                let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
+                let otlp_bytes: OtlpProtoBytes = payload.try_into_with_default()?;
 
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
@@ -608,7 +609,7 @@ mod tests {
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
-                // check the the processor has received the expected number of messages
+                // check the processor has received the expected number of messages
                 assert!(reader.contains("Received 1 resource metrics"));
                 assert!(reader.contains("Received 1 metrics"));
                 assert!(reader.contains("Received 1 data points"));
@@ -956,7 +957,7 @@ mod tests {
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
-                // check the the processor has received the expected number of messages
+                // check the processor has received the expected number of messages
                 assert!(!reader.contains("Received 1 resource metrics"));
                 assert!(!reader.contains("Received 1 metrics"));
                 assert!(!reader.contains("Received 1 data points"));
@@ -1015,7 +1016,7 @@ mod tests {
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
-                // check the the processor has received the expected number of messages
+                // check the processor has received the expected number of messages
                 assert!(reader.contains("Received 1 resource metrics"));
                 assert!(reader.contains("Received 1 metrics"));
                 assert!(reader.contains("Received 1 data points"));
@@ -1074,7 +1075,7 @@ mod tests {
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
-                // check the the processor has received the expected number of messages
+                // check the processor has received the expected number of messages
                 assert!(!reader.contains("Received 1 resource metrics"));
                 assert!(!reader.contains("Received 1 metrics"));
                 assert!(!reader.contains("Received 1 data points"));
@@ -1099,7 +1100,7 @@ mod tests {
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
-                // check the the processor has received the expected number of messages
+                // check the processor has received the expected number of messages
                 assert!(reader.contains("Received 1 resource metrics"));
                 assert!(reader.contains("Received 1 metrics"));
                 assert!(reader.contains("Received 1 data points"));
@@ -1128,7 +1129,7 @@ mod tests {
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
-                // check the the processor has received the expected number of messages
+                // check the processor has received the expected number of messages
                 assert!(reader.contains("Received 1 resource metrics"));
                 assert!(reader.contains("Received 1 metrics"));
                 assert!(reader.contains("Received 1 data points"));

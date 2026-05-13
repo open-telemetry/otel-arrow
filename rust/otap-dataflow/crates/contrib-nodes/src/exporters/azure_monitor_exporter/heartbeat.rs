@@ -7,7 +7,6 @@ use super::client::AZURE_MONITOR_SOURCE_RESOURCEID_HEADER;
 use super::config::{ApiConfig, HeartbeatOverrides};
 use super::error::Error;
 use chrono::Utc;
-use otap_df_telemetry::otel_warn;
 use reqwest::{
     Client,
     header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue},
@@ -222,12 +221,6 @@ impl Heartbeat {
 
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-
-        otel_warn!(
-            "azure_monitor_exporter.heartbeat.error",
-            status = status.as_u16(),
-            message = %body
-        );
 
         match status.as_u16() {
             401 => Err(Error::unauthorized(body)),
@@ -649,12 +642,22 @@ mod tests {
         }
     }
 
+    /// Construct a `Heartbeat` for tests. `Heartbeat::new` builds a reqwest
+    /// `Client`; on platforms where reqwest uses rustls (e.g. Linux) that
+    /// requires a process-wide `CryptoProvider` to be installed, otherwise
+    /// the build panics with "No provider set". macOS uses SecureTransport
+    /// and is unaffected, but we install the provider unconditionally so the
+    /// tests behave the same everywhere.
+    fn build_test_heartbeat(overrides: &HeartbeatOverrides) -> Heartbeat {
+        otap_df_otap::crypto::ensure_crypto_provider();
+        Heartbeat::new(&test_api_config(), overrides).unwrap()
+    }
+
     #[test]
     fn test_new_with_no_overrides_uses_defaults() {
-        let config = test_api_config();
         let overrides = HeartbeatOverrides::default();
 
-        let hb = Heartbeat::new(&config, &overrides).unwrap();
+        let hb = build_test_heartbeat(&overrides);
 
         // All fields should be auto-detected (non-empty)
         assert!(!hb.heartbeat_row.computer.is_empty());
@@ -667,7 +670,6 @@ mod tests {
 
     #[test]
     fn test_new_with_all_overrides() {
-        let config = test_api_config();
         let overrides = HeartbeatOverrides {
             version: Some("99.0.0-custom".to_string()),
             computer: Some("my-host".to_string()),
@@ -677,7 +679,7 @@ mod tests {
             os_minor_version: Some("7".to_string()),
         };
 
-        let hb = Heartbeat::new(&config, &overrides).unwrap();
+        let hb = build_test_heartbeat(&overrides);
 
         assert_eq!(hb.heartbeat_row.version, "99.0.0-custom");
         assert_eq!(hb.heartbeat_row.computer, "my-host");
@@ -689,7 +691,6 @@ mod tests {
 
     #[test]
     fn test_new_with_partial_overrides() {
-        let config = test_api_config();
         let overrides = HeartbeatOverrides {
             version: Some("2.0.0".to_string()),
             computer: Some("override-host".to_string()),
@@ -699,7 +700,7 @@ mod tests {
             os_minor_version: None,
         };
 
-        let hb = Heartbeat::new(&config, &overrides).unwrap();
+        let hb = build_test_heartbeat(&overrides);
 
         // Overridden fields
         assert_eq!(hb.heartbeat_row.version, "2.0.0");
@@ -714,7 +715,6 @@ mod tests {
 
     #[test]
     fn test_new_overrides_appear_in_serialized_payload() {
-        let config = test_api_config();
         let overrides = HeartbeatOverrides {
             version: Some("payload-test-1.0".to_string()),
             computer: Some("payload-host".to_string()),
@@ -724,7 +724,7 @@ mod tests {
             os_minor_version: None,
         };
 
-        let hb = Heartbeat::new(&config, &overrides).unwrap();
+        let hb = build_test_heartbeat(&overrides);
         let payload = serde_json::json!([hb.heartbeat_row]);
         let row = &payload[0];
 
@@ -734,10 +734,9 @@ mod tests {
 
     #[test]
     fn test_new_builds_correct_endpoint() {
-        let config = test_api_config();
         let overrides = HeartbeatOverrides::default();
 
-        let hb = Heartbeat::new(&config, &overrides).unwrap();
+        let hb = build_test_heartbeat(&overrides);
 
         assert_eq!(
             hb.endpoint,

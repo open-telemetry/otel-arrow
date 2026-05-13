@@ -342,6 +342,14 @@ impl<T> Receiver<T> {
         let state = self.channel.state.borrow();
         state.buffer.is_empty()
     }
+
+    /// Checks whether the channel has been closed and will accept no further
+    /// sends.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        let state = self.channel.state.borrow();
+        state.is_closed
+    }
 }
 
 struct SendFuture<T> {

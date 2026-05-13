@@ -6,7 +6,7 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
 /// Pdata-oriented metrics for the OTAP FilterProcessor
-#[metric_set(name = "filter.processor.pdata.metrics")]
+#[metric_set(name = "processor.filter.pdata")]
 #[derive(Debug, Default, Clone)]
 pub struct FilterPdataMetrics {
     /// Number of log signals consumed

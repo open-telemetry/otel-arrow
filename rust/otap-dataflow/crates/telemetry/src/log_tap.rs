@@ -10,6 +10,15 @@ use std::collections::VecDeque;
 use std::mem::size_of;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::broadcast;
+
+/// Capacity of the per-handle subscriber broadcast channel.
+///
+/// When a subscriber falls more than this many events behind the producer,
+/// the oldest unread events are dropped for that subscriber and a `Lagged`
+/// error is returned on the next receive.  The sender (i.e., the `record()`
+/// hot-path) is never blocked regardless of subscriber speed.
+const SUBSCRIBER_CHANNEL_CAPACITY: usize = 512;
 
 /// Shared counter for logs dropped before they reached the retained log sink.
 #[derive(Clone, Debug, Default)]
@@ -65,12 +74,16 @@ impl LogRetention {
         }
     }
 
-    fn push(&mut self, event: LogEvent) {
+    fn next_seq(&mut self) -> u64 {
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
-        let estimated_bytes = estimate_event_size(&event);
+        seq
+    }
+
+    /// Push a new retained log event into the ring buffer.
+    fn push(&mut self, retained: RetainedLogEvent, estimated_bytes: usize) {
         let slot = RetainedLogSlot {
-            event: RetainedLogEvent { seq, event },
+            event: retained,
             estimated_bytes,
         };
         self.retained_bytes = self.retained_bytes.saturating_add(slot.estimated_bytes);
@@ -120,22 +133,62 @@ pub struct LogQueryResult {
 }
 
 /// Shared query/update handle for the retained internal log ring buffer.
+///
+/// Cloning the handle is cheap: all clones share the same ring buffer,
+/// drop counter, and subscriber broadcast channel.
 #[derive(Clone, Debug)]
 pub struct InternalLogTapHandle {
     state: Arc<RwLock<LogRetention>>,
     dropped_on_ingest: InternalLogTapDropCounter,
+    /// Broadcast sender for live log events.  Each call to `subscribe()`
+    /// returns a new receiver.  Sending never blocks; lagging receivers
+    /// automatically drop the oldest buffered events.
+    subscribers: broadcast::Sender<Arc<RetainedLogEvent>>,
 }
 
 impl InternalLogTapHandle {
-    /// Record a structured internal log event in retention.
+    /// Record a structured internal log event in retention and fan it out
+    /// non-blockingly to any active subscribers.
+    ///
+    /// The broadcast send is performed **while the write lock is still held**
+    /// so that concurrent `record()` callers cannot interleave their sends and
+    /// invert the monotonic seq order visible to subscribers.
+    /// `broadcast::send()` is non-blocking (it never waits for receivers), so
+    /// holding the lock is safe.
     pub fn record(&self, event: LogEvent) {
-        self.state.write().push(event);
+        let mut state = self.state.write();
+        let seq = state.next_seq();
+        let estimated_bytes = estimate_event_size(&event);
+        // Skip the send when nobody is listening (benign race: a subscriber
+        // that connects between the check and the send picks up the event
+        // from the snapshot query instead).
+        if self.subscribers.receiver_count() > 0 {
+            let retained = RetainedLogEvent { seq, event };
+            state.push(retained.clone(), estimated_bytes);
+            let _ = self.subscribers.send(Arc::new(retained));
+        } else {
+            state.push(RetainedLogEvent { seq, event }, estimated_bytes);
+        }
+        // Write lock released here — after the send, preserving seq order.
     }
 
     /// Returns a counter that tracks logs dropped before retention.
     #[must_use]
     pub fn ingest_drop_counter(&self) -> InternalLogTapDropCounter {
         self.dropped_on_ingest.clone()
+    }
+
+    /// Subscribe to the live stream of newly recorded log events.
+    ///
+    /// Returns a broadcast receiver that delivers each `RetainedLogEvent` as
+    /// an `Arc` immediately after `record()` appends it to the ring buffer.
+    /// The receiver is bounded: if a subscriber falls more than
+    /// `SUBSCRIBER_CHANNEL_CAPACITY` events behind, the next `recv()` returns
+    /// `Err(broadcast::error::RecvError::Lagged(n))` indicating how many
+    /// events were skipped.  The producer is never slowed by slow subscribers.
+    #[must_use]
+    pub fn subscribe(&self) -> broadcast::Receiver<Arc<RetainedLogEvent>> {
+        self.subscribers.subscribe()
     }
 
     /// Query retained logs using cursor-based semantics.
@@ -188,12 +241,14 @@ impl InternalLogTapHandle {
 /// Create a new internal log tap from configuration.
 #[must_use]
 pub fn build(config: &InternalLogTapConfig) -> InternalLogTapHandle {
+    let (subscribers, _) = broadcast::channel(SUBSCRIBER_CHANNEL_CAPACITY);
     InternalLogTapHandle {
         state: Arc::new(RwLock::new(LogRetention::new(
             config.max_entries,
             config.max_bytes,
         ))),
         dropped_on_ingest: InternalLogTapDropCounter::default(),
+        subscribers,
     }
 }
 
@@ -383,6 +438,111 @@ mod tests {
         });
         assert!(result.logs.is_empty());
         assert_eq!(result.next_seq, 4);
+    }
+
+    #[tokio::test]
+    async fn subscriber_receives_recorded_events() {
+        let config = InternalLogTapConfig {
+            enabled: true,
+            max_entries: 10,
+            max_bytes: usize::MAX,
+        };
+        let handle = build(&config);
+        let mut rx = handle.subscribe();
+
+        handle.record(event_with_message("hello"));
+        handle.record(event_with_message("world"));
+
+        let e1 = rx.recv().await.expect("first event");
+        let e2 = rx.recv().await.expect("second event");
+        assert_eq!(e1.seq, 1);
+        assert_eq!(e2.seq, 2);
+    }
+
+    #[tokio::test]
+    async fn subscriber_receives_lagged_error_when_too_slow() {
+        let config = InternalLogTapConfig {
+            enabled: true,
+            max_entries: 1024,
+            max_bytes: usize::MAX,
+        };
+        let handle = build(&config);
+        // Subscribe but don't read.
+        let mut rx = handle.subscribe();
+
+        // Overflow the broadcast channel capacity (SUBSCRIBER_CHANNEL_CAPACITY = 512).
+        for i in 0..=512u32 {
+            handle.record(event_with_message(&i.to_string()));
+        }
+
+        // The receiver should get a Lagged error rather than blocking the producer.
+        let result = rx.recv().await;
+        assert!(
+            matches!(result, Err(broadcast::error::RecvError::Lagged(_))),
+            "expected Lagged error, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn subscriber_does_not_receive_events_recorded_before_subscribe() {
+        let config = InternalLogTapConfig {
+            enabled: true,
+            max_entries: 10,
+            max_bytes: usize::MAX,
+        };
+        let handle = build(&config);
+
+        handle.record(event_with_message("before"));
+        // Subscribe after the first event.
+        let mut rx = handle.subscribe();
+        handle.record(event_with_message("after"));
+
+        let entry = rx.recv().await.expect("second event");
+        assert_eq!(entry.seq, 2);
+    }
+
+    #[tokio::test]
+    async fn subscriber_receives_events_in_seq_order_under_concurrency() {
+        // Regression test: seq is assigned under the write lock AND the
+        // broadcast send happens while the lock is still held, so concurrent
+        // record() callers cannot invert the order visible to subscribers.
+        let config = InternalLogTapConfig {
+            enabled: true,
+            max_entries: 200,
+            max_bytes: usize::MAX,
+        };
+        let handle = build(&config);
+        let mut rx = handle.subscribe();
+
+        const N: usize = 50;
+        // Spawn many concurrent tasks that each record one event.
+        let tasks: Vec<_> = (0..N)
+            .map(|i| {
+                let h = handle.clone();
+                tokio::spawn(async move {
+                    h.record(event_with_message(&i.to_string()));
+                })
+            })
+            .collect();
+        for t in tasks {
+            t.await.expect("task panicked");
+        }
+
+        let mut seqs = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            seqs.push(e.seq);
+        }
+
+        assert_eq!(seqs.len(), N, "expected {N} events, got {}", seqs.len());
+        // Seqs must be strictly increasing — no inversions allowed.
+        for w in seqs.windows(2) {
+            assert!(
+                w[0] < w[1],
+                "out-of-order delivery: seq {} before {}",
+                w[0],
+                w[1]
+            );
+        }
     }
 
     #[test]

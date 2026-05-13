@@ -1415,7 +1415,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_logs_greedy_all_offset() {
-        // Checking scenario where we skip all compaction becuase 
+        // Checking scenario where we skip all compaction because 
         // all batches have gaps (span > len) but sum(span) fits
         // in U16 range. Every batch qualifies for the offset fast-path.
         //

@@ -96,10 +96,8 @@ impl FieldRanges for ResourceSpansFieldRanges {
             match field_num {
                 RESOURCE_SPANS_RESOURCE => self.resource.set(Some(range)),
                 RESOURCE_SPANS_SCHEMA_URL => self.schema_url.set(Some(range)),
-                RESOURCE_SPANS_SCOPE_SPANS => {
-                    if self.first_scope_spans.get().is_none() {
-                        self.first_scope_spans.set(Some(range));
-                    }
+                RESOURCE_SPANS_SCOPE_SPANS if self.first_scope_spans.get().is_none() => {
+                    self.first_scope_spans.set(Some(range));
                 }
                 _ => { /* ignore  */ }
             }
@@ -149,10 +147,8 @@ impl FieldRanges for ScopeSpansFieldRanges {
             match field_num {
                 SCOPE_SPANS_SCOPE => self.scope.set(Some(range)),
                 SCOPE_SPANS_SCHEMA_URL => self.schema_url.set(Some(range)),
-                SCOPE_SPANS_SPANS => {
-                    if self.first_span.get().is_none() {
-                        self.first_span.set(Some(range));
-                    }
+                SCOPE_SPANS_SPANS if self.first_span.get().is_none() => {
+                    self.first_span.set(Some(range));
                 }
                 _ => { /* ignore  */ }
             }
@@ -291,25 +287,17 @@ impl FieldRanges for SpanEventFieldRanges {
         };
 
         match field_num {
-            SPAN_EVENT_TIME_UNIX_NANO => {
-                if wire_type == wire_types::FIXED64 {
-                    self.time_unix_nano.set(Some(range))
-                }
+            SPAN_EVENT_TIME_UNIX_NANO if wire_type == wire_types::FIXED64 => {
+                self.time_unix_nano.set(Some(range))
             }
-            SPAN_EVENT_NAME => {
-                if wire_type == wire_types::LEN {
-                    self.name.set(Some(range))
-                }
+            SPAN_EVENT_NAME if wire_type == wire_types::LEN => self.name.set(Some(range)),
+            SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS if wire_type == wire_types::VARINT => {
+                self.dropped_attributes_count.set(Some(range))
             }
-            SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS => {
-                if wire_type == wire_types::VARINT {
-                    self.dropped_attributes_count.set(Some(range))
-                }
-            }
-            SPAN_EVENT_ATTRIBUTES => {
-                if self.first_attribute.get().is_none() && wire_type == wire_types::LEN {
-                    self.first_attribute.set(Some(range))
-                }
+            SPAN_EVENT_ATTRIBUTES
+                if self.first_attribute.get().is_none() && wire_type == wire_types::LEN =>
+            {
+                self.first_attribute.set(Some(range))
             }
             _ => { /* ignore */ }
         }
@@ -364,35 +352,19 @@ impl FieldRanges for SpanLinkFieldRanges {
         };
 
         match field_num {
-            SPAN_LINK_TRACE_ID => {
-                if wire_type == wire_types::LEN {
-                    self.trace_id.set(Some(range))
-                }
+            SPAN_LINK_TRACE_ID if wire_type == wire_types::LEN => self.trace_id.set(Some(range)),
+            SPAN_LINK_SPAN_ID if wire_type == wire_types::LEN => self.span_id.set(Some(range)),
+            SPAN_LINK_TRACE_STATE if wire_type == wire_types::LEN => {
+                self.trace_state.set(Some(range))
             }
-            SPAN_LINK_SPAN_ID => {
-                if wire_type == wire_types::LEN {
-                    self.span_id.set(Some(range))
-                }
+            SPAN_LINK_DROPPED_ATTRIBUTES_COUNT if wire_type == wire_types::VARINT => {
+                self.dropped_attributes_count.set(Some(range))
             }
-            SPAN_LINK_TRACE_STATE => {
-                if wire_type == wire_types::LEN {
-                    self.trace_state.set(Some(range))
-                }
-            }
-            SPAN_LINK_DROPPED_ATTRIBUTES_COUNT => {
-                if wire_type == wire_types::VARINT {
-                    self.dropped_attributes_count.set(Some(range))
-                }
-            }
-            SPAN_LINK_FLAGS => {
-                if wire_type == wire_types::FIXED32 {
-                    self.flags.set(Some(range))
-                }
-            }
-            SPAN_LINK_ATTRIBUTES => {
-                if self.first_attribute.get().is_none() && wire_type == wire_types::LEN {
-                    self.first_attribute.set(Some(range))
-                }
+            SPAN_LINK_FLAGS if wire_type == wire_types::FIXED32 => self.flags.set(Some(range)),
+            SPAN_LINK_ATTRIBUTES
+                if self.first_attribute.get().is_none() && wire_type == wire_types::LEN =>
+            {
+                self.first_attribute.set(Some(range))
             }
             _ => { /* ignore */ }
         }
@@ -434,16 +406,8 @@ impl FieldRanges for SpanStatusFieldRanges {
         };
 
         match field_num {
-            SPAN_STATUS_MESSAGE => {
-                if wire_type == wire_types::LEN {
-                    self.message.set(Some(range))
-                }
-            }
-            SPAN_STATUS_CODE => {
-                if wire_type == wire_types::VARINT {
-                    self.code.set(Some(range))
-                }
-            }
+            SPAN_STATUS_MESSAGE if wire_type == wire_types::LEN => self.message.set(Some(range)),
+            SPAN_STATUS_CODE if wire_type == wire_types::VARINT => self.code.set(Some(range)),
             _ => { /* ignore */ }
         }
     }

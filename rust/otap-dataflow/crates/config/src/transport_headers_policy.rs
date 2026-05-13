@@ -294,6 +294,16 @@ impl HeaderPropagationPolicy {
         Self { default, overrides }
     }
 
+    /// Validate the propagation policy configuration.
+    ///
+    /// Currently validates the default selector shape. This is the single
+    /// entry-point that both pipeline-level and node-level validation use so
+    /// that invalid selectors cannot be silently accepted in one path while
+    /// being rejected in another.
+    pub fn validate(&self) -> Result<(), String> {
+        self.default.selector.validate()
+    }
+
     /// Returns an iterator over headers that should be propagated on
     /// egress. Each [`PropagatedHeader`] borrows from the captured
     /// headers
@@ -340,13 +350,7 @@ impl HeaderPropagationPolicy {
         }
 
         // Check whether the header passes the default selector.
-        let selected = match &self.default.selector {
-            PropagationSelector::AllCaptured => true,
-            PropagationSelector::None => false,
-            PropagationSelector::Named(names) => {
-                names.iter().any(|n| header.name.eq_ignore_ascii_case(n))
-            }
-        };
+        let selected = self.default.selector.selects(&header.name);
 
         if selected {
             (self.default.action, self.default.name)
@@ -377,15 +381,61 @@ pub struct PropagationDefault {
 /// Selects which captured headers are candidates for propagation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum PropagationSelector {
+pub enum PropagationSelectorType {
     /// Propagate all captured headers (subject to overrides).
     AllCaptured,
     /// Do not propagate any captured headers by default (overrides may
     /// still select specific headers).
     #[default]
     None,
-    /// Propagate only headers whose stored names appear in this list.
-    Named(Vec<String>),
+    /// Propagate only headers whose stored names appear in the `named` list.
+    Named,
+}
+
+/// Selects which captured headers are candidates for propagation.
+///
+/// The `type` field selects the strategy. When `type` is `named`,
+/// the `named` field must contain the list of header names to propagate.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PropagationSelector {
+    /// The propagation selection strategy to use.
+    #[serde(rename = "type", default)]
+    pub selector_type: PropagationSelectorType,
+
+    /// List of header names to propagate. Required when `type` is `named`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub named: Option<Vec<String>>,
+}
+impl PropagationSelector {
+    /// Validate the supplied configuration.
+    pub fn validate(&self) -> Result<(), String> {
+        match (&self.selector_type, &self.named) {
+            (PropagationSelectorType::Named, None) => {
+                Err("'named' list is required when type is 'named'".into())
+            }
+            (PropagationSelectorType::Named, Some(names)) if names.is_empty() => {
+                Err("'named' list must not be empty when type is 'named'".into())
+            }
+            (PropagationSelectorType::AllCaptured | PropagationSelectorType::None, Some(_)) => {
+                Err("'named' must not be set when type is not 'named'".into())
+            }
+            _ => Ok(()),
+        }
+    }
+    /// Returns true if the given header name is selected for propagation.
+    #[must_use]
+    pub fn selects(&self, header_name: &str) -> bool {
+        match &self.selector_type {
+            PropagationSelectorType::AllCaptured => true,
+            PropagationSelectorType::None => false,
+            PropagationSelectorType::Named => self
+                .named
+                .as_ref()
+                .map(|names| names.iter().any(|n| header_name.eq_ignore_ascii_case(n)))
+                .unwrap_or(false),
+        }
+    }
 }
 
 /// Action to take for a header during propagation.
@@ -462,7 +512,10 @@ mod tests {
     #[test]
     fn default_propagation_policy() {
         let policy = HeaderPropagationPolicy::default();
-        assert_eq!(policy.default.selector, PropagationSelector::None);
+        assert_eq!(
+            policy.default.selector.selector_type,
+            PropagationSelectorType::None
+        );
         assert_eq!(policy.default.action, PropagationAction::Propagate);
         assert_eq!(policy.default.name, NameStrategy::Preserve);
         assert_eq!(policy.default.on_error, ErrorAction::Drop);
@@ -502,7 +555,8 @@ headers:
     fn propagation_policy_serde_roundtrip() {
         let yaml = r#"
 default:
-  selector: all_captured
+  selector: 
+    type: all_captured
   action: propagate
   name: preserve
   on_error: drop
@@ -535,7 +589,8 @@ header_capture:
       store_as: tenant_id
 header_propagation:
   default:
-    selector: all_captured
+    selector:
+        type: all_captured
   overrides:
     - match:
         stored_names: ["authorization"]
@@ -548,14 +603,115 @@ header_propagation:
 
     #[test]
     fn selector_named_variant() {
-        let yaml = r#"!named
-- tenant_id
-- request_id
+        let yaml = r#"!
+type: named
+named:
+    - tenant_id
+    - request_id
 "#;
         let selector: PropagationSelector = serde_yaml::from_str(yaml).expect("parse");
+        assert_eq!(selector.selector_type, PropagationSelectorType::Named);
         assert_eq!(
-            selector,
-            PropagationSelector::Named(vec!["tenant_id".to_string(), "request_id".to_string()])
+            selector.named,
+            Some(vec!["tenant_id".to_string(), "request_id".to_string()])
         );
+    }
+
+    #[test]
+    fn selector_validate_all_captured_valid() {
+        let selector = PropagationSelector {
+            selector_type: PropagationSelectorType::AllCaptured,
+            named: None,
+        };
+        assert!(selector.validate().is_ok());
+    }
+
+    #[test]
+    fn selector_validate_none_valid() {
+        let selector = PropagationSelector {
+            selector_type: PropagationSelectorType::None,
+            named: None,
+        };
+        assert!(selector.validate().is_ok());
+    }
+
+    #[test]
+    fn selector_validate_named_valid() {
+        let selector = PropagationSelector {
+            selector_type: PropagationSelectorType::Named,
+            named: Some(vec!["tenant_id".to_string()]),
+        };
+        assert!(selector.validate().is_ok());
+    }
+
+    #[test]
+    fn selector_validate_named_missing_list() {
+        let selector = PropagationSelector {
+            selector_type: PropagationSelectorType::Named,
+            named: None,
+        };
+        let err = selector.validate().unwrap_err();
+        assert!(err.contains("'named' list is required"));
+    }
+
+    #[test]
+    fn selector_validate_named_empty_list() {
+        let selector = PropagationSelector {
+            selector_type: PropagationSelectorType::Named,
+            named: Some(vec![]),
+        };
+        let err = selector.validate().unwrap_err();
+        assert!(err.contains("must not be empty"));
+    }
+
+    #[test]
+    fn selector_validate_all_captured_with_named_field() {
+        let selector = PropagationSelector {
+            selector_type: PropagationSelectorType::AllCaptured,
+            named: Some(vec!["tenant_id".to_string()]),
+        };
+        let err = selector.validate().unwrap_err();
+        assert!(err.contains("'named' must not be set"));
+    }
+
+    #[test]
+    fn selector_validate_none_with_named_field() {
+        let selector = PropagationSelector {
+            selector_type: PropagationSelectorType::None,
+            named: Some(vec!["tenant_id".to_string()]),
+        };
+        let err = selector.validate().unwrap_err();
+        assert!(err.contains("'named' must not be set"));
+    }
+
+    #[test]
+    fn propagation_policy_validate_delegates_to_selector() {
+        let policy = HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::Named,
+                    named: None,
+                },
+                ..Default::default()
+            },
+            vec![],
+        );
+        let err = policy.validate().unwrap_err();
+        assert!(err.contains("'named' list is required"));
+    }
+
+    #[test]
+    fn propagation_policy_validate_valid() {
+        let policy = HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
+                ..Default::default()
+            },
+            vec![],
+        );
+        assert!(policy.validate().is_ok());
     }
 }

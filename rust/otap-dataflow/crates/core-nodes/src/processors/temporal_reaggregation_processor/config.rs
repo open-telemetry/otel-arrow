@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_PERIOD_SECONDS: u64 = 60;
 const MIN_PERIOD_MILLIS: u64 = 100;
 const MIN_INBOUND_REQUEST_LIMIT: usize = 1;
-const MIN_OUTBOUND_REQUEST_LIMIT: usize = 2;
+const MIN_OUTBOUND_REQUEST_LIMIT: usize = 3;
 
 /// Configuration for the temporal reaggregation processor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,12 +145,18 @@ mod tests {
 
     #[test]
     fn test_validate_minimum_outbound_request_limit() {
-        // A value of 1 is below MIN_OUTBOUND_REQUEST_LIMIT (2) and should be rejected.
-        let reject_below_min = Config {
+        // Values below MIN_OUTBOUND_REQUEST_LIMIT (3) should be rejected.
+        let reject_1 = Config {
             outbound_request_limit: NonZeroUsize::new(1).unwrap(),
             ..Default::default()
         };
-        assert!(reject_below_min.validate().is_err());
+        assert!(reject_1.validate().is_err());
+
+        let reject_2 = Config {
+            outbound_request_limit: NonZeroUsize::new(2).unwrap(),
+            ..Default::default()
+        };
+        assert!(reject_2.validate().is_err());
 
         // The exact minimum should be accepted.
         let accept_min = Config {

@@ -49,11 +49,12 @@ use otap_df_engine::{
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
 use otap_df_otap::pdata::{Context, OtapPdata};
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::{
     OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, error::Error as PDataError,
     otap::batching::make_item_batches, otlp::batching::make_bytes_batches,
 };
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::{Counter, Mmsc};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
@@ -410,8 +411,8 @@ struct BatchContext {
 struct BatchPortion {
     /// The number of these matches Signalbuffer.inbound[inkey]
     inkey: Option<SlotKey>,
-    /// Number of items
-    items: usize,
+    /// Weight of this portion in the active sizer's unit.
+    weight: usize,
 }
 
 struct Inputs<T: OtapPayloadHelpers> {
@@ -421,8 +422,8 @@ struct Inputs<T: OtapPayloadHelpers> {
     /// Waiter context
     context: Vec<BatchPortion>,
 
-    /// A count defined by num_items(), number of spans, log records, or metric data points.
-    items: usize,
+    /// Total weight across all pending portions, in the active sizer's unit.
+    weight: usize,
 }
 
 struct MultiContext {
@@ -446,6 +447,9 @@ struct SignalBuffer<T: OtapPayloadHelpers> {
     /// Arrival time of the oldest data. This is reset whenever the number in the
     /// pending Inputs becomes non-empty.
     arrival: Option<Instant>,
+
+    /// Whether the local scheduler currently has a live wakeup for this signal.
+    wakeup_armed: bool,
 }
 
 /// Local (!Send) batch processor
@@ -492,16 +496,6 @@ enum FlushReason {
 #[metric_set(name = "otap.processor.batch")]
 #[derive(Debug, Default, Clone)]
 pub struct BatchProcessorMetrics {
-    /// Total items consumed for logs signal
-    #[metric(unit = "{item}")]
-    consumed_items_logs: Counter<u64>,
-    /// Total items consumed for metrics signal
-    #[metric(unit = "{item}")]
-    consumed_items_metrics: Counter<u64>,
-    /// Total items consumed for traces signal
-    #[metric(unit = "{item}")]
-    consumed_items_traces: Counter<u64>,
-
     /// Total batches consumed for logs signal
     #[metric(unit = "{item}")]
     consumed_batches_logs: Counter<u64>,
@@ -511,16 +505,6 @@ pub struct BatchProcessorMetrics {
     /// Total batches consumed for traces signal
     #[metric(unit = "{item}")]
     consumed_batches_traces: Counter<u64>,
-
-    /// Total items produced for logs signal
-    #[metric(unit = "{item}")]
-    produced_items_logs: Counter<u64>,
-    /// Total items produced for metrics signal
-    #[metric(unit = "{item}")]
-    produced_items_metrics: Counter<u64>,
-    /// Total items produced for traces signal
-    #[metric(unit = "{item}")]
-    produced_items_traces: Counter<u64>,
 
     /// Total batches produced for logs signal
     #[metric(unit = "{item}")]
@@ -539,15 +523,31 @@ pub struct BatchProcessorMetrics {
     #[metric(unit = "{flush}")]
     flushes_timer: Counter<u64>,
 
+    /// Number of input requests pending at flush time
+    #[metric(unit = "{request}")]
+    flush_pending_requests: Mmsc,
+    /// Number of bytes pending at flush time when byte size is known
+    #[metric(unit = "By")]
+    flush_pending_bytes: Mmsc,
+    /// Time from first pending input arrival to actual flush start
+    #[metric(unit = "ns")]
+    flush_age_duration: Mmsc,
+    /// Delay between scheduled timer wakeup and actual timer flush start
+    #[metric(unit = "ns")]
+    flush_timer_lateness_duration: Mmsc,
+    /// Number of output batches emitted by each flush
+    #[metric(unit = "{batch}")]
+    flush_output_batches: Mmsc,
+    /// Number of bytes emitted by each flush when byte size is known
+    #[metric(unit = "By")]
+    flush_output_bytes: Mmsc,
+
     /// Number of messages dropped due to conversion failures
     #[metric(unit = "{msg}")]
     dropped_conversion: Counter<u64>,
     /// Number of batches for which errors encountered
     #[metric(unit = "{error}")]
     batching_errors: Counter<u64>,
-    /// Number of empty records dropped
-    #[metric(unit = "{msg}")]
-    dropped_empty_records: Counter<u64>,
     /// Number of requests nacked due to inbound slot exhaustion
     #[metric(unit = "{msg}")]
     nacked_inbound_slots: Counter<u64>,
@@ -709,30 +709,11 @@ impl BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
         request: OtapPdata,
     ) -> Result<(), EngineError> {
-        let items = request.num_items();
-
-        if items == 0 {
-            self.metrics.dropped_empty_records.inc();
-            // Note: Failure to Ack/Nack is an engine-level error.
-            effect.notify_ack(AckMsg::new(request)).await?;
-            return Ok(());
-        }
-
-        // Increment consumed_items for the appropriate signal
         let signal = request.signal_type();
         match signal {
-            SignalType::Logs => {
-                self.metrics.consumed_items_logs.add(items as u64);
-                self.metrics.consumed_batches_logs.add(1);
-            }
-            SignalType::Metrics => {
-                self.metrics.consumed_items_metrics.add(items as u64);
-                self.metrics.consumed_batches_metrics.add(1);
-            }
-            SignalType::Traces => {
-                self.metrics.consumed_items_traces.add(items as u64);
-                self.metrics.consumed_batches_traces.add(1);
-            }
+            SignalType::Logs => self.metrics.consumed_batches_logs.add(1),
+            SignalType::Metrics => self.metrics.consumed_batches_metrics.add(1),
+            SignalType::Traces => self.metrics.consumed_batches_traces.add(1),
         };
 
         let (ctx, payload) = request.into_parts();
@@ -742,12 +723,13 @@ impl BatchProcessor {
                 if let Some(mut otap_format) = self.otap_format() {
                     otap_format
                         .for_signal(signal)
-                        .accept_payload(effect, ctx, otap, items)
+                        .accept_payload(effect, ctx, otap)
                         .await?
                 } else if let Some(mut otlp_format) = self.otlp_format() {
+                    let otlp_payload = otap.try_into_with_default()?;
                     otlp_format
                         .for_signal(signal)
-                        .accept_payload(effect, ctx, otap.try_into()?, items)
+                        .accept_payload(effect, ctx, otlp_payload)
                         .await?
                 } else {
                     return Err(Self::no_active_format_error());
@@ -757,12 +739,13 @@ impl BatchProcessor {
                 if let Some(mut otlp_format) = self.otlp_format() {
                     otlp_format
                         .for_signal(signal)
-                        .accept_payload(effect, ctx, otlp, items)
+                        .accept_payload(effect, ctx, otlp)
                         .await?
                 } else if let Some(mut otap_format) = self.otap_format() {
+                    let otap_payload = otlp.try_into_with_default()?;
                     otap_format
                         .for_signal(signal)
-                        .accept_payload(effect, ctx, otlp.try_into()?, items)
+                        .accept_payload(effect, ctx, otap_payload)
                         .await?
                 } else {
                     return Err(Self::no_active_format_error());
@@ -851,8 +834,17 @@ where
         effect: &mut local::EffectHandler<OtapPdata>,
         ctx: Context,
         payload: T,
-        items: usize,
     ) -> Result<(), EngineError> {
+        let weight = self.fmtcfg.sizer.batch_size(&payload)?;
+        if weight == 0 {
+            // Note: we do not check for empty envelopes, e.g., logs
+            // requests with only a resource and no log records. We do
+            // not count these.
+            let pdata = OtapPdata::new(ctx, payload.into());
+            effect.notify_ack(AckMsg::new(pdata)).await?;
+            return Ok(());
+        }
+
         // If there are subscribers, calculate an inbound slot key.
         let inkey = if ctx.has_subscribers() {
             let slot = self
@@ -879,23 +871,29 @@ where
             None
         };
 
-        // Set the arrival time when the current input is empty.
+        // Record the arrival time when the current input is empty. Defer
+        // scheduling the wakeup until after measuring the accepted payload, so
+        // one-request size flushes do not pay set/cancel timer overhead.
         let timeout = self.config.max_batch_duration;
-        let mut arrival: Option<Instant> = None;
-        if timeout != Duration::ZERO && self.buffer.inputs.is_empty() {
-            let now = Instant::now();
-            arrival = Some(now);
-            self.buffer
-                .set_arrival(self.signal, now, timeout, effect)
-                .await?;
-        }
+        let arrival = if timeout != Duration::ZERO && self.buffer.inputs.is_empty() {
+            Some(Instant::now())
+        } else {
+            None
+        };
 
         self.buffer
             .inputs
-            .accept(payload, BatchPortion::new(inkey, items));
+            .accept(payload, BatchPortion::new(inkey, weight));
+
+        let pending_size = self.buffer.inputs.size_by(self.fmtcfg.sizer)?;
 
         // Flush based on size when the batch reaches the lower limit.
-        if timeout != Duration::ZERO && self.buffer.inputs.items < self.fmtcfg.lower_limit() {
+        if timeout != Duration::ZERO && pending_size < self.fmtcfg.lower_limit() {
+            if let Some(now) = arrival {
+                self.buffer
+                    .set_arrival(self.signal, now, timeout, effect)
+                    .await?;
+            }
             Ok(())
         } else {
             self.flush_signal_impl(
@@ -920,22 +918,51 @@ where
         now: Instant,
         reason: FlushReason,
     ) -> Result<(), EngineError> {
+        // Timer wakeups are already popped from the local scheduler before
+        // delivery. Only size/shutdown flushes need to cancel an armed timer.
+        if reason == FlushReason::Timer {
+            self.buffer.wakeup_armed = false;
+        }
+
         // If the input is empty.
         if self.buffer.inputs.is_empty() {
             return Ok(());
         }
 
-        let _ = effect.cancel_wakeup(SignalBuffer::<T>::wakeup_slot(self.signal));
+        if reason != FlushReason::Timer && self.buffer.wakeup_armed {
+            let _ = effect.cancel_wakeup(SignalBuffer::<T>::wakeup_slot(self.signal));
+            self.buffer.wakeup_armed = false;
+        }
 
         // If this is a timer-based flush and we were called too soon,
         // skip. this may happen if the batch for which the timer was set
         // flushes for size before the timer.
         if reason == FlushReason::Timer
             && self.config.max_batch_duration != Duration::ZERO
-            && now.duration_since(self.buffer.arrival.expect("timed"))
-                < self.config.max_batch_duration
+            && self
+                .buffer
+                .arrival
+                .is_some_and(|arrival| now.duration_since(arrival) < self.config.max_batch_duration)
         {
             return Ok(());
+        }
+
+        let flush_started = Instant::now();
+        self.metrics
+            .flush_pending_requests
+            .record(self.buffer.inputs.requests() as f64);
+        if let Some(bytes) = self.buffer.inputs.known_bytes() {
+            self.metrics.flush_pending_bytes.record(bytes as f64);
+        }
+        if let Some(arrival) = self.buffer.arrival {
+            self.metrics
+                .flush_age_duration
+                .record(flush_started.duration_since(arrival).as_nanos() as f64);
+        }
+        if reason == FlushReason::Timer {
+            self.metrics
+                .flush_timer_lateness_duration
+                .record(flush_started.saturating_duration_since(now).as_nanos() as f64);
         }
 
         let mut inputs = self.buffer.inputs.drain();
@@ -967,6 +994,8 @@ where
 
         // If size-triggered and we requested splitting (upper_limit is Some), re-buffer the last partial
         // output if it is smaller than the configured lower_limit. Timer/Shutdown flush everything.
+        let mut retained_partial = false;
+
         if self.config.max_batch_duration != Duration::ZERO
             && reason == FlushReason::Size
             && self.fmtcfg.max_size.is_some()
@@ -998,39 +1027,40 @@ where
                 .batch_size(&output_batches[num_output - 1])?;
 
             if last_batch_size < self.fmtcfg.lower_limit() {
-                self.buffer.take_remaining(&mut inputs, &mut output_batches);
+                self.buffer
+                    .take_remaining(self.fmtcfg.sizer, &mut inputs, &mut output_batches);
 
                 // We use the latest arrival time as the new arrival for timeout purposes.
                 self.buffer
                     .set_arrival(self.signal, now, self.config.max_batch_duration, effect)
                     .await?;
+                retained_partial = true;
             }
+        }
+
+        self.metrics
+            .flush_output_batches
+            .record(output_batches.len() as f64);
+        if let Some(bytes) = known_total_bytes(&output_batches) {
+            self.metrics.flush_output_bytes.record(bytes as f64);
         }
 
         let mut input_context = inputs.take_context();
 
         for records in output_batches {
-            let items = records.num_items();
+            // Apportion ack/nack subscribers in the active sizer's unit.
+            let weight = self.fmtcfg.sizer.batch_size(&records)?;
             let mut pdata = OtapPdata::new(Context::default(), records.into());
 
-            // Increment produced_items for the appropriate signal
             match self.signal {
-                SignalType::Logs => {
-                    self.metrics.produced_items_logs.add(items as u64);
-                    self.metrics.produced_batches_logs.add(1);
-                }
-                SignalType::Metrics => {
-                    self.metrics.produced_items_metrics.add(items as u64);
-                    self.metrics.produced_batches_metrics.add(1);
-                }
-                SignalType::Traces => {
-                    self.metrics.produced_items_traces.add(items as u64);
-                    self.metrics.produced_batches_traces.add(1);
-                }
+                SignalType::Logs => self.metrics.produced_batches_logs.add(1),
+                SignalType::Metrics => self.metrics.produced_batches_metrics.add(1),
+                SignalType::Traces => self.metrics.produced_batches_traces.add(1),
             }
 
-            // If any items require notification, get an outbound slot and subscribe.
-            if let Some(ctxs) = self.buffer.drain_context(items, &mut input_context) {
+            // If any inputs in this batch require notification, get an
+            // outbound slot and subscribe.
+            if let Some(ctxs) = self.buffer.drain_context(weight, &mut input_context) {
                 match self.buffer.outbound.allocate_with_data(ctxs) {
                     Err(ctxs) => {
                         for bp in ctxs {
@@ -1065,6 +1095,11 @@ where
             }
 
             effect.send_message_with_source_node(pdata).await?;
+        }
+
+        if !retained_partial {
+            self.buffer.arrival = None;
+            self.buffer.wakeup_armed = false;
         }
 
         Ok(())
@@ -1181,11 +1216,18 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                     }
                     NodeControlMsg::CollectTelemetry {
                         mut metrics_reporter,
-                    } => metrics_reporter.report(&mut self.metrics).map_err(|e| {
-                        EngineError::InternalError {
-                            message: e.to_string(),
-                        }
-                    }),
+                    } => {
+                        effect
+                            .report_local_scheduler_metrics(&mut metrics_reporter)
+                            .map_err(|e| EngineError::InternalError {
+                                message: e.to_string(),
+                            })?;
+                        metrics_reporter.report(&mut self.metrics).map_err(|e| {
+                            EngineError::InternalError {
+                                message: e.to_string(),
+                            }
+                        })
+                    }
                     NodeControlMsg::Wakeup { slot, when, .. } => {
                         let Some((format, signal)) = signal_from_wakeup_slot(slot) else {
                             return Ok(());
@@ -1254,7 +1296,7 @@ impl<T: OtapPayloadHelpers> Default for Inputs<T> {
         Self {
             pending: Vec::new(),
             context: Vec::new(),
-            items: 0,
+            weight: 0,
         }
     }
 }
@@ -1283,8 +1325,8 @@ where
 }
 
 impl BatchPortion {
-    const fn new(inkey: Option<SlotKey>, items: usize) -> Self {
-        Self { inkey, items }
+    const fn new(inkey: Option<SlotKey>, weight: usize) -> Self {
+        Self { inkey, weight }
     }
 }
 
@@ -1299,20 +1341,33 @@ impl<T: OtapPayloadHelpers> Inputs<T> {
         Self {
             pending: self.pending.drain(..).collect(),
             context: self.context.drain(..).collect(),
-            items: std::mem::take(&mut self.items),
+            weight: std::mem::take(&mut self.weight),
         }
     }
 
     const fn is_empty(&self) -> bool {
-        self.items == 0
+        self.weight == 0
     }
 
     const fn requests(&self) -> usize {
         self.pending.len()
     }
 
+    fn known_bytes(&self) -> Option<usize> {
+        known_total_bytes(&self.pending)
+    }
+
+    fn size_by(&self, sizer: Sizer) -> Result<usize, PDataError> {
+        match sizer {
+            Sizer::Requests => Ok(self.requests()),
+            // For Sizer::Items / Sizer::Bytes, `weight` was accumulated in
+            // the active sizer's unit at accept() time, so this is exact.
+            Sizer::Items | Sizer::Bytes => Ok(self.weight),
+        }
+    }
+
     fn accept(&mut self, batch: T, part: BatchPortion) {
-        self.items += part.items;
+        self.weight += part.weight;
         self.pending.push(batch);
         self.context.push(part);
     }
@@ -1326,6 +1381,12 @@ impl<T: OtapPayloadHelpers> Inputs<T> {
     }
 }
 
+fn known_total_bytes<T: OtapPayloadHelpers>(payloads: &[T]) -> Option<usize> {
+    payloads.iter().try_fold(0usize, |total, payload| {
+        payload.num_bytes().map(|bytes| total + bytes)
+    })
+}
+
 impl<T: OtapPayloadHelpers> SignalBuffer<T>
 where
     Inputs<T>: Default,
@@ -1337,26 +1398,32 @@ where
             inbound: SlotState::new(cfg.inbound_request_limit.get()),
             outbound: SlotState::new(cfg.outbound_request_limit.get()),
             arrival: None,
+            wakeup_armed: false,
         }
     }
 
     /// Takes the residual batch, used in case the final output is less than
     /// the lower bound. This removes the last output btach, the corresponding
     /// context, and places it back in the pending buffer as the first in line.
-    fn take_remaining(&mut self, from_inputs: &mut Inputs<T>, output_batches: &mut Vec<T>) {
+    fn take_remaining(
+        &mut self,
+        sizer: Sizer,
+        from_inputs: &mut Inputs<T>,
+        output_batches: &mut Vec<T>,
+    ) {
         // SAFETY: protected by output_batches.len() > 1.
         let remaining = output_batches.pop().expect("has last");
         let last_input = from_inputs.context.last().expect("has last");
-        let last_items = remaining.num_items();
-        let new_part = BatchPortion::new(last_input.inkey, last_items);
+        let last_weight = sizer.batch_size(&remaining).expect("known size");
+        let new_part = BatchPortion::new(last_input.inkey, last_weight);
 
-        from_inputs.items -= last_items;
+        from_inputs.weight -= last_weight;
 
         self.inputs.accept(remaining, new_part);
     }
 
     /// Using a multi-context corresponding with the input pending
-    /// data, and considering an output item count for a single output
+    /// data, and considering an output weight for a single output
     /// batch, this determines the set of (maybe partial) pending
     /// batches that correspond. When merging only (not splitting),
     /// this will return the entire set of pending contexts; when
@@ -1364,19 +1431,19 @@ where
     /// retained as first-in-line.
     fn drain_context(
         &mut self,
-        mut items: usize,
+        mut weight: usize,
         contexts: &mut MultiContext,
     ) -> Option<Vec<BatchPortion>> {
         let mut out = Vec::new();
 
-        while items > 0 && contexts.pos < contexts.inputs.len() {
+        while weight > 0 && contexts.pos < contexts.inputs.len() {
             let bp = contexts.inputs.get_mut(contexts.pos).expect("valid");
 
-            let take = bp.items.min(items);
-            bp.items -= take;
-            items -= take;
+            let take = bp.weight.min(weight);
+            bp.weight -= take;
+            weight -= take;
 
-            if bp.items == 0 {
+            if bp.weight == 0 {
                 contexts.pos += 1;
             }
 
@@ -1441,11 +1508,12 @@ where
         timeout: Duration,
         effect: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
-        self.arrival = Some(now);
-
         effect
             .set_wakeup(Self::wakeup_slot(signal), now + timeout)
-            .map(|_| ())
+            .map(|_| {
+                self.arrival = Some(now);
+                self.wakeup_armed = true;
+            })
             .map_err(|_| EngineError::ProcessorError {
                 processor: effect.processor_id(),
                 kind: ProcessorErrorKind::Other,
@@ -1553,14 +1621,15 @@ mod tests {
         (telemetry_registry, metrics_reporter, phase)
     }
 
-    /// Helper to verify consumed and produced item metrics
-    fn verify_item_metrics(
+    /// Helper to verify that batch counters were incremented to the expected
+    /// values. `expected_counts` is `(consumed_batches, produced_batches)` —
+    /// i.e. the number of input requests consumed by the processor and the
+    /// number of output batches it produced.
+    fn verify_batch_metrics(
         telemetry_registry: &TelemetryRegistryHandle,
         signal: SignalType,
-        expected_items: usize,
+        expected_counts: (usize, usize),
     ) {
-        let mut consumed_items = 0u64;
-        let mut produced_items = 0u64;
         let mut consumed_batches = 0u64;
         let mut produced_batches = 0u64;
 
@@ -1568,18 +1637,6 @@ mod tests {
             if desc.name == "otap.processor.batch" {
                 for (field, value) in iter {
                     match (signal, field.name) {
-                        (SignalType::Logs, "consumed.items.logs") => {
-                            consumed_items = value.to_u64_lossy()
-                        }
-                        (SignalType::Logs, "produced.items.logs") => {
-                            produced_items = value.to_u64_lossy()
-                        }
-                        (SignalType::Traces, "consumed.items.traces") => {
-                            consumed_items = value.to_u64_lossy()
-                        }
-                        (SignalType::Traces, "produced.items.traces") => {
-                            produced_items = value.to_u64_lossy()
-                        }
                         (SignalType::Logs, "consumed.batches.logs") => {
                             consumed_batches = value.to_u64_lossy()
                         }
@@ -1598,16 +1655,36 @@ mod tests {
             }
         });
 
+        let (expected_consumed, expected_produced) = expected_counts;
         assert_eq!(
-            consumed_items as usize, expected_items,
-            "consumed_items metric must match"
+            consumed_batches, expected_consumed as u64,
+            "consumed_batches"
         );
         assert_eq!(
-            produced_items as usize, expected_items,
-            "produced_items metric must match"
+            produced_batches, expected_produced as u64,
+            "produced_batches"
         );
-        assert!(produced_batches != 0, "produced_batches != 0");
-        assert!(consumed_batches != 0, "consumed_batches != 0");
+    }
+
+    fn mmsc_metric_count(
+        telemetry_registry: &TelemetryRegistryHandle,
+        set_name: &str,
+        metric_name: &str,
+    ) -> u64 {
+        let mut count = 0u64;
+        telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
+            if desc.name == set_name {
+                for (field, metric_value) in iter {
+                    if field.name == metric_name
+                        && let otap_df_telemetry::metrics::MetricValue::Mmsc(snapshot) =
+                            metric_value
+                    {
+                        count = snapshot.count;
+                    }
+                }
+            }
+        });
+        count
     }
 
     #[test]
@@ -1757,7 +1834,8 @@ mod tests {
             self.outputs
                 .get(i)
                 .map(|d| {
-                    let payload: OtlpProtoBytes = d.clone().payload().try_into().expect("ok");
+                    let payload: OtlpProtoBytes =
+                        d.clone().payload().try_into_with_default().expect("ok");
                     payload.try_into().expect("ok")
                 })
                 .expect("ok")
@@ -1765,7 +1843,7 @@ mod tests {
     }
 
     fn otap_pdata_to_message(data: &OtapPdata) -> OtlpProtoMessage {
-        let rec: OtapArrowRecords = data.clone().payload().try_into().unwrap();
+        let rec: OtapArrowRecords = data.clone().payload().try_into_with_default().unwrap();
         otap_to_otlp(&rec)
     }
 
@@ -1806,6 +1884,8 @@ mod tests {
         let input_item_count: usize = inputs_otlp.iter().map(|m| m.num_items()).sum();
         let num_inputs = inputs_otlp.len();
         let total_events = events.len();
+        let produced_total = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let produced_total_inner = produced_total.clone();
 
         phase
             .run_test(move |mut ctx| async move {
@@ -1977,12 +2057,16 @@ mod tests {
 
                 // Test-specific validation.
                 (verify_outputs)(&event_outputs);
+
+                // Publish the produced batch count for the validate closure.
+                produced_total_inner.store(total_outputs, std::sync::atomic::Ordering::SeqCst);
             })
             .validate(move |_| async move {
                 // TODO: Not clear why, but this sleep is necessary (probably flaky)
                 // for the NodeControlMsg::CollectTelemetry sent above to take effect.
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_item_metrics(&telemetry_registry, signal, input_item_count);
+                let produced = produced_total.load(std::sync::atomic::Ordering::SeqCst);
+                verify_batch_metrics(&telemetry_registry, signal, (num_inputs, produced));
             });
     }
 
@@ -2223,7 +2307,81 @@ mod tests {
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_item_metrics(&telemetry_registry, SignalType::Logs, 9);
+                // 3 inputs consumed; 2 batches produced (one size flush after
+                // the second input, one timer flush after the third).
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (3, 2));
+            });
+    }
+
+    /// A size flush that empties the buffer must clear timer state. Otherwise
+    /// later one-request size flushes try to cancel a wakeup that is no longer
+    /// live, which inflates scheduler cancel-miss telemetry.
+    #[test]
+    fn test_size_flush_clears_timer_state_after_full_drain() {
+        fn logs_with_count(base_id: usize, count: usize) -> LogsData {
+            let base_time = 1_000_000_000 + (base_id * 1000) as u64;
+            LogsData {
+                resource_logs: vec![ResourceLogs {
+                    scope_logs: vec![ScopeLogs {
+                        log_records: (0..count)
+                            .map(|i| LogRecord {
+                                time_unix_nano: base_time + i as u64,
+                                ..Default::default()
+                            })
+                            .collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            }
+        }
+
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 5,
+                "max_size": 10,
+                "sizer": "items",
+            },
+            "max_batch_duration": "1s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                for (index, count) in [3, 3, 6, 6].into_iter().enumerate() {
+                    let rec = encode_logs_otap_batch(&logs_with_count(index, count))
+                        .expect("encode logs");
+                    ctx.process(Message::PData(OtapPdata::new_default(rec.into())))
+                        .await
+                        .expect("process input");
+
+                    let outputs = ctx.drain_pdata().await;
+                    match index {
+                        0 => assert!(outputs.is_empty(), "first input should arm the timer"),
+                        _ => assert_eq!(outputs.len(), 1, "input {index} should size-flush"),
+                    }
+                }
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                // 4 inputs consumed; 3 size-flushed batches produced (the
+                // first input only arms the timer; each subsequent input
+                // size-flushes one batch).
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (4, 3));
+                assert_eq!(
+                    mmsc_metric_count(
+                        &telemetry_registry,
+                        "otap.processor.batch",
+                        "flush.age.duration"
+                    ),
+                    1,
+                    "only the flush of the timer-armed partial batch should use timer age"
+                );
             });
     }
 
@@ -2288,7 +2446,8 @@ mod tests {
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_item_metrics(&telemetry_registry, SignalType::Logs, 3);
+                // 1 input consumed; 1 batch produced by the real wakeup.
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
             });
     }
 
@@ -2443,7 +2602,8 @@ mod tests {
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_item_metrics(&telemetry_registry, SignalType::Logs, 3);
+                // 1 input consumed; 1 batch produced by the shutdown flush.
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
             });
     }
 
@@ -2908,6 +3068,132 @@ mod tests {
         test_split_with_nack_ordering(create_marked_logs, extract_log_markers, 3);
     }
 
+    /// OTLP min_size is byte-based. The size flush decision must compare the
+    /// configured threshold against pending bytes, not against log-record count.
+    #[test]
+    fn test_otlp_byte_min_size_triggers_size_flush() {
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "format": "otlp",
+            "otlp": {
+                "min_size": 4,
+                "sizer": "bytes",
+            },
+            "max_batch_duration": "1s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let mut datagen = DataGenerator::new(1);
+                let logs: OtlpProtoMessage = datagen.generate_logs().into();
+                let input_bytes = otlp_message_to_bytes(&logs);
+                assert!(
+                    input_bytes.num_bytes() >= 4,
+                    "generated OTLP request should exceed the byte threshold"
+                );
+
+                ctx.process(Message::PData(OtapPdata::new_default(input_bytes.into())))
+                    .await
+                    .expect("process otlp bytes");
+
+                let outputs = ctx.drain_pdata().await;
+                assert_eq!(
+                    outputs.len(),
+                    1,
+                    "byte min_size should trigger an immediate size flush"
+                );
+                assert_eq!(outputs[0].signal_format(), SignalFormat::OtlpBytes);
+
+                let output_messages: Vec<_> = outputs.iter().map(otap_pdata_to_message).collect();
+                assert_equivalent(&[logs], &output_messages);
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                // 1 input consumed; 1 batch produced by the byte-size flush.
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
+            });
+    }
+
+    /// A zero-byte OTLP request is acked immediately and never reaches the
+    /// batch buffer.
+    #[test]
+    fn test_otlp_zero_byte_request_acked_immediately() {
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "format": "otlp",
+            "otlp": {
+                "min_size": 100,
+                "sizer": "bytes",
+            },
+            "max_batch_duration": "1s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let empty = OtlpProtoBytes::ExportLogsRequest(Bytes::new());
+                ctx.process(Message::PData(OtapPdata::new_default(empty.into())))
+                    .await
+                    .expect("process empty otlp");
+
+                assert!(ctx.drain_pdata().await.is_empty(), "no batch should flush");
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 0));
+            });
+    }
+
+    /// An OTLP request that has non-zero bytes but zero log records is not
+    /// treated as empty under the bytes sizer; it flows through the batcher
+    /// like any other input.
+    #[test]
+    fn test_otlp_empty_container_passes_through_batcher() {
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "format": "otlp",
+            "otlp": {
+                "min_size": 1,
+                "sizer": "bytes",
+            },
+            "max_batch_duration": "1s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let logs = LogsData {
+                    resource_logs: vec![ResourceLogs::default()],
+                };
+                let input_bytes = otlp_message_to_bytes(&OtlpProtoMessage::Logs(logs));
+                assert!(input_bytes.num_bytes() > 0);
+
+                ctx.process(Message::PData(OtapPdata::new_default(input_bytes.into())))
+                    .await
+                    .expect("process empty-container otlp");
+
+                let outputs = ctx.drain_pdata().await;
+                assert_eq!(outputs.len(), 1, "empty container should size-flush");
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
+            });
+    }
+
     /// Test Preserve mode: this can't use the same test harness used above because it
     /// arranges mixed-format inputs.
     #[test]
@@ -2991,7 +3277,7 @@ mod tests {
 
                 assert_equivalent(&[logs1, logs2], &outputs);
 
-                // Collect telemetry for verify_item_metrics.
+                // Collect telemetry for verify_batch_metrics.
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
                     metrics_reporter,
                 }))
@@ -3000,7 +3286,9 @@ mod tests {
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_item_metrics(&telemetry_registry, SignalType::Logs, 6);
+                // 2 inputs consumed (one OTLP, one OTAP); 2 batches produced
+                // (one per format, both flushed by their respective wakeups).
+                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (2, 2));
             });
     }
 

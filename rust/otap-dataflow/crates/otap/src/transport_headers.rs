@@ -19,7 +19,7 @@ mod tests {
     use super::*;
     use otap_df_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, PropagationAction, PropagationDefault, PropagationMatch,
-        PropagationOverride, PropagationSelector,
+        PropagationOverride, PropagationSelector, PropagationSelectorType,
     };
 
     // -- Helper functions for tests ------------------------------------------
@@ -109,7 +109,10 @@ mod tests {
 
         let propagation_policy = HeaderPropagationPolicy::new(
             PropagationDefault {
-                selector: PropagationSelector::AllCaptured,
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
                 ..PropagationDefault::default()
             },
             vec![PropagationOverride {
@@ -173,7 +176,10 @@ mod tests {
 
         let propagation_policy = HeaderPropagationPolicy::new(
             PropagationDefault {
-                selector: PropagationSelector::AllCaptured,
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
                 ..PropagationDefault::default()
             },
             vec![],
@@ -207,7 +213,10 @@ mod tests {
         let headers = pdata_after.transport_headers().unwrap();
         let propagation_policy = HeaderPropagationPolicy::new(
             PropagationDefault {
-                selector: PropagationSelector::AllCaptured,
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
                 ..PropagationDefault::default()
             },
             vec![],

@@ -12,6 +12,10 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+live-logs-ws = ["axum/ws"]
+
 [dependencies]
 otap-df-admin-types = { workspace = true }
 otap-df-config = { workspace = true }

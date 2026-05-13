@@ -2,7 +2,7 @@ version: otel_dataflow/v1
 engine:
   telemetry:
     logs:
-      level: debug
+      level: info
       providers:
         engine: console_async
         global: console_async

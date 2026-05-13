@@ -28,9 +28,38 @@ jobs:
     runs-on: oracle-bare-metal-64cpu-1024gb-x86-64-ubuntu-24
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
         with:
           egress-policy: audit
+
+      - name: Disk usage diagnostics
+        run: |
+          echo "=== Overall disk usage ==="
+          df -h
+          echo ""
+          echo "=== Largest directories under / (top 20) ==="
+          sudo du -h --max-depth=3 / 2>/dev/null | sort -rh | head -20
+          echo ""
+          echo "=== Docker disk usage ==="
+          docker system df -v 2>/dev/null || echo "Docker not running or not available"
+          echo ""
+          echo "=== Docker images ==="
+          docker images --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}' 2>/dev/null || true
+          echo ""
+          echo "=== Docker volumes ==="
+          docker volume ls 2>/dev/null || true
+          echo ""
+          echo "=== Docker containers (all) ==="
+          docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Size}}\t{{.Status}}' 2>/dev/null || true
+          echo ""
+          echo "=== /home usage ==="
+          sudo du -h --max-depth=2 /home 2>/dev/null | sort -rh | head -20
+          echo ""
+          echo "=== /var usage ==="
+          sudo du -h --max-depth=2 /var 2>/dev/null | sort -rh | head -20
+          echo ""
+          echo "=== /tmp usage ==="
+          sudo du -h --max-depth=1 /tmp 2>/dev/null | sort -rh | head -10
 
       # Check out the PR's merge commit so tests run against how it would integrate with the base branch.
       # This works for PRs from the same repo or forks.
@@ -78,7 +107,7 @@ jobs:
 
       - name: Set PR status based on result
         if: always()
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             // Read PR number from workflow inputs

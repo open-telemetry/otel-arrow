@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn test_prometheus_exporter_provider_configure_exporter() {
         let prometheus_config = PrometheusExporterConfig {
-            host: "0.0.0.0".to_string(),
+            host: "127.0.0.1".to_string(),
             port: 9090,
             path: "/metrics".to_string(),
         };

@@ -36,6 +36,7 @@ use arrow::array::{Array, ArrayRef, Int32Array, RecordBatch, StructArray, UInt16
 use arrow::compute::take;
 use arrow::datatypes::{DataType, Field, Fields, Schema};
 use datafusion::logical_expr::ColumnarValue;
+use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::get_required_struct_array;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -43,7 +44,7 @@ use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::expr::{
-    DataScope, LEFT_COLUMN_NAME, PhysicalExprEvalResult, RIGHT_COLUMN_NAME,
+    DataScope, LEFT_COLUMN_NAME, PhysicalExprEvalResult, RIGHT_COLUMN_NAME, arg_column_name,
 };
 use crate::pipeline::planner::AttributesIdentifier;
 
@@ -133,6 +134,292 @@ pub fn is_one_to_many(
             *left == ArrowPayloadType::ResourceAttrs && *right == ArrowPayloadType::ScopeAttrs
         }
     }
+}
+
+/// Describes how two sides of a join are aligned after computing the join.
+enum JoinAlignment {
+    /// Both sides have the same data scope and row order; no reordering needed.
+    EqualScope,
+    /// The left side's row order is preserved; the right side is reordered by the given indices.
+    LeftPreserved(Int32Array),
+    /// The right side's row order is preserved; the left side is reordered by the given indices.
+    RightPreserved(Int32Array),
+}
+
+/// Determines the alignment strategy for joining two expression results, returning which side's
+/// row order is preserved and the take-indices for reordering the other side.
+fn compute_join_alignment(
+    left: &PhysicalExprEvalResult,
+    right: &PhysicalExprEvalResult,
+    otap_batch: &OtapArrowRecords,
+) -> Result<(JoinAlignment, Rc<DataScope>)> {
+    if left.data_scope == right.data_scope {
+        return Ok((JoinAlignment::EqualScope, left.data_scope.clone()));
+    }
+
+    // Static scalars can broadcast to any row count without reordering.
+    if left.data_scope.is_scalar() {
+        return Ok((JoinAlignment::EqualScope, right.data_scope.clone()));
+    }
+    if right.data_scope.is_scalar() {
+        return Ok((JoinAlignment::EqualScope, left.data_scope.clone()));
+    }
+
+    match (left.data_scope.as_ref(), right.data_scope.as_ref()) {
+        (DataScope::Attributes(left_attrs_id, _), DataScope::Attributes(right_attrs_id, _)) => {
+            if left_attrs_id == right_attrs_id {
+                let exec = AttributeToSameAttributeJoin::new();
+                let indices = exec.rows_to_take(left, right, otap_batch)?;
+                Ok((
+                    JoinAlignment::LeftPreserved(indices),
+                    left.data_scope.clone(),
+                ))
+            } else if is_one_to_many(left_attrs_id, right_attrs_id) {
+                let exec =
+                    AttributeToDifferentAttributeReverseJoin::new(*left_attrs_id, *right_attrs_id);
+                let indices = exec.rows_to_take(left, right, otap_batch)?;
+                Ok((
+                    JoinAlignment::RightPreserved(indices),
+                    right.data_scope.clone(),
+                ))
+            } else {
+                let exec = AttributeToDifferentAttributeJoin::new(*left_attrs_id, *right_attrs_id);
+                let indices = exec.rows_to_take(left, right, otap_batch)?;
+                Ok((
+                    JoinAlignment::LeftPreserved(indices),
+                    left.data_scope.clone(),
+                ))
+            }
+        }
+        (DataScope::Root, DataScope::Attributes(attr_id, _)) => {
+            let exec = RootToAttributesJoin::new(*attr_id);
+            let indices = exec.rows_to_take(left, right, otap_batch)?;
+            Ok((
+                JoinAlignment::LeftPreserved(indices),
+                left.data_scope.clone(),
+            ))
+        }
+        (DataScope::Attributes(attr_id, _), DataScope::Root) => match attr_id {
+            AttributesIdentifier::Root => {
+                let exec = RootAttrsToRootJoin::new();
+                let indices = exec.rows_to_take(left, right, otap_batch)?;
+                Ok((
+                    JoinAlignment::LeftPreserved(indices),
+                    left.data_scope.clone(),
+                ))
+            }
+            AttributesIdentifier::NonRoot(payload_type) => {
+                let exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
+                let indices = exec.rows_to_take(left, right, otap_batch)?;
+                Ok((
+                    JoinAlignment::RightPreserved(indices),
+                    right.data_scope.clone(),
+                ))
+            }
+        },
+        (left, right) => Err(Error::ExecutionError {
+            cause: format!("invalid data scopes for join: left {left:?} right {right:?}"),
+        }),
+    }
+}
+
+/// Joins multiple expression evaluation results into a single record batch.
+///
+/// The resulting record batch contains columns named "arg_0", "arg_1", ..., "arg_{N-1}"
+/// (one per input result), plus ID columns (id, parent_id, resource, scope) from whichever
+/// side's row order is preserved.
+///
+/// The implementation works by iteratively joining each new result against the accumulated
+/// row order. When a join preserves the left (accumulated) side, the accumulated value arrays
+/// keep their order and only the new argument needs reordering. When a reverse join preserves
+/// the right (new) side, all previously accumulated value arrays are reordered.
+pub fn multi_join(
+    results: &[PhysicalExprEvalResult],
+    otap_batch: &OtapArrowRecords,
+) -> Result<(RecordBatch, Rc<DataScope>)> {
+    if results.is_empty() {
+        return Err(Error::ExecutionError {
+            cause: "multi_join called with no results".into(),
+        });
+    }
+
+    // If there's only one result, produce a single-column record batch directly.
+    // This shouldn't happen in practice (the planner only creates MultiJoin when there
+    // are incompatible scopes across 2+ args), but we handle it defensively.
+    if results.len() == 1 {
+        let result = &results[0];
+        let values = result.values.to_array(
+            result
+                .parent_ids
+                .as_ref()
+                .map(|a| a.len())
+                .or_else(|| result.ids.as_ref().map(|a| a.len()))
+                .unwrap_or(1),
+        )?;
+        let schema = Schema::new(vec![Field::new(
+            arg_column_name(0),
+            values.data_type().clone(),
+            true,
+        )]);
+        let rb = RecordBatch::try_new(Arc::new(schema), vec![values])?;
+        return Ok((rb, result.data_scope.clone()));
+    }
+
+    // Start with the first result as the accumulator.
+    let first = &results[0];
+    let first_values = first.values.to_array(
+        first
+            .parent_ids
+            .as_ref()
+            .map(|a| a.len())
+            .or_else(|| first.ids.as_ref().map(|a| a.len()))
+            .unwrap_or(1),
+    )?;
+    let mut accumulated_values: Vec<ArrayRef> = vec![first_values];
+    let mut accum_scope = first.data_scope.clone();
+    let mut accum_ids = first.ids.clone();
+    let mut accum_parent_ids = first.parent_ids.clone();
+    let mut accum_resource_ids = first.resource_ids.clone();
+    let mut accum_scope_ids = first.scope_ids.clone();
+
+    for result in results.iter().skip(1) {
+        // Build a temporary PhysicalExprEvalResult for the accumulator to pass to
+        // compute_join_alignment. We use the first accumulated value as the "values" field
+        // (the alignment only depends on the data scope and ID columns, not the actual values).
+        let accum_result = PhysicalExprEvalResult {
+            values: ColumnarValue::Array(accumulated_values[0].clone()),
+            data_scope: accum_scope.clone(),
+            ids: accum_ids.clone(),
+            parent_ids: accum_parent_ids.clone(),
+            scope_ids: accum_scope_ids.clone(),
+            resource_ids: accum_resource_ids.clone(),
+        };
+
+        let (alignment, new_scope) = compute_join_alignment(&accum_result, result, otap_batch)?;
+
+        match alignment {
+            JoinAlignment::EqualScope => {
+                if accum_scope.is_scalar() && !result.data_scope.is_scalar() {
+                    // Transitioning from scalar to non-scalar. Adopt the new result's
+                    // IDs and re-broadcast any previously accumulated scalar values to
+                    // match the new result's row count.
+                    let new_len = result
+                        .parent_ids
+                        .as_ref()
+                        .map(|a| a.len())
+                        .or_else(|| result.ids.as_ref().map(|a| a.len()))
+                        .unwrap_or(1);
+                    for arr in accumulated_values.iter_mut() {
+                        *arr = ColumnarValue::Scalar(ScalarValue::try_from_array(arr, 0)?)
+                            .to_array(new_len)?;
+                    }
+                    let new_values = result.values.to_array(new_len)?;
+                    accumulated_values.push(new_values);
+                    accum_ids = result.ids.clone();
+                    accum_parent_ids = result.parent_ids.clone();
+                    accum_resource_ids = result.resource_ids.clone();
+                    accum_scope_ids = result.scope_ids.clone();
+                } else {
+                    // Same row order - just add the new arg's values directly.
+                    let new_values = result.values.to_array(accumulated_values[0].len())?;
+                    accumulated_values.push(new_values);
+                }
+            }
+            JoinAlignment::LeftPreserved(right_take_indices) => {
+                // Left (accumulator) order preserved. Reorder the new arg's values.
+                let new_arr_len = result
+                    .parent_ids
+                    .as_ref()
+                    .map(|a| a.len())
+                    .or_else(|| result.ids.as_ref().map(|a| a.len()))
+                    .unwrap_or(1);
+                let new_values = result.values.to_array(new_arr_len)?;
+                let aligned_new = take(&new_values, &right_take_indices, None)?;
+                accumulated_values.push(aligned_new);
+                // Scope and IDs stay with the accumulator (left side preserved).
+            }
+            JoinAlignment::RightPreserved(left_take_indices) => {
+                // Right (new arg) order preserved. Reorder ALL accumulated values.
+                for arr in accumulated_values.iter_mut() {
+                    *arr = take(arr, &left_take_indices, None)?;
+                }
+                // Add the new arg's values directly (right side order is preserved).
+                let new_arr_len = result
+                    .parent_ids
+                    .as_ref()
+                    .map(|a| a.len())
+                    .or_else(|| result.ids.as_ref().map(|a| a.len()))
+                    .unwrap_or(1);
+                let new_values = result.values.to_array(new_arr_len)?;
+                accumulated_values.push(new_values);
+                // Update IDs to the right (new) side since its row order is preserved.
+                accum_ids = result.ids.clone();
+                accum_parent_ids = result.parent_ids.clone();
+                accum_resource_ids = result.resource_ids.clone();
+                accum_scope_ids = result.scope_ids.clone();
+            }
+        }
+        accum_scope = new_scope;
+    }
+
+    // Build the final RecordBatch with "arg_0", "arg_1", ..., "arg_{N-1}" columns + ID columns.
+    let num_args = accumulated_values.len();
+    let mut fields = Vec::with_capacity(num_args + 4);
+    let mut columns: Vec<ArrayRef> = Vec::with_capacity(num_args + 4);
+
+    for (i, values) in accumulated_values.into_iter().enumerate() {
+        fields.push(Field::new(
+            arg_column_name(i),
+            values.data_type().clone(),
+            true,
+        ));
+        columns.push(values);
+    }
+
+    if let Some(ids) = &accum_ids {
+        fields.push(Field::new(consts::ID, ids.data_type().clone(), true));
+        columns.push(ids.clone());
+    }
+
+    if let Some(parent_ids) = &accum_parent_ids {
+        fields.push(Field::new(
+            consts::PARENT_ID,
+            parent_ids.data_type().clone(),
+            false,
+        ));
+        columns.push(parent_ids.clone());
+    }
+
+    if let Some(col) = &accum_resource_ids {
+        let struct_arr = StructArray::new(
+            Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
+            vec![col.clone()],
+            None,
+        );
+        fields.push(Field::new(
+            consts::RESOURCE,
+            struct_arr.data_type().clone(),
+            true,
+        ));
+        columns.push(Arc::new(struct_arr));
+    }
+
+    if let Some(col) = &accum_scope_ids {
+        let struct_arr = StructArray::new(
+            Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
+            vec![col.clone()],
+            None,
+        );
+        fields.push(Field::new(
+            consts::SCOPE,
+            struct_arr.data_type().clone(),
+            true,
+        ));
+        columns.push(Arc::new(struct_arr));
+    }
+
+    let record_batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)?;
+    Ok((record_batch, accum_scope))
 }
 
 // helper functions for producing errors from results. Normally, we wouldn't produce these errors
@@ -940,5 +1227,52 @@ impl IdJoinLookup {
         let inner = (left_id & PAGE_MASK) as usize;
 
         self.lookup[outer].as_ref().and_then(|page| page[inner])
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use arrow::array::Int64Array;
+    use otap_df_pdata::otap::Logs;
+
+    fn empty_otap_batch() -> OtapArrowRecords {
+        OtapArrowRecords::Logs(Logs::default())
+    }
+
+    /// Helper to build a minimal PhysicalExprEvalResult with the given values and scope.
+    fn make_result(values: ArrayRef, scope: DataScope) -> PhysicalExprEvalResult {
+        PhysicalExprEvalResult {
+            values: ColumnarValue::Array(values),
+            data_scope: Rc::new(scope),
+            ids: None,
+            parent_ids: None,
+            scope_ids: None,
+            resource_ids: None,
+        }
+    }
+
+    #[test]
+    fn test_multi_join_empty_results_returns_error() {
+        let otap_batch = empty_otap_batch();
+        let err = multi_join(&[], &otap_batch);
+        assert!(err.is_err(), "expected error for empty results");
+    }
+
+    #[test]
+    fn test_multi_join_single_result_returns_single_column() {
+        let otap_batch = empty_otap_batch();
+        let values: ArrayRef = Arc::new(Int64Array::from(vec![10, 20, 30]));
+        let result = make_result(values, DataScope::Root);
+
+        let (rb, scope) = multi_join(&[result], &otap_batch).unwrap();
+
+        assert_eq!(*scope, DataScope::Root);
+        assert_eq!(rb.num_columns(), 1);
+        assert_eq!(rb.num_rows(), 3);
+        assert_eq!(rb.schema().field(0).name(), "arg_0");
+
+        let col = rb.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(col.values(), &[10, 20, 30]);
     }
 }

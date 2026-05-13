@@ -486,14 +486,6 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 }
             })?;
 
-        // Start periodic telemetry collection and retain the cancel handle for graceful shutdown
-        let telemetry_timer_cancel_handle = effect_handler
-            .start_periodic_telemetry(std::time::Duration::from_secs(1))
-            .await
-            .map_err(|e| EngineError::InternalError {
-                message: format!("Failed to start telemetry timer: {e}"),
-            })?;
-
         let mut next_periodic_export = tokio::time::Instant::now()
             + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
         let mut next_heartbeat_send = tokio::time::Instant::now();
@@ -584,7 +576,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     if let Some(ref mut hb) = self.heartbeat {
                         match hb.send().await {
                             Ok(_) => otel_debug!("azure_monitor_exporter.heartbeat.sent"),
-                            Err(e) => otel_warn!("azure_monitor_exporter.heartbeat.send_failed", error = ?e),
+                            Err(e) => otel_warn!("azure_monitor_exporter.heartbeat.send_failed", error = %e),
                         }
                     }
                 }
@@ -639,7 +631,6 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             let _ = self.metrics.borrow_mut().report(&mut metrics_reporter);
                         }
                         Ok(Message::Control(NodeControlMsg::Shutdown { deadline, .. })) => {
-                            let _ = telemetry_timer_cancel_handle.cancel().await;
                             self.handle_shutdown(&effect_handler).await?;
                             let snapshot = self.metrics.borrow().metrics().snapshot();
                             return Ok(TerminalState::new(

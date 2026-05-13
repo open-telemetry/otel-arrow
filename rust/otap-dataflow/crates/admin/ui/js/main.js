@@ -69,6 +69,7 @@
     getPipelineInterconnect,
     getTransitivelyConnectedPipelineKeys,
   } from "./inter-pipeline-topology.js";
+  import { createLogsController } from "./logs-controller.js";
 
   // Query params tune metrics query behavior.
   const urlParams = new URLSearchParams(window.location.search);
@@ -2081,7 +2082,7 @@
 
   // --- Summary extraction and card updates ---
   function extractPipelineSummary(metricSets) {
-    const pipelineSets = metricSets.filter((ms) => ms.name === "pipeline.metrics");
+    const pipelineSets = metricSets.filter((ms) => ms.name === "pipeline");
     const summary = {
       count: pipelineSets.length,
       cpuUtilSum: 0,
@@ -4212,6 +4213,27 @@
     error: "not checked yet",
   });
   updatePipelineSelectionDisplay();
+
+  // Initialise the live log-stream panel.  The controller wires up its own
+  // DOM event listeners and manages the WebSocket lifecycle independently of
+  // the metrics polling loop.
+  const logsSection = document.getElementById("logs-section");
+  if (logsSection) {
+    if (logsSection.dataset.liveLogsWs === "true") {
+      createLogsController({ containerEl: logsSection });
+    } else {
+      const logsStatus = document.getElementById("logs-status");
+      const logsConnectBtn = document.getElementById("logs-connect-btn");
+      const logsPauseBtn = document.getElementById("logs-pause-btn");
+      const logsBackfillBtn = document.getElementById("logs-backfill-btn");
+      if (logsStatus) {
+        logsStatus.textContent = "Live log streaming disabled";
+      }
+      for (const button of [logsConnectBtn, logsPauseBtn, logsBackfillBtn]) {
+        if (button) button.disabled = true;
+      }
+    }
+  }
 
   void fetchAndUpdate();
   void pollHealthEndpoints();

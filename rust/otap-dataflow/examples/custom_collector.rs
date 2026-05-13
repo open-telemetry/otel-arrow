@@ -66,9 +66,8 @@ struct Args {
 }
 
 fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
-    Ok(CoreAllocation::CoreSet {
-        set: s
-            .split(',')
+    Ok(CoreAllocation::core_set(
+        s.split(',')
             .map(|part| {
                 part.trim()
                     .parse::<usize>()
@@ -92,7 +91,7 @@ fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
                     })
             })
             .collect::<Result<Vec<CoreRange>, String>>()?,
-    })
+    ))
 }
 
 fn memory_allocator_name() -> &'static str {

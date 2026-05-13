@@ -8,8 +8,8 @@ emitted via `otel_*` log macros.
 
 | Metric name | Description | Produced in file |
 | --- | --- | --- |
-| `engine.metrics.memory_rss` | Process resident memory (RSS) in bytes. | `crates/engine/src/engine_metrics.rs` |
-| `engine.metrics.cpu_utilization` | Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across all logical CPU cores on the system. Aligned with the OTel semantic convention `process.cpu.utilization`. | `crates/engine/src/engine_metrics.rs` |
+| `engine.memory_rss` | Process resident memory (RSS) in bytes. | `crates/engine/src/engine_metrics.rs` |
+| `engine.cpu_utilization` | Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across all logical CPU cores on the system. Aligned with the OTel semantic convention `process.cpu.utilization`. | `crates/engine/src/engine_metrics.rs` |
 | `channel.sender.send.count` | Number of messages successfully sent to a channel. | `crates/engine/src/channel_metrics.rs` |
 | `channel.sender.send.error_full` | Number of send attempts that failed because the channel was full. | `crates/engine/src/channel_metrics.rs` |
 | `channel.sender.send.error_closed` | Number of send attempts that failed because the channel was closed. | `crates/engine/src/channel_metrics.rs` |
@@ -25,18 +25,18 @@ emitted via `otel_*` log macros.
 | `node.producer.produced.success` | Produced requests acknowledged by downstream. | `crates/engine/src/channel_metrics.rs` |
 | `node.producer.produced.failure` | Produced requests that failed (retryable errors). | `crates/engine/src/channel_metrics.rs` |
 | `node.producer.produced.refused` | Produced requests permanently refused (permanent failures). | `crates/engine/src/channel_metrics.rs` |
-| `pipeline.metrics.uptime` | Time since pipeline instance start. | `crates/engine/src/pipeline_metrics.rs` |
-| `pipeline.metrics.memory_usage` | Current heap memory in use by the pipeline thread (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |
-| `pipeline.metrics.memory_allocated` | Cumulative bytes allocated by the pipeline thread (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |
-| `pipeline.metrics.memory_freed` | Cumulative bytes freed by the pipeline thread (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |
-| `pipeline.metrics.memory_allocated_delta` | Bytes allocated during the latest sampling interval (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |
-| `pipeline.metrics.memory_freed_delta` | Bytes freed during the latest sampling interval (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |
-| `pipeline.metrics.cpu_time` | Cumulative CPU seconds consumed by the pipeline thread. | `crates/engine/src/pipeline_metrics.rs` |
-| `pipeline.metrics.cpu_utilization` | Ratio of CPU time to wall time over the latest interval. | `crates/engine/src/pipeline_metrics.rs` |
-| `pipeline.metrics.context_switches_voluntary` | Cumulative voluntary thread context switches. | `crates/engine/src/pipeline_metrics.rs` |
-| `pipeline.metrics.context_switches_involuntary` | Cumulative involuntary thread context switches (preemption). | `crates/engine/src/pipeline_metrics.rs` |
-| `pipeline.metrics.page_faults_minor` | Cumulative minor page faults for the pipeline thread. | `crates/engine/src/pipeline_metrics.rs` |
-| `pipeline.metrics.page_faults_major` | Cumulative major page faults for the pipeline thread. | `crates/engine/src/pipeline_metrics.rs` |
+| `pipeline.uptime` | Time since pipeline instance start. | `crates/engine/src/pipeline_metrics.rs` |
+| `pipeline.memory_usage` | Current heap memory in use by the pipeline thread (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |
+| `pipeline.memory_allocated` | Cumulative bytes allocated by the pipeline thread (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |
+| `pipeline.memory_freed` | Cumulative bytes freed by the pipeline thread (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |
+| `pipeline.memory_allocated_delta` | Bytes allocated during the latest sampling interval (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |
+| `pipeline.memory_freed_delta` | Bytes freed during the latest sampling interval (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |
+| `pipeline.cpu_time` | Cumulative CPU seconds consumed by the pipeline thread. | `crates/engine/src/pipeline_metrics.rs` |
+| `pipeline.cpu_utilization` | Ratio of CPU time to wall time over the latest interval. | `crates/engine/src/pipeline_metrics.rs` |
+| `pipeline.context_switches_voluntary` | Cumulative voluntary thread context switches. | `crates/engine/src/pipeline_metrics.rs` |
+| `pipeline.context_switches_involuntary` | Cumulative involuntary thread context switches (preemption). | `crates/engine/src/pipeline_metrics.rs` |
+| `pipeline.page_faults_minor` | Cumulative minor page faults for the pipeline thread. | `crates/engine/src/pipeline_metrics.rs` |
+| `pipeline.page_faults_major` | Cumulative major page faults for the pipeline thread. | `crates/engine/src/pipeline_metrics.rs` |
 | `tokio.runtime.worker_count` | Number of Tokio worker threads in the runtime. | `crates/engine/src/pipeline_metrics.rs` |
 | `tokio.runtime.task_active_count` | Current count of alive tasks in the runtime. | `crates/engine/src/pipeline_metrics.rs` |
 | `tokio.runtime.global_task_queue_size` | Current count of tasks in Tokio global/injection queue. | `crates/engine/src/pipeline_metrics.rs` |

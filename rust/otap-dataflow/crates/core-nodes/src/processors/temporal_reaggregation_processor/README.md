@@ -39,6 +39,9 @@ This processor has the following limitations:
   through metrics are preserved.
 - Array and Map attribute values are discarded for the purpose of identifying
   metrics due to a current limitation with OTAP views.
+- During a shutdown sequence, any in-flight metrics will be aggregated one final
+  time until either a stream/id limit is reached or the shutdown message is
+  received by the processor.
 
 ## Configuration
 

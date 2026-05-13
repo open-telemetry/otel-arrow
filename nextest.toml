@@ -1,5 +1,6 @@
 [profile.default]
 test-binary-threads = 4
+retries = 2
 
 [profile.default.reporters]
 pretty = true

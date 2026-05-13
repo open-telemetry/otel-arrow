@@ -243,7 +243,7 @@ impl DiagnosticsCollector {
         }
 
         let mut binaries = self.test_binaries.clone();
-        binaries.sort_by(|left, right| right.duration.cmp(&left.duration));
+        binaries.sort_by_key(|b| std::cmp::Reverse(b.duration));
 
         for (index, binary) in binaries.iter().take(HOTSPOT_LIMIT).enumerate() {
             let color = hotspot_rank_color(index);

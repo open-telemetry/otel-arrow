@@ -18,7 +18,7 @@ use otap_df_config::policy::{ChannelCapacityPolicy, TelemetryPolicy};
 use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_core_nodes::processors::batch_processor::OTAP_BATCH_PROCESSOR_URN;
 use otap_df_core_nodes::processors::retry_processor::RETRY_PROCESSOR_URN;
-use otap_df_core_nodes::receivers::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
+use otap_df_core_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{
     RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
@@ -28,6 +28,7 @@ use otap_df_engine::testing::liveness::wait_for_condition;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
+use otap_df_telemetry::metrics::MetricValue;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -82,7 +83,7 @@ fn build_retry_pipeline_config(
     PipelineConfigBuilder::new()
         .add_receiver(
             "fake_receiver",
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
             Some(fake_receiver_config(6, 2, true)),
         )
         .add_processor(
@@ -118,7 +119,7 @@ fn build_batch_pipeline_config(
     PipelineConfigBuilder::new()
         .add_receiver(
             "fake_receiver",
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
             Some(fake_receiver_config(3, 3, true)),
         )
         .add_processor(
@@ -156,7 +157,7 @@ fn build_otlp_batch_local_wakeup_pipeline_config(
     PipelineConfigBuilder::new()
         .add_receiver(
             "fake_receiver",
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
             Some(rate_limited_fake_receiver_config(5, 1, 1, true)),
         )
         .add_processor(
@@ -231,6 +232,7 @@ fn run_pipeline_with_condition<F>(
         pipeline_group_id: pipeline_group_id.clone(),
         pipeline_id: pipeline_id.clone(),
         core_id: 0,
+        deployment_generation: 0,
     };
     let metrics_reporter = telemetry_system.reporter();
     let event_reporter = observed_state_store.reporter(SendPolicy::default());
@@ -309,6 +311,10 @@ fn capture_batch_metrics(
     registry.visit_current_metrics(|desc, _attrs, iter| {
         if desc.name == "otap.processor.batch" {
             for (field, value) in iter {
+                if let MetricValue::Mmsc(_) = value {
+                    continue;
+                }
+
                 let _ = snapshot
                     .fields
                     .insert(field.name.to_owned(), value.to_u64_lossy());
@@ -365,6 +371,7 @@ where
         pipeline_group_id: pipeline_group_id.clone(),
         pipeline_id: pipeline_id.clone(),
         core_id: 0,
+        deployment_generation: 0,
     };
     let metrics_reporter = telemetry_system.reporter();
     let event_reporter = observed_state_store.reporter(SendPolicy::default());
@@ -460,7 +467,7 @@ fn test_retry_pipeline_eventually_recovers_after_transient_nacks() {
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_secs(2),
+        Duration::from_secs(5),
         Duration::from_secs(1),
         Some({
             let delivered_items = delivered_items.clone();
@@ -562,9 +569,7 @@ fn test_batch_pipeline_uses_timer_wakeup_metrics_with_otlp_bytes_config() {
         5,
         "the local wakeup pipeline should export every generated item"
     );
-    metrics.assert_eq("consumed.items.logs", 5);
     metrics.assert_eq("consumed.batches.logs", 5);
-    metrics.assert_eq("produced.items.logs", 5);
     metrics.assert_eq("produced.batches.logs", 5);
     metrics.assert_eq("flushes.size", 0);
     metrics.assert_eq("flushes.timer", 5);

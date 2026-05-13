@@ -9,12 +9,13 @@ use crate::{
         CHANNEL_MODE_LOCAL, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
         ChannelMetricsRegistry, ChannelReceiverMetrics, ChannelSenderMetrics,
     },
-    config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
+    config::{ExporterConfig, ExtensionConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
     effect_handler::SourceTagging,
     entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
     error::{Error, TypedError},
     exporter::ExporterWrapper,
+    extension::ExtensionBundle,
     local::message::{LocalReceiver, LocalSender},
     message::{Receiver, Sender},
     node::{Node, NodeDefs, NodeId, NodeName, NodeType},
@@ -50,10 +51,15 @@ use std::{
     sync::OnceLock,
 };
 
+// TODO: remove `dead_code` once the capability system is wired into the
+// pipeline build.
+#[allow(dead_code)]
+pub mod capability;
 #[doc(hidden)]
 pub mod clock;
 pub mod error;
 pub mod exporter;
+pub mod extension;
 pub mod message;
 pub mod processor;
 pub mod receiver;
@@ -69,6 +75,8 @@ mod control_plane_metrics;
 pub mod effect_handler;
 pub mod engine_metrics;
 pub mod entity_context;
+pub mod flow_metrics;
+pub(crate) mod indexed_min_heap;
 pub mod local;
 pub mod memory_limiter;
 pub mod node;
@@ -77,6 +85,7 @@ pub mod output_router;
 pub mod pipeline_ctrl;
 mod pipeline_metrics;
 pub mod process_duration;
+mod route_admission;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod terminal_state;
@@ -85,6 +94,7 @@ pub mod topic;
 pub mod wiring_contract;
 pub use node_local_scheduler::{WakeupError, WakeupSetOutcome};
 pub use processor::{LocalWakeupRequirements, ProcessorRuntimeRequirements};
+pub use route_admission::RouteAdmission;
 
 /// Trait for factory types that expose a name.
 ///
@@ -207,6 +217,42 @@ impl<PData> Clone for ExporterFactory<PData> {
 }
 
 impl<PData> NamedFactory for ExporterFactory<PData> {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+/// A factory for creating extensions.
+///
+/// Extension factories are NOT generic over PData — extensions never process
+/// pipeline data. This makes them fully decoupled from the data-plane type.
+#[derive(Clone)]
+pub struct ExtensionFactory {
+    /// The name of the extension.
+    pub name: &'static str,
+    /// A short, human-readable description of the extension.
+    pub description: &'static str,
+    /// URL to the extension's documentation.
+    pub documentation_url: &'static str,
+    /// The capabilities this extension provides.
+    ///
+    /// `Some(caps)` for active or passive extensions (caps lists are
+    /// non-empty by macro construction). `None` marks a Background
+    /// extension — engine-driven event loop with no capabilities
+    /// exposed to nodes; `register_into` skips capability registration.
+    pub capabilities: Option<capability::ExtensionCapabilities>,
+    /// A function that creates a new extension instance.
+    pub create: fn(
+        pipeline: PipelineContext,
+        name: otap_df_config::ExtensionId,
+        ext_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+        extension_config: &ExtensionConfig,
+    ) -> Result<ExtensionBundle, otap_df_config::error::Error>,
+    /// Validates the node-specific config statically, without creating the component.
+    pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
+}
+
+impl NamedFactory for ExtensionFactory {
     fn name(&self) -> &'static str {
         self.name
     }
@@ -337,6 +383,13 @@ impl ReceivedAtNode for () {
 impl ReceivedAtNode for String {
     fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
 }
+// `FlowMetricHook` is a bound on the `PData` generic of `ProcessorWrapper::start*`,
+// `RuntimePipeline`, and the controller. Test code uses `()` and `String` as stand-in PData
+// types (e.g. `Controller<()>`); these blanket no-op impls let those tests compile without
+// requiring every test PData type to define hook behavior. Real PData types (e.g. `OtapPdata`)
+// override these methods to drive flow_metric signal counting and compute-duration accumulation.
+impl processor::FlowMetricHook for () {}
+impl processor::FlowMetricHook for String {}
 
 /// Trait for setting exit information in the Context, for PData consumers.
 pub trait StampOutputPort {
@@ -350,6 +403,23 @@ impl StampOutputPort for () {
 
 impl StampOutputPort for String {
     fn stamp_output_port_index(&mut self, _index: u16) {}
+}
+
+/// Trait for forward-path flow_metric compute accumulation on PData.
+///
+/// At most one flow_metric range can be active on a given message at a
+/// time (non-overlapping ranges).
+pub trait FlowMetricAccumulation {
+    /// Initialise a fresh flow_metric accumulator (set to 0).
+    /// Called at the start node.
+    fn start_flow_metric(&mut self);
+
+    /// Add `ns` nanoseconds to the active flow_metric accumulator, if any.
+    fn add_flow_compute(&mut self, ns: u64);
+
+    /// Remove and return the accumulated total.
+    /// Returns `None` if no accumulator was active.
+    fn take_flow_compute(&mut self) -> Option<u64>;
 }
 
 /// Effect handler extensions for producers specific to data type.
@@ -403,6 +473,16 @@ pub trait MessageSourceLocalEffectHandlerExtension<PData> {
     async fn send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
     /// Try to send data after tagging with the source node.
     fn try_send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
+    /// Try to admit data to the default output without awaiting.
+    ///
+    /// This preserves non-channel errors (for example, a missing default port)
+    /// while classifying `Full` and `Closed` as explicit route rejections.
+    fn try_admit_message_with_source_node(
+        &self,
+        data: PData,
+    ) -> Result<RouteAdmission<PData>, TypedError<PData>> {
+        route_admission::classify_route_admission(self.try_send_message_with_source_node(data))
+    }
     /// Send data to a specific port after tagging with the source node.
     async fn send_message_with_source_node_to<P>(
         &self,
@@ -419,6 +499,22 @@ pub trait MessageSourceLocalEffectHandlerExtension<PData> {
     ) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName> + Send + 'static;
+    /// Try to admit data to a specific selected output without awaiting.
+    ///
+    /// This preserves non-channel errors (for example, an unknown port) while
+    /// classifying `Full` and `Closed` as explicit route rejections.
+    fn try_admit_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: PData,
+    ) -> Result<RouteAdmission<PData>, TypedError<PData>>
+    where
+        P: Into<PortName> + Send + 'static,
+    {
+        route_admission::classify_route_admission(
+            self.try_send_message_with_source_node_to(port, data),
+        )
+    }
 }
 
 /// Send-friendly variant for use in `Send` contexts (e.g., `tokio::spawn`).
@@ -428,6 +524,16 @@ pub trait MessageSourceSharedEffectHandlerExtension<PData: Send + 'static> {
     async fn send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
     /// Try to send data after tagging with the source node.
     fn try_send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
+    /// Try to admit data to the default output without awaiting.
+    ///
+    /// This preserves non-channel errors (for example, a missing default port)
+    /// while classifying `Full` and `Closed` as explicit route rejections.
+    fn try_admit_message_with_source_node(
+        &self,
+        data: PData,
+    ) -> Result<RouteAdmission<PData>, TypedError<PData>> {
+        route_admission::classify_route_admission(self.try_send_message_with_source_node(data))
+    }
     /// Send data to a specific port after tagging with the source node.
     async fn send_message_with_source_node_to<P>(
         &self,
@@ -444,6 +550,22 @@ pub trait MessageSourceSharedEffectHandlerExtension<PData: Send + 'static> {
     ) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName> + Send + 'static;
+    /// Try to admit data to a specific selected output without awaiting.
+    ///
+    /// This preserves non-channel errors (for example, an unknown port) while
+    /// classifying `Full` and `Closed` as explicit route rejections.
+    fn try_admit_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: PData,
+    ) -> Result<RouteAdmission<PData>, TypedError<PData>>
+    where
+        P: Into<PortName> + Send + 'static,
+    {
+        route_admission::classify_route_admission(
+            self.try_send_message_with_source_node_to(port, data),
+        )
+    }
 }
 
 /// Builds a pipeline factory for initialization.
@@ -474,9 +596,11 @@ pub struct PipelineFactory<PData: 'static + Clone> {
     receiver_factory_map: OnceLock<HashMap<&'static str, ReceiverFactory<PData>>>,
     processor_factory_map: OnceLock<HashMap<&'static str, ProcessorFactory<PData>>>,
     exporter_factory_map: OnceLock<HashMap<&'static str, ExporterFactory<PData>>>,
+    extension_factory_map: OnceLock<HashMap<&'static str, ExtensionFactory>>,
     receiver_factories: &'static [ReceiverFactory<PData>],
     processor_factories: &'static [ProcessorFactory<PData>],
     exporter_factories: &'static [ExporterFactory<PData>],
+    extension_factories: &'static [ExtensionFactory],
 }
 
 impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
@@ -486,14 +610,17 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         receiver_factories: &'static [ReceiverFactory<PData>],
         processor_factories: &'static [ProcessorFactory<PData>],
         exporter_factories: &'static [ExporterFactory<PData>],
+        extension_factories: &'static [ExtensionFactory],
     ) -> Self {
         Self {
             receiver_factory_map: OnceLock::new(),
             processor_factory_map: OnceLock::new(),
             exporter_factory_map: OnceLock::new(),
+            extension_factory_map: OnceLock::new(),
             receiver_factories,
             processor_factories,
             exporter_factories,
+            extension_factories,
         }
     }
 
@@ -524,6 +651,16 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 .iter()
                 .map(|f| (f.name(), f.clone()))
                 .collect::<HashMap<&'static str, ExporterFactory<PData>>>()
+        })
+    }
+
+    /// Gets the extension factory map, initializing it if necessary.
+    pub fn get_extension_factory_map(&self) -> &HashMap<&'static str, ExtensionFactory> {
+        self.extension_factory_map.get_or_init(|| {
+            self.extension_factories
+                .iter()
+                .map(|f| (f.name(), f.clone()))
+                .collect::<HashMap<&'static str, ExtensionFactory>>()
         })
     }
 
@@ -1779,7 +1916,7 @@ where
         // sent each message.
         let multi_source = self.sources.len() > 1;
 
-        for (source, sender) in self.sources.into_iter().zip(self.senders.into_iter()) {
+        for (source, sender) in self.sources.into_iter().zip(self.senders) {
             let src_node = pipeline
                 .get_mut_node_with_pdata_sender(source.node_id.index)
                 .ok_or_else(|| Error::UnknownNode {
@@ -1823,7 +1960,6 @@ where
 struct HyperEdgeRuntime {
     sources: Vec<NodeIdPortName>,
 
-    #[allow(dead_code)]
     dispatch_policy: DispatchPolicy,
 
     // names are from the configuration, not yet resolved
@@ -2102,7 +2238,7 @@ mod test {
     use super::*;
     use otap_df_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
-        PropagationAction, PropagationDefault, PropagationSelector,
+        PropagationAction, PropagationDefault, PropagationSelector, PropagationSelectorType,
     };
 
     #[test]
@@ -2194,7 +2330,10 @@ mod test {
     fn make_propagation_policy(action: PropagationAction) -> HeaderPropagationPolicy {
         HeaderPropagationPolicy::new(
             PropagationDefault {
-                selector: PropagationSelector::AllCaptured,
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
                 action,
                 ..Default::default()
             },
@@ -2259,5 +2398,80 @@ mod test {
 
         let policy = resolve_propagation_policy(&node_config, &transport_headers_policy);
         assert!(policy.is_none());
+    }
+
+    // -- ExtensionFactory tests -----------------------------------------------
+
+    #[test]
+    fn test_extension_factory_named_factory() {
+        fn dummy_create(
+            _: PipelineContext,
+            _: otap_df_config::ExtensionId,
+            _: Arc<otap_df_config::extension::ExtensionUserConfig>,
+            _: &ExtensionConfig,
+        ) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+            unimplemented!()
+        }
+        fn dummy_validate(_: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+            Ok(())
+        }
+
+        let factory = ExtensionFactory {
+            name: "urn:test:example",
+            description: "test extension",
+            documentation_url: "",
+            capabilities: None,
+            create: dummy_create,
+            validate_config: dummy_validate,
+        };
+
+        assert_eq!(factory.name(), "urn:test:example");
+
+        let cloned = factory.clone();
+        assert_eq!(cloned.name(), "urn:test:example");
+        assert_eq!(cloned.description, "test extension");
+    }
+
+    // -- Error variant_name tests ---------------------------------------------
+
+    #[test]
+    fn test_extension_already_exists_variant_name() {
+        let err = Error::ExtensionAlreadyExists {
+            extension: "dup_ext".into(),
+        };
+        assert_eq!(err.variant_name(), "ExtensionAlreadyExists");
+    }
+
+    #[test]
+    fn test_extension_factory_validate_config() {
+        fn dummy_create(
+            _: PipelineContext,
+            _: otap_df_config::ExtensionId,
+            _: Arc<otap_df_config::extension::ExtensionUserConfig>,
+            _: &ExtensionConfig,
+        ) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+            unimplemented!()
+        }
+        fn dummy_validate(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+            if config.is_null() {
+                Ok(())
+            } else {
+                Err(otap_df_config::error::Error::InvalidUserConfig {
+                    error: "expected null".into(),
+                })
+            }
+        }
+
+        let factory = ExtensionFactory {
+            name: "urn:test:example",
+            description: "test",
+            documentation_url: "",
+            capabilities: None,
+            create: dummy_create,
+            validate_config: dummy_validate,
+        };
+
+        assert!((factory.validate_config)(&serde_json::Value::Null).is_ok());
+        assert!((factory.validate_config)(&serde_json::json!({"key": "val"})).is_err());
     }
 }

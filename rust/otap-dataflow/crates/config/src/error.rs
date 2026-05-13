@@ -5,7 +5,7 @@
 
 use crate::node::NodeKind;
 use crate::pipeline::DispatchPolicy;
-use crate::{NodeId, PipelineGroupId, PipelineId, PortName};
+use crate::{ExtensionId, NodeId, PipelineGroupId, PipelineId, PortName};
 use miette::Diagnostic;
 use std::fmt::Display;
 
@@ -75,6 +75,16 @@ pub enum Error {
         context: Context,
         /// The id of the node that was duplicated.
         node_id: NodeId,
+    },
+
+    /// An extension with the same id already exists in the pipeline.
+    #[error("Duplicated extension id `{extension_id}`\nContext: {context}")]
+    #[diagnostic(code(data_plane::duplicate_extension), url(docsrs))]
+    DuplicateExtension {
+        /// The context in which the error occurred.
+        context: Context,
+        /// The id of the extension that was duplicated.
+        extension_id: ExtensionId,
     },
 
     /// The same output port was connected more than once on a single node.

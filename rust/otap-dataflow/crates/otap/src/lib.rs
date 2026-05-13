@@ -63,7 +63,6 @@ pub mod crypto;
 pub mod transport_headers;
 
 /// TLS utilities
-#[cfg(feature = "experimental-tls")]
 pub mod tls_utils;
 
 /// Factory for OTAP-based pipeline

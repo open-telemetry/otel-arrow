@@ -5,7 +5,7 @@ use crate::error::ValidationError;
 use crate::metrics_types::{MetricSetSnapshot, MetricsSnapshot};
 use otap_df_admin_api::{
     AdminClient, AdminEndpoint, HttpAdminClientSettings, engine::ProbeStatus,
-    operations::OperationOptions, pipeline_groups::ShutdownStatus, telemetry::MetricsOptions,
+    groups::ShutdownStatus, operations::OperationOptions, telemetry::MetricsOptions,
 };
 use otap_df_config::engine::OtelDataflowSpec;
 use otap_df_controller::Controller;
@@ -13,11 +13,11 @@ use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::collections::HashMap;
 use tokio::time::{Duration, sleep};
 
-const LOADGEN_METRIC_SET: &str = "fake_data_generator.receiver.metrics";
+const LOADGEN_METRIC_SET: &str = "receiver.traffic_generator";
 const LOADGEN_METRIC_NAME_LOGS: &str = "logs.produced";
 const LOADGEN_METRIC_NAME_METRICS: &str = "metrics.produced";
 const LOADGEN_TRACE_NAME_SPANS: &str = "spans.produced";
-const VALIDATION_METRIC_SET: &str = "validation.exporter.metrics";
+const VALIDATION_METRIC_SET: &str = "exporter.validation";
 const VALIDATION_METRIC_NAME: &str = "valid";
 const VALIDATION_FINISHED_METRIC_NAME: &str = "finished";
 
@@ -147,7 +147,7 @@ async fn wait_for_validation_finished(
 /// shutdown pipeline after running
 async fn shutdown_pipeline(client: &AdminClient) -> Result<(), ValidationError> {
     let response = client
-        .pipeline_groups()
+        .groups()
         .shutdown(&OperationOptions::default())
         .await
         .map_err(admin_error)?;
@@ -360,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_not_finished_keeps_polling() {
+    fn not_finished_keeps_polling() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: validation_set(0, 0, "cap1"),
@@ -372,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_finished_and_passed_returns_ok() {
+    fn finished_and_passed_returns_ok() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: validation_set(1, 1, "cap1"),
@@ -384,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_finished_with_failures_reports_labels() {
+    fn finished_with_failures_reports_labels() {
         let mut sets = validation_set(1, 1, "cap1");
         sets.extend(validation_set(0, 1, "cap2"));
         let snap = MetricsSnapshot {
@@ -400,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_mixed_finished_returns_not_finished() {
+    fn mixed_finished_returns_not_finished() {
         let mut sets = validation_set(1, 1, "cap1");
         sets.extend(validation_set(0, 0, "cap2"));
         let snap = MetricsSnapshot {
@@ -414,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_empty_snapshot_returns_not_finished() {
+    fn empty_snapshot_returns_not_finished() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: vec![],
@@ -426,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_no_matching_metric_sets_returns_not_finished() {
+    fn no_matching_metric_sets_returns_not_finished() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: vec![set_with_node(
@@ -476,7 +476,7 @@ mod tests {
             .await;
 
         Mock::given(method("POST"))
-            .and(path("/api/v1/pipeline-groups/shutdown"))
+            .and(path("/api/v1/groups/shutdown"))
             .and(query_param("wait", "false"))
             .and(query_param("timeout_secs", "60"))
             .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({
