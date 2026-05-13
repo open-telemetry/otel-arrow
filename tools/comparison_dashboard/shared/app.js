@@ -327,10 +327,15 @@ function buildComparisonChartData(suiteData, comparison, testNames, selectedMetr
         missing.push(false);
       }
     }
+    // Fall back to a scalar color when no bars will be drawn (e.g. the
+    // comparison has zero published tests). Chart.js reads index 0 of
+    // backgroundColor for the legend swatch; an empty array yields black.
+    const bgColor = data.length ? data.map((_, i) => missing[i] ? pattern : color) : color;
+    const bdColor = data.length ? data.map((_, i) => missing[i] ? `${color}80` : color) : color;
     return {
       label: ref.short || ref.name, data, _hasBackpressure: bp, _missing: missing,
-      backgroundColor: data.map((_, i) => missing[i] ? pattern : color),
-      borderColor: data.map((_, i) => missing[i] ? `${color}80` : color),
+      backgroundColor: bgColor,
+      borderColor: bdColor,
       borderWidth: 1,
       borderRadius: 4, borderSkipped: "bottom",
     };
@@ -560,7 +565,6 @@ function renderComparisonSection(suiteData, comparison) {
   const categories = collectFilterCategories(suiteData, comparison);
   const filterState = getFilterState(slug, categories);
   const filtered = filterComparison(comparison, suiteData, filterState);
-  const testNames = collectTestNames(suiteData, filtered);
   const metrics = findAvailableMetrics(suiteData, filtered);
   if (!perComparisonMetrics.has(slug)) perComparisonMetrics.set(slug, metrics.includes("cpu_percentage_normalized_avg") ? "cpu_percentage_normalized_avg" : metrics[0] || "cpu_percentage_normalized_avg");
   const sel = perComparisonMetrics.get(slug);
@@ -592,7 +596,11 @@ function wireComparisonSection(suiteData, comparison) {
 
   function renderChart() {
     const filtered = filterComparison(comparison, suiteData, filterState);
-    const testNames = collectTestNames(suiteData, filtered);
+    // X-axis is the union of test names across the WHOLE comparison, not the
+    // filter-survivors. Keeps the chart stable when filters hide the only
+    // data-having suite -- remaining suites then render striped "missing"
+    // stubs in their proper colors instead of an empty black-legend chart.
+    const testNames = collectTestNames(suiteData, comparison);
     const sel = perComparisonMetrics.get(slug);
     if (activeCharts.has(slug)) { activeCharts.get(slug).destroy(); activeCharts.delete(slug); }
     const canvas = section.querySelector("canvas");
@@ -644,7 +652,11 @@ function renderComparisonPage(compSlug) {
 
   function renderAll() {
     const filtered = filterComparison(comparison, suiteData, filterState);
-    const testNames = collectTestNames(suiteData, filtered);
+    // X-axis is the union of test names across the WHOLE comparison, not the
+    // filter-survivors. Keeps the chart stable when filters hide the only
+    // data-having suite -- remaining suites then render striped "missing"
+    // stubs in their proper colors instead of an empty black-legend chart.
+    const testNames = collectTestNames(suiteData, comparison);
     if (detailSuiteIdx >= filtered.suites.length) detailSuiteIdx = 0;
     if (!testNames.includes(detailTestName)) detailTestName = testNames[0] || "";
 
