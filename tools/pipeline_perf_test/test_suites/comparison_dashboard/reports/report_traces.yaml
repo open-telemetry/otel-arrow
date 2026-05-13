@@ -1,0 +1,446 @@
+queries:
+  - name: Filter superflous metadata
+    sql: |
+      CREATE VIEW metadata_filtered AS
+      SELECT *
+      FROM metadata
+      WHERE Attribute NOT LIKE 'test.ctx.%';
+
+  - name: Calculate observation window for this test
+    sql: |
+      CREATE TABLE observation_window AS WITH event_times AS (
+        SELECT
+          "attributes.test.name" AS test_name,
+          name AS event_name,
+          TO_TIMESTAMP(timestamp / 1000000000.0) AS timestamp
+        FROM events
+        WHERE name IN ('observation_start', 'observation_stop')
+      ),
+      observation_windows AS (
+        SELECT
+          start.test_name,
+          start.timestamp AS start_ts,
+          stop.timestamp AS stop_ts
+        FROM
+          event_times start
+          JOIN event_times stop ON start.test_name = stop.test_name
+        WHERE
+          start.event_name = 'observation_start'
+          AND stop.event_name = 'observation_stop'
+          AND start.timestamp < stop.timestamp
+      )
+
+      SELECT
+        w.*
+      FROM
+        metadata_row
+        JOIN observation_windows w ON metadata_row."test.name" = w.test_name
+
+  - name: Container Network Per-Timestamp Rates
+    sql: |
+      CREATE TABLE container_network_with_rate AS WITH
+        metrics_filtered AS (
+            SELECT *,
+            "metric_attributes.component_name" AS component_name,
+            FROM metrics
+            WHERE metric_name IN (
+              'container.network.rx',
+              'container.network.tx'
+            ) AND timestamp > (
+                SELECT CAST("test.start" AS TIMESTAMP WITH TIME ZONE)
+                FROM metadata_row
+                LIMIT 1
+              )
+        ),
+        with_lag AS (
+            SELECT *,
+                  LAG(value) OVER (PARTITION BY metric_name, component_name  ORDER BY timestamp) AS prev_value,
+                  LAG(timestamp) OVER (PARTITION BY metric_name, component_name ORDER BY timestamp) AS prev_timestamp
+            FROM metrics_filtered
+        )
+        SELECT *,
+              value - prev_value AS delta,
+              EXTRACT(EPOCH FROM timestamp - prev_timestamp) AS time_delta_seconds,
+              CASE
+                  WHEN prev_value IS NULL OR EXTRACT(EPOCH FROM timestamp - prev_timestamp) = 0 THEN NULL
+                  ELSE (value - prev_value) / EXTRACT(EPOCH FROM timestamp - prev_timestamp)
+              END AS rate
+        FROM with_lag
+
+  - name: Container Network Rates
+    sql: |
+      CREATE TABLE container_network_rates AS
+        SELECT
+          component_name,
+          metric_name,
+          MAX(value) - MIN(value) AS total_increase,
+          AVG(rate) AS average_rate
+        FROM
+          observation_window AS ow
+        JOIN
+          container_network_with_rate AS wr
+          ON wr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        GROUP BY component_name, metric_name
+
+  - name: Send/Receive Per-Timestamp Rates
+    sql: |
+      CREATE TABLE send_receive_with_rate AS WITH
+        metrics_filtered AS (
+            SELECT *,
+            "metric_attributes.component_name" AS component_name,
+            COALESCE("metric_attributes.core_id", 'N/A') AS core_id,
+            FROM metrics
+            WHERE metric_name IN (
+              'spans_produced',
+              'failed',
+              'bytes_sent',
+              'sent',
+              'late_batches',
+              'spans'
+            ) AND timestamp > (
+                SELECT CAST("test.start" AS TIMESTAMP WITH TIME ZONE)
+                FROM metadata_row
+                LIMIT 1
+              )
+        ),
+        with_lag AS (
+            SELECT *,
+                  LAG(value) OVER (PARTITION BY metric_name, component_name, core_id  ORDER BY timestamp) AS prev_value,
+                  LAG(timestamp) OVER (PARTITION BY metric_name, component_name, core_id ORDER BY timestamp) AS prev_timestamp
+            FROM metrics_filtered
+        )
+        SELECT *,
+              value - prev_value AS delta,
+              EXTRACT(EPOCH FROM timestamp - prev_timestamp) AS time_delta_seconds,
+              CASE
+                  WHEN prev_value IS NULL OR EXTRACT(EPOCH FROM timestamp - prev_timestamp) = 0 THEN NULL
+                  ELSE (value - prev_value) / EXTRACT(EPOCH FROM timestamp - prev_timestamp)
+              END AS rate
+        FROM with_lag
+
+  - name: Component Metric Rates By Core ID
+    sql: |
+      CREATE TABLE send_receive_rates_by_core AS WITH
+        trimmed_rates AS (
+          SELECT wr.*
+          FROM send_receive_with_rate wr
+          JOIN observation_window ow
+            ON wr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        ),
+
+        observation_window_aggregates AS (
+          SELECT
+            wr.component_name,
+            wr.metric_name,
+            wr.core_id,
+            MAX(wr.value) - MIN(wr.value) AS total_increase
+          FROM send_receive_with_rate wr
+          JOIN observation_window ow
+            ON wr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+          GROUP BY wr.component_name, wr.metric_name, wr.core_id
+        )
+
+        SELECT
+          t.component_name,
+          t.metric_name,
+          t.core_id,
+          f.total_increase,
+          AVG(t.rate) AS average_rate
+        FROM trimmed_rates t
+        JOIN observation_window_aggregates f
+          ON t.component_name = f.component_name
+          AND t.metric_name = f.metric_name
+          AND t.core_id = f.core_id
+        GROUP BY t.component_name, t.metric_name, t.core_id, f.total_increase
+        ORDER BY t.component_name, t.metric_name, t.core_id;
+
+  - name: Component Metric Rates
+    sql: |
+      CREATE TABLE aggregate_send_receive_rates AS
+      SELECT
+        component_name,
+        metric_name,
+        SUM(total_increase) AS total_increase,
+        SUM(average_rate) AS average_rate
+      FROM send_receive_rates_by_core
+      GROUP BY component_name, metric_name;
+  - name: Calculate component core counts
+    sql: |
+      CREATE TABLE component_core_counts AS
+        WITH allocated AS (
+          SELECT
+            "metric_attributes.component_name" AS component_name,
+            MAX(value) AS core_count
+          FROM metrics
+          WHERE metric_name = 'container.cpu.allocated'
+          GROUP BY "metric_attributes.component_name"
+        ),
+        system_cores AS (
+          SELECT DISTINCT
+            "metric_attributes.component_name" AS component_name,
+            (SELECT MAX(value) FROM metrics WHERE metric_name = 'container.cpu.usage') AS system_cpu_count
+          FROM metrics
+          WHERE metric_name IN ('container.cpu.usage', 'process.cpu.usage')
+        )
+        SELECT
+          s.component_name,
+          COALESCE(a.core_count, s.system_cpu_count) AS core_count
+        FROM system_cores s
+        LEFT JOIN allocated a ON s.component_name = a.component_name;
+
+  - name: Component Resource Per-Timestamp Values
+    sql: |
+      CREATE TABLE component_resource_with_values AS
+        SELECT
+          m.timestamp,
+          m."metric_attributes.component_name" AS component_name,
+          m.metric_name,
+          m.value
+        FROM metrics m
+        JOIN observation_window ow
+          ON m.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        WHERE m.metric_name IN ('process.cpu.usage', 'process.memory.usage', 'container.cpu.usage', 'container.memory.usage')
+
+  - name: Create component metric aggregates
+    sql: |
+      CREATE TABLE component_resource_metrics AS
+        SELECT
+          component_name,
+          metric_name,
+          MIN(value) AS min_value,
+          AVG(value) AS avg_value,
+          MAX(value) AS max_value
+        FROM component_resource_with_values
+        GROUP BY
+          component_name, metric_name
+        ORDER BY
+          component_name DESC;
+
+  - name: Calculate loss
+    sql: |
+      CREATE TABLE span_loss AS
+      SELECT
+          (COALESCE(spans_produced.total, 0) + COALESCE(failed.total, 0) - COALESCE(spans.total, 0)) AS spans_lost,
+          CASE
+              WHEN (COALESCE(spans_produced.total, 0) + COALESCE(failed.total, 0)) > 0 THEN
+                  (COALESCE(spans_produced.total, 0) + COALESCE(failed.total, 0) - COALESCE(spans.total, 0)) * 1.0 /
+                  (COALESCE(spans_produced.total, 0) + COALESCE(failed.total, 0))
+              ELSE NULL
+          END AS spans_lost_pct
+      FROM
+          (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'spans_produced') AS spans_produced,
+          (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'failed') AS failed,
+          (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'spans') AS spans;
+
+  - name: Calculate log throughput rates
+    sql: |
+      CREATE TABLE span_throughput_rates AS
+      WITH actual_timespans AS (
+        SELECT
+          wr.metric_name,
+          EXTRACT(EPOCH FROM (MAX(wr.timestamp) - MIN(wr.timestamp))) AS actual_duration
+        FROM send_receive_with_rate wr
+        JOIN observation_window ow
+          ON wr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        WHERE wr.metric_name IN ('spans_produced', 'spans')
+        GROUP BY wr.metric_name
+      )
+      SELECT
+        asr.metric_name,
+        asr.total_increase,
+        asr.total_increase / NULLIF(ats.actual_duration, 0) AS spans_per_second
+      FROM aggregate_send_receive_rates asr
+      JOIN actual_timespans ats ON asr.metric_name = ats.metric_name
+      WHERE asr.metric_name IN ('spans_produced', 'spans');
+
+  - name: Create Final Github Actions Format table
+    sql: |
+      CREATE TABLE gh_actions_benchmark AS
+          SELECT 'dropped_spans_percentage' AS name, '%' AS unit, CAST(spans_lost_pct AS FLOAT) * 100 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Dropped Spans %' AS extra
+          FROM span_loss
+          CROSS JOIN metadata_row
+
+          UNION ALL
+
+          SELECT 'cpu_percentage_normalized_avg' AS name, '%' AS unit,
+                (crm.avg_value / COALESCE(ccc.core_count, 1)) * 100 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - CPU % (Normalized)' AS extra
+          FROM component_resource_metrics crm
+          CROSS JOIN metadata_row
+          LEFT JOIN component_core_counts ccc ON crm.component_name = ccc.component_name
+          WHERE crm.component_name IN ('df-engine') AND crm.metric_name IN ('container.cpu.usage', 'process.cpu.usage')
+
+          UNION ALL
+
+          SELECT 'cpu_percentage_normalized_max' AS name, '%' AS unit,
+                (crm.max_value / COALESCE(ccc.core_count, 1)) * 100 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - CPU % (Normalized)' AS extra
+          FROM component_resource_metrics crm
+          CROSS JOIN metadata_row
+          LEFT JOIN component_core_counts ccc ON crm.component_name = ccc.component_name
+          WHERE crm.component_name IN ('df-engine') AND crm.metric_name IN ('container.cpu.usage', 'process.cpu.usage')
+
+          UNION ALL
+
+          SELECT 'ram_mib_avg' AS name, 'MiB' AS unit, avg_value / 1024 / 1024 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - RAM (MiB)' AS extra
+          FROM component_resource_metrics
+          CROSS JOIN metadata_row
+          WHERE component_name IN ('df-engine') AND metric_name IN ('container.memory.usage', 'process.memory.usage')
+
+          UNION ALL
+
+          SELECT 'ram_mib_max' AS name, 'MiB' AS unit, max_value / 1024 / 1024 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - RAM (MiB)' AS extra
+          FROM component_resource_metrics
+          CROSS JOIN metadata_row
+          WHERE component_name IN ('df-engine') AND metric_name IN ('container.memory.usage', 'process.memory.usage')
+
+          UNION ALL
+
+          SELECT 'spans_produced_rate' AS name, 'spans/sec' AS unit, spans_per_second AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Span Throughput' AS extra
+          FROM span_throughput_rates
+          CROSS JOIN metadata_row
+          WHERE metric_name = 'spans_produced'
+
+          UNION ALL
+
+          SELECT 'spans_received_rate' AS name, 'spans/sec' AS unit, spans_per_second AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Span Throughput' AS extra
+          FROM span_throughput_rates
+          CROSS JOIN metadata_row
+          WHERE metric_name = 'spans'
+
+          UNION ALL
+
+          SELECT 'test_duration' AS name, 'seconds' AS unit,
+                EXTRACT(EPOCH FROM (stop_ts - start_ts)) AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Test Duration' AS extra
+          FROM observation_window
+          CROSS JOIN metadata_row
+
+          UNION ALL
+
+          SELECT 'network_tx_bytes_rate_avg' AS name, 'bytes/sec' AS unit, average_rate AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
+          FROM container_network_rates
+          CROSS JOIN metadata_row
+          WHERE metric_name = 'container.network.tx' AND component_name IN ('df-engine')
+
+          UNION ALL
+
+          SELECT 'network_rx_bytes_rate_avg' AS name, 'bytes/sec' AS unit, average_rate AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
+          FROM container_network_rates
+          CROSS JOIN metadata_row
+          WHERE metric_name = 'container.network.rx' AND component_name IN ('df-engine');
+
+  - name: Dashboard time-series data
+    sql: |
+      CREATE TABLE dashboard_timeseries AS
+        -- CPU % (normalized by core count)
+        SELECT
+          EXTRACT(EPOCH FROM cr.timestamp - ow.start_ts) AS t,
+          'cpu_percentage_normalized' AS metric,
+          (cr.value / COALESCE(ccc.core_count, 1)) * 100 AS value
+        FROM component_resource_with_values cr
+        CROSS JOIN observation_window ow
+        LEFT JOIN component_core_counts ccc ON cr.component_name = ccc.component_name
+        WHERE cr.metric_name IN ('container.cpu.usage', 'process.cpu.usage')
+          AND cr.component_name IN ('df-engine')
+
+        UNION ALL
+
+        -- RAM (MiB)
+        SELECT
+          EXTRACT(EPOCH FROM cr.timestamp - ow.start_ts) AS t,
+          'ram_mib' AS metric,
+          cr.value / 1048576.0 AS value
+        FROM component_resource_with_values cr
+        CROSS JOIN observation_window ow
+        WHERE cr.metric_name IN ('container.memory.usage', 'process.memory.usage')
+          AND cr.component_name IN ('df-engine')
+
+        UNION ALL
+
+        -- Network TX rate (bytes/sec)
+        SELECT
+          EXTRACT(EPOCH FROM nr.timestamp - ow.start_ts) AS t,
+          'network_tx_bytes_rate' AS metric,
+          nr.rate AS value
+        FROM container_network_with_rate nr
+        JOIN observation_window ow ON nr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        WHERE nr.rate IS NOT NULL
+          AND nr.metric_name = 'container.network.tx'
+          AND nr.component_name IN ('df-engine')
+
+        UNION ALL
+
+        -- Network RX rate (bytes/sec)
+        SELECT
+          EXTRACT(EPOCH FROM nr.timestamp - ow.start_ts) AS t,
+          'network_rx_bytes_rate' AS metric,
+          nr.rate AS value
+        FROM container_network_with_rate nr
+        JOIN observation_window ow ON nr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        WHERE nr.rate IS NOT NULL
+          AND nr.metric_name = 'container.network.rx'
+          AND nr.component_name IN ('df-engine')
+
+        UNION ALL
+
+        -- Span produced rate (spans/sec) - sum across all cores
+        SELECT
+          t,
+          'spans_produced_rate' AS metric,
+          SUM(rate) AS value
+        FROM (
+          SELECT
+            EXTRACT(EPOCH FROM sr.timestamp - ow.start_ts) AS t,
+            sr.rate
+          FROM send_receive_with_rate sr
+          JOIN observation_window ow ON sr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+          WHERE sr.rate IS NOT NULL AND sr.metric_name = 'spans_produced'
+        ) sub
+        GROUP BY t
+
+        UNION ALL
+
+        -- Span received rate (spans/sec) - sum across all cores
+        SELECT
+          t,
+          'spans_received_rate' AS metric,
+          SUM(rate) AS value
+        FROM (
+          SELECT
+            EXTRACT(EPOCH FROM sr.timestamp - ow.start_ts) AS t,
+            sr.rate
+          FROM send_receive_with_rate sr
+          JOIN observation_window ow ON sr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+          WHERE sr.rate IS NOT NULL AND sr.metric_name = 'spans'
+        ) sub
+        GROUP BY t
+
+        ORDER BY metric, t;
+
+result_tables:
+  - name: metadata_filtered
+    description: Information about the test suite and report.
+  - name: send_receive_rates_by_core
+    description: Core Specific increase and average rate of various send / receive metrics
+  - name: aggregate_send_receive_rates
+    description: Cumulative increase and average rate of various send / receive metrics
+  - name: component_resource_metrics
+    description: CPU and Memory metrics for the components in the Test Suite during the test.
+  - name: span_loss
+    description: Lost spans (failed or sent but not received) total and as a percentage
+  - name: span_throughput_rates
+    description: Span throughput rates (spans/sec) calculated from total counts and observation window duration
+  - name: gh_actions_benchmark
+    description: The final metrics used with gh_actions_benchmark.
+    #display: False
+  - name: dashboard_timeseries
+    description: Per-metric time-series data points within the observation window for dashboard charts.
+    display: False
