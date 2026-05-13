@@ -1,0 +1,17 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["dfe_metrics_otlphttp_zstd_baseline"] = {
+  "name": "DFE OTLP/HTTP Baseline w/ Zstd (Metrics)",
+  "slug": "dfe_metrics_otlphttp_zstd_baseline",
+  "description": "Dataflow Engine baseline for OTLP/HTTP metrics with zstd compression",
+  "meta": {
+    "binary": "dfe",
+    "protocols": [
+      "otlphttp"
+    ],
+    "signals": [
+      "metrics"
+    ],
+    "compression": "zstd"
+  },
+  "tests": []
+};

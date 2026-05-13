@@ -1,0 +1,17 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["dfe_metrics_otlp_none_baseline"] = {
+  "name": "DFE OTLP Baseline (Metrics)",
+  "slug": "dfe_metrics_otlp_none_baseline",
+  "description": "Dataflow Engine baseline for OTLP metrics with no compression",
+  "meta": {
+    "binary": "dfe",
+    "protocols": [
+      "otlp"
+    ],
+    "signals": [
+      "metrics"
+    ],
+    "compression": "none"
+  },
+  "tests": []
+};

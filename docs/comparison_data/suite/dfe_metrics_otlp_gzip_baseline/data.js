@@ -1,0 +1,17 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["dfe_metrics_otlp_gzip_baseline"] = {
+  "name": "DFE OTLP Baseline w/ Gzip (Metrics)",
+  "slug": "dfe_metrics_otlp_gzip_baseline",
+  "description": "Dataflow Engine baseline for OTLP metrics with gzip compression",
+  "meta": {
+    "binary": "dfe",
+    "protocols": [
+      "otlp"
+    ],
+    "signals": [
+      "metrics"
+    ],
+    "compression": "gzip"
+  },
+  "tests": []
+};
