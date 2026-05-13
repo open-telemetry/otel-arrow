@@ -14,29 +14,31 @@ workspace = true
 
 [dependencies]
 # Workspace crates (likely used by most/all features)
+otap-df-channel = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-engine = { workspace = true }
 otap-df-otap = { workspace = true }
 otap-df-pdata = { workspace = true }
 otap-df-pdata-views = { workspace = true }
 otap-df-telemetry = { workspace = true }
-otap-df-channel = { workspace = true }
 otap-df-telemetry-macros = { workspace = true }
 
 arrow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
-tokio.workspace = true
-tracing.workspace = true
 bytes.workspace = true
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 linkme.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+base64 = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
-geneva-uploader = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
+itoa = { workspace = true, optional = true }
+geneva-uploader = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 data_engine_expressions = { workspace = true, optional = true }
 data_engine_kql_parser = { workspace = true, optional = true }
@@ -47,14 +49,33 @@ azure_core = { workspace = true, optional = true, features = ["reqwest"] }
 azure_identity = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
-itoa = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 ryu = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 sysinfo = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# TODO: Remove this pinned git dependency once one-collect is upstream in the
+# normal dependency graph and no longer needs to be pulled directly here. The
+# pinned commit is from 2026-04-10.
+one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "2d33e674348168f4a19bd3ab40d92f1c556407ec", features = ["scripting"], optional = true }
+tracepoint_decode = { workspace = true, optional = true }
+
 [features]
+contrib-receivers = [
+    "user_events-receiver",
+]
+user_events-receiver = [
+    "dep:base64",
+    "dep:chrono",
+    "dep:humantime-serde",
+    "dep:one_collect",
+]
+user_events-eventheader = [
+    "user_events-receiver",
+    "dep:tracepoint_decode",
+]
 contrib-exporters = [
     "geneva-exporter",
     "azure-monitor-exporter",
@@ -103,13 +124,21 @@ criterion = { workspace = true, features = ["html_reports"] }
 data_engine_expressions.workspace = true
 data_engine_recordset.workspace = true
 humantime.workspace = true
+core_affinity.workspace = true
+otap-df-channel = { workspace = true }
 opentelemetry-proto.workspace = true
 otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-otap = { workspace = true, features = ["test-utils"] }
+otap-df-pdata = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+eventheader_dynamic.workspace = true
+tracepoint.workspace = true
 
 [[bench]]
 name = "azure_monitor_transformer"
@@ -138,3 +167,13 @@ required-features = ["recordset-kql-processor"]
 name = "mock_la_server"
 path = "examples/mock_la_server.rs"
 required-features = ["azure-monitor-exporter"]
+
+[[example]]
+name = "user_events_tracefs_producer"
+path = "src/receivers/user_events_receiver/examples/tracefs_producer.rs"
+required-features = ["user_events-receiver"]
+
+[[example]]
+name = "user_events_eventheader_producer"
+path = "src/receivers/user_events_receiver/examples/eventheader_producer.rs"
+required-features = ["user_events-eventheader"]

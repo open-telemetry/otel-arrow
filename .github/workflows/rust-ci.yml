@@ -196,6 +196,24 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
+  user_events_linux_smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: ./rust/otap-dataflow
+      - name: Run user_events Linux smoke test when supported
+        env:
+          OTAP_DF_RUN_USEREVENTS_E2E: "1"
+        run: cargo test -p otap-df-contrib-nodes user_events_linux_e2e_smoke_when_available --features user_events-receiver,otap-df-otap/crypto-ring
+        working-directory: ./rust/otap-dataflow
+
   fmt:
     strategy:
       fail-fast: false
@@ -831,6 +849,7 @@ jobs:
       - no_default_features_check
       - pipeline_perf_test
       - host-metrics-semconv
+      - user_events_linux_smoke
     steps:
       - name: Check if all required jobs succeeded
         run: |
@@ -872,6 +891,10 @@ jobs:
           fi
           if [[ "${{ needs.host-metrics-semconv.result }}" != "success" ]]; then
             echo "host-metrics-semconv failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.user_events_linux_smoke.result }}" != "success" ]]; then
+            echo "user_events_linux_smoke failed or was cancelled"
             exit 1
           fi
           echo "All required checks passed!"

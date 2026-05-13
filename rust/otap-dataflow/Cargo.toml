@@ -231,6 +231,7 @@ wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
 data_engine_recordset = { path = '../experimental/query_engine/engine-recordset' }
+eventheader_dynamic = "0.5.0"
 include_dir = "0.7.4"
 mime_guess = "2.0.5"
 minijinja = "2"
@@ -247,6 +248,8 @@ ratatui = "0.30"
 testcontainers = "0.27"
 toml = "1.0.0"
 tonic-prost-build = "0.14"
+tracepoint = { version = "0.5.0", features = ["user_events"] }
+tracepoint_decode = "0.5.0"
 urlencoding = "2"
 # Pinned to open-telemetry/opentelemetry-rust-contrib main on 2026-04-25.
 geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "ce866b48a1645f1fb222bdea19c42821a2b48d5a" }
@@ -290,6 +293,10 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
 geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
 azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
+# Contrib receivers (opt-in) - now in contrib-nodes
+contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
+user_events-receiver = ["otap-df-contrib-nodes/user_events-receiver"]
+user_events-eventheader = ["otap-df-contrib-nodes/user_events-eventheader"]
 # Contrib processors (opt-in) - now in contrib-nodes
 contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
 condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]
