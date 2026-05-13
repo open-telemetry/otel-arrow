@@ -155,7 +155,6 @@ def simplify_suite_yaml(suite: dict) -> dict:
 #   memory.total_gib_rounded, os.release
 # Times are captured/displayed but not part of equality.
 # ---------------------------------------------------------------------------
-RUN_ENV_SCHEMA_VERSION = 1
 
 
 def now_utc_iso() -> str:
@@ -172,7 +171,6 @@ def collect_run_env(started_at: str, ended_at: str) -> dict:
     assert isinstance(started_at, str) and started_at, "started_at must be a non-empty ISO 8601 string"
     assert isinstance(ended_at, str) and ended_at, "ended_at must be a non-empty ISO 8601 string"
     return {
-        "schema_version": RUN_ENV_SCHEMA_VERSION,
         "started_at": started_at,
         "ended_at": ended_at,
         "cpu": _collect_cpu(),
@@ -184,6 +182,8 @@ def collect_run_env(started_at: str, ended_at: str) -> dict:
 def _collect_cpu() -> dict:
     """CPU details: model, arch, physical/logical cores, max frequency."""
     psutil = _require_psutil()
+    cpuinfo = _require_cpuinfo()
+    info = cpuinfo.get_cpu_info() or {}
     physical = psutil.cpu_count(logical=False)
     logical = psutil.cpu_count(logical=True)
     try:
@@ -192,58 +192,12 @@ def _collect_cpu() -> dict:
     except Exception:
         max_freq_mhz = None
     return {
-        "model": _cpu_model(),
+        "model": info.get("brand_raw") or "unknown",
         "architecture": platform.machine() or "unknown",
         "physical_cores": int(physical) if physical else None,
         "logical_cores": int(logical) if logical else None,
         "max_freq_mhz": max_freq_mhz,
     }
-
-
-def _cpu_model() -> str:
-    """Best-effort cross-platform CPU model name."""
-    system = platform.system()
-    if system == "Linux":
-        model = _cpu_model_from_proc_cpuinfo()
-        if model:
-            return model
-    elif system == "Darwin":
-        model = _cpu_model_from_sysctl()
-        if model:
-            return model
-    # Windows and fallback
-    return platform.processor() or "unknown"
-
-
-def _cpu_model_from_proc_cpuinfo() -> str | None:
-    """Read the first 'model name' entry from /proc/cpuinfo."""
-    path = Path("/proc/cpuinfo")
-    if not path.exists():
-        return None
-    try:
-        for line in path.read_text().splitlines():
-            if line.startswith("model name"):
-                _, _, value = line.partition(":")
-                value = value.strip()
-                if value:
-                    return value
-    except OSError:
-        return None
-    return None
-
-
-def _cpu_model_from_sysctl() -> str | None:
-    """Read `machdep.cpu.brand_string` via sysctl on macOS."""
-    try:
-        out = subprocess.check_output(
-            ["sysctl", "-n", "machdep.cpu.brand_string"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-            timeout=2,
-        ).strip()
-        return out or None
-    except (OSError, subprocess.SubprocessError):
-        return None
 
 
 def _collect_os() -> dict:
@@ -296,6 +250,24 @@ def _require_psutil():
         )
         raise SystemExit(1) from exc
     return psutil
+
+
+def _require_cpuinfo():
+    """Import py-cpuinfo with an actionable error if missing.
+
+    Only called from `dashboard.py run`. `build` reads existing
+    run_env.json files and never invokes this.
+    """
+    try:
+        import cpuinfo  # noqa: WPS433
+    except ImportError as exc:
+        print(
+            "ERROR: py-cpuinfo is required for `dashboard.py run` (captures CPU model).\n"
+            "  pip install -r tools/comparison_dashboard/requirements.txt",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+    return cpuinfo
 
 
 def env_fingerprint(env: dict | None) -> dict | None:
