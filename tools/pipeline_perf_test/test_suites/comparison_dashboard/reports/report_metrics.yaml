@@ -269,7 +269,7 @@ queries:
           FROM component_resource_metrics crm
           CROSS JOIN metadata_row
           LEFT JOIN component_core_counts ccc ON crm.component_name = ccc.component_name
-          WHERE crm.component_name IN ('df-engine') AND crm.metric_name IN ('container.cpu.usage', 'process.cpu.usage')
+          WHERE crm.component_name IN ('df-engine', 'go-collector') AND crm.metric_name IN ('container.cpu.usage', 'process.cpu.usage')
 
           UNION ALL
 
@@ -279,7 +279,7 @@ queries:
           FROM component_resource_metrics crm
           CROSS JOIN metadata_row
           LEFT JOIN component_core_counts ccc ON crm.component_name = ccc.component_name
-          WHERE crm.component_name IN ('df-engine') AND crm.metric_name IN ('container.cpu.usage', 'process.cpu.usage')
+          WHERE crm.component_name IN ('df-engine', 'go-collector') AND crm.metric_name IN ('container.cpu.usage', 'process.cpu.usage')
 
           UNION ALL
 
@@ -287,7 +287,7 @@ queries:
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - RAM (MiB)' AS extra
           FROM component_resource_metrics
           CROSS JOIN metadata_row
-          WHERE component_name IN ('df-engine') AND metric_name IN ('container.memory.usage', 'process.memory.usage')
+          WHERE component_name IN ('df-engine', 'go-collector') AND metric_name IN ('container.memory.usage', 'process.memory.usage')
 
           UNION ALL
 
@@ -295,7 +295,7 @@ queries:
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - RAM (MiB)' AS extra
           FROM component_resource_metrics
           CROSS JOIN metadata_row
-          WHERE component_name IN ('df-engine') AND metric_name IN ('container.memory.usage', 'process.memory.usage')
+          WHERE component_name IN ('df-engine', 'go-collector') AND metric_name IN ('container.memory.usage', 'process.memory.usage')
 
           UNION ALL
 
@@ -327,7 +327,7 @@ queries:
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
-          WHERE metric_name = 'container.network.tx' AND component_name IN ('df-engine')
+          WHERE metric_name = 'container.network.tx' AND component_name IN ('df-engine', 'go-collector')
 
           UNION ALL
 
@@ -335,7 +335,7 @@ queries:
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
-          WHERE metric_name = 'container.network.rx' AND component_name IN ('df-engine');
+          WHERE metric_name = 'container.network.rx' AND component_name IN ('df-engine', 'go-collector');
 
   - name: Dashboard time-series data
     sql: |
@@ -349,7 +349,7 @@ queries:
         CROSS JOIN observation_window ow
         LEFT JOIN component_core_counts ccc ON cr.component_name = ccc.component_name
         WHERE cr.metric_name IN ('container.cpu.usage', 'process.cpu.usage')
-          AND cr.component_name IN ('df-engine')
+          AND cr.component_name IN ('df-engine', 'go-collector')
 
         UNION ALL
 
@@ -361,7 +361,7 @@ queries:
         FROM component_resource_with_values cr
         CROSS JOIN observation_window ow
         WHERE cr.metric_name IN ('container.memory.usage', 'process.memory.usage')
-          AND cr.component_name IN ('df-engine')
+          AND cr.component_name IN ('df-engine', 'go-collector')
 
         UNION ALL
 
@@ -374,7 +374,7 @@ queries:
         JOIN observation_window ow ON nr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
         WHERE nr.rate IS NOT NULL
           AND nr.metric_name = 'container.network.tx'
-          AND nr.component_name IN ('df-engine')
+          AND nr.component_name IN ('df-engine', 'go-collector')
 
         UNION ALL
 
@@ -387,7 +387,7 @@ queries:
         JOIN observation_window ow ON nr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
         WHERE nr.rate IS NOT NULL
           AND nr.metric_name = 'container.network.rx'
-          AND nr.component_name IN ('df-engine')
+          AND nr.component_name IN ('df-engine', 'go-collector')
 
         UNION ALL
 

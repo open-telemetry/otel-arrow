@@ -6,11 +6,9 @@
 //! This exporter sends telemetry data to an OTLP server using the HTTP Protocol.
 //!
 //! ToDo:
-//! - TLS/mTLS
 //! - Proxy settings
 //! - Compression (payloads and accepting compressed responses)
 //! - JSON encoding payloads (currently only proto is supported and it's not configurable)
-//! - Allow endpoint overrides for each signal type (similar to Go collector implementation)
 //! - Unit test metrics reporting
 
 use std::num::NonZeroUsize;
