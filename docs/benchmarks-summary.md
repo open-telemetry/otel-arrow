@@ -49,7 +49,7 @@ of this benchmark summary.
 
 | Configuration   | CPU Usage | Memory Usage |
 | --------------- | --------- | ------------ |
-| Single Core     | 0.06%     | 27 MB        |
+| Single Core     | 0.1%      | 15 MB        |
 | All Cores (128) | 2.5%      | 600 MB       |
 
 *Note: CPU usage is normalized (percentage of total system capacity). Memory
@@ -63,37 +63,32 @@ telemetry loads.
 #### Standard Load Performance (Single Core)
 
 Resource utilization at 100,000 log records per second (100K logs/sec) on a
-single CPU core. Tests are conducted with four different batch sizes to
-demonstrate the impact of batching on performance.
+single CPU core. Tests are conducted with different batch sizes to demonstrate
+the impact of batching on performance.
 
 **Test Parameters:**
 
 - Total input load: 100,000 log records/second
 - Average log record size: 1 KB
-- Batch sizes tested: 10, 100, 1000, 5000, and 10000 records per request
+- Batch sizes tested: 10, 100, 512, 1024, 4096, and 8192 records per request
 - Test duration: 60 seconds
 
 This wide range of batch sizes evaluates performance across diverse deployment
 scenarios. Small batches (10-100) represent edge collectors or real-time
-streaming requirements, while large batches (1000-10000) represent gateway
+streaming requirements, while large batches (1024-8192) represent gateway
 collectors and high-throughput aggregation points. This approach ensures a fair
 assessment, highlighting both the overhead for small batches and the significant
 efficiency gains inherent to Arrow's columnar format at larger batch sizes.
-
-<!-- TODO: We need to add BatchingProcessor to tests. -->
-<!-- TODO: Batch size influence might be most relevant when we
- do aggregation/transform etc. -->
-<!-- TODO: Add benchmark tests for batch sizes 10 and 100. -->
 
 ##### Standard Load - OTAP -> OTAP (Native Protocol)
 
 | Batch Size | CPU Usage | Memory Usage | Network In | Network Out |
 |------------|-----------|--------------|------------|-------------|
-| 10/batch | TBD | TBD | TBD | TBD |
-| 100/batch | TBD | TBD | TBD | TBD |
-| 1000/batch | 17% | 46 MB | 718 KB/s | 750 KB/s |
-| 5000/batch | 7% | 50 MB | 390 KB/s | 422 KB/s |
-| 10000/batch | 5% | 58 MB | 350 KB/s | 383 KB/s |
+| 512/batch | 50% | 16 MB | 767 KB/s | 833 KB/s |
+
+*Note: Only 512/batch has been tested for OTAP at standard load so far. OTAP
+batch size variants for small batches are blocked by a known drain-timeout issue
+and will be added once resolved.*
 
 This represents the optimal scenario where the dataflow engine operates with its
 native protocol end-to-end, eliminating protocol conversion overhead.
@@ -102,11 +97,15 @@ native protocol end-to-end, eliminating protocol conversion overhead.
 
 | Batch Size | CPU Usage | Memory Usage | Network In | Network Out |
 |------------|-----------|--------------|------------|-------------|
-| 10/batch | TBD | TBD | TBD | TBD |
-| 100/batch | TBD | TBD | TBD | TBD |
-| 1000/batch | 43% | 52 MB | 2.1 MB/s | 2.2 MB/s |
-| 5000/batch | 40% | 79 MB | 1.9 MB/s | 2.0 MB/s |
-| 10000/batch | 40% | 80 MB | 1.8 MB/s | 1.9 MB/s |
+| 10/batch | 71%* | 19 MB | 4.1 MB/s | 4.4 MB/s |
+| 100/batch | 67% | 17 MB | 4.8 MB/s | 5.0 MB/s |
+| 512/batch | 65% | 17 MB | 2.8 MB/s | 3.0 MB/s |
+| 1024/batch | 65% | 17 MB | 2.6 MB/s | 2.7 MB/s |
+| 4096/batch | 57% | 22 MB | 2.4 MB/s | 2.5 MB/s |
+| 8192/batch | 55% | 30 MB | 2.4 MB/s | 2.5 MB/s |
+
+*\* At batch size 10, the engine saturates at ~33K logs/sec and cannot reach the
+100K target. The per-request overhead at very small batch sizes dominates.*
 
 This scenario processes OTLP end-to-end using the standard OpenTelemetry
 protocol, providing a baseline for comparison with traditional OTLP-based
@@ -119,7 +118,7 @@ establishes the baseline "unit of capacity" for capacity planning.
 
 **Test Parameters:**
 
-- Batch size: 500 records per request
+- Batch size: 512 records per request
 - Load: Continuously increased until the CPU core is fully saturated
 - Test duration: 60 seconds at maximum load
 
@@ -130,8 +129,7 @@ for load balancing and routing use cases.
 
 | Protocol | Max Throughput | CPU Usage | Memory Usage |
 |----------|----------------|-----------|--------------|
-| OTAP -> OTAP (Native) | TBD | TBD | TBD |
-| OTLP -> OTLP (Standard) | ~566K logs/sec | ~98% | ~45 MB |
+| OTLP -> OTLP (Standard) | ~542K logs/sec | ~96% | ~33 MB |
 
 ##### With Processing
 
@@ -141,8 +139,10 @@ filtering, attribute enrichment, renaming, or aggregation.
 
 | Protocol | Max Throughput | CPU Usage | Memory Usage |
 |----------|----------------|-----------|--------------|
-| OTAP -> OTAP (Native) | TBD | TBD | TBD |
-| OTLP -> OTLP (Standard) | ~238K logs/sec | ~99% | ~38 MB |
+| OTLP -> OTLP (Standard) | ~260K logs/sec | ~91% | ~41 MB |
+
+*Note: OTAP -> OTAP saturation tests for passthrough and processing modes are
+not yet available and will be added in a future update.*
 
 #### Scalability
 
@@ -165,9 +165,11 @@ eliminating shared-state synchronization overhead.
 | 16 Cores  | ~2.37M logs/sec | ~78%*    | 62%               | ~288 MB      |
 | 24 Cores  | ~3.67M logs/sec | ~77%*    | 64%               | ~461 MB      |
 
-TODO: Use more load-generator so saturate CPU at higher cores.
+*\* At higher core counts, CPU utilization drops below 100% because the
+load-generator cannot fully saturate all engine cores. Adding more load-generator
+cores would increase both throughput and CPU utilization.*
 
-Scaling Efficiency = (Throughput at N cores) / (N * Single-core throughput)
+Scaling Efficiency = (Throughput at N cores) / (N × Single-core throughput)
 
 ### Architecture
 
@@ -234,23 +236,28 @@ across different serialization formats.
 - Test duration: 60 seconds
 - CPU: Both systems pinned to a single core
 
+*Note: OTel Arrow numbers are from the nightly benchmark server (64-core bare
+metal). OTel Collector numbers are from local testing (16-core dev machine)
+pending nightly CI integration. Final numbers will be updated once the OTel
+Collector syslog test suite is merged and running in nightly CI.*
+
 #### Saturation Throughput - OTLP Output
 
 | Metric | OTel Collector | OTel Arrow | Improvement |
 |--------|---------------|------------|-------------|
-| Max Throughput (logs/sec) | ~50K | ~161K | **3.3x** |
-| CPU Usage | ~98% | ~90% | — |
-| Memory Usage | ~41 MB | ~29 MB | 1.4x less |
-| Network Egress | ~1.0 MB/s | ~1.8 MB/s | — |
+| Max Throughput (logs/sec) | ~50K | ~240K | **4.8x** |
+| CPU Usage | ~98% | ~91% | — |
+| Memory Usage | ~41 MB | ~30 MB | 1.4x less |
+| Network Egress | ~1.0 MB/s | ~2.7 MB/s | — |
 
 #### Saturation Throughput - OTAP Output
 
 | Metric | OTel Collector | OTel Arrow | Improvement |
 |--------|---------------|------------|-------------|
-| Max Throughput (logs/sec) | ~79K | ~113K | **1.4x** |
+| Max Throughput (logs/sec) | ~79K | ~165K | **2.1x** |
 | CPU Usage | ~100% | ~100% | — |
-| Memory Usage | ~360 MB | ~33 MB | 10.9x less |
-| Network Egress | ~330 KB/s | ~605 KB/s | — |
+| Memory Usage | ~360 MB | ~18 MB | 20x less |
+| Network Egress | ~330 KB/s | ~887 KB/s | — |
 
 *Note: The OTel Collector's higher memory usage with OTAP output is due to the
 Arrow encoding buffers and Go's garbage collector behavior under sustained
@@ -258,19 +265,17 @@ load.*
 
 ### Key Findings
 
-- **3.3x higher throughput** with OTLP output: The OTel Arrow engine processes
-  syslog messages over 3x faster than the Go-based OTel Collector when both
+- **4.8x higher throughput** with OTLP output: The OTel Arrow engine processes
+  syslog messages nearly 5x faster than the Go-based OTel Collector when both
   are exporting via OTLP on a single core.
-- **Dramatically lower memory** with OTAP output: The OTel Arrow engine uses
-  ~33 MB vs ~360 MB for the Go collector when using OTAP as the export
-  protocol, a ~11x reduction.
-- **OTAP benefits both systems**: Both achieve higher throughput with OTAP
-  vs OTLP output (79K vs 50K for Go, 113K vs 161K — the df-engine is actually
-  slightly slower with OTAP here because it is fully saturating the CPU doing
-  Arrow encoding work, whereas OTLP export is lighter since the loadgen cannot
-  fully saturate it).
+- **20x lower memory** with OTAP output: The OTel Arrow engine uses ~18 MB vs
+  ~360 MB for the Go collector when using OTAP as the export protocol.
+- **OTAP benefits both systems for network efficiency**: Both achieve
+  significantly lower network egress with OTAP vs OTLP output due to Arrow's
+  columnar compression. However, the Arrow encoding work itself saturates the
+  CPU, reducing throughput compared to the simpler OTLP serialization path.
 - **Efficient resource utilization**: The Rust-based engine achieves higher
-  throughput at lower CPU utilization (90% vs 98% at the OTLP throughput
+  throughput at lower CPU utilization (91% vs 98% at the OTLP throughput
   ceiling), leaving headroom for burst handling.
 
 ---
