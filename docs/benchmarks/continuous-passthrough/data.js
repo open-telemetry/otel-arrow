@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778718373606,
+  "lastUpdate": 1778721389554,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "33842784+JakeDern@users.noreply.github.com",
-            "name": "Jake Dern",
-            "username": "JakeDern"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "8f6fa92280658b62989971f21ab1000610b55d5d",
-          "message": "feat: Make fake data generator pacing more reliable and update sql reports to query correct time frame (#2723)\n\n# Change Summary\n\nThis PR is an attempt to solve #2713 with three connected changes.\n\nThe first is to make the reported data production rate coming out of the\nfake data generator smoother and more reliable especially under\nbackpressure by using tokio intervals which are less prone to drift and\nhave a catch-up mechanism.\n\nThe second makes sure we report metrics in smaller increments after\nevery batch is exported. #2685 made some progress in this area, but as\nnoted there it was an incomplete solution which held back metrics for\nprolonged periods of time in addition to having to heap allocate the\nsend futures. I went after the full solution to the problem in this PR.\nNow we exclusively do non-blocking sends one batch at a time and always\nbump counters in-between on successful sends.\n\nThe third is against the rate calculations which were using the total\nproduced signals from the run, but computing the rate from the\nobservation time interval only. This means that we artificially inflated\nthe overall rate by making it look like it took a shorter time to\nachieve than it did. We correct this by computing the rate for the\nobservation window only.\n\nOther small fixes:\n\n- Added two production modes for the fake data generator which can do\neither a smooth production loop or an open loop in case the interval to\ndo a smooth loop is too small.\n- Updated some try_from implementations.\n\n## What issue does this PR close?\n\n* Closes #2713\n\n## How are these changes tested?\n\nRan the benchmarks locally and we can see that the produced and received\nrates are _very_ close to 100klrps now as opposed to 120k.\n\n<img width=\"1393\" height=\"310\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/1360f96e-8b23-48ef-98e7-f3a73cd27721\"\n/>\n\n\n## Are there any user-facing changes?\n\nNew fake data generator `production_mode` setting.\n\n---------\n\nCo-authored-by: Laurent Quérel <laurent.querel@gmail.com>",
-          "timestamp": "2026-04-23T14:45:02Z",
-          "tree_id": "0350a7d43d3b13f9ade00ffdf398db468dd41399",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/8f6fa92280658b62989971f21ab1000610b55d5d"
-        },
-        "date": 1776959422735,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 5.749362657324763,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 6.109238954429794,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 16.851692708333335,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.140625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 6041.346968251147,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 6041.346968251147,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002513,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 210979.93663970375,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 175318.30224909083,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 15181203.147154313,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "66651184+utpilla@users.noreply.github.com",
+            "name": "Utkarsh Umesan Pillai",
+            "username": "utpilla"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "f0b1ca6c8504355628090d13bcb6490ba7a80664",
+          "message": "Remove stale TODOs from OTLP Http Exporter that are already implemented (#2969)\n\n# Change Summary\n\nThe module-level `ToDo:` block at the top of\n`crates/core-nodes/src/exporters/otlp_http_exporter/mod.rs` still listed\ntwo items that have since been implemented. This PR removes them so the\nlist reflects only work that is actually outstanding.\n\n## Removed entries and where they are implemented\n\n### 1. `TLS/mTLS`\n\n- Configured via `HttpClientSettings.tls: Option<TlsClientConfig>` in\n`crates/otap/src/otlp_http/client_settings.rs` (lines 51-53).\n- Trust store (CA file/PEM, system roots), `insecure_skip_verify`, and\nthe mTLS client identity (cert + key paired into a reqwest `Identity`)\nare wired into the `reqwest::ClientBuilder` at\n`crates/otap/src/otlp_http/client_settings.rs` (lines 85-188).\n- Exporter validates and surfaces TLS-specific configuration errors at\n`crates/core-nodes/src/exporters/otlp_http_exporter/mod.rs` (lines\n139-175), e.g. unsupported `server_name_override`, ignored `insecure:\ntrue` when scheme is `https://`.\n- Integration coverage in `crates/otap/tests/otlp_exporter_tls.rs`:\n  - `otlp_exporter_connects_with_mtls`\n  - `otlp_exporter_connects_with_tls_only`\n  - `otlp_exporter_fails_partial_mtls`\n  - `otlp_exporter_fails_with_invalid_ca_pem`\n  - `otlp_exporter_allows_http_with_tls_config`\n- Proxy + TLS combinations in\n`crates/otap/tests/otlp_exporter_proxy_tls.rs`.\n\n### 2. `Allow endpoint overrides for each signal type (similar to Go\ncollector implementation)`\n\n- Per-signal override fields exist on the config struct:\n`traces_endpoint`, `metrics_endpoint`, `logs_endpoint` in\n`crates/core-nodes/src/exporters/otlp_http_exporter/config.rs` (lines\n26-40).\n- Resolved per-signal at construction time at\n`crates/core-nodes/src/exporters/otlp_http_exporter/mod.rs` (lines\n156-167 and 203-221), then dispatched per `SignalType` in the export\npath at lines 368-370 of the same file.\n\n## Remaining ToDo items (unchanged)\n\n- Proxy settings\n- Compression (payloads and accepting compressed responses)\n- JSON encoding payloads (only proto is supported, not configurable; see\nexisting inline TODO at\n`crates/core-nodes/src/exporters/otlp_http_exporter/mod.rs` line 670)\n- Unit test metrics reporting\n\n## What issue does this PR close?\n\n* Closes #NNN\n\n## How are these changes tested?\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->\n\nCo-authored-by: Utkarsh Umesan Pillai <utpilla@users.noreply.github.com>\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-05-14T00:30:31Z",
+          "tree_id": "32472846cecce6c9b48427b60efe12b74a8eedff",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f0b1ca6c8504355628090d13bcb6490ba7a80664"
+        },
+        "date": 1778721388859,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1120.076416015625,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.15608385046556,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.14895527008203,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 31.828645833333333,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 32.765625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 44626.39171034643,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 544476.1099497525,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003955,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 15471626.692371638,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 15422949.64242879,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
