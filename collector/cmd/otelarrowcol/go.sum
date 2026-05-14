@@ -108,6 +108,8 @@ github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/jonboulle/clockwork v0.5.0 h1:Hyh9A8u51kptdkR+cqRpT1EebBwTn1oK9YfGYbdFz6I=
 github.com/jonboulle/clockwork v0.5.0/go.mod h1:3mZlmanh0g2NDKO5TWZVJAfofYk64M7XN3SzBPjZF60=
+github.com/jpillora/backoff v1.0.0 h1:uvFg412JmmHBHw7iwprIxkPMI+sGQ4kzOWsMeHnm2EA=
+github.com/jpillora/backoff v1.0.0/go.mod h1:J/6gKK9jxlEcS3zixgDgUAsiuZ7yrSoa/FX5e0EB2j4=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
 github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
 github.com/kamstrup/intmap v0.5.2 h1:qnwBm1mh4XAnW9W9Ue9tZtTff8pS6+s6iKF6JRIV2Dk=
@@ -194,6 +196,8 @@ github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowrece
 github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.149.0/go.mod h1:W7hks+NivHSHNnSyQOXgRxLqkmEqW1L7wGgnetb0eI8=
 github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver v0.149.0 h1:eFYBAKpTwS4TgWAX9uY+O2jWlGi3bvWVLlV2xQrjyq8=
 github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver v0.149.0/go.mod h1:jGZvC8NhIjt5Nnz0dfxTQ6ypkEUryZ3L8AGv5Fs9ux8=
+github.com/open-telemetry/opentelemetry-collector-contrib/receiver/syslogreceiver v0.149.0 h1:F9MdIJEN9Nwln2Mq5g1JhTlvN5vi7ICY5T82tjddea0=
+github.com/open-telemetry/opentelemetry-collector-contrib/receiver/syslogreceiver v0.149.0/go.mod h1:mAkPDoBcIDglZqFL9I7tWtZkvUWwQnvIo3vNiiDZtHk=
 github.com/pierrec/lz4/v4 v4.1.26 h1:GrpZw1gZttORinvzBdXPUXATeqlJjqUG/D87TKMnhjY=
 github.com/pierrec/lz4/v4 v4.1.26/go.mod h1:EoQMVJgeeEOMsCqCzqFm2O0cJvljX2nGZjcRIPL34O4=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
