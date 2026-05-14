@@ -1346,3 +1346,86 @@ a.scenario-section-title:hover {
   flex: 0 1 auto;
   text-align: center;
 }
+
+/* ── Environment summary (comparison header) ─────────────────────────────── */
+.env-summary {
+  margin: 12px 0 8px;
+  padding: 8px 12px;
+  background: #f1f5f9;
+  border-left: 3px solid #64748b;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #0f172a;
+}
+.env-summary-label {
+  font-weight: 600;
+  color: #334155;
+  margin-right: 6px;
+}
+.env-summary-value {
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 12px;
+}
+.env-summary-unknown {
+  background: #fef3c7;
+  border-left-color: #f59e0b;
+  color: #78350f;
+}
+
+/* ── Environment mismatch banner ─────────────────────────────────────────── */
+.env-mismatch-banner {
+  margin: 12px 0;
+  padding: 12px 14px;
+  background: #fee2e2;
+  border: 1px solid #fca5a5;
+  border-left: 4px solid #dc2626;
+  border-radius: 6px;
+  color: #7f1d1d;
+}
+.env-mismatch-title {
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+.env-mismatch-reason {
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.env-mismatch-list {
+  margin: 0 0 6px 0;
+  padding-left: 18px;
+  font-size: 12px;
+  font-family: "SF Mono", Menlo, monospace;
+}
+.env-mismatch-list li { margin-bottom: 2px; }
+.env-mismatch-slug { font-weight: 600; }
+.env-mismatch-note {
+  font-size: 11px;
+  color: #991b1b;
+  font-style: italic;
+}
+
+/* ── Environment detail pane (per-test) ──────────────────────────────────── */
+.env-detail {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin-top: 4px;
+  padding: 8px 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.env-detail-row {
+  display: contents;
+}
+.env-detail-key {
+  color: #64748b;
+  font-weight: 600;
+}
+.env-detail-val {
+  color: #0f172a;
+  font-family: "SF Mono", Menlo, monospace;
+  word-break: break-word;
+}
