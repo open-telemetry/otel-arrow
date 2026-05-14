@@ -62,6 +62,20 @@ suites:
   - suites/otc/otc-logs-otlp-gzip-baseline.yaml
   - suites/otc/otc-logs-otlp-zstd-baseline.yaml
   - suites/otc/otc-logs-otlphttp-none-baseline.yaml
+  - suites/otc/otc-metrics-otap-none-baseline.yaml
+  - suites/otc/otc-metrics-otap-gzip-baseline.yaml
+  - suites/otc/otc-metrics-otap-zstd-baseline.yaml
+  - suites/otc/otc-metrics-otlp-none-baseline.yaml
+  - suites/otc/otc-metrics-otlp-gzip-baseline.yaml
+  - suites/otc/otc-metrics-otlp-zstd-baseline.yaml
+  - suites/otc/otc-metrics-otlphttp-none-baseline.yaml
+  - suites/otc/otc-traces-otap-none-baseline.yaml
+  - suites/otc/otc-traces-otap-gzip-baseline.yaml
+  - suites/otc/otc-traces-otap-zstd-baseline.yaml
+  - suites/otc/otc-traces-otlp-none-baseline.yaml
+  - suites/otc/otc-traces-otlp-gzip-baseline.yaml
+  - suites/otc/otc-traces-otlp-zstd-baseline.yaml
+  - suites/otc/otc-traces-otlphttp-none-baseline.yaml
 
 # Comparison definitions, listed by path. Each entry must point at an
 # existing YAML file with `slug` and `suites` (a list of suite refs).
