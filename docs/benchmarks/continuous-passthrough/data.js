@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778783489754,
+  "lastUpdate": 1778785029200,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "pritishnahar@gmail.com",
-            "name": "Pritish Nahar",
-            "username": "pritishnahar95"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "c77442588054522e7de6eb3a4083ff45140adb6b",
-          "message": "feat(metrics): add scope_attributes to MetricSelector for view filtering (#2755)\n\nExpand MetricSelector to support scope_attributes as a new selector\ndimension. When configured, the view only applies to instruments whose\nscope contains all specified attribute key-value pairs.\n\n# Change Summary\n\nAdd `scope_attributes: Option<HashMap<String, String>>` to\n`MetricSelector` in the config crate, and implement corresponding\nAND-based filter logic in `DeclarativeView::to_view_funtion()` in the\ntelemetry crate. Each configured key-value pair must be present on the\ninstrument's scope for the view to match.\n\n## What issue does this PR close?\n\n* Closes #2742\n\n## How are these changes tested?\n\n- Added `test_view_config_with_scope_attributes` in `views.rs` to verify\nYAML deserialization of the new field.\n- Added `test_views_provider_configure_with_scope_attributes` in\n`views_provider.rs` to verify that a view with scope attributes can be\nregistered on the meter provider.\n- Updated all existing test struct literals to include\n`scope_attributes: None`.\n\n## Are there any user-facing changes?\n\nYes. Users can now configure `scope_attributes` in their YAML view\nselectors to filter by scope-level metadata:\n\n```yaml\nviews:\n  - selector:\n      scope_name: \"my.library\"\n      scope_attributes:\n        env: \"production\"\n    stream:\n      description: \"Production histograms\"\n```\n\n---------\n\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>",
-          "timestamp": "2026-04-29T18:30:13Z",
-          "tree_id": "38b9d594a016cac42dbca29f3c455e2cb5e3a6be",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/c77442588054522e7de6eb3a4083ff45140adb6b"
-        },
-        "date": 1777493992181,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.9900990128517151,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 5.7542782909503645,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 6.243101876882676,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 16.769661458333335,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.03125,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 6032.208886562998,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 6091.933727024017,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.008532,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 213273.56237122478,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 176378.75664862656,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 15410933.122611875,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "cijo.thomas@gmail.com",
+            "name": "Cijo Thomas",
+            "username": "cijothomas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "54598c7d91f10b5258113ceeb5f65baee0045cc9",
+          "message": "Validate otel_* event names at compile time (#2957)\n\nAdds a `const fn validate_event_name` invoked from each `otel_info!` /\n`otel_warn!` / `otel_debug!` / `otel_error!` / `otel_event!` macro arm,\nso calls with empty or whitespace-containing event names fail `cargo\ncheck` instead of silently producing logs whose entire description is\nshoved into `event.name`.\n\nZero runtime cost (compile-time only). Existing call sites that violated\nthe rule are updated to use a short identifier with the descriptive text\nmoved to a `message = \"...\"` field.\n\nThe local macro copies in the `quiver` crate are intentionally left for\na follow-up.",
+          "timestamp": "2026-05-14T15:40:17Z",
+          "tree_id": "1eba98f7b02b4f1f65f1462a094f14855a2d3f95",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/54598c7d91f10b5258113ceeb5f65baee0045cc9"
+        },
+        "date": 1778785028671,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.0861191600561142,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.0003003291857,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.03549918799783,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 32.442708333333336,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 33.34375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 544952.1329815411,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 545421.4411677774,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003215,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 15487343.691512067,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 15437512.335388213,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
