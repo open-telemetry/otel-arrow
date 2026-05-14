@@ -14,11 +14,10 @@ emits OTAP log records. It reads through the `sd-journal` API, not by tailing
 `.journal` files and not by execing `journalctl`.
 
 The receiver is a source-specific sibling to the proposed filelog receiver in
-[#2844](https://github.com/open-telemetry/otel-arrow/issues/2844). It should
-reuse the same architectural principles where they apply:
-bounded backpressure, Ack-aware progress, durable checkpoints, partitioned
-ownership, and processor-owned semantic processing. It should not depend on
-the #2844 filelog assignment extension landing first.
+[#2844](https://github.com/open-telemetry/otel-arrow/issues/2844). It is **not**
+a filelog variant: its progress unit is an opaque journald cursor and its
+source API is `sd-journal`, not file discovery and byte offsets. It should not
+depend on the #2844 filelog assignment extension landing first.
 
 ## Core Decisions
 
@@ -26,7 +25,7 @@ the #2844 filelog assignment extension landing first.
 | --- | --- |
 | Source API | `sd-journal` via the `systemd` crate or a small internal `libsystemd` FFI wrapper |
 | Progress unit | Opaque journald cursor (`__CURSOR`) |
-| First implementation | Linux-only, default local system journal, static partition list |
+| First implementation | Linux-only, default local system journal, single-instance source pipeline (one core) |
 | Delivery model | At-least-once from the last committed cursor |
 | Checkpoint advance | Only after downstream Ack and durable checkpoint write |
 | Backpressure | Stop calling `sd_journal_next()` when the bounded handoff is full |
@@ -36,34 +35,68 @@ the #2844 filelog assignment extension landing first.
 
 ## Journald vs Filelog
 
-Journald is not a normal file tailing source even though journal data is stored
-on disk. A filelog receiver owns file discovery, file identity, byte offsets,
-line framing, and rotation. A journald receiver owns journal source selection,
+Journald must stay a separate receiver, not a filelog variant. Even though
+journal data is stored on disk, it is not a normal file tailing source. A
+filelog receiver owns file discovery, file identity, byte offsets, line
+framing, and rotation. A journald receiver owns journal source selection,
 `sd-journal` iteration, cursor checkpoints, field extraction, and journal
-retention/cursor-loss handling.
+retention/cursor-loss handling. The progress unit is an opaque cursor, the
+source API is `sd-journal`, and the failure modes (vacuum, cursor loss,
+priority filtering) have no analogue in `(file_identity, byte_offset)`
+tracking.
 
 ```text
 filelog:  file identity + byte offset + framing
-journald: journal partition + opaque cursor + structured entry
+journald: journal namespace + opaque cursor + structured entry
 ```
+
+What journald and filelog share -- and only these -- should be source-neutral
+engine contracts: backpressure, Ack/Nack-aware checkpoint advancement,
+checkpoint envelopes, lifecycle/drain, and future source assignment.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    J["systemd journal<br/>sd-journal API"] --> W["PartitionWorker<br/>blocking thread"]
+    J["systemd journal<br/>sd-journal API"] --> W["JournalWorker<br/>blocking thread"]
     W -->|"bounded batches<br/>batch_id + cursor range"| A["Async receiver task<br/>df-engine runtime"]
     A --> P["Processors<br/>parse / enrich / route"]
     P --> E["Exporters"]
     E -->|"Ack / Nack"| A
     A -->|"CommitCursor"| W
-    W --> C["Checkpoint file<br/>partition -> cursor"]
+    W --> C["Checkpoint file<br/>namespace -> cursor"]
 ```
 
-The first PR uses static partitions from config, normally one partition:
-`journal/system`. When #2844 introduces an assignment extension, the receiver
-can swap static partitions for assignment events without changing its read,
-Ack, or checkpoint model.
+In v1 the receiver reads one logical journal source per receiver instance
+(default: the local system journal). When #2844 introduces assignment, startup
+namespace selection can be replaced with assignment events without changing the
+read, Ack, or checkpoint model.
+
+## Startup and Instance Model
+
+`namespace` is the stable OTAP source identifier. In v1, `system` means the
+default local system journal; later, named systemd journal namespaces can use
+their namespace name.
+
+A single journal source is not sharded across per-core receiver instances. The
+factory rejects `pipeline_ctx.num_cores() > 1` with a clear error directing
+operators to use topic fanout for downstream parallelism:
+
+```text
+one-core pipeline:
+  receiver:journald -> exporter:topic
+
+multicore pipeline:
+  receiver:topic -> processors/exporters
+```
+
+A process-local startup lease keyed by `journald:<namespace>` prevents duplicate
+readers in the same process, even across different pipelines. Cross-process
+duplication is not prevented in v1.
+
+Multiple journald receivers in the *same* engine are still supported, as long
+as each targets a distinct namespace. With a future assignment extension,
+non-owner instances stay Ready but idle until assigned a namespace.
 
 ## Execution Model
 
@@ -71,7 +104,7 @@ All `sd_journal_*` calls are synchronous. Checkpoint writes also perform
 blocking filesystem I/O (`write`, `fsync`, `rename`). None of these run on the
 df-engine per-core async pipeline task.
 
-The receiver uses one long-lived blocking worker thread per assigned partition:
+The receiver uses one long-lived blocking worker thread per assigned namespace:
 
 - worker owns the `sd_journal*` handle
 - async task owns the engine `EffectHandler`, lifecycle state, and Ack tracker
@@ -109,13 +142,24 @@ flowchart TD
 
 If a completed batch cannot be handed to the async task, the worker keeps that
 batch in memory and does not call `sd_journal_next()` again until the batch is
-accepted or shutdown begins. A held batch counts against the partition's
+accepted or shutdown begins. A held batch counts against the namespace's
 in-flight budget.
 
 Pause and shutdown responsiveness is bounded by `wait_timeout`. The configured
 `drain_timeout` should be larger than `wait_timeout`.
 
 ## Ack and Checkpoint Model
+
+The receiver advances its durable cursor only after a downstream Ack and never
+after a Nack. It therefore subscribes to `Interests::ACKS | Interests::NACKS`
+unconditionally, independent of telemetry/metric level.
+
+Expected completion behavior:
+
+- each emitted batch carries `Interests::ACKS | Interests::NACKS`
+- Ack permits advancing past that batch's `last_cursor`
+- Nack does not advance the cursor and may rewind to the last committed cursor
+- missing completion before shutdown/drain does not advance the checkpoint
 
 Each emitted batch carries:
 
@@ -124,7 +168,7 @@ Each emitted batch carries:
 - `last_cursor`
 - an epoch used to ignore stale completions after rewinds
 
-The async task tracks pending ranges per partition and advances the durable
+The async task tracks pending ranges per namespace and advances the durable
 cursor only through contiguous Acked ranges.
 
 ```text
@@ -143,9 +187,57 @@ Checkpoint commit ownership is split deliberately:
   on-disk write succeeded
 
 If there is no committed cursor yet, the receiver rewinds to a frozen initial
-anchor captured at partition start. For `start_at: end` on an empty journal,
+anchor captured at namespace open. For `start_at: end` on an empty journal,
 the first arriving entry becomes the first emitted record; a rewind may
 duplicate it, which is acceptable under at-least-once delivery.
+
+## Checkpoints
+
+Durable cursor recovery must survive process restarts, CPU count changes,
+live reconfiguration, and ownership handoff under a future assignment
+extension. The checkpoint identity must therefore be **stable** and
+**independent of unstable per-run inputs**.
+
+The checkpoint key (and the on-disk path derived from it) MUST be derived
+only from inputs that are stable across restart and across instance churn:
+
+- pipeline group id (operator-defined, stable)
+- pipeline id (operator-defined, stable)
+- receiver node name (operator-defined, stable)
+- journal namespace identifier (e.g. `system`, or a named namespace; stable)
+
+It MUST NOT include per-run inputs:
+
+- `core_id`
+- current CPU count / `num_cores`
+- engine `instance_id` or any per-process generation id
+- receiver runtime instance id
+- the identity of the current owner under a future assignment extension
+- deployment generation, pod name, container id, or any orchestrator-assigned
+  ephemeral id
+
+Recommended on-disk layout:
+
+```text
+${engine.state_dir}/journald/<pipeline_group>/<pipeline_id>/<receiver_name>/<namespace>.cursor
+```
+
+The `<namespace>` segment is `system` for the default local journal and the
+namespace name for named namespaces. There is no `instance_id` or `core_id`
+segment.
+
+A single cursor file must not be written by two processes concurrently. In
+v1, cross-process duplication is prevented operationally (operators run one
+engine per host against a given namespace, or use distinct namespaces). The
+process-local lease covers in-process duplication. A future enhancement may
+add a file lock alongside the cursor file; that addition does not change the
+checkpoint key shape above.
+
+The cursor file is a small versioned envelope (cursor string + version +
+checksum). Corrupt or unknown-version envelopes fail closed; see [Failure
+Policy](#failure-policy). The local v1 envelope is provisional -- if #2844
+later freezes a shared envelope format, this receiver will perform a one-time
+migration but the **key/path identity above will not change**.
 
 ## Configuration
 
@@ -160,8 +252,9 @@ groups:
           journald:
             type: receiver:journald
             config:
-              partitions:
-                - id: journal/system
+              # Stable OTAP source identifier. "system" means the default
+              # local system journal.
+              namespace: system
 
               units: ["nginx.service", "ssh.service"]
               identifiers: []
@@ -175,8 +268,10 @@ groups:
                 max_flush_period: 200ms
 
               checkpoint:
-                directory: "${engine.state_dir}/${engine.instance_id}/journald"
-                max_in_flight_batches_per_partition: 1
+                # Receiver appends:
+                # <pipeline_group>/<pipeline_id>/<receiver_name>/<namespace>.cursor
+                directory: "${engine.state_dir}/journald"
+                max_in_flight_batches: 1
                 on_nack: rewind
                 max_consecutive_failures: 5
 
@@ -237,14 +332,15 @@ base64 and mark the encoding explicitly; do not lossy-decode.
 | checkpoint missing | apply `start_at` |
 | checkpoint corrupt / unknown version | fail closed; operator must remove or migrate it |
 | cursor vacuumed | emit `journald.cursor_lost`; apply `start_at` |
-| checkpoint commit I/O failure | do not advance in-memory cursor; retry with backoff; fail partition after threshold |
+| checkpoint commit I/O failure | do not advance in-memory cursor; retry with backoff; fail the receiver source after threshold |
 | `sd_journal_get_cursor` failure | discard un-emitted partial batch, reopen, and reseek from committed cursor or initial anchor |
 | Nack | do not advance checkpoint; rewind or fail according to config |
 | shutdown deadline | abandon pending completions without advancing checkpoint; late completions are ignored and counted |
-| duplicate partition in same process | process-local lease rejects the second receiver |
-| duplicate across processes | not prevented in v1; use distinct engine instance checkpoint paths |
+| duplicate namespace in same process | process-local lease rejects the second receiver |
+| duplicate across processes | not prevented in v1; operators must avoid this or use distinct namespaces |
+| `pipeline_ctx.num_cores() > 1` | factory rejects with "journald must run in a one-core source pipeline" |
 
-Worker thread panic fails the partition, releases its process-local lease, and
+Worker thread panic fails the receiver source, releases its process-local lease, and
 surfaces an error through the receiver/engine path.
 
 ## NUMA and Placement
@@ -265,7 +361,7 @@ resolved, the NUMA node is reported as unknown.
 Future goal:
 
 ```text
-journal storage NUMA node -> partition worker thread -> same-node pipeline
+journal storage NUMA node -> journald worker thread -> same-node pipeline
 ```
 
 ## Implementation Scope
@@ -276,10 +372,14 @@ First PR:
 - `urn:otel:receiver:journald`
 - Linux gated behind a `journald` Cargo feature
 - real `SdJournalReader` plus fake reader for tests
-- static partition list from config
-- local cursor checkpoint file per partition
+- single-namespace per receiver instance, configured by `namespace` (default
+  `system`); factory rejects `pipeline_ctx.num_cores() > 1`
+- process-local startup lease keyed by `journald:<namespace>`
+- stable per-namespace cursor checkpoint file under
+  `${engine.state_dir}/journald/<pipeline_group>/<pipeline_id>/<receiver_name>/<namespace>.cursor`
 - dedicated worker thread and bounded channels
-- contiguous-Ack tracker with default `max_in_flight_batches_per_partition = 1`
+- unconditional subscription to `Interests::ACKS | Interests::NACKS`
+- contiguous-Ack tracker with default `max_in_flight_batches = 1`
 
 Not in first PR:
 
@@ -298,13 +398,19 @@ Use a fake journal reader for most tests and a Linux-only smoke test for real
 Required unit coverage:
 
 - config validation and priority expansion
+- factory rejection on `num_cores() > 1`
+- receiver subscribes to `ACKS | NACKS` regardless of telemetry/metric level
 - field projection and severity mapping
 - contiguous Ack tracker, out-of-order Acks, Nack rewind
+- Nack does NOT advance the cursor; subsequent Ack of an earlier range still
+  cannot move the cursor past the Nacked range
 - initial-anchor behavior before the first committed cursor
 - corrupt checkpoint load and checkpoint commit failure
+- checkpoint path stability: identical key/path across runs with different
+  `core_id`, `num_cores`, and engine `instance_id` values
 - malformed entry fields and cursor-get failure
 - backpressure: held batch stops further `sd_journal_next()` calls
-- duplicate partition lease and lease release on failure
+- duplicate namespace lease and lease release on failure
 - shutdown deadline and late completion handling
 - worker panic path
 
@@ -314,23 +420,6 @@ Linux smoke coverage:
 - source-side matches for units, identifiers, and priorities
 - restart from committed cursor
 - live tailing through `sd_journal_wait`
-
-## Relationship to #2844
-
-The journald receiver should stay source-specific. It should not be folded into
-the filelog receiver because it checkpoints by journal cursor, not by file
-identity and byte offset.
-
-Reusable concepts with #2844:
-
-- partition-oriented ownership
-- Ack-aware checkpoint advancement
-- checkpoint envelope conventions
-- placement hints for future NUMA-aware assignment
-- handoff/drain contracts once an assignment extension exists
-
-The local v1 checkpoint envelope is provisional. If #2844 later freezes a
-shared checkpoint format, this receiver may need a one-time migration.
 
 ## References
 
