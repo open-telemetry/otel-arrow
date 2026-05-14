@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778632981071,
+  "lastUpdate": 1778719475699,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -4101,6 +4101,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 108.95,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Jake Dern",
+            "username": "JakeDern",
+            "email": "33842784+JakeDern@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "55099cb930c81eb11c892e263d75ffcdb071ed08",
+          "message": "feat(comparison_dashboard): Add OTC metrics and traces baselines (#2959)\n\n# Change Summary\n\nAdds the OTC metrics and traces baselines to mirror the logs ones.\n\n## What issue does this PR close?\n\n* Closes #2948\n\n## How are these changes tested?\n\nSmoke tested the runs locally.\n\n## Are there any user-facing changes?\n\nNew suites, but not really as they're not visible yet.",
+          "timestamp": "2026-05-13T23:04:26Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/55099cb930c81eb11c892e263d75ffcdb071ed08"
+        },
+        "date": 1778719466581,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 108.93,
             "unit": "MB"
           }
         ]
