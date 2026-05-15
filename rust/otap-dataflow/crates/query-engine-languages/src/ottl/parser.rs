@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! OpenTelemetry Transform Language (OTTL) parser implementation.
+
 use ::pest::Parser as _;
 use ::pest::iterators::Pair;
 use data_engine_parser_abstractions::{

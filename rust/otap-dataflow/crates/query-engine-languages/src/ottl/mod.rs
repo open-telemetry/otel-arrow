@@ -4,7 +4,7 @@
 //! Implementation of OpenTelemetry Transformation Language (OTTL) parser.
 
 pub(crate) mod editor_expression;
-pub(crate) mod parser;
+pub mod parser;
 pub(crate) mod scalar_expression;
 pub(crate) mod scalar_primitive_expression;
 
