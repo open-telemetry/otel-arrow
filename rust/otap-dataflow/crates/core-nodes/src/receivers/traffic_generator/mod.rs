@@ -176,8 +176,8 @@ impl TrafficGeneratorReceiver {
                                 .smooth_behind_remaining_items
                                 .record(remaining_items as f64);
                             otel_warn!(
-                                "Data generator is falling behind and didn't finish the current run. For highest
-                                possible throughput, use production_mode: open",
+                                "traffic_generator.smooth_run_behind",
+                                message = "Data generator is falling behind and didn't finish the current run. For highest possible throughput, use production_mode: open",
                                 remaining=remaining_batches,
                                 remaining_items,
                             );
@@ -283,7 +283,8 @@ impl TrafficGeneratorReceiver {
 
                     _ = run_ticker.tick() => {
                         otel_debug!(
-                            "Data generator is falling behind and didn't finish the current run.",
+                            "traffic_generator.open_run_behind",
+                            message = "Data generator is falling behind and didn't finish the current run.",
                             remaining=current_run.len(),
                         );
 
@@ -524,10 +525,6 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
 
         let transport_headers = build_transport_headers(self.config.transport_headers());
 
-        let _ = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         let run_len = producer.run_len();
 
         // We consume one tick here because it's always immediately ready and would
@@ -536,7 +533,21 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
         run_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         _ = run_ticker.tick().await;
 
-        match self.config.get_traffic_config().production_mode {
+        // When signals_per_second is None (uncapped), always use Open mode
+        // regardless of the configured production_mode, since Smooth pacing
+        // is meaningless without a target rate.
+        let effective_mode = if self
+            .config
+            .get_traffic_config()
+            .signals_per_second
+            .is_none()
+        {
+            config::ProductionMode::Open
+        } else {
+            self.config.get_traffic_config().production_mode.clone()
+        };
+
+        match effective_mode {
             config::ProductionMode::Smooth => {
                 if let Some(batch_duration) = smooth_batch_interval(run_len) {
                     self.metrics.smooth_run_batches.set(run_len as u64);
@@ -556,7 +567,8 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
                     .await
                 } else {
                     otel_warn!(
-                        "Falling back to Open production mode because smooth batch interval is zero"
+                        "traffic_generator.smooth_fallback_open",
+                        reason = "smooth batch interval is zero"
                     );
                     self.run_open(
                         ctrl_msg_recv,

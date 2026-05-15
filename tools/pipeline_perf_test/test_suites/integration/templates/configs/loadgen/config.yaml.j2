@@ -44,6 +44,9 @@ groups:
               {%- if exporter_type in ["otap", "otlp"] %}
               grpc_endpoint: "http://{{ engine_host }}:{{ exporter_port }}"
               compression_method: {{ compression }}
+              {%- if num_connections is defined %}
+              num_connections: {{ num_connections }}
+              {%- endif %}
               {%- if exporter_extra_config is defined %}
               {%- for k, v in exporter_extra_config.items() %}
               {{ k }}: {{ v }}

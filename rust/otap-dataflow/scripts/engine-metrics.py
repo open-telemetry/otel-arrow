@@ -270,11 +270,11 @@ def classify(name):
     'engine'
     >>> classify('channel.sender')
     'channel'
-    >>> classify('syslog_cef.receiver')
+    >>> classify('receiver.syslog_cef')
     'receiver'
     >>> classify('otap.processor.batch')
     'processor'
-    >>> classify('azure_monitor_exporter')
+    >>> classify('exporter.azure_monitor')
     'exporter'
     """
     n = name.lower()

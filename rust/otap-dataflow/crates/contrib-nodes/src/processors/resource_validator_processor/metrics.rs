@@ -11,7 +11,7 @@ use otap_df_telemetry_macros::metric_set;
 /// Tracks both batch-level and item-level counts. Validation is pass/fail for
 /// the entire batch — if any resource fails, the whole batch is NACKed. Item
 /// counts capture the magnitude of data loss on rejection.
-#[metric_set(name = "resource_validator.processor")]
+#[metric_set(name = "processor.resource_validator")]
 #[derive(Debug, Default, Clone)]
 pub struct ResourceValidatorMetrics {
     /// Number of batches that passed validation

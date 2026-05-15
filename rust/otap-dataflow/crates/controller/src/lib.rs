@@ -1182,7 +1182,7 @@ impl<
             .logs
             .providers
             .uses_console_async_provider()
-            .then(|| obs_state_store.reporter(engine.observed_state.logging_events));
+            .then(|| obs_state_store.reporter(engine.observed_state.logging_events.clone()));
 
         // Create the telemetry system. The console_async_reporter is passed when any
         // providers use ConsoleAsync. The its_logs_receiver is passed when any
@@ -1191,6 +1191,7 @@ impl<
             telemetry_config,
             telemetry_registry.clone(),
             console_async_reporter,
+            engine.observed_state.logging_events.clone(),
             engine_context,
             log_tap_handle.clone(),
         )?;
@@ -1367,12 +1368,15 @@ impl<
         ) {
             (false, true) => {
                 otel_warn!(
-                    "ITS provider requested yet engine.observability.pipeline is not defined"
+                    "controller.its_provider_without_pipeline",
+                    message =
+                        "ITS provider requested yet engine.observability.pipeline is not defined"
                 )
             }
             (true, false) => {
                 otel_warn!(
-                    "engine.observability.pipeline is defined yet ITS provider is not requested"
+                    "controller.pipeline_without_its_provider",
+                    message = "engine.observability.pipeline is defined yet ITS provider is not requested"
                 )
             }
             _ => {}
