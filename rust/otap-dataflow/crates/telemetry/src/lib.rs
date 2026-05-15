@@ -513,7 +513,7 @@ mod tests {
 
             // Emit a log using the engine tracing setup (which uses ITS)
             its.engine_tracing_setup().with_subscriber_ignoring_env(|| {
-                crate::otel_info!("test log message");
+                crate::otel_info!("telemetry.test_log", message = "test log message");
             });
 
             // Receiver should have the log
