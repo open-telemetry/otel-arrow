@@ -558,7 +558,10 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                         metrics.send_failures.add(1);
                                         metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
                                     }
-                                    otel_warn!("host metrics dropped due to downstream backpressure");
+                                    otel_warn!(
+                                        "host_metrics.dropped_backpressure",
+                                        message = "host metrics dropped due to downstream backpressure"
+                                    );
                                 }
                                 Err(other) => {
                                     if let Some(metrics) = metrics.as_mut() {
@@ -582,7 +585,8 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                 metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
                             }
                             otel_warn!(
-                                "host metrics scrape failed; receiver will retry",
+                                "host_metrics.scrape_failed",
+                                message = "host metrics scrape failed; receiver will retry",
                                 error = err.to_string()
                             );
                         }

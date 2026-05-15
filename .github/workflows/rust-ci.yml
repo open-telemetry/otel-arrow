@@ -115,6 +115,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/${{ matrix.folder }}
+          cache-bin: false
       - name: Free disk space (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -208,6 +209,7 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: ./rust/otap-dataflow
+          cache-bin: false
       - name: Run user_events Linux smoke test when supported
         env:
           OTAP_DF_RUN_USEREVENTS_E2E: "1"
@@ -325,6 +327,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/${{ matrix.folder }}
+          cache-bin: false
       - name: cargo clippy ${{ matrix.folder }}
         run: |
           cargo clippy --all-targets --all-features --workspace -- -D warnings
@@ -485,6 +488,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/${{ matrix.folder }}
+          cache-bin: false
       - name: Free disk space (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -593,6 +597,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/otap-dataflow
+          cache-bin: false
       - name: Free disk space
         run: |
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
@@ -659,6 +664,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/${{ matrix.folder }}
+          cache-bin: false
       - name: Install OpenSSL (Windows)
         if: runner.os == 'Windows'
         # Required for the crypto-openssl feature (rustls-openssl -> openssl-sys).
@@ -691,6 +697,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/otap-dataflow
+          cache-bin: false
       - name: Run host metrics semconv drift check
         env:
           OTAP_HOST_METRICS_SEMCONV_REGISTRY: ${{ github.workspace }}/semantic-conventions/model

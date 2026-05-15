@@ -80,42 +80,12 @@ tests:
         metric_weight: 0
         trace_weight: 0
 
-  - name: Logs-OTAP-OTAP
-    from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
-      variables:
-        result_dir: nightly_batch_processor
-        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-otap.yaml
-        loadgen_exporter_type: otap
-        backend_receiver_type: otap
-        generation_strategy: fresh
-        observation_interval: 60
-        log_weight: 100
-        metric_weight: 0
-        trace_weight: 0
-
   - name: Logs-OTLP-BATCH-OTLP
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
         result_dir: nightly_batch_processor
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml
-        loadgen_exporter_type: otlp
-        backend_receiver_type: otlp
-        generation_strategy: fresh
-        observation_interval: 60
-        log_weight: 100
-        metric_weight: 0
-        trace_weight: 0
-        exporter_extra_config:
-          max_in_flight: 256
-
-  - name: Logs-OTLP-OTLP
-    from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
-      variables:
-        result_dir: nightly_batch_processor
-        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
         generation_strategy: fresh
@@ -142,44 +112,12 @@ tests:
         trace_weight: 0
         report_config: ./test_suites/integration/configs/integration_report_metrics.yaml
 
-  - name: Metrics-OTAP-OTAP
-    from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
-      variables:
-        result_dir: nightly_batch_processor
-        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-otap.yaml
-        loadgen_exporter_type: otap
-        backend_receiver_type: otap
-        generation_strategy: fresh
-        observation_interval: 60
-        log_weight: 0
-        metric_weight: 100
-        trace_weight: 0
-        report_config: ./test_suites/integration/configs/integration_report_metrics.yaml
-
   - name: Metrics-OTLP-BATCH-OTLP
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
         result_dir: nightly_batch_processor
         engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml
-        loadgen_exporter_type: otlp
-        backend_receiver_type: otlp
-        generation_strategy: fresh
-        observation_interval: 60
-        log_weight: 0
-        metric_weight: 100
-        trace_weight: 0
-        report_config: ./test_suites/integration/configs/integration_report_metrics.yaml
-        exporter_extra_config:
-          max_in_flight: 256
-
-  - name: Metrics-OTLP-OTLP
-    from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
-      variables:
-        result_dir: nightly_batch_processor
-        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
         generation_strategy: fresh
@@ -207,21 +145,6 @@ tests:
         trace_weight: 100
         report_config: ./test_suites/integration/configs/integration_report_traces.yaml
 
-  - name: Traces-OTAP-OTAP
-    from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
-      variables:
-        result_dir: nightly_batch_processor
-        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-otap.yaml
-        loadgen_exporter_type: otap
-        backend_receiver_type: otap
-        generation_strategy: fresh
-        observation_interval: 60
-        log_weight: 0
-        metric_weight: 0
-        trace_weight: 100
-        report_config: ./test_suites/integration/configs/integration_report_traces.yaml
-
   - name: Traces-OTLP-BATCH-OTLP
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
@@ -239,19 +162,3 @@ tests:
         exporter_extra_config:
           max_in_flight: 256
 
-  - name: Traces-OTLP-OTLP
-    from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
-      variables:
-        result_dir: nightly_batch_processor
-        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-otlp.yaml
-        loadgen_exporter_type: otlp
-        backend_receiver_type: otlp
-        generation_strategy: fresh
-        observation_interval: 60
-        log_weight: 0
-        metric_weight: 0
-        trace_weight: 100
-        report_config: ./test_suites/integration/configs/integration_report_traces.yaml
-        exporter_extra_config:
-          max_in_flight: 256
