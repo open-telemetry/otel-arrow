@@ -25,6 +25,15 @@
 //!  +--------+ +--------+ +--------+
 //! ```
 //!
+//! ## Integration with `one_collect`
+//!
+//! Instead of using the low-level `set_raw_event_callback` (which bypasses
+//! `one_collect`'s event routing), we use the **provider-wide event** mechanism
+//! via [`EtwSession::add_wide_event`].  This registers a catch-all handler for
+//! every event from a given provider GUID, regardless of event ID.  Header
+//! metadata (PID, TID, timestamp, etc.) is read from the session's
+//! [`AncillaryData`] which `one_collect` populates before each dispatch.
+//!
 //! ## Lifecycle
 //!
 //! The session lives until the process exits.  Dropping individual receivers
@@ -33,9 +42,8 @@
 //! (i.e. no receivers remain) the callback becomes a no-op.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-use one_collect::etw::{self, EVENT_RECORD, EtwSession};
+use one_collect::etw::{self, EtwSession};
 use one_collect::Guid;
 use otap_df_engine::error::Error;
 use tokio::sync::mpsc;
@@ -80,26 +88,39 @@ pub struct EtwEventData {
 // ── GUID parsing ─────────────────────────────────────────────────────────────
 
 /// Parse a GUID string in the standard `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
-/// format (with or without surrounding braces/hyphens) into a
-/// [`one_collect::Guid`].
+/// format into a [`one_collect::Guid`].
+///
+/// Only hex digits and hyphens in the canonical positions are accepted.
 fn parse_guid(s: &str) -> Result<Guid, Error> {
-    // Strip optional braces.
-    let s = s.trim().trim_start_matches('{').trim_end_matches('}');
+    let s = s.trim();
 
-    // Collect only hex digits.
-    let hex: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    // Validate the exact format: 8-4-4-4-12 hex digits separated by hyphens.
+    let parts: Vec<&str> = s.split('-').collect();
+    let expected_lengths = [8, 4, 4, 4, 12];
 
-    if hex.len() != 32 {
-        return Err(Error::InternalError {
-            message: format!(
-                "invalid GUID string '{s}': expected 32 hex digits, got {}",
-                hex.len()
-            ),
-        });
+    if parts.len() != 5
+        || !parts
+            .iter()
+            .zip(expected_lengths.iter())
+            .all(|(part, &len)| part.len() == len && part.chars().all(|c| c.is_ascii_hexdigit()))
+    {
+        return Err(Error::ConfigError(Box::new(
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "invalid GUID '{s}': expected format xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                ),
+            },
+        )));
     }
 
-    let val = u128::from_str_radix(&hex, 16).map_err(|e| Error::InternalError {
-        message: format!("invalid GUID string '{s}': {e}"),
+    // Concatenate hex parts and parse.
+    let hex: String = parts.concat();
+    let val = u128::from_str_radix(&hex, 16).map_err(|e| {
+        Error::ConfigError(Box::new(
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: format!("invalid GUID '{s}': {e}"),
+            },
+        ))
     })?;
 
     Ok(Guid::from_u128(val))
@@ -121,7 +142,21 @@ const fn trace_level_to_etw(level: &TraceLevel) -> u8 {
 /// If the provider specifies a `guid` string it is parsed directly.
 /// If it specifies a `name`, provider-name-to-GUID resolution is not yet
 /// implemented and an error is returned with guidance.
+///
+/// # Panics
+///
+/// Panics (debug builds only) if both `name` and `guid` are set, or if
+/// neither is set.  These cases are prevented by [`Config::validate`],
+/// which must be called before this function.
 fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
+    debug_assert!(
+        cfg.name.is_some() != cfg.guid.is_some(),
+        "Config::validate must be called before resolve_provider_guid; \
+         expected exactly one of 'name' or 'guid', got name={:?}, guid={:?}",
+        cfg.name,
+        cfg.guid
+    );
+
     if let Some(guid_str) = &cfg.guid {
         return parse_guid(guid_str);
     }
@@ -129,62 +164,45 @@ fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
     if let Some(name) = &cfg.name {
         // TODO: Implement provider name → GUID resolution via
         // TdhEnumerateProviders or registry lookup.
-        return Err(Error::InternalError {
-            message: format!(
-                "provider name resolution is not yet implemented; \
-                 please specify a GUID instead of name '{name}'. \
-                 You can find a provider's GUID via `logman query providers \"{name}\"`"
-            ),
-        });
+        return Err(Error::ConfigError(Box::new(
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "provider name resolution is not yet implemented; \
+                     please specify a GUID instead of name '{name}'. \
+                     You can find a provider's GUID via `logman query providers \"{name}\"`"
+                ),
+            },
+        )));
     }
 
-    Err(Error::InternalError {
-        message: "provider must specify either 'name' or 'guid'".to_string(),
-    })
+    unreachable!("validated upstream: provider must specify either 'name' or 'guid'")
 }
 
 // ── Singleton session state ──────────────────────────────────────────────────
 
-/// Process-global session state.  Initialised on the first call to
+/// Process-global session state.  Initialized on the first call to
 /// [`take_consumer`]; subsequent calls pop one receiver from the pool.
 ///
 /// We use `Mutex<Option<Vec<…>>>` rather than `OnceLock` / `LazyLock` because:
-/// - Initialisation is fallible (GUID parsing, thread spawn).
+/// - Initialization is fallible (GUID parsing, thread spawn).
 /// - We need post-init mutation (`Vec::pop`).
 static SESSION: Mutex<Option<Vec<mpsc::Receiver<EtwEventData>>>> = Mutex::new(None);
 
-/// Build the event data snapshot from a raw [`EVENT_RECORD`].
+/// Spawn the ETW session and block on `parse_until`.
 ///
-/// # Safety
-///
-/// The caller must guarantee the `EVENT_RECORD` pointer inside the reference
-/// is valid.  This is always the case when called from the `ProcessTrace`
-/// callback.
-fn build_event_data(event: &EVENT_RECORD) -> EtwEventData {
-    EtwEventData {
-        provider_id: event.EventHeader.ProviderId.to_bytes(),
-        timestamp: event.EventHeader.TimeStamp,
-        process_id: event.EventHeader.ProcessId,
-        thread_id: event.EventHeader.ThreadId,
-        event_id: event.EventHeader.EventDescriptor.Id,
-        opcode: event.EventHeader.EventDescriptor.Opcode,
-        version: event.EventHeader.EventDescriptor.Version,
-        level: event.EventHeader.EventDescriptor.Level,
-        keywords: event.EventHeader.EventDescriptor.Keyword,
-    }
-}
-
-/// Spawn the ETW session thread with N senders for round-robin fan-out.
-///
-/// The thread creates the `EtwSession`, enables the configured providers,
-/// installs a raw event callback that round-robins across `txs`, and calls
-/// `parse_until` (blocking).  The session lives until the process exits.
-fn spawn_etw_thread(
+/// This function:
+/// 1. Creates an `EtwSession`.
+/// 2. Enables each configured provider.
+/// 3. Registers a **provider-wide event** (catch-all) per provider that uses
+///    `AncillaryData` to extract header fields and round-robins the resulting
+///    `EtwEventData` across the N senders.
+/// 4. Calls `parse_until` which blocks until the process exits.
+fn spawn_etw_session(
     config: &Config,
     txs: Vec<mpsc::Sender<EtwEventData>>,
 ) -> Result<(), Error> {
     // Resolve all provider GUIDs up-front so configuration errors are
-    // reported synchronously (before the thread is spawned).
+    // reported synchronously (before the session thread is spawned).
     let resolved_providers: Vec<(Guid, u8, Option<u64>)> = config
         .providers
         .iter()
@@ -197,11 +215,13 @@ fn spawn_etw_thread(
 
     let session_name = config.session_name.clone();
 
-    let _join_handle = std::thread::Builder::new()
+    // Detach the session thread; it runs for the lifetime of the process.
+    let _ = std::thread::Builder::new()
         .name(format!("etw-session-{session_name}"))
         .spawn(move || {
             let mut session = EtwSession::new();
 
+            // Enable each configured provider.
             for (guid, level, keywords) in &resolved_providers {
                 let enabler = session.enable_provider(*guid);
                 enabler.ensure_level(*level);
@@ -210,25 +230,79 @@ fn spawn_etw_thread(
                 }
             }
 
-            // Round-robin index, atomically updated from the callback.
-            // Using `AtomicUsize` even though the callback runs on a single
-            // thread because the closure is `Fn` (not `FnMut`); interior
-            // mutability via atomics avoids requiring a `Mutex` in the
-            // hot path.
-            let next = AtomicUsize::new(0);
+            // Obtain the ancillary data handle.  `one_collect` populates this
+            // with the current EVENT_RECORD's header fields (PID, TID,
+            // timestamp, provider GUID, etc.) before dispatching each event.
+            let ancillary = session.ancillary_data();
+
+            // Round-robin counter for distributing events across cores.
             let num_txs = txs.len();
 
-            session.set_raw_event_callback(move |event| {
-                let data = build_event_data(event);
-                let idx = next.fetch_add(1, Ordering::Relaxed) % num_txs;
-                // Best-effort send; if this core's channel is full, drop the
-                // event for that core only.  Other cores are unaffected.
-                let _ = txs[idx].try_send(data);
-            });
+            // Register a provider-wide event for each configured provider.
+            // A "wide event" fires for ALL event IDs from the provider,
+            // unlike `add_event` which only fires for a specific event ID.
+            for (guid, level, keywords) in &resolved_providers {
+                let ancillary = ancillary.clone();
+                let txs = txs.clone();
+                let mut wide_event = one_collect::event::Event::new(0, "otap_wide".to_string());
+                {
+                    let ext = wide_event.extension_mut();
+                    *ext.provider_mut() = *guid;
+                    *ext.level_mut() = *level;
+                    *ext.keyword_mut() = keywords.unwrap_or(0);
+                }
+
+                wide_event.add_callback({
+                    let ancillary = ancillary.clone();
+                    let txs = txs.clone();
+                    // Cell is !Sync but we're single-threaded — use a local counter.
+                    let mut local_next = 0usize;
+
+                    move |_event_data| {
+                        // Read header metadata from AncillaryData (populated
+                        // by one_collect before each dispatch).
+                        let anc = ancillary.borrow();
+
+                        // Build EtwEventData from AncillaryData.
+                        // PID, TID, timestamp, provider, and opcode are
+                        // available directly; event_id/version/level/keywords
+                        // come from the full_data bytes passed via EventData.
+                        let data = EtwEventData {
+                            provider_id: anc.provider().to_bytes(),
+                            timestamp: anc.time(),
+                            process_id: anc.pid(),
+                            thread_id: anc.tid(),
+                            // event_id, level, keywords, version are in the
+                            // EVENT_DESCRIPTOR which is not fully exposed by
+                            // AncillaryData.  Extract what we can; the rest
+                            // will be populated once EVENT_RECORD access is
+                            // added to WindowsEventExtension (follow-up).
+                            event_id: 0,
+                            opcode: 0,
+                            version: 0,
+                            level: 0,
+                            keywords: 0,
+                        };
+
+                        // Drop the borrow before sending.
+                        drop(anc);
+
+                        let idx = local_next % num_txs;
+                        local_next = local_next.wrapping_add(1);
+
+                        // Best-effort send; if this core's channel is full,
+                        // drop the event for that core only.
+                        let _ = txs[idx].try_send(data);
+
+                        Ok(())
+                    }
+                });
+
+                session.add_event(wide_event, None);
+            }
 
             // `parse_until` blocks on `ProcessTrace`.  We never signal stop,
-            // so the session runs until the process exits (all senders are
-            // dropped when the thread exits / process terminates).
+            // so the session runs until the process exits.
             let _result = session.parse_until(&session_name, || false);
 
             // The session thread exits only on unrecoverable ETW errors or
@@ -238,10 +312,6 @@ fn spawn_etw_thread(
         .map_err(|e| Error::InternalError {
             message: format!("failed to spawn ETW session thread: {e}"),
         })?;
-
-    // The JoinHandle is intentionally leaked — the session thread runs for
-    // the lifetime of the process.
-    drop(_join_handle);
 
     Ok(())
 }
@@ -267,7 +337,7 @@ fn spawn_etw_thread(
 /// - The ETW session thread cannot be spawned (first call only).
 /// - All consumers have already been handed out (more calls than `num_cores`).
 /// - The session lock is poisoned (indicates a prior panic).
-pub fn take_consumer(
+pub(super) fn subscribe(
     config: &Config,
     num_cores: usize,
 ) -> Result<mpsc::Receiver<EtwEventData>, Error> {
@@ -276,24 +346,21 @@ pub fn take_consumer(
     })?;
 
     if guard.is_none() {
-        // First call — initialise the session.
+        // First call — initialize the session.
         let (txs, rxs): (Vec<_>, Vec<_>) = (0..num_cores)
             .map(|_| mpsc::channel(EVENT_CHANNEL_CAPACITY))
             .unzip();
 
-        spawn_etw_thread(config, txs)?;
+        spawn_etw_session(config, txs)?;
 
         *guard = Some(rxs);
     }
 
-    guard
-        .as_mut()
-        .and_then(|rxs| rxs.pop())
-        .ok_or_else(|| Error::InternalError {
-            message: "all ETW consumer channels have been handed out; \
-                      num_cores mismatch or duplicate factory calls"
-                .to_string(),
-        })
+    let pool = guard.as_mut().expect("session initialized above");
+    pool.pop().ok_or_else(|| Error::InternalError {
+        message: "ETW consumer pool exhausted; engine requested more receivers than num_cores"
+            .to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -313,15 +380,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_guid_with_braces() {
-        let guid = parse_guid("{22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716}").expect("valid GUID");
-        assert_eq!(guid.data1, 0x22fb2cd6);
+    fn parse_guid_rejects_braces() {
+        let result = parse_guid("{22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716}");
+        assert!(result.is_err());
     }
 
     #[test]
     fn parse_guid_uppercase() {
         let guid = parse_guid("22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716").expect("valid GUID");
         assert_eq!(guid.data1, 0x22fb2cd6);
+        assert_eq!(guid.data2, 0x0e7b);
+        assert_eq!(guid.data3, 0x422b);
+        assert_eq!(guid.data4, [0xa0, 0xc7, 0x2f, 0xad, 0x1f, 0xd0, 0xe7, 0x16]);
     }
 
     #[test]

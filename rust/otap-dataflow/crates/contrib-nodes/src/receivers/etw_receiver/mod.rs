@@ -10,7 +10,7 @@
 //!
 //! ## Multi-core fan-out
 //!
-//! Windows allows only one real-time ETW session per session name.  The engine
+//! Windows allows only one real-time ETW session per session name. The engine
 //! may instantiate the receiver once per allocated core.  To reconcile these
 //! two models the ETW session is a **process-global singleton** with N consumer
 //! channels (one per core).  The `ProcessTrace` callback round-robins events
@@ -82,7 +82,7 @@ pub const ETW_RECEIVER_URN: &str = "urn:otel:receiver:etw";
 /// Trace level filter for ETW providers, matching the standard five ETW levels.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum TraceLevel {
+enum TraceLevel {
     /// Critical errors only.
     Critical,
     /// Errors and critical events.
@@ -99,7 +99,7 @@ pub enum TraceLevel {
 /// Configuration for a single ETW provider to trace.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProviderConfig {
+struct ProviderConfig {
     /// The ETW provider name (e.g. `"Microsoft-Windows-Kernel-Process"`).
     /// Mutually exclusive with `guid`.
     #[serde(default)]
@@ -120,29 +120,58 @@ pub struct ProviderConfig {
     pub keywords: Option<u64>,
 }
 
-impl ProviderConfig {
-    /// Returns the display label for this provider (for logging and error messages).
-    pub fn display_id(&self) -> &str {
-        if let Some(name) = &self.name {
-            name.as_str()
-        } else if let Some(guid) = &self.guid {
-            guid.as_str()
-        } else {
-            "<unknown>"
-        }
-    }
-}
-
 /// Top-level configuration for the ETW receiver.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Config {
+struct Config {
     /// One or more ETW providers to subscribe to.
     pub providers: Vec<ProviderConfig>,
 
     /// Name of the ETW trace session. Defaults to `"OtelArrowETW"`.
     #[serde(default = "default_session_name")]
     pub session_name: String,
+}
+
+impl Config {
+    /// Validates domain rules that cannot be expressed by the type system alone.
+    ///
+    /// # Rules
+    ///
+    /// * At least one provider must be specified.
+    /// * Each provider must specify exactly one of `name` or `guid` (not both, not neither).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`otap_df_config::error::Error::InvalidUserConfig`] when a rule is violated.
+    fn validate(&self) -> Result<(), otap_df_config::error::Error> {
+        if self.providers.is_empty() {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "at least one ETW provider must be configured".to_string(),
+            });
+        }
+
+        for (i, provider) in self.providers.iter().enumerate() {
+            match (&provider.name, &provider.guid) {
+                (Some(_), Some(_)) => {
+                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'name' and 'guid' are mutually exclusive — specify one, not both"
+                        ),
+                    });
+                }
+                (None, None) => {
+                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: either 'name' or 'guid' must be specified"
+                        ),
+                    });
+                }
+                _ => {} // Valid: exactly one of name or guid is specified.
+            }
+        }
+
+        Ok(())
+    }
 }
 
 fn default_session_name() -> String {
@@ -160,8 +189,7 @@ struct EtwReceiver {
     config: Config,
     metrics: Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
     /// Per-core consumer channel from the singleton ETW session.
-    /// Wrapped in `Option` so it can be moved out in `start()`.
-    event_rx: Option<tokio::sync::mpsc::Receiver<EtwEventData>>,
+    event_rx: tokio::sync::mpsc::Receiver<EtwEventData>,
 }
 
 impl EtwReceiver {
@@ -169,7 +197,7 @@ impl EtwReceiver {
     /// process-global ETW session.
     ///
     /// Called at **factory time** (once per allocated core).  The first call
-    /// lazily initialises the singleton session and spawns the `ProcessTrace`
+    /// lazily initializes the singleton session and spawns the `ProcessTrace`
     /// thread.
     fn from_config(
         pipeline: PipelineContext,
@@ -180,51 +208,25 @@ impl EtwReceiver {
                 error: e.to_string(),
             }
         })?;
-
-        if cfg.providers.is_empty() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "at least one ETW provider must be configured".to_string(),
-            });
-        }
-
-        // Validate that each provider specifies exactly one of `name` or `guid`.
-        for (i, provider) in cfg.providers.iter().enumerate() {
-            match (&provider.name, &provider.guid) {
-                (Some(_), Some(_)) => {
-                    return Err(otap_df_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "provider[{i}]: 'name' and 'guid' are mutually exclusive — specify one, not both"
-                        ),
-                    });
-                }
-                (None, None) => {
-                    return Err(otap_df_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "provider[{i}]: either 'name' or 'guid' must be specified"
-                        ),
-                    });
-                }
-                _ => {} // Exactly one is set — valid.
-            }
-        }
+        cfg.validate()?;
 
         let num_cores = pipeline.num_cores();
         let metrics = pipeline.register_metrics::<EtwReceiverMetrics>();
 
         // Acquire this core's consumer channel from the singleton session.
-        // The first call initialises the session; subsequent calls pop from
+        // The first call initializes the session; subsequent calls pop from
         // the pre-allocated pool.
         let event_rx =
-            session::take_consumer(&cfg, num_cores).map_err(|e| {
+            session::subscribe(&cfg, num_cores).map_err(|e| {
                 otap_df_config::error::Error::InvalidUserConfig {
-                    error: format!("ETW session initialisation failed: {e}"),
+                    error: format!("ETW session initialization failed: {e}"),
                 }
             })?;
 
         Ok(EtwReceiver {
             config: cfg,
             metrics: Rc::new(RefCell::new(metrics)),
-            event_rx: Some(event_rx),
+            event_rx,
         })
     }
 }
@@ -235,11 +237,10 @@ impl EtwReceiver {
     /// Main event loop when an ETW session is active.
     ///
     /// Consumes events from the per-core MPSC channel and processes control
-    /// messages.  Returns when a shutdown or drain-ingress control message is
+    /// messages. Returns when a shutdown or drain-ingress control message is
     /// received.
     async fn run_event_loop(
-        &self,
-        event_rx: &mut tokio::sync::mpsc::Receiver<EtwEventData>,
+        &mut self,
         ctrl_chan: &mut local::ControlChannel<OtapPdata>,
         effect_handler: &local::EffectHandler<OtapPdata>,
         telemetry_timer_handle: TelemetryTimerCancelHandle<OtapPdata>,
@@ -255,6 +256,7 @@ impl EtwReceiver {
                     match ctrl_msg {
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             let _ = telemetry_timer_handle.cancel().await;
+                            // TODO: drain buffered events before notifying
                             effect_handler.notify_receiver_drained().await?;
                             let snapshot = self.metrics.borrow().snapshot();
                             return Ok(TerminalState::new(deadline, [snapshot]));
@@ -287,7 +289,7 @@ impl EtwReceiver {
                 // Receive event data from the singleton ETW session.
                 // Only poll when the channel is still alive to avoid
                 // spinning on a closed channel.
-                event_data = event_rx.recv(), if channel_alive => {
+                event_data = self.event_rx.recv(), if channel_alive => {
                     match event_data {
                         Some(event) => {
                             self.metrics.borrow_mut().received_events_total.inc();
@@ -372,19 +374,8 @@ impl local::Receiver<OtapPdata> for EtwReceiver {
             provider_count = self.config.providers.len(),
         );
 
-        // Take the pre-acquired consumer channel.  The channel was obtained
-        // at factory time from the process-global singleton session.
-        let mut event_rx = self.event_rx.take().ok_or_else(|| Error::InternalError {
-            message: "ETW event channel already consumed (duplicate start?)".to_string(),
-        })?;
-
-        self.run_event_loop(
-            &mut event_rx,
-            &mut ctrl_chan,
-            &effect_handler,
-            telemetry_timer_handle,
-        )
-        .await
+        self.run_event_loop(&mut ctrl_chan, &effect_handler, telemetry_timer_handle)
+            .await
     }
 }
 
@@ -413,4 +404,119 @@ pub struct EtwReceiverMetrics {
     /// Number of ETW events dropped due to process-wide memory pressure.
     #[metric(unit = "{event}")]
     pub received_events_rejected_memory_pressure: Counter<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_config(providers: Vec<ProviderConfig>) -> Config {
+        Config {
+            session_name: "test-session".to_string(),
+            providers,
+        }
+    }
+
+    fn provider_with_guid(guid: &str) -> ProviderConfig {
+        ProviderConfig {
+            name: None,
+            guid: Some(guid.to_string()),
+            level: TraceLevel::default(),
+            keywords: None,
+        }
+    }
+
+    fn provider_with_name(name: &str) -> ProviderConfig {
+        ProviderConfig {
+            name: Some(name.to_string()),
+            guid: None,
+            level: TraceLevel::default(),
+            keywords: None,
+        }
+    }
+
+    #[test]
+    fn validate_accepts_single_guid_provider() {
+        let cfg = make_config(vec![provider_with_guid(
+            "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716",
+        )]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_single_name_provider() {
+        let cfg = make_config(vec![provider_with_name("Microsoft-Windows-PowerShell")]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_multiple_providers() {
+        let cfg = make_config(vec![
+            provider_with_guid("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716"),
+            provider_with_name("Microsoft-Windows-PowerShell"),
+        ]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_empty_providers() {
+        let cfg = make_config(vec![]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("at least one ETW provider"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_both_name_and_guid() {
+        let cfg = make_config(vec![ProviderConfig {
+            name: Some("SomeProvider".to_string()),
+            guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+            level: TraceLevel::default(),
+            keywords: None,
+        }]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mutually exclusive"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_neither_name_nor_guid() {
+        let cfg = make_config(vec![ProviderConfig {
+            name: None,
+            guid: None,
+            level: TraceLevel::default(),
+            keywords: None,
+        }]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("either 'name' or 'guid' must be specified"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_reports_correct_index() {
+        let cfg = make_config(vec![
+            provider_with_guid("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716"),
+            ProviderConfig {
+                name: None,
+                guid: None,
+                level: TraceLevel::default(),
+                keywords: None,
+            },
+        ]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("provider[1]"),
+            "expected error at index 1, got: {msg}"
+        );
+    }
 }
