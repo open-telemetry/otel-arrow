@@ -12,9 +12,14 @@ maintaining the network efficiency gains from Phase 1.
 
 The OTel Arrow dataflow engine, implemented in Rust, provides predictable
 performance characteristics and efficient resource utilization across varying
-load conditions. The engine uses a [thread-per-core
-architecture](#thread-per-core-design) where resource consumption scales with
-the number of configured cores.
+load conditions. The engine uses a **thread-per-core architecture** where each
+configured core runs an independent pipeline instance with dedicated memory,
+eliminating lock contention and context switching overhead. This share-nothing
+design enables throughput to scale linearly with the number of configured cores,
+supports CPU affinity and NUMA-aware memory placement, and allows workload
+isolation across tenants or signals. For detailed technical documentation, see
+the [OTAP Dataflow Engine Documentation](../rust/otap-dataflow/README.md) and
+[Phase 2 Design](phase2-design.md).
 
 This document presents a curated set of key performance metrics across different
 load scenarios and test configurations. For the complete set of automated
@@ -24,10 +29,10 @@ Results](benchmarks.md#current-performance-results).
 
 ### Test Environment
 
-All performance tests are executed on bare-metal compute instance with the
+All performance tests are executed on a dedicated bare-metal compute instance with the
 following specifications:
 
-- **CPU**: 64 physical cores / 128 logical cores (x86-64 architecture)
+- **CPU**: 64 physical cores / 128 logical cores (x86-64, 2 NUMA nodes)
 - **Memory**: 512 GB RAM
 - **Platform**: Oracle Bare Metal Instance
 - **OS**: Oracle Linux 8
@@ -49,12 +54,12 @@ of this benchmark summary.
 
 | Configuration   | CPU Usage | Memory Usage |
 | --------------- | --------- | ------------ |
-| Single Core     | 0.1%      | 15 MB        |
+| Single Core     | 0.1%      | 27 MB        |
 | All Cores (128) | 2.5%      | 600 MB       |
 
 *Note: CPU usage is normalized (percentage of total system capacity). Memory
-usage scales with core count due to the [thread-per-core
-architecture](#thread-per-core-design).*
+usage refers to Resident Set Size (RSS) and scales with core count due to the
+thread-per-core architecture.*
 
 These baseline metrics validate that the engine maintains minimal resource
 footprint when idle, ensuring efficient operation in environments with variable
@@ -94,6 +99,8 @@ This represents the optimal scenario where the dataflow engine operates with its
 native protocol end-to-end, eliminating protocol conversion overhead.
 
 ##### Standard Load - OTLP -> OTLP (Standard Protocol)
+
+*OTLP is gRPC with Protobuf encoding, no TLS.*
 
 | Batch Size | CPU Usage | Memory Usage | Network In | Network Out |
 |------------|-----------|--------------|------------|-------------|
@@ -146,8 +153,8 @@ not yet available and will be added in a future update.*
 
 #### Scalability
 
-How throughput scales when adding CPU cores. The [thread-per-core
-architecture](#thread-per-core-design) enables near-linear scaling by
+How throughput scales when adding CPU cores. The thread-per-core
+architecture enables near-linear scaling by
 eliminating shared-state synchronization overhead.
 
 **Test Parameters:**
@@ -171,30 +178,6 @@ cores would increase both throughput and CPU utilization.*
 
 Scaling Efficiency = (Throughput at N cores) / (N × Single-core throughput)
 
-### Architecture
-
-The OTel Arrow dataflow engine is built in Rust, to achieve high throughput and
-low latency. The columnar data representation and zero-copy processing
-capabilities enable efficient handling of telemetry data at scale.
-
-#### Thread-Per-Core Design
-
-The dataflow engine supports a configurable runtime execution model, using a
-**thread-per-core architecture** that eliminates traditional concurrency
-overhead. This design allows:
-
-- **CPU Affinity Control**: Pipelines can be pinned to specific CPU cores or
-  groups through configuration
-- **NUMA Optimization**: Memory and CPU assignments can be coordinated for
-  Non-Uniform Memory Access (NUMA) architectures
-- **Workload Isolation**: Different telemetry signals or tenants can be assigned
-  to dedicated CPU resources, preventing resource contention
-- **Reduced Synchronization**: Thread-per-core design minimizes lock contention
-  and context switching overhead
-
-For detailed technical documentation, see the [OTAP Dataflow Engine
-Documentation](../rust/otap-dataflow/README.md) and [Phase 2
-Design](phase2-design.md).
 
 ---
 
