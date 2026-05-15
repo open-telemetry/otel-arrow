@@ -32,7 +32,7 @@ Results](benchmarks.md#current-performance-results).
 All performance tests are executed on a dedicated bare-metal compute instance with the
 following specifications:
 
-- **CPU**: 64 physical cores / 128 logical cores (x86-64, 2 NUMA nodes)
+- **CPU**: 64 physical cores / 128 logical cores (x86-64, 2 [NUMA](https://en.wikipedia.org/wiki/Non-uniform_memory_access) nodes)
 - **Memory**: 512 GB RAM
 - **Platform**: Oracle Bare Metal Instance
 - **OS**: Oracle Linux 8
@@ -52,14 +52,14 @@ post-initialization idle state and validate minimal resource footprint. Note
 that longer-duration soak testing for memory leak detection is outside the scope
 of this benchmark summary.
 
-| Configuration   | CPU Usage | Memory Usage |
+| Configuration   | CPU Utilization | Memory Usage |
 | --------------- | --------- | ------------ |
 | Single Core     | 0.1%      | 27 MB        |
 | All Cores (128) | 2.5%      | 600 MB       |
 
-*Note: CPU usage is normalized (percentage of total system capacity). Memory
-usage refers to Resident Set Size (RSS) and scales with core count due to the
-thread-per-core architecture.*
+*Note: CPU utilization is normalized to total system capacity (e.g., 50% on a
+128-core system means half of one core). Memory usage refers to Resident Set
+Size (RSS) and scales with core count due to the thread-per-core architecture.*
 
 These baseline metrics validate that the engine maintains minimal resource
 footprint when idle, ensuring efficient operation in environments with variable
@@ -73,8 +73,8 @@ the impact of batching on performance.
 
 **Test Parameters:**
 
-- Total input load: 100,000 log records/second
-- Average log record size: 1 KB
+- Ingress: ~100 MB/s (100,000 log records/second × ~1 KB average record size)
+- Egress: varies by batch size (see Network Out column)
 - Batch sizes tested: 10, 100, 512, 1024, 4096, and 8192 records per request
 - Test duration: 60 seconds
 
@@ -87,7 +87,7 @@ efficiency gains inherent to Arrow's columnar format at larger batch sizes.
 
 ##### Standard Load - OTAP -> OTAP (Native Protocol)
 
-| Batch Size | CPU Usage | Memory Usage | Network In | Network Out |
+| Batch Size | CPU Utilization | Memory Usage | Network In | Network Out |
 |------------|-----------|--------------|------------|-------------|
 | 512/batch | 50% | 16 MB | 767 KB/s | 833 KB/s |
 
@@ -100,9 +100,9 @@ native protocol end-to-end, eliminating protocol conversion overhead.
 
 ##### Standard Load - OTLP -> OTLP (Standard Protocol)
 
-*OTLP is gRPC with Protobuf encoding, no TLS.*
+*OTLP is [gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc) with Protobuf encoding, no TLS.*
 
-| Batch Size | CPU Usage | Memory Usage | Network In | Network Out |
+| Batch Size | CPU Utilization | Memory Usage | Network In | Network Out |
 |------------|-----------|--------------|------------|-------------|
 | 10/batch | 71%* | 19 MB | 4.1 MB/s | 4.4 MB/s |
 | 100/batch | 67% | 17 MB | 4.8 MB/s | 5.0 MB/s |
@@ -134,7 +134,7 @@ establishes the baseline "unit of capacity" for capacity planning.
 Forwarding without data transformation. Represents the minimum engine overhead
 for load balancing and routing use cases.
 
-| Protocol | Max Throughput | CPU Usage | Memory Usage |
+| Protocol | Max Throughput | CPU Utilization | Memory Usage |
 |----------|----------------|-----------|--------------|
 | OTLP -> OTLP (Standard) | ~542K logs/sec | ~96% | ~33 MB |
 
@@ -144,7 +144,7 @@ Includes an attribute processor to force data materialization. Represents
 typical production workloads where collectors perform transformations such as
 filtering, attribute enrichment, renaming, or aggregation.
 
-| Protocol | Max Throughput | CPU Usage | Memory Usage |
+| Protocol | Max Throughput | CPU Utilization | Memory Usage |
 |----------|----------------|-----------|--------------|
 | OTLP -> OTLP (Standard) | ~260K logs/sec | ~91% | ~41 MB |
 
@@ -163,7 +163,7 @@ eliminating shared-state synchronization overhead.
 - Protocol: OTLP -> OTLP with attribute processing
 - Load: Maximum sustained throughput at each core count
 
-| CPU Cores | Max Throughput | CPU Usage | Scaling Efficiency | Memory Usage |
+| CPU Cores | Max Throughput | CPU Utilization | Scaling Efficiency | Memory Usage |
 |-----------|----------------|-----------|-------------------|--------------|
 | 1 Core    | ~238K logs/sec | ~99%      | 100% (baseline)   | ~38 MB       |
 | 2 Cores   | ~414K logs/sec | ~91%      | 87%               | ~55 MB       |
