@@ -138,9 +138,9 @@ establishes the baseline "unit of capacity" for capacity planning.
 Forwarding without data transformation. Represents the minimum engine overhead
 for load balancing and routing use cases.
 
-| Protocol                 | Max Throughput | CPU Utilization | Memory Usage |
-| ------------------------ | -------------- | --------------- | ------------ |
-| OTLP -> OTLP (Standard) | ~542K logs/sec | ~96%            | ~33 MB       |
+| Protocol | Max Throughput | CPU Utilization | Memory Usage |
+| --- | --- | --- | --- |
+| OTLP -> OTLP (Standard) | ~542K logs/sec | ~96% | ~33 MB |
 
 ##### With Processing
 
@@ -148,9 +148,9 @@ Includes an attribute processor to force data materialization. Represents
 typical production workloads where collectors perform transformations such as
 filtering, attribute enrichment, renaming, or aggregation.
 
-| Protocol                 | Max Throughput | CPU Utilization | Memory Usage |
-| ------------------------ | -------------- | --------------- | ------------ |
-| OTLP -> OTLP (Standard) | ~260K logs/sec | ~91%            | ~41 MB       |
+| Protocol | Max Throughput | CPU Utilization | Memory Usage |
+| --- | --- | --- | --- |
+| OTLP -> OTLP (Standard) | ~260K logs/sec | ~91% | ~41 MB |
 
 *Note: OTAP -> OTAP saturation tests for passthrough and processing modes are
 not yet available and will be added in a future update.*
@@ -181,7 +181,6 @@ load-generator cannot fully saturate all engine cores. Adding more
 load-generator cores would increase both throughput and CPU utilization.*
 
 Scaling Efficiency = (Throughput at N cores) / (N x Single-core throughput)
-
 
 ---
 
