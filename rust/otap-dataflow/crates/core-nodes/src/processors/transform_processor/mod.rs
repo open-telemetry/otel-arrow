@@ -842,7 +842,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let otap_batch = out.into_iter().next().unwrap();
 
