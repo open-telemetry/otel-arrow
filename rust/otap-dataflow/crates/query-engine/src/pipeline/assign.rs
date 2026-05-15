@@ -1760,7 +1760,7 @@ mod test {
             otap_to_otlp, otlp_to_otap, to_logs_data, to_metrics_data, to_traces_data,
         },
     };
-    use otap_df_query_engine_languages::opl::parser::OplParser;
+    use otap_df_query_engine_languages::{opl::parser::OplParser, ottl::OttlParser};
 
     use crate::{
         parser::default_parser_options,
