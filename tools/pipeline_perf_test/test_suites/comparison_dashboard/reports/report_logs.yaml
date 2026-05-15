@@ -323,7 +323,7 @@ queries:
 
           UNION ALL
 
-          SELECT 'network_tx_bytes_rate_avg' AS name, 'bytes/sec' AS unit, average_rate AS value,
+          SELECT 'network_tx_mb_per_sec' AS name, 'MB/s' AS unit, average_rate / 1048576.0 AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
@@ -331,11 +331,26 @@ queries:
 
           UNION ALL
 
-          SELECT 'network_rx_bytes_rate_avg' AS name, 'bytes/sec' AS unit, average_rate AS value,
+          SELECT 'network_rx_mb_per_sec' AS name, 'MB/s' AS unit, average_rate / 1048576.0 AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
-          WHERE metric_name = 'container.network.rx' AND component_name IN ('df-engine', 'go-collector');
+          WHERE metric_name = 'container.network.rx' AND component_name IN ('df-engine', 'go-collector')
+
+          UNION ALL
+
+          SELECT 'egress_bytes_per_log' AS name, 'bytes/log' AS unit,
+                CASE WHEN ltr.logs_per_second > 0
+                  THEN cnr.average_rate / ltr.logs_per_second
+                  ELSE NULL
+                END AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Egress Bytes Per Log' AS extra
+          FROM container_network_rates cnr
+          CROSS JOIN log_throughput_rates ltr
+          CROSS JOIN metadata_row
+          WHERE cnr.metric_name = 'container.network.tx'
+            AND cnr.component_name IN ('df-engine', 'go-collector')
+            AND ltr.metric_name = 'logs';
 
   - name: Dashboard time-series data
     sql: |
