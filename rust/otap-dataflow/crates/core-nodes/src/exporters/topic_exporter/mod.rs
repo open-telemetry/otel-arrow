@@ -36,13 +36,12 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// URN for the topic exporter.
 pub const TOPIC_EXPORTER_URN: &str = "urn:otel:exporter:topic";
 
 /// Telemetry metrics for the topic exporter.
-#[metric_set(name = "topic.exporter.metrics")]
+#[metric_set(name = "exporter.topic")]
 #[derive(Debug, Default, Clone)]
 pub struct TopicExporterMetrics {
     /// Number of messages published to the topic.
@@ -404,9 +403,6 @@ impl Exporter<OtapPdata> for TopicExporter {
             ack_propagation = format!("{ack_propagation_mode:?}"),
             message = "Topic exporter started"
         );
-        let telemetry_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
 
         let run_result: Result<(), Error> = async {
             loop {
@@ -583,7 +579,6 @@ impl Exporter<OtapPdata> for TopicExporter {
         }
         .await;
 
-        _ = telemetry_cancel_handle.cancel().await;
         run_result?;
         Ok(TerminalState::default())
     }

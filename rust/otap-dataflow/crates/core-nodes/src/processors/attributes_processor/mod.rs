@@ -2317,7 +2317,7 @@ mod telemetry_tests {
                 let mut found_domain_signal = false;
 
                 telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
-                    if desc.name == "attributes.processor.metrics" {
+                    if desc.name == "processor.attributes" {
                         for (field, v) in iter {
                             match (field.name, v.to_u64_lossy()) {
                                 ("renamed.entries", x) if x >= 1 => found_renamed_entries = true,

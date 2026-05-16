@@ -106,14 +106,7 @@ pub(super) struct LaunchedPipelineThread<PData> {
 }
 
 impl<
-    PData: 'static
-        + Clone
-        + Send
-        + Sync
-        + std::fmt::Debug
-        + ReceivedAtNode
-        + Unwindable
-        + FlowMeasurementHook,
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
 > ControllerRuntime<PData>
 {
     #[allow(clippy::too_many_arguments)]
@@ -450,14 +443,7 @@ impl<
 }
 
 impl<
-    PData: 'static
-        + Clone
-        + Send
-        + Sync
-        + std::fmt::Debug
-        + ReceivedAtNode
-        + Unwindable
-        + FlowMeasurementHook,
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
 > ControlPlane for ControllerControlPlane<PData>
 {
     fn shutdown_all(&self, timeout_secs: u64) -> Result<(), ControlPlaneError> {

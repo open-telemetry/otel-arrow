@@ -152,7 +152,7 @@ pub(super) fn build_manager<PData>(
             runtime_metrics: MetricLevel::None,
             pipeline_metrics: false,
             tokio_metrics: false,
-            stopwatches: Vec::new(),
+            flow_metrics: Vec::new(),
         },
         Vec::new(),
         empty_node_metric_handles(),

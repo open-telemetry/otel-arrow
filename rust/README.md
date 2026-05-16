@@ -16,7 +16,7 @@ demonstration purposes including a set of core components. In this
 form, the engine is configured with YAML configuration expression the
 set of nodes and edges in the graph. The core components: OTLP
 receiver and exporter, OTAP receiver and exporter, batch and retry
-processors, debug processor, fake data generator, Parquet exporter,
+processors, debug processor, traffic generator, Parquet exporter,
 and a few more.
 
 The primary data type of the OTAP dataflow engine is OTAP records

@@ -198,7 +198,7 @@ mod tests {
         let view_config = ViewConfig {
             selector: MetricSelector {
                 instrument_name: None,
-                scope_name: Some("azure_monitor_exporter.metrics".to_string()),
+                scope_name: Some("exporter.azure_monitor".to_string()),
                 scope_attributes: HashMap::new(),
             },
             stream: MetricStream {

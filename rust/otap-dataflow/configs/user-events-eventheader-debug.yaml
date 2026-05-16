@@ -1,0 +1,60 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        # Linux user_events EventHeader -> debug processor pipeline for manual
+        # E2E validation.
+        #
+        # Build:    cargo build --features user_events-eventheader
+        # Run:      ./target/debug/df_engine --config configs/user-events-eventheader-debug.yaml --num-cores 1
+        # Produce:  taskset -c 0 cargo run -p otap-df-contrib-nodes --features user_events-eventheader --example user_events_eventheader_producer
+        # Verify:   cat /tmp/user_events_eventheader_debug.log
+        #
+        # With --num-cores 1, df_engine drains CPU 0 only. Keep the producer on
+        # CPU 0 too, or run df_engine with host-wide CPU coverage.
+
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: urn:otel:receiver:user_events
+            config:
+              subscriptions:
+                - tracepoint: "otap_df_eventheader_demo_L4K1"
+                  format:
+                    type: event_header
+              session:
+                per_cpu_buffer_size: 1048576
+                late_registration_poll_interval: 100ms
+              drain:
+                max_records_per_turn: 128
+                max_bytes_per_turn: 1048576
+                max_drain_ns: 2ms
+              batching:
+                max_size: 1
+                max_duration: 100ms
+
+          debug:
+            type: processor:debug
+            config:
+              verbosity: detailed
+              mode: signal
+              signals:
+                - logs
+              output: /tmp/user_events_eventheader_debug.log
+
+          noop:
+            type: exporter:noop
+
+        connections:
+          - from: receiver
+            to: debug
+          - from: debug
+            to: noop

@@ -8,6 +8,7 @@ use crate::health::HealthPolicy;
 use crate::transport_headers_policy::TransportHeadersPolicy;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::time::Duration;
 
@@ -179,6 +180,9 @@ impl Policies {
                 errors.push(format!("{path_prefix}.resources.core_allocation: {e}"));
             }
         }
+        if let Some(telemetry) = &self.telemetry {
+            errors.extend(telemetry.validation_errors(&format!("{path_prefix}.telemetry")));
+        }
         if let Some(transport_headers) = &self.transport_headers {
             if let Err(e) = transport_headers.header_propagation.validate() {
                 errors.push(format!(
@@ -266,28 +270,82 @@ pub struct TelemetryPolicy {
     /// shared control-plane telemetry.
     #[serde(default = "default_metric_level_basic")]
     pub runtime_metrics: MetricLevel,
-    /// Distributed stopwatches that sum per-message compute duration across
+    /// Distributed flow_metrics that sum per-message compute duration across
     /// a range of processor nodes.
     #[serde(default)]
-    pub stopwatches: Vec<StopwatchConfig>,
+    pub flow_metrics: Vec<FlowMetricConfig>,
 }
 
-/// Configuration for a distributed stopwatch that measures the aggregate
-/// per-message compute duration across a contiguous range of processor nodes.
-///
-/// The engine accumulates per-message wall-clock time inside each
-/// processor's `process()` (between successive sends) for nodes between
-/// `start_node` and `stop_node` (inclusive) on the forward path, and
-/// records the sum into a dedicated stopwatch metric entity.
+/// Configuration for flow metrics across a contiguous range of processor nodes.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct StopwatchConfig {
-    /// User-facing name for this stopwatch, used as a metric attribute.
+pub struct FlowMetricConfig {
+    /// User-facing name for this flow metric, used as a metric attribute.
     pub name: String,
-    /// Processor node name where the stopwatch range begins (inclusive).
+    /// Processor node bounds for this flow metric.
+    pub bounds: FlowBounds,
+    /// Metrics to enable. Omitted means all metrics are enabled.
+    #[serde(default)]
+    pub metrics: Option<Vec<FlowMetric>>,
+}
+
+impl FlowMetricConfig {
+    /// Returns whether the given metric is enabled for this flow.
+    #[must_use]
+    pub fn has(&self, metric: FlowMetric) -> bool {
+        match &self.metrics {
+            None => true,
+            Some(metrics) => metrics.contains(&metric),
+        }
+    }
+}
+
+/// Start/end node bounds for a flow metric.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FlowBounds {
+    /// Processor node name where the flow metric range begins (inclusive).
     pub start_node: String,
-    /// Processor node name where the stopwatch range ends (inclusive).
-    pub stop_node: String,
+    /// Processor node name where the flow metric range ends (inclusive).
+    pub end_node: String,
+}
+
+/// Individual metrics that can be enabled for a flow.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowMetric {
+    /// Aggregate processor compute duration across the flow.
+    ComputeDuration,
+    /// Signal item count entering the flow.
+    SignalsIncoming,
+    /// Signal item count leaving the flow.
+    SignalsOutgoing,
+}
+
+impl TelemetryPolicy {
+    /// Returns validation errors for the telemetry policy.
+    #[must_use]
+    pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
+        let mut errors = Vec::new();
+        for (idx, flow) in self.flow_metrics.iter().enumerate() {
+            let path = format!("{path_prefix}.flow_metrics[{idx}].metrics");
+            if let Some(metrics) = &flow.metrics {
+                if metrics.is_empty() {
+                    errors.push(format!(
+                        "{path} must not be empty when explicitly configured"
+                    ));
+                }
+                let mut seen = HashSet::new();
+                for metric in metrics {
+                    if !seen.insert(*metric) {
+                        errors.push(format!("{path} must not contain duplicate entries"));
+                        break;
+                    }
+                }
+            }
+        }
+        errors
+    }
 }
 
 impl Default for TelemetryPolicy {
@@ -296,7 +354,7 @@ impl Default for TelemetryPolicy {
             pipeline_metrics: true,
             tokio_metrics: true,
             runtime_metrics: MetricLevel::Basic,
-            stopwatches: Vec::new(),
+            flow_metrics: Vec::new(),
         }
     }
 }
@@ -801,6 +859,83 @@ mod tests {
         "#;
         let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
         assert_eq!(policy.runtime_metrics, super::MetricLevel::Basic);
+    }
+
+    #[test]
+    fn flow_metrics_omitted_metrics_enable_all() {
+        let yaml = r#"
+            flow_metrics:
+              - name: flow1
+                bounds: { start_node: a, end_node: b }
+        "#;
+        let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
+        let flow = &policy.flow_metrics[0];
+        assert!(flow.metrics.is_none());
+        assert!(flow.has(super::FlowMetric::ComputeDuration));
+        assert!(flow.has(super::FlowMetric::SignalsIncoming));
+        assert!(flow.has(super::FlowMetric::SignalsOutgoing));
+    }
+
+    #[test]
+    fn flow_metrics_explicit_subset_is_honored() {
+        let yaml = r#"
+            flow_metrics:
+              - name: flow1
+                bounds: { start_node: a, end_node: b }
+                metrics: [compute_duration]
+        "#;
+        let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
+        let flow = &policy.flow_metrics[0];
+        assert!(flow.has(super::FlowMetric::ComputeDuration));
+        assert!(!flow.has(super::FlowMetric::SignalsIncoming));
+        assert!(!flow.has(super::FlowMetric::SignalsOutgoing));
+    }
+
+    #[test]
+    fn flow_metrics_rejects_empty_metrics() {
+        let policies = Policies {
+            telemetry: Some(super::TelemetryPolicy {
+                flow_metrics: vec![super::FlowMetricConfig {
+                    name: "flow1".to_string(),
+                    bounds: super::FlowBounds {
+                        start_node: "a".to_string(),
+                        end_node: "b".to_string(),
+                    },
+                    metrics: Some(vec![]),
+                }],
+                ..super::TelemetryPolicy::default()
+            }),
+            ..Default::default()
+        };
+        let errors = policies.validation_errors("policies");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("must not be empty"))
+        );
+    }
+
+    #[test]
+    fn flow_metrics_rejects_duplicate_metrics() {
+        let policies = Policies {
+            telemetry: Some(super::TelemetryPolicy {
+                flow_metrics: vec![super::FlowMetricConfig {
+                    name: "flow1".to_string(),
+                    bounds: super::FlowBounds {
+                        start_node: "a".to_string(),
+                        end_node: "b".to_string(),
+                    },
+                    metrics: Some(vec![
+                        super::FlowMetric::ComputeDuration,
+                        super::FlowMetric::ComputeDuration,
+                    ]),
+                }],
+                ..super::TelemetryPolicy::default()
+            }),
+            ..Default::default()
+        };
+        let errors = policies.validation_errors("policies");
+        assert!(errors.iter().any(|error| error.contains("duplicate")));
     }
 
     #[test]
