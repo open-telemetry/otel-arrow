@@ -1519,7 +1519,7 @@ impl FilterExec {
 
         // check if the result is already aligned to the root batch
         match eval_result.data_scope.as_ref() {
-            DataScope::Root | DataScope::StaticScalar => {
+            DataScope::Root | DataScope::StaticScalar | DataScope::StructField(_) => {
                 // result is already aligned to root batch rows
                 Ok(boolean_arr)
             }
