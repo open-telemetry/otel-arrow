@@ -751,9 +751,10 @@ jobs:
         run: cargo build --release --bin df_engine
         working-directory: ./rust/otap-dataflow
       - name: Run host_metrics_receiver against weaver live-check
+        timeout-minutes: 5
         working-directory: ${{ github.workspace }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           mkdir -p live-check-report
 
           echo "::group::Start weaver live-check listener"
@@ -792,16 +793,13 @@ jobs:
           sleep 12
 
           echo "::group::Stop services"
-          kill -INT "$ENGINE_PID" || true
-          # Best effort: give df_engine a moment to flush before tearing down.
-          sleep 2
+          # df_engine does not implement SIGINT shutdown today. Hard-kill it
+          # and do NOT `wait` on it (would block indefinitely).
+          kill -KILL "$ENGINE_PID" 2>/dev/null || true
           # Tell weaver to stop accepting and finalize the report.
           curl -fsS -X POST "http://127.0.0.1:4320/stop" || true
-          wait "$ENGINE_PID" 2>/dev/null || true
-          set +e
           wait "$WEAVER_PID"
           WEAVER_EXIT=$?
-          set -e
           echo "weaver exit code: $WEAVER_EXIT"
           echo "::endgroup::"
 
