@@ -833,9 +833,9 @@ jobs:
           violations = levels.get("violation", 0)
           improvements = levels.get("improvement", 0)
           informations = levels.get("information", 0)
-          status_emoji = "❌" if violations else "✅"
+          status = "FAIL" if violations else "PASS"
 
-          print(f"## {status_emoji} Weaver live-check (host_metrics_receiver)")
+          print(f"## Weaver live-check (host_metrics_receiver): {status}")
           print()
           print(f"- Weaver: `{os.environ.get('WEAVER_VERSION', 'unknown')}`")
           print(f"- Semantic conventions: `{os.environ.get('SEMCONV_REF', 'unknown')}`")
