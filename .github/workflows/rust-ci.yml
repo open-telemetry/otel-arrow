@@ -739,16 +739,10 @@ jobs:
         with:
           workspaces: ./rust/otap-dataflow
           cache-bin: false
-      - name: Install Weaver
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.weaver/bin"
-          curl -sSL -o /tmp/weaver.tar.xz \
-            "https://github.com/open-telemetry/weaver/releases/download/${WEAVER_VERSION}/weaver-x86_64-unknown-linux-gnu.tar.xz"
-          tar -xf /tmp/weaver.tar.xz -C "$HOME/.weaver/bin" --strip-components=1
-          echo "$HOME/.weaver/bin" >> "$GITHUB_PATH"
-      - name: Verify Weaver
-        run: weaver --version
+      - name: Setup Weaver
+        uses: open-telemetry/weaver/.github/actions/setup-weaver@3a3b7cc98e08f84bccda45c0f20522b51d64a88c # v0.23.0
+        with:
+          version: ${{ env.WEAVER_VERSION }}
       - name: Build df_engine
         run: cargo build --release --bin df_engine
         working-directory: ./rust/otap-dataflow
