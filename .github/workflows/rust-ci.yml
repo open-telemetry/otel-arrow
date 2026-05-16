@@ -719,6 +719,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       WEAVER_VERSION: v0.23.0
+      # Semantic-conventions tag to validate against. Keep in sync with
+      # the `VERSION` constant in
+      # rust/otap-dataflow/crates/core-nodes/src/receivers/host_metrics_receiver/semconv.rs
+      SEMCONV_REF: v1.41.0
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -726,9 +730,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: open-telemetry/semantic-conventions
-          # Pinned to the same version the receiver targets
-          # (rust/otap-dataflow/crates/core-nodes/src/receivers/host_metrics_receiver/semconv.rs).
-          ref: v1.41.0
+          ref: ${{ env.SEMCONV_REF }}
           path: semantic-conventions
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
@@ -756,6 +758,10 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p live-check-report
+
+          echo "Weaver version:       ${WEAVER_VERSION}"
+          echo "Semantic conventions: ${SEMCONV_REF}"
+          weaver --version || true
 
           echo "::group::Start weaver live-check listener"
           weaver registry live-check \
@@ -823,8 +829,10 @@ jobs:
             exit 0
           fi
 
-          python3 - "$REPORT" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
-          import json, sys
+          # Compact summary -> GitHub step summary.
+          SEMCONV_REF="$SEMCONV_REF" WEAVER_VERSION="$WEAVER_VERSION" \
+            python3 - "$REPORT" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json, os, sys
           d = json.load(open(sys.argv[1]))
           s = d.get("statistics", {}) or {}
           levels = s.get("advice_level_counts", {}) or {}
@@ -835,6 +843,8 @@ jobs:
 
           print(f"## {status_emoji} Weaver live-check (host_metrics_receiver)")
           print()
+          print(f"- Weaver: `{os.environ.get('WEAVER_VERSION', 'unknown')}`")
+          print(f"- Semantic conventions: `{os.environ.get('SEMCONV_REF', 'unknown')}`")
           print(f"- Samples received: **{len(d.get('samples', []))}**")
           by_type = s.get("total_entities_by_type", {}) or {}
           if by_type:
@@ -859,10 +869,84 @@ jobs:
               print()
 
           if violations:
-              print("> Violations were reported. See artifact `weaver-live-check-host-metrics` for the full JSON report.")
+              print("> Violations were reported. See the job log and the `weaver-live-check-host-metrics` artifact for full detail.")
           else:
-              print("> No semantic-convention violations. Improvements/informations are advisory.")
+              print("> No semantic-convention violations. Improvements/informations are advisory. See the job log for example findings.")
           PY
+
+          # Detailed findings -> job log only (too verbose for step summary).
+          # Walks every sample's `live_check_result.all_advice` and groups
+          # findings by (level, id), printing a few example messages per group.
+          echo "::group::Detailed findings (sampled)"
+          python3 - "$REPORT" <<'PY'
+          import json, sys
+          from collections import defaultdict
+
+          d = json.load(open(sys.argv[1]))
+
+          # (level, id) -> list of dicts {message, signal_type, signal_name, sample_path}
+          groups = defaultdict(list)
+
+          def walk(node, path):
+              """Recursively collect findings from a nested sample tree."""
+              if isinstance(node, dict):
+                  result = node.get("live_check_result") or {}
+                  for adv in result.get("all_advice", []) or []:
+                      groups[(adv.get("level", "?"), adv.get("id", "?"))].append({
+                          "message": adv.get("message", ""),
+                          "signal_type": adv.get("signal_type", ""),
+                          "signal_name": adv.get("signal_name", ""),
+                          "sample_path": " / ".join(path) if path else "",
+                      })
+                  # Recurse into the sample subtree to catch nested findings
+                  # (e.g. attribute findings inside number_data_point).
+                  sample_name = (
+                      node.get("name")
+                      or node.get("attribute", {}).get("name") if isinstance(node.get("attribute"), dict) else None
+                  )
+                  sub_path = path + ([sample_name] if sample_name else [])
+                  for k, v in node.items():
+                      if k in ("live_check_result",):
+                          continue
+                      walk(v, sub_path)
+              elif isinstance(node, list):
+                  for item in node:
+                      walk(item, path)
+
+          for sample in d.get("samples", []) or []:
+              walk(sample, [])
+
+          if not groups:
+              print("(no findings emitted by weaver)")
+          else:
+              LEVEL_ORDER = {"violation": 0, "improvement": 1, "information": 2}
+              ordered = sorted(
+                  groups.items(),
+                  key=lambda kv: (LEVEL_ORDER.get(kv[0][0], 99), -len(kv[1]), kv[0][1]),
+              )
+              MAX_EXAMPLES = 5
+              for (level, fid), items in ordered:
+                  print(f"[{level}] {fid}  ({len(items)} occurrences)")
+                  # Deduplicate by message + signal_name so we show distinct cases.
+                  seen = set()
+                  shown = 0
+                  for it in items:
+                      key = (it["message"], it["signal_type"], it["signal_name"])
+                      if key in seen:
+                          continue
+                      seen.add(key)
+                      sig = f"{it['signal_type']}:{it['signal_name']}" if it['signal_name'] else it['signal_type']
+                      ctx = f" [{it['sample_path']}]" if it['sample_path'] else ""
+                      print(f"    - ({sig}{ctx}) {it['message']}")
+                      shown += 1
+                      if shown >= MAX_EXAMPLES:
+                          break
+                  remaining = len(items) - shown
+                  if remaining > 0:
+                      print(f"    ... and {remaining} more occurrence(s)")
+                  print()
+          PY
+          echo "::endgroup::"
       - name: Upload live-check report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
