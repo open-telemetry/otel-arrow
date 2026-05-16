@@ -515,6 +515,21 @@ impl AssignPipelineStage {
             }
         }
 
+        // Coerce static scalar integers to the destination field type (e.g. AnyInt literal → UInt32).
+        // Mirrors the same cast done in assign_to_root.
+        if let Some(dest_logical_type) = nested_struct_field_type(dest_field_name) {
+            if let Some(dest_arrow_type) = dest_logical_type.datatype() {
+                if eval_result.data_scope.as_ref() == &DataScope::StaticScalar
+                    && eval_result.values.data_type().is_integer()
+                    && dest_arrow_type.is_integer()
+                {
+                    eval_result.values = eval_result
+                        .values
+                        .cast_to(&dest_arrow_type, None)?;
+                }
+            }
+        }
+
         let mut values = eval_result_to_array(
             &eval_result.values,
             column_supports_dict_encoding,
@@ -3618,21 +3633,58 @@ mod test {
         test_struct_col_assign_fails_on_wrong_type::<KqlParser>().await
     }
 
-    #[tokio::test]
-    async fn test_struct_col_assign_fails_string_to_uint32_field() {
-        let logs_data = to_logs_data(vec![LogRecord::build().finish()]);
+    async fn test_struct_col_assign_uint32_field<P: Parser>() {
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![
+                ScopeLogs::new(
+                    InstrumentationScope::build().name("scope1").finish(),
+                    vec![LogRecord::build().finish()],
+                ),
+                ScopeLogs::new(
+                    InstrumentationScope::build().name("scope2").finish(),
+                    vec![LogRecord::build().finish()],
+                ),
+            ],
+        )]);
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
-        let query = "logs | extend instrumentation_scope.dropped_attributes_count = \"foo\"";
-        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let query = "logs | extend instrumentation_scope.dropped_attributes_count = 42";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
         let mut pipeline = Pipeline::new(pipeline_expr);
-        let err = pipeline.execute(input).await.unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("cannot assign expression of type String to type UInt32"),
-            "unexpected error: {}",
-            err
-        );
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let resource_0 = &result_logs_data.resource_logs[0];
+        let expected = vec![
+            ScopeLogs::new(
+                InstrumentationScope::build()
+                    .name("scope1")
+                    .dropped_attributes_count(42u32)
+                    .finish(),
+                vec![LogRecord::build().finish()],
+            ),
+            ScopeLogs::new(
+                InstrumentationScope::build()
+                    .name("scope2")
+                    .dropped_attributes_count(42u32)
+                    .finish(),
+                vec![LogRecord::build().finish()],
+            ),
+        ];
+        assert_eq!(resource_0.scope_logs, expected);
+    }
+
+    #[tokio::test]
+    async fn test_struct_col_assign_uint32_field_opl_parser() {
+        test_struct_col_assign_uint32_field::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_struct_col_assign_uint32_field_kql_parser() {
+        test_struct_col_assign_uint32_field::<KqlParser>().await
     }
 
     #[tokio::test]
