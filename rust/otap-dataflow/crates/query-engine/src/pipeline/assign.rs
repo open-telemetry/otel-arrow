@@ -523,9 +523,7 @@ impl AssignPipelineStage {
                     && eval_result.values.data_type().is_integer()
                     && dest_arrow_type.is_integer()
                 {
-                    eval_result.values = eval_result
-                        .values
-                        .cast_to(&dest_arrow_type, None)?;
+                    eval_result.values = eval_result.values.cast_to(&dest_arrow_type, None)?;
                 }
             }
         }
