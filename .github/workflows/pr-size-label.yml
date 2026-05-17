@@ -1,0 +1,56 @@
+name: "PR Size Labeler"
+
+permissions:
+  contents: read
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  size-label:
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: codelytv/pr-size-labeler@095a41fca88b8764fd9e008ad269bcdb82bb38b9 # v1.10.4
+        with:
+          xs_label: 'size/XS'
+          xs_max_size: '9'
+          s_label: 'size/S'
+          s_max_size: '29'
+          m_label: 'size/M'
+          m_max_size: '99'
+          l_label: 'size/L'
+          l_max_size: '499'
+          xl_label: 'size/XL'
+          fail_if_xl: 'false'
+          message_if_xl: >
+            ⚠️ **This PR is `size/XL` (500+ changed lines).** Large PRs are
+            harder to review thoroughly and more likely to introduce subtle
+            bugs.
+
+
+            Please consider:
+
+            - Splitting into smaller, independently mergeable PRs
+
+            - Ensuring each PR addresses a single concern
+
+
+            If the size is unavoidable (e.g., a large refactor or generated
+            code update), please explain the reasoning in the PR description.
+            See
+            [CONTRIBUTING.md](https://github.com/open-telemetry/otel-arrow/blob/main/CONTRIBUTING.md)
+            for guidelines on keeping PRs small.
+          files_to_ignore: |
+            "go.sum"
+            "Cargo.lock"
+            "*.lock"
+            "*.pb.go"
+            "*.pb.gw.go"
+            "**/testdata/**"
+            "vendor/**"
