@@ -40,6 +40,9 @@ use tokio::time::{Duration, Interval, MissedTickBehavior, interval};
 use self::producer::{GenerateError, TrafficProducer};
 
 pub mod attributes;
+
+#[cfg(test)]
+mod compression_ratio_tests;
 /// allows the user to configure their traffic generator receiver
 pub mod config;
 /// provides synthetic data for generated signals
