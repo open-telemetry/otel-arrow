@@ -7,6 +7,9 @@
 /// Protocol) message types.
 pub mod otlp;
 
+/// STEF stream support.
+pub mod stef;
+
 /// Module contains the underlying OTLP and OTAP protobuf objects.
 pub mod proto;
 

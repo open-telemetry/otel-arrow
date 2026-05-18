@@ -6,6 +6,7 @@
 //! This module contains types that are used by multiple view implementations to avoid
 //! code duplication across signal-specific modules.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::ops::Range;
 
@@ -15,7 +16,9 @@ use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAc
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, AttributeValueType};
 use crate::otlp::common::AnyValueArrays;
 use crate::schema::consts;
-use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, Str, ValueType};
+use otap_df_pdata_views::views::common::{
+    AnyValueScalar, AnyValueView, AttributeView, Str, ValueType,
+};
 
 // ===== RowGroup =====
 
@@ -157,6 +160,17 @@ impl<'a> AnyValueView<'a> for OtapAnyValueView<'a> {
     fn as_kvlist(&self) -> Option<Self::KeyValueIter<'_>> {
         None
     }
+
+    fn scalar_value(&self) -> AnyValueScalar<'a> {
+        match self {
+            Self::Empty => AnyValueScalar::Empty,
+            Self::Str(value) => AnyValueScalar::String(Cow::Borrowed(value)),
+            Self::Int(value) => AnyValueScalar::Int64(*value),
+            Self::Double(value) => AnyValueScalar::Double(*value),
+            Self::Bool(value) => AnyValueScalar::Bool(*value),
+            Self::Bytes(value) => AnyValueScalar::Bytes(Cow::Borrowed(value)),
+        }
+    }
 }
 
 /// Attribute view for OTAP format
@@ -179,6 +193,10 @@ impl<'a> AttributeView for OtapAttributeView<'a> {
     #[inline]
     fn value(&self) -> Option<Self::Val<'_>> {
         Some(self.value)
+    }
+
+    fn key_scalar_value(&self) -> (Str<'_>, Option<AnyValueScalar<'_>>) {
+        (self.key, Some(self.value.scalar_value()))
     }
 }
 

@@ -52,6 +52,7 @@ tokio.workspace = true
 tower.workspace = true
 tonic-middleware.workspace = true
 tonic.workspace = true
+tonic-prost.workspace = true
 tokio-util.workspace = true
 reqwest.workspace = true
 parking_lot.workspace = true

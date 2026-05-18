@@ -27,3 +27,6 @@ pub mod otlp_grpc_exporter;
 
 /// OTLP HTTP exporter.
 pub mod otlp_http_exporter;
+
+/// STEF exporter.
+pub mod stef;
