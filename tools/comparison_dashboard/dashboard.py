@@ -70,6 +70,7 @@ class Manifest:
     comparison_files: list[Path]  # absolute paths to comparison YAMLs
     variables: dict               # template variables passed to Jinja at top level
     meta: dict                    # allowed values per meta key (key -> [values])
+    metrics: list                 # ordered list of {name, label} for dashboard metrics
 
 def load_manifest(manifest_path: Path) -> Manifest:
     """Load and validate the manifest file. Resolves all listed paths."""
@@ -88,7 +89,7 @@ def load_manifest(manifest_path: Path) -> Manifest:
         print(f"ERROR: manifest must be a mapping at top level: {manifest_path}")
         sys.exit(1)
 
-    for key in ("suites", "comparisons", "variables", "meta"):
+    for key in ("suites", "comparisons", "variables", "meta", "metrics"):
         if key not in data:
             print(f"ERROR: manifest missing required key '{key}': {manifest_path}")
             sys.exit(1)
@@ -107,6 +108,30 @@ def load_manifest(manifest_path: Path) -> Manifest:
             print(f"ERROR: manifest meta.{key} must be a list of allowed values: {manifest_path}")
             sys.exit(1)
 
+    metrics_raw = data["metrics"]
+    if not isinstance(metrics_raw, list) or not metrics_raw:
+        print(f"ERROR: manifest 'metrics' must be a non-empty list: {manifest_path}")
+        sys.exit(1)
+    metrics: list = []
+    seen_metric_names: set[str] = set()
+    for i, m in enumerate(metrics_raw):
+        if not isinstance(m, dict):
+            print(f"ERROR: manifest metrics[{i}] must be a mapping: {manifest_path}")
+            sys.exit(1)
+        name = m.get("name")
+        label = m.get("label")
+        if not isinstance(name, str) or not name:
+            print(f"ERROR: manifest metrics[{i}] missing non-empty 'name': {manifest_path}")
+            sys.exit(1)
+        if not isinstance(label, str) or not label:
+            print(f"ERROR: manifest metrics[{i}] missing non-empty 'label': {manifest_path}")
+            sys.exit(1)
+        if name in seen_metric_names:
+            print(f"ERROR: duplicate manifest metric name '{name}': {manifest_path}")
+            sys.exit(1)
+        seen_metric_names.add(name)
+        metrics.append({"name": name, "label": label})
+
     base = manifest_path.parent
     suite_files = [_resolve_listed_path(base, p, "suite") for p in data["suites"]]
     comparison_files = [_resolve_listed_path(base, p, "comparison") for p in data["comparisons"]]
@@ -118,6 +143,7 @@ def load_manifest(manifest_path: Path) -> Manifest:
         comparison_files=comparison_files,
         variables=variables,
         meta=meta,
+        metrics=metrics,
     )
 
 
@@ -830,11 +856,11 @@ def cmd_build(args) -> int:
     print()
 
     print("Generating index.html...")
-    generate_index_html(comparisons, suites, paths)
+    generate_index_html(comparisons, suites, paths, manifest)
     print()
 
     print("Generating comparison stubs...")
-    generate_compare_stubs(comparisons, suites, paths)
+    generate_compare_stubs(comparisons, suites, paths, manifest)
     print()
 
     print("Build complete.")
@@ -1183,6 +1209,35 @@ def validate_manifest(
                     f"'{ref_slug}' (source: {comp.get('_source')})"
                 )
 
+    known_metric_names = {m["name"] for m in manifest.metrics}
+    for comp in comparisons:
+        comp_metrics = comp.get("metrics")
+        if comp_metrics is None:
+            continue
+        if not isinstance(comp_metrics, dict):
+            errors.append(
+                f"comparison '{comp.get('slug')}' 'metrics' must be a mapping (source: {comp.get('_source')})"
+            )
+            continue
+        chart_list = comp_metrics.get("chart")
+        if chart_list is None:
+            continue
+        if not isinstance(chart_list, list) or not chart_list:
+            errors.append(
+                f"comparison '{comp.get('slug')}' 'metrics.chart' must be a non-empty list (source: {comp.get('_source')})"
+            )
+            continue
+        for j, name in enumerate(chart_list):
+            if not isinstance(name, str) or not name:
+                errors.append(
+                    f"comparison '{comp.get('slug')}' metrics.chart[{j}] must be a non-empty string (source: {comp.get('_source')})"
+                )
+                continue
+            if name not in known_metric_names:
+                errors.append(
+                    f"comparison '{comp.get('slug')}' metrics.chart references unknown metric '{name}' (source: {comp.get('_source')})"
+                )
+
     for comp in comparisons:
         comp_slug = comp.get("slug")
         src = comp.get("_source", "?")
@@ -1345,7 +1400,7 @@ def _url_relpath(target: Path, start: Path) -> str:
     return Path(os.path.relpath(target, start)).as_posix()
 
 
-def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> None:
+def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths, manifest: Manifest) -> None:
     """Generate <compare_dir>/index.html with comparison sections."""
     shared_rel = _url_relpath(paths.shared_dst, paths.compare_dir)
     data_rel = _url_relpath(paths.data_dir, paths.compare_dir)
@@ -1364,6 +1419,8 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> N
 
     comparisons_public = [_strip_internal(c) for c in comparisons]
     comparisons_json = json.dumps(comparisons_public, indent=2)
+    metrics_meta = {m["name"]: {"label": m["label"]} for m in manifest.metrics}
+    metrics_meta_json = json.dumps(metrics_meta)
 
     lines = [
         '<!DOCTYPE html>',
@@ -1400,6 +1457,7 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> N
         '  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>',
         data_script_tags,
         f'  <script>window.DATA_PATH = "{data_rel}/suite";</script>',
+        f'  <script>window.METRICS_META = {metrics_meta_json};</script>',
         f'  <script>window.COMPARISONS = {comparisons_json};</script>',
         f'  <script type="module" src="{shared_rel}/app.js"></script>',
         '</body>',
@@ -1417,13 +1475,15 @@ def _strip_internal(comp: dict) -> dict:
     return {k: v for k, v in comp.items() if not (isinstance(k, str) and k.startswith("_"))}
 
 
-def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths) -> None:
+def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths, manifest: Manifest) -> None:
     """Generate <compare_dir>/<slug>/index.html stub pages."""
     # Per-comparison pages are all siblings under compare_dir, so the
     # relpaths to shared/ and data/ are identical for every slug.
     sample_stub = paths.compare_page_dir("_")
     shared_rel = _url_relpath(paths.shared_dst, sample_stub)
     data_rel = _url_relpath(paths.data_dir, sample_stub)
+    metrics_meta = {m["name"]: {"label": m["label"]} for m in manifest.metrics}
+    metrics_meta_json = json.dumps(metrics_meta)
 
     for comp in comparisons:
         comp_slug = comp["slug"]
@@ -1480,6 +1540,7 @@ def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths) -
             '',
             '  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>',
             f'  <script>window.DATA_PATH = "{data_rel}/suite";</script>',
+            f'  <script>window.METRICS_META = {metrics_meta_json};</script>',
             f'  <script>window.COMPARISON_SLUG = "{comp_slug}";</script>',
             suite_scripts,
             f'  <script>window.COMPARISON = {comp_json};</script>',
