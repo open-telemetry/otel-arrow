@@ -1,0 +1,37 @@
+slug: dfe_traces_baselines
+name: Dataflow Engine Traces Baselines
+description: Baseline DFE traces runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
+
+suites:
+  # OTAP
+  - name: DFE Traces OTAP Baseline (None)
+    slug: dfe_traces_otap_none_baseline
+    short: OTAP/None
+  - name: DFE Traces OTAP Baseline (Gzip)
+    slug: dfe_traces_otap_gzip_baseline
+    short: OTAP/Gzip
+  - name: DFE Traces OTAP Baseline (Zstd)
+    slug: dfe_traces_otap_zstd_baseline
+    short: OTAP/Zstd
+
+  # OTLP
+  - name: DFE Traces OTLP Baseline (None)
+    slug: dfe_traces_otlp_none_baseline
+    short: OTLP/None
+  - name: DFE Traces OTLP Baseline (Gzip)
+    slug: dfe_traces_otlp_gzip_baseline
+    short: OTLP/Gzip
+  - name: DFE Traces OTLP Baseline (Zstd)
+    slug: dfe_traces_otlp_zstd_baseline
+    short: OTLP/Zstd
+
+  # OTLP/HTTP
+  - name: DFE Traces OTLP/HTTP Baseline (None)
+    slug: dfe_traces_otlphttp_none_baseline
+    short: OTLP-HTTP/None
+  - name: DFE Traces OTLP/HTTP Baseline (Gzip)
+    slug: dfe_traces_otlphttp_gzip_baseline
+    short: OTLP-HTTP/Gzip
+  - name: DFE Traces OTLP/HTTP Baseline (Zstd)
+    slug: dfe_traces_otlphttp_zstd_baseline
+    short: OTLP-HTTP/Zstd
