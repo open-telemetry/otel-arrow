@@ -1,0 +1,37 @@
+slug: dfe_logs_baselines
+name: Dataflow Engine Logs
+description: Baseline DFE logs runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
+
+suites:
+  # OTAP
+  - name: DFE Logs OTAP Baseline (None)
+    slug: dfe_logs_otap_none_baseline
+    short: OTAP/None
+  - name: DFE Logs OTAP Baseline (Gzip)
+    slug: dfe_logs_otap_gzip_baseline
+    short: OTAP/Gzip
+  - name: DFE Logs OTAP Baseline (Zstd)
+    slug: dfe_logs_otap_zstd_baseline
+    short: OTAP/Zstd
+
+  # OTLP
+  - name: DFE Logs OTLP Baseline (None)
+    slug: dfe_logs_otlp_none_baseline
+    short: OTLP/None
+  - name: DFE Logs OTLP Baseline (Gzip)
+    slug: dfe_logs_otlp_gzip_baseline
+    short: OTLP/Gzip
+  - name: DFE Logs OTLP Baseline (Zstd)
+    slug: dfe_logs_otlp_zstd_baseline
+    short: OTLP/Zstd
+
+  # OTLP/HTTP
+  - name: DFE Logs OTLP/HTTP Baseline (None)
+    slug: dfe_logs_otlphttp_none_baseline
+    short: OTLP-HTTP/None
+  - name: DFE Logs OTLP/HTTP Baseline (Gzip)
+    slug: dfe_logs_otlphttp_gzip_baseline
+    short: OTLP-HTTP/Gzip
+  - name: DFE Logs OTLP/HTTP Baseline (Zstd)
+    slug: dfe_logs_otlphttp_zstd_baseline
+    short: OTLP-HTTP/Zstd

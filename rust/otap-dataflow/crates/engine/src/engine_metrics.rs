@@ -44,7 +44,7 @@ use otap_df_telemetry_macros::metric_set;
 use std::time::Instant;
 
 /// Engine-wide metrics emitted once per engine instance.
-#[metric_set(name = "engine.metrics")]
+#[metric_set(name = "engine")]
 #[derive(Debug, Default, Clone)]
 pub struct EngineMetrics {
     /// Process-wide Resident Set Size — physical RAM currently used by the process.

@@ -79,7 +79,7 @@ use config::{RuntimeFamily, effective_root_path, normalized_root_path};
 pub const HOST_METRICS_RECEIVER_URN: &str = "urn:otel:receiver:host_metrics";
 
 /// Telemetry metrics for the host metrics receiver.
-#[metric_set(name = "host_metrics.receiver.metrics")]
+#[metric_set(name = "receiver.host_metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct HostMetricsReceiverMetrics {
     /// Number of scrape ticks started.
@@ -481,10 +481,6 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
         })?;
         let mut scheduler = FamilyScheduler::new(&config, Instant::now());
 
-        let _ = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         loop {
             tokio::select! {
                 biased;
@@ -556,7 +552,10 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                         metrics.send_failures.add(1);
                                         metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
                                     }
-                                    otel_warn!("host metrics dropped due to downstream backpressure");
+                                    otel_warn!(
+                                        "host_metrics.dropped_backpressure",
+                                        message = "host metrics dropped due to downstream backpressure"
+                                    );
                                 }
                                 Err(other) => {
                                     if let Some(metrics) = metrics.as_mut() {
@@ -580,7 +579,8 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                 metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
                             }
                             otel_warn!(
-                                "host metrics scrape failed; receiver will retry",
+                                "host_metrics.scrape_failed",
+                                message = "host metrics scrape failed; receiver will retry",
                                 error = err.to_string()
                             );
                         }

@@ -1,0 +1,661 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+#![allow(clippy::unwrap_used, missing_docs, elided_lifetimes_in_paths)]
+
+use chrono::{DateTime, FixedOffset, TimeZone, Utc};
+use data_engine_expressions::*;
+use data_engine_recordset::*;
+use otap_df_contrib_nodes::processors::recordset_kql_processor::otlp_bridge::*;
+
+use crate::common::*;
+
+pub mod common;
+
+#[test]
+fn test_project_keep() {
+    let log = LogRecord::new()
+        .with_event_name("event_name".into())
+        .with_attribute("key1", AnyValue::Null)
+        .with_attribute("name", AnyValue::Null);
+
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+    );
+
+    let query = "source\n | project-keep key*";
+
+    let pipeline = parse_kql_logs_query_into_pipeline(query, None).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.included_records.len(), 1);
+    assert_eq!(results.dropped_records.len(), 0);
+
+    let log = results.included_records.first().unwrap().get_record();
+
+    assert!(log.event_name.is_none());
+
+    let attributes = log.attributes.get_values();
+    assert_eq!(attributes.len(), 1);
+    assert_eq!(
+        attributes.get("key1").map(|v| v.to_value().to_string()),
+        Some(AnyValue::Null.to_value().to_string())
+    );
+}
+
+#[test]
+fn test_project_away() {
+    let log = LogRecord::new()
+        .with_event_name("event_name".into())
+        .with_attribute("key1", AnyValue::Null)
+        .with_attribute("name", AnyValue::Null);
+
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+    );
+
+    let query = "source\n | project-away key*";
+
+    let pipeline = parse_kql_logs_query_into_pipeline(query, None).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.included_records.len(), 1);
+    assert_eq!(results.dropped_records.len(), 0);
+
+    let log = results.included_records.first().unwrap().get_record();
+
+    assert!(log.event_name.is_some());
+
+    let attributes = log.attributes.get_values();
+    assert_eq!(attributes.len(), 1);
+    assert_eq!(
+        attributes.get("name").map(|v| v.to_value().to_string()),
+        Some(AnyValue::Null.to_value().to_string())
+    );
+}
+
+#[test]
+fn test_summarize_count_only() {
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(
+            ScopeLogs::new()
+                .with_log_record(LogRecord::new())
+                .with_log_record(LogRecord::new()),
+        ),
+    );
+
+    let query = "source | summarize Count = count()";
+
+    let pipeline = parse_kql_logs_query_into_pipeline(query, None).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.summaries.included_summaries.len(), 1);
+    assert_eq!(results.summaries.dropped_summaries.len(), 0);
+    assert_eq!(results.included_records.len(), 0);
+    assert_eq!(results.dropped_records.len(), 2);
+
+    let summary = results.summaries.included_summaries.first().unwrap();
+
+    assert_eq!(
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        summary.summary_id
+    );
+
+    assert!(summary.group_by_values.is_empty());
+    assert_eq!(summary.aggregation_values.len(), 1);
+
+    let (key, value) = summary.aggregation_values.iter().next().unwrap();
+
+    assert_eq!("Count", key.as_ref());
+
+    if let SummaryAggregation::Count(v) = value {
+        assert_eq!(2, *v);
+    } else {
+        panic!()
+    }
+}
+
+#[test]
+fn test_summarize_count_and_group_by() {
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(
+            ScopeLogs::new()
+                .with_log_record(LogRecord::new().with_body(AnyValue::Native(
+                    OtlpAnyValue::StringValue(StringValueStorage::new("hello world".into())),
+                )))
+                .with_log_record(LogRecord::new().with_body(AnyValue::Native(
+                    OtlpAnyValue::StringValue(StringValueStorage::new("hello world".into())),
+                )))
+                .with_log_record(LogRecord::new().with_body(AnyValue::Native(
+                    OtlpAnyValue::StringValue(StringValueStorage::new("goodbye world".into())),
+                ))),
+        ),
+    );
+
+    let query = "source | summarize Count = count() by body";
+
+    let pipeline = parse_kql_logs_query_into_pipeline(query, None).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.summaries.included_summaries.len(), 2);
+    assert_eq!(results.summaries.dropped_summaries.len(), 0);
+    assert_eq!(results.included_records.len(), 0);
+    assert_eq!(results.dropped_records.len(), 3);
+
+    let mut summaries = results.summaries.included_summaries;
+    summaries.sort_by(|l, r| l.summary_id.cmp(&r.summary_id));
+
+    assert_summary(
+        &summaries[0],
+        "7d6d65513d07776c49e53cec3ab1a6cffb6115e2d0b163b4faf2f76c7cfbcb1c",
+        "goodbye world",
+        1,
+    );
+
+    assert_summary(
+        &summaries[1],
+        "ce97b63c110999592ba6ea0552fcbea93eb39ec322391551377fca83c0b9ede5",
+        "hello world",
+        2,
+    );
+
+    fn assert_summary(summary: &RecordSetEngineSummary, sumary_id: &str, body: &str, count: usize) {
+        assert_eq!(sumary_id, summary.summary_id);
+
+        assert_eq!(summary.group_by_values.len(), 1);
+
+        let (key, value) = &summary.group_by_values[0];
+
+        assert_eq!("body", key.as_ref());
+
+        assert_eq!(
+            OwnedValue::String(StringValueStorage::new(body.into())).to_value(),
+            value.to_value()
+        );
+
+        assert_eq!(summary.aggregation_values.len(), 1);
+
+        let (key, value) = summary.aggregation_values.iter().next().unwrap();
+
+        assert_eq!("Count", key.as_ref());
+
+        if let SummaryAggregation::Count(v) = value {
+            assert_eq!(count, *v);
+        } else {
+            panic!()
+        }
+    }
+}
+
+#[test]
+fn test_summarize_count_and_group_by_with_bin() {
+    let mut request =
+        ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(
+                ScopeLogs::new()
+                    .with_log_record(LogRecord::new().with_timestamp(
+                        Utc.with_ymd_and_hms(2025, 8, 25, 10, 0, 0).unwrap().into(),
+                    ))
+                    .with_log_record(LogRecord::new().with_timestamp(
+                        Utc.with_ymd_and_hms(2025, 8, 25, 11, 0, 0).unwrap().into(),
+                    ))
+                    .with_log_record(LogRecord::new().with_timestamp(
+                        Utc.with_ymd_and_hms(2025, 8, 26, 10, 0, 0).unwrap().into(),
+                    )),
+            ),
+        );
+
+    let query = "source | summarize Count = count() by time_unix_nano=bin(time_unix_nano, 1d)";
+
+    let pipeline = parse_kql_logs_query_into_pipeline(query, None).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.summaries.included_summaries.len(), 2);
+    assert_eq!(results.summaries.dropped_summaries.len(), 0);
+    assert_eq!(results.included_records.len(), 0);
+    assert_eq!(results.dropped_records.len(), 3);
+
+    let mut summaries = results.summaries.included_summaries;
+    summaries.sort_by(|l, r| l.summary_id.cmp(&r.summary_id));
+
+    assert_summary(
+        &summaries[0],
+        "b489979af2c5b27b64ad4b8d62da0ba3ceebdb5d5451482bf9883ddb2dca1c1c",
+        Utc.with_ymd_and_hms(2025, 8, 25, 0, 0, 0).unwrap().into(),
+        2,
+    );
+
+    assert_summary(
+        &summaries[1],
+        "d16015a6ceda2b50437eb2d5d5791c2a06cba8574b9d2141ee4b960e65a60b54",
+        Utc.with_ymd_and_hms(2025, 8, 26, 0, 0, 0).unwrap().into(),
+        1,
+    );
+
+    fn assert_summary(
+        summary: &RecordSetEngineSummary,
+        sumary_id: &str,
+        timestamp: DateTime<FixedOffset>,
+        count: usize,
+    ) {
+        assert_eq!(sumary_id, summary.summary_id);
+
+        assert_eq!(summary.group_by_values.len(), 1);
+
+        let (key, value) = &summary.group_by_values[0];
+
+        assert_eq!("time_unix_nano", key.as_ref());
+
+        assert_eq!(
+            OwnedValue::DateTime(DateTimeValueStorage::new(timestamp)).to_value(),
+            value.to_value()
+        );
+
+        assert_eq!(summary.aggregation_values.len(), 1);
+
+        let (key, value) = summary.aggregation_values.iter().next().unwrap();
+
+        assert_eq!("Count", key.as_ref());
+
+        if let SummaryAggregation::Count(v) = value {
+            assert_eq!(count, *v);
+        } else {
+            panic!()
+        }
+    }
+}
+
+#[test]
+fn test_summarize_with_pipeline() {
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(
+            ScopeLogs::new()
+                .with_log_record(LogRecord::new())
+                .with_log_record(LogRecord::new())
+                .with_log_record(LogRecord::new().with_body(AnyValue::Native(
+                    OtlpAnyValue::IntValue(IntegerValueStorage::new(1)),
+                ))),
+        ),
+    );
+
+    let query = "let BatchTime = now(); source | summarize Count = count() by body | where Count > 1 | extend ProcessedTime = now(), BatchTime = BatchTime";
+
+    let pipeline = parse_kql_logs_query_into_pipeline(query, None).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.summaries.included_summaries.len(), 1);
+    assert_eq!(results.summaries.dropped_summaries.len(), 1);
+    assert_eq!(results.included_records.len(), 0);
+    assert_eq!(results.dropped_records.len(), 3);
+
+    let summary = results.summaries.included_summaries.first().unwrap();
+
+    assert_eq!(
+        "ba6acf76c601af4e8db421e9be150e15f66ebb5fe9c7cc28c5d71fe9cd44e3ee",
+        summary.summary_id
+    );
+
+    assert_eq!(summary.group_by_values.len(), 1);
+    assert_eq!(summary.aggregation_values.len(), 1);
+
+    if let Some(map) = &summary.map {
+        assert_eq!(
+            Some(OwnedValue::Integer(IntegerValueStorage::new(2)).to_value()),
+            map.get("Count").map(|v| v.to_value())
+        );
+        assert_eq!(
+            Some(OwnedValue::Null.to_value()),
+            map.get("body").map(|v| v.to_value())
+        );
+
+        match (
+            map.get("ProcessedTime").map(|v| v.to_value()),
+            map.get("BatchTime").map(|v| v.to_value()),
+        ) {
+            (Some(Value::DateTime(p)), Some(Value::DateTime(b))) => {
+                assert!(p.get_value() >= b.get_value());
+            }
+            _ => panic!(),
+        }
+    } else {
+        panic!()
+    }
+}
+
+#[test]
+fn test_strlen_function() {
+    let log = LogRecord::new()
+        .with_event_name("hello world".into())
+        .with_attribute(
+            "text",
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                "test string".into(),
+            ))),
+        );
+
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+    );
+
+    let query = "source\n | extend name_length = strlen(event_name), text_length = strlen(text)";
+
+    let pipeline = parse_kql_logs_query_into_pipeline(query, None).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.included_records.len(), 1);
+    assert_eq!(results.dropped_records.len(), 0);
+
+    let log = results.included_records.first().unwrap().get_record();
+
+    let attributes = log.attributes.get_values();
+    assert_eq!(
+        attributes
+            .get("name_length")
+            .map(|v| v.to_value().to_string()),
+        Some(
+            AnyValue::Native(OtlpAnyValue::IntValue(IntegerValueStorage::new(11)))
+                .to_value()
+                .to_string()
+        ) // "hello world" has 11 characters
+    );
+    assert_eq!(
+        attributes
+            .get("text_length")
+            .map(|v| v.to_value().to_string()),
+        Some(
+            AnyValue::Native(OtlpAnyValue::IntValue(IntegerValueStorage::new(11)))
+                .to_value()
+                .to_string()
+        ) // "test string" has 11 characters
+    );
+}
+
+#[test]
+fn test_strcat_function() {
+    let log = LogRecord::new()
+        .with_event_name("_name_".into())
+        .with_attribute(
+            "text",
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                "_value_".into(),
+            ))),
+        );
+
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+    );
+
+    let query = "source\n | extend a = strcat('hello', event_name, text, Unknown)";
+
+    let pipeline = parse_kql_logs_query_into_pipeline(query, None).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.included_records.len(), 1);
+    assert_eq!(results.dropped_records.len(), 0);
+
+    let log = results.included_records.first().unwrap().get_record();
+
+    let attributes = log.attributes.get_values();
+    assert_eq!(
+        attributes.get("a").map(|v| v.to_value().to_string()),
+        Some(
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                "hello_name__value_".into()
+            )))
+            .to_value()
+            .to_string()
+        )
+    );
+}
+
+#[test]
+fn test_replace_string_function() {
+    let log = LogRecord::new()
+        .with_event_name("A magic trick can turn a cat into a dog".into())
+        .with_attribute(
+            "text",
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                "hello world hello".into(),
+            ))),
+        );
+
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+    );
+
+    let query = r#"source
+ | extend
+     modified_name = replace_string(event_name, "cat", "hamster"),
+     modified_text = replace_string(text, "hello", "hi")"#;
+
+    let pipeline = parse_kql_logs_query_into_pipeline(query, None).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.included_records.len(), 1);
+    assert_eq!(results.dropped_records.len(), 0);
+
+    let log = results.included_records.first().unwrap().get_record();
+
+    let attributes = log.attributes.get_values();
+    assert_eq!(
+        attributes
+            .get("modified_name")
+            .map(|v| v.to_value().to_string()),
+        Some(
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                "A magic trick can turn a hamster into a dog".into()
+            )))
+            .to_value()
+            .to_string()
+        )
+    );
+    assert_eq!(
+        attributes
+            .get("modified_text")
+            .map(|v| v.to_value().to_string()),
+        Some(
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                "hi world hi".into()
+            )))
+            .to_value()
+            .to_string()
+        )
+    );
+}
+
+#[test]
+fn test_substring_function() {
+    let run_test = |statement: &str, expected: &str| {
+        let log = LogRecord::new().with_attribute(
+            "greeting",
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                "hello world".into(),
+            ))),
+        );
+
+        let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+        );
+
+        let pipeline = parse_kql_logs_query_into_pipeline(
+            format!("source | extend e = {statement}").as_str(),
+            None,
+        )
+        .unwrap();
+
+        let engine = RecordSetEngine::new_with_options(
+            RecordSetEngineOptions::new()
+                .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+        );
+
+        let results = process_records(&pipeline, &engine, &mut request);
+
+        assert_eq!(results.included_records.len(), 1);
+        assert_eq!(results.dropped_records.len(), 0);
+
+        let log = results.included_records.first().unwrap().get_record();
+
+        assert_eq!(
+            expected,
+            log.attributes.get("e").unwrap().to_value().to_string()
+        );
+    };
+
+    run_test("substring(attributes['greeting'], 6)", "world");
+    run_test("substring(attributes['greeting'], 0, 5)", "hello");
+    run_test("substring(attributes['greeting'], 1, 4)", "ello");
+    run_test("substring(attributes['greeting'], 0, 50)", "hello world");
+}
+
+#[test]
+fn test_coalesce_function() {
+    let run_test = |statement: &str, expected: &str| {
+        let log = LogRecord::new()
+            .with_attribute("null_key1", AnyValue::Null)
+            .with_attribute(
+                "string_key1",
+                AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                    "hello world".into(),
+                ))),
+            );
+
+        let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+        );
+
+        let pipeline = parse_kql_logs_query_into_pipeline(
+            format!("source | extend e = {statement}").as_str(),
+            None,
+        )
+        .unwrap();
+
+        let engine = RecordSetEngine::new_with_options(
+            RecordSetEngineOptions::new()
+                .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+        );
+
+        let results = process_records(&pipeline, &engine, &mut request);
+
+        assert_eq!(results.included_records.len(), 1);
+        assert_eq!(results.dropped_records.len(), 0);
+
+        let log = results.included_records.first().unwrap().get_record();
+
+        assert_eq!(
+            expected,
+            log.attributes.get("e").unwrap().to_value().to_string()
+        );
+    };
+
+    run_test("coalesce('hello', 'world')", "hello");
+    run_test("coalesce(attributes['null_key1'], 'world')", "world");
+    run_test(
+        "coalesce(attributes['null_key1'], attributes['null_key1'], 'world')",
+        "world",
+    );
+    run_test(
+        "coalesce(attributes['null_key1'], attributes['null_key1'], attributes['null_key1'])",
+        "null",
+    );
+    run_test(
+        "coalesce(attributes['null_key1'], attributes['string_key1'])",
+        "hello world",
+    );
+    run_test("coalesce(tolong('invalid'), 18)", "18");
+}
+
+#[test]
+fn test_now_global_variable() {
+    let log = LogRecord::new();
+
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+    );
+
+    let query = "let batch_start_time = now();\nsource\n | extend batch_start = batch_start_time, record_start = now()";
+
+    let pipeline = parse_kql_logs_query_into_pipeline(query, None).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.included_records.len(), 1);
+    assert_eq!(results.dropped_records.len(), 0);
+
+    let log = results.included_records.first().unwrap().get_record();
+
+    let attributes = log.attributes.get_values();
+
+    assert_eq!(attributes.len(), 2);
+
+    let batch_start = attributes.get("batch_start").unwrap();
+    let record_start = attributes.get("record_start").unwrap();
+
+    match (
+        batch_start.to_value().convert_to_datetime(),
+        record_start.to_value().convert_to_datetime(),
+    ) {
+        (Some(batch_start), Some(record_start)) => {
+            assert!(batch_start <= record_start);
+        }
+        _ => panic!(),
+    }
+}

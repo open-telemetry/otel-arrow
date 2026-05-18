@@ -178,7 +178,7 @@ socket2 = { version = "0.6.1", features = ["all"] }
 ipnet = "2.11.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 zstd = "0.13"
-sysinfo = "0.38"
+sysinfo = "0.39"
 tempfile = "3"
 thiserror = "2.0.17"
 tracing = { version = ">=0.1.40", default-features = false }
@@ -207,11 +207,12 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2" }
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc"}
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc" }
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc"}
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc"}
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc"}
+sha1 = { version = "0.10" }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
@@ -230,14 +231,14 @@ wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
 data_engine_recordset = { path = '../experimental/query_engine/engine-recordset' }
-data_engine_recordset_otlp_bridge = { path = '../experimental/query_engine/engine-recordset-otlp-bridge' }
+eventheader_dynamic = "0.5.0"
 include_dir = "0.7.4"
 mime_guess = "2.0.5"
 minijinja = "2"
 otap-df-admin = { path = 'crates/admin' }
 otap-df-channel = { path = 'crates/channel' }
 otap-df-engine-macros = { path = 'crates/engine-macros' }
-otap-df-opl = { path = 'crates/opl' }
+otap-df-query-engine-languages = { path = 'crates/query-engine-languages' }
 otap-df-query-engine = { path = 'crates/query-engine' }
 otap-df-quiver = { path = 'crates/quiver' }
 otap-df-state = { path = 'crates/state' }
@@ -247,9 +248,11 @@ ratatui = "0.30"
 testcontainers = "0.27"
 toml = "1.0.0"
 tonic-prost-build = "0.14"
+tracepoint = { version = "0.5.0", features = ["user_events"] }
+tracepoint_decode = "0.5.0"
 urlencoding = "2"
 # Pinned to open-telemetry/opentelemetry-rust-contrib main on 2026-04-25.
-geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "ce866b48a1645f1fb222bdea19c42821a2b48d5a" }
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "a168edbe7ee59c9581dce22218472767828dfb52" }
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata = { path = "crates/pdata" }
@@ -290,6 +293,10 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
 geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
 azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
+# Contrib receivers (opt-in) - now in contrib-nodes
+contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
+user_events-receiver = ["otap-df-contrib-nodes/user_events-receiver"]
+user_events-eventheader = ["otap-df-contrib-nodes/user_events-eventheader"]
 # Contrib processors (opt-in) - now in contrib-nodes
 contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
 condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]

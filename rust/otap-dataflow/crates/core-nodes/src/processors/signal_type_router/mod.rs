@@ -83,7 +83,7 @@ pub const PORT_METRICS: &str = "metrics";
 pub const PORT_LOGS: &str = "logs";
 
 /// Metrics for the SignalTypeRouter processor.
-#[metric_set(name = "signal_type_router.processor.metrics")]
+#[metric_set(name = "processor.signal_type_router")]
 #[derive(Debug, Default, Clone)]
 pub struct SignalTypeRouterMetrics {
     /// Number of log messages received by the router.

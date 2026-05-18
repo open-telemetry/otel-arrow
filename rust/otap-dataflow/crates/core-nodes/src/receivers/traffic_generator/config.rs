@@ -164,7 +164,8 @@ pub struct TrafficConfig {
     #[serde(default)]
     pub production_mode: ProductionMode,
     /// Target number of signals to produce per second across all signal types.
-    /// When `None`, defaults to `max_batch_size` (one full batch per second).
+    /// When `None`, the generator runs in uncapped (open-loop) mode, producing
+    /// signals as fast as possible without rate limiting.
     #[serde(default = "default_signals_per_second")]
     pub signals_per_second: Option<usize>,
     /// Maximum total signals to produce before stopping. `None` means unlimited.
@@ -284,11 +285,13 @@ impl Config {
     /// Provide a reference to the ResolvedRegistry.
     /// Returns None if data_source is Static.
     pub fn get_registry(&self) -> Result<Option<ResolvedRegistry>, String> {
+        let mut semconv_errors = Vec::new();
         match self.data_source {
             DataSource::Static => Ok(None),
             DataSource::SemanticConventions => {
-                let registry_repo = RegistryRepo::try_new("main", &self.registry_path)
-                    .map_err(|err| err.to_string())?;
+                let registry_repo =
+                    RegistryRepo::try_new(None, &self.registry_path, &mut semconv_errors)
+                        .map_err(|err| err.to_string())?;
 
                 // Load the semantic convention registry.
                 let registry = match SchemaResolver::load_semconv_repository(registry_repo, false) {
