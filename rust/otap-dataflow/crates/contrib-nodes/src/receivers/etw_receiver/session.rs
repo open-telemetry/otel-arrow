@@ -28,11 +28,11 @@
 //! ## Integration with `one_collect`
 //!
 //! Instead of using the low-level `set_raw_event_callback` (which bypasses
-//! `one_collect`'s event routing), we use the **provider-wide event** mechanism
-//! via [`EtwSession::add_wide_event`].  This registers a catch-all handler for
-//! every event from a given provider GUID, regardless of event ID.  Header
-//! metadata (PID, TID, timestamp, etc.) is read from the session's
-//! [`AncillaryData`] which `one_collect` populates before each dispatch.
+//! `one_collect`'s event routing), we register a catch-all `Event` per
+//! provider via [`EtwSession::add_event`].  This fires for every event from
+//! a given provider GUID, regardless of event ID.  Header metadata (PID,
+//! TID, timestamp, etc.) is read from the session's [`AncillaryData`] which
+//! `one_collect` populates before each dispatch.
 //!
 //! ## Lifecycle
 //!
@@ -41,6 +41,8 @@
 //! events to the remaining senders.  When **all** senders have been dropped
 //! (i.e. no receivers remain) the callback becomes a no-op.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Mutex;
 
 use one_collect::etw::{self, EtwSession};
@@ -235,15 +237,18 @@ fn spawn_etw_session(
             // timestamp, provider GUID, etc.) before dispatching each event.
             let ancillary = session.ancillary_data();
 
-            // Round-robin counter for distributing events across cores.
-            let num_txs = txs.len();
+            // Shared round-robin counter and sender list.  All provider
+            // callbacks run on the single `ProcessTrace` thread, so `Cell`
+            // is safe — no atomics or locking needed.  Sharing the counter
+            // ensures uniform core distribution even at startup when
+            // multiple providers would otherwise all start at index 0.
+            let next: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+            let txs: Rc<Vec<mpsc::Sender<EtwEventData>>> = Rc::new(txs);
 
             // Register a provider-wide event for each configured provider.
             // A "wide event" fires for ALL event IDs from the provider,
             // unlike `add_event` which only fires for a specific event ID.
             for (guid, level, keywords) in &resolved_providers {
-                let ancillary = ancillary.clone();
-                let txs = txs.clone();
                 let mut wide_event = one_collect::event::Event::new(0, "otap_wide".to_string());
                 {
                     let ext = wide_event.extension_mut();
@@ -252,50 +257,44 @@ fn spawn_etw_session(
                     *ext.keyword_mut() = keywords.unwrap_or(0);
                 }
 
-                wide_event.add_callback({
-                    let ancillary = ancillary.clone();
-                    let txs = txs.clone();
-                    // Cell is !Sync but we're single-threaded — use a local counter.
-                    let mut local_next = 0usize;
+                let ancillary = ancillary.clone();
+                let next = Rc::clone(&next);
+                let txs = Rc::clone(&txs);
 
-                    move |_event_data| {
-                        // Read header metadata from AncillaryData (populated
-                        // by one_collect before each dispatch).
-                        let anc = ancillary.borrow();
+                wide_event.add_callback(move |_event_data| {
+                    // Read header metadata from AncillaryData (populated
+                    // by one_collect before each dispatch).
+                    let anc = ancillary.borrow();
 
-                        // Build EtwEventData from AncillaryData.
-                        // PID, TID, timestamp, provider, and opcode are
-                        // available directly; event_id/version/level/keywords
-                        // come from the full_data bytes passed via EventData.
-                        let data = EtwEventData {
-                            provider_id: anc.provider().to_bytes(),
-                            timestamp: anc.time(),
-                            process_id: anc.pid(),
-                            thread_id: anc.tid(),
-                            // event_id, level, keywords, version are in the
-                            // EVENT_DESCRIPTOR which is not fully exposed by
-                            // AncillaryData.  Extract what we can; the rest
-                            // will be populated once EVENT_RECORD access is
-                            // added to WindowsEventExtension (follow-up).
-                            event_id: 0,
-                            opcode: 0,
-                            version: 0,
-                            level: 0,
-                            keywords: 0,
-                        };
+                    // Build EtwEventData from AncillaryData.
+                    // PID, TID, timestamp, provider, and opcode are
+                    // available directly; event_id/version/level/keywords
+                    // come from the full_data bytes passed via EventData.
+                    let data = EtwEventData {
+                        provider_id: anc.provider().to_bytes(),
+                        timestamp: anc.time(),
+                        process_id: anc.pid(),
+                        thread_id: anc.tid(),
+                        // TODO: populate event_id/opcode/level/keywords/version
+                        // once WindowsEventExtension exposes EVENT_DESCRIPTOR.
+                        event_id: 0,
+                        opcode: 0,
+                        version: 0,
+                        level: 0,
+                        keywords: 0,
+                    };
 
-                        // Drop the borrow before sending.
-                        drop(anc);
+                    // Drop the borrow before sending.
+                    drop(anc);
 
-                        let idx = local_next % num_txs;
-                        local_next = local_next.wrapping_add(1);
+                    let i = next.get();
+                    next.set(i.wrapping_add(1));
 
-                        // Best-effort send; if this core's channel is full,
-                        // drop the event for that core only.
-                        let _ = txs[idx].try_send(data);
+                    // Best-effort send; if this core's channel is full,
+                    // drop the event for that core only.
+                    let _ = txs[i % txs.len()].try_send(data);
 
-                        Ok(())
-                    }
+                    Ok(())
                 });
 
                 session.add_event(wide_event, None);
