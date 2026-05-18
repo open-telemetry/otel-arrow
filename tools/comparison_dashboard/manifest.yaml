@@ -80,4 +80,6 @@ suites:
 # Comparison definitions, listed by path. Each entry must point at an
 # existing YAML file with `slug` and `suites` (a list of suite refs).
 comparisons:
-  - comparisons/dfe_baselines.yaml
+  - comparisons/dfe_logs_baselines.yaml
+  - comparisons/dfe_metrics_baselines.yaml
+  - comparisons/dfe_traces_baselines.yaml
