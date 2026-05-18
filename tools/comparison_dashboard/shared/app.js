@@ -455,15 +455,28 @@ function metricTitle(name, suiteData, comparison) {
   return unit ? `${label} (${unit})` : label;
 }
 
+function chartMetricsConfig(comparison) {
+  return (comparison.chart && comparison.chart.metrics) || {};
+}
+
 function findAvailableMetrics(suiteData, comparison) {
-  const chartList = comparison.metrics && comparison.metrics.chart;
-  const candidates = chartList && chartList.length
-    ? chartList
+  const allowed = chartMetricsConfig(comparison).allowed;
+  const candidates = allowed && allowed.length
+    ? allowed
     : Object.keys(window.METRICS_META || {});
   return candidates.filter((mn) =>
     (comparison.suites || []).some((ref) =>
       getSuiteTests(suiteData, ref.slug).some((t) =>
         t.metrics && t.metrics.some((m) => m.name === mn && m.value != null))));
+}
+
+// Resolve the default metric for a comparison: prefer the configured
+// chart.metrics.default if it is available; otherwise fall back to the
+// first available metric.
+function defaultMetric(comparison, availableMetrics) {
+  const configured = chartMetricsConfig(comparison).default;
+  if (configured && availableMetrics.includes(configured)) return configured;
+  return availableMetrics[0] || null;
 }
 
 // ── Syntax highlighting ────────────────────────────────────────────────────
@@ -543,7 +556,7 @@ function renderComparisonSection(suiteData, comparison) {
   const filterState = getFilterState(slug, categories);
   const filtered = filterComparison(comparison, suiteData, filterState);
   const metrics = findAvailableMetrics(suiteData, filtered);
-  if (!perComparisonMetrics.has(slug)) perComparisonMetrics.set(slug, metrics.includes("cpu_percentage_normalized_avg") ? "cpu_percentage_normalized_avg" : metrics[0] || "cpu_percentage_normalized_avg");
+  if (!perComparisonMetrics.has(slug)) perComparisonMetrics.set(slug, defaultMetric(comparison, metrics));
   const sel = perComparisonMetrics.get(slug);
   const optsHtml = metrics.map((n) => `<option value="${escapeHtml(n)}" ${n === sel ? "selected" : ""}>${escapeHtml(metricLabel(n))}</option>`).join("");
   const hasFilters = Object.keys(categories).length > 0;
@@ -652,9 +665,7 @@ function renderComparisonChart(suiteData, comparison, tests, onBarClick) {
   const metrics = findAvailableMetrics(suiteData, comparison);
   const compSlug = window.COMPARISON_SLUG;
   const prev = perComparisonMetrics.get(compSlug);
-  let sel = prev && metrics.includes(prev)
-    ? prev
-    : (metrics.includes("cpu_percentage_normalized_avg") ? "cpu_percentage_normalized_avg" : metrics[0] || "cpu_percentage_normalized_avg");
+  let sel = prev && metrics.includes(prev) ? prev : defaultMetric(comparison, metrics);
   perComparisonMetrics.set(compSlug, sel);
   const optsHtml = metrics.map((n) => `<option value="${escapeHtml(n)}" ${n === sel ? "selected" : ""}>${escapeHtml(metricLabel(n))}</option>`).join("");
 

@@ -2,6 +2,10 @@ slug: dfe_metrics_baselines
 name: Dataflow Engine Metrics
 description: Baseline DFE metrics runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
 
+chart:
+  metrics:
+    default: cpu_percentage_normalized_avg
+
 tests:
   - name: 100k
     loadgen_rate: 100000
