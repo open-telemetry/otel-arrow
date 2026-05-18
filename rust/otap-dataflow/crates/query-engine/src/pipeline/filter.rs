@@ -3,18 +3,27 @@
 
 use std::sync::Arc;
 
+use crate::consts::BODY_FIELD_NAME;
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
+use crate::pipeline::expr::types::{ExprLogicalType, coerce_arithmetic};
 use crate::pipeline::expr::{
-    DataScope, ExprLogicalPlanner, ExprPhysicalPlanner, LogicalExprDataSource, ScopedLogicalExpr,
-    ScopedPhysicalExpr,
+    DataScope, ExprLogicalPlanner, ExprPhysicalPlanner, LogicalExprDataSource,
+    PhysicalExprEvalResult, ScopedLogicalExpr, ScopedPhysicalExpr, join::join,
 };
+use crate::pipeline::expr::{LEFT_COLUMN_NAME, RIGHT_COLUMN_NAME};
+use crate::pipeline::filter::compare::compare;
 use crate::pipeline::functions::expr_fn::contains;
+use crate::pipeline::functions::is_type::IsTypeFunc;
 use crate::pipeline::planner::{
     AttributesIdentifier, BinaryArg, ColumnAccessor, try_attrs_value_filter_from_literal,
-    try_static_scalar_to_attr_literal, try_static_scalar_to_literal_for_column,
+    try_static_scalar_to_any_val_column, try_static_scalar_to_attr_literal,
+    try_static_scalar_to_literal_for_column,
 };
 use crate::pipeline::project::Projection;
+use crate::pipeline::project::anyval::{
+    attempt_coerce_value_column_from_any_value_struct_column, is_any_value_data_type,
+};
 use crate::pipeline::state::ExecutionState;
 use arrow::array::{Array, BooleanArray, BooleanBufferBuilder, RecordBatch, UInt16Array};
 use arrow::buffer::BooleanBuffer;
@@ -24,7 +33,7 @@ use async_trait::async_trait;
 use data_engine_expressions::{
     BooleanValue, ContainsLogicalExpression, Expression, LogicalExpression,
     MatchesLogicalExpression, PipelineFunction, ScalarExpression, StaticScalarExpression,
-    StringScalarExpression, StringValue,
+    StringScalarExpression, StringValue, ValueType,
 };
 use datafusion::common::DFSchema;
 use datafusion::common::cast::as_boolean_array;
@@ -32,16 +41,20 @@ use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
 use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, col, lit};
+use datafusion::logical_expr::expr::ScalarFunction;
+use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::binary_expr;
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::OtapArrowRecords;
+use otap_df_config::SignalType;
 use otap_df_pdata::arrays::MaybeDictArrayAccessor;
 use otap_df_pdata::otap::filter::{ChildBatchFilterIdHelper, IdBitmap, IdBitmapPool};
+use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
+use otap_df_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
+mod compare;
 pub mod optimize;
 
 /// A compositional tree structure for combining expressions with boolean operators.
@@ -157,7 +170,7 @@ impl<T> From<T> for Composite<T> {
 /// to evaluating the expression which may involve realigning data from sub-expressions using the
 /// expression evaluation's join mechanics.
 ///
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Default, Debug, PartialEq)]
 pub struct FilterPlan {
     /// filters that will be applied to the root record batch
     pub source_filter: Option<Expr>,
@@ -173,15 +186,18 @@ pub struct FilterPlan {
     ///
     /// This uses the same expression evaluation infrastructure as `set` expressions, including
     /// support for joins across data scopes.
-    pub expr_filter: Option<ScopedLogicalExpr>,
+    pub expr_filter: Option<ExprFilterPlan>,
+
+    /// filter will be applied to check if an element of the stream passing through the filter is
+    /// this type
+    pub element_type_filter: Option<ElementTypeFilter>,
 }
 
 impl From<Expr> for FilterPlan {
     fn from(expr: Expr) -> Self {
         Self {
             source_filter: Some(expr),
-            attribute_filter: None,
-            expr_filter: None,
+            ..Default::default()
         }
     }
 }
@@ -189,9 +205,8 @@ impl From<Expr> for FilterPlan {
 impl From<AttributesFilterPlan> for FilterPlan {
     fn from(attrs_filter: AttributesFilterPlan) -> Self {
         Self {
-            source_filter: None,
             attribute_filter: Some(attrs_filter.into()),
-            expr_filter: None,
+            ..Default::default()
         }
     }
 }
@@ -199,20 +214,27 @@ impl From<AttributesFilterPlan> for FilterPlan {
 impl From<Composite<AttributesFilterPlan>> for FilterPlan {
     fn from(attrs_filter: Composite<AttributesFilterPlan>) -> Self {
         Self {
-            source_filter: None,
             attribute_filter: Some(attrs_filter),
-            expr_filter: None,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<ElementTypeFilter> for FilterPlan {
+    fn from(element_type_filter: ElementTypeFilter) -> Self {
+        Self {
+            element_type_filter: Some(element_type_filter),
+            ..Default::default()
         }
     }
 }
 
 impl FilterPlan {
     /// Create a FilterPlan that uses the general expression evaluation path.
-    fn from_expr(expr: ScopedLogicalExpr) -> Self {
+    fn from_expr(expr: ExprFilterPlan) -> Self {
         Self {
-            source_filter: None,
-            attribute_filter: None,
             expr_filter: Some(expr),
+            ..Default::default()
         }
     }
 }
@@ -273,25 +295,36 @@ impl FilterPlan {
 
         match left_arg {
             BinaryArg::Column(left_column) => match left_column {
-                ColumnAccessor::ColumnName(left_col_name) => match right_arg {
-                    BinaryArg::Literal(right_lit) => {
-                        // left = column & right = literal
-                        let right_expr =
-                            try_static_scalar_to_literal_for_column(&left_col_name, &right_lit)?;
-                        Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
-                            Box::new(col(left_col_name)),
-                            binary_op,
-                            Box::new(right_expr),
-                        ))))
+                ColumnAccessor::ColumnName(left_col_name) => {
+                    match right_arg {
+                        BinaryArg::Literal(right_lit) => {
+                            // left = column & right = literal
+                            let right_expr = try_static_scalar_to_literal_for_column(
+                                &left_col_name,
+                                &right_lit,
+                            )?;
+                            let left_col_expr = if left_col_name == BODY_FIELD_NAME {
+                                let any_val_field_name =
+                                    try_static_scalar_to_any_val_column(&right_lit)?;
+                                col(left_col_name).field(any_val_field_name)
+                            } else {
+                                col(left_col_name)
+                            };
+                            Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
+                                Box::new(left_col_expr),
+                                binary_op,
+                                Box::new(right_expr),
+                            ))))
+                        }
+                        BinaryArg::Null => {
+                            // left = column & right == null
+                            Ok(FilterPlan::from(col(left_col_name).is_null()))
+                        }
+                        _ => Self::try_from_binary_expr_via_expr_eval(
+                            left_expr, binary_op, right_expr, functions,
+                        ),
                     }
-                    BinaryArg::Null => {
-                        // left = column & right == null
-                        Ok(FilterPlan::from(col(left_col_name).is_null()))
-                    }
-                    _ => Self::try_from_binary_expr_via_expr_eval(
-                        left_expr, binary_op, right_expr, functions,
-                    ),
-                },
+                }
                 ColumnAccessor::StructCol(left_struct_name, left_struct_field) => match right_arg {
                     BinaryArg::Literal(right_lit) => {
                         // left = struct col & right = literal
@@ -320,7 +353,6 @@ impl FilterPlan {
                         BinaryArg::Literal(right_lit) => {
                             // left = attribute & right = literal
                             Ok(FilterPlan::from(AttributesFilterPlan::new(
-                                // col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key))
                                 Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive).and(
                                     Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                         &right_lit, binary_op,
@@ -333,7 +365,6 @@ impl FilterPlan {
                             // left = attribute & right = null (e.g. doesn't have attribute)
                             Ok(FilterPlan::from(Composite::not(AttributesFilterPlan::new(
                                 Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive),
-                                // col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)),
                                 attrs_identifier,
                             ))))
                         }
@@ -352,14 +383,31 @@ impl FilterPlan {
                 }
                 BinaryArg::Column(right_column) => match right_column {
                     ColumnAccessor::ColumnName(right_col_name) => {
-                        // left = literal & right = column
-                        let left_expr =
-                            try_static_scalar_to_literal_for_column(&right_col_name, &left_lit)?;
-                        Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
-                            Box::new(left_expr),
-                            binary_op,
-                            Box::new(col(right_col_name)),
-                        ))))
+                        let expr = if right_col_name == BODY_FIELD_NAME {
+                            let any_val_field_name =
+                                try_static_scalar_to_any_val_column(&left_lit)?;
+                            let left_expr = try_static_scalar_to_literal_for_column(
+                                any_val_field_name,
+                                &left_lit,
+                            )?;
+                            BinaryExpr::new(
+                                Box::new(left_expr),
+                                binary_op,
+                                Box::new(col(right_col_name).field(any_val_field_name)),
+                            )
+                        } else {
+                            // left = literal & right = column
+                            let left_expr = try_static_scalar_to_literal_for_column(
+                                &right_col_name,
+                                &left_lit,
+                            )?;
+                            BinaryExpr::new(
+                                Box::new(left_expr),
+                                binary_op,
+                                Box::new(col(right_col_name)),
+                            )
+                        };
+                        Ok(FilterPlan::from(Expr::BinaryExpr(expr)))
                     }
                     ColumnAccessor::StructCol(right_struct_name, right_struct_field) => {
                         // left = literal & right = struct col
@@ -376,8 +424,6 @@ impl FilterPlan {
                     ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
                         // left = literal & right = attribute
                         Ok(FilterPlan::from(AttributesFilterPlan::new(
-                            // col(consts::ATTRIBUTE_KEY)
-                            //     .eq(lit(attrs_key))
                             Self::attr_key_equals(&attrs_key, attr_keys_case_sensitive).and(
                                 Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                     &left_lit, binary_op,
@@ -443,73 +489,145 @@ impl FilterPlan {
         right_expr: &ScalarExpression,
         functions: &[PipelineFunction],
     ) -> Result<Self> {
+        // try as filter on the type of signal passing through the filter. These filters can be
+        // quickly evaluated without any expression evaluation by checking the signal type of the
+        // batch itself
+        if let Some(element_type_filter) =
+            Self::try_as_type_check(left_expr, binary_op, right_expr, functions)?
+        {
+            return Ok(element_type_filter);
+        }
+
         let planner = ExprLogicalPlanner::default();
-        let left = planner.plan_scalar_expr(left_expr, functions)?;
-        let right = planner.plan_scalar_expr(right_expr, functions)?;
 
         // build the comparison expression using the expr system's scoping logic
-        let expr = Self::build_scoped_comparison_expr(left, binary_op, right)?;
-        Ok(FilterPlan::from_expr(expr))
+        Ok(FilterPlan::from_expr(ExprFilterPlan::Binary(
+            ExprBinaryFilterPlan {
+                left: planner.plan_scalar_expr(left_expr, functions)?,
+                operator: binary_op,
+                right: planner.plan_scalar_expr(right_expr, functions)?,
+            },
+        )))
     }
 
-    /// Build a `ScopedLogicalExpr` that performs a boolean comparison (eq, gt, etc.) on the
-    /// results of two child expressions. Handles both same-scope and cross-scope cases.
-    ///
-    /// Type coercion is applied to ensure both sides have compatible types for the comparison
-    /// (e.g., Int32 vs Int64 will have the narrower side cast to Int64).
-    fn build_scoped_comparison_expr(
-        mut left: ScopedLogicalExpr,
+    /// Try to plan as a filter checks if either an element of the stream or a signal is some type
+    fn try_as_type_check(
+        left_expr: &ScalarExpression,
         binary_op: Operator,
-        mut right: ScopedLogicalExpr,
-    ) -> Result<ScopedLogicalExpr> {
-        use crate::pipeline::expr::types::{ExprLogicalType, coerce_arithmetic};
-        use crate::pipeline::expr::{LEFT_COLUMN_NAME, RIGHT_COLUMN_NAME};
-
-        // Apply type coercion so both sides of the comparison have compatible types.
-        // We reuse the arithmetic coercion rules (which handle Int32 vs Int64, AnyValue vs
-        // concrete types, etc.) -- the side-effect of adding cast expressions is what we need.
-        // We ignore the returned result type since comparisons always produce Boolean.
-        let _ = coerce_arithmetic(&mut left, &mut right);
-
-        // check if both sides can be evaluated in the same scope (no join needed)
-        let possible_combined_scope = match (&left.source, &right.source) {
+        right_expr: &ScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<Option<Self>> {
+        match (left_expr, binary_op, right_expr) {
             (
-                LogicalExprDataSource::DataSource(left_scope),
-                LogicalExprDataSource::DataSource(right_scope),
-            ) => left_scope
-                .can_combine(right_scope)
-                .then_some(if !left_scope.is_scalar() {
-                    left_scope
-                } else {
-                    right_scope
-                }),
-            _ => None,
-        };
+                ScalarExpression::GetRecordType(_),
+                Operator::Eq,
+                ScalarExpression::Static(StaticScalarExpression::String(typename_expr)),
+            ) => {
+                // here we are handling an expression that checks the type of some some batch
+                // for example `is Log`
 
-        if let Some(combined_scope) = possible_combined_scope {
-            let dict_downcast = left.requires_dict_downcast || right.requires_dict_downcast;
-            Ok(ScopedLogicalExpr {
-                logical_expr: Expr::BinaryExpr(BinaryExpr::new(
-                    Box::new(left.logical_expr),
-                    binary_op,
-                    Box::new(right.logical_expr),
-                )),
-                source: LogicalExprDataSource::DataSource(combined_scope.clone()),
-                expr_type: ExprLogicalType::Boolean,
-                requires_dict_downcast: dict_downcast,
-            })
-        } else {
-            // different scopes -- need a join
-            Ok(ScopedLogicalExpr {
-                logical_expr: Expr::BinaryExpr(BinaryExpr::new(
-                    Box::new(col(LEFT_COLUMN_NAME)),
-                    binary_op,
-                    Box::new(col(RIGHT_COLUMN_NAME)),
-                )),
-                source: LogicalExprDataSource::Join(Box::new(left), Box::new(right)),
-                expr_type: ExprLogicalType::Boolean,
-                requires_dict_downcast: true,
-            })
+                let type_name = typename_expr.get_value();
+                let stream_element_type =
+                    StreamElementType::from_str(type_name).ok_or_else(|| {
+                        Error::InvalidPipelineError {
+                            cause: format!("Unknown stream type name {type_name}"),
+                            query_location: Some(right_expr.get_query_location().clone()),
+                        }
+                    })?;
+
+                Ok(Some(FilterPlan::from(ElementTypeFilter::new(
+                    stream_element_type,
+                ))))
+            }
+            (
+                ScalarExpression::GetType(get_type_expr),
+                Operator::Eq,
+                ScalarExpression::Static(StaticScalarExpression::String(typename_expr)),
+            ) => {
+                // here we are handling an expression that checks the type of some field
+                // for example `attributes["x"] is String`
+
+                let expr_planner = ExprLogicalPlanner::default();
+                let mut expr_source =
+                    expr_planner.plan_scalar_expr(get_type_expr.get_value(), functions)?;
+
+                let type_name = typename_expr.get_value();
+                let value_type = ValueType::from_str_opt(type_name).ok_or_else(|| {
+                    Error::InvalidPipelineError {
+                        cause: format!("Unknown type name {type_name}"),
+                        query_location: Some(right_expr.get_query_location().clone()),
+                    }
+                })?;
+
+                let expected_type = match value_type {
+                    ValueType::Boolean => ExprLogicalType::Boolean,
+                    ValueType::DateTime => ExprLogicalType::TimestampNanosecond,
+                    ValueType::Double => ExprLogicalType::Float64,
+                    ValueType::Integer => ExprLogicalType::AnyInt,
+                    ValueType::String => ExprLogicalType::String,
+                    ValueType::TimeSpan => ExprLogicalType::DurationNanoSecond,
+                    // `Array`, `Map`, and `Null` have no standalone Arrow representation in
+                    // our system -- they only appear as subtypes inside an `AnyValue` struct
+                    // column. If the source isn't an `AnyValue`, the answer is constantly
+                    // false. Otherwise, build an `is_type` UDF that checks the `AnyValue`
+                    // discriminator directly.
+                    ValueType::Array | ValueType::Map | ValueType::Null => {
+                        if !matches!(
+                            expr_source.expr_type,
+                            ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumeric
+                        ) {
+                            return Ok(Some(FilterPlan::from(lit(false))));
+                        }
+                        let subtype = match value_type {
+                            ValueType::Array => AttributeValueType::Slice,
+                            ValueType::Map => AttributeValueType::Map,
+                            ValueType::Null => AttributeValueType::Empty,
+                            _ => unreachable!(),
+                        };
+                        expr_source.logical_expr = Expr::ScalarFunction(ScalarFunction::new_udf(
+                            Arc::new(ScalarUDF::new_from_shared_impl(Arc::new(
+                                IsTypeFunc::for_any_value_subtype(subtype),
+                            ))),
+                            vec![expr_source.logical_expr],
+                        ));
+                        return Ok(Some(FilterPlan::from_expr(ExprFilterPlan::Unary(
+                            expr_source,
+                        ))));
+                    }
+                    ValueType::Regex => {
+                        return Err(Error::NotYetSupportedError {
+                            message: "type check logical expression using type \
+                                {value_type} not yet supported"
+                                .into(),
+                        });
+                    }
+                };
+
+                if expr_source.expr_type == expected_type {
+                    // here we know the expression returns the type we are seeking. This may be
+                    // a trivial expression such as `severity_text is String`
+                    return Ok(Some(FilterPlan::from(lit(true))));
+                }
+
+                if expr_source.expr_type.is_concrete() {
+                    // since the types were not equal, and we know what type exactly the
+                    // expression will return, we know the types do not match here:
+                    return Ok(Some(FilterPlan::from(lit(false))));
+                }
+
+                // call the is_type function on the result of the expression
+                expr_source.logical_expr = Expr::ScalarFunction(ScalarFunction::new_udf(
+                    Arc::new(ScalarUDF::new_from_shared_impl(Arc::new(IsTypeFunc::new(
+                        expected_type,
+                    )))),
+                    vec![expr_source.logical_expr],
+                ));
+
+                Ok(Some(FilterPlan::from_expr(ExprFilterPlan::Unary(
+                    expr_source,
+                ))))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -587,7 +705,7 @@ impl FilterPlan {
 
         // Build a contains function call as a ScopedLogicalExpr
         let expr = Self::build_scoped_contains_expr(haystack, needle)?;
-        Ok(FilterPlan::from_expr(expr))
+        Ok(FilterPlan::from_expr(ExprFilterPlan::Unary(expr)))
     }
 
     /// Build a `ScopedLogicalExpr` that performs a contains check on two expressions.
@@ -651,11 +769,14 @@ impl FilterPlan {
 
         match left_arg {
             BinaryArg::Column(left_column) => Ok(match left_column {
-                ColumnAccessor::ColumnName(left_col_name) => FilterPlan::from(binary_expr(
-                    col(left_col_name),
-                    Operator::RegexMatch,
-                    pattern,
-                )),
+                ColumnAccessor::ColumnName(left_col_name) => {
+                    let col_expr = if left_col_name == BODY_FIELD_NAME {
+                        col(left_col_name).field(consts::ATTRIBUTE_STR)
+                    } else {
+                        col(left_col_name)
+                    };
+                    FilterPlan::from(binary_expr(col_expr, Operator::RegexMatch, pattern))
+                }
                 ColumnAccessor::StructCol(struct_name, struct_field) => {
                     FilterPlan::from(binary_expr(
                         col(struct_name).field(struct_field),
@@ -774,7 +895,13 @@ impl FilterPlan {
     ) -> (Expr, Option<(AttributesIdentifier, String)>) {
         let mut attrs = None;
         let expr = match column_accessor {
-            ColumnAccessor::ColumnName(col_name) => col(col_name),
+            ColumnAccessor::ColumnName(col_name) => {
+                if col_name == BODY_FIELD_NAME {
+                    col(col_name).field(consts::ATTRIBUTE_STR)
+                } else {
+                    col(col_name)
+                }
+            }
             ColumnAccessor::StructCol(struct_name, struct_field) => {
                 col(struct_name).field(struct_field)
             }
@@ -869,7 +996,9 @@ impl Composite<FilterPlan> {
                 other => {
                     let planner = ExprLogicalPlanner::default();
                     let expr = planner.plan_scalar_expr(other, functions)?;
-                    Ok(Self::from(FilterPlan::from_expr(expr)))
+                    Ok(Self::from(FilterPlan::from_expr(ExprFilterPlan::Unary(
+                        expr,
+                    ))))
                 }
             },
         }
@@ -899,9 +1028,8 @@ impl ToExec for FilterPlan {
             .expr_filter
             .as_ref()
             .map(|logical_expr| {
-                let planner = ExprPhysicalPlanner::default();
                 // clone the logical expr since into_physical consumes it
-                planner.plan(logical_expr.clone())
+                ExprFilterExec::try_from_plan(logical_expr.clone())
             })
             .transpose()?;
 
@@ -920,6 +1048,7 @@ impl ToExec for FilterPlan {
         Ok(FilterExec {
             predicate: physical_expr,
             attributes_filter: attrs_filter,
+            element_type_filter: self.element_type_filter.clone(),
             expr_predicate,
             missing_attrs_pass,
         })
@@ -1008,6 +1137,57 @@ impl Composite<AttributesFilterPlan> {
     }
 }
 
+/// Filter plan representing a selection vector that will be created from the result of expression
+/// evaluations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExprFilterPlan {
+    /// A unary expression evaluation that should create boolean value
+    Unary(ScopedLogicalExpr),
+
+    /// The selection vector will be created by evaluating both sides comparing the results
+    Binary(ExprBinaryFilterPlan),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExprBinaryFilterPlan {
+    left: ScopedLogicalExpr,
+    operator: Operator,
+    right: ScopedLogicalExpr,
+}
+
+/// Filter representing a predicate that checks whether an element of the stream being filtered is
+/// some type
+#[derive(Clone, Debug, PartialEq)]
+pub struct ElementTypeFilter {
+    is_type: StreamElementType,
+}
+
+impl ElementTypeFilter {
+    fn new(stream_type: StreamElementType) -> Self {
+        Self {
+            is_type: stream_type,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum StreamElementType {
+    Log,
+    Metric,
+    Span,
+}
+
+impl StreamElementType {
+    fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "Log" => Some(Self::Log),
+            "Metric" => Some(Self::Metric),
+            "Span" => Some(Self::Span),
+            _ => None,
+        }
+    }
+}
+
 fn to_physical_exprs(
     expr: &Expr,
     record_batch: &RecordBatch,
@@ -1031,12 +1211,16 @@ pub struct FilterExec {
     /// General-purpose expression-based predicate. Evaluated using the expression evaluation
     /// system (supporting joins across data scopes). The result is converted to a
     /// `BooleanArray` aligned to the root record batch.
-    expr_predicate: Option<ScopedPhysicalExpr>,
+    expr_predicate: Option<ExprFilterExec>,
 
     /// determines how we treat rows that where there are no attributes. if false, this cause the
     /// row not to pass the filter, unless this is true which it should be set it as for filters/
     /// like `attributes["x"] == null`
     missing_attrs_pass: bool,
+
+    /// filter will be applied to check if an element of the stream passing through the filter is
+    /// this type
+    pub element_type_filter: Option<ElementTypeFilter>,
 }
 
 impl From<AdaptivePhysicalExprExec> for FilterExec {
@@ -1045,6 +1229,7 @@ impl From<AdaptivePhysicalExprExec> for FilterExec {
             predicate: Some(predicate),
             attributes_filter: None,
             expr_predicate: None,
+            element_type_filter: None,
             missing_attrs_pass: false,
         }
     }
@@ -1069,6 +1254,23 @@ impl FilterExec {
                 });
             }
         };
+
+        // if only certain signal types are supposed to pass this filter, check the signal type
+        if let Some(element_type_filter) = &self.element_type_filter {
+            let signal_type = otap_batch.signal_type();
+            let is_valid_signal_type = match element_type_filter.is_type {
+                StreamElementType::Log => signal_type == SignalType::Logs,
+                StreamElementType::Span => signal_type == SignalType::Traces,
+                StreamElementType::Metric => signal_type == SignalType::Metrics,
+            };
+
+            if !is_valid_signal_type {
+                return Ok(BooleanArray::new(
+                    BooleanBuffer::new_unset(root_rb.num_rows()),
+                    None,
+                ));
+            }
+        }
 
         // evaluate predicate on the root batch
         let mut selection_vec = self
@@ -1171,7 +1373,7 @@ impl FilterExec {
         Ok(result)
     }
 
-    /// Evaluates a [`ScopedPhysicalExpr`] and converts the result to a `BooleanArray` selection
+    /// Evaluates a [`ExprFilterExec`] and converts the result to a `BooleanArray` selection
     /// vector aligned to the root record batch.
     ///
     /// The expression may produce results from any data scope (root, attributes, join result, or
@@ -1180,18 +1382,88 @@ impl FilterExec {
     /// - Scalar scope: broadcast the scalar boolean to all rows
     /// - Attributes scope: use parent_id -> root join to align
     fn evaluate_expr_predicate(
-        expr_pred: &mut ScopedPhysicalExpr,
+        expr_pred: &mut ExprFilterExec,
         otap_batch: &OtapArrowRecords,
         session_ctx: &SessionContext,
         root_rb: &RecordBatch,
     ) -> Result<BooleanArray> {
         let num_rows = root_rb.num_rows();
 
-        let eval_result = match expr_pred.execute(otap_batch, session_ctx)? {
-            Some(result) => result,
-            None => {
-                // expression result was null/absent -- treat as all rows failing the filter
-                return Ok(BooleanArray::new(BooleanBuffer::new_unset(num_rows), None));
+        let eval_result = match expr_pred {
+            ExprFilterExec::Unary(expr_pred) => {
+                match expr_pred.execute(otap_batch, session_ctx)? {
+                    Some(result) => result,
+                    None => {
+                        // expression result was null/absent -- treat as all rows failing the filter
+                        return Ok(BooleanArray::new(BooleanBuffer::new_unset(num_rows), None));
+                    }
+                }
+            }
+            ExprFilterExec::Binary(expr_pred) => {
+                let mut left_result = expr_pred
+                    .left
+                    .execute(otap_batch, session_ctx)?
+                    .unwrap_or(PhysicalExprEvalResult::new_scalar(ScalarValue::Null));
+                let mut right_result = expr_pred
+                    .right
+                    .execute(otap_batch, session_ctx)?
+                    .unwrap_or(PhysicalExprEvalResult::new_scalar(ScalarValue::Null));
+
+                // coerce the any-value structs that may have been returned from either side of
+                // the operation into a single column of values if the type distribution is uniform
+                // across all rows ...
+                if let ColumnarValue::Array(arr) = &left_result.values {
+                    if is_any_value_data_type(arr.data_type()) {
+                        let coerced_value_col =
+                            attempt_coerce_value_column_from_any_value_struct_column(arr)?;
+                        left_result.values = ColumnarValue::Array(coerced_value_col);
+                    }
+                }
+                if let ColumnarValue::Array(arr) = &right_result.values {
+                    if is_any_value_data_type(arr.data_type()) {
+                        let coerced_value_col =
+                            attempt_coerce_value_column_from_any_value_struct_column(arr)?;
+                        right_result.values = ColumnarValue::Array(coerced_value_col);
+                    }
+                }
+
+                // Check if the results of the left & right expressions effectively have
+                // equivalent row orders. If not, we need to align them by performing a join.
+                if !left_result.data_scope.can_combine(&right_result.data_scope) {
+                    let (join_rb, joined_scope) = join(&left_result, &right_result, otap_batch)?;
+                    // safety: we can expect here because `join` will always create columns with
+                    // names "left" and "right"
+                    let left = join_rb
+                        .column_by_name(LEFT_COLUMN_NAME)
+                        .expect("left column present");
+                    let right = join_rb
+                        .column_by_name(RIGHT_COLUMN_NAME)
+                        .expect("right column present");
+                    let left = ColumnarValue::Array(Arc::clone(left));
+                    let right = ColumnarValue::Array(Arc::clone(right));
+                    let selection_vec = compare(&left, expr_pred.operator, &right)?;
+                    PhysicalExprEvalResult::new(
+                        ColumnarValue::Array(Arc::new(selection_vec)),
+                        joined_scope,
+                        &join_rb,
+                    )
+                } else {
+                    let selection_vec = compare(
+                        &left_result.values,
+                        expr_pred.operator,
+                        &right_result.values,
+                    )?;
+                    let result = ColumnarValue::Array(Arc::new(selection_vec));
+
+                    // reuse the existing result after comparison
+                    if left_result.data_scope.is_scalar() {
+                        right_result.values = result;
+                        right_result
+                    } else {
+                        left_result.values = result;
+                        left_result
+                    }
+                }
             }
         };
 
@@ -1274,7 +1546,7 @@ impl FilterExec {
     /// predicate.
     fn align_attrs_result_to_root(
         boolean_arr: &BooleanArray,
-        eval_result: &crate::pipeline::expr::PhysicalExprEvalResult,
+        eval_result: &PhysicalExprEvalResult,
         attrs_id: AttributesIdentifier,
         otap_batch: &OtapArrowRecords,
         root_rb: &RecordBatch,
@@ -1600,7 +1872,7 @@ impl AttributeFilterExec {
 }
 
 impl Composite<AttributeFilterExec> {
-    /// Executes the base filter, and combines the the parent_id to using the logical expression
+    /// Executes the base filter, and combines the parent_id to using the logical expression
     /// defined by the composite tree. The reason we do here, instead of say combining everything
     /// in `Composite<FilterExec>`, is that this saves us from doing additional conversions between
     /// the parent_id bitmap to a selection vector for the parent record batch.
@@ -1656,6 +1928,41 @@ impl Composite<AttributeFilterExec> {
             Self::And(left, _) => left.payload_type(),
             Self::Or(left, _) => left.payload_type(),
         }
+    }
+}
+
+#[allow(clippy::large_enum_variant)]
+pub enum ExprFilterExec {
+    Unary(ScopedPhysicalExpr),
+    Binary(ExprBinaryFilterExec),
+}
+
+pub struct ExprBinaryFilterExec {
+    left: ScopedPhysicalExpr,
+    operator: Operator,
+    right: ScopedPhysicalExpr,
+}
+
+impl ExprFilterExec {
+    fn try_from_plan(logical_expr: ExprFilterPlan) -> Result<Self> {
+        let planner = ExprPhysicalPlanner::default();
+
+        Ok(match logical_expr.clone() {
+            ExprFilterPlan::Unary(plan) => Self::Unary(planner.plan(plan)?),
+            ExprFilterPlan::Binary(mut binary_plan) => {
+                // Apply type coercion so both sides of the comparison have compatible types. We
+                // We reuse the arithmetic coercion rules (which handle Int32 vs Int64, AnyValue vs
+                // concrete types, etc.). The side-effect of adding cast expressions is what we
+                // need. We ignore the returned result type since comparisons always produce bool.
+                _ = coerce_arithmetic(&mut binary_plan.left, &mut binary_plan.right);
+
+                Self::Binary(ExprBinaryFilterExec {
+                    left: planner.plan(binary_plan.left)?,
+                    operator: binary_plan.operator,
+                    right: planner.plan(binary_plan.right)?,
+                })
+            }
+        })
     }
 }
 
@@ -1903,8 +2210,7 @@ mod test {
     }
     use data_engine_kql_parser::{KqlParser, Parser};
     use datafusion::physical_plan::PhysicalExpr;
-    use otap_df_opl::parser::OplParser;
-    use otap_df_pdata::otap::Logs;
+    use otap_df_pdata::otap::{Logs, Traces};
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
@@ -1922,7 +2228,9 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status};
     use otap_df_pdata::testing::round_trip::{
         otap_to_otlp, otlp_to_otap, to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces,
+        to_traces_data,
     };
+    use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::test::{
         exec_logs_pipeline, otap_to_logs_data, otap_to_metrics_data, otap_to_traces_data,
@@ -2094,6 +2402,193 @@ mod test {
         test_simple_attrs_filter::<OplParser>().await;
     }
 
+    #[tokio::test]
+    async fn test_simple_filter_logs_body() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("world"))
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_int(418))
+                .event_name("4")
+                .finish(),
+            LogRecord::build().event_name("5").finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("6")
+                .finish(),
+        ];
+
+        let query = "logs | where body == \"hello\"";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone(), input[5].clone()]
+        );
+
+        // ensure same result when body column ref on the right
+        let query = "logs | where \"hello\" == body";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone(), input[5].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_logs_body_is_null() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build().event_name("2").finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("3")
+                .finish(),
+            LogRecord::build().event_name("4").finish(),
+        ];
+
+        let query = "logs | where body == null";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[1].clone(), input[3].clone()]
+        );
+
+        // ensure same result when body column ref on the right
+        let query = "logs | where null == body";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[1].clone(), input[3].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_logs_body_using_matches() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello world"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello arrow"))
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("world"))
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_int(418))
+                .event_name("4")
+                .finish(),
+            LogRecord::build().event_name("5").finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("6")
+                .finish(),
+        ];
+
+        let query = "logs | where matches(body, \"hello .*\")";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_logs_body_using_contains() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello world"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello arrow"))
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("world"))
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_int(418))
+                .event_name("4")
+                .finish(),
+            LogRecord::build().event_name("5").finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("6")
+                .finish(),
+        ];
+
+        let query = "logs | where contains(body, \"hello \")";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone()]
+        );
+
+        // check it works w/ body on the right
+        let query = "logs | where contains(\"hello world\", body)";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[2].clone(), input[5].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_logs_by_body_using_expression() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello world"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello arrow"))
+                .event_name("2")
+                .finish(),
+        ];
+
+        let query = r#"logs | where replace(body, "hello", "bonjour") == "bonjour world""#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone()]
+        );
+
+        // check it works when the expressions on either side of predicate are flipped
+        let query = r#"logs | where "bonjour world" == replace(body, "hello", "bonjour")"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone()]
+        );
+    }
+
     async fn test_filter_text_contains<P: Parser>(
         q_event_name_contains_error: &str,
         q_1234_contains_event_name: &str,
@@ -2251,6 +2746,129 @@ mod test {
             r#"logs | where contains("experimental version", resource.schema_url)"#,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_event_name_using_starts_with_opl() {
+        let input = vec![
+            LogRecord::build().event_name("hello world").finish(),
+            LogRecord::build().event_name("hello arrow").finish(),
+            LogRecord::build().event_name("world hello").finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("hello").finish(),
+        ];
+
+        let query = r#"logs | where starts_with(event_name, "hello")"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone(), input[4].clone()]
+        );
+
+        // column on the right
+        let query = r#"logs | where starts_with("hello world", event_name)"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[4].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_event_name_using_ends_with_opl() {
+        let input = vec![
+            LogRecord::build().event_name("hello world").finish(),
+            LogRecord::build().event_name("goodbye world").finish(),
+            LogRecord::build().event_name("hello arrow").finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("world").finish(),
+        ];
+
+        let query = r#"logs | where ends_with(event_name, "world")"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone(), input[4].clone()]
+        );
+
+        // column on the right
+        let query = r#"logs | where ends_with("hello world", event_name)"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[4].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_attrs_using_starts_with_opl() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "username",
+                    AnyValue::new_string("albert"),
+                )])
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "username",
+                    AnyValue::new_string("alice"),
+                )])
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("username", AnyValue::new_string("bob"))])
+                .event_name("3")
+                .finish(),
+        ];
+
+        let query = r#"logs | where starts_with(attributes["username"], "al")"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_attrs_using_ends_with_opl() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "filename",
+                    AnyValue::new_string("report.pdf"),
+                )])
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "filename",
+                    AnyValue::new_string("notes.pdf"),
+                )])
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "filename",
+                    AnyValue::new_string("README.md"),
+                )])
+                .event_name("3")
+                .finish(),
+        ];
+
+        let query = r#"logs | where ends_with(attributes["filename"], ".pdf")"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
     }
 
     async fn test_filter_matches_regex<P: Parser>(q1: &str, q2: &str) {
@@ -6057,5 +6675,195 @@ mod test {
             r#"logs | where contains(attributes["haystack"], attributes["needle"])"#,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_check_signal_types() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![])
+                .finish(),
+        ];
+
+        let query = "signals | where is Log";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let logs_input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)));
+        let logs_ouptut = pipeline.execute(logs_input.clone()).await.unwrap();
+
+        assert_eq!(logs_input, logs_ouptut);
+
+        let traces_input = otlp_to_otap(&OtlpProtoMessage::Traces(to_traces_data(vec![
+            Span::default(),
+        ])));
+        let traces_ouptut = pipeline.execute(traces_input).await.unwrap();
+
+        // assert it returns empty traces
+        assert_eq!(traces_ouptut, OtapArrowRecords::Traces(Traces::default()));
+    }
+
+    #[tokio::test]
+    async fn test_filter_check_signal_type_inverted() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![])
+                .finish(),
+        ];
+
+        let query = "signals | where not(is Log)";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let logs_input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)));
+        let logs_ouptut = pipeline.execute(logs_input).await.unwrap();
+
+        // assert it returns empty traces
+        assert_eq!(logs_ouptut, OtapArrowRecords::Logs(Logs::default()));
+
+        let traces_input = otlp_to_otap(&OtlpProtoMessage::Traces(to_traces_data(vec![
+            Span::default(),
+        ])));
+        let traces_ouptut = pipeline.execute(traces_input.clone()).await.unwrap();
+
+        assert_eq!(traces_input, traces_ouptut);
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attr_type() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes([
+                    KeyValue::new("attr_always_string", AnyValue::new_string("hello")),
+                    KeyValue::new("attr_always_int", AnyValue::new_int(1)),
+                    KeyValue::new("mixed_types", AnyValue::new_string("hello")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes([
+                    KeyValue::new("attr_always_string", AnyValue::new_string("hello")),
+                    KeyValue::new("mixed_types", AnyValue::new_bool(false)),
+                ])
+                .finish(),
+        ];
+
+        // check selects correctly all rows when they all have the attribute with the matching type
+        let query = "logs | where attributes[\"attr_always_string\"] is String";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+
+        let expected = vec![log_records[0].clone(), log_records[1].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+
+        // check we can invert the case above
+        let query = "logs | where not(attributes[\"attr_always_string\"] is String)";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0, "expected empty result");
+
+        // check omits correctly all rows when  they all have the attribute with a non-matching type
+        let query = "logs | where attributes[\"attr_always_string\"] is Integer";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0, "expected empty result");
+
+        // check we select correctly only some rows have the attribute
+        let query = "logs | where attributes[\"attr_always_int\"] is Integer";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        let expected = vec![log_records[0].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+
+        // check we select correctly only some rows have the attribute
+        let query = "logs | where attributes[\"mixed_types\"] is String";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        let expected = vec![log_records[0].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+
+        // check we select correctly only some rows have the attribute
+        let query = "logs | where attributes[\"mixed_types\"] is Boolean";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        let expected = vec![log_records[1].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attr_array_map_null_type() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes([KeyValue::new(
+                    "complex",
+                    AnyValue::new_array(vec![AnyValue::new_int(1), AnyValue::new_int(2)]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("nested", AnyValue::new_bool(true))]),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new("complex", AnyValue::default())])
+                .finish(),
+            LogRecord::build()
+                .attributes([KeyValue::new("complex", AnyValue::new_string("hello"))])
+                .finish(),
+        ];
+
+        let cases = [
+            ("Array", log_records[0].clone()),
+            ("Map", log_records[1].clone()),
+            ("Null", log_records[2].clone()),
+        ];
+
+        for (value_type, expected_record) in cases {
+            let query = format!("logs | where attributes[\"complex\"] is {value_type}");
+            let result =
+                exec_logs_pipeline::<OplParser>(&query, to_logs_data(log_records.clone())).await;
+            assert_eq!(
+                &result.resource_logs[0].scope_logs[0].log_records,
+                &[expected_record],
+                "value_type={value_type}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_known_type() {
+        let log_records = vec![
+            LogRecord::build().severity_text("DEBUG").finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+        ];
+
+        let query = "logs | where severity_text is String";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+
+        let expected = vec![log_records[0].clone(), log_records[1].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+
+        let query = "logs | where severity_text is Integer";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0, "expected empty result");
     }
 }

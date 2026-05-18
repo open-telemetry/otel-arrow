@@ -40,9 +40,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
@@ -60,13 +57,13 @@ jobs:
           if (Test-Path "C:\SeleniumWebDrivers") { Remove-Item -Recurse -Force "C:\SeleniumWebDrivers" }
           if (Test-Path "C:\imagemagick") { Remove-Item -Recurse -Force "C:\imagemagick" }
       - name: install cargo-llvm-cov and nextest
-        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        uses: taiki-e/install-action@51cd0b8c0499559d9a4d75c0f5c67bec3a894ec8 # v2.75.28
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         if: runner.os == 'Linux'
         with:
-          go-version: "1.26.1"
+          go-version: "1.26.2"
       - name: Build the test collector
         if: runner.os == 'Linux'
         run: make otelarrowcol
@@ -86,6 +83,9 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo nextest run --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
+      # NOTE: when adding or removing a codecov upload step anywhere in
+      # the repo, update `codecov.notify.after_n_builds` in
+      # .github/codecov.yaml so codecov waits for the new total.
       - name: Upload to codecov.io
         if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
@@ -94,8 +94,10 @@ jobs:
         with:
           fail_ci_if_error: true
 
-  # otap-dataflow on ARM and macOS (non-required): build once per OS, fan out tests.
-  # Uses default features only -- full feature coverage is handled by the required x86/Windows jobs.
+  # otap-dataflow on ARM and macOS (non-required): build once per OS,
+  # fan out tests.  macOS uses the workspace default features. Linux
+  # ARM uses a reduced feature set Full feature coverage and
+  # validation tests are handled by the required x86 jobs.
   build_nonrequired:
     strategy:
       fail-fast: false
@@ -107,15 +109,13 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/${{ matrix.folder }}
+          cache-bin: false
       - name: Free disk space (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -123,14 +123,24 @@ jobs:
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
       - name: install nextest
-        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        uses: taiki-e/install-action@51cd0b8c0499559d9a4d75c0f5c67bec3a894ec8 # v2.75.28
         with:
           tool: cargo-nextest
-      - name: Build and archive tests (default features)
+      - name: Build and archive tests (Complete)
+        if: matrix.os != 'ubuntu-24.04-arm'
         run: cargo nextest archive --workspace --archive-file nextest-archive.tar.zst
         working-directory: ./rust/${{ matrix.folder }}
+      - name: Build and archive tests (Incomplete)
+        if: matrix.os == 'ubuntu-24.04-arm'
+        run: |
+          cargo nextest archive \
+            --no-default-features \
+            --features=crypto-ring,jemalloc,azure,aws,azure-monitor-exporter,contrib-processors,unsafe-optimizations \
+            --workspace --exclude otap-df-validation --exclude benchmarks \
+            --archive-file nextest-archive.tar.zst
+        working-directory: ./rust/${{ matrix.folder }}
       - name: Upload nextest archive
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nextest-archive-${{ matrix.os }}
           path: ./rust/${{ matrix.folder }}/nextest-archive.tar.zst
@@ -153,7 +163,7 @@ jobs:
         with:
           toolchain: stable
       - name: install nextest
-        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        uses: taiki-e/install-action@51cd0b8c0499559d9a4d75c0f5c67bec3a894ec8 # v2.75.28
         with:
           tool: cargo-nextest
       - name: Free disk space (Linux)
@@ -170,6 +180,41 @@ jobs:
       - name: Run tests (partition ${{ matrix.partition }}/3)
         run: cargo nextest run --profile ci --config-file .config/nextest.toml --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
         working-directory: ./rust/${{ matrix.folder }}
+      - name: Write JUnit artifact metadata
+        if: always()
+        shell: bash
+        run: |
+          echo '{"job": "${{ github.job }}", "os": "${{ matrix.os }}", "partition": "${{ matrix.partition }}", "folder": "${{ matrix.folder }}"}' \
+            > ./rust/${{ matrix.folder }}/target/nextest/ci/metadata.json
+      - name: Upload JUnit XML results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-xml-nonrequired-${{ matrix.os }}-${{ matrix.partition }}
+          path: |
+            ./rust/${{ matrix.folder }}/target/nextest/ci/junit.xml
+            ./rust/${{ matrix.folder }}/target/nextest/ci/metadata.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+  user_events_linux_smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: ./rust/otap-dataflow
+          cache-bin: false
+      - name: Run user_events Linux smoke test when supported
+        env:
+          OTAP_DF_RUN_USEREVENTS_E2E: "1"
+        run: cargo test -p otap-df-contrib-nodes user_events_linux_e2e_smoke_when_available --features user_events-receiver,otap-df-otap/crypto-ring
+        working-directory: ./rust/otap-dataflow
 
   fmt:
     strategy:
@@ -194,9 +239,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: nightly
@@ -207,7 +249,7 @@ jobs:
 
   # Checks that Pest grammar files are properly formatted using pestfmt.
   # Only runs if opl.pest has been modified in PRs, or on pushes to main.
-  # To format locally: cargo install pest_fmt && pestfmt rust/otap-dataflow/crates/opl/src/opl.pest
+  # To format locally: cargo install pest_fmt && pestfmt rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest
   pest-fmt:
     runs-on: ubuntu-latest
     steps:
@@ -222,7 +264,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" == "pull_request" ]; then
             # For PRs, check if the file was changed
-            git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q "rust/otap-dataflow/crates/opl/src/opl.pest" && echo "changed=true" >> $GITHUB_OUTPUT || echo "changed=false" >> $GITHUB_OUTPUT
+            git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q "rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest" && echo "changed=true" >> $GITHUB_OUTPUT || echo "changed=false" >> $GITHUB_OUTPUT
           else
             # For pushes to main, always check
             echo "changed=true" >> $GITHUB_OUTPUT
@@ -236,20 +278,20 @@ jobs:
           # Create a backup of the original file before formatting.
           # pestfmt modifies files in-place, so we need to preserve the original
           # to compare and detect if any formatting changes are needed.
-          cp rust/otap-dataflow/crates/opl/src/opl.pest /tmp/opl.pest.original
+          cp rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest /tmp/opl.pest.original
 
           # Run pestfmt to format the file
-          pestfmt rust/otap-dataflow/crates/opl/src/opl.pest
+          pestfmt rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest
 
           # Compare with original
-          if ! diff -q /tmp/opl.pest.original rust/otap-dataflow/crates/opl/src/opl.pest > /dev/null; then
+          if ! diff -q /tmp/opl.pest.original rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest > /dev/null; then
             echo "opl.pest is not formatted correctly"
             echo ""
             echo "Please run the following command to format it:"
-            echo "  pestfmt rust/otap-dataflow/crates/opl/src/opl.pest"
+            echo "  pestfmt rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest"
             echo ""
             echo "Diff:"
-            diff -u /tmp/opl.pest.original rust/otap-dataflow/crates/opl/src/opl.pest || true
+            diff -u /tmp/opl.pest.original rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest || true
             exit 1
           else
             echo "opl.pest is correctly formatted"
@@ -278,16 +320,14 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
           components: clippy
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/${{ matrix.folder }}
+          cache-bin: false
       - name: cargo clippy ${{ matrix.folder }}
         run: |
           cargo clippy --all-targets --all-features --workspace -- -D warnings
@@ -306,33 +346,30 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
       - name: advisories
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check advisories
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
       - name: licenses
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check licenses
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
       - name: bans
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check bans
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
       - name: sources
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check sources
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
@@ -350,9 +387,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
@@ -371,9 +405,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
@@ -383,6 +414,29 @@ jobs:
       - name: check telemetry macro usage
         run: ./scripts/check-direct-telemetry-macros.sh
         working-directory: ./rust/${{ matrix.folder }}
+
+  compile_proto:
+    strategy:
+      fail-fast: false
+      matrix:
+        folder: [otap-dataflow]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          version: "34.1"
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - name: cargo xtask compile proto
+        run: cargo xtask compile-proto
+        working-directory: ./rust/${{ matrix.folder }}
+      - name: check git diff after compile-proto execution
+        run: git diff --exit-code rust/otap-dataflow/crates/pdata/src/proto
 
   # Verify the workspace builds with --no-default-features to catch broken
   # optional feature gates (e.g., dev-tools, crypto-*).
@@ -396,9 +450,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
@@ -428,25 +479,16 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - name: Install OpenSSL (Windows)
-        if: runner.os == 'Windows'
-        # Required for the crypto-openssl feature (rustls-openssl -> openssl-sys).
-        run: |
-          vcpkg install openssl:x64-windows-static-md
-          echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" >> $env:GITHUB_ENV
-        shell: pwsh
       - name: Install SymCrypt (Windows)
         if: runner.os == 'Windows'
         uses: ./.github/actions/install-symcrypt
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/${{ matrix.folder }}
+          cache-bin: false
       - name: Free disk space (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -461,14 +503,19 @@ jobs:
           if (Test-Path "C:\SeleniumWebDrivers") { Remove-Item -Recurse -Force "C:\SeleniumWebDrivers" }
           if (Test-Path "C:\imagemagick") { Remove-Item -Recurse -Force "C:\imagemagick" }
       - name: install nextest
-        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        uses: taiki-e/install-action@51cd0b8c0499559d9a4d75c0f5c67bec3a894ec8 # v2.75.28
         with:
           tool: cargo-nextest
-      - name: Build and archive tests
+      - name: Build and archive tests (Incomplete)
+        if: runner.os == 'Windows'
+        run: cargo nextest archive --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,contrib-processors,unsafe-optimizations --workspace --archive-file nextest-archive.tar.zst
+        working-directory: ./rust/${{ matrix.folder }}
+      - name: Build and archive tests (Complete)
+        if: runner.os != 'Windows'
         run: cargo nextest archive --all-features --workspace --archive-file nextest-archive.tar.zst
         working-directory: ./rust/${{ matrix.folder }}
       - name: Upload nextest archive
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nextest-archive-${{ matrix.os }}
           path: ./rust/${{ matrix.folder }}/nextest-archive.tar.zst
@@ -495,7 +542,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: ./.github/actions/install-symcrypt
       - name: install nextest
-        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        uses: taiki-e/install-action@51cd0b8c0499559d9a4d75c0f5c67bec3a894ec8 # v2.75.28
         with:
           tool: cargo-nextest
       - name: Free disk space (Linux)
@@ -507,7 +554,7 @@ jobs:
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         if: runner.os == 'Linux'
         with:
-          go-version: "1.26.1"
+          go-version: "1.26.2"
       - name: Build the test collector
         if: runner.os == 'Linux'
         run: make otelarrowcol
@@ -519,6 +566,22 @@ jobs:
       - name: Run tests (partition ${{ matrix.partition }}/3)
         run: cargo nextest run --profile ci --config-file .config/nextest.toml --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
         working-directory: ./rust/${{ matrix.folder }}
+      - name: Write JUnit artifact metadata
+        if: always()
+        shell: bash
+        run: |
+          echo '{"job": "${{ github.job }}", "os": "${{ matrix.os }}", "partition": "${{ matrix.partition }}", "folder": "${{ matrix.folder }}"}' \
+            > ./rust/${{ matrix.folder }}/target/nextest/ci/metadata.json
+      - name: Upload JUnit XML results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-xml-required-${{ matrix.os }}-${{ matrix.partition }}
+          path: |
+            ./rust/${{ matrix.folder }}/target/nextest/ci/junit.xml
+            ./rust/${{ matrix.folder }}/target/nextest/ci/metadata.json
+          retention-days: 30
+          if-no-files-found: ignore
 
   # Coverage runs unpartitioned on Linux x86_64 (does not block merge).
   # This compiles from scratch with coverage instrumentation and runs all tests.
@@ -528,32 +591,33 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/otap-dataflow
+          cache-bin: false
       - name: Free disk space
         run: |
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
       - name: install cargo-llvm-cov and nextest
-        uses: taiki-e/install-action@d858f8113943481093e02986a7586a4819a3bfd6 # v2.71.2
+        uses: taiki-e/install-action@51cd0b8c0499559d9a4d75c0f5c67bec3a894ec8 # v2.75.28
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
-          go-version: "1.26.1"
+          go-version: "1.26.2"
       - name: Build the test collector
         run: make otelarrowcol
       - name: Run tests with coverage
         run: cargo llvm-cov nextest --profile ci --all-features --workspace --lcov --output-path lcov.info
         working-directory: ./rust/otap-dataflow
+      # NOTE: when adding or removing a codecov upload step anywhere in
+      # the repo, update `codecov.notify.after_n_builds` in
+      # .github/codecov.yaml so codecov waits for the new total.
       - name: Upload to codecov.io
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
         env:
@@ -573,9 +637,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: nightly
@@ -596,16 +657,14 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
           components: clippy
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/${{ matrix.folder }}
+          cache-bin: false
       - name: Install OpenSSL (Windows)
         if: runner.os == 'Windows'
         # Required for the crypto-openssl feature (rustls-openssl -> openssl-sys).
@@ -621,6 +680,33 @@ jobs:
           cargo clippy --all-targets --all-features --workspace -- -D warnings
         working-directory: ./rust/${{ matrix.folder }}
 
+  host-metrics-semconv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: open-telemetry/semantic-conventions
+          ref: v1.41.0
+          path: semantic-conventions
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: ./rust/otap-dataflow
+          cache-bin: false
+      - name: Run host metrics semconv drift check
+        env:
+          OTAP_HOST_METRICS_SEMCONV_REGISTRY: ${{ github.workspace }}/semantic-conventions/model
+        run: |
+          cargo test -p otap-df-core-nodes \
+            --features dev-tools,otap-df-otap/crypto-ring \
+            emitted_phase1_metric_shapes_match_weaver_semconv --lib -- --ignored
+        working-directory: ./rust/otap-dataflow
+
   # Required matrix combinations for deny: otap-dataflow only
   deny_required:
     runs-on: ubuntu-latest
@@ -628,33 +714,30 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
       - name: advisories
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check advisories
           manifest-path: ./rust/otap-dataflow/Cargo.toml
       - name: licenses
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check licenses
           manifest-path: ./rust/otap-dataflow/Cargo.toml
       - name: bans
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check bans
           manifest-path: ./rust/otap-dataflow/Cargo.toml
       - name: sources
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
         with:
           command: check sources
           manifest-path: ./rust/otap-dataflow/Cargo.toml
@@ -666,9 +749,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
@@ -682,9 +762,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
@@ -703,6 +780,64 @@ jobs:
           echo "- Add the label \`cargobench\` to your PR to run micro benchmarks." >> $GITHUB_STEP_SUMMARY
           echo "- More info: [link to docs](https://github.com/open-telemetry/otel-arrow/blob/main/CONTRIBUTING.md#micro-benchmarks)" >> $GITHUB_STEP_SUMMARY
 
+  # Publish test results from JUnit XML artifacts.
+  # Runs after all test jobs and posts a summary to the workflow run.
+  test-report:
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - test_required
+      - test_nonrequired
+    permissions:
+      checks: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Download all JUnit XML artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: junit-xml-*
+          path: junit-results
+      - name: Publish test results
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        if: always()
+        with:
+          name: Rust Test Results
+          path: junit-results/**/*.xml
+          reporter: java-junit
+          fail-on-error: false
+
+  # Pipeline performance test - validates that Rust changes don't regress performance.
+  pipeline_perf_test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.14"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
+          sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
+          sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
+      - name: Build dataflow_engine
+        run: |
+          cd rust/otap-dataflow
+          docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+          cd ../..
+      - name: Install dependencies
+        run: |
+          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
+          python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
+      - name: Run pipeline performance test suite
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
+
   # Aggregated status check - depends only on the required matrix combinations.
   # Add/remove jobs from the needs list to change what is required via PR,
   # rather than updating GitHub branch protection settings directly.
@@ -716,8 +851,12 @@ jobs:
       - deny_required
       - docs_required
       - structure_check
+      - compile_proto
       - pest-fmt
       - no_default_features_check
+      - pipeline_perf_test
+      - host-metrics-semconv
+      - user_events_linux_smoke
     steps:
       - name: Check if all required jobs succeeded
         run: |
@@ -751,6 +890,18 @@ jobs:
           fi
           if [[ "${{ needs.no_default_features_check.result }}" != "success" ]]; then
             echo "no_default_features_check failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.pipeline_perf_test.result }}" != "success" ]]; then
+            echo "pipeline_perf_test failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.host-metrics-semconv.result }}" != "success" ]]; then
+            echo "host-metrics-semconv failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.user_events_linux_smoke.result }}" != "success" ]]; then
+            echo "user_events_linux_smoke failed or was cancelled"
             exit 1
           fi
           echo "All required checks passed!"

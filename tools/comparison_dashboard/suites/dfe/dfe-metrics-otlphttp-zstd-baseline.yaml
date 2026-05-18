@@ -1,0 +1,22 @@
+name: DFE OTLP/HTTP Baseline w/ Zstd (Metrics)
+slug: dfe_metrics_otlphttp_zstd_baseline
+description: Dataflow Engine baseline for OTLP/HTTP metrics with zstd compression
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/dfe-single-core-multi-rate.yaml
+
+meta:
+  binary: dfe
+  protocols: [otlphttp]
+  signals: [metrics]
+  compression: zstd
+
+variables:
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_metrics.yaml
+  engine_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/engine/otlphttp-otlphttp.yaml.j2
+  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otlp-http.yaml.j2
+  backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/backend/otlp-http.yaml.j2
+  protocol: otlphttp
+  signal: metrics
+  loadgen_max_batch_size: 1000
+  compression_method: zstd
+  exporter_port: 4318
+  wait_for_result: true

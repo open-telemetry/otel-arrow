@@ -17,7 +17,7 @@ pub enum AdminScheme {
 }
 
 impl AdminScheme {
-    /// Returns the URL scheme string.
+    /// Returns the URL scheme string used when building admin endpoint URLs.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -49,7 +49,9 @@ pub struct AdminEndpoint {
 }
 
 impl AdminEndpoint {
-    /// Creates a new endpoint.
+    /// Creates an endpoint from explicit scheme, host, and port components.
+    ///
+    /// This validates the endpoint fields before returning.
     pub fn new(
         scheme: AdminScheme,
         host: impl Into<String>,
@@ -65,7 +67,10 @@ impl AdminEndpoint {
         Ok(endpoint)
     }
 
-    /// Creates an HTTP endpoint.
+    /// Creates an HTTP endpoint for direct plaintext admin access.
+    ///
+    /// This constructor does not fail; validation happens later when the client
+    /// is built or when the endpoint is used to construct URLs.
     #[must_use]
     pub fn http(host: impl Into<String>, port: u16) -> Self {
         Self {
@@ -76,7 +81,10 @@ impl AdminEndpoint {
         }
     }
 
-    /// Creates an HTTPS endpoint.
+    /// Creates an HTTPS endpoint for admin access over TLS.
+    ///
+    /// Pair this with [`HttpAdminClientSettings::with_tls`](crate::HttpAdminClientSettings::with_tls)
+    /// when the server or upstream gateway requires custom CA trust or mTLS.
     #[must_use]
     pub fn https(host: impl Into<String>, port: u16) -> Self {
         Self {
@@ -87,13 +95,22 @@ impl AdminEndpoint {
         }
     }
 
-    /// Creates an endpoint from a socket address using HTTP.
+    /// Creates an HTTP endpoint from a socket address.
+    ///
+    /// This is mainly useful for local engines discovered as a concrete bind
+    /// address.
     #[must_use]
     pub fn from_socket_addr(addr: SocketAddr) -> Self {
         Self::http(addr.ip().to_string(), addr.port())
     }
 
     /// Creates an endpoint from a full base URL.
+    ///
+    /// Use this when the admin API is exposed behind a gateway or reverse proxy
+    /// and you want to preserve the URL prefix in `base_path`.
+    ///
+    /// Query strings and fragments are rejected because SDK routes are built by
+    /// appending `/api/v1/...` path segments to this base URL.
     pub fn from_url(url: &str) -> Result<Self, EndpointError> {
         let parsed = Url::parse(url).map_err(|err| EndpointError::UrlParse {
             url: url.to_string(),
@@ -136,14 +153,20 @@ impl AdminEndpoint {
         Ok(endpoint)
     }
 
-    /// Sets the base path used for URL construction.
+    /// Sets the URL path prefix used when building admin request URLs.
+    ///
+    /// This is useful when the engine is published behind a path-prefixed
+    /// gateway such as `/engine-a`.
     pub fn with_base_path(mut self, base_path: impl Into<String>) -> Result<Self, EndpointError> {
         self.base_path = Some(base_path.into());
         self.validate()?;
         Ok(self)
     }
 
-    /// Validates the endpoint fields.
+    /// Validates the endpoint fields without building a client.
+    ///
+    /// Most callers do not need to call this directly because client creation
+    /// and URL construction validate automatically.
     pub fn validate(&self) -> Result<(), EndpointError> {
         if self.host.trim().is_empty() {
             return Err(EndpointError::EmptyHost);
@@ -159,7 +182,11 @@ impl AdminEndpoint {
         Ok(())
     }
 
-    /// Builds a URL for the provided path segments.
+    /// Builds a concrete URL by appending path segments to this endpoint.
+    ///
+    /// Most SDK callers do not need this directly because the built-in HTTP
+    /// transport uses it internally. It is mainly useful for custom transports,
+    /// tests, or diagnostics.
     pub fn url_for_segments<'a, I>(&self, segments: I) -> Result<Url, EndpointError>
     where
         I: IntoIterator<Item = &'a str>,

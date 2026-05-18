@@ -267,6 +267,16 @@ impl<T> SharedReceiver<T> {
             SharedReceiverInner::Mpmc(receiver) => receiver.is_empty(),
         }
     }
+
+    /// Returns `true` once all senders are gone or the channel has been
+    /// explicitly closed.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        match &self.inner {
+            SharedReceiverInner::Mpsc(receiver) => receiver.is_closed(),
+            SharedReceiverInner::Mpmc(receiver) => receiver.is_disconnected(),
+        }
+    }
 }
 
 #[cfg(test)]

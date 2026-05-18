@@ -581,5 +581,6 @@ pub(super) fn nack_with_calldata(calldata: CallData, reason: &str) -> NackMsg<Ot
             return_time_ns: 0,
         },
         permanent: false,
+        cause: otap_df_engine::control::NackCause::Unspecified,
     }
 }

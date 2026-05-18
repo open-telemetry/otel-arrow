@@ -244,11 +244,16 @@ method and its operational purpose.
 | `GET /api/v1/status` | `engine().status()` | Full engine status snapshot across pipelines and cores. |
 | `GET /api/v1/livez` | `engine().livez()` | Engine liveness probe with structured failure details. |
 | `GET /api/v1/readyz` | `engine().readyz()` | Readiness probe for orchestration or traffic gating. |
-| `GET /api/v1/pipeline-groups/status` | `pipeline_groups().status()` | Fleet-style pipeline status view. |
-| `POST /api/v1/pipeline-groups/shutdown` | `pipeline_groups().shutdown(...)` | Coordinated shutdown request across running pipelines. |
-| `GET /api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/status` | `pipelines().status(...)` | Detailed status for a single pipeline. |
-| `GET /api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez` | `pipelines().livez(...)` | Semantic liveness probe result for a single pipeline. |
-| `GET /api/v1/pipeline-groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz` | `pipelines().readyz(...)` | Semantic readiness probe result for a single pipeline. |
+| `GET /api/v1/groups/status` | `groups().status()` | Fleet-style pipeline status view. |
+| `POST /api/v1/groups/shutdown` | `groups().shutdown(...)` | Coordinated shutdown request across running pipelines. |
+| `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}` | `pipelines().details(...)` | Live committed configuration and any active rollout summary for one logical pipeline. |
+| `PUT /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}` | `pipelines().reconfigure(...)` | Submit a live pipeline reconfiguration request and get an accepted, completed, failed, or timed-out operation outcome. |
+| `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/rollouts/{rollout_id}` | `pipelines().rollout_status(...)` | Detailed status for one rollout operation. |
+| `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/status` | `pipelines().status(...)` | Detailed status for a single pipeline. |
+| `POST /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown` | `pipelines().shutdown(...)` | Shut down one logical pipeline and get an accepted, completed, failed, or timed-out operation outcome. |
+| `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdowns/{shutdown_id}` | `pipelines().shutdown_status(...)` | Detailed status for one pipeline shutdown operation. |
+| `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez` | `pipelines().livez(...)` | Semantic liveness probe result for a single pipeline. |
+| `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz` | `pipelines().readyz(...)` | Semantic readiness probe result for a single pipeline. |
 | `GET /api/v1/telemetry/logs` | `telemetry().logs(...)` | Retained admin logs when log retention is enabled. |
 | `GET /api/v1/telemetry/metrics` | `telemetry().metrics(...)`, `telemetry().metrics_compact(...)` | Current engine metrics as structured JSON, using either the full or compact response shape. |
 
@@ -257,50 +262,26 @@ method and its operational purpose.
 canonical `telemetry().metrics(...)` and `telemetry().metrics_compact(...)`
 methods.
 
-## Future evolution: live reconfiguration
+## Live pipeline control
 
-Future live reconfiguration work is expected to extend the admin SDK from a
-status-and-observability client into a richer control-plane client for
-long-lived engine instances. The details are not stabilized yet, but the work
-in progress already helps frame the direction for advanced integrators building
-external controllers.
+The SDK exposes the live pipeline control surface behind typed methods:
 
-Main capabilities expected from this area of the admin API:
+- `pipelines().details(...)` reads the committed pipeline config and active
+  rollout summary.
+- `pipelines().reconfigure(...)` submits create, `noop`, resize, and replace
+  operations and returns a typed outcome.
+- `pipelines().rollout_status(...)` polls a rollout by id.
+- `pipelines().shutdown(...)` requests shutdown for one logical pipeline and
+  returns a typed outcome.
+- `pipelines().shutdown_status(...)` polls a shutdown operation by id.
 
-- read the live committed configuration for a single logical pipeline;
-- create, replace, resize, or accept a `noop` update for one logical pipeline;
-- track rollout progress through a dedicated rollout resource;
-- track per-pipeline shutdown progress through a dedicated shutdown resource;
-- expose generation-aware pipeline status during overlapping cutover.
+Terminal rollout and shutdown ids are retained only within a bounded in-memory
+window. Older ids may return `Ok(None)` after the controller evicts historical
+operation snapshots.
 
-The current SDK is intentionally narrower, and the main future extensions for
-live reconfiguration are expected to center on:
-
-- resource model: adding live pipeline details, rollout status, and shutdown
-  status as first-class SDK resources instead of exposing only snapshots and
-  probes;
-- status shape: extending pipeline status with generation-aware fields such as
-  `activeGeneration`, `servingGenerations`, rollout summaries, and
-  per-generation instance views;
-- operation semantics: treating create, replace, resize, and shutdown as
-  long-running admin operations with both immediate-return and wait-or-poll
-  interaction patterns;
-- error and outcome modeling: representing rollout conflicts, validation
-  failures, and timeout outcomes as typed SDK results rather than leaving them
-  as transport-level concerns.
-
-The intended integration direction is to keep `AdminClient` as the stable
-entrypoint and absorb those changes behind typed client methods rather than
-exposing raw route strings as the public contract. In practice, that likely
-means:
-
-- keeping transport and route-version differences behind backend adapters;
-- adding job-oriented client methods for live pipeline read, update, rollout
-  status, and per-pipeline shutdown tracking;
-- supporting both immediate-return and wait-or-poll interaction patterns for
-  long-running admin operations;
-- continuing to treat experimental endpoints as opt-in additions only after
-  their semantics and wire format settle.
+Waited operations return typed terminal outcomes instead of surfacing rollout
+or shutdown failures as transport-level errors. Request rejection remains a
+typed SDK error via `Error::AdminOperation`.
 
 ## Client API cookbook
 
@@ -327,7 +308,7 @@ println!("readyz={:?}", readyz.status);
 # }
 ```
 
-### Pipeline group status and coordinated shutdown
+### Group status and coordinated shutdown
 
 Use this when an operator or control plane needs a fleet view and a single
 engine-wide shutdown entrypoint.
@@ -343,11 +324,11 @@ let client = AdminClient::builder()
     .http(HttpAdminClientSettings::new(AdminEndpoint::http("127.0.0.1", 8080)))
     .build()?;
 
-let groups = client.pipeline_groups().status().await?;
+let groups = client.groups().status().await?;
 println!("pipelines={}", groups.pipelines.len());
 
 let shutdown = client
-    .pipeline_groups()
+    .groups()
     .shutdown(&OperationOptions {
         wait: true,
         timeout_secs: 30,

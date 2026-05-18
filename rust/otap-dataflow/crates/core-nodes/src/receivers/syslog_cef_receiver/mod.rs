@@ -132,29 +132,6 @@ struct Config {
 }
 
 impl Config {
-    /// Creates a new Config for TCP.
-    #[must_use]
-    #[allow(dead_code)]
-    const fn new_tcp(listening_addr: SocketAddr) -> Self {
-        Self {
-            protocol: Protocol::Tcp(TcpConfig {
-                listening_addr,
-                tls: None,
-            }),
-            batch: None,
-        }
-    }
-
-    /// Creates a new Config for UDP.
-    #[must_use]
-    #[allow(dead_code)]
-    const fn new_udp(listening_addr: SocketAddr) -> Self {
-        Self {
-            protocol: Protocol::Udp(UdpConfig { listening_addr }),
-            batch: None,
-        }
-    }
-
     /// Returns the effective max batch duration, using the configured value or the default.
     fn max_batch_duration(&self) -> Duration {
         self.batch
@@ -311,11 +288,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        // Start periodic telemetry collection (1s), similar to other nodes
-        let telemetry_timer_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         match &self.config.protocol {
             Protocol::Tcp(tcp_config) => {
                 otel_info!(
@@ -370,7 +342,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // for TCP we still wait for already accepted connection tasks
                                     // to flush their per-connection buffers before reporting
                                     // ReceiverDrained to the runtime.
-                                    let _ = telemetry_timer_handle.cancel().await;
                                     shutdown_flag.set(true); // Signal all connection tasks to flush and exit
 
                                     // Wait for active tasks to finish flushing.
@@ -400,7 +371,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                    let _ = telemetry_timer_handle.cancel().await;
                                     shutdown_flag.set(true);
                                     let snapshot = self.metrics.borrow().snapshot();
                                     return Ok(TerminalState::new(deadline, [snapshot]));
@@ -806,7 +776,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // UDP has no long-lived connection tasks, so receiver-first
                                     // drain just means: stop ingesting new packets, flush the
                                     // current batch buffer once, then report ReceiverDrained.
-                                    let _ = telemetry_timer_handle.cancel().await;
 
                                     if arrow_records_builder.len() > 0 {
                                         let items = u64::from(arrow_records_builder.len());
@@ -834,7 +803,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                    let _ = telemetry_timer_handle.cancel().await;
                                     let snapshot = self.metrics.borrow().snapshot();
                                     return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
@@ -976,14 +944,14 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 }
 
 /// RFC-aligned metrics for Syslog CEF receiver.
-#[metric_set(name = "syslog_cef.receiver.metrics")]
+#[metric_set(name = "receiver.syslog_cef")]
 #[derive(Debug, Default, Clone)]
 pub struct SyslogCefReceiverMetrics {
     /// Number of log records successfully forwarded downstream
     #[metric(unit = "{item}")]
     pub received_logs_forwarded: Counter<u64>,
 
-    /// Number of log records that failed to be parsed
+    /// Number of log records rejected because their payload is zero-length
     #[metric(unit = "{item}")]
     pub received_logs_invalid: Counter<u64>,
 
@@ -1019,6 +987,30 @@ pub struct SyslogCefReceiverMetrics {
     /// Number of TCP connections rejected or closed due to process-wide memory pressure.
     #[metric(unit = "{conn}")]
     pub tcp_connections_rejected_memory_pressure: Counter<u64>,
+}
+
+#[cfg(test)]
+impl Config {
+    /// Creates a new Config for TCP. Test-only helper.
+    #[must_use]
+    const fn new_tcp(listening_addr: SocketAddr) -> Self {
+        Self {
+            protocol: Protocol::Tcp(TcpConfig {
+                listening_addr,
+                tls: None,
+            }),
+            batch: None,
+        }
+    }
+
+    /// Creates a new Config for UDP. Test-only helper.
+    #[must_use]
+    const fn new_udp(listening_addr: SocketAddr) -> Self {
+        Self {
+            protocol: Protocol::Udp(UdpConfig { listening_addr }),
+            batch: None,
+        }
+    }
 }
 
 #[cfg(test)]

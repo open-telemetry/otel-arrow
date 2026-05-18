@@ -116,11 +116,14 @@ steps:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8085/api/v1/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
+              url: http://localhost:8085/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
               method: POST
               headers:
                 "Content-Type": "application/json"
               timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
+              raise_for_status: false
+              on_error:
+                continue: true
     action:
       no_op: {}
   # Stop the df-engine and wait for it to drain in-flight data to backend.
@@ -129,11 +132,14 @@ steps:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8086/api/v1/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
+              url: http://localhost:8086/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
               method: POST
               headers:
                 "Content-Type": "application/json"
               timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
+              raise_for_status: false
+              on_error:
+                continue: true
     action:
       no_op: {}
   # Stop the backend-service (ensures any internal processing completes).
@@ -142,11 +148,14 @@ steps:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8087/api/v1/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
+              url: http://localhost:8087/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
               method: POST
               headers:
                 "Content-Type": "application/json"
               timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
+              raise_for_status: false
+              on_error:
+                continue: true
     action:
       no_op: {}
   # Brief wait to ensure final metrics are visible before scraping.

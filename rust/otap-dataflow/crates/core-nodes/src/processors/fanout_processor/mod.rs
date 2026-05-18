@@ -362,7 +362,7 @@ struct Inflight {
     next_send_queue: DestinationIndexQueue,
 }
 
-#[metric_set(name = "fanout.processor.metrics")]
+#[metric_set(name = "processor.fanout")]
 #[derive(Debug, Default, Clone)]
 struct FanoutMetrics {
     /// Requests dispatched. Note: This is a convenience metric that overlaps with
@@ -669,6 +669,7 @@ impl FanoutProcessor {
             unwind: UnwindData::default(),
             refused: Box::new(inflight.original_pdata.clone()),
             permanent: false, // Timeout is retriable
+            cause: otap_df_engine::control::NackCause::Unspecified,
         })
     }
 
@@ -1039,6 +1040,7 @@ impl FanoutProcessor {
                 unwind: UnwindData::default(),
                 refused: Box::new(original_pdata),
                 permanent: nack.permanent, // Propagate from downstream
+                cause: nack.cause,
             };
             effect_handler.notify_nack(nackmsg).await?;
         }

@@ -189,9 +189,11 @@ We meet weekly, alternating between Tuesday at 4:00 PM PT and Thursday
 at 8:00 AM PT. Check the [OpenTelemetry community calendar][OTELCAL]
 for dates and Zoom links.
 
-Whether you're a seasoned OpenTelemetry developer, just starting your
-journey, or simply curious about the work we do, you're more than
-welcome to participate!
+The meeting is open for all to join. We invite everyone to join our
+meeting, regardless of your experience level. Whether you're a
+seasoned OpenTelemetry developer, just starting your journey, or
+simply curious about the work we do, you're more than welcome to
+participate!
 
 - [Contribution guidelines](CONTRIBUTING.md)
 - [Meeting notes](https://docs.google.com/document/d/1z8_Ra-ALDaYNa88mMj1gOZtOpLZLRk0-dZEmDjPmcUs)
@@ -211,7 +213,6 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
 - [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
-- [Lei Huang](https://github.com/v0y4g3r), Greptime
 - [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
 
 For more information about the approver role, see the [community
@@ -227,6 +228,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 ### Emeritus
 
 - [Alex Boten](https://github.com/codeboten), Approver
+- [Lei Huang](https://github.com/v0y4g3r), Approver
 - [Moh Osman](https://github.com/moh-osman3), Approver
 
 ### Thanks to all of our contributors

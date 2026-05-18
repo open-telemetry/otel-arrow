@@ -8,6 +8,7 @@ use crate::health::HealthPolicy;
 use crate::transport_headers_policy::TransportHeadersPolicy;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::time::Duration;
 
@@ -179,6 +180,9 @@ impl Policies {
                 errors.push(format!("{path_prefix}.resources.core_allocation: {e}"));
             }
         }
+        if let Some(telemetry) = &self.telemetry {
+            errors.extend(telemetry.validation_errors(&format!("{path_prefix}.telemetry")));
+        }
         if let Some(transport_headers) = &self.transport_headers {
             if let Err(e) = transport_headers.header_propagation.validate() {
                 errors.push(format!(
@@ -205,6 +209,33 @@ pub struct ResolvedPolicies {
     /// Transport headers policy. `None` when the feature is not configured
     /// (opt-in only -- no headers are captured or propagated by default).
     pub transport_headers: Option<TransportHeadersPolicy>,
+}
+
+impl ResolvedPolicies {
+    /// Compares resolved policies while intentionally ignoring the resources
+    /// policy, which controls placement and scaling rather than runtime shape.
+    #[must_use]
+    pub fn eq_ignoring_resources(&self, other: &Self) -> bool {
+        let Self {
+            channel_capacity: self_channel_capacity,
+            health: self_health,
+            telemetry: self_telemetry,
+            resources: _,
+            transport_headers: self_transport_headers,
+        } = self;
+        let Self {
+            channel_capacity: other_channel_capacity,
+            health: other_health,
+            telemetry: other_telemetry,
+            resources: _,
+            transport_headers: other_transport_headers,
+        } = other;
+
+        self_channel_capacity == other_channel_capacity
+            && self_health == other_health
+            && self_telemetry == other_telemetry
+            && self_transport_headers == other_transport_headers
+    }
 }
 /// instrumentation overhead.
 #[derive(
@@ -239,6 +270,82 @@ pub struct TelemetryPolicy {
     /// shared control-plane telemetry.
     #[serde(default = "default_metric_level_basic")]
     pub runtime_metrics: MetricLevel,
+    /// Distributed flow_metrics that sum per-message compute duration across
+    /// a range of processor nodes.
+    #[serde(default)]
+    pub flow_metrics: Vec<FlowMetricConfig>,
+}
+
+/// Configuration for flow metrics across a contiguous range of processor nodes.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FlowMetricConfig {
+    /// User-facing name for this flow metric, used as a metric attribute.
+    pub name: String,
+    /// Processor node bounds for this flow metric.
+    pub bounds: FlowBounds,
+    /// Metrics to enable. Omitted means all metrics are enabled.
+    #[serde(default)]
+    pub metrics: Option<Vec<FlowMetric>>,
+}
+
+impl FlowMetricConfig {
+    /// Returns whether the given metric is enabled for this flow.
+    #[must_use]
+    pub fn has(&self, metric: FlowMetric) -> bool {
+        match &self.metrics {
+            None => true,
+            Some(metrics) => metrics.contains(&metric),
+        }
+    }
+}
+
+/// Start/end node bounds for a flow metric.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FlowBounds {
+    /// Processor node name where the flow metric range begins (inclusive).
+    pub start_node: String,
+    /// Processor node name where the flow metric range ends (inclusive).
+    pub end_node: String,
+}
+
+/// Individual metrics that can be enabled for a flow.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowMetric {
+    /// Aggregate processor compute duration across the flow.
+    ComputeDuration,
+    /// Signal item count entering the flow.
+    SignalsIncoming,
+    /// Signal item count leaving the flow.
+    SignalsOutgoing,
+}
+
+impl TelemetryPolicy {
+    /// Returns validation errors for the telemetry policy.
+    #[must_use]
+    pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
+        let mut errors = Vec::new();
+        for (idx, flow) in self.flow_metrics.iter().enumerate() {
+            let path = format!("{path_prefix}.flow_metrics[{idx}].metrics");
+            if let Some(metrics) = &flow.metrics {
+                if metrics.is_empty() {
+                    errors.push(format!(
+                        "{path} must not be empty when explicitly configured"
+                    ));
+                }
+                let mut seen = HashSet::new();
+                for metric in metrics {
+                    if !seen.insert(*metric) {
+                        errors.push(format!("{path} must not contain duplicate entries"));
+                        break;
+                    }
+                }
+            }
+        }
+        errors
+    }
 }
 
 impl Default for TelemetryPolicy {
@@ -247,6 +354,7 @@ impl Default for TelemetryPolicy {
             pipeline_metrics: true,
             tokio_metrics: true,
             runtime_metrics: MetricLevel::Basic,
+            flow_metrics: Vec::new(),
         }
     }
 }
@@ -596,6 +704,41 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn resolved_policies_eq_ignoring_resources_ignores_resource_only_changes() {
+        let current = super::ResolvedPolicies {
+            resources: super::ResourcesPolicy {
+                core_allocation: super::CoreAllocation::core_count(1),
+                memory_limiter: None,
+            },
+            ..super::ResolvedPolicies::default()
+        };
+        let candidate = super::ResolvedPolicies {
+            resources: super::ResourcesPolicy {
+                core_allocation: super::CoreAllocation::core_count(2),
+                memory_limiter: None,
+            },
+            ..super::ResolvedPolicies::default()
+        };
+
+        assert_ne!(current, candidate);
+        assert!(current.eq_ignoring_resources(&candidate));
+    }
+
+    #[test]
+    fn resolved_policies_eq_ignoring_resources_detects_runtime_policy_change() {
+        let current = super::ResolvedPolicies::default();
+        let candidate = super::ResolvedPolicies {
+            telemetry: super::TelemetryPolicy {
+                pipeline_metrics: false,
+                ..super::TelemetryPolicy::default()
+            },
+            ..super::ResolvedPolicies::default()
+        };
+
+        assert!(!current.eq_ignoring_resources(&candidate));
+    }
+
+    #[test]
     fn defaults_match_expected_values() {
         let defaults = Policies::resolve([&Policies::default()]);
         assert_eq!(defaults.channel_capacity.control.node, 256);
@@ -716,6 +859,83 @@ mod tests {
         "#;
         let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
         assert_eq!(policy.runtime_metrics, super::MetricLevel::Basic);
+    }
+
+    #[test]
+    fn flow_metrics_omitted_metrics_enable_all() {
+        let yaml = r#"
+            flow_metrics:
+              - name: flow1
+                bounds: { start_node: a, end_node: b }
+        "#;
+        let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
+        let flow = &policy.flow_metrics[0];
+        assert!(flow.metrics.is_none());
+        assert!(flow.has(super::FlowMetric::ComputeDuration));
+        assert!(flow.has(super::FlowMetric::SignalsIncoming));
+        assert!(flow.has(super::FlowMetric::SignalsOutgoing));
+    }
+
+    #[test]
+    fn flow_metrics_explicit_subset_is_honored() {
+        let yaml = r#"
+            flow_metrics:
+              - name: flow1
+                bounds: { start_node: a, end_node: b }
+                metrics: [compute_duration]
+        "#;
+        let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
+        let flow = &policy.flow_metrics[0];
+        assert!(flow.has(super::FlowMetric::ComputeDuration));
+        assert!(!flow.has(super::FlowMetric::SignalsIncoming));
+        assert!(!flow.has(super::FlowMetric::SignalsOutgoing));
+    }
+
+    #[test]
+    fn flow_metrics_rejects_empty_metrics() {
+        let policies = Policies {
+            telemetry: Some(super::TelemetryPolicy {
+                flow_metrics: vec![super::FlowMetricConfig {
+                    name: "flow1".to_string(),
+                    bounds: super::FlowBounds {
+                        start_node: "a".to_string(),
+                        end_node: "b".to_string(),
+                    },
+                    metrics: Some(vec![]),
+                }],
+                ..super::TelemetryPolicy::default()
+            }),
+            ..Default::default()
+        };
+        let errors = policies.validation_errors("policies");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("must not be empty"))
+        );
+    }
+
+    #[test]
+    fn flow_metrics_rejects_duplicate_metrics() {
+        let policies = Policies {
+            telemetry: Some(super::TelemetryPolicy {
+                flow_metrics: vec![super::FlowMetricConfig {
+                    name: "flow1".to_string(),
+                    bounds: super::FlowBounds {
+                        start_node: "a".to_string(),
+                        end_node: "b".to_string(),
+                    },
+                    metrics: Some(vec![
+                        super::FlowMetric::ComputeDuration,
+                        super::FlowMetric::ComputeDuration,
+                    ]),
+                }],
+                ..super::TelemetryPolicy::default()
+            }),
+            ..Default::default()
+        };
+        let errors = policies.validation_errors("policies");
+        assert!(errors.iter().any(|error| error.contains("duplicate")));
     }
 
     #[test]

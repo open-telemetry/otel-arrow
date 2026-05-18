@@ -54,6 +54,7 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataMetrics;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use std::io::ErrorKind;
@@ -188,11 +189,6 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 .await?;
         }
 
-        // Start periodic telemetry collection (internal metrics)
-        let telemetry_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         let mut writer = writer::WriterManager::new(object_store, writer_options);
         let mut batch_id = 0;
         let mut id_generator = PartitionSequenceIdGenerator::new();
@@ -250,19 +246,23 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     deadline,
                     reason: _,
                 }) => {
+                    // If the deadline has already passed, return immediately.
+                    // `Delay::new(Duration::ZERO)` is not guaranteed to resolve
+                    // on the first poll on all platforms (Windows timer
+                    // granularity is ~15 ms), so an explicit check avoids a
+                    // race between the timeout and the flush future.
+                    if deadline.checked_duration_since(Instant::now()).is_none() {
+                        return Err(Error::IoError {
+                            node: exporter_id.clone(),
+                            error: std::io::Error::from(ErrorKind::TimedOut),
+                        });
+                    }
+
                     let mut timeout = Delay::new(deadline.duration_since(Instant::now())).fuse();
                     let flush_all = writer.flush_all().fuse();
                     pin_mut!(flush_all);
                     // Stop telemetry loop concurrently with flushing; do not block shutdown on cancel
-                    let cancel_fut = async {
-                        let _ = telemetry_cancel_handle.cancel().await;
-                        futures::future::pending::<()>().await
-                    }
-                    .fuse();
-                    pin_mut!(cancel_fut);
-
                     return futures::select_biased! {
-                        _ = cancel_fut => unreachable!(),
                         _timeout = timeout => Err(Error::IoError {
                                 node: exporter_id.clone(),
                                 error: std::io::Error::from(ErrorKind::TimedOut)
@@ -284,7 +284,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     }
 
                     let mut otap_batch: OtapArrowRecords =
-                        payload.try_into().inspect_err(|_| {
+                        payload.try_into_with_default().inspect_err(|_| {
                             if let Some(metrics) = self.pdata_metrics.as_mut() {
                                 metrics.inc_failed(signal_type);
                             }
@@ -422,7 +422,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
 /// This calculates the period at which we instruct the [`WriterManager`] to flush any writers
 /// older than the threshold.
 fn calculate_flush_timeout_check_period(configured_threshold: Duration) -> Duration {
-    // try to choose a period that is relatively close the the configured threshold.
+    // try to choose a period that is relatively close the configured threshold.
     // this avoids the check happening long after the file writer is beyond the threshold.
     let period = configured_threshold / 60;
 
@@ -469,13 +469,14 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value::Value};
     use otap_df_pdata::schema::consts;
+    use otap_df_pdata::{TryFromWithOptions, TryIntoWithOptions};
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
     use tokio::time::sleep;
 
     fn logs_scenario(
         num_rows: usize,
-        shutdown_timeout: Instant,
+        shutdown_timeout: Duration,
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
@@ -495,7 +496,7 @@ mod test {
                 .await
                 .expect("Failed to send  logs message");
 
-                ctx.send_shutdown(shutdown_timeout, "test completed")
+                ctx.send_shutdown(Instant::now().add(shutdown_timeout), "test completed")
                     .await
                     .unwrap();
             })
@@ -503,10 +504,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(
-        target_os = "windows",
-        ignore = "Skipping on Windows due to timing flakiness"
-    )]
     fn test_adaptive_schema_dict_upgrade_write() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
@@ -568,7 +565,7 @@ mod test {
                         })
                     }
                     let pdata3 = fixtures::create_single_logs_pdata_with_attrs(attrs3).payload();
-                    let mut otap_batch = OtapArrowRecords::try_from(pdata3).unwrap();
+                    let mut otap_batch = OtapArrowRecords::try_from_with_default(pdata3).unwrap();
                     let mut attrs_batch =
                         otap_batch.get(ArrowPayloadType::LogAttrs).unwrap().clone();
                     let old_column = attrs_batch.remove_column(
@@ -601,7 +598,7 @@ mod test {
                         .await
                         .unwrap();
 
-                    let deadline = Instant::now().add(Duration::from_millis(200));
+                    let deadline = Instant::now().add(Duration::from_secs(1));
                     ctx.send_shutdown(deadline, "test completed").await.unwrap();
                 })
             })
@@ -644,7 +641,7 @@ mod test {
                             value: Some(AnyValue::new_string("terry")),
                         }])
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .unwrap();
 
                     let batch2: OtapArrowRecords =
@@ -653,7 +650,7 @@ mod test {
                             value: Some(AnyValue::new_int(418)),
                         }])
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .unwrap();
 
                     // double check that these contain schemas that are not the same ...
@@ -668,12 +665,9 @@ mod test {
                         .await
                         .unwrap();
 
-                    ctx.send_shutdown(
-                        Instant::now().add(Duration::from_millis(200)),
-                        "test completed",
-                    )
-                    .await
-                    .unwrap();
+                    ctx.send_shutdown(Instant::now().add(Duration::from_secs(1)), "test completed")
+                        .await
+                        .unwrap();
                 })
             })
             .run_validation(move |_ctx, exporter_result| {
@@ -785,10 +779,7 @@ mod test {
         let num_rows = 100;
         test_runtime
             .set_exporter(exporter)
-            .run_test(logs_scenario(
-                num_rows,
-                Instant::now().add(Duration::from_secs(1)),
-            ))
+            .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
                     exporter_result.unwrap();
@@ -873,10 +864,7 @@ mod test {
         let num_rows = 100;
         test_runtime
             .set_exporter(exporter)
-            .run_test(logs_scenario(
-                num_rows,
-                Instant::now().add(Duration::from_secs(1)),
-            ))
+            .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
                     exporter_result.unwrap();
@@ -895,19 +883,15 @@ mod test {
             });
     }
 
-    // Skipping on Windows and macOS due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[test]
-    #[cfg_attr(
-        any(target_os = "windows", target_os = "macos"),
-        ignore = "Skipping on Windows and macOS due to flakiness"
-    )]
     fn test_shutdown_timeout() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
+        let base_dir_url = base_dir.replace('\\', "/");
         let exporter = ParquetExporter::new(config::Config {
             storage: object_store::StorageType::File {
-                base_uri: format!("testdelayed://{base_dir}?delay=500ms"),
+                base_uri: format!("testdelayed:///{base_dir_url}?delay=500ms"),
             },
             partitioning_strategies: None,
             writer_options: Some(WriterOptions {
@@ -1030,10 +1014,10 @@ mod test {
                 );
             }
 
-            // shutdown faster than it could possibly flush
+            // Make timeout deterministic: deadline is already due when shutdown is handled.
             _ = ctrl_sender
                 .send(NodeControlMsg::Shutdown {
-                    deadline: Instant::now().add(Duration::from_secs(1)),
+                    deadline: Instant::now(),
                     reason: "shutting down".into(),
                 })
                 .await;
@@ -1217,92 +1201,6 @@ mod test {
         // these shouldn't be Err, so unwrap to check
         test_run_result.unwrap();
         exporter_result.unwrap();
-    }
-
-    #[test]
-    fn test_starts_telemetry_timer() {
-        use otap_df_engine::control::runtime_ctrl_msg_channel;
-        use otap_df_engine::testing::test_node;
-
-        let test_runtime = TestRuntime::<OtapPdata>::new();
-        let temp_dir = tempfile::tempdir().unwrap();
-        let base_dir: String = temp_dir.path().to_str().unwrap().into();
-        let exporter = ParquetExporter::new(config::Config {
-            storage: object_store::StorageType::File {
-                base_uri: base_dir.clone(),
-            },
-            partitioning_strategies: None,
-            writer_options: None,
-        });
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
-        let mut exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
-            exporter,
-            test_node(test_runtime.config().name.clone()),
-            node_config,
-            test_runtime.config(),
-        );
-
-        let (rt, _) = setup_test_runtime();
-        let control_sender = exporter.control_sender();
-        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
-        let _pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
-        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
-
-        let (runtime_ctrl_msg_tx, mut runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
-        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
-            pipeline_completion_msg_channel::<OtapPdata>(10);
-
-        exporter
-            .set_pdata_receiver(test_node("exp"), pdata_rx)
-            .expect("Failed to set PData Receiver");
-
-        async fn start_exporter(
-            exporter: ExporterWrapper<OtapPdata>,
-            runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
-            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
-        ) -> Result<(), Error> {
-            let (_metrics_rx, metrics_reporter) =
-                otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
-            exporter
-                .start(
-                    runtime_ctrl_msg_tx,
-                    pipeline_completion_msg_tx,
-                    metrics_reporter,
-                    Interests::empty(),
-                )
-                .await
-                .map(|_| ())
-        }
-
-        let (_exporter_result, _ignored) = rt.block_on(async move {
-            tokio::join!(
-                start_exporter(exporter, runtime_ctrl_msg_tx, pipeline_completion_msg_tx),
-                async move {
-                    // Expect StartTelemetryTimer quickly after startup
-                    let msg = tokio::time::timeout(Duration::from_millis(1500), async {
-                        runtime_ctrl_msg_rx.recv().await
-                    })
-                    .await
-                    .expect("timed out waiting for StartTelemetryTimer")
-                    .expect("runtime-control channel closed");
-
-                    match msg {
-                        RuntimeControlMsg::StartTelemetryTimer { duration, .. } => {
-                            assert_eq!(duration, Duration::from_secs(1));
-                        }
-                        other => panic!("Expected StartTelemetryTimer, got {other:?}"),
-                    }
-
-                    // Shutdown exporter to end the test
-                    let _ = control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: Instant::now(),
-                            reason: "done".into(),
-                        })
-                        .await;
-                }
-            )
-        });
     }
 
     #[test]

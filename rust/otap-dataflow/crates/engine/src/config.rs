@@ -7,6 +7,7 @@
 //! focuses instead on defining the interconnection of nodes within the DAG and each node’s specific
 //! settings.
 
+use otap_df_config::ExtensionId;
 use otap_df_config::NodeId;
 
 /// Default control channel capacity used by legacy constructor paths.
@@ -69,7 +70,7 @@ pub struct ExporterConfig {
 #[derive(Clone, Debug)]
 pub struct ExtensionConfig {
     /// Name of the extension.
-    pub name: NodeId,
+    pub name: ExtensionId,
     /// Configuration for control channel.
     pub control_channel: ControlChannelConfig,
 }
@@ -188,7 +189,7 @@ impl ExtensionConfig {
     #[must_use]
     pub fn new<T>(name: T) -> Self
     where
-        T: Into<NodeId>,
+        T: Into<ExtensionId>,
     {
         Self::with_control_channel_capacity(name, DEFAULT_CONTROL_CHANNEL_CAPACITY)
     }
@@ -197,7 +198,7 @@ impl ExtensionConfig {
     #[must_use]
     pub fn with_control_channel_capacity<T>(name: T, control_channel_capacity: usize) -> Self
     where
-        T: Into<NodeId>,
+        T: Into<ExtensionId>,
     {
         ExtensionConfig {
             name: name.into(),

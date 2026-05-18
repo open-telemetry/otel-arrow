@@ -58,7 +58,7 @@ Multiple filter rules can be definied and will be applied in order
 
 ### Output
 
-The DebugProcessor is a pass-through processor which allows the the normal
+The DebugProcessor is a pass-through processor which allows the normal
 flow of signals, this processor outputs various debug information on the
 signals/batches passing through. You can configure how the debug information
 is received.

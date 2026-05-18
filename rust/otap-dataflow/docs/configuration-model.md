@@ -152,9 +152,9 @@ Important behavior:
 - Graph topology is explicit via `connections`.
 - `kind` is inferred from node `type`.
 - For single-output nodes, you do not need `outputs` or `default_output`.
-- Parsing is strict: unknown fields are rejected (might be relaxed in the future
-  if we find good use cases for extensibility, but for now this is intentional
-  to catch typos and mistakes early).
+- Parsing is strict: unknown fields are rejected to catch typos and mistakes
+  early. Applications that embed the engine can place their own engine-level
+  configuration under `engine.custom` (see below).
 
 ## Engine Section
 
@@ -165,6 +165,7 @@ Important behavior:
 - `telemetry`
 - `observed_state`
 - `observability`
+- `custom`
 
 ### Engine Topic Settings
 
@@ -206,6 +207,23 @@ Optional observability policies are supported at:
 - `telemetry`
 
 `resources` is intentionally not supported for observability and is rejected.
+
+### Custom Embedder Configuration
+
+`engine.custom` is an optional map for applications that embed the dataflow
+engine as a library. The engine ignores this field entirely -- embedding
+binaries can read namespaced keys for their own engine-level concerns.
+
+```yaml
+engine:
+  custom:
+    remote_management:
+      server_url: "ws://mgmt.example.com/v1"
+      heartbeat_interval_secs: 10
+    custom_auth:
+      provider: "oidc"
+      token_endpoint: "https://auth.example.com/token"
+```
 
 ## Policy Hierarchy
 
@@ -401,6 +419,16 @@ topic hop as a whole and controls whether Ack/Nack can be bridged across
 pipelines. `ack_propagation.max_in_flight` and `ack_propagation.timeout`
 govern tracked publish outcomes per publisher handle when Ack/Nack propagation
 is enabled.
+
+Processor-local NACKs follow the same rule. For example, when
+`content_router` or `signal_type_router` emits a route-local NACK because a
+selected route is full, closed, or being drained during shutdown, that
+rejection stays local when `ack_propagation.mode: disabled` and is bridged
+upstream when `ack_propagation.mode: auto`. See the
+[`content_router`](../crates/core-nodes/src/processors/content_router/README.md)
+and
+[`signal_type_router`](../crates/core-nodes/src/processors/signal_type_router/README.md)
+processor docs.
 
 Current limitation: in broadcast mode, `ack_propagation.mode: auto` does not
 aggregate acknowledgements across all subscribers. The first broadcast

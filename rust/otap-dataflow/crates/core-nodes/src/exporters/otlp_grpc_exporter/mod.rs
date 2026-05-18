@@ -44,9 +44,9 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde::Deserialize;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
@@ -64,10 +64,19 @@ pub struct Config {
     /// Maximum number of concurrent in-flight export RPCs.
     #[serde(default = "default_max_in_flight")]
     pub max_in_flight: usize,
+    /// Number of separate gRPC channels (TCP connections) to open to the
+    /// endpoint. Multiple connections improve load distribution when the
+    /// receiver uses `SO_REUSEPORT` across cores. Defaults to 1.
+    #[serde(default = "default_num_connections")]
+    pub num_connections: usize,
 }
 
 pub(crate) const fn default_max_in_flight() -> usize {
     5
+}
+
+pub(crate) const fn default_num_connections() -> usize {
+    1
 }
 
 /// Exporter that sends OTLP data via gRPC
@@ -132,24 +141,32 @@ impl Exporter<OtapPdata> for OTLPExporter {
         self.config.grpc.log_proxy_info();
 
         let exporter_id = effect_handler.exporter_id();
-        let timer_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
 
-        let channel = self
-            .config
-            .grpc
-            .connect_channel_lazy(None)
-            .await
-            .map_err(|e| {
-                let source_detail = format_error_sources(&e);
-                Error::ExporterError {
-                    exporter: exporter_id.clone(),
-                    kind: ExporterErrorKind::Connect,
-                    error: format!("grpc channel error {e}"),
-                    source_detail,
-                }
-            })?;
+        let num_connections = self.config.num_connections.max(1);
+        let mut channels = Vec::with_capacity(num_connections);
+        for _ in 0..num_connections {
+            let channel = self
+                .config
+                .grpc
+                .connect_channel_lazy(None)
+                .await
+                .map_err(|e| {
+                    let source_detail = format_error_sources(&e);
+                    Error::ExporterError {
+                        exporter: exporter_id.clone(),
+                        kind: ExporterErrorKind::Connect,
+                        error: format!("grpc channel error {e}"),
+                        source_detail,
+                    }
+                })?;
+            channels.push(channel);
+        }
+
+        otel_info!(
+            "otlp.exporter.grpc.channels",
+            num_connections = num_connections,
+            endpoint = self.config.grpc.grpc_endpoint.as_str()
+        );
 
         let compression = self.config.grpc.compression_encoding();
         let max_in_flight = self.config.max_in_flight.max(1);
@@ -163,7 +180,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         let mut metrics_proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
         let mut traces_proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
 
-        let mut grpc_clients = GrpcClientPool::new(max_in_flight, channel, compression);
+        let mut grpc_clients = GrpcClientPool::new(max_in_flight, channels, compression);
         grpc_clients.prepopulate_clients();
 
         let mut inflight_exports = InFlightExports::new();
@@ -246,7 +263,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             grpc_clients.release(client);
                         }
                     }
-                    _ = timer_cancel_handle.cancel().await;
                     return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
@@ -746,96 +762,109 @@ where
 }
 
 /// Keeps a small stash of gRPC clients so each export can reuse an existing connection.
+/// When multiple channels are configured, clients are distributed across them in
+/// round-robin order so that exports spread evenly across TCP connections.
 struct GrpcClientPool {
-    base_channel: Channel,
+    channels: Vec<Channel>,
     compression: Option<CompressionEncoding>,
-    logs: Vec<LogsServiceClient<Channel>>,
-    metrics: Vec<MetricsServiceClient<Channel>>,
-    traces: Vec<TraceServiceClient<Channel>>,
+    logs: VecDeque<LogsServiceClient<Channel>>,
+    metrics: VecDeque<MetricsServiceClient<Channel>>,
+    traces: VecDeque<TraceServiceClient<Channel>>,
 }
 
 impl GrpcClientPool {
     fn new(
         max_in_flight: usize,
-        base_channel: Channel,
+        channels: Vec<Channel>,
         compression: Option<CompressionEncoding>,
     ) -> Self {
+        // Pool must hold at least one client per channel so every TCP connection
+        // gets exercised, even when max_in_flight is smaller than the channel count.
+        let pool_size = max_in_flight.max(channels.len());
         Self {
-            base_channel,
+            channels,
             compression,
-            logs: Vec::with_capacity(max_in_flight),
-            metrics: Vec::with_capacity(max_in_flight),
-            traces: Vec::with_capacity(max_in_flight),
+            logs: VecDeque::with_capacity(pool_size),
+            metrics: VecDeque::with_capacity(pool_size),
+            traces: VecDeque::with_capacity(pool_size),
         }
     }
 
-    /// Eagerly build up to `max_in_flight` clients per signal to avoid first-call setup.
+    /// Eagerly build up to `max_in_flight` clients per signal, distributing them
+    /// round-robin across the available channels.
     fn prepopulate_clients(&mut self) {
         let logs_cap = self.logs.capacity();
-        for _ in 0..logs_cap {
-            self.logs.push(self.make_logs_client());
+        for i in 0..logs_cap {
+            let channel = self.channels[i % self.channels.len()].clone();
+            self.logs.push_back(self.make_logs_client_with(channel));
         }
 
         let metrics_cap = self.metrics.capacity();
-        for _ in 0..metrics_cap {
-            self.metrics.push(self.make_metrics_client());
+        for i in 0..metrics_cap {
+            let channel = self.channels[i % self.channels.len()].clone();
+            self.metrics
+                .push_back(self.make_metrics_client_with(channel));
         }
 
         let traces_cap = self.traces.capacity();
-        for _ in 0..traces_cap {
-            self.traces.push(self.make_traces_client());
+        for i in 0..traces_cap {
+            let channel = self.channels[i % self.channels.len()].clone();
+            self.traces.push_back(self.make_traces_client_with(channel));
         }
     }
 
     #[inline(always)]
     fn take_logs(&mut self) -> LogsServiceClient<Channel> {
         self.logs
-            .pop()
+            .pop_front()
             .expect("client pool underflow: take_logs called with empty pool")
     }
 
     #[inline(always)]
     fn take_metrics(&mut self) -> MetricsServiceClient<Channel> {
         self.metrics
-            .pop()
+            .pop_front()
             .expect("client pool underflow: take_metrics called with empty pool")
     }
 
     #[inline(always)]
     fn take_traces(&mut self) -> TraceServiceClient<Channel> {
         self.traces
-            .pop()
+            .pop_front()
             .expect("client pool underflow: take_traces called with empty pool")
     }
 
     fn release(&mut self, client: SignalClient) {
         match client {
-            SignalClient::Logs(client) => self.logs.push(client),
-            SignalClient::Metrics(client) => self.metrics.push(client),
-            SignalClient::Traces(client) => self.traces.push(client),
+            SignalClient::Logs(client) => self.logs.push_back(client),
+            SignalClient::Metrics(client) => self.metrics.push_back(client),
+            SignalClient::Traces(client) => self.traces.push_back(client),
         }
     }
 
-    fn make_logs_client(&self) -> LogsServiceClient<Channel> {
-        let mut client = LogsServiceClient::new(self.base_channel.clone());
+    fn make_logs_client_with(&self, channel: Channel) -> LogsServiceClient<Channel> {
+        let mut client = LogsServiceClient::new(channel);
         if let Some(encoding) = self.compression {
             client = client.send_compressed(encoding);
-        }
-        client
-    }
-
-    fn make_metrics_client(&self) -> MetricsServiceClient<Channel> {
-        let mut client = MetricsServiceClient::new(self.base_channel.clone());
-        if let Some(encoding) = self.compression {
-            client = client.send_compressed(encoding);
+            client = client.accept_compressed(encoding);
         }
         client
     }
 
-    fn make_traces_client(&self) -> TraceServiceClient<Channel> {
-        let mut client = TraceServiceClient::new(self.base_channel.clone());
+    fn make_metrics_client_with(&self, channel: Channel) -> MetricsServiceClient<Channel> {
+        let mut client = MetricsServiceClient::new(channel);
         if let Some(encoding) = self.compression {
             client = client.send_compressed(encoding);
+            client = client.accept_compressed(encoding);
+        }
+        client
+    }
+
+    fn make_traces_client_with(&self, channel: Channel) -> TraceServiceClient<Channel> {
+        let mut client = TraceServiceClient::new(channel);
+        if let Some(encoding) = self.compression {
+            client = client.send_compressed(encoding);
+            client = client.accept_compressed(encoding);
         }
         client
     }
@@ -862,13 +891,25 @@ mod tests {
 
     use otap_df_config::node::NodeUserConfig;
 
-    #[cfg(not(windows))]
+    use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
     use otap_df_config::transport_headers_policy::PropagationSelectorType;
+    use otap_df_config::transport_headers_policy::{
+        HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
+        PropagationOverride, PropagationSelector,
+    };
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::PipelineCompletionMsg;
+    use otap_df_engine::control::{
+        Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
+        pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+    };
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
+    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
+    use otap_df_engine::message::{Receiver, Sender};
+    use otap_df_engine::node::NodeWithPDataReceiver;
+    use otap_df_engine::testing::create_not_send_channel;
     use otap_df_engine::testing::{
         exporter::{TestContext, TestRuntime},
         test_node,
@@ -883,7 +924,9 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::metrics_service_server::MetricsServiceServer;
     use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
     use otap_df_pdata::proto::opentelemetry::collector::trace::v1::trace_service_server::TraceServiceServer;
+    use otap_df_telemetry::metrics::MetricSetSnapshot;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otap_df_telemetry::reporter::MetricsReporter;
     use prost::Message;
     use std::net::SocketAddr;
     use std::pin::Pin;
@@ -893,25 +936,6 @@ mod tests {
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
-    // Imports only used by tests that are skipped on Windows
-    #[cfg(not(windows))]
-    use {
-        otap_df_config::transport_headers::{TransportHeader, TransportHeaders},
-        otap_df_config::transport_headers_policy::{
-            HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
-            PropagationOverride, PropagationSelector,
-        },
-        otap_df_engine::control::{
-            Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
-            pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
-        },
-        otap_df_engine::local::message::{LocalReceiver, LocalSender},
-        otap_df_engine::message::{Receiver, Sender},
-        otap_df_engine::node::NodeWithPDataReceiver,
-        otap_df_engine::testing::create_not_send_channel,
-        otap_df_telemetry::metrics::MetricSetSnapshot,
-        otap_df_telemetry::reporter::MetricsReporter,
-    };
 
     /// Helper function to wait for and validate an Ack or Nack message with the expected node_id
     async fn wait_for_ack_or_nack(
@@ -1114,6 +1138,7 @@ mod tests {
                         ..Default::default()
                     },
                     max_in_flight: 32,
+                    num_connections: default_num_connections(),
                 },
                 pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
             },
@@ -1153,8 +1178,6 @@ mod tests {
         _ = shutdown_sender.send("Shutdown");
     }
 
-    // Skipping on Windows due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1611
-    #[cfg(not(windows))]
     #[test]
     fn test_receiver_not_ready_on_start_and_reconnect() {
         // the purpose of this test is to that the exporter behaves as expected in the face of
@@ -1181,9 +1204,11 @@ mod tests {
                 config: Config {
                     grpc: GrpcClientSettings {
                         grpc_endpoint: grpc_endpoint.clone(),
+                        connect_timeout: Duration::from_millis(500),
                         ..Default::default()
                     },
                     max_in_flight: 32,
+                    num_connections: default_num_connections(),
                 },
                 pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
             },
@@ -1458,7 +1483,6 @@ mod tests {
     // ---- build_grpc_metadata unit tests ----------------------------------------
 
     /// Helper: Creates an [`EffectHandler`] with an optional propagation policy set.
-    #[cfg(not(windows))]
     fn make_effect_handler_with_policy(
         policy: Option<HeaderPropagationPolicy>,
     ) -> EffectHandler<OtapPdata> {
@@ -1470,7 +1494,6 @@ mod tests {
     }
 
     /// Helper: Creates a [`Context`] that carries the given transport headers.
-    #[cfg(not(windows))]
     fn context_with_headers(headers: TransportHeaders) -> Context {
         let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into())
             .with_transport_headers(headers);
@@ -1479,7 +1502,6 @@ mod tests {
     }
 
     /// Helper: Creates a [`Context`] without any transport headers.
-    #[cfg(not(windows))]
     fn context_without_headers() -> Context {
         let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into());
         let (context, _) = pdata.into_parts();
@@ -1487,7 +1509,6 @@ mod tests {
     }
 
     /// Helper: Propagation policy that propagates all captured headers.
-    #[cfg(not(windows))]
     fn propagate_all_policy() -> HeaderPropagationPolicy {
         HeaderPropagationPolicy::new(
             PropagationDefault {
@@ -1501,7 +1522,6 @@ mod tests {
         )
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_returns_none_without_policy() {
         let handler = make_effect_handler_with_policy(None);
@@ -1513,7 +1533,6 @@ mod tests {
         assert!(result.is_none(), "should return None when no policy is set");
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_returns_none_without_headers() {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
@@ -1526,7 +1545,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_propagates_text_headers() {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
@@ -1558,7 +1576,6 @@ mod tests {
         assert_eq!(request_id.to_str().unwrap(), "req-xyz-789");
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_drops_filtered_headers() {
         let policy = HeaderPropagationPolicy::new(
@@ -1602,7 +1619,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_propagates_binary_headers() {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
@@ -1629,7 +1645,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_appends_bin_suffix_for_binary_headers() {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
@@ -1653,7 +1668,6 @@ mod tests {
         assert_eq!(bin_val.to_bytes().unwrap(), binary_value.as_slice());
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_preserves_duplicate_headers() {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
@@ -1691,7 +1705,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn test_build_grpc_metadata_returns_none_when_all_dropped() {
         // Policy that drops everything (selector = None means no headers are selected).

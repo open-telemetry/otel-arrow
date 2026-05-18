@@ -14,55 +14,39 @@ workspace = true
 
 [dependencies]
 arrow.workspace = true
-arrow-ipc.workspace = true
 async-trait.workspace = true
-ciborium.workspace = true
 futures.workspace = true
-futures-timer.workspace = true
 http.workspace = true
 humantime-serde.workspace = true
 object_store = {workspace = true, features = ["fs"]}
-parquet.workspace = true
 thiserror = { workspace = true }
 serde_json = { workspace = true }
 slotmap = { workspace = true }
 tokio = { workspace = true }
 linkme = { workspace = true }
-uuid.workspace = true
 tonic = { workspace = true }
 tonic-middleware = { workspace = true }
-tonic-prost = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 smallvec = { workspace = true }
-bitflags = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
 base64 = { workspace = true }
-tracing = { workspace = true }
+cfg-if.workspace = true
 
-data_engine_kql_parser = { workspace = true }
-data_engine_expressions = { workspace =  true }
 otap-df-engine = { workspace = true }
 otap-df-engine-macros = { workspace = true }
 otap-df-channel = { workspace = true }
 otap-df-config = { workspace = true }
-otap-df-opl = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["testing"] }
-otap-df-pdata-views = { workspace = true }
-otap-df-query-engine = { workspace = true }
 otap-df-telemetry = { workspace = true }
 otap-df-telemetry-macros = { workspace = true }
 
-chrono.workspace = true
 tower-service.workspace = true
-fluke-hpack.workspace = true
 serde.workspace = true
 tokio-stream.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
-async-stream.workspace = true
 humantime.workspace = true
-rand.workspace = true
 reqwest = { workspace = true, features = ["http2", "rustls-no-provider", "stream"] }
 tower = { workspace = true }
 hyper-util = { workspace = true }
@@ -87,14 +71,23 @@ rustls-openssl = { workspace = true, optional = true }
 
 # Quiver persistence engine (durable buffer processor)
 quiver = { workspace = true }
-blake3.workspace = true
-byte-unit.workspace = true
+
+# Optional dev-tools dep used only by integration tests gated on the
+# `integration-tests` feature. Declaring it here (rather than as a dev-dep)
+# lets the feature flag turn it on/off; otherwise it would always be pulled
+# into the build, dragging gix/reqwest/native-tls/openssl-sys with it.
+weaver_common = { workspace = true, optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 rustls-symcrypt = { workspace = true, optional = true }
 
 [features]
 test-utils = ["rustls/ring", "otap-df-pdata/testing"]
+# Integration tests that depend on the traffic_generator receiver and the
+# `weaver_common` crate (used to load semconv schemas). Gating these behind
+# an opt-in feature lets builds that don't need them avoid pulling weaver,
+# gix, reqwest, native-tls and (on Linux) openssl-sys into the dep graph.
+integration-tests = ["dep:weaver_common", "otap-df-core-nodes/dev-tools"]
 crypto-ring = ["rustls/ring", "tokio-rustls/ring"]
 crypto-aws-lc = ["rustls/aws_lc_rs", "tokio-rustls/aws-lc-rs"]
 crypto-openssl = ["dep:rustls-openssl", "tonic/tls-native-roots"]
@@ -103,22 +96,38 @@ azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:
 aws = ["object_store/aws", "object_store/cloud"]
 
 [dev-dependencies]
-flume.workspace = true
 portpicker.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
 tokio-util.workspace = true
 time.workspace = true
-wiremock.workspace = true
 rustls = { workspace = true, features = ["ring"] }
 tokio-rustls.workspace = true
 rustls-pki-types.workspace = true
 tokio-stream.workspace = true
 otap-df-contrib-nodes = { workspace = true }
-otap-df-core-nodes = { workspace = true, features = ["dev-tools"] }
-weaver_common.workspace = true
+otap-df-core-nodes = { workspace = true }
 otap-test-tls-certs.workspace = true
 otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-pdata = { workspace = true, features = ["testing"] }
 otap-df-state = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
+
+# Integration tests that pull `core-nodes/dev-tools` (traffic_generator)
+# and `weaver_common`. Listing them here with `required-features` lets cargo
+# skip the test binaries entirely when the `integration-tests` feature is
+# off, keeping the test source files free of `#[cfg]` gating.
+[[test]]
+name = "pipeline_tests"
+path = "tests/pipeline_tests.rs"
+required-features = ["integration-tests"]
+
+[[test]]
+name = "durable_buffer_processor_tests"
+path = "tests/durable_buffer_processor_tests.rs"
+required-features = ["integration-tests"]
+
+[[test]]
+name = "core_node_liveness_tests"
+path = "tests/core_node_liveness_tests.rs"
+required-features = ["integration-tests"]

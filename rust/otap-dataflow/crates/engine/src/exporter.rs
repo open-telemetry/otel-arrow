@@ -223,8 +223,8 @@ impl<PData> ExporterWrapper<PData> {
                 ..
             } => {
                 let (control_sender, control_receiver) =
-                    wrap_control_channel_metrics::<LocalMode, PData>(
-                        &node_id,
+                    wrap_control_channel_metrics::<LocalMode, NodeControlMsg<PData>>(
+                        node_id.name.as_ref(),
                         pipeline_ctx,
                         channel_metrics,
                         channel_metrics_enabled,
@@ -258,8 +258,8 @@ impl<PData> ExporterWrapper<PData> {
                 ..
             } => {
                 let (control_sender, control_receiver) =
-                    wrap_control_channel_metrics::<SharedMode, PData>(
-                        &node_id,
+                    wrap_control_channel_metrics::<SharedMode, NodeControlMsg<PData>>(
+                        node_id.name.as_ref(),
                         pipeline_ctx,
                         channel_metrics,
                         channel_metrics_enabled,

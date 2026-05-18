@@ -27,7 +27,7 @@ use tokio::net::{TcpListener, UdpSocket};
 #[derive(Clone, Copy)]
 pub enum SourceTagging {
     /// Disabled means no source node-id will be automatically
-    /// inserted for nodes that do not not otherwise subscribe to
+    /// inserted for nodes that do not otherwise subscribe to
     /// Ack/Nack.
     Disabled,
 
@@ -62,8 +62,8 @@ pub(crate) struct EffectHandlerCore<PData> {
     pub(crate) source_tag: SourceTagging,
     /// Precomputed node interests derived from metric level.
     node_interests: Interests,
-    /// Optional processor-local wakeup scheduler.
-    local_scheduler: Option<NodeLocalSchedulerHandle>,
+    /// Optional processor-local delayed-resume and wakeup scheduler.
+    pub(crate) local_scheduler: Option<NodeLocalSchedulerHandle<PData>>,
 }
 
 impl<PData> EffectHandlerCore<PData> {
@@ -111,7 +111,7 @@ impl<PData> EffectHandlerCore<PData> {
     }
 
     /// Sets the processor-local wakeup scheduler for this effect handler.
-    pub(crate) fn set_local_scheduler(&mut self, local_scheduler: NodeLocalSchedulerHandle) {
+    pub(crate) fn set_local_scheduler(&mut self, local_scheduler: NodeLocalSchedulerHandle<PData>) {
         self.local_scheduler = Some(local_scheduler);
     }
 
@@ -266,6 +266,18 @@ impl<PData> EffectHandlerCore<PData> {
         self.metrics_reporter.report(metrics)
     }
 
+    /// Reports processor-local wakeup scheduler metrics, if this processor uses
+    /// the local wakeup service.
+    pub fn report_local_scheduler_metrics(
+        &self,
+        metrics_reporter: &mut MetricsReporter,
+    ) -> Result<(), TelemetryError> {
+        if let Some(scheduler) = &self.local_scheduler {
+            scheduler.report_metrics(metrics_reporter)?;
+        }
+        Ok(())
+    }
+
     /// Re-usable function to send a runtime control message. This returns a reference
     /// to the sender to place in a cancelation, for example.
     async fn send_runtime_ctrl_msg(
@@ -407,6 +419,17 @@ impl<PData> EffectHandlerCore<PData> {
                 _ => unreachable!(),
             }
         })
+    }
+
+    /// Requeue retained pdata onto this node later.
+    pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
+        self.local_scheduler
+            .as_ref()
+            // Safety: processor runtime preparation installs the node-local scheduler
+            // before processor code receives an effect handler.
+            .expect("node-local scheduler not set for processor effect handler")
+            .requeue_later(when, data)
+            .map_err(|data| *data)
     }
 
     /// Set or replace a processor-local wakeup.

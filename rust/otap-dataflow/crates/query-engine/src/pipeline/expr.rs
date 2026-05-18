@@ -45,26 +45,33 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 
-use arrow::array::{Array, ArrayRef, RecordBatch, StringArray, UInt16Array};
+use arrow::array::{Array, ArrayRef, RecordBatch, StringArray, StructArray, UInt16Array};
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{DataType, Field, Schema};
 use data_engine_expressions::{
     BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
-    CollectionScalarExpression, CombineScalarExpression, DoubleValue, Expression, IntegerValue,
-    InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
-    MathScalarExpression, PipelineFunction, PipelineFunctionImplementation,
-    ReplaceTextScalarExpression, ScalarExpression, StaticScalarExpression, StringScalarExpression,
-    StringValue, TextScalarExpression,
+    CoalesceScalarExpression, CollectionScalarExpression, CombineScalarExpression, DoubleValue,
+    Expression, IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression,
+    JoinTextScalarExpression, MathScalarExpression, PipelineFunction,
+    PipelineFunctionImplementation, ReplaceTextScalarExpression, ScalarExpression,
+    StaticScalarExpression, StringScalarExpression, StringValue, TextScalarExpression,
 };
 use datafusion::common::DFSchema;
+use datafusion::functions::core::coalesce::CoalesceFunc;
 use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::functions::crypto::sha256;
+use datafusion::functions::crypto::{md5, sha256, sha512};
+use datafusion::functions::datetime::to_char;
 use datafusion::functions::encoding::encode;
-use datafusion::functions::string::{concat, concat_ws, replace};
+
+use datafusion::functions::math::log10;
+use datafusion::functions::string::{
+    concat, concat_ws, ends_with, lower, ltrim, replace, rtrim, starts_with, upper, uuid,
+};
 use datafusion::logical_expr::expr::ScalarFunction;
+use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
 use datafusion::logical_expr::{
-    BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, cast, col, lit,
+    BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, ScalarUDFImpl, cast, col, lit,
 };
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::SessionContext;
@@ -73,18 +80,33 @@ use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::{
     get_optional_array_from_struct_array_from_record_batch, get_required_array,
 };
-use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
-use crate::consts::{ENCODE_FUNC_NAME, REGEXP_SUBSTR_FUNC_NAME, SHA256_FUNC_NAME};
+#[cfg(feature = "sha1-hash")]
+use crate::consts::SHA1_FUNC_NAME;
+use crate::consts::{
+    ENCODE_FUNC_NAME, ENDS_WITH_FUNC_NAME, FNV_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOG_FUNC_NAME,
+    LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME,
+    REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME,
+    STARTS_WITH_FUNC_NAME, UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME, UUIDV7_FUNC_NAME, XXH3_FUNC_NAME,
+    XXH128_FUNC_NAME,
+};
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::{join, multi_join};
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
-use crate::pipeline::functions::{arity_range, regexp_substr, substring};
+use crate::pipeline::functions::is_type::IsTypeFunc;
+#[cfg(feature = "sha1-hash")]
+use crate::pipeline::functions::sha1_hash;
+use crate::pipeline::functions::{
+    arity_range, fnv_hash, murmur3_hash, regexp_substr, substring, uuidv7, xxh3_hash, xxh128_hash,
+};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
+use crate::pipeline::project::anyval::{
+    find_any_value_columns, project_any_value_columns, stitch_partitioned_results,
+};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
 pub(crate) mod join;
@@ -231,12 +253,15 @@ impl ScopedLogicalExpr {
                 PhysicalExprDataSource::MultiJoin(physical_children)
             }
         };
+        let eval_anyval_as_struct = can_evaluate_anyval_as_struct(&self.logical_expr);
+
         let projection = Projection::try_new(&self.logical_expr)?;
 
         Ok(ScopedPhysicalExpr {
             source,
             logical_expr: self.logical_expr,
             physical_expr: None, // computed when data received
+            eval_anyval_as_struct,
             projection,
             projection_opts: ProjectionOptions {
                 downcast_dicts: self.requires_dict_downcast,
@@ -305,7 +330,7 @@ impl ExprLogicalPlanner {
             ScalarExpression::Static(static_scalar_expr) => {
                 let (logical_expr, expr_type) = match static_scalar_expr {
                     StaticScalarExpression::Integer(int_expr) => {
-                        (lit(int_expr.get_value()), ExprLogicalType::ScalarInt)
+                        (lit(int_expr.get_value()), ExprLogicalType::AnyInt)
                     }
                     StaticScalarExpression::Double(double_expr) => {
                         (lit(double_expr.get_value()), ExprLogicalType::Float64)
@@ -389,10 +414,47 @@ impl ExprLogicalPlanner {
                 })
             }
             ScalarExpression::Text(text) => self.plan_text_expr(text, functions),
+            ScalarExpression::Coalesce(coalesce_expr) => {
+                self.plan_coalesce_expr(coalesce_expr, functions)
+            }
             other_expr => Err(Error::NotYetSupportedError {
                 message: format!("expression not yet supported {other_expr:?}"),
             }),
         }
+    }
+
+    fn plan_coalesce_expr(
+        &self,
+        coalesce_expr: &CoalesceScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<ScopedLogicalExpr> {
+        let (df_args, source_scope, _requires_dict_downcast) =
+            self.plan_function_args(coalesce_expr.get_expressions().iter(), functions)?;
+
+        // DataFusion's `coalesce` UDF does not support direct physical evaluation; the optimizer
+        // rewrites it via `CoalesceFunc::simplify`. Reuse that implementation here.
+        let coalesce_func = CoalesceFunc::new();
+        let simplify_result = coalesce_func
+            .simplify(df_args, &SimplifyContext::default())
+            .map_err(Error::from)?;
+        let case_expr = match simplify_result {
+            ExprSimplifyResult::Simplified(expr) => expr,
+            ExprSimplifyResult::Original(_) => {
+                return Err(Error::InvalidPipelineError {
+                    cause: "expected coalesce simplify to produce a single expression".into(),
+                    query_location: None,
+                });
+            }
+        };
+
+        Ok(ScopedLogicalExpr {
+            logical_expr: case_expr,
+            expr_type: ExprLogicalType::AnyValue,
+            source: source_scope,
+            // Like `concat`, mixed attribute columns (often dictionary-encoded) and literals need
+            // dictionary downcasting before CASE can build a single array.
+            requires_dict_downcast: true,
+        })
     }
 
     fn plan_binary_math_expr(
@@ -541,11 +603,17 @@ impl ExprLogicalPlanner {
             }
         }
 
-        if invoke_arg_exprs.is_empty() {
-            // TODO: support functions with zero arguments, such as `now()`.
-            Err(Error::NotYetSupportedError {
-                message: "Only functions with one or more arguments currently supported".into(),
-            })
+        let (arg_exprs, source_scope, source_requires_dict_downcast) = if invoke_arg_exprs
+            .is_empty()
+        {
+            // For zero-arg functions (e.g. `uuid()`, `uuidv7()`), evaluate against the root
+            // batch so that volatile UDFs produce one value per row rather than a single
+            // scalar that gets broadcast across rows.
+            (
+                Vec::new(),
+                LogicalExprDataSource::DataSource(DataScope::Root),
+                false,
+            )
         } else {
             let scalar_arg_exprs = invoke_arg_exprs
                 .iter()
@@ -559,30 +627,28 @@ impl ExprLogicalPlanner {
                 })
                 .collect::<Result<Vec<_>>>()?;
 
-            let (arg_exprs, source_scope, source_requires_dict_downcast) =
-                self.plan_function_args(scalar_arg_exprs.into_iter(), functions)?;
+            self.plan_function_args(scalar_arg_exprs.into_iter(), functions)?
+        };
 
-            let mut logical_expr =
-                Expr::ScalarFunction(ScalarFunction::new_udf(df_udf.scalar_udf, arg_exprs));
+        let mut logical_expr =
+            Expr::ScalarFunction(ScalarFunction::new_udf(df_udf.scalar_udf, arg_exprs));
 
-            if let Some(data_type) = df_udf.cast_result_to {
-                logical_expr = cast(logical_expr, data_type)
-            }
-
-            // TODO: currently this will eagerly remove dictionary encoding when projecting the
-            // source if dictionary encoding is not supported by the function being invoked.
-            // However there may be cases where the overall expression may evaluate faster on
-            // dict-encoded data and we may wish to defer removing the dict encoding.
-            let requires_dict_downcast =
-                source_requires_dict_downcast | df_udf.requires_dict_downcast;
-
-            Ok(ScopedLogicalExpr {
-                logical_expr,
-                expr_type: df_udf.return_type,
-                source: source_scope,
-                requires_dict_downcast,
-            })
+        if let Some(data_type) = df_udf.cast_result_to {
+            logical_expr = cast(logical_expr, data_type)
         }
+
+        // TODO: currently this will eagerly remove dictionary encoding when projecting the
+        // source if dictionary encoding is not supported by the function being invoked.
+        // However there may be cases where the overall expression may evaluate faster on
+        // dict-encoded data and we may wish to defer removing the dict encoding.
+        let requires_dict_downcast = source_requires_dict_downcast | df_udf.requires_dict_downcast;
+
+        Ok(ScopedLogicalExpr {
+            logical_expr,
+            expr_type: df_udf.return_type,
+            source: source_scope,
+            requires_dict_downcast,
+        })
     }
 
     fn plan_function_args<'a>(
@@ -818,10 +884,28 @@ impl DataFusionFunctionDef {
         // upstream in datafusion_functions)
         Some(match func_name {
             ENCODE_FUNC_NAME => Self::new(encode(), ExprLogicalType::String, false, None),
+            ENDS_WITH_FUNC_NAME => Self::new(ends_with(), ExprLogicalType::Boolean, true, None),
+            LOG_FUNC_NAME => Self::new(log10(), ExprLogicalType::Float64, true, None),
+            LTRIM_FUNC_NAME => Self::new(ltrim(), ExprLogicalType::String, true, None),
             REGEXP_SUBSTR_FUNC_NAME => {
                 Self::new(regexp_substr(), ExprLogicalType::String, false, None)
             }
+            FORMAT_DATETIME_FUNC_NAME => Self::new(to_char(), ExprLogicalType::String, false, None),
+            RTRIM_FUNC_NAME => Self::new(rtrim(), ExprLogicalType::String, true, None),
             SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
+            MD5_FUNC_NAME => Self::new(md5(), ExprLogicalType::String, true, Some(DataType::Utf8)),
+            FNV_FUNC_NAME => Self::new(fnv_hash(), ExprLogicalType::Int64, true, None),
+            MURMUR3_FUNC_NAME => Self::new(murmur3_hash(), ExprLogicalType::Int64, true, None),
+            #[cfg(feature = "sha1-hash")]
+            SHA1_FUNC_NAME => Self::new(sha1_hash(), ExprLogicalType::Binary, true, None),
+            SHA512_FUNC_NAME => Self::new(sha512(), ExprLogicalType::Binary, true, None),
+            STARTS_WITH_FUNC_NAME => Self::new(starts_with(), ExprLogicalType::Boolean, true, None),
+            XXH3_FUNC_NAME => Self::new(xxh3_hash(), ExprLogicalType::Int64, true, None),
+            XXH128_FUNC_NAME => Self::new(xxh128_hash(), ExprLogicalType::Binary, true, None),
+            UUID_FUNC_NAME => Self::new(uuid(), ExprLogicalType::String, false, None),
+            UUIDV7_FUNC_NAME => Self::new(uuidv7(), ExprLogicalType::String, false, None),
+            UPPER_CASE_FUNC_NAME => Self::new(upper(), ExprLogicalType::String, true, None),
+            LOWER_CASE_FUNC_NAME => Self::new(lower(), ExprLogicalType::String, true, None),
             _ => return None,
         })
     }
@@ -838,6 +922,24 @@ impl ExprPhysicalPlanner {
     /// Converts a ScopedLogicalExpr into an executable ScopedPhysicalExpr.
     pub fn plan(&self, logical_expr: ScopedLogicalExpr) -> Result<ScopedPhysicalExpr> {
         logical_expr.into_physical()
+    }
+}
+
+/// Determines if we can evaluate the AnyValue column as a struct column
+fn can_evaluate_anyval_as_struct(expr: &Expr) -> bool {
+    match expr {
+        // if we're simply returning the column, keep the column as an AnyValue struct and let
+        // consumers expressions project it into a concrete type if they need to
+        Expr::Column(_) => true,
+        // `is_type(col)` resolves the type check directly from the AnyValue discriminator
+        // column, so we want to keep the input as a struct rather than partition it by
+        // concrete subtype, evaluate, and stitch.
+        Expr::ScalarFunction(sf) => {
+            sf.args.len() == 1
+                && matches!(sf.args[0], Expr::Column(_))
+                && sf.func.inner().as_any().is::<IsTypeFunc>()
+        }
+        _ => false,
     }
 }
 
@@ -875,6 +977,10 @@ pub(crate) struct ScopedPhysicalExpr {
     /// Options for projection, including whether to remove dictionary encoding (which is required
     /// for arrow numeric compute kernels).
     pub(crate) projection_opts: ProjectionOptions,
+
+    /// Whether or not to evaluate the expression on AnyValue columns as structs, or otherwise
+    /// convert the AnyValue column into one or more simple columns representing the concrete type
+    eval_anyval_as_struct: bool,
 }
 
 /// Identifies the source for the input to the physical expression
@@ -917,13 +1023,7 @@ impl ScopedPhysicalExpr {
 
                         otap_batch
                             .get(attrs_payload_type)
-                            .map(|rb| {
-                                Self::try_project_attrs(
-                                    rb,
-                                    key.as_str(),
-                                    self.projection_opts.downcast_dicts,
-                                )
-                            })
+                            .map(|rb| Self::try_project_attrs(rb, key.as_str()))
                             .transpose()?
                             .flatten()
                             .map(Cow::Owned)
@@ -984,8 +1084,37 @@ impl ScopedPhysicalExpr {
             }
         };
 
-        // evaluate the expression
-        let result_vals = self.evaluate_on_batch(session_context, &projected_rb)?;
+        // Check if the projected batch contains any AnyValue struct columns that need
+        // to be resolved to concrete types before expression evaluation.
+        let any_value_indices = find_any_value_columns(projected_rb.schema_ref());
+
+        let result_vals = if any_value_indices.is_empty() || self.eval_anyval_as_struct {
+            // Fast path: no need to project AnyValue columns to concrete type columns
+            self.evaluate_on_batch(session_context, &projected_rb)?
+        } else {
+            let partitions = project_any_value_columns(&projected_rb, &any_value_indices)?;
+
+            if partitions.len() == 1 {
+                // All AnyValue columns were uniform — single partition, evaluate directly
+                let partition = partitions.into_iter().next().expect("non-empty");
+                let batch = Self::maybe_downcast_dicts(partition.batch, &self.projection_opts)?;
+                self.evaluate_on_batch(session_context, &batch)?
+            } else {
+                // Multiple partitions — evaluate each and stitch results back together
+                let total_rows = projected_rb.num_rows();
+                let mut partition_results = Vec::with_capacity(partitions.len());
+
+                for partition in partitions {
+                    let batch = Self::maybe_downcast_dicts(partition.batch, &self.projection_opts)?;
+                    let result = self.evaluate_on_batch(session_context, &batch)?;
+                    let result_arr = result.into_array(batch.num_rows())?;
+                    partition_results.push((result_arr, partition.original_row_ranges));
+                }
+
+                let stitched = stitch_partitioned_results(partition_results, total_rows)?;
+                ColumnarValue::Array(stitched)
+            }
+        };
 
         Ok(Some(PhysicalExprEvalResult::new(
             result_vals,
@@ -1023,28 +1152,40 @@ impl ScopedPhysicalExpr {
         Ok(result_vals)
     }
 
-    /// Filters the record batch by key, and then projects the column containing values of the
-    /// type for this attribute to a column called "values".
+    /// Apply dictionary downcasting to a RecordBatch if `downcast_dicts` option is enabled.
+    fn maybe_downcast_dicts(batch: RecordBatch, opts: &ProjectionOptions) -> Result<RecordBatch> {
+        if !opts.downcast_dicts {
+            return Ok(batch);
+        }
+
+        let schema = batch.schema();
+        let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
+        let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
+
+        Projection::try_downcast_dicts(&mut fields, &mut columns)?;
+
+        Ok(RecordBatch::try_new(
+            Arc::new(Schema::new(fields)),
+            columns,
+        )?)
+    }
+
+    /// Filters the record batch by key, and then projects the type and value columns into a
+    /// struct column named "value".
     ///
     /// For example, if we had an input batch like:
     /// key:        ["a", "a", "b", "b"]
     /// type:       [1, 1, 1, 1] // type 1 = str
-    /// str:        ["x", "x", y", "z"]
+    /// str:        ["x", "x", "y", "z"]
     /// parent_id:  [0, 1, 0, 1]
     ///
     /// If the "key" argument to this function was "b", the result would be:
-    /// value:     ["y", "z"]
     /// parent_id: [0, 1]
+    /// value:     Struct { type: [1, 1], str: ["y", "z"], ... }  (tagged as AnyValue)
     ///
-    // TODO - we're making an assumptions here that will need to be later revisited. We assume
-    // if a type is present for some key, then all attributes for this key have the same type
-    // Normally this would be the case and this is definitely best practice, eventually we'll
-    // need to relax this assumption for the sake of correctness.
-    fn try_project_attrs(
-        record_batch: &RecordBatch,
-        key: &str,
-        downcast_dicts: bool,
-    ) -> Result<Option<RecordBatch>> {
+    /// The AnyValue struct column will later be resolved to a concrete typed column during
+    /// the split-evaluate-stitch phase in [`ScopedPhysicalExpr::execute`].
+    fn try_project_attrs(record_batch: &RecordBatch, key: &str) -> Result<Option<RecordBatch>> {
         // Get the key column and create a mask for rows matching the specified key
         let key_col = get_required_array(record_batch, consts::ATTRIBUTE_KEY).map_err(|e| {
             Error::ExecutionError {
@@ -1059,90 +1200,90 @@ impl ScopedPhysicalExpr {
             return Ok(None);
         }
 
-        // Get the type column to determine which value column to use
-        let type_arr =
-            get_required_array(&filtered_batch, consts::ATTRIBUTE_TYPE).map_err(|e| {
-                Error::ExecutionError {
-                    cause: e.to_string(),
-                }
-            })?;
-
-        let type_col = type_arr
-            .as_any()
-            .downcast_ref::<arrow::array::UInt8Array>()
-            .ok_or_else(|| Error::ExecutionError {
-                cause: format!(
-                    "Expected UInt8 for type column, got {:?}",
-                    type_arr.data_type()
-                ),
-            })?;
-
-        // Find the first non-null type value
-        let type_value = type_col
-            .iter()
-            .find_map(|v| v)
-            .ok_or_else(|| Error::ExecutionError {
-                cause: "No non-null type value found in filtered attributes".to_string(),
-            })?;
-
-        let type_value = AttributeValueType::try_from(type_value).map_err(|_e| Error::ExecutionError {
-            cause:  format!("invalid record batch. Found invalid value in attributes type column: {type_value}")
-        })?;
-
-        // Based on type value, select the appropriate value column
-        let value_array = match type_value {
-            AttributeValueType::Str => filtered_batch.column_by_name(consts::ATTRIBUTE_STR),
-            AttributeValueType::Int => filtered_batch.column_by_name(consts::ATTRIBUTE_INT),
-            AttributeValueType::Double => filtered_batch.column_by_name(consts::ATTRIBUTE_DOUBLE),
-            AttributeValueType::Bool => filtered_batch.column_by_name(consts::ATTRIBUTE_BOOL),
-            AttributeValueType::Bytes => filtered_batch.column_by_name(consts::ATTRIBUTE_BYTES),
-            AttributeValueType::Empty => return Ok(None),
-            AttributeValueType::Map | AttributeValueType::Slice => {
-                return Err(Error::NotYetSupportedError {
-                    message:
-                        "expression evaluation on non-scalar type attributes (Map/Slice) not yet supported".into()
-                    ,
-                });
-            }
-        };
-
-        let value_array = value_array.cloned().ok_or_else(|| Error::ExecutionError {
-            cause: format!("Missing values column for type {type_value:?}",),
-        })?;
-
-        // Build new schema with parent_id (if present) and value column renamed to "value"
-        let mut fields = Vec::new();
-        let mut columns = Vec::new();
-
+        // Build the parent_id column
         let parent_id_col = filtered_batch
             .column_by_name(consts::PARENT_ID)
             .cloned()
             .ok_or_else(|| Error::ExecutionError {
-                cause: "Invalid attributes record batch: missing values parent_id column".into(),
+                cause: "invalid attributes record batch: missing parent_id column".into(),
             })?;
+
+        // Build the AnyValue struct from the type + value sub-columns
+        let any_value_struct = Self::build_any_value_struct(&filtered_batch)?;
+
+        let mut fields: Vec<Arc<Field>> = Vec::with_capacity(2);
+        let mut columns: Vec<ArrayRef> = Vec::with_capacity(2);
+
         fields.push(Arc::new(Field::new(
             consts::PARENT_ID,
             parent_id_col.data_type().clone(),
             false,
         )));
-        columns.push(parent_id_col.clone());
+        columns.push(parent_id_col);
 
-        // Add the value column renamed to "value"
+        // The struct column is detected as AnyValue by its shape (struct containing a `type`
+        // sub-field of UInt8) — no explicit metadata tagging needed.
         fields.push(Arc::new(Field::new(
             VALUE_COLUMN_NAME,
-            value_array.data_type().clone(),
+            any_value_struct.data_type().clone(),
             true,
         )));
-        columns.push(value_array);
-
-        if downcast_dicts {
-            Projection::try_downcast_dicts(&mut fields, &mut columns)?;
-        }
+        columns.push(Arc::new(any_value_struct));
 
         let schema = Arc::new(Schema::new(fields));
         let projected_batch = RecordBatch::try_new(schema, columns)?;
 
         Ok(Some(projected_batch))
+    }
+
+    /// Collect the `type` discriminant and all present value sub-columns from an attributes
+    /// record batch into a single [`StructArray`].
+    ///
+    /// The columns included are: `type` (required), plus whichever of `str`, `int`, `double`,
+    /// `bool`, `bytes`, `ser` are present in the batch.
+    fn build_any_value_struct(filtered_batch: &RecordBatch) -> Result<StructArray> {
+        let mut struct_fields: Vec<Arc<Field>> = Vec::new();
+        let mut struct_columns: Vec<ArrayRef> = Vec::new();
+
+        // The type column is required
+        let type_col = get_required_array(filtered_batch, consts::ATTRIBUTE_TYPE).map_err(|e| {
+            Error::ExecutionError {
+                cause: e.to_string(),
+            }
+        })?;
+        struct_fields.push(Arc::new(Field::new(
+            consts::ATTRIBUTE_TYPE,
+            type_col.data_type().clone(),
+            false,
+        )));
+        struct_columns.push(type_col.clone());
+
+        // Collect whichever value sub-columns are present
+        let value_col_names = [
+            consts::ATTRIBUTE_STR,
+            consts::ATTRIBUTE_INT,
+            consts::ATTRIBUTE_DOUBLE,
+            consts::ATTRIBUTE_BOOL,
+            consts::ATTRIBUTE_BYTES,
+            consts::ATTRIBUTE_SER,
+        ];
+
+        for col_name in value_col_names {
+            if let Some(col) = filtered_batch.column_by_name(col_name) {
+                struct_fields.push(Arc::new(Field::new(
+                    col_name,
+                    col.data_type().clone(),
+                    true,
+                )));
+                struct_columns.push(col.clone());
+            }
+        }
+
+        StructArray::try_new(struct_fields.into(), struct_columns, None).map_err(|e| {
+            Error::ExecutionError {
+                cause: format!("failed to build AnyValue struct: {e}"),
+            }
+        })
     }
 }
 
@@ -1239,14 +1380,15 @@ impl PhysicalExprEvalResult {
 mod test {
     use super::*;
     use arrow::array::{
-        BinaryArray, Float64Array, Int32Array, Int64Array, StructArray, UInt8Array,
+        BinaryArray, BooleanArray, DictionaryArray, Float64Array, Int32Array, Int64Array,
+        StringArray, StructArray, UInt8Array,
     };
-    use arrow::compute::take;
     use data_engine_expressions::{
         BinaryMathematicalScalarExpression, IntegerScalarExpression,
         InvokeFunctionScalarExpression, QueryLocation, SourceScalarExpression,
         StaticScalarExpression, StringScalarExpression, ValueAccessor,
     };
+    use otap_df_pdata::otlp::attributes::AttributeValueType;
     use otap_df_pdata::{
         otap::Logs,
         proto::{
@@ -1447,11 +1589,29 @@ mod test {
         ]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        // get the expected column
-        let logs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
-        let input_col = logs.column_by_name(consts::ATTRIBUTE_STR).unwrap();
-        let expected_col = take(input_col, &Int32Array::from(vec![1, 2, 4]), None).unwrap();
+        let expected_col = Arc::new(StructArray::new(
+            vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(
+                    consts::ATTRIBUTE_STR,
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    true,
+                ),
+            ]
+            .into(),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter_values([1, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(["x", "y"])),
+                )),
+            ],
+            None,
+        ));
 
         run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
     }
@@ -2901,73 +3061,6 @@ mod test {
     }
 
     #[test]
-    fn test_null_propagation_empty_attributes() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
-                )),
-            ]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_int(3)),
-                    KeyValue::new("k2", AnyValue { value: None }),
-                ])
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k2", AnyValue::new_int(7)),
-                    KeyValue::new("k2", AnyValue { value: None }),
-                ])
-                .severity_text("DEBUG")
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        // ensure the attribute values are what we expect
-        let log_attrs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
-        let type_col = log_attrs
-            .column_by_name(consts::ATTRIBUTE_TYPE)
-            .unwrap()
-            .as_any()
-            .downcast_ref::<UInt8Array>()
-            .unwrap();
-        assert_eq!(type_col.value(1), AttributeValueType::Empty as u8);
-        assert_eq!(type_col.value(3), AttributeValueType::Empty as u8);
-
-        let result = run_scalar_expr_test(input_expr, &otap_batch);
-        assert!(result.is_none());
-    }
-
-    #[test]
     fn test_arithmetic_type_mismatch_caught_planning() {
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
@@ -3383,6 +3476,210 @@ mod test {
         assert_eq!(result_arr.as_ref(), &expected);
     }
 
+    #[test]
+    fn test_function_invocation_upper_case() {
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "event_name",
+                        )),
+                    )]),
+                ),
+            ))],
+        ));
+
+        let functions = [PipelineFunction::new_external("upper_case", vec![], None)];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("hello").finish(),
+            LogRecord::build().event_name("World").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = StringArray::from_iter([None, Some("HELLO"), Some("WORLD")]);
+
+        assert_eq!(result_arr.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_function_invocation_lower_case() {
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "event_name",
+                        )),
+                    )]),
+                ),
+            ))],
+        ));
+
+        let functions = [PipelineFunction::new_external("lower_case", vec![], None)];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("HELLO").finish(),
+            LogRecord::build().event_name("World").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = StringArray::from_iter([None, Some("hello"), Some("world")]);
+
+        assert_eq!(result_arr.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_function_invocation_starts_with() {
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![
+                InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "event_name",
+                            )),
+                        )]),
+                    ),
+                )),
+                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "ev",
+                    )),
+                )),
+            ],
+        ));
+
+        let functions = [PipelineFunction::new_external("starts_with", vec![], None)];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("other").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = BooleanArray::from_iter([None, Some(true), Some(false)]);
+
+        assert_eq!(result_arr.as_ref(), &expected);
+    }
+
+    #[test]
+    fn test_function_invocation_ends_with() {
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![
+                InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "event_name",
+                            )),
+                        )]),
+                    ),
+                )),
+                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "1",
+                    )),
+                )),
+            ],
+        ));
+
+        let functions = [PipelineFunction::new_external("ends_with", vec![], None)];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_vals = result.map(|result| result.values);
+        let result_arr = match &result_vals {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => {
+                panic!("expected arr, got scalar {otherwise:?}")
+            }
+        };
+
+        let expected = BooleanArray::from_iter([None, Some(true), Some(false)]);
+
+        assert_eq!(result_arr.as_ref(), &expected);
+    }
+
     // ----- Tests for multi-scope function arguments (MultiJoin) -----
 
     /// Tests concat(severity_text, attributes["k1"]) where args come from Root and Attributes
@@ -3438,6 +3735,48 @@ mod test {
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
         let expected_col = Arc::new(StringArray::from(vec!["ERROR_a", "INFO_b", "DEBUG_c"]));
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
+    }
+
+    /// `coalesce(attributes["k1"], "hello")` uses the literal when the attribute is absent.
+    #[test]
+    fn test_coalesce_attribute_with_string_fallback() {
+        use data_engine_expressions::CoalesceScalarExpression;
+
+        let attr_arg = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let fallback = ScalarExpression::Static(StaticScalarExpression::String(
+            StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+        ));
+
+        let input_expr = ScalarExpression::Coalesce(CoalesceScalarExpression::new(
+            QueryLocation::new_fake(),
+            vec![attr_arg, fallback],
+        ));
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("from_attr"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("k1", AnyValue { value: None })])
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let expected_col = Arc::new(StringArray::from(vec!["from_attr", "hello"]));
         run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
     }
 
@@ -3810,5 +4149,68 @@ mod test {
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
         let expected_col = Arc::new(StringArray::from(vec!["hello rust", "foo qux baz"]));
         run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
+    }
+
+    fn run_uuid_function_test(func_name: &str, expected_version: usize) {
+        use std::collections::HashSet;
+
+        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+            QueryLocation::new_fake(),
+            None,
+            0,
+            vec![],
+        ));
+
+        let functions = [PipelineFunction::new_external(func_name, vec![], None)];
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+        ]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
+        let result_arr = match result.map(|r| r.values) {
+            Some(ColumnarValue::Array(arr)) => arr,
+            otherwise => panic!("expected Array, got {otherwise:?}"),
+        };
+
+        let str_arr = result_arr
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap_or_else(|| panic!("expected StringArray, got {result_arr:?}"));
+        assert_eq!(str_arr.len(), 3);
+
+        let unique: HashSet<&str> = str_arr.iter().map(|v| v.unwrap()).collect();
+        assert_eq!(
+            unique.len(),
+            3,
+            "expected one distinct UUID per row from {func_name}, got {unique:?}"
+        );
+
+        for value in str_arr.iter().flatten() {
+            let parsed = ::uuid::Uuid::parse_str(value)
+                .unwrap_or_else(|e| panic!("expected valid UUID from {func_name}: {value}: {e}"));
+            assert_eq!(
+                parsed.get_version_num(),
+                expected_version,
+                "expected v{expected_version} UUID from {func_name}, got {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_function_invocation_uuid_v4() {
+        run_uuid_function_test(UUID_FUNC_NAME, 4);
+    }
+
+    #[test]
+    fn test_function_invocation_uuid_v7() {
+        run_uuid_function_test(UUIDV7_FUNC_NAME, 7);
     }
 }

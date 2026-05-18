@@ -42,6 +42,7 @@ groups:
               {%- if receiver_type == "otlp" %}
               protocols:
                 grpc:
+                  max_decoding_message_size: 32MiB 
                   listening_addr: "{{ listen_addr }}"
                   {%- for k, v in extra_config.items() %}
                   {{ k }}: {{ v }}

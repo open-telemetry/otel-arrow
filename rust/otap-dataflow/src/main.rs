@@ -3,6 +3,7 @@
 
 //! Create and run a multi-core pipeline
 
+use cfg_if::cfg_if;
 use clap::Parser;
 use otap_df_config::config_provider::{ConfigFormat, resolve_config};
 use otap_df_config::engine::OtelDataflowSpec;
@@ -16,7 +17,6 @@ use otap_df_controller::startup;
 // Keep this side-effect import so the crate is linked and its `linkme`
 // distributed-slice registrations (core nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
-use cfg_if::cfg_if;
 use otap_df_core_nodes as _;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 /// Project license text (Apache-2.0), embedded at compile time.
@@ -61,10 +61,10 @@ use {
     std::sync::{LazyLock, Mutex},
 };
 
-#[cfg(all(not(clippy), feature = "mimalloc"))]
+#[cfg(all(windows, not(feature = "dhat-heap"), feature = "mimalloc"))]
 use mimalloc::MiMalloc;
 
-#[cfg(all(not(clippy), not(windows), feature = "jemalloc"))]
+#[cfg(all(not(windows), not(feature = "dhat-heap"), feature = "jemalloc"))]
 use tikv_jemallocator::Jemalloc;
 
 // -----------------------------------------------------------------------------
@@ -88,7 +88,7 @@ cfg_if! {
         }
 
     // Windows default: mimalloc
-    } else if #[cfg(feature = "mimalloc")] {
+    } else if #[cfg(all(windows, feature = "mimalloc"))] {
         #[global_allocator]
         static GLOBAL: MiMalloc = MiMalloc;
 
@@ -104,66 +104,37 @@ cfg_if! {
 // pattern so that `cargo test --all-features` (used in CI) does not fail.
 // When all features are enabled (e.g. --all-features), crypto.rs uses a
 // priority order (ring > aws-lc > openssl > symcrypt) so the binary still works.
-#[cfg(all(
-    feature = "crypto-ring",
-    feature = "crypto-aws-lc",
-    not(any(test, doc)),
-    not(clippy)
-))]
-compile_error!(
-    "Features `crypto-ring` and `crypto-aws-lc` are mutually exclusive. \
-     Use --no-default-features to disable the default crypto provider, then enable exactly one."
-);
-#[cfg(all(
-    feature = "crypto-ring",
-    feature = "crypto-symcrypt",
-    not(any(test, doc)),
-    not(clippy)
-))]
-compile_error!(
-    "Features `crypto-ring` and `crypto-symcrypt` are mutually exclusive. \
-     Use --no-default-features to disable the default crypto provider, then enable exactly one."
-);
-#[cfg(all(
-    feature = "crypto-ring",
-    feature = "crypto-openssl",
-    not(any(test, doc)),
-    not(clippy)
-))]
-compile_error!(
-    "Features `crypto-ring` and `crypto-openssl` are mutually exclusive. \
-     Use --no-default-features to disable the default crypto provider, then enable exactly one."
-);
-#[cfg(all(
-    feature = "crypto-aws-lc",
-    feature = "crypto-symcrypt",
-    not(any(test, doc)),
-    not(clippy)
-))]
-compile_error!(
-    "Features `crypto-aws-lc` and `crypto-symcrypt` are mutually exclusive. \
-     Use --no-default-features to disable the default crypto provider, then enable exactly one."
-);
-#[cfg(all(
-    feature = "crypto-aws-lc",
-    feature = "crypto-openssl",
-    not(any(test, doc)),
-    not(clippy)
-))]
-compile_error!(
-    "Features `crypto-aws-lc` and `crypto-openssl` are mutually exclusive. \
-     Use --no-default-features to disable the default crypto provider, then enable exactly one."
-);
-#[cfg(all(
-    feature = "crypto-symcrypt",
-    feature = "crypto-openssl",
-    not(any(test, doc)),
-    not(clippy)
-))]
-compile_error!(
-    "Features `crypto-symcrypt` and `crypto-openssl` are mutually exclusive. \
-     Use --no-default-features to disable the default crypto provider, then enable exactly one."
-);
+#[cfg(all(not(any(test, doc)), not(clippy)))]
+const _: () = {
+    // Turn features into 0/1 at compile time.
+    const SYMCRYPT: u8 = if cfg!(feature = "crypto-symcrypt") {
+        1
+    } else {
+        0
+    };
+    const OPENSSL: u8 = if cfg!(feature = "crypto-openssl") {
+        1
+    } else {
+        0
+    };
+    const AWS_LC: u8 = if cfg!(feature = "crypto-aws-lc") {
+        1
+    } else {
+        0
+    };
+    const RING: u8 = if cfg!(feature = "crypto-ring") { 1 } else { 0 };
+
+    const COUNT: u8 = SYMCRYPT + OPENSSL + AWS_LC + RING;
+
+    // Exactly one should be enabled (or change to `> 1` if "zero is allowed").
+    if COUNT > 1 {
+        panic!(
+            "Crypto provider features are mutually exclusive. \
+             Enable exactly one of: crypto-symcrypt, crypto-openssl, crypto-aws-lc, crypto-ring. \
+             Use --no-default-features to disable the default crypto provider, then enable exactly one."
+        );
+    }
+};
 
 #[cfg(all(
     feature = "crypto-symcrypt",
@@ -267,6 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         dhat_start();
     }
+
     // Install the rustls crypto provider selected by the crypto-* feature flag.
     // This must happen before any TLS connections (reqwest, tonic, etc.).
     otap_df_otap::crypto::install_crypto_provider()
@@ -353,14 +325,14 @@ mod tests {
             Ok(CoreAllocation::core_set(vec![
                 CoreRange { start: 0, end: 4 },
                 CoreRange { start: 5, end: 5 },
-                CoreRange { start: 6, end: 7 },
+                CoreRange { start: 6, end: 7 }
             ]))
         );
         assert_eq!(
             parse_core_id_allocation("0..4"),
             Ok(CoreAllocation::core_set(vec![CoreRange {
                 start: 0,
-                end: 4,
+                end: 4
             }]))
         );
     }
@@ -528,7 +500,7 @@ connections:
             args.core_id_range,
             Some(CoreAllocation::core_set(vec![
                 CoreRange { start: 1, end: 3 },
-                CoreRange { start: 7, end: 7 },
+                CoreRange { start: 7, end: 7 }
             ]))
         );
         assert_eq!(args.num_cores, None);

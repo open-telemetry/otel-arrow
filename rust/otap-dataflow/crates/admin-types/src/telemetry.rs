@@ -18,7 +18,10 @@ pub struct MetricsOptions {
 }
 
 impl MetricsOptions {
-    /// Converts these options into URL query pairs.
+    /// Converts these options into URL query pairs for SDK transports.
+    ///
+    /// Most callers do not need this directly because the built-in HTTP
+    /// transport uses it automatically.
     #[must_use]
     pub fn to_query_pairs(&self) -> Vec<(&'static str, String)> {
         vec![
@@ -189,7 +192,10 @@ pub struct LogsQuery {
 }
 
 impl LogsQuery {
-    /// Converts this request into URL query pairs.
+    /// Converts this query into URL query pairs for SDK transports.
+    ///
+    /// Most callers do not need this directly because the built-in HTTP
+    /// transport uses it automatically.
     #[must_use]
     pub fn to_query_pairs(&self) -> Vec<(&'static str, String)> {
         let mut pairs = Vec::new();
@@ -313,7 +319,7 @@ mod tests {
             "timestamp": "2026-01-01T00:00:00Z",
             "metric_sets": [
                 {
-                    "name": "engine.metrics",
+                    "name": "engine",
                     "brief": "engine",
                     "attributes": {
                         "node.id": { "String": "receiver" }
@@ -340,7 +346,7 @@ mod tests {
             "timestamp": "2026-01-01T00:00:00Z",
             "metric_sets": [
                 {
-                    "name": "engine.metrics",
+                    "name": "engine",
                     "attributes": {
                         "node.id": { "String": "receiver" }
                     },

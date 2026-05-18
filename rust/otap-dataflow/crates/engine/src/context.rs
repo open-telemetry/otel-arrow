@@ -126,6 +126,7 @@ pub struct PipelineContextParams {
 pub struct PipelineContext {
     controller_context: ControllerContext,
     pipeline_context_params: PipelineContextParams,
+    deployment_generation: u64,
     pipeline_telemetry_attrs: HashMap<String, TelemetryAttribute>,
     node_id: ConfigNodeId,
     node_urn: NodeUrn,
@@ -169,7 +170,28 @@ impl ControllerContext {
         num_cores: usize,
         thread_id: usize,
     ) -> PipelineContext {
-        PipelineContext::new(
+        self.pipeline_context_with_generation(
+            pipeline_group_id,
+            pipeline_id,
+            core_id,
+            num_cores,
+            thread_id,
+            0,
+        )
+    }
+
+    /// Returns a new pipeline context with an explicit deployment generation.
+    #[must_use]
+    pub fn pipeline_context_with_generation(
+        &self,
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        core_id: usize,
+        num_cores: usize,
+        thread_id: usize,
+        deployment_generation: u64,
+    ) -> PipelineContext {
+        PipelineContext::new_with_generation(
             self.clone(),
             PipelineContextParams {
                 pipeline_group_id,
@@ -178,6 +200,7 @@ impl ControllerContext {
                 num_cores,
                 thread_id,
             },
+            deployment_generation,
         )
     }
 
@@ -212,13 +235,24 @@ impl ControllerContext {
 
 impl PipelineContext {
     /// Creates a new `PipelineContext`.
+    #[allow(dead_code)]
     pub(crate) fn new(
         parent_ctx: ControllerContext,
         pipeline_context_params: PipelineContextParams,
     ) -> Self {
+        Self::new_with_generation(parent_ctx, pipeline_context_params, 0)
+    }
+
+    /// Creates a new `PipelineContext` with an explicit deployment generation.
+    pub(crate) fn new_with_generation(
+        parent_ctx: ControllerContext,
+        pipeline_context_params: PipelineContextParams,
+        deployment_generation: u64,
+    ) -> Self {
         Self {
             controller_context: parent_ctx,
             pipeline_context_params,
+            deployment_generation,
             node_id: Default::default(),
             node_urn: Default::default(),
             node_kind: Default::default(),
@@ -246,6 +280,12 @@ impl PipelineContext {
     #[must_use]
     pub const fn core_id(&self) -> usize {
         self.pipeline_context_params.core_id
+    }
+
+    /// Returns the deployment generation associated with this pipeline runtime.
+    #[must_use]
+    pub const fn deployment_generation(&self) -> u64 {
+        self.deployment_generation
     }
 
     /// Returns the total number of cores allocated to this pipeline.
@@ -451,6 +491,7 @@ impl PipelineContext {
             engine_attrs: self.engine_attribute_set(),
             pipeline_id: self.pipeline_context_params.pipeline_id.clone(),
             pipeline_group_id: self.pipeline_context_params.pipeline_group_id.clone(),
+            deployment_generation: self.deployment_generation,
         }
     }
 
@@ -542,6 +583,7 @@ impl PipelineContext {
         Self {
             controller_context: self.controller_context.clone(),
             pipeline_context_params: self.pipeline_context_params.clone(),
+            deployment_generation: self.deployment_generation,
             pipeline_telemetry_attrs: self.pipeline_telemetry_attrs.clone(),
             node_id,
             node_urn,

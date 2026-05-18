@@ -40,13 +40,13 @@ use std::collections::HashSet;
 use std::future::{self, Future};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// URN for the topic receiver.
 pub const TOPIC_RECEIVER_URN: &str = "urn:otel:receiver:topic";
 
 /// Telemetry metrics for the topic receiver.
-#[metric_set(name = "topic.receiver.metrics")]
+#[metric_set(name = "receiver.topic")]
 #[derive(Debug, Default, Clone)]
 pub struct TopicReceiverMetrics {
     /// Number of messages forwarded to downstream.
@@ -248,13 +248,15 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
             ack_propagation = format!("{ack_propagation_mode:?}"),
             message = "Topic receiver started"
         );
-        let mut telemetry_cancel_handle = Some(
-            effect_handler
-                .start_periodic_telemetry(Duration::from_secs(1))
-                .await?,
-        );
         let mut draining_deadline: Option<Instant> = None;
         let mut draining_reason: Option<String> = None;
+        // These represent two different handoff stages:
+        // - `pending_forward` is one permitted topic delivery that is still trying
+        //   to enter the downstream pipeline and therefore must not be
+        //   committed yet.
+        // - `pending_tracked_message_ids` are deliveries that were already
+        //   forwarded and committed locally, but whose downstream Ack/Nack has
+        //   not been bridged back to the topic runtime yet.
         let mut pending_tracked_message_ids = HashSet::new();
         let mut pending_forward: Option<PendingForward> = None;
 
@@ -293,9 +295,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                     }
 
                     if pending_tracked_message_ids.is_empty() {
-                        if let Some(handle) = telemetry_cancel_handle.take() {
-                            _ = handle.cancel().await;
-                        }
                         effect_handler.notify_receiver_drained().await?;
                         return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
                     }
@@ -327,9 +326,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     }
                                 }
                             }
-                        }
-                        if let Some(handle) = telemetry_cancel_handle.take() {
-                            _ = handle.cancel().await;
                         }
                         effect_handler.notify_receiver_drained().await?;
                         return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
@@ -453,9 +449,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     }
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                    if let Some(handle) = telemetry_cancel_handle.take() {
-                                        _ = handle.cancel().await;
-                                    }
                                     return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
                                 }
                                 Ok(_) => {}
@@ -624,9 +617,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 }
                             }
                             Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                if let Some(handle) = telemetry_cancel_handle.take() {
-                                    _ = handle.cancel().await;
-                                }
                                 return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
                             }
                             Ok(_) => {}
@@ -659,6 +649,12 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 let send_started_at = Instant::now();
                                 match effect_handler.try_send_message_with_source_node(pdata) {
                                     Ok(()) => {
+                                        // Commit the topic delivery permit only after the
+                                        // downstream pipeline accepts the
+                                        // message. That keeps drain precise:
+                                        // an unadmitted message can still be
+                                        // aborted locally instead of turning
+                                        // into tracked in-flight work.
                                         delivery.commit();
                                         if let Some(message_id) = tracked_message_id {
                                             _ = pending_tracked_message_ids.insert(message_id);
@@ -725,9 +721,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
         }
         .await;
 
-        if let Some(handle) = telemetry_cancel_handle.take() {
-            _ = handle.cancel().await;
-        }
         run_result
     }
 }

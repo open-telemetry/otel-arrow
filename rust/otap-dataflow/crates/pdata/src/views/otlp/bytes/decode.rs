@@ -160,7 +160,7 @@ where
     }
 
     /// Advances the parser to find one of the fields specified in the `field_nums` argument.
-    /// If found, it returns the the byte slice containing the value for this field and the
+    /// If found, it returns the byte slice containing the value for this field and the
     /// field number as a tuple.
     #[must_use]
     pub fn advance_to_find_oneof(&self, field_nums: &[u64]) -> Option<(&'a [u8], u64)> {

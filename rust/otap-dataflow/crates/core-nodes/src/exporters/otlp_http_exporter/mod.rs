@@ -6,17 +6,14 @@
 //! This exporter sends telemetry data to an OTLP server using the HTTP Protocol.
 //!
 //! ToDo:
-//! - TLS/mTLS
 //! - Proxy settings
 //! - Compression (payloads and accepting compressed responses)
 //! - JSON encoding payloads (currently only proto is supported and it's not configurable)
-//! - Allow endpoint overrides for each signal type (similar to Go collector implementation)
 //! - Unit test metrics reporting
 
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -37,6 +34,8 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::wiring_contract::WiringContract;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+#[cfg(test)]
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
 use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
@@ -225,10 +224,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             traces_endpoint = traces_endpoint.as_str(),
         );
 
-        let telemetry_timer_cancel = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         let max_in_flight = self.config.max_in_flight.max(1);
         let mut client_pool =
             HttpClientPool::try_new(&self.config.http, self.config.client_pool_size)
@@ -245,7 +240,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         let mut logs_proto_encoder = LogsProtoBytesEncoder::new();
         let mut metrics_proto_encoder = MetricsProtoBytesEncoder::new();
         let mut traces_proto_encoder = TracesProtoBytesEncoder::new();
-        let mut proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
+        let mut proto_buffer = ProtoBuffer::default();
 
         loop {
             // Opportunistically drain completions before we park on a recv.
@@ -307,7 +302,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             .await;
                         }
                     }
-                    _ = telemetry_timer_cancel.cancel().await;
                     return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
@@ -345,7 +339,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 };
 
                             if !context.may_return_payload() {
-                                // drop the original OTAP batch if the the context indicates it
+                                // drop the original OTAP batch if the context indicates it
                                 // does not wish it to be returned
                                 _ = otap_batch.take_payload();
                             }
@@ -814,6 +808,11 @@ mod test {
             .await
         });
 
+        // Wait for the server to be ready to accept connections. Without this,
+        // the exporter may attempt to connect before the server has bound,
+        // leading to a retryable NACK and the test hanging in validation.
+        wait_for_port_ready(endpoint_addr);
+
         (pdata_rx, server_cancellation_token2)
     }
 
@@ -921,6 +920,21 @@ mod test {
         let _ = tracker.close();
     }
 
+    /// Polls a TCP port until it accepts connections, or panics after 5 seconds.
+    fn wait_for_port_ready(addr: &str) {
+        let addr: std::net::SocketAddr = addr.parse().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if Instant::now() >= deadline {
+                panic!("Server did not become ready within 5 seconds on {addr}");
+            }
+            match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(50)) {
+                Ok(_) => return,
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+    }
+
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
     /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
     /// the test is finished), and a receiver that will emit any pdata that the server produces.
@@ -971,6 +985,11 @@ mod test {
             )
             .await;
         });
+
+        // Wait for the server to be ready to accept connections. Without this,
+        // the exporter may attempt to connect before the server has bound,
+        // leading to a retryable NACK and the test hanging in validation.
+        wait_for_port_ready(endpoint_addr);
 
         (pdata_rx, server_cancellation_token2)
     }
@@ -1217,7 +1236,7 @@ mod test {
                         match pdata.signal_type() {
                             SignalType::Logs => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Logs(pdata_decoded)],
@@ -1226,7 +1245,7 @@ mod test {
                             }
                             SignalType::Metrics => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = MetricsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Metrics(pdata_decoded)],
@@ -1235,7 +1254,7 @@ mod test {
                             }
                             SignalType::Traces => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = TracesData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Traces(pdata_decoded)],
@@ -1878,7 +1897,7 @@ mod test {
                         match pdata.signal_type() {
                             SignalType::Logs => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Logs(pdata_decoded)],
@@ -1887,7 +1906,7 @@ mod test {
                             }
                             SignalType::Metrics => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = MetricsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Metrics(pdata_decoded)],
@@ -1896,7 +1915,7 @@ mod test {
                             }
                             SignalType::Traces => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = TracesData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Traces(pdata_decoded)],
@@ -1998,7 +2017,8 @@ mod test {
                     // ensure we got back all the signals we expected, from the correct servers.
 
                     let mut pdata = logs_pdata_rx.recv().await.unwrap();
-                    let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into().unwrap();
+                    let otlp_bytes: OtlpProtoBytes =
+                        pdata.take_payload().try_into_with_default().unwrap();
                     let pdata_decoded = LogsData::decode(otlp_bytes.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Logs(pdata_decoded)],
@@ -2006,7 +2026,8 @@ mod test {
                     );
 
                     let mut pdata = metrics_pdata_rx.recv().await.unwrap();
-                    let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into().unwrap();
+                    let otlp_bytes: OtlpProtoBytes =
+                        pdata.take_payload().try_into_with_default().unwrap();
                     let pdata_decoded = MetricsData::decode(otlp_bytes.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Metrics(pdata_decoded)],
@@ -2014,7 +2035,8 @@ mod test {
                     );
 
                     let mut pdata = traces_pdata_rx.recv().await.unwrap();
-                    let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into().unwrap();
+                    let otlp_bytes: OtlpProtoBytes =
+                        pdata.take_payload().try_into_with_default().unwrap();
                     let pdata_decoded = TracesData::decode(otlp_bytes.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Traces(pdata_decoded)],
@@ -2078,18 +2100,26 @@ mod test {
 
                     let num_expected_pdatas = 1;
                     let mut pdatas_received = Vec::new();
-                    while let Some(pdata) = pdata_rx.recv().await {
-                        pdatas_received.push(pdata);
-                        if pdatas_received.len() >= num_expected_pdatas {
-                            break;
+                    let recv_deadline = tokio::time::timeout(Duration::from_secs(10), async {
+                        while let Some(pdata) = pdata_rx.recv().await {
+                            pdatas_received.push(pdata);
+                            if pdatas_received.len() >= num_expected_pdatas {
+                                break;
+                            }
                         }
-                    }
+                    });
+                    recv_deadline.await.expect(
+                        "timed out waiting for server to receive pdata; \
+                         server may not have been ready in time",
+                    );
 
                     server_cancellation_token.cancel();
 
                     // assert the pdata sent was the pdata received
-                    let pdata: OtlpProtoBytes =
-                        pdatas_received[0].take_payload().try_into().unwrap();
+                    let pdata: OtlpProtoBytes = pdatas_received[0]
+                        .take_payload()
+                        .try_into_with_default()
+                        .unwrap();
                     let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Logs(pdata_decoded)],

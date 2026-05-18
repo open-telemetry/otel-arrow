@@ -32,12 +32,12 @@ use otap_df_engine::{
     node::NodeId,
     processor::ProcessorWrapper,
 };
-use otap_df_opl::parser::OplParser;
 use otap_df_otap::{
     OTAP_PROCESSOR_FACTORIES,
     accessory::slots::Key,
     pdata::{Context, OtapPdata},
 };
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::{
     OtapArrowRecords, OtapPayload, otap::transform::sanitize::sanitize_otap_batch,
 };
@@ -45,6 +45,7 @@ use otap_df_query_engine::{
     parser::default_parser_options,
     pipeline::{Pipeline, PipelineOptions, routing::RouterExtType, state::ExecutionState},
 };
+use otap_df_query_engine_languages::opl::parser::OplParser;
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use slotmap::Key as _;
@@ -410,7 +411,7 @@ impl Processor<OtapPdata> for TransformProcessor {
                         .send_message_with_source_node(OtapPdata::new(context, payload))
                         .await?;
                 } else {
-                    let mut otap_batch: OtapArrowRecords = payload.try_into()?;
+                    let mut otap_batch: OtapArrowRecords = payload.try_into_with_default()?;
                     otap_batch.decode_transport_optimized_ids()?;
                     let result = self
                         .pipeline
@@ -464,6 +465,7 @@ mod test {
         },
     };
     use otap_df_pdata::{
+        TryFromWithOptions,
         otap::Logs,
         proto::{
             OtlpProtoMessage,
@@ -473,7 +475,7 @@ mod test {
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
                 metrics::v1::{Metric, MetricsData, ResourceMetrics, ScopeMetrics},
                 resource::v1::Resource,
-                trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData},
+                trace::v1::{ResourceSpans, ScopeSpans, Span, Status, TracesData},
             },
         },
         schema::consts,
@@ -629,7 +631,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let otap_batch = out.into_iter().next().unwrap();
 
@@ -677,7 +679,7 @@ mod test {
                 let mut msgs_transformed = 0;
                 let mut msgs_transform_failed = 0;
                 telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
-                    if desc.name == "transform.processor" {
+                    if desc.name == "processor.transform" {
                         for (field, v) in iter {
                             let val = v.to_u64_lossy();
                             match field.name {
@@ -727,7 +729,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let otap_batch = out.into_iter().next().unwrap();
                 let result = otap_to_otlp(&otap_batch);
@@ -808,7 +810,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let otap_batch = out.into_iter().next().unwrap();
                 let result = otap_to_otlp(&otap_batch);
@@ -902,7 +904,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let traces_batch = processed_pdata.next().expect("sent traces batch");
                 let metrics_batch = processed_pdata.next().expect("sent metrics batch");
@@ -937,7 +939,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let traces_batch = processed_pdata.next().expect("sent traces batch");
                 let metrics_batch = processed_pdata.next().expect("sent metrics batch");
@@ -1009,7 +1011,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let result = out.into_iter().next().expect("one result");
 
@@ -1030,6 +1032,125 @@ mod test {
                     _ => panic!("unexpected payload type"),
                 }
                 // TODO when we support Ack/Nack here assert on routed context
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_conditional_on_signal_type() {
+        // test ensure it will only operate on all signals
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"signals | 
+            if (is Log) {
+                set attributes["is_log"] = true
+            } else if (is Metric) {
+                set attributes["is_metric"] = true
+            } else if (is Span) {
+                set attributes["is_span"] = true
+            }"#;
+        let processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let log_record = LogRecord::build().severity_text("ERROR").finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![log_record.clone()],
+                        )],
+                    )],
+                }));
+                let pdata = OtapPdata::new_default(input.clone().into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let span = Span::build()
+                    .name("hello")
+                    .trace_id([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                    .span_id([0, 0, 0, 0, 0, 0, 0, 0])
+                    .status(Status {
+                        message: "hello".into(),
+                        code: 0,
+                    })
+                    .finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData {
+                    resource_spans: vec![ResourceSpans::new(
+                        Resource::default(),
+                        vec![ScopeSpans::new(
+                            InstrumentationScope::default(),
+                            vec![span.clone()],
+                        )],
+                    )],
+                }));
+                let pdata = OtapPdata::new_default(input.clone().into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let metric = Metric::build().name("my_metric").finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Metrics(MetricsData {
+                    resource_metrics: vec![ResourceMetrics::new(
+                        Resource::default(),
+                        vec![ScopeMetrics::new(
+                            InstrumentationScope::default(),
+                            vec![metric.clone()],
+                        )],
+                    )],
+                }));
+                let pdata = OtapPdata::new_default(input.clone().into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // check anything not routed get outputted to the default port
+                let mut out = ctx
+                    .drain_pdata()
+                    .await
+                    .into_iter()
+                    .map(OtapPdata::payload)
+                    .map(OtapArrowRecords::try_from_with_default)
+                    .map(Result::unwrap)
+                    .map(|otap_batch| otap_to_otlp(&otap_batch));
+
+                let result = out.next().unwrap();
+                let OtlpProtoMessage::Logs(output_logs) = result else {
+                    panic!("expected logs, got {result:?}")
+                };
+                assert_eq!(
+                    &output_logs.resource_logs[0].scope_logs[0].log_records[0],
+                    &LogRecord {
+                        attributes: vec![KeyValue::new("is_log", AnyValue::new_bool(true))],
+                        ..log_record
+                    }
+                );
+
+                let result = out.next().unwrap();
+                let OtlpProtoMessage::Traces(output_traces) = result else {
+                    panic!("expected trace, got {result:?}")
+                };
+                assert_eq!(
+                    &output_traces.resource_spans[0].scope_spans[0].spans[0],
+                    &Span {
+                        attributes: vec![KeyValue::new("is_span", AnyValue::new_bool(true))],
+                        ..span
+                    }
+                );
+
+                let result = out.next().unwrap();
+                let OtlpProtoMessage::Metrics(output_metrics) = result else {
+                    panic!("expected metric, got {result:?}")
+                };
+                assert_eq!(
+                    &output_metrics.resource_metrics[0].scope_metrics[0].metrics[0],
+                    &Metric {
+                        metadata: vec![KeyValue::new("is_metric", AnyValue::new_bool(true))],
+                        ..metric
+                    }
+                )
             })
             .validate(|_ctx| async move {})
     }
@@ -1092,7 +1213,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let default_result = out.into_iter().next().expect("one result");
                 assert_logs_records_equal(default_result, other_log_record);
@@ -1697,7 +1818,7 @@ mod test {
                     .expect_err("process error");
                 assert!(err.to_string().contains("outbound slots not available"));
 
-                // now drain and ack the the messages from the first batch to clear out the slot map
+                // now drain and ack the messages from the first batch to clear out the slot map
                 let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
                 let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
 
@@ -1888,7 +2009,7 @@ mod test {
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
+                    .map(OtapArrowRecords::try_from_with_default)
                     .map(Result::unwrap);
                 let default_result = out.into_iter().next().expect("one result");
                 // check we skipped the sanitization on the default output

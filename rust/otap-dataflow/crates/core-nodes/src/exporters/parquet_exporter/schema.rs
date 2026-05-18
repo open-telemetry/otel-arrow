@@ -255,7 +255,7 @@ fn get_all_default_value_column(
     })
 }
 
-/// creates a a struct where all the columns are all null, or all default value if non-nullable.
+/// creates a struct where all the columns are all null, or all default value if non-nullable.
 /// the intention is that this will be a stand-in for the struct column of a record batch that is
 /// missing some struct column.
 fn get_struct_full_of_nulls_or_defaults(

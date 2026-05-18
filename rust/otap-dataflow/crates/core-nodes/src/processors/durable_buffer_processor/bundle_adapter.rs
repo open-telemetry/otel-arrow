@@ -45,6 +45,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::SystemTime;
 
 use arrow::array::{BinaryArray, RecordBatch};
+use arrow::buffer::{Buffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field, Schema};
 use quiver::record_bundle::{
     BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
@@ -348,8 +349,22 @@ impl OtlpBytesAdapter {
             OtlpProtoBytes::ExportTracesRequest(_) => SignalType::Traces,
         };
 
-        // Create a record batch with a single binary column containing the OTLP bytes
-        let binary_array = BinaryArray::from_vec(vec![bytes.as_bytes()]);
+        // Create a record batch with a single binary column containing the OTLP bytes.
+        // Use zero-copy wrapping: clone_bytes() is just an Arc refcount bump,
+        // and Buffer::from(Bytes) wraps without copying the payload data.
+        let data_bytes = bytes.clone_bytes();
+        let len = i32::try_from(data_bytes.len()).map_err(|_| {
+            (
+                BundleConversionError::RecordBatchCreationError(format!(
+                    "OTLP payload too large for BinaryArray: {} bytes exceeds i32::MAX",
+                    data_bytes.len()
+                )),
+                bytes.clone(),
+            )
+        })?;
+        let data_buffer = Buffer::from(data_bytes);
+        let offsets = OffsetBuffer::new(ScalarBuffer::from(vec![0i32, len]));
+        let binary_array = BinaryArray::new(offsets, data_buffer, None);
         let batch = match RecordBatch::try_new(otlp_binary_schema(), vec![Arc::new(binary_array)]) {
             Ok(batch) => batch,
             Err(e) => {
@@ -734,6 +749,41 @@ mod tests {
         // Wrong signal type slot should return None
         let wrong_slot = to_otlp_slot_id(SignalType::Traces);
         assert!(adapter.payload(wrong_slot).is_none());
+    }
+
+    #[test]
+    fn test_otlp_bytes_adapter_zero_copy() {
+        let test_bytes = b"zero-copy verification payload".to_vec();
+        let otlp = OtlpProtoBytes::new_from_bytes(SignalType::Logs, test_bytes);
+
+        let adapter = OtlpBytesAdapter::new(otlp).map_err(|(e, _)| e).unwrap();
+
+        let slot = to_otlp_slot_id(SignalType::Logs);
+        let payload = adapter.payload(slot).unwrap();
+        let column = payload.batch.column(0);
+        let binary_array = column.as_any().downcast_ref::<BinaryArray>().unwrap();
+
+        // The Arrow buffer should alias the original bytes (zero-copy).
+        // Compare the pointer of the stored value with the original OtlpProtoBytes.
+        let arrow_value_ptr = binary_array.value(0).as_ptr();
+        let original_ptr = adapter.bytes.as_bytes().as_ptr();
+        assert_eq!(
+            arrow_value_ptr, original_ptr,
+            "BinaryArray value should point to the same memory as OtlpProtoBytes (zero-copy)"
+        );
+    }
+
+    #[test]
+    fn test_otlp_bytes_adapter_empty_payload() {
+        let otlp = OtlpProtoBytes::new_from_bytes(SignalType::Metrics, vec![]);
+
+        let adapter = OtlpBytesAdapter::new(otlp).map_err(|(e, _)| e).unwrap();
+
+        let slot = to_otlp_slot_id(SignalType::Metrics);
+        let payload = adapter.payload(slot).unwrap();
+        let column = payload.batch.column(0);
+        let binary_array = column.as_any().downcast_ref::<BinaryArray>().unwrap();
+        assert_eq!(binary_array.value(0), b"");
     }
 
     #[test]

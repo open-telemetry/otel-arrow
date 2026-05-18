@@ -557,7 +557,7 @@ fn sort_attrs_type_and_keys_to_indices(
                 // will only return error for types that don't support rank, which utf8 does
                 let val_ranks = rank(dict_arr.values(), None).expect("can rank string array");
 
-                // concat the type and key rank into a a u16 vec where the higher end byte of each
+                // concat the type and key rank into a u16 vec where the higher end byte of each
                 // element is the type, and the lower end is the key's rank
                 let mut to_sort = vec![0u16; len];
                 for i in 0..len {

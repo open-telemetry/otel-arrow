@@ -253,6 +253,14 @@ mod test {
 
         let path = url.path().to_string();
 
+        // On Windows, url.path() returns "/C:/..." for file paths; strip the leading slash
+        // so that LocalFileSystem receives a valid Windows path.
+        #[cfg(windows)]
+        let path = path
+            .strip_prefix('/')
+            .map(|s| s.to_string())
+            .unwrap_or(path);
+
         let delay = url
             .query_pairs()
             .find(|(k, _)| k == "delay")
@@ -342,23 +350,20 @@ mod test {
         }
     }
 
-    // Skipping on Windows: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[test]
-    #[cfg(not(windows))]
     fn test_get_testdelayed_file_storage() {
-        let storage = StorageType::File {
-            base_uri: "testdelayed:///tmp".to_string(),
-        };
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().to_str().unwrap().replace('\\', "/");
+        let base_uri = format!("testdelayed:///{path}");
+        let storage = StorageType::File { base_uri };
         assert!(from_storage_type(&storage).is_ok());
     }
 
-    // Skipping on Windows: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[test]
-    #[cfg(not(windows))]
     fn test_get_file_storage() {
-        let storage = StorageType::File {
-            base_uri: "/tmp".to_string(),
-        };
+        let tmp = tempfile::tempdir().unwrap();
+        let base_uri = tmp.path().to_str().unwrap().to_string();
+        let storage = StorageType::File { base_uri };
         assert!(from_storage_type(&storage).is_ok());
     }
 

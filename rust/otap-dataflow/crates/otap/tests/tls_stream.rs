@@ -41,10 +41,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
-    )]
     async fn test_tls_stream_success() {
         otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
@@ -107,10 +103,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
-    )]
     async fn test_tls_stream_handshake_failure_filtered() {
         otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
@@ -224,10 +216,6 @@ mod tests {
     /// This tests the DoS protection feature where slow/malicious clients
     /// that don't complete the TLS handshake are timed out.
     #[tokio::test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
-    )]
     async fn test_handshake_respects_timeout() {
         otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
@@ -313,10 +301,6 @@ mod tests {
     /// Multiple slow clients should not prevent a fast client from completing.
     /// This tests the buffer_unordered concurrency mechanism.
     #[tokio::test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
-    )]
     async fn test_concurrent_handshakes_not_blocked() {
         otap_df_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();

@@ -107,6 +107,17 @@ pub fn create_test_pdata() -> OtapPdata {
     OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::from(otlp_bytes)).into())
 }
 
+/// Create empty test pdata (a logs request with zero log records).
+#[must_use]
+pub fn create_empty_test_pdata() -> OtapPdata {
+    let empty = otap_df_pdata::proto::opentelemetry::logs::v1::LogsData::new(vec![]);
+    let mut otlp_bytes = vec![];
+    empty
+        .encode(&mut otlp_bytes)
+        .expect("failed to encode empty OTLP ExportLogsServiceRequest");
+    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::from(otlp_bytes)).into())
+}
+
 /// Simple exporter test where there is NO subscribe_to() in the context.
 pub fn test_exporter_no_subscription(factory: &ExporterFactory<OtapPdata>, config: Value) {
     let test_runtime = TestRuntime::new();

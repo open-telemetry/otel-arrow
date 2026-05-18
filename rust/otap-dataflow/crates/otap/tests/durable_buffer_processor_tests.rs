@@ -23,7 +23,7 @@ use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_core_nodes::exporters::error_exporter::ERROR_EXPORTER_URN;
 use otap_df_core_nodes::exporters::noop_exporter::NOOP_EXPORTER_URN;
 use otap_df_core_nodes::processors::durable_buffer_processor::DURABLE_BUFFER_URN;
-use otap_df_core_nodes::receivers::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
+use otap_df_core_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{
     RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
@@ -57,6 +57,27 @@ fn init_test_tracing() {
         tracing_subscriber::fmt().with_env_filter(filter).init();
     });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CI Timing Constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Generous timeout for `wait_for_condition` in flip threads.
+///
+/// These threads start before the pipeline is running. On slow CI (e.g.,
+/// overloaded Windows runners), pipeline startup -- Tokio runtime creation,
+/// Quiver engine init, segment finalization -- can consume several seconds
+/// before the first NACK reaches the exporter. This timeout must absorb all
+/// startup latency. It does not affect test duration on healthy machines
+/// because `wait_for_condition` returns immediately when the condition is met.
+const FLIP_CONDITION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Pipeline max_duration ceiling for tests with flip threads.
+///
+/// Must exceed the sum of all flip thread phase timeouts plus delivery time.
+/// On healthy machines the shutdown condition fires in ~2s; this is a safety
+/// ceiling for extremely slow CI.
+const PIPELINE_MAX_DURATION: Duration = Duration::from_secs(60);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test Configuration Builder
@@ -245,7 +266,7 @@ impl TestConfigBuilder {
         PipelineConfigBuilder::new()
             .add_receiver(
                 "fake_receiver",
-                OTAP_FAKE_DATA_GENERATOR_URN,
+                TRAFFIC_GENERATOR_RECEIVER_URN,
                 Some(receiver_config_value),
             )
             .add_processor("durable_buffer", DURABLE_BUFFER_URN, Some(buffer_config))
@@ -264,32 +285,6 @@ impl TestConfigBuilder {
 // ─────────────────────────────────────────────────────────────────────────────
 // Test Runner Helper
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Run a pipeline with the given config, then shut down.
-///
-/// Handles all the boilerplate: telemetry, context, channels, shutdown thread.
-///
-/// If `shutdown_condition` is provided, it will be polled every 10ms and
-/// shutdown will be triggered as soon as the condition returns true (or when
-/// `run_duration` is reached, whichever comes first). This allows tests to
-/// complete as fast as the actual work takes, rather than waiting for a fixed
-/// duration.
-fn run_pipeline(
-    config: PipelineConfig,
-    pipeline_group_id: &PipelineGroupId,
-    pipeline_id: &PipelineId,
-    run_duration: Duration,
-    shutdown_deadline: Duration,
-) {
-    run_pipeline_with_condition(
-        config,
-        pipeline_group_id,
-        pipeline_id,
-        run_duration,
-        shutdown_deadline,
-        None::<fn() -> bool>,
-    );
-}
 
 /// Run a pipeline with an optional early shutdown condition.
 ///
@@ -536,6 +531,7 @@ where
         pipeline_group_id: pipeline_group_id.clone(),
         pipeline_id: pipeline_id.clone(),
         core_id: 0,
+        deployment_generation: 0,
     };
     // Create a metrics reporter with our own receiver so we can inspect metrics.
     // Use a very large channel so it never overflows, even on extremely slow CI
@@ -700,20 +696,34 @@ fn count_signals_in_segments(
         .unwrap_or(0)
 }
 
-/// Wait for at least `min_count` signals to exist in the primary signal table across all segments.
+/// Count the total item_count across all bundle manifest entries in segment files.
 ///
-/// Returns `true` if the condition was met within `timeout`, `false` otherwise.
-fn wait_for_signals_in_segments(
-    segments_dir: &std::path::Path,
-    payload_type: ArrowPayloadType,
-    min_count: u64,
-    timeout: Duration,
-) -> bool {
-    wait_for_condition(
-        || count_signals_in_segments(segments_dir, payload_type) >= min_count,
-        timeout,
-        Duration::from_millis(10),
-    )
+/// For OTLP pass-through mode, each item corresponds to one signal (log record,
+/// span, or metric data point). This reads the segment manifest rather than Arrow
+/// streams, so it works for any storage format.
+fn count_manifest_items_in_segments(segments_dir: &std::path::Path) -> u64 {
+    if !segments_dir.exists() {
+        return 0;
+    }
+    std::fs::read_dir(segments_dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+                .map(|e| {
+                    SegmentReader::open(e.path())
+                        .map(|reader| {
+                            reader
+                                .manifest()
+                                .iter()
+                                .map(|entry| entry.item_count())
+                                .sum::<u64>()
+                        })
+                        .unwrap_or(0)
+                })
+                .sum()
+        })
+        .unwrap_or(0)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -837,6 +847,7 @@ where
         pipeline_group_id: pipeline_group_id.clone(),
         pipeline_id: pipeline_id.clone(),
         core_id: 0,
+        deployment_generation: 0,
     };
     let metrics_reporter = telemetry_system.reporter();
     let event_reporter = observed_state_store.reporter(SendPolicy::default());
@@ -962,10 +973,14 @@ fn test_durable_buffer_retries_on_nack() {
     // Spawn a thread to flip the exporter after NACKs are observed
     let flip_test_id = test_id.to_owned();
     let flip_handle = std::thread::spawn(move || {
-        // Wait for at least 5 NACKs (condition-based, not fixed timeout)
+        // Wait for at least 5 NACKs (condition-based, not fixed timeout).
+        // Use a generous timeout because this thread starts before the pipeline
+        // is running. On slow CI, pipeline startup (runtime init, engine init,
+        // segment finalization) can consume several seconds before the first
+        // NACK arrives.
         let nacks_observed = wait_for_condition(
             || flaky_exporter::nack_count_by_id(&flip_test_id) >= 5,
-            Duration::from_secs(5), // generous timeout for CI
+            FLIP_CONDITION_TIMEOUT,
             Duration::from_millis(10),
         );
         assert!(nacks_observed, "Expected at least 5 NACKs within timeout");
@@ -985,7 +1000,7 @@ fn test_durable_buffer_retries_on_nack() {
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_secs(10), // generous max timeout for CI
+        PIPELINE_MAX_DURATION,
         Duration::from_secs(1),
         Some(move || delivered_counter.load(Ordering::Relaxed) > 0),
         true, // wait for telemetry cycle before shutdown so metrics are populated
@@ -1114,19 +1129,9 @@ fn test_durable_buffer_recovery_after_outage() {
 
     // Run 1: Downstream failing (all NACKs) - data persists to Quiver
     //
-    // Key timing considerations for reliable segment persistence:
-    // - max_segment_open_duration: 50ms (from TestConfigBuilder default)
-    // - poll_interval: 20ms (timer tick that triggers flush)
-    // - signals_per_second: 500 (generates all 25 signals in ~50ms)
-    //
-    // The pipeline needs enough time for:
-    // 1. Data generation (~50ms for 25 signals at 500/sec)
-    // 2. At least one timer tick to trigger segment flush (poll_interval: 20ms)
-    // 3. max_segment_open_duration to elapse so flush actually finalizes (50ms)
-    // 4. Graceful shutdown to complete flush and engine shutdown
-    //
-    // Run for 300ms to ensure multiple flush opportunities, with a generous
-    // shutdown deadline to ensure the engine properly finalizes segments.
+    // Instead of a fixed timeout (which is flaky on slow CI), we use a
+    // condition-based shutdown that waits until all signals are actually
+    // persisted to segment files before triggering shutdown.
     let config = TestConfigBuilder::new(buffer_path.clone())
         .max_signal_count(Some(run1_signals))
         .max_batch_size(5)
@@ -1140,31 +1145,25 @@ fn test_durable_buffer_recovery_after_outage() {
         }))
         .build(&pipeline_group_id, &pipeline_id);
 
-    run_pipeline(
+    let segments_dir = buffer_path.join("core_0").join("segments");
+    let segments_dir_for_condition = segments_dir.clone();
+    run_pipeline_with_condition(
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_millis(300), // Allow time for segment flush cycles
-        Duration::from_secs(1),     // Generous shutdown deadline for segment finalization
+        Duration::from_secs(10), // generous max timeout for CI
+        Duration::from_secs(1),  // Generous shutdown deadline for segment finalization
+        Some(move || {
+            count_signals_in_segments(&segments_dir_for_condition, ArrowPayloadType::Logs)
+                >= run1_signals
+        }),
     );
 
     // Verify data was persisted to segment files (not just the WAL).
     //
     // We verify by counting actual signal rows in the LOGS table.
     // Each row = 1 log signal, so we should see exactly 25 signals persisted.
-    let segments_dir = buffer_path.join("core_0").join("segments");
-    let signals_exist = wait_for_signals_in_segments(
-        &segments_dir,
-        ArrowPayloadType::Logs,
-        run1_signals,
-        Duration::from_secs(2),
-    );
     let actual_signals = count_signals_in_segments(&segments_dir, ArrowPayloadType::Logs);
-    assert!(
-        signals_exist,
-        "Run 1 should have persisted {} signals, found {}",
-        run1_signals, actual_signals
-    );
     assert_eq!(
         actual_signals, run1_signals,
         "Run 1 should have persisted exactly {} signals, found {}",
@@ -1733,7 +1732,7 @@ fn test_durable_buffer_otlp_item_count_metrics() {
     let pipeline_group_id: PipelineGroupId = "item-count-test".into();
     let pipeline_id: PipelineId = "item-count-pipeline".into();
 
-    // The fake data generator sends signals in order (metrics, traces, logs) per
+    // The traffic generator sends signals in order (metrics, traces, logs) per
     // iteration. Using equal weights with max_batch_size=30 ensures exactly 10 of
     // each signal type per iteration (30 total). No rate limit — the budget is
     // governed entirely by max_signal_count.
@@ -1754,16 +1753,22 @@ fn test_durable_buffer_otlp_item_count_metrics() {
         }))
         .build(&pipeline_group_id, &pipeline_id);
 
-    run_pipeline(
+    // Use a condition-based shutdown that waits until all signals are persisted
+    // to segment files, rather than a fixed timeout that can be too short on slow CI.
+    let segments_dir = buffer_path.join("core_0").join("segments");
+    let segments_dir_for_condition = segments_dir.clone();
+    run_pipeline_with_condition(
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_secs(2), // Give time for WAL → segment rotation
+        Duration::from_secs(10), // generous max timeout for CI
         Duration::from_secs(1),
+        Some(move || {
+            count_manifest_items_in_segments(&segments_dir_for_condition) >= phase1_signals
+        }),
     );
 
     // ── Between phases: verify per-signal item_count in segment manifests ────
-    let segments_dir = buffer_path.join("core_0").join("segments");
     assert!(
         segments_dir.exists(),
         "Segments directory should exist after Phase 1"
@@ -1818,7 +1823,7 @@ fn test_durable_buffer_otlp_item_count_metrics() {
         "Metrics should have non-zero item_count in manifest (got {metric_items})"
     );
 
-    // For OTLP pass-through, each signal from the fake data generator is 1 item
+    // For OTLP pass-through, each signal from the traffic generator is 1 item
     // (1 log record, 1 span, or 1 metric data point). The total should match.
     assert_eq!(
         total_manifest_items, phase1_signals,
@@ -2024,10 +2029,13 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
     // tighter timeout in this thread caused failures on slow CI (see #2354).
     let flip_test_id = test_id.to_owned();
     let flip_handle = std::thread::spawn(move || {
-        // Wait for at least 3 permanent NACKs
+        // Wait for at least 3 permanent NACKs.
+        // Use a generous timeout because this thread starts before the pipeline
+        // is running. On slow CI, pipeline startup can consume several seconds
+        // before the first NACK arrives.
         let permanent_nacks_observed = wait_for_condition(
             || flaky_exporter::permanent_nack_count_by_id(&flip_test_id) >= 3,
-            Duration::from_secs(5),
+            FLIP_CONDITION_TIMEOUT,
             Duration::from_millis(10),
         );
         assert!(
@@ -2041,7 +2049,7 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
 
         // Switch to ACK mode - new data should be delivered.
         // The pipeline shutdown condition gates on delivered_counter > 0, so delivery
-        // is verified there (with a 15 s ceiling) rather than here.
+        // is verified there (with PIPELINE_MAX_DURATION ceiling) rather than here.
         flaky_exporter::set_should_ack_by_id(&flip_test_id, true);
 
         (permanent_nacks_before, transient_nacks_before)
@@ -2053,7 +2061,7 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_secs(15),
+        PIPELINE_MAX_DURATION,
         Duration::from_secs(1),
         Some(move || delivered_counter.load(Ordering::Relaxed) > 0),
         true, // wait for telemetry cycle before shutdown so metrics are populated
@@ -2244,10 +2252,15 @@ fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
 
     let flip_test_id = test_id.to_owned();
     let flip_handle = std::thread::spawn(move || {
-        // Phase 1: Wait for transient NACKs
+        // Phase 1: Wait for transient NACKs.
+        // Use a generous timeout because this thread starts before the pipeline
+        // is running. On slow CI (e.g., overloaded Windows runners), pipeline
+        // startup (Tokio runtime creation, Quiver engine init, segment
+        // finalization) can consume several seconds before the first NACK
+        // arrives at the exporter.
         let transient_observed = wait_for_condition(
             || flaky_exporter::nack_count_by_id(&flip_test_id) >= 3,
-            Duration::from_secs(5),
+            FLIP_CONDITION_TIMEOUT,
             Duration::from_millis(10),
         );
         assert!(
@@ -2262,7 +2275,7 @@ fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
 
         let permanent_observed = wait_for_condition(
             || flaky_exporter::permanent_nack_count_by_id(&flip_test_id) >= 3,
-            Duration::from_secs(5),
+            FLIP_CONDITION_TIMEOUT,
             Duration::from_millis(10),
         );
         assert!(
@@ -2273,9 +2286,10 @@ fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
         let permanent_nacks_phase2 = flaky_exporter::permanent_nack_count_by_id(&flip_test_id);
 
         // Phase 3: Switch to ACK mode.
-        // The pipeline shutdown condition gates on delivered_counter > 0 with a 15 s
-        // ceiling, so delivery is verified there rather than here. Waiting
-        // here with a tighter timeout caused failures on slow CI (see #2354).
+        // The pipeline shutdown condition gates on delivered_counter > 0 with
+        // PIPELINE_MAX_DURATION ceiling, so delivery is verified there rather
+        // than here. Waiting here with a tighter timeout caused failures on
+        // slow CI (see #2354).
         flaky_exporter::set_should_ack_by_id(&flip_test_id, true);
 
         (transient_nacks_phase1, permanent_nacks_phase2)
@@ -2286,7 +2300,7 @@ fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_secs(15),
+        PIPELINE_MAX_DURATION,
         Duration::from_secs(1),
         Some(move || delivered_counter.load(Ordering::Relaxed) > 0),
         true, // wait for telemetry cycle before shutdown so metrics are populated
