@@ -17,7 +17,7 @@ components:
         ###   This doesn't work.
         #     build-context: 'otel-arrow=../../'
         volumes:
-          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/nonroot/config.yaml:ro'
         command:
           - "--config"
           - "./config.yaml"
@@ -38,7 +38,7 @@ components:
         ports:
           - "8086:8080"
         volumes:
-          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/nonroot/config.yaml:ro'
         command:
           - "--config"
           - "./config.yaml"
@@ -59,7 +59,7 @@ components:
         ports:
           - "8087:8080"
         volumes:
-          - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+          - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/nonroot/config.yaml:ro'
         command:
           - "--config"
           - "./config.yaml"
