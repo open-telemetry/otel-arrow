@@ -22,6 +22,7 @@ controlled, reviewable, and accountable:
 - Treat AI output as a draft, not as authority.
 - Require traceable evidence for accepted behavior and design decisions.
 - Keep changes small enough to review and validate.
+- Consider optimizing changes for human readability and reviewability.
 - Document assumptions, unsupported behavior, and intentional divergences.
 - Preserve human ownership of correctness, maintainability, and security.
 - Validate changes with tests, fixtures, benchmarks, and/or documented rationale.
