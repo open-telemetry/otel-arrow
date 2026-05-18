@@ -38,7 +38,7 @@ groups:
               grpc_endpoint: http://{{backend_hostname}}:1235
               compression_method: zstd
               arrow:
-                payload_compression: none
+                payload_compression: zstd
             {%- else %}
             type: urn:otel:exporter:otlp_grpc
             config:
