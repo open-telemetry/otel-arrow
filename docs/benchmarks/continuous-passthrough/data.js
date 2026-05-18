@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779128303930,
+  "lastUpdate": 1779138581088,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "c8804f567d53c195a25f3be40080e281edcb2314",
-          "message": "docs: consolidate CLAUDE.md and copilot-instructions.md into AGENTS.md (#2791)\n\nBoth `CLAUDE.md` and `.github/copilot-instructions.md` were stubs that\nsimply redirected to\n[rust/otap-dataflow/AGENTS.md](rust/otap-dataflow/AGENTS.md).\n\nModern AI coding agents (Claude Code, GitHub Copilot, Cursor, etc.) all\nsupport a single top-level `AGENTS.md` file, so this consolidates the\ntwo stubs into one.",
-          "timestamp": "2026-04-30T18:59:36Z",
-          "tree_id": "4647005286ec671e7c219b6c24b342409c74ba3e",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/c8804f567d53c195a25f3be40080e281edcb2314"
-        },
-        "date": 1777589045242,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0.9887005090713501,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 5.740904093832289,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 6.202992944095526,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 16.544921875,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 17.75,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 6041.3450552386685,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 5981.614242545631,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002532,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 212410.94907589044,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 175491.70640271768,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8416,6 +8332,96 @@ window.BENCHMARK_DATA = {
           {
             "name": "egress_bytes_per_log",
             "value": 28.357761488869436,
+            "unit": "bytes/log",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "cijo.thomas@gmail.com",
+            "name": "Cijo Thomas",
+            "username": "cijothomas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "e68150189f986e183d3e3773d77f52835647be5f",
+          "message": "NUMA-aware core assignments for saturation tests (#2997)\n\n## Summary\n\nImproves the accuracy and consistency of the saturation/scaling test\nsuite by eliminating hardware-level interference (NUMA cross-socket\ntraffic, HT sibling contention) and making the workload more realistic.\n\n## Problem\n\nThe saturation tests measure CPU scaling efficiency by running the SUT\nat 1/2/4/8/16 cores and checking for linear throughput growth. On our\n2-socket NUMA CI box (Intel Xeon 8358, 128 logical CPUs), results were\nunreliable:\n\n- **16-core showed ~48% efficiency** — far below expected for a\nshared-nothing architecture\n- **High run-to-run variance** made results hard to interpret\n\nRoot causes identified:\n1. **HT sibling contention** — SUT (cores 0-15) and backend (cores\n64-79) were placed on hyperthreaded siblings of the same physical cores,\ncausing L1/L2 thrashing\n2. **Cross-NUMA traffic** — components spanning both NUMA nodes incurred\n2x memory latency (node distance: 10 local vs 20 remote)\n3. **Unrealistic workload** — semantic_conventions data source with\n~300-byte logs and low entropy bodies gave artificially good\ncompression, not representative of real pipelines\n\n## Changes\n\n### 1. NUMA-aware core pinning\n\nPin SUT exclusively to NUMA node 0 physical cores (0-15), loadgen and\nbackend to NUMA node 1 (32-63, 96-127). This ensures:\n- No HT sibling sharing between components\n- All memory accesses are NUMA-local within each component\n- SUT gets dedicated L3 cache (no pollution from loadgen/backend)\n\n### 2. Static 1KB log bodies (saturation tests only)\n\nSwitch from `semantic_conventions` (~300 bytes) to `static` data source\nwith `log_body_size_bytes: 1024`. Larger payloads better exercise the\nserialization/compression/network path that dominates real workloads.\nOnly affects saturation tests — all other tests continue using\n`semantic_conventions`.\n\n### 3. Body pool entropy (512 unique bodies)\n\nGenerate 512 unique log bodies with sequence-prefixed cycling templates\ninstead of repeating the same ~50 bodies. This gives a realistic ~3:1\ncompression ratio rather than artificially high compression from\nduplicate data.\n\n### 4. Saturation tests in label-triggered workflow\n\nAdd saturation suite to `pipeline-perf-on-label.yaml` so scaling can be\nvalidated on PRs via the `pipelineperf` label without waiting for\nnightly runs. Also adds `labeled` event type to trigger on label\naddition.\n\n## Results (3 consecutive CI runs on bare metal)\n\n| Cores | Before | Run 0 | Run 1 | Run 2 |\n|-------|--------|-------|-------|-------|\n| 2 | 97% | 96% | 116%* | 99% |\n| 4 | 87% | 99.6% | 102% | 100% |\n| 8 | 82% | 100% | 95% | 91% |\n| 16 | 48% | 80% | 68% | 91% |\n| **Avg** | **79%** | **94%** | **96%** | **96%** |\n| **Speedup** | **7.7x** | **12.8x** | **11.0x** | **14.6x** |\n\n*\\* >100% is measurement noise (super-linear artifact from cache warming\neffects)*\n\nVerdict changed from 🟠 ACCEPTABLE to ✅ EXCELLENT across all runs.\n\n16-core variance (68-91%) is due to loadgen CPU saturation — with 48\nloadgen cores at 100%, small throughput fluctuations swing the\nefficiency metric. This is a measurement limitation, not a SUT issue.\n\n## Files changed\n\n- `saturation-{1,2,4,8,16}cores.yaml` — NUMA-aware core ranges\n- `saturation-cores-template.yaml.j2` — `data_source: static`,\n`log_body_size_bytes: 1024`\n- `configs/loadgen/config.yaml.j2` — template variables for data_source\nand log_body_size_bytes\n- `df-loadgen-steps-docker.yaml` — pass through new template variables\n- `static_signal.rs` — body pool entropy (512 unique bodies with cycling\ntemplates)\n- `pipeline-perf-on-label.yaml` — saturation step + labeled trigger",
+          "timestamp": "2026-05-18T16:10:36Z",
+          "tree_id": "138a4810673b4ba36eb05261229f3f3bdb389934",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/e68150189f986e183d3e3773d77f52835647be5f"
+        },
+        "date": 1779138580611,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.2629070281982422,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 95.99592719406081,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.24567821401078,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 32.79296875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 33.4375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 537143.6561463312,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 543927.2813510387,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003315,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_mb_per_sec",
+            "value": 14.739360978352858,
+            "unit": "MB/s",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_mb_per_sec",
+            "value": 14.696708676044901,
+            "unit": "MB/s",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 28.414350055853863,
             "unit": "bytes/log",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Egress Bytes Per Log"
           }
