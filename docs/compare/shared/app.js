@@ -34,10 +34,16 @@ const METRIC_LABELS = {
   network_tx_bytes_rate_avg: "Network TX Rate",
   network_rx_bytes_rate_avg: "Network RX Rate",
   dropped_logs_percentage: "Dropped Logs",
+  dropped_metrics_percentage: "Dropped Metrics",
+  dropped_spans_percentage: "Dropped Spans",
   logs_delivery_deviation_percentage: "Logs Delivery Deviation",
   logs_produced_rate: "Offered Load Rate",
+  metrics_produced_rate: "Offered Load Rate",
+  spans_produced_rate: "Offered Load Rate",
   loadgen_logs_sent_rate: "Loadgen Sent Rate",
   logs_received_rate: "Collector Received Rate",
+  metrics_received_rate: "Collector Received Rate",
+  spans_received_rate: "Collector Received Rate",
   collector_logs_sent_rate: "Collector Sent Rate",
   backend_logs_received_rate: "Backend Received Rate",
   test_duration: "Test Duration",
@@ -51,10 +57,16 @@ const METRIC_UNITS = {
   network_tx_bytes_rate_avg: "bytes/sec",
   network_rx_bytes_rate_avg: "bytes/sec",
   dropped_logs_percentage: "%",
+  dropped_metrics_percentage: "%",
+  dropped_spans_percentage: "%",
   logs_delivery_deviation_percentage: "%",
   logs_produced_rate: "logs/sec",
+  metrics_produced_rate: "metrics/sec",
+  spans_produced_rate: "spans/sec",
   loadgen_logs_sent_rate: "logs/sec",
   logs_received_rate: "logs/sec",
+  metrics_received_rate: "metrics/sec",
+  spans_received_rate: "spans/sec",
   collector_logs_sent_rate: "logs/sec",
   backend_logs_received_rate: "logs/sec",
   test_duration: "seconds",
@@ -280,14 +292,16 @@ const activeCharts = new Map();
 
 function getColor(index) { const p = getActivePalette(); return p[index % p.length]; }
 
+const RECEIVED_RATE_METRICS = ["logs_received_rate", "metrics_received_rate", "spans_received_rate"];
+
 function hasBackpressure(metricsArray, loadgenRate) {
   if (!metricsArray) return false;
   const dropped = metricsArray.find((m) => m.name === "dropped_logs_percentage");
   if (dropped && typeof dropped.value === "number" && dropped.value > DATA_LOSS_THRESHOLD) return true;
   if (loadgenRate && loadgenRate > 0) {
-    const produced = metricsArray.find((m) => m.name === "logs_produced_rate");
-    if (produced && typeof produced.value === "number") {
-      if ((loadgenRate - produced.value) / loadgenRate * 100 > RATE_DEVIATION_THRESHOLD) return true;
+    const received = metricsArray.find((m) => RECEIVED_RATE_METRICS.includes(m.name));
+    if (received && typeof received.value === "number") {
+      if ((loadgenRate - received.value) / loadgenRate * 100 > RATE_DEVIATION_THRESHOLD) return true;
     }
   }
   return false;
@@ -402,10 +416,16 @@ const TIMESERIES_METRICS = [
   { key: "network_rx_bytes_rate", label: "Network RX Rate", unit: "bytes/sec", avg: "network_rx_bytes_rate_avg" },
   { key: "logs_produced_rate", label: "Offered Load Rate", unit: "logs/sec", avg: "logs_produced_rate" },
   { key: "logs_received_rate", label: "Backend Received Rate", unit: "logs/sec", avg: "logs_received_rate" },
+  { key: "metrics_produced_rate", label: "Offered Load Rate", unit: "metrics/sec", avg: "metrics_produced_rate" },
+  { key: "metrics_received_rate", label: "Backend Received Rate", unit: "metrics/sec", avg: "metrics_received_rate" },
+  { key: "spans_produced_rate", label: "Offered Load Rate", unit: "spans/sec", avg: "spans_produced_rate" },
+  { key: "spans_received_rate", label: "Backend Received Rate", unit: "spans/sec", avg: "spans_received_rate" },
 ];
 
 const SCALAR_ONLY_METRICS = [
   { name: "dropped_logs_percentage", label: "Dropped Logs", unit: "%" },
+  { name: "dropped_metrics_percentage", label: "Dropped Metrics", unit: "%" },
+  { name: "dropped_spans_percentage", label: "Dropped Spans", unit: "%" },
   { name: "test_duration", label: "Test Duration", unit: "seconds" },
 ];
 
@@ -761,7 +781,7 @@ function renderComparisonDetail(suiteData, comparison, testNames, initialSuiteId
 
     let scalarsHtml = "";
     if (test && metrics.length) {
-      const cards = SCALAR_ONLY_METRICS.map((sm) => { const m = getAgg(sm.name); if (!m) return ""; const bad = sm.name === "dropped_logs_percentage" && m.value > DATA_LOSS_THRESHOLD;
+      const cards = SCALAR_ONLY_METRICS.map((sm) => { const m = getAgg(sm.name); if (!m) return ""; const bad = /^dropped_(logs|metrics|spans)_percentage$/.test(sm.name) && m.value > DATA_LOSS_THRESHOLD;
         return `<div class="metric-scalar-card${bad ? " backpressure" : ""}"><div class="metric-scalar-name">${escapeHtml(sm.label)}</div><div class="metric-scalar-value">${formatMetricValue(m.value, m.unit || sm.unit)}</div></div>`; }).filter(Boolean).join("");
       if (cards) scalarsHtml = `<div class="metric-scalars">${cards}</div>`;
     }
