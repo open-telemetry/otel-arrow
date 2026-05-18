@@ -64,6 +64,11 @@
     "slug": "dfe_logs_baselines",
     "name": "Dataflow Engine Logs",
     "description": "Baseline DFE logs runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.",
+    "chart": {
+      "metrics": {
+        "default": "cpu_percentage_normalized_avg"
+      }
+    },
     "tests": [
       {
         "name": "100k",
@@ -153,6 +158,11 @@
     "slug": "dfe_metrics_baselines",
     "name": "Dataflow Engine Metrics",
     "description": "Baseline DFE metrics runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.",
+    "chart": {
+      "metrics": {
+        "default": "cpu_percentage_normalized_avg"
+      }
+    },
     "tests": [
       {
         "name": "100k",
@@ -242,6 +252,11 @@
     "slug": "dfe_traces_baselines",
     "name": "Dataflow Engine Traces",
     "description": "Baseline DFE traces runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.",
+    "chart": {
+      "metrics": {
+        "default": "cpu_percentage_normalized_avg"
+      }
+    },
     "tests": [
       {
         "name": "100k",
