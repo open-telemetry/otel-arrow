@@ -20,10 +20,13 @@ Open-source projects that embrace AI-assisted development should keep the work
 controlled, reviewable, and accountable:
 
 - Treat AI output as a draft, not as authority.
-- Require traceable evidence for accepted behavior and design decisions.
+- Require traceable evidence and explicit quality gates for accepted behavior
+  and design decisions.
 - Keep changes small enough to review and validate.
+- Consider optimizing changes for human readability and reviewability.
 - Document assumptions, unsupported behavior, and intentional divergences.
-- Preserve human ownership of correctness, maintainability, and security.
+- Preserve human ownership of correctness, maintainability, security, and merge
+  decisions.
 - Validate changes with tests, fixtures, benchmarks, and/or documented rationale.
 - Avoid exposing secrets, private data, or unsuitable third-party content.
 - Respect licensing, provenance, and attribution requirements.

@@ -61,7 +61,7 @@ Do not treat every observed oracle behavior as in scope. Classify important
 observations before relying on them:
 
 | Classification | Meaning |
-|---|---|
+| --- | --- |
 | Spec-required | Required by the normative specification. |
 | Schema-required | Required by a schema, IDL, or generated-code contract. |
 | Ecosystem-required | Not fully specified, but required for interoperability. |
@@ -75,6 +75,12 @@ oracle is the required check. The classification explains why that oracle
 behavior matters and records any intentional divergence, such as implementation
 artifacts, reference bugs, OTAP-specific constraints, or behavior left out of
 the current scope.
+
+Treat `Reference bug` as the highest-risk divergence classification. If Rust
+intentionally does not reproduce reference behavior, record why with a
+specification link, upstream issue, test evidence, or short development-note
+rationale so reviewers can distinguish a real reference bug from hard or
+inconvenient behavior.
 
 ## Define the OTAP Integration Contract
 
