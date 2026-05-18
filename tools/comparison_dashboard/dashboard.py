@@ -1211,31 +1211,52 @@ def validate_manifest(
 
     known_metric_names = {m["name"] for m in manifest.metrics}
     for comp in comparisons:
-        comp_metrics = comp.get("metrics")
-        if comp_metrics is None:
+        chart = comp.get("chart")
+        if chart is None:
             continue
-        if not isinstance(comp_metrics, dict):
+        if not isinstance(chart, dict):
             errors.append(
-                f"comparison '{comp.get('slug')}' 'metrics' must be a mapping (source: {comp.get('_source')})"
+                f"comparison '{comp.get('slug')}' 'chart' must be a mapping (source: {comp.get('_source')})"
             )
             continue
-        chart_list = comp_metrics.get("chart")
-        if chart_list is None:
+        chart_metrics = chart.get("metrics")
+        if chart_metrics is None:
             continue
-        if not isinstance(chart_list, list) or not chart_list:
+        if not isinstance(chart_metrics, dict):
             errors.append(
-                f"comparison '{comp.get('slug')}' 'metrics.chart' must be a non-empty list (source: {comp.get('_source')})"
+                f"comparison '{comp.get('slug')}' 'chart.metrics' must be a mapping (source: {comp.get('_source')})"
             )
             continue
-        for j, name in enumerate(chart_list):
-            if not isinstance(name, str) or not name:
+        allowed = chart_metrics.get("allowed")
+        if allowed is not None:
+            if not isinstance(allowed, list) or not allowed:
                 errors.append(
-                    f"comparison '{comp.get('slug')}' metrics.chart[{j}] must be a non-empty string (source: {comp.get('_source')})"
+                    f"comparison '{comp.get('slug')}' 'chart.metrics.allowed' must be a non-empty list (source: {comp.get('_source')})"
                 )
-                continue
-            if name not in known_metric_names:
+            else:
+                for j, name in enumerate(allowed):
+                    if not isinstance(name, str) or not name:
+                        errors.append(
+                            f"comparison '{comp.get('slug')}' chart.metrics.allowed[{j}] must be a non-empty string (source: {comp.get('_source')})"
+                        )
+                        continue
+                    if name not in known_metric_names:
+                        errors.append(
+                            f"comparison '{comp.get('slug')}' chart.metrics.allowed references unknown metric '{name}' (source: {comp.get('_source')})"
+                        )
+        default = chart_metrics.get("default")
+        if default is not None:
+            if not isinstance(default, str) or not default:
                 errors.append(
-                    f"comparison '{comp.get('slug')}' metrics.chart references unknown metric '{name}' (source: {comp.get('_source')})"
+                    f"comparison '{comp.get('slug')}' 'chart.metrics.default' must be a non-empty string (source: {comp.get('_source')})"
+                )
+            elif default not in known_metric_names:
+                errors.append(
+                    f"comparison '{comp.get('slug')}' chart.metrics.default references unknown metric '{default}' (source: {comp.get('_source')})"
+                )
+            elif isinstance(allowed, list) and allowed and default not in allowed:
+                errors.append(
+                    f"comparison '{comp.get('slug')}' chart.metrics.default '{default}' is not in chart.metrics.allowed (source: {comp.get('_source')})"
                 )
 
     for comp in comparisons:
