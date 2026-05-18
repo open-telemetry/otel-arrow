@@ -650,7 +650,12 @@ function renderComparisonChart(suiteData, comparison, tests, onBarClick) {
   const target = document.getElementById("comparison-chart");
   if (!target) return;
   const metrics = findAvailableMetrics(suiteData, comparison);
-  let sel = metrics.includes("cpu_percentage_normalized_avg") ? "cpu_percentage_normalized_avg" : metrics[0] || "cpu_percentage_normalized_avg";
+  const compSlug = window.COMPARISON_SLUG;
+  const prev = perComparisonMetrics.get(compSlug);
+  let sel = prev && metrics.includes(prev)
+    ? prev
+    : (metrics.includes("cpu_percentage_normalized_avg") ? "cpu_percentage_normalized_avg" : metrics[0] || "cpu_percentage_normalized_avg");
+  perComparisonMetrics.set(compSlug, sel);
   const optsHtml = metrics.map((n) => `<option value="${escapeHtml(n)}" ${n === sel ? "selected" : ""}>${escapeHtml(metricLabel(n))}</option>`).join("");
 
   const onClick = onBarClick ? (event, elements) => {
@@ -690,6 +695,7 @@ function renderComparisonChart(suiteData, comparison, tests, onBarClick) {
   const ms = document.getElementById("metric-select");
   if (ms) ms.onchange = () => {
     sel = ms.value;
+    perComparisonMetrics.set(compSlug, sel);
     updateBarChartData(chart, suiteData, comparison, tests, sel);
     const t = target.querySelector(".scenario-section-title");
     if (t) t.textContent = metricTitle(sel, suiteData, comparison);
