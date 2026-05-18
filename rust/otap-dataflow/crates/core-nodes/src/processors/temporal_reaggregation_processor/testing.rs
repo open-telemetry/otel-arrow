@@ -234,7 +234,7 @@ pub(super) fn drain_upstream(
     ack_count: &mut usize,
     nack_count: &mut usize,
 ) {
-    // Drain runtime control (e.g. DelayData) -- just consume for now
+    // Drain runtime control -- just consume for now
     while runtime_ctrl_rx.try_recv().is_ok() {}
 
     // Drain pipeline completion (upstream ack/nack delivery)

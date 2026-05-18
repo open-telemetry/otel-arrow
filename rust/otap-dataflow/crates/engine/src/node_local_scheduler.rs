@@ -6,7 +6,7 @@
 //! This module implements two related but intentionally distinct mechanisms:
 //!
 //! - Delayed resume stores a retained `Box<PData>` until a deadline and then
-//!   surfaces that same payload as `NodeControlMsg::DelayedData`. Delayed
+//!   surfaces that same payload as `NodeControlMsg::ResumeData`. Delayed
 //!   resumes are append-only: there is no key, deduplication, or replacement.
 //!   Equal deadlines are emitted FIFO by scheduler sequence. Rejection is
 //!   payload-preserving so callers can turn failed scheduling into explicit
@@ -388,7 +388,7 @@ impl<PData> NodeLocalScheduler<PData> {
                 // Safety: take_resume is true only after peeking a due resume,
                 // and no delayed-resume mutation happens between peek and pop.
                 .expect("resume must exist");
-            return Some(NodeControlMsg::DelayedData {
+            return Some(NodeControlMsg::ResumeData {
                 when: resume.when,
                 data: resume.data,
             });
@@ -434,7 +434,7 @@ impl<PData> NodeLocalScheduler<PData> {
     }
 
     /// Latches shutdown and converts pending delayed resumes into immediate
-    /// `DelayedData` controls while dropping pending wakeups.
+    /// `ResumeData` controls while dropping pending wakeups.
     ///
     /// This preserves payload drain expectations for retry-like flows. Wakeups
     /// are intentionally not retained because they carry no payload.
@@ -445,7 +445,7 @@ impl<PData> NodeLocalScheduler<PData> {
         self.shutting_down = true;
 
         while let Some(resume) = self.delayed_resumes.pop() {
-            self.due_now.push_back(NodeControlMsg::DelayedData {
+            self.due_now.push_back(NodeControlMsg::ResumeData {
                 when: now,
                 data: resume.data,
             });
@@ -592,17 +592,13 @@ mod tests {
         scheduler.heap.assert_consistent();
     }
 
-    fn expect_delayed(
-        msg: Option<NodeControlMsg<i32>>,
-        expected_when: Instant,
-        expected_data: i32,
-    ) {
+    fn expect_resume(msg: Option<NodeControlMsg<i32>>, expected_when: Instant, expected_data: i32) {
         match msg {
-            Some(NodeControlMsg::DelayedData { when, data }) => {
+            Some(NodeControlMsg::ResumeData { when, data }) => {
                 assert_eq!(when, expected_when);
                 assert_eq!(*data, expected_data);
             }
-            _ => panic!("expected delayed data"),
+            _ => panic!("expected resume data"),
         }
     }
 
@@ -629,14 +625,14 @@ mod tests {
     /// Scenario: a retained payload is scheduled through the processor-local
     /// delayed-resume queue and then becomes due.
     /// Guarantees: the scheduler emits the original payload as
-    /// `NodeControlMsg::DelayedData` and clears the delayed-resume deadline.
+    /// `NodeControlMsg::ResumeData` and clears the delayed-resume deadline.
     #[test]
     fn requeue_later_emits_the_stored_payload() {
         let mut scheduler = NodeLocalScheduler::<i32>::new(2, 2);
         let when = Instant::now() + Duration::from_secs(1);
 
         assert_eq!(scheduler.requeue_later(when, Box::new(17)), Ok(()));
-        expect_delayed(scheduler.pop_due(when), when, 17);
+        expect_resume(scheduler.pop_due(when), when, 17);
         assert_eq!(scheduler.next_expiry(), None);
     }
 
@@ -658,10 +654,10 @@ mod tests {
         assert_eq!(scheduler.requeue_later(same_time_b, Box::new(2)), Ok(()));
         assert_eq!(scheduler.requeue_later(sooner, Box::new(0)), Ok(()));
 
-        expect_delayed(scheduler.pop_due(sooner), sooner, 0);
-        expect_delayed(scheduler.pop_due(same_time_a), same_time_a, 1);
-        expect_delayed(scheduler.pop_due(same_time_b), same_time_b, 2);
-        expect_delayed(scheduler.pop_due(later), later, 3);
+        expect_resume(scheduler.pop_due(sooner), sooner, 0);
+        expect_resume(scheduler.pop_due(same_time_a), same_time_a, 1);
+        expect_resume(scheduler.pop_due(same_time_b), same_time_b, 2);
+        expect_resume(scheduler.pop_due(later), later, 3);
     }
 
     /// Scenario: the delayed-resume heap has reached its configured capacity.
@@ -698,7 +694,7 @@ mod tests {
     /// Scenario: shutdown begins while future delayed resumes are still pending
     /// in the processor-local scheduler.
     /// Guarantees: pending delayed resumes are converted into immediate
-    /// `DelayedData` delivery using the shutdown-start timestamp.
+    /// `ResumeData` delivery using the shutdown-start timestamp.
     #[test]
     fn shutdown_makes_pending_delayed_resumes_due_immediately() {
         let mut scheduler = NodeLocalScheduler::new(4, 2);
@@ -713,8 +709,8 @@ mod tests {
 
         scheduler.begin_shutdown(now);
 
-        expect_delayed(scheduler.pop_due(now), now, 11);
-        expect_delayed(scheduler.pop_due(now), now, 12);
+        expect_resume(scheduler.pop_due(now), now, 11);
+        expect_resume(scheduler.pop_due(now), now, 12);
         assert!(scheduler.pop_due(now).is_none());
     }
 

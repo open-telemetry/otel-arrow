@@ -1207,85 +1207,59 @@ impl local::Processor<OtapPdata> for BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         match msg {
-            Message::Control(ctrl) => {
-                match ctrl {
-                    NodeControlMsg::Config { .. } => Ok(()),
-                    NodeControlMsg::Shutdown { .. } => {
-                        self.flush_shutdown(effect).await?;
-                        Ok(())
-                    }
-                    NodeControlMsg::CollectTelemetry {
-                        mut metrics_reporter,
-                    } => {
-                        effect
-                            .report_local_scheduler_metrics(&mut metrics_reporter)
-                            .map_err(|e| EngineError::InternalError {
-                                message: e.to_string(),
-                            })?;
-                        metrics_reporter.report(&mut self.metrics).map_err(|e| {
-                            EngineError::InternalError {
-                                message: e.to_string(),
-                            }
-                        })
-                    }
-                    NodeControlMsg::Wakeup { slot, when, .. } => {
-                        let Some((format, signal)) = signal_from_wakeup_slot(slot) else {
-                            return Ok(());
-                        };
-
-                        match format {
-                            SignalFormat::OtapRecords => {
-                                if let Some(mut otap_format) = self.otap_format() {
-                                    otap_format
-                                        .for_signal(signal)
-                                        .flush_signal_impl(effect, when, FlushReason::Timer)
-                                        .await?;
-                                }
-                            }
-                            SignalFormat::OtlpBytes => {
-                                if let Some(mut otlp_format) = self.otlp_format() {
-                                    otlp_format
-                                        .for_signal(signal)
-                                        .flush_signal_impl(effect, when, FlushReason::Timer)
-                                        .await?;
-                                }
-                            }
-                        };
-
-                        Ok(())
-                    }
-                    NodeControlMsg::DelayedData { data, when } => {
-                        let signal = data.signal_type();
-
-                        match self.format_for_signal_format(data.signal_format()) {
-                            Some(ActiveBatchProcessorFormatKind::Otap) => self
-                                .otap_format()
-                                .expect(
-                                    "otap batch state must exist when otap format kind is selected",
-                                )
-                                .for_signal(signal)
-                                .flush_signal_impl(effect, when, FlushReason::Timer)
-                                .await?,
-                            Some(ActiveBatchProcessorFormatKind::Otlp) => self
-                                .otlp_format()
-                                .expect(
-                                    "otlp batch state must exist when otlp format kind is selected",
-                                )
-                                .for_signal(signal)
-                                .flush_signal_impl(effect, when, FlushReason::Timer)
-                                .await?,
-                            None => return Err(Self::no_active_format_error()),
-                        };
-
-                        Ok(())
-                    }
-                    NodeControlMsg::Ack(ack) => self.handle_ack(effect, ack).await,
-                    NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
-                    NodeControlMsg::DrainIngress { .. } => Ok(()),
-                    NodeControlMsg::TimerTick { .. } => unreachable!(),
-                    NodeControlMsg::MemoryPressureChanged { .. } => Ok(()),
+            Message::Control(ctrl) => match ctrl {
+                NodeControlMsg::Config { .. } => Ok(()),
+                NodeControlMsg::Shutdown { .. } => {
+                    self.flush_shutdown(effect).await?;
+                    Ok(())
                 }
-            }
+                NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                } => {
+                    effect
+                        .report_local_scheduler_metrics(&mut metrics_reporter)
+                        .map_err(|e| EngineError::InternalError {
+                            message: e.to_string(),
+                        })?;
+                    metrics_reporter.report(&mut self.metrics).map_err(|e| {
+                        EngineError::InternalError {
+                            message: e.to_string(),
+                        }
+                    })
+                }
+                NodeControlMsg::Wakeup { slot, when, .. } => {
+                    let Some((format, signal)) = signal_from_wakeup_slot(slot) else {
+                        return Ok(());
+                    };
+
+                    match format {
+                        SignalFormat::OtapRecords => {
+                            if let Some(mut otap_format) = self.otap_format() {
+                                otap_format
+                                    .for_signal(signal)
+                                    .flush_signal_impl(effect, when, FlushReason::Timer)
+                                    .await?;
+                            }
+                        }
+                        SignalFormat::OtlpBytes => {
+                            if let Some(mut otlp_format) = self.otlp_format() {
+                                otlp_format
+                                    .for_signal(signal)
+                                    .flush_signal_impl(effect, when, FlushReason::Timer)
+                                    .await?;
+                            }
+                        }
+                    };
+
+                    Ok(())
+                }
+                NodeControlMsg::ResumeData { .. } => Ok(()),
+                NodeControlMsg::Ack(ack) => self.handle_ack(effect, ack).await,
+                NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
+                NodeControlMsg::DrainIngress { .. } => Ok(()),
+                NodeControlMsg::TimerTick { .. } => unreachable!(),
+                NodeControlMsg::MemoryPressureChanged { .. } => Ok(()),
+            },
             Message::PData(request) => self.process_signal_impl(effect, request).await,
         }
     }

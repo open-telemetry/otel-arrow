@@ -41,10 +41,10 @@ use std::time::Instant;
 /// Pipeline-scoped metrics for the shared runtime-control actor.
 ///
 /// This set describes shutdown/drain progress, pending control backlogs, and
-/// the state and throughput of the runtime-managed timer and delayed-data
-/// machinery. It is the primary metric set for understanding whether the
-/// pipeline runtime is still making progress under control-plane load and where
-/// graceful shutdown is spending time.
+/// the state and throughput of the runtime-managed timer machinery. It is the
+/// primary metric set for understanding whether the pipeline runtime is still
+/// making progress under control-plane load and where graceful shutdown is
+/// spending time.
 #[metric_set(name = "pipeline.runtime_control")]
 #[derive(Debug, Default, Clone)]
 pub(crate) struct RuntimeControlMetrics {
@@ -91,15 +91,6 @@ pub(crate) struct RuntimeControlMetrics {
     /// Level: `basic`.
     #[metric(name = "telemetry_timers.active", unit = "{timer}")]
     pub telemetry_timers_active: Gauge<u64>,
-    /// Number of delayed-data wakeups currently queued in the runtime manager.
-    ///
-    /// This is a key liveness signal for processors that depend on delayed
-    /// retries or one-shot wakeups: rising backlog means more admitted work is
-    /// waiting on the shared runtime control path.
-    ///
-    /// Level: `basic`.
-    #[metric(name = "delayed_data.queued", unit = "{message}")]
-    pub delayed_data_queued: Gauge<u64>,
     /// Count of `RuntimeControlMsg::Shutdown` requests accepted by this runtime.
     ///
     /// This marks the start of the runtime-managed drain sequence and is the
@@ -172,23 +163,6 @@ pub(crate) struct RuntimeControlMetrics {
     /// Level: `normal`.
     #[metric(name = "cancel_telemetry_timer.received", unit = "{message}")]
     pub cancel_telemetry_timer_received: Counter<u64>,
-    /// Count of `DelayData` requests received by the runtime manager.
-    ///
-    /// This measures how much work is being converted into deferred wakeups, a
-    /// common cause of control-plane load for retry and batching patterns.
-    ///
-    /// Level: `normal`.
-    #[metric(name = "delay_data.received", unit = "{message}")]
-    pub delay_data_received: Counter<u64>,
-    /// Count of delayed-data items returned immediately because drain is active.
-    ///
-    /// This is important for shutdown liveness: it shows the runtime is
-    /// flushing scheduled work back to origin nodes instead of leaving it
-    /// stranded behind future wakeup times.
-    ///
-    /// Level: `normal`.
-    #[metric(name = "delay_data.returned_during_drain", unit = "{message}")]
-    pub delay_data_returned_during_drain: Counter<u64>,
     /// Count of `TimerTick` control messages sent to nodes.
     ///
     /// This confirms that due timers are actually being delivered and helps
@@ -205,14 +179,6 @@ pub(crate) struct RuntimeControlMetrics {
     /// Level: `normal`.
     #[metric(name = "collect_telemetry.sent", unit = "{message}")]
     pub collect_telemetry_sent: Counter<u64>,
-    /// Count of delayed-data wakeups sent back to origin nodes.
-    ///
-    /// This is the completion-side counterpart to `delay_data.received` and is
-    /// a direct indicator that deferred work is resuming rather than stalling.
-    ///
-    /// Level: `normal`.
-    #[metric(name = "delayed_data.sent", unit = "{message}")]
-    pub delayed_data_sent: Counter<u64>,
     /// Distribution of time spent waiting for receivers to finish draining.
     ///
     /// This isolates the receiver-gated phase of shutdown and is useful for
@@ -377,7 +343,6 @@ pub(crate) struct RuntimeControlMetricsState {
     pending_sends_buffered: u64,
     timers_active: u64,
     telemetry_timers_active: u64,
-    delayed_data_queued: u64,
     shutdown_received: u64,
     drain_ingress_sent: u64,
     receiver_drained_received: u64,
@@ -387,11 +352,8 @@ pub(crate) struct RuntimeControlMetricsState {
     cancel_timer_received: u64,
     start_telemetry_timer_received: u64,
     cancel_telemetry_timer_received: u64,
-    delay_data_received: u64,
-    delay_data_returned_during_drain: u64,
     timer_tick_sent: u64,
     collect_telemetry_sent: u64,
-    delayed_data_sent: u64,
     drain_receiver_phase_duration_ns: Mmsc,
     drain_total_duration_ns: Mmsc,
     shutdown_started_at: Option<Instant>,
@@ -405,7 +367,6 @@ impl RuntimeControlMetricsState {
         level: MetricLevel,
         timers_active: usize,
         telemetry_timers_active: usize,
-        delayed_data_queued: usize,
     ) -> Self {
         Self {
             level,
@@ -417,7 +378,6 @@ impl RuntimeControlMetricsState {
             pending_sends_buffered: 0,
             timers_active: timers_active as u64,
             telemetry_timers_active: telemetry_timers_active as u64,
-            delayed_data_queued: delayed_data_queued as u64,
             shutdown_received: 0,
             drain_ingress_sent: 0,
             receiver_drained_received: 0,
@@ -427,11 +387,8 @@ impl RuntimeControlMetricsState {
             cancel_timer_received: 0,
             start_telemetry_timer_received: 0,
             cancel_telemetry_timer_received: 0,
-            delay_data_received: 0,
-            delay_data_returned_during_drain: 0,
             timer_tick_sent: 0,
             collect_telemetry_sent: 0,
-            delayed_data_sent: 0,
             drain_receiver_phase_duration_ns: Mmsc::default(),
             drain_total_duration_ns: Mmsc::default(),
             shutdown_started_at: None,
@@ -472,14 +429,6 @@ impl RuntimeControlMetricsState {
         }
         if self.telemetry_timers_active != telemetry_timers_active {
             self.telemetry_timers_active = telemetry_timers_active;
-            self.dirty = true;
-        }
-    }
-
-    pub(crate) fn set_delayed_data_queued(&mut self, queued: usize) {
-        let queued = queued as u64;
-        if self.delayed_data_queued != queued {
-            self.delayed_data_queued = queued;
             self.dirty = true;
         }
     }
@@ -582,31 +531,11 @@ impl RuntimeControlMetricsState {
         }
     }
 
-    pub(crate) fn record_delay_data_received(&mut self) {
-        if self.level >= MetricLevel::Normal {
-            self.delay_data_received += 1;
-            self.dirty = true;
-        }
-    }
-
-    pub(crate) fn record_delay_data_returned_during_drain(&mut self) {
-        if self.level >= MetricLevel::Normal {
-            self.delay_data_returned_during_drain += 1;
-            self.dirty = true;
-        }
-    }
-
-    pub(crate) fn record_due_events(
-        &mut self,
-        timer_ticks: usize,
-        collect_telemetry: usize,
-        delayed_data_sent: usize,
-    ) {
+    pub(crate) fn record_due_events(&mut self, timer_ticks: usize, collect_telemetry: usize) {
         if self.level >= MetricLevel::Normal {
             self.timer_tick_sent += timer_ticks as u64;
             self.collect_telemetry_sent += collect_telemetry as u64;
-            self.delayed_data_sent += delayed_data_sent as u64;
-            if timer_ticks > 0 || collect_telemetry > 0 || delayed_data_sent > 0 {
+            if timer_ticks > 0 || collect_telemetry > 0 {
                 self.dirty = true;
             }
         }
@@ -638,10 +567,6 @@ impl RuntimeControlMetricsState {
             .metrics
             .telemetry_timers_active
             .set(self.telemetry_timers_active);
-        registered
-            .metrics
-            .delayed_data_queued
-            .set(self.delayed_data_queued);
 
         if self.level >= MetricLevel::Normal {
             registered.metrics.shutdown_received = self.shutdown_received.into();
@@ -655,12 +580,8 @@ impl RuntimeControlMetricsState {
                 self.start_telemetry_timer_received.into();
             registered.metrics.cancel_telemetry_timer_received =
                 self.cancel_telemetry_timer_received.into();
-            registered.metrics.delay_data_received = self.delay_data_received.into();
-            registered.metrics.delay_data_returned_during_drain =
-                self.delay_data_returned_during_drain.into();
             registered.metrics.timer_tick_sent = self.timer_tick_sent.into();
             registered.metrics.collect_telemetry_sent = self.collect_telemetry_sent.into();
-            registered.metrics.delayed_data_sent = self.delayed_data_sent.into();
         } else {
             registered.metrics.shutdown_received = Counter::default();
             registered.metrics.drain_ingress_sent = Counter::default();
@@ -671,11 +592,8 @@ impl RuntimeControlMetricsState {
             registered.metrics.cancel_timer_received = Counter::default();
             registered.metrics.start_telemetry_timer_received = Counter::default();
             registered.metrics.cancel_telemetry_timer_received = Counter::default();
-            registered.metrics.delay_data_received = Counter::default();
-            registered.metrics.delay_data_returned_during_drain = Counter::default();
             registered.metrics.timer_tick_sent = Counter::default();
             registered.metrics.collect_telemetry_sent = Counter::default();
-            registered.metrics.delayed_data_sent = Counter::default();
         }
 
         if self.level >= MetricLevel::Detailed {
@@ -702,11 +620,8 @@ impl RuntimeControlMetricsState {
                     self.cancel_timer_received = 0;
                     self.start_telemetry_timer_received = 0;
                     self.cancel_telemetry_timer_received = 0;
-                    self.delay_data_received = 0;
-                    self.delay_data_returned_during_drain = 0;
                     self.timer_tick_sent = 0;
                     self.collect_telemetry_sent = 0;
-                    self.delayed_data_sent = 0;
                 }
                 if self.level >= MetricLevel::Detailed {
                     self.drain_receiver_phase_duration_ns = Mmsc::default();

@@ -1900,10 +1900,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                     self.handle_retry_wakeup(slot, revision, effect_handler)
                         .await
                 }
-                NodeControlMsg::DelayedData { .. } => {
-                    otel_warn!("durable_buffer.delayed_data.unexpected");
-                    Ok(())
-                }
+                NodeControlMsg::ResumeData { .. } => Ok(()),
             },
         }
     }
