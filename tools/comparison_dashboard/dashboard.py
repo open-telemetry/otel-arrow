@@ -1066,14 +1066,14 @@ def load_comparisons(manifest: Manifest) -> list:
         with open(comp_file) as f:
             comp = yaml.safe_load(f)
 
-        for key in ("slug", "suites"):
+        for key in ("slug", "suites", "tests"):
             if key not in comp:
                 print(f"  ERROR: {comp_file.name}: missing required key '{key}'")
                 sys.exit(1)
 
         comp["_source"] = str(comp_file)
         comparisons.append(comp)
-        print(f"  {comp['slug']}: {len(comp['suites'])} suites")
+        print(f"  {comp['slug']}: {len(comp['suites'])} suites, {len(comp['tests'])} tests")
 
     return comparisons
 
@@ -1182,6 +1182,47 @@ def validate_manifest(
                     f"comparison '{comp.get('slug')}' references unknown suite slug "
                     f"'{ref_slug}' (source: {comp.get('_source')})"
                 )
+
+    for comp in comparisons:
+        comp_slug = comp.get("slug")
+        src = comp.get("_source", "?")
+        tests = comp.get("tests")
+        if not isinstance(tests, list) or not tests:
+            errors.append(
+                f"comparison '{comp_slug}' must define a non-empty 'tests' list (source: {src})"
+            )
+            continue
+        seen_names: set[str] = set()
+        for i, t in enumerate(tests):
+            if not isinstance(t, dict):
+                errors.append(
+                    f"comparison '{comp_slug}' tests[{i}] must be a mapping (source: {src})"
+                )
+                continue
+            name = t.get("name")
+            rate = t.get("loadgen_rate")
+            if not isinstance(name, str) or not name:
+                errors.append(
+                    f"comparison '{comp_slug}' tests[{i}] missing non-empty 'name' (source: {src})"
+                )
+            if "label" in t:
+                label = t.get("label")
+                if not isinstance(label, str) or not label:
+                    errors.append(
+                        f"comparison '{comp_slug}' tests[{i}] 'label' must be a non-empty string when provided (source: {src})"
+                    )
+            elif isinstance(name, str) and name:
+                t["label"] = name
+            if not isinstance(rate, int) or isinstance(rate, bool) or rate <= 0:
+                errors.append(
+                    f"comparison '{comp_slug}' tests[{i}] 'loadgen_rate' must be a positive integer (source: {src})"
+                )
+            if isinstance(name, str) and name:
+                if name in seen_names:
+                    errors.append(
+                        f"comparison '{comp_slug}' has duplicate test name '{name}' (source: {src})"
+                    )
+                seen_names.add(name)
 
     if errors:
         print("ERROR: manifest validation failed:")
