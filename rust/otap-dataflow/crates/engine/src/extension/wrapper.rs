@@ -51,24 +51,13 @@ use std::sync::Arc;
 /// so the extension's event loop terminates instead of dispatching
 /// further control messages.
 ///
-/// Immediate delivery is the natural fit here: the runtime broadcasts
-/// `Shutdown` to extensions only **after every data-path node has
-/// already drained** (see [`crate::extension_lifecycle`] and
-/// `runtime_pipeline::run_forever`), so by the time this message
-/// arrives there is nothing left for the extension to coordinate with
-/// — it should just start releasing its sockets, files, or background
-/// work right away, with the full `deadline - now()` window available
-/// for that cleanup.
-///
-/// This is intentionally different from the data-path node control
-/// channel in [`crate::message`], which stashes a `Shutdown` with a
-/// future deadline and continues delivering other control messages
-/// (including local timer expirations) until the deadline expires.
-/// Data-path nodes need that grace window to keep draining in-flight
-/// pipeline data (PData) they have already accepted. Extensions are
-/// PData-free, run *after* the data path has stopped, and have no
-/// analogous drain — so the same policy would just burn the deadline
-/// inside the channel adapter for no benefit.
+/// Immediate delivery is appropriate here: the runtime broadcasts
+/// `Shutdown` to extensions only after every data-path node has
+/// drained (see [`crate::extension_lifecycle`]), so the full
+/// `deadline - now()` window is available for cleanup. This differs
+/// from the data-path node control channel in [`crate::message`],
+/// which stashes `Shutdown` and keeps delivering other control
+/// messages until the deadline so nodes can drain in-flight PData.
 #[doc(hidden)]
 pub struct ControlChannel<R> {
     control_rx: Option<R>,

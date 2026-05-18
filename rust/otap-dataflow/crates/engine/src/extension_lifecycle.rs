@@ -40,18 +40,13 @@ use tokio::time::Instant as TokioInstant;
 pub(crate) const EXTENSION_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 /// Slack added past `EXTENSION_SHUTDOWN_GRACE` before the runtime
-/// hard-stops draining extension tasks. The deadline carried in the
-/// `Shutdown` message and the deadline the runtime drains until are
-/// intentionally different: the extension is granted exactly
-/// `EXTENSION_SHUTDOWN_GRACE` to perform its cooperative cleanup
-/// (matching the contract documented on the `Shutdown` message), and
-/// the runtime then waits a small additional window for the task to
-/// actually return after its cleanup completes — context switches,
-/// `JoinHandle` polling, and any post-cleanup teardown the runtime
-/// performs all take non-zero time. Without this slack a well-behaved
-/// extension that finishes cleanup right at the deadline would race
-/// against the runtime's drain timeout and be reported as a timeout
-/// even though it terminated correctly.
+/// hard-stops draining extension tasks. The extension's cooperative
+/// budget is exactly `EXTENSION_SHUTDOWN_GRACE`; the runtime then
+/// waits this much longer for the task to actually return after
+/// cleanup completes (context switch + `JoinHandle` poll latency).
+/// Without it, an extension that finishes right at the deadline
+/// would race the drain timeout and be reported as a timeout despite
+/// terminating correctly.
 pub(crate) const EXTENSION_SHUTDOWN_DRAIN_SLACK: Duration = Duration::from_millis(500);
 
 const SHUTDOWN_REASON: &str = "pipeline data-path drained";
@@ -108,10 +103,6 @@ impl ExtensionLifecycle {
             let fut = async move {
                 match ext_wrapper.start(ext_metrics_reporter.clone()).await {
                     Ok(terminal_state) => {
-                        // Forward any final metric snapshots the
-                        // extension reported in its TerminalState so
-                        // they reach the same MetricsReporter that
-                        // receiver/exporter tasks use on completion.
                         crate::runtime_pipeline::report_terminal_metrics(
                             &ext_metrics_reporter,
                             terminal_state,
@@ -169,15 +160,10 @@ impl ExtensionLifecycle {
         let deadline = Instant::now() + EXTENSION_SHUTDOWN_GRACE;
         self.shutdown_deadline = Some(deadline);
         for sender in &self.shutdown_senders {
-            // `try_send` is intentional: the extension's control
-            // channel is a small mpsc and we don't want shutdown
-            // broadcast to block the runtime loop. The data path
-            // (the only other writer) has already terminated by the
-            // time this is called, so the channel should have room.
-            // A failure here is unusual — it means the extension is
-            // either backed up on its own control queue or has
-            // already torn down — so surface it as a warning rather
-            // than silently dropping the cleanup signal.
+            // Non-blocking: data path has already drained so the
+            // small mpsc should have room. Warn on the rare failure
+            // (extension backed up or already torn down) rather than
+            // silently dropping the cleanup signal.
             if let Err(e) = sender.sender.try_send(ExtensionControlMsg::Shutdown {
                 deadline,
                 reason: SHUTDOWN_REASON.to_string(),
@@ -213,10 +199,7 @@ impl ExtensionLifecycle {
         let deadline = self
             .shutdown_deadline
             .get_or_insert_with(|| Instant::now() + EXTENSION_SHUTDOWN_GRACE);
-        // Wait slightly past the cooperative deadline to absorb the
-        // time it takes the ControlChannel adapter to deliver the
-        // queued `Shutdown` to the extension and for the extension's
-        // task to return.
+        // See `EXTENSION_SHUTDOWN_DRAIN_SLACK` for rationale.
         let drain_deadline = TokioInstant::from_std(*deadline + EXTENSION_SHUTDOWN_DRAIN_SLACK);
 
         let drain = async {
