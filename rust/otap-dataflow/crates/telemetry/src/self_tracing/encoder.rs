@@ -446,7 +446,7 @@ fn encode_resource_attribute(
                 }
                 _ => {
                     // TODO: share the encoding logic used somewhere else, somehow.
-                    crate::raw_error!("cannot encode SDK resource value", value = ?value);
+                    crate::raw_error!("encoder.sdk_resource_value", message = "cannot encode SDK resource value", value = ?value);
                 }
             }
             Ok(())
