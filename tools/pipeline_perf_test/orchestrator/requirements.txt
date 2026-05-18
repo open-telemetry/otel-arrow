@@ -1,7 +1,7 @@
 # Dependencies for the pipeline performance test orchestrator
 
 # General dependencies
-requests==2.33.1
+requests==2.34.1
 pyyaml==6.0.3
 pydantic==2.13.4
 
@@ -19,6 +19,6 @@ opentelemetry-exporter-otlp==1.41.1
 opentelemetry-sdk==1.41.1
 opentelemetry-proto==1.41.1
 prometheus_client==0.25.0
-pandas==3.0.2
+pandas==3.0.3
 pyarrow==24.0.0
 tabulate==0.10.0

@@ -79,6 +79,7 @@ steps:
                 # compression_method: zstd           # Default is 'zstd' for otap, 'gzip' for otlp
                 engine_hostname: df-engine
                 loadgen_exporter_type: '{{loadgen_exporter_type}}'
+                {% if num_connections is defined %}num_connections: {{num_connections}}{% endif %}
                 {% if exporter_extra_config is defined %}exporter_extra_config: {{exporter_extra_config}}{% endif %}
 
         post:
