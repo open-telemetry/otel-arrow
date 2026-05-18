@@ -39,56 +39,178 @@
   <script src="../comparison_data/suite/dfe_logs_otlphttp_gzip_baseline/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otlphttp_none_baseline/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otlphttp_zstd_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_metrics_otap_gzip_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_metrics_otap_none_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_metrics_otap_zstd_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_metrics_otlp_gzip_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_metrics_otlp_none_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_metrics_otlp_zstd_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_metrics_otlphttp_gzip_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_metrics_otlphttp_none_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_metrics_otlphttp_zstd_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_traces_otap_gzip_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_traces_otap_none_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_traces_otap_zstd_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_traces_otlp_gzip_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_traces_otlp_none_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_traces_otlp_zstd_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_traces_otlphttp_gzip_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_traces_otlphttp_none_baseline/data.js"></script>
+  <script src="../comparison_data/suite/dfe_traces_otlphttp_zstd_baseline/data.js"></script>
   <script>window.DATA_PATH = "../comparison_data/suite";</script>
   <script>window.COMPARISONS = [
   {
-    "slug": "dfe_baselines",
-    "name": "Dataflow Engine Baselines",
+    "slug": "dfe_logs_baselines",
+    "name": "Dataflow Engine Logs",
     "description": "Baseline DFE logs runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.",
     "suites": [
       {
-        "name": "DFE OTAP Baseline (None)",
+        "name": "DFE Logs OTAP Baseline (None)",
         "slug": "dfe_logs_otap_none_baseline",
         "short": "OTAP/None"
       },
       {
-        "name": "DFE OTAP Baseline (Gzip)",
+        "name": "DFE Logs OTAP Baseline (Gzip)",
         "slug": "dfe_logs_otap_gzip_baseline",
         "short": "OTAP/Gzip"
       },
       {
-        "name": "DFE OTAP Baseline (Zstd)",
+        "name": "DFE Logs OTAP Baseline (Zstd)",
         "slug": "dfe_logs_otap_zstd_baseline",
         "short": "OTAP/Zstd"
       },
       {
-        "name": "DFE OTLP Baseline (None)",
+        "name": "DFE Logs OTLP Baseline (None)",
         "slug": "dfe_logs_otlp_none_baseline",
         "short": "OTLP/None"
       },
       {
-        "name": "DFE OTLP Baseline (Gzip)",
+        "name": "DFE Logs OTLP Baseline (Gzip)",
         "slug": "dfe_logs_otlp_gzip_baseline",
         "short": "OTLP/Gzip"
       },
       {
-        "name": "DFE OTLP Baseline (Zstd)",
+        "name": "DFE Logs OTLP Baseline (Zstd)",
         "slug": "dfe_logs_otlp_zstd_baseline",
         "short": "OTLP/Zstd"
       },
       {
-        "name": "DFE OTLP/HTTP Baseline (None)",
+        "name": "DFE Logs OTLP/HTTP Baseline (None)",
         "slug": "dfe_logs_otlphttp_none_baseline",
         "short": "OTLP-HTTP/None"
       },
       {
-        "name": "DFE OTLP/HTTP Baseline (Gzip)",
+        "name": "DFE Logs OTLP/HTTP Baseline (Gzip)",
         "slug": "dfe_logs_otlphttp_gzip_baseline",
         "short": "OTLP-HTTP/Gzip"
       },
       {
-        "name": "DFE OTLP/HTTP Baseline (Zstd)",
+        "name": "DFE Logs OTLP/HTTP Baseline (Zstd)",
         "slug": "dfe_logs_otlphttp_zstd_baseline",
+        "short": "OTLP-HTTP/Zstd"
+      }
+    ]
+  },
+  {
+    "slug": "dfe_metrics_baselines",
+    "name": "Dataflow Engine Metrics",
+    "description": "Baseline DFE metrics runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.",
+    "suites": [
+      {
+        "name": "DFE Metrics OTAP Baseline (None)",
+        "slug": "dfe_metrics_otap_none_baseline",
+        "short": "OTAP/None"
+      },
+      {
+        "name": "DFE Metrics OTAP Baseline (Gzip)",
+        "slug": "dfe_metrics_otap_gzip_baseline",
+        "short": "OTAP/Gzip"
+      },
+      {
+        "name": "DFE Metrics OTAP Baseline (Zstd)",
+        "slug": "dfe_metrics_otap_zstd_baseline",
+        "short": "OTAP/Zstd"
+      },
+      {
+        "name": "DFE Metrics OTLP Baseline (None)",
+        "slug": "dfe_metrics_otlp_none_baseline",
+        "short": "OTLP/None"
+      },
+      {
+        "name": "DFE Metrics OTLP Baseline (Gzip)",
+        "slug": "dfe_metrics_otlp_gzip_baseline",
+        "short": "OTLP/Gzip"
+      },
+      {
+        "name": "DFE Metrics OTLP Baseline (Zstd)",
+        "slug": "dfe_metrics_otlp_zstd_baseline",
+        "short": "OTLP/Zstd"
+      },
+      {
+        "name": "DFE Metrics OTLP/HTTP Baseline (None)",
+        "slug": "dfe_metrics_otlphttp_none_baseline",
+        "short": "OTLP-HTTP/None"
+      },
+      {
+        "name": "DFE Metrics OTLP/HTTP Baseline (Gzip)",
+        "slug": "dfe_metrics_otlphttp_gzip_baseline",
+        "short": "OTLP-HTTP/Gzip"
+      },
+      {
+        "name": "DFE Metrics OTLP/HTTP Baseline (Zstd)",
+        "slug": "dfe_metrics_otlphttp_zstd_baseline",
+        "short": "OTLP-HTTP/Zstd"
+      }
+    ]
+  },
+  {
+    "slug": "dfe_traces_baselines",
+    "name": "Dataflow Engine Traces",
+    "description": "Baseline DFE traces runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.",
+    "suites": [
+      {
+        "name": "DFE Traces OTAP Baseline (None)",
+        "slug": "dfe_traces_otap_none_baseline",
+        "short": "OTAP/None"
+      },
+      {
+        "name": "DFE Traces OTAP Baseline (Gzip)",
+        "slug": "dfe_traces_otap_gzip_baseline",
+        "short": "OTAP/Gzip"
+      },
+      {
+        "name": "DFE Traces OTAP Baseline (Zstd)",
+        "slug": "dfe_traces_otap_zstd_baseline",
+        "short": "OTAP/Zstd"
+      },
+      {
+        "name": "DFE Traces OTLP Baseline (None)",
+        "slug": "dfe_traces_otlp_none_baseline",
+        "short": "OTLP/None"
+      },
+      {
+        "name": "DFE Traces OTLP Baseline (Gzip)",
+        "slug": "dfe_traces_otlp_gzip_baseline",
+        "short": "OTLP/Gzip"
+      },
+      {
+        "name": "DFE Traces OTLP Baseline (Zstd)",
+        "slug": "dfe_traces_otlp_zstd_baseline",
+        "short": "OTLP/Zstd"
+      },
+      {
+        "name": "DFE Traces OTLP/HTTP Baseline (None)",
+        "slug": "dfe_traces_otlphttp_none_baseline",
+        "short": "OTLP-HTTP/None"
+      },
+      {
+        "name": "DFE Traces OTLP/HTTP Baseline (Gzip)",
+        "slug": "dfe_traces_otlphttp_gzip_baseline",
+        "short": "OTLP-HTTP/Gzip"
+      },
+      {
+        "name": "DFE Traces OTLP/HTTP Baseline (Zstd)",
+        "slug": "dfe_traces_otlphttp_zstd_baseline",
         "short": "OTLP-HTTP/Zstd"
       }
     ]
