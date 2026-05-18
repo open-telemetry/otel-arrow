@@ -5979,6 +5979,86 @@ mod test {
         test_update_attr_to_upper_case_function_call::<KqlParser>().await
     }
 
+    /// `extend` with `coalesce` across two attribute keys (see #2905).
+    ///
+    /// The second log uses explicit null `attr1` so the `attr1` attribute batch still has a row
+    /// for that log (MultiJoin follows the first attribute argument's row set).
+    ///
+    /// The third log uses explicit null `attr1` and `attr2` so the join still has rows before
+    /// the literal default `"foo"`.
+    async fn test_update_attr_coalesce_function_call<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("attr1", AnyValue::new_string("X")),
+                    KeyValue::new("attr2", AnyValue::new_string("Y")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("attr1", AnyValue { value: None }),
+                    KeyValue::new("attr2", AnyValue::new_string("Z")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("attr1", AnyValue { value: None }),
+                    KeyValue::new("attr2", AnyValue { value: None }),
+                ])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["attr3"] = coalesce(attributes["attr1"], attributes["attr2"], "foo")"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("attr1", AnyValue::new_string("X")),
+                KeyValue::new("attr2", AnyValue::new_string("Y")),
+                KeyValue::new("attr3", AnyValue::new_string("X")),
+            ]
+        );
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(
+            log_1.attributes,
+            vec![
+                KeyValue::new("attr1", AnyValue { value: None }),
+                KeyValue::new("attr2", AnyValue::new_string("Z")),
+                KeyValue::new("attr3", AnyValue::new_string("Z")),
+            ]
+        );
+
+        let log_2 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[2];
+        assert_eq!(
+            log_2.attributes,
+            vec![
+                KeyValue::new("attr1", AnyValue { value: None }),
+                KeyValue::new("attr2", AnyValue { value: None }),
+                KeyValue::new("attr3", AnyValue::new_string("foo")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_coalesce_function_call_opl_parser() {
+        test_update_attr_coalesce_function_call::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_coalesce_function_call_kql_parser() {
+        test_update_attr_coalesce_function_call::<KqlParser>().await
+    }
+
     async fn test_update_attr_to_lower_case_function_call<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
