@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Logs)/800k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 0.002118733711540699
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Logs)/800k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 11.710521453720304
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Logs)/800k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 12.1225
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Logs)/800k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 71.46328125
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Logs)/800k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 83.3671875
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Logs)/800k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 799315.3370810731
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Logs)/800k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 802022.6938589127
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Logs)/800k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000607
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Logs)/800k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 286828834.3661255
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Logs)/800k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 286644073.4737961
+  }
+]

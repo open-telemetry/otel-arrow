@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "DFE OTAP Baseline (Metrics)/400k - Dropped Metrics %",
+    "name": "dropped_metrics_percentage",
+    "unit": "%",
+    "value": -1.6949152946472168
+  },
+  {
+    "extra": "DFE OTAP Baseline (Metrics)/400k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 10.877733724880644
+  },
+  {
+    "extra": "DFE OTAP Baseline (Metrics)/400k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 11.15233406045497
+  },
+  {
+    "extra": "DFE OTAP Baseline (Metrics)/400k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 45.55546875
+  },
+  {
+    "extra": "DFE OTAP Baseline (Metrics)/400k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 46.22265625
+  },
+  {
+    "extra": "DFE OTAP Baseline (Metrics)/400k - Metric Throughput",
+    "name": "metrics_produced_rate",
+    "unit": "metrics/sec",
+    "value": 397525.59854300803
+  },
+  {
+    "extra": "DFE OTAP Baseline (Metrics)/400k - Metric Throughput",
+    "name": "metrics_received_rate",
+    "unit": "metrics/sec",
+    "value": 402859.2803133816
+  },
+  {
+    "extra": "DFE OTAP Baseline (Metrics)/400k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000663
+  },
+  {
+    "extra": "DFE OTAP Baseline (Metrics)/400k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 34887788.53634753
+  },
+  {
+    "extra": "DFE OTAP Baseline (Metrics)/400k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 34830328.30019452
+  }
+]

@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - Dropped Metrics %",
+    "name": "dropped_metrics_percentage",
+    "unit": "%",
+    "value": -1.6949152946472168
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 77.40992719139737
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 81.70264715042043
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 49.61119791666667
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 50.1015625
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - Metric Throughput",
+    "name": "metrics_produced_rate",
+    "unit": "metrics/sec",
+    "value": 298844.51514959347
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - Metric Throughput",
+    "name": "metrics_received_rate",
+    "unit": "metrics/sec",
+    "value": 302867.99331933784
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000603
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 13295071.023669552
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Metrics)/300k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 13263343.72244266
+  }
+]

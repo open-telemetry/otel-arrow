@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Metrics)/600k - Dropped Metrics %",
+    "name": "dropped_metrics_percentage",
+    "unit": "%",
+    "value": -1.6949152946472168
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Metrics)/600k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 5.66210619344887
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Metrics)/600k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 6.576847352024923
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Metrics)/600k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 51.694010416666664
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Metrics)/600k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 52.65625
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Metrics)/600k - Metric Throughput",
+    "name": "metrics_produced_rate",
+    "unit": "metrics/sec",
+    "value": 597679.8978082184
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Metrics)/600k - Metric Throughput",
+    "name": "metrics_received_rate",
+    "unit": "metrics/sec",
+    "value": 604336.9434967453
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Metrics)/600k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000582
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Metrics)/600k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 118210018.3320993
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline (Metrics)/600k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 118131126.14744619
+  }
+]
