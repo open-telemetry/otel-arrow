@@ -1,5 +1,5 @@
 slug: dfe_logs_baselines
-name: Dataflow Engine Logs Baselines
+name: Dataflow Engine Logs
 description: Baseline DFE logs runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
 
 suites:

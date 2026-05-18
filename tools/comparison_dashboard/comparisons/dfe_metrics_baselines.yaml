@@ -1,5 +1,5 @@
 slug: dfe_metrics_baselines
-name: Dataflow Engine Metrics Baselines
+name: Dataflow Engine Metrics
 description: Baseline DFE metrics runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
 
 suites:

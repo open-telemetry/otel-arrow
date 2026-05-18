@@ -1,5 +1,5 @@
 slug: dfe_traces_baselines
-name: Dataflow Engine Traces Baselines
+name: Dataflow Engine Traces
 description: Baseline DFE traces runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
 
 suites:

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Telemetry Engine Benchmark Dashboard</title>
+  <link rel="stylesheet" href="shared/styles.css">
+</head>
+<body>
+  <div class="wip-banner" role="alert">
+    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>
+    <span class="wip-text">All benchmarks are WIP and not final. Inaccuracies may exist.</span>
+    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>
+  </div>
+  <div class="wrap">
+    <h1>Telemetry Engine Benchmark Dashboard</h1>
+    <div class="sub">Compare telemetry engines and protocols across a variety of scenarios</div>
+    <div id="app"></div>
+    <div id="comparison-cards"></div>
+  </div>
+
+  <div id="run-detail-modal" class="modal-backdrop" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <div id="run-detail-title" class="modal-title"></div>
+        <button id="run-detail-close" class="modal-close" type="button">Close</button>
+      </div>
+      <div id="run-detail-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>
+
+  <script>window.COMPARISONS = [];</script>
+  <script type="module" src="shared/app.js"></script>
+</body>
+</html>
