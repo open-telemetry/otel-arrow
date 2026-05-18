@@ -189,11 +189,8 @@ impl Exporter<OtapPdata> for ValidationExporter {
     async fn start(
         mut self: Box<Self>,
         mut msg_chan: ExporterInbox<OtapPdata>,
-        effect_handler: EffectHandler<OtapPdata>,
+        _effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
-        let _ = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
         let mut time = Instant::now();
         let mut last_message_time = Instant::now();
         loop {
