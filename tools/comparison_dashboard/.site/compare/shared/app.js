@@ -296,8 +296,9 @@ const RECEIVED_RATE_METRICS = ["logs_received_rate", "metrics_received_rate", "s
 
 function hasBackpressure(metricsArray, loadgenRate) {
   if (!metricsArray) return false;
-  const dropped = metricsArray.find((m) => m.name === "dropped_logs_percentage");
-  if (dropped && typeof dropped.value === "number" && dropped.value > DATA_LOSS_THRESHOLD) return true;
+  // Loadgen-reported send rate is currently unreliable due to a data-collection
+  // bug, so determine backpressure purely by comparing the backend received
+  // rate (correctly reported) against the expected throughput.
   if (loadgenRate && loadgenRate > 0) {
     const received = metricsArray.find((m) => RECEIVED_RATE_METRICS.includes(m.name));
     if (received && typeof received.value === "number") {
