@@ -82,10 +82,11 @@ const DASHBOARD_METRICS = [
 ];
 
 const AUTO_COLORS = [
-  "#f97316", "#3b82f6", "#22c55e", "#a855f7",
-  "#ef4444", "#14b8a6", "#eab308", "#ec4899",
-  "#06b6d4", "#84cc16", "#e11d48", "#8b5cf6",
-  "#f59e0b", "#0ea5e9", "#10b981", "#d946ef",
+  "#1F77B4", "#AEC7E8", "#FF7F0E", "#FFBB78",
+  "#2CA02C", "#98DF8A", "#D62728", "#FF9896",
+  "#9467BD", "#C5B0D5", "#8C564B", "#C49C94",
+  "#E377C2", "#F7B6D2", "#7F7F7F", "#C7C7C7",
+  "#BCBD22", "#DBDB8D", "#17BECF", "#9EDAE5",
 ];
 
 const COLORBLIND_COLORS = [
@@ -93,6 +94,7 @@ const COLORBLIND_COLORS = [
   "#56b4e9", "#d55e00", "#f0e442", "#000000",
   "#0099cc", "#994f00", "#006d5b", "#ad5c85",
   "#3a9bd9", "#aa4400", "#c4b832", "#444444",
+  "#882e72", "#b178a6", "#117733", "#88ccaa",
 ];
 
 let colorblindMode = localStorage.getItem("colorblindMode") === "true";
