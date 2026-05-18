@@ -100,6 +100,19 @@ jobs:
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/batch-processor-docker.yaml
 
+      - name: Run idle state performance tests
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          ./scripts/run-idle-state-tests.sh --output-json results/idle-memory-scaling.json \
+            | tee idle-memory-scaling-report.txt
+          # Add memory scaling report to job summary
+          echo "### Idle State Memory Scaling Analysis" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          # Extract just the analysis section from the report
+          sed -n '/^=.*MEMORY SCALING/,/^=\{10,\}$/p' idle-memory-scaling-report.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
       - name: Run saturation/scaling performance test suite
         if: ${{ !cancelled() }}
         run: |
@@ -175,6 +188,20 @@ jobs:
         with:
           name: saturation-nightly-results
           path: tools/pipeline_perf_test/results/continuous_saturation*/gh-actions-benchmark/*.json
+
+      - name: Upload idle state results for processing
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: idle-state-nightly-results
+          path: tools/pipeline_perf_test/results/idle_state*/gh-actions-benchmark/*.json
+
+      - name: Upload idle state memory scaling metrics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: idle-memory-scaling-nightly-results
+          path: tools/pipeline_perf_test/results/idle-memory-scaling.json
 
       - name: Upload scaling efficiency metrics
         if: ${{ !cancelled() }}
@@ -264,6 +291,20 @@ jobs:
           merge-multiple: true
           path: saturation_results
 
+      - name: Download idle state artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: idle-state-nightly-results*
+          merge-multiple: true
+          path: idle_state_results
+
+      - name: Download idle memory scaling artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: idle-memory-scaling-nightly-results*
+          merge-multiple: true
+          path: idle_memory_scaling_results
+
       - name: Download scaling efficiency metrics
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -315,6 +356,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh saturation_results saturation_output.json
+
+      - name: Consolidate idle state benchmark data
+        if: ${{ !cancelled() }}
+        run: |
+          bash ./.github/workflows/scripts/consolidate-benchmarks.sh idle_state_results idle_state_output.json
 
       - name: Update benchmark data
         if: ${{ !cancelled() && hashFiles('syslog_output.json') != '' }}
@@ -430,6 +476,32 @@ jobs:
           max-items-in-chart: 100
           github-token: ${{ secrets.GITHUB_TOKEN }}
           benchmark-data-dir-path: "docs/benchmarks/nightly/saturation"
+          auto-push: true
+          save-data-file: true
+
+      - name: Update idle state benchmark data
+        if: ${{ !cancelled() && hashFiles('idle_state_output.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: idle_state_output.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/nightly/idle-state"
+          auto-push: true
+          save-data-file: true
+
+      - name: Update idle state memory scaling data
+        if: ${{ !cancelled() && hashFiles('idle_memory_scaling_results/idle-memory-scaling.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: idle_memory_scaling_results/idle-memory-scaling.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/nightly/idle-memory-scaling"
           auto-push: true
           save-data-file: true
 
