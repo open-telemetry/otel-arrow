@@ -183,7 +183,7 @@ fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
 // ── Singleton session state ──────────────────────────────────────────────────
 
 /// Process-global session state.  Initialized on the first call to
-/// [`take_consumer`]; subsequent calls pop one receiver from the pool.
+/// [`subscribe`]; subsequent calls pop one receiver from the pool.
 ///
 /// We use `Mutex<Option<Vec<…>>>` rather than `OnceLock` / `LazyLock` because:
 /// - Initialization is fallible (GUID parsing, thread spawn).
