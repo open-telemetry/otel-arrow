@@ -306,13 +306,24 @@ function buildComparisonChartData(suiteData, comparison, tests, selectedMetric) 
   return { labels: tests.map((t) => t.label), datasets };
 }
 
-function chartOptions(onClick) {
+function axisTitleConfig(text) {
+  if (!text) return { display: false };
+  return {
+    display: true,
+    text,
+    color: "#475569",
+    font: { size: 12, weight: "600" },
+  };
+}
+
+function chartOptions(onClick, xTitle) {
   return {
     responsive: true, maintainAspectRatio: false, animation: false,
     layout: { padding: { top: 24 } },
     datasets: { bar: { categoryPercentage: 0.85, barPercentage: 0.9 } },
     scales: {
-      x: { grid: { display: false }, border: { display: false }, ticks: { font: { size: 12, weight: "600" }, color: "#64748b" } },
+      x: { grid: { display: false }, border: { display: false }, ticks: { font: { size: 12, weight: "600" }, color: "#64748b" },
+        title: axisTitleConfig(xTitle) },
       y: { beginAtZero: true, border: { display: true, color: "#cbd5e1" },
         ticks: { maxTicksLimit: 5, color: "#94a3b8", font: { size: 10 }, callback: (v) => formatMetricValue(v, "") },
         grid: { color: "#e2e8f0" } },
@@ -331,15 +342,155 @@ function chartOptions(onClick) {
 }
 
 function createBarChart(canvas, suiteData, comparison, tests, selectedMetric, onClick) {
-  const chart = new Chart(canvas, { type: "bar", data: buildComparisonChartData(suiteData, comparison, tests, selectedMetric), options: chartOptions(onClick), plugins: [barValueLabelsPlugin] });
+  const xTitle = resolveXAxisTitle(comparison);
+  const chart = new Chart(canvas, { type: "bar", data: buildComparisonChartData(suiteData, comparison, tests, selectedMetric), options: chartOptions(onClick, xTitle), plugins: [barValueLabelsPlugin] });
   sizeChartContainer(chart, canvas);
+  attachAxisHoverTooltips(chart, canvas, comparison, tests);
   return chart;
+}
+
+// Resolve x/y axis titles for a chart. Both come exclusively from
+// chart.axes.x.title; the y-axis is left unlabeled because the metric
+// (with unit) is already shown in the chart's title dropdown.
+function resolveXAxisTitle(comparison) {
+  const axes = chartAxesConfig(comparison);
+  return (axes.x && axes.x.title) ? axes.x.title : null;
+}
+
+function chartAxesConfig(comparison) {
+  return (comparison && comparison.chart && comparison.chart.axes) || {};
 }
 
 function sizeChartContainer(chart, canvas, baseHeight = 220) {
   const legendHeight = chart.legend?.height || 0;
   canvas.parentElement.style.height = `${baseHeight + legendHeight}px`;
   chart.resize();
+}
+
+// Wire mousemove on the chart canvas so hovering over an axis title or an
+// individual tick label reveals a floating tooltip. Axis title hover shows
+// the configured chart.axes.{x,y}.description. Tick label hover shows a
+// per-tick string (currently derived from each test's loadgen_rate). No-op
+// when there is nothing to show.
+function attachAxisHoverTooltips(chart, canvas, comparison, tests) {
+  const axes = chartAxesConfig(comparison);
+  const xDesc = axes.x && typeof axes.x.description === "string" && axes.x.description.trim() ? axes.x.description : null;
+  const tickTexts = (tests || []).map(tickHoverText);
+  const hasTickHovers = tickTexts.some(Boolean);
+  if (!xDesc && !hasTickHovers) return;
+  const PAD = 4;
+  const onMove = (ev) => {
+    const sx = chart.scales && chart.scales.x;
+    if (!sx) { hideAxisHoverTooltip(); return; }
+    const rect = canvas.getBoundingClientRect();
+    const px = ev.clientX - rect.left;
+    const py = ev.clientY - rect.top;
+
+    // 1) X-axis title: a box sized to the rendered text, centered along
+    //    the x scale's bottom strip.
+    if (xDesc) {
+      const box = xTitleBox(sx, canvas);
+      if (box && px >= box.left - PAD && px <= box.right + PAD
+              && py >= box.top - PAD && py <= box.bottom + PAD) {
+        showAxisHoverTooltip(ev.clientX, ev.clientY, xDesc);
+        return;
+      }
+    }
+
+    // 2) Per-tick x label hover.
+    if (hasTickHovers) {
+      const xLabelH = tickFontSize(sx) + 4;
+      const xLabelTop = sx.top;
+      const xLabelBot = sx.top + xLabelH;
+      if (py >= xLabelTop - PAD && py <= xLabelBot + PAD
+          && px >= sx.left - PAD && px <= sx.right + PAD) {
+        const i = nearestTickIndex(sx, px);
+        const text = i >= 0 ? tickTexts[i] : null;
+        if (text) { showAxisHoverTooltip(ev.clientX, ev.clientY, text); return; }
+      }
+    }
+
+    hideAxisHoverTooltip();
+  };
+  canvas.addEventListener("mousemove", onMove);
+  canvas.addEventListener("mouseleave", hideAxisHoverTooltip);
+}
+
+function tickHoverText(test) {
+  if (!test) return null;
+  if (typeof test.description === "string" && test.description.trim()) return test.description;
+  if (typeof test.loadgen_rate === "number" && Number.isFinite(test.loadgen_rate)) {
+    return `${test.loadgen_rate.toLocaleString()}/sec`;
+  }
+  return null;
+}
+
+function tickFontSize(scale) {
+  return (scale.options && scale.options.ticks && scale.options.ticks.font && scale.options.ticks.font.size) || 12;
+}
+
+// Bounding box for the x-axis title text, in canvas-relative pixels. Title
+// is rendered centered horizontally at the bottom of the scale.
+function xTitleBox(scale, canvas) {
+  const t = scale.options && scale.options.title;
+  if (!t || !t.display || !t.text) return null;
+  const fs = (t.font && t.font.size) || 12;
+  const weight = (t.font && t.font.weight) || "normal";
+  const textW = measureCanvasText(canvas, t.text, fs, weight);
+  const centerX = (scale.left + scale.right) / 2;
+  const bottom = scale.bottom;
+  return {
+    left: centerX - textW / 2,
+    right: centerX + textW / 2,
+    top: bottom - fs - 2,
+    bottom: bottom,
+  };
+}
+
+function measureCanvasText(canvas, text, fontSize, fontWeight) {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return text.length * fontSize * 0.6;
+  ctx.save();
+  ctx.font = `${fontWeight} ${fontSize}px "SF Pro Text", "Segoe UI", system-ui, sans-serif`;
+  const w = ctx.measureText(text).width;
+  ctx.restore();
+  return w;
+}
+
+function nearestTickIndex(scale, px) {
+  const n = (scale.ticks || []).length;
+  if (!n) return -1;
+  let best = -1, bestDist = Infinity;
+  for (let i = 0; i < n; i++) {
+    const tx = scale.getPixelForTick ? scale.getPixelForTick(i) : scale.getPixelForValue(i);
+    const d = Math.abs(px - tx);
+    if (d < bestDist) { bestDist = d; best = i; }
+  }
+  // Cap: only count a hit when within half the inter-tick spacing.
+  const halfSpan = n > 1 ? Math.abs(scale.getPixelForTick(1) - scale.getPixelForTick(0)) / 2 : (scale.right - scale.left) / 2;
+  return bestDist <= halfSpan ? best : -1;
+}
+
+let axisHoverTooltipEl = null;
+function showAxisHoverTooltip(clientX, clientY, text) {
+  if (!axisHoverTooltipEl) {
+    axisHoverTooltipEl = document.createElement("div");
+    axisHoverTooltipEl.className = "axis-hover-tooltip";
+    axisHoverTooltipEl.hidden = true;
+    document.body.appendChild(axisHoverTooltipEl);
+  }
+  axisHoverTooltipEl.textContent = text;
+  axisHoverTooltipEl.hidden = false;
+  // Offset from cursor; keep within viewport on the right edge.
+  const pad = 12;
+  const x = Math.min(clientX + pad, window.innerWidth - axisHoverTooltipEl.offsetWidth - pad);
+  const y = Math.min(clientY + pad, window.innerHeight - axisHoverTooltipEl.offsetHeight - pad);
+  axisHoverTooltipEl.style.left = `${x}px`;
+  axisHoverTooltipEl.style.top = `${y}px`;
+}
+
+function hideAxisHoverTooltip() {
+  if (axisHoverTooltipEl) axisHoverTooltipEl.hidden = true;
 }
 
 function updateBarChartData(chart, suiteData, comparison, tests, selectedMetric) {
@@ -558,7 +709,7 @@ function renderComparisonSection(suiteData, comparison) {
   const metrics = findAvailableMetrics(suiteData, filtered);
   if (!perComparisonMetrics.has(slug)) perComparisonMetrics.set(slug, defaultMetric(comparison, metrics));
   const sel = perComparisonMetrics.get(slug);
-  const optsHtml = metrics.map((n) => `<option value="${escapeHtml(n)}" ${n === sel ? "selected" : ""}>${escapeHtml(metricLabel(n))}</option>`).join("");
+  const optsHtml = metrics.map((n) => `<option value="${escapeHtml(n)}" ${n === sel ? "selected" : ""}>${escapeHtml(metricTitle(n, suiteData, filtered))}</option>`).join("");
   const hasFilters = Object.keys(categories).length > 0;
   const filterHtml = hasFilters ? buildFilterHtml(categories, filterState) : "";
   const anyBP = (filtered.suites || []).some((r) => getSuiteTests(suiteData, r.slug).some((t) => { const rm = t.name.match(/^(\d+)k$/); return hasBackpressure(t.metrics, rm ? parseInt(rm[1])*1000 : null); }));
@@ -663,11 +814,8 @@ function renderComparisonChart(suiteData, comparison, tests, onBarClick) {
   const target = document.getElementById("comparison-chart");
   if (!target) return;
   const metrics = findAvailableMetrics(suiteData, comparison);
-  const compSlug = window.COMPARISON_SLUG;
-  const prev = perComparisonMetrics.get(compSlug);
-  let sel = prev && metrics.includes(prev) ? prev : defaultMetric(comparison, metrics);
-  perComparisonMetrics.set(compSlug, sel);
-  const optsHtml = metrics.map((n) => `<option value="${escapeHtml(n)}" ${n === sel ? "selected" : ""}>${escapeHtml(metricLabel(n))}</option>`).join("");
+  let sel = metrics.includes("cpu_percentage_normalized_avg") ? "cpu_percentage_normalized_avg" : metrics[0] || "cpu_percentage_normalized_avg";
+  const optsHtml = metrics.map((n) => `<option value="${escapeHtml(n)}" ${n === sel ? "selected" : ""}>${escapeHtml(metricTitle(n, suiteData, comparison))}</option>`).join("");
 
   const onClick = onBarClick ? (event, elements) => {
     if (!elements.length) return;

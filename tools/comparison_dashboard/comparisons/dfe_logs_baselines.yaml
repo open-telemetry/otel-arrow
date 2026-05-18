@@ -3,8 +3,10 @@ name: Dataflow Engine Logs
 description: Baseline DFE logs runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
 
 chart:
-  metrics:
-    default: cpu_percentage_normalized_avg
+  axes:
+    x:
+      title: Generated Load (logs/sec)
+      description: Rate at which the load generator is configured to submit logs e.g. "100k" == "100,000 logs/sec".
 
 tests:
   - name: 100k
