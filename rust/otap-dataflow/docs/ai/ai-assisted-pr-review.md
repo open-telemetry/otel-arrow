@@ -17,6 +17,20 @@ This guideline is expected to evolve. Update it when recurring PR comments,
 issues, incidents, or maintainer feedback reveal review gaps that should become
 shared guidance.
 
+## Agent Reviewer Quick Checklist
+
+If an agent only has time for one focused pass, it should:
+
+- inspect the full diff and relevant nearby code before forming conclusions
+- run targeted searches for runtime-risk patterns when Rust async or runtime
+  code changes, such as `tokio::spawn`, `spawn_blocking`, `Arc<Mutex`,
+  `RwLock`, `unbounded_channel`, `block_on`, `std::fs`,
+  `std::thread::sleep`, `unwrap(`, `expect(`, and `unreachable!`
+- use `rust/otap-dataflow/scripts/check-async-blocking.sh` from the repository
+  root as a review aid when async/runtime paths are touched
+- report only risks supported by the diff, nearby code, or project guidance
+- state residual risk when no material findings are found
+
 ## Review Posture
 
 Prioritize architectural integrity, performance characteristics, resource
@@ -58,6 +72,14 @@ Flag runtime-path work that can block or monopolize the core:
   processes
 - long CPU sections over records, batches, encoders, decoders, aggregations,
   sorting, or flushing without bounded work units or cooperative await points
+
+When runtime-path code calls an external crate or native library, the PR should
+record important assumptions that are not visible at the call site. Reviewers
+should look for whether the library can block, start threads, use shared or
+global state, allocate or buffer substantially, retry internally, or hide
+backpressure. Evidence can be a library source or documentation link, a code
+comment, a component development note, or a focused test or benchmark. Dependency
+upgrades that affect such calls should re-check these assumptions.
 
 `spawn_blocking` is not automatically acceptable. Blocking offload must be
 bounded, cancel-aware, backpressure-integrated, observable, and justified
@@ -138,6 +160,8 @@ Review Rust correctness and safety through the lens of the OTAP runtime model:
 - idiomatic Rust without sacrificing hot-path performance
 - no implicit behavior that hides failure, retries, or data loss
 - justified and reviewed `unsafe` blocks
+- justified `expect()`, `unwrap()`, and `unreachable!()` in non-test code;
+  document the invariant or use explicit error handling
 - no locks, mutable borrows, permits, backpressure tokens, or large buffers held
   longer than necessary across `.await`
 - long-running work observes cancellation and deadlines where shutdown or live
@@ -195,8 +219,8 @@ Check dependency and feature hygiene:
 An agent reviewer should:
 
 - inspect the complete PR diff before forming conclusions
-- use `./scripts/check-async-blocking.sh` as a review aid when async/runtime
-  paths are touched
+- use `rust/otap-dataflow/scripts/check-async-blocking.sh` from the repository
+  root as a review aid when async/runtime paths are touched
 - evaluate only risks supported by the diff or repository context
 - focus findings on architecture, performance, bounded resources, backpressure,
   correctness, semantic fidelity, test adequacy, security, and maintainability

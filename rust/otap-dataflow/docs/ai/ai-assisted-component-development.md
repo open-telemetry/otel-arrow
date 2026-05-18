@@ -69,7 +69,7 @@ for the companion guidance.
 ## Choosing the Right Approach
 
 | Question | Spec-Constrained Oracle | Reference-Informed Design |
-|---|---:|---:|
+| --- | ---: | ---: |
 | Is interoperability the primary risk? | Yes | Sometimes |
 | Is a protocol, schema, file format, or framing model central? | Yes | Sometimes |
 | Should the reference implementation define observable behavior? | Yes, for declared scope | No |
@@ -83,16 +83,22 @@ Hybrid projects should split the decision by responsibility. For example, an
 exporter may use the oracle approach for a wire protocol and the
 reference-informed approach for configuration, telemetry, and runtime behavior.
 
+Greenfield OTAP-native work without a meaningful reference implementation is
+outside this decision tree. Use the normal design and review process, then
+apply the shared requirements below when AI assistance is involved.
+
 ## Shared Requirements
 
 Every AI-assisted component effort must remain controlled and reviewable:
 
 - define the declared scope and first useful end-to-end scenario
+- define human-owned decision points and quality gates for any delegated AI work
 - record the evidence used for design and validation
 - classify preserved, changed, unsupported, rejected, or intentionally divergent
   behavior
 - make unsupported behavior and intentional divergences explicit
-- preserve human ownership of correctness, maintainability, and security
+- preserve human ownership of correctness, maintainability, security, and merge
+  decisions
 - validate AI-generated conclusions with tests, fixtures, references, or
   documented OTAP decisions
 
