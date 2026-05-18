@@ -126,6 +126,33 @@ fn report_terminal_metrics(metrics_reporter: &MetricsReporter, terminal_state: T
     }
 }
 
+/// Build a flat edge list from a pipeline's connections, resolving node
+/// names to indices. Names not found in the map are silently skipped.
+fn connection_edges<'a>(
+    connections: impl Iterator<Item = &'a otap_df_config::pipeline::PipelineConnection>,
+    node_name_to_index: &HashMap<String, usize>,
+) -> Vec<(usize, usize)> {
+    let mut edges = Vec::new();
+    for conn in connections {
+        let from_indices: Vec<usize> = conn
+            .from_nodes()
+            .into_iter()
+            .filter_map(|name| node_name_to_index.get(name.as_ref()).copied())
+            .collect();
+        let to_indices: Vec<usize> = conn
+            .to_nodes()
+            .into_iter()
+            .filter_map(|name| node_name_to_index.get(name.as_ref()).copied())
+            .collect();
+        for &src in &from_indices {
+            for &dst in &to_indices {
+                edges.push((src, dst));
+            }
+        }
+    }
+    edges
+}
+
 /// PipeNode contains runtime-specific info.
 pub(crate) struct PipeNode {
     index: usize, // NodeIndex into the appropriate vector w/ offset precomputed
@@ -238,12 +265,17 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             })
             .collect();
 
+        // Build edge list from pipeline connections for flow metric
+        // interleaving detection.
+        let pipeline_connections = connection_edges(_config.connection_iter(), &node_name_to_index);
+
         // Build flow_metric state and per-node role assignments up front.
         let flow_metric_state = build_flow_metric_state(
             &telemetry_policy,
             &node_name_to_index,
             &processor_indices,
             &pipeline_context,
+            &pipeline_connections,
         )?;
 
         // Spawn node tasks and register their control senders, scoping telemetry where available.
