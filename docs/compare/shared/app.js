@@ -307,7 +307,7 @@ function hasBackpressure(metricsArray, loadgenRate) {
   return false;
 }
 
-function buildComparisonChartData(suiteData, comparison, testNames, selectedMetric) {
+function buildComparisonChartData(suiteData, comparison, tests, selectedMetric) {
   const refs = comparison.suites || [];
   const origIdx = comparison._originalIndices || null;
 
@@ -326,18 +326,17 @@ function buildComparisonChartData(suiteData, comparison, testNames, selectedMetr
     const colorIdx = origIdx ? origIdx[si] : si;
     const color = getColor(colorIdx);
     const pattern = createDiagonalPattern(color);
-    const tests = getSuiteTests(suiteData, ref.slug);
+    const suiteTests = getSuiteTests(suiteData, ref.slug);
     const data = [], bp = [], missing = [];
-    for (const tn of testNames) {
-      const t = tests.find((x) => x.name === tn);
+    for (const ct of tests) {
+      const t = suiteTests.find((x) => x.name === ct.name);
       if (!t || !t.metrics) { data.push(sentinel); bp.push(false); missing.push(true); continue; }
       const m = t.metrics.find((x) => x.name === selectedMetric);
       const val = m && typeof m.value === "number" && Number.isFinite(m.value) ? m.value : null;
       if (val === null) { data.push(sentinel); bp.push(false); missing.push(true); }
       else {
         data.push(val);
-        const rm = tn.match(/^(\d+)k$/);
-        bp.push(hasBackpressure(t.metrics, rm ? parseInt(rm[1]) * 1000 : null));
+        bp.push(hasBackpressure(t.metrics, ct.loadgen_rate));
         missing.push(false);
       }
     }
@@ -354,7 +353,7 @@ function buildComparisonChartData(suiteData, comparison, testNames, selectedMetr
       borderRadius: 4, borderSkipped: "bottom",
     };
   });
-  return { labels: testNames, datasets };
+  return { labels: tests.map((t) => t.label), datasets };
 }
 
 function chartOptions(onClick) {
@@ -381,8 +380,8 @@ function chartOptions(onClick) {
   };
 }
 
-function createBarChart(canvas, suiteData, comparison, testNames, selectedMetric, onClick) {
-  const chart = new Chart(canvas, { type: "bar", data: buildComparisonChartData(suiteData, comparison, testNames, selectedMetric), options: chartOptions(onClick), plugins: [barValueLabelsPlugin] });
+function createBarChart(canvas, suiteData, comparison, tests, selectedMetric, onClick) {
+  const chart = new Chart(canvas, { type: "bar", data: buildComparisonChartData(suiteData, comparison, tests, selectedMetric), options: chartOptions(onClick), plugins: [barValueLabelsPlugin] });
   sizeChartContainer(chart, canvas);
   return chart;
 }
@@ -393,8 +392,8 @@ function sizeChartContainer(chart, canvas, baseHeight = 220) {
   chart.resize();
 }
 
-function updateBarChartData(chart, suiteData, comparison, testNames, selectedMetric) {
-  const d = buildComparisonChartData(suiteData, comparison, testNames, selectedMetric);
+function updateBarChartData(chart, suiteData, comparison, tests, selectedMetric) {
+  const d = buildComparisonChartData(suiteData, comparison, tests, selectedMetric);
   chart.data.labels = d.labels;
   for (let i = 0; i < d.datasets.length; i++) {
     if (chart.data.datasets[i]) {
@@ -493,13 +492,6 @@ function metricTitle(name) {
   const label = metricLabel(name);
   const unit = METRIC_UNITS[name];
   return unit ? `${label} (${unit})` : label;
-}
-
-function collectTestNames(suiteData, comparison) {
-  const names = new Set();
-  for (const ref of comparison.suites || [])
-    for (const t of getSuiteTests(suiteData, ref.slug)) names.add(t.name);
-  return [...names].sort((a, b) => (parseInt(a) || 0) - (parseInt(b) || 0));
 }
 
 function findAvailableMetrics(suiteData, comparison) {
@@ -616,20 +608,22 @@ function wireComparisonSection(suiteData, comparison) {
 
   function renderChart() {
     const filtered = filterComparison(comparison, suiteData, filterState);
-    // X-axis is the union of test names across the WHOLE comparison, not the
-    // filter-survivors. Keeps the chart stable when filters hide the only
-    // data-having suite -- remaining suites then render striped "missing"
-    // stubs in their proper colors instead of an empty black-legend chart.
-    const testNames = collectTestNames(suiteData, comparison);
+    const tests = comparison.tests || [];
     const sel = perComparisonMetrics.get(slug);
     if (activeCharts.has(slug)) { activeCharts.get(slug).destroy(); activeCharts.delete(slug); }
     const canvas = section.querySelector("canvas");
     if (canvas && filtered.suites.length > 0) {
-      activeCharts.set(slug, createBarChart(canvas, suiteData, filtered, testNames, sel));
+      activeCharts.set(slug, createBarChart(canvas, suiteData, filtered, tests, sel));
     }
     const bpEl = section.querySelector(".chart-backpressure-legend");
     if (bpEl) {
-      const anyBP = (filtered.suites || []).some((r) => getSuiteTests(suiteData, r.slug).some((t) => { const rm = t.name.match(/^(\d+)k$/); return hasBackpressure(t.metrics, rm ? parseInt(rm[1])*1000 : null); }));
+      const anyBP = (filtered.suites || []).some((r) => {
+        const suiteTests = getSuiteTests(suiteData, r.slug);
+        return tests.some((ct) => {
+          const t = suiteTests.find((x) => x.name === ct.name);
+          return t && hasBackpressure(t.metrics, ct.loadgen_rate);
+        });
+      });
       bpEl.style.display = anyBP ? "" : "none";
     }
   }
@@ -672,16 +666,13 @@ function renderComparisonPage(compSlug) {
 
   function renderAll() {
     const filtered = filterComparison(comparison, suiteData, filterState);
-    // X-axis is the union of test names across the WHOLE comparison, not the
-    // filter-survivors. Keeps the chart stable when filters hide the only
-    // data-having suite -- remaining suites then render striped "missing"
-    // stubs in their proper colors instead of an empty black-legend chart.
-    const testNames = collectTestNames(suiteData, comparison);
+    const tests = comparison.tests || [];
+    const testNames = tests.map((t) => t.name);
     if (detailSuiteIdx >= filtered.suites.length) detailSuiteIdx = 0;
     if (!testNames.includes(detailTestName)) detailTestName = testNames[0] || "";
 
-    const setDetail = renderComparisonDetail(suiteData, filtered, testNames, detailSuiteIdx, detailTestName, (si, tn) => { detailSuiteIdx = si; detailTestName = tn; });
-    renderComparisonChart(suiteData, filtered, testNames, (si, tn) => { detailSuiteIdx = si; detailTestName = tn; setDetail(si, tn); });
+    const setDetail = renderComparisonDetail(suiteData, filtered, tests, detailSuiteIdx, detailTestName, (si, tn) => { detailSuiteIdx = si; detailTestName = tn; });
+    renderComparisonChart(suiteData, filtered, tests, (si, tn) => { detailSuiteIdx = si; detailTestName = tn; setDetail(si, tn); });
   }
 
   wireColorblindToggle(app, () => renderComparisonPage(compSlug));
@@ -690,7 +681,7 @@ function renderComparisonPage(compSlug) {
   renderAll();
 }
 
-function renderComparisonChart(suiteData, comparison, testNames, onBarClick) {
+function renderComparisonChart(suiteData, comparison, tests, onBarClick) {
   const target = document.getElementById("comparison-chart");
   if (!target) return;
   const metrics = findAvailableMetrics(suiteData, comparison);
@@ -701,11 +692,17 @@ function renderComparisonChart(suiteData, comparison, testNames, onBarClick) {
     if (!elements.length) return;
     const { datasetIndex, index } = elements[0];
     const ref = (comparison.suites || [])[datasetIndex];
-    const tn = testNames[index];
-    if (ref && tn) onBarClick(datasetIndex, tn);
+    const ct = tests[index];
+    if (ref && ct) onBarClick(datasetIndex, ct.name);
   } : null;
 
-  const anyBP = (comparison.suites || []).some((r) => getSuiteTests(suiteData, r.slug).some((t) => { const rm = t.name.match(/^(\d+)k$/); return hasBackpressure(t.metrics, rm ? parseInt(rm[1])*1000 : null); }));
+  const anyBP = (comparison.suites || []).some((r) => {
+    const suiteTests = getSuiteTests(suiteData, r.slug);
+    return tests.some((ct) => {
+      const t = suiteTests.find((x) => x.name === ct.name);
+      return t && hasBackpressure(t.metrics, ct.loadgen_rate);
+    });
+  });
   const bpHtml = anyBP ? '<div class="chart-backpressure-legend">\u26A0 Backpressure detected</div>' : "";
 
   if (comparison.suites.length === 0) {
@@ -724,11 +721,11 @@ function renderComparisonChart(suiteData, comparison, testNames, onBarClick) {
     </div>`;
 
   const canvas = target.querySelector("canvas");
-  let chart = createBarChart(canvas, suiteData, comparison, testNames, sel, onClick);
+  let chart = createBarChart(canvas, suiteData, comparison, tests, sel, onClick);
   const ms = document.getElementById("metric-select");
   if (ms) ms.onchange = () => {
     sel = ms.value;
-    updateBarChartData(chart, suiteData, comparison, testNames, sel);
+    updateBarChartData(chart, suiteData, comparison, tests, sel);
     const t = target.querySelector(".scenario-section-title");
     if (t) t.textContent = metricTitle(sel);
   };
@@ -736,7 +733,7 @@ function renderComparisonChart(suiteData, comparison, testNames, onBarClick) {
 
 // ── Comparison page: test detail panel ─────────────────────────────────────
 
-function renderComparisonDetail(suiteData, comparison, testNames, initialSuiteIdx, initialTestName, onSelectionChange) {
+function renderComparisonDetail(suiteData, comparison, tests, initialSuiteIdx, initialTestName, onSelectionChange) {
   const target = document.getElementById("comparison-detail");
   if (!target) return () => {};
   const refs = comparison.suites || [];
@@ -765,7 +762,7 @@ function renderComparisonDetail(suiteData, comparison, testNames, initialSuiteId
       return `<button class="detail-pill ${i === selSuite ? "active" : ""}" style="--pill-color: ${getColor(ci)}" data-suite-idx="${i}" type="button">${escapeHtml(r.short || r.name)}</button>`;
     }).join("");
 
-    const testOptsHtml = testNames.map((n) => `<option value="${escapeHtml(n)}" ${n === selTest ? "selected" : ""}>${escapeHtml(n)}</option>`).join("");
+    const testOptsHtml = tests.map((ct) => `<option value="${escapeHtml(ct.name)}" ${ct.name === selTest ? "selected" : ""}>${escapeHtml(ct.label)}</option>`).join("");
 
     let filesHtml = '<div class="muted">No files available.</div>';
     if (test) {
@@ -775,8 +772,8 @@ function renderComparisonDetail(suiteData, comparison, testNames, initialSuiteId
 
     const envHtml = ref ? renderEnvDetail(suiteData[ref.slug] ? suiteData[ref.slug].env : null) : "";
 
-    const rm = selTest.match(/^(\d+)k$/);
-    const lr = rm ? parseInt(rm[1]) * 1000 : null;
+    const selTestCfg = tests.find((ct) => ct.name === selTest);
+    const lr = selTestCfg ? selTestCfg.loadgen_rate : null;
     const bpBadge = hasBackpressure(metrics, lr) ? '<div class="detail-backpressure-badge">\u26A0 Backpressure detected</div>' : "";
 
     let scalarsHtml = "";
