@@ -127,7 +127,10 @@ pub struct RuntimePipeline<PData: Debug> {
     telemetry_policy: TelemetryPolicy,
 }
 
-fn report_terminal_metrics(metrics_reporter: &MetricsReporter, terminal_state: TerminalState) {
+pub(crate) fn report_terminal_metrics(
+    metrics_reporter: &MetricsReporter,
+    terminal_state: TerminalState,
+) {
     for snapshot in terminal_state.into_metrics() {
         let _ = metrics_reporter.try_report_snapshot(snapshot);
     }

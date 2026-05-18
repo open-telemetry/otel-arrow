@@ -344,9 +344,12 @@ async fn test_ctrl_config_then_shutdown() {
 
 #[tokio::test]
 async fn test_ctrl_delayed_shutdown() {
+    // Shutdown is delivered immediately regardless of how far in the
+    // future its deadline is — the deadline is the extension's
+    // cooperative cleanup budget, not a wait time before delivery.
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx));
-    let dl = Instant::now() + std::time::Duration::from_millis(50);
+    let dl = Instant::now() + std::time::Duration::from_secs(60);
     let sender = SharedSender::mpsc(tx);
     sender
         .send(ExtensionControlMsg::Shutdown {
@@ -355,29 +358,38 @@ async fn test_ctrl_delayed_shutdown() {
         })
         .await
         .unwrap();
-    // Keep sender alive so control_rx doesn't close before the deadline.
+    let before = Instant::now();
     assert!(ch.recv().await.unwrap().is_shutdown());
-    assert!(Instant::now() >= dl);
+    assert!(
+        before.elapsed() < std::time::Duration::from_secs(1),
+        "Shutdown should be delivered immediately, not after the deadline"
+    );
+    // After Shutdown the channel is closed.
+    assert!(ch.recv().await.is_err());
     drop(sender);
 }
 
 #[tokio::test]
-async fn test_ctrl_delayed_shutdown_sender_dropped() {
-    // Edge case: sender drops during grace period. The pending shutdown
-    // should still be delivered instead of returning RecvError::Closed.
+async fn test_ctrl_shutdown_closes_channel() {
+    // Messages sent after Shutdown are never observed: once Shutdown
+    // is delivered the channel is closed and the extension's event
+    // loop terminates.
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx));
-    let dl = Instant::now() + std::time::Duration::from_millis(100);
-    SharedSender::mpsc(tx)
-        .send(ExtensionControlMsg::Shutdown {
-            deadline: dl,
-            reason: "dl".into(),
-        })
-        .await
-        .unwrap();
-    // Sender is dropped here — channel closes during grace period.
-    // recv() should still return the pending shutdown, not Err(Closed).
+    let s = SharedSender::mpsc(tx);
+    s.send(ExtensionControlMsg::Shutdown {
+        deadline: Instant::now() + std::time::Duration::from_secs(1),
+        reason: "d".into(),
+    })
+    .await
+    .unwrap();
+    s.send(ExtensionControlMsg::Config {
+        config: Value::Null,
+    })
+    .await
+    .unwrap();
     assert!(ch.recv().await.unwrap().is_shutdown());
+    assert!(ch.recv().await.is_err());
 }
 
 #[tokio::test]

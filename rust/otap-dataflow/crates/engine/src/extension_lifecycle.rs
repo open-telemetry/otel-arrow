@@ -40,17 +40,18 @@ use tokio::time::Instant as TokioInstant;
 pub(crate) const EXTENSION_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 /// Slack added past `EXTENSION_SHUTDOWN_GRACE` before the runtime
-/// hard-stops draining extension tasks. The cooperative deadline that
-/// `broadcast_shutdown` puts on the wire and the deadline the runtime
-/// waits on are intentionally different: extensions get exactly
-/// `EXTENSION_SHUTDOWN_GRACE` to wind down (matching the contract in
-/// the `Shutdown` message), and the runtime waits a small additional
-/// window to absorb the time it takes the
-/// [`crate::extension::ControlChannel`] adapter to deliver the
-/// `Shutdown` message through to the extension's `recv()` and for the
-/// extension's task to return. Without this slack a well-behaved
-/// extension that wakes up exactly at the deadline races against the
-/// runtime's drain timeout.
+/// hard-stops draining extension tasks. The deadline carried in the
+/// `Shutdown` message and the deadline the runtime drains until are
+/// intentionally different: the extension is granted exactly
+/// `EXTENSION_SHUTDOWN_GRACE` to perform its cooperative cleanup
+/// (matching the contract documented on the `Shutdown` message), and
+/// the runtime then waits a small additional window for the task to
+/// actually return after its cleanup completes — context switches,
+/// `JoinHandle` polling, and any post-cleanup teardown the runtime
+/// performs all take non-zero time. Without this slack a well-behaved
+/// extension that finishes cleanup right at the deadline would race
+/// against the runtime's drain timeout and be reported as a timeout
+/// even though it terminated correctly.
 pub(crate) const EXTENSION_SHUTDOWN_DRAIN_SLACK: Duration = Duration::from_millis(500);
 
 const SHUTDOWN_REASON: &str = "pipeline data-path drained";
@@ -105,8 +106,18 @@ impl ExtensionLifecycle {
             let ext_metrics_reporter = metrics_reporter.clone();
             let ext_id = ext_wrapper.name();
             let fut = async move {
-                match ext_wrapper.start(ext_metrics_reporter).await {
-                    Ok(_terminal_state) => Ok(()),
+                match ext_wrapper.start(ext_metrics_reporter.clone()).await {
+                    Ok(terminal_state) => {
+                        // Forward any final metric snapshots the
+                        // extension reported in its TerminalState so
+                        // they reach the same MetricsReporter that
+                        // receiver/exporter tasks use on completion.
+                        crate::runtime_pipeline::report_terminal_metrics(
+                            &ext_metrics_reporter,
+                            terminal_state,
+                        );
+                        Ok(())
+                    }
                     Err(e) => {
                         otel_warn!(
                             "extension.task.error",
@@ -160,14 +171,23 @@ impl ExtensionLifecycle {
         for sender in &self.shutdown_senders {
             // `try_send` is intentional: the extension's control
             // channel is a small mpsc and we don't want shutdown
-            // broadcast to block the runtime loop. Drop on full is
-            // acceptable — the channel's only other writer is the
-            // dispatcher, which has already terminated by the time
-            // this is called.
-            let _ = sender.sender.try_send(ExtensionControlMsg::Shutdown {
+            // broadcast to block the runtime loop. The data path
+            // (the only other writer) has already terminated by the
+            // time this is called, so the channel should have room.
+            // A failure here is unusual — it means the extension is
+            // either backed up on its own control queue or has
+            // already torn down — so surface it as a warning rather
+            // than silently dropping the cleanup signal.
+            if let Err(e) = sender.sender.try_send(ExtensionControlMsg::Shutdown {
                 deadline,
                 reason: SHUTDOWN_REASON.to_string(),
-            });
+            }) {
+                otel_warn!(
+                    "extension.shutdown.send_failed",
+                    extension = sender.name.as_ref(),
+                    error = format!("{e}"),
+                );
+            }
         }
     }
 

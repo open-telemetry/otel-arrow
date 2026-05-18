@@ -32,10 +32,7 @@ use otap_df_config::extension::ExtensionUserConfig;
 use otap_df_telemetry::otel_debug;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Instant;
-use tokio::time::{Sleep, sleep_until};
 
 // ── ControlChannel ──────────────────────────────────────────────────────────
 
@@ -46,14 +43,35 @@ use tokio::time::{Sleep, sleep_until};
 /// [`local::extension::ControlChannel`](crate::local::extension::ControlChannel)
 /// and [`shared::extension::ControlChannel`](crate::shared::extension::ControlChannel).
 ///
-/// When a `Shutdown` message arrives with a future deadline, the channel
-/// continues delivering other control messages until the deadline expires,
-/// then returns the `Shutdown`.
+/// `Shutdown` is delivered to the extension immediately on arrival; the
+/// deadline carried in the message is the extension's cooperative
+/// cleanup budget (i.e., "you have until `deadline` to wind down"),
+/// **not** a delay before delivery. Once `Shutdown` has been returned,
+/// subsequent calls to [`recv`](Self::recv) return [`RecvError::Closed`]
+/// so the extension's event loop terminates instead of dispatching
+/// further control messages.
+///
+/// Immediate delivery is the natural fit here: the runtime broadcasts
+/// `Shutdown` to extensions only **after every data-path node has
+/// already drained** (see [`crate::extension_lifecycle`] and
+/// `runtime_pipeline::run_forever`), so by the time this message
+/// arrives there is nothing left for the extension to coordinate with
+/// — it should just start releasing its sockets, files, or background
+/// work right away, with the full `deadline - now()` window available
+/// for that cleanup.
+///
+/// This is intentionally different from the data-path node control
+/// channel in [`crate::message`], which stashes a `Shutdown` with a
+/// future deadline and continues delivering other control messages
+/// (including local timer expirations) until the deadline expires.
+/// Data-path nodes need that grace window to keep draining in-flight
+/// pipeline data (PData) they have already accepted. Extensions are
+/// PData-free, run *after* the data path has stopped, and have no
+/// analogous drain — so the same policy would just burn the deadline
+/// inside the channel adapter for no benefit.
 #[doc(hidden)]
 pub struct ControlChannel<R> {
     control_rx: Option<R>,
-    shutting_down_deadline: Option<Instant>,
-    pending_shutdown: Option<ExtensionControlMsg>,
 }
 
 /// Trait abstracting over local and shared receivers for control messages.
@@ -81,96 +99,32 @@ impl<R: ControlReceiver> ControlChannel<R> {
     pub fn new(control_rx: R) -> Self {
         ControlChannel {
             control_rx: Some(control_rx),
-            shutting_down_deadline: None,
-            pending_shutdown: None,
         }
     }
 
     /// Asynchronously receives the next control message.
     ///
+    /// `Shutdown` is delivered immediately on arrival; the extension is
+    /// responsible for honouring the `deadline` field as its cooperative
+    /// cleanup budget. After `Shutdown` has been delivered the channel
+    /// is closed and subsequent calls return [`RecvError::Closed`].
+    ///
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
     pub async fn recv(&mut self) -> Result<ExtensionControlMsg, RecvError> {
-        let mut sleep_until_deadline: Option<Pin<Box<Sleep>>> = None;
-
-        loop {
-            if self.control_rx.is_none() {
-                return Err(RecvError::Closed);
+        let rx = self.control_rx.as_mut().ok_or(RecvError::Closed)?;
+        match rx.recv().await {
+            Ok(ExtensionControlMsg::Shutdown { deadline, reason }) => {
+                // Close the underlying receiver so subsequent recv()
+                // calls return Closed and the extension's event loop
+                // exits instead of attempting to dispatch further
+                // control messages past Shutdown.
+                let _ = self.control_rx.take();
+                Ok(ExtensionControlMsg::Shutdown { deadline, reason })
             }
-
-            if let Some(dl) = self.shutting_down_deadline {
-                if Instant::now() >= dl {
-                    let shutdown = self
-                        .pending_shutdown
-                        .take()
-                        .expect("pending_shutdown must exist");
-                    self.shutdown();
-                    return Ok(shutdown);
-                }
-
-                if sleep_until_deadline.is_none() {
-                    sleep_until_deadline = Some(Box::pin(sleep_until(dl.into())));
-                }
-
-                // Race the deadline against incoming control messages so that
-                // Config / CollectTelemetry messages sent during the grace
-                // period are still delivered to the extension.
-                tokio::select! {
-                    biased;
-                    _ = sleep_until_deadline.as_mut().expect("set above") => {
-                        let shutdown = self
-                            .pending_shutdown
-                            .take()
-                            .expect("pending_shutdown must exist");
-                        self.shutdown();
-                        return Ok(shutdown);
-                    }
-                    msg = self.control_rx.as_mut().expect("checked above").recv() => {
-                        match msg {
-                            Ok(msg) => return Ok(msg),
-                            Err(_) => {
-                                // Channel closed during grace period — deliver
-                                // the pending shutdown instead of propagating
-                                // the closed error.
-                                let shutdown = self
-                                    .pending_shutdown
-                                    .take()
-                                    .expect("pending_shutdown must exist");
-                                self.shutdown();
-                                return Ok(shutdown);
-                            }
-                        }
-                    }
-                }
-            }
-
-            match self
-                .control_rx
-                .as_mut()
-                .expect("checked above")
-                .recv()
-                .await
-            {
-                Ok(ExtensionControlMsg::Shutdown { deadline, reason }) => {
-                    if deadline.duration_since(Instant::now()).is_zero() {
-                        self.shutdown();
-                        return Ok(ExtensionControlMsg::Shutdown { deadline, reason });
-                    }
-                    self.shutting_down_deadline = Some(deadline);
-                    self.pending_shutdown =
-                        Some(ExtensionControlMsg::Shutdown { deadline, reason });
-                    continue;
-                }
-                Ok(msg) => return Ok(msg),
-                Err(e) => return Err(e),
-            }
+            other => other,
         }
-    }
-
-    fn shutdown(&mut self) {
-        self.shutting_down_deadline = None;
-        let _ = self.control_rx.take().expect("control_rx must exist");
     }
 }
 

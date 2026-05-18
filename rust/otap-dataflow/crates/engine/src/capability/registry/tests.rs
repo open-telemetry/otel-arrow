@@ -1634,3 +1634,82 @@ fn test_passive_cloned_local_hands_out_independent_clones() {
     assert_eq!(handle_a.bump(), 3, "consumer A must keep its own counter");
     assert_eq!(handle_b.bump(), 2, "consumer B must keep its own counter");
 }
+
+/// Regression: when an extension exposes multiple capabilities of the
+/// same variant and a node consumes only some of them, the variant must
+/// still be reported as consumed.
+///
+/// Under the old `unconsumed_local()`-based pruning logic, a single
+/// unbound capability would make the extension appear in the
+/// "unconsumed" set, causing the engine to drop a variant that was
+/// actually in use by other capabilities. `consumed_local()` /
+/// `consumed_shared()` express the correct "any consumed" semantics:
+/// the variant is in use as soon as one capability is bound.
+#[test]
+fn test_tracker_consumed_local_any_capability_consumed() {
+    let mut tracker = ConsumedTracker::new();
+    let ext: ExtensionId = "multi-cap-ext".into();
+
+    // Same extension exposes two distinct local capabilities.
+    let cap_a =
+        tracker.ensure_local_consumer_slot(TypeId::of::<TestCap>(), "test_cap", ext.clone());
+    let _cap_b =
+        tracker.ensure_local_consumer_slot(TypeId::of::<MutSelfCap>(), "mut_self_cap", ext.clone());
+
+    // Only cap_a is consumed; cap_b is left untouched.
+    cap_a.set(true);
+
+    // Old semantics would still flag the extension in `unconsumed_local`
+    // (because cap_b's slot is still false), which is preserved here as
+    // documentation. The fix is to use `consumed_local` instead, which
+    // correctly reports the extension as in-use.
+    let unconsumed: HashSet<ExtensionId> = tracker
+        .unconsumed_local()
+        .into_iter()
+        .map(|(e, _)| e)
+        .collect();
+    assert!(
+        unconsumed.contains(&ext),
+        "cap_b is still unbound, so ext appears under the per-capability unconsumed view"
+    );
+
+    let consumed = tracker.consumed_local();
+    assert!(
+        consumed.contains(&ext),
+        "consumed_local must report ext because cap_a was consumed"
+    );
+}
+
+#[test]
+fn test_tracker_consumed_shared_any_capability_consumed() {
+    let mut tracker = ConsumedTracker::new();
+    let ext: ExtensionId = "multi-cap-ext".into();
+
+    let _cap_a =
+        tracker.ensure_shared_consumer_slot(TypeId::of::<TestCap>(), "test_cap", ext.clone());
+    let cap_b = tracker.ensure_shared_consumer_slot(
+        TypeId::of::<MutSelfCap>(),
+        "mut_self_cap",
+        ext.clone(),
+    );
+
+    cap_b.set(true);
+
+    let consumed = tracker.consumed_shared();
+    assert!(
+        consumed.contains(&ext),
+        "consumed_shared must report ext because cap_b was consumed"
+    );
+}
+
+#[test]
+fn test_tracker_consumed_empty_when_no_capability_consumed() {
+    let mut tracker = ConsumedTracker::new();
+    let ext: ExtensionId = "unused-ext".into();
+
+    let _ = tracker.ensure_local_consumer_slot(TypeId::of::<TestCap>(), "test_cap", ext.clone());
+    let _ = tracker.ensure_shared_consumer_slot(TypeId::of::<MutSelfCap>(), "mut_self_cap", ext);
+
+    assert!(tracker.consumed_local().is_empty());
+    assert!(tracker.consumed_shared().is_empty());
+}

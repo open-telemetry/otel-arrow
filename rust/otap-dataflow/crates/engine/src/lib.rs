@@ -1006,22 +1006,25 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         //
         // A bundle's two variants (local + shared) are evaluated
         // independently in 3/3a — a SharedAsLocal-fallback bundle
-        // (shared-only) only ever populates `unconsumed_shared`, so the
-        // local check is automatically a no-op for it.
+        // (shared-only) only ever populates the consumed_shared set,
+        // so the local check naturally fails for it (and the bundle's
+        // missing local variant is dropped accordingly).
         let bound_extensions: HashSet<otap_df_config::ExtensionId> = config
             .node_iter()
             .flat_map(|(_, node_config)| node_config.capabilities.values().cloned())
             .collect();
-        let unconsumed_local: HashSet<otap_df_config::ExtensionId> = consumed_tracker
-            .unconsumed_local()
-            .into_iter()
-            .map(|(ext_id, _name)| ext_id)
-            .collect();
-        let unconsumed_shared: HashSet<otap_df_config::ExtensionId> = consumed_tracker
-            .unconsumed_shared()
-            .into_iter()
-            .map(|(ext_id, _name)| ext_id)
-            .collect();
+        // Per-variant consumption: an extension's local (resp. shared)
+        // variant is considered "in use" iff at least one of the
+        // capabilities it exposes for that variant was bound by some
+        // node. Tracking presence-of-consumed (rather than
+        // presence-of-unconsumed) is required because an extension may
+        // expose multiple capabilities of the same variant — under the
+        // unconsumed view, a single unbound capability would mask the
+        // bound ones and the whole variant would be incorrectly dropped.
+        let consumed_local: HashSet<otap_df_config::ExtensionId> =
+            consumed_tracker.consumed_local();
+        let consumed_shared: HashSet<otap_df_config::ExtensionId> =
+            consumed_tracker.consumed_shared();
         let extension_wrappers: Vec<extension::ExtensionWrapper> = extension_bundles
             .into_iter()
             .flat_map(|(ext_id, mut bundle, is_background)| {
@@ -1054,12 +1057,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
                 // Category 3 / 3a: per-variant consumption.
                 // A variant is "consumed" iff it exists in the bundle
-                // AND its tracker slot was flipped to `true` (i.e., the
-                // ext_id is *absent* from the unconsumed set).
+                // AND at least one of the extension's capabilities for
+                // that variant was bound by a node (i.e., ext_id is
+                // present in the corresponding consumed set).
                 let local_present = bundle.local().is_some();
                 let shared_present = bundle.shared().is_some();
-                let local_consumed = local_present && !unconsumed_local.contains(&ext_id);
-                let shared_consumed = shared_present && !unconsumed_shared.contains(&ext_id);
+                let local_consumed = local_present && consumed_local.contains(&ext_id);
+                let shared_consumed = shared_present && consumed_shared.contains(&ext_id);
 
                 // Category 3: bound but no variant consumed → warn + drop.
                 if !local_consumed && !shared_consumed {
