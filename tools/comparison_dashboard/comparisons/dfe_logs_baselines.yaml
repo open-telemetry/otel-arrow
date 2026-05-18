@@ -2,6 +2,23 @@ slug: dfe_logs_baselines
 name: Dataflow Engine Logs
 description: Baseline DFE logs runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
 
+tests:
+  - name: 100k
+    loadgen_rate: 100000
+  - name: 200k
+    loadgen_rate: 200000
+  - name: 300k
+    loadgen_rate: 300000
+  - name: 400k
+    loadgen_rate: 400000
+  - name: 600k
+    loadgen_rate: 600000
+  - name: 800k
+    loadgen_rate: 800000
+  - name: 1000k
+    loadgen_rate: 1000000
+    label: 1M
+
 suites:
   # OTAP
   - name: DFE Logs OTAP Baseline (None)
