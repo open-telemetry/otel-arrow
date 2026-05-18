@@ -1,11 +1,11 @@
-# Single-core saturation test: measures maximum throughput per core
+# Single-core saturation test (OTAP variant): measures maximum throughput per core
 # Uses semantic_conventions (~300 byte logs) -- same payload as other benchmarks
 # for direct comparability. Loadgen is unleashed (no rate cap) with enough cores
 # to fully saturate the single SUT core.
 #
 # NUMA-aware layout: SUT on NUMA node 0, loadgen+backend on NUMA node 1
 # Layout: SUT=1 core, Backend=2 cores, Loadgen=4 cores (7 total)
-name: Continuous - Saturation - Max Throughput
+name: Continuous - Saturation - Max Throughput OTAP
 components:
   load-generator:
     deployment:
@@ -72,14 +72,14 @@ components:
         endpoint: http://localhost:8087/api/v1/telemetry/metrics?format=prometheus&reset=false
 
 tests:
-  - name: OTLP-ATTR-OTLP
+  - name: OTAP-ATTR-OTAP
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
         result_dir: "continuous_saturation_max_throughput"
-        engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otlp.yaml
-        loadgen_exporter_type: otlp
-        backend_receiver_type: otlp
+        engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otap-attr-otap.yaml
+        loadgen_exporter_type: otelarrow
+        backend_receiver_type: otelarrow
         observation_interval: 60
         signals_per_second: null
         max_batch_size: 1000
