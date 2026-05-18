@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "DFE OTAP Baseline w/ Gzip (Traces)/800k - Dropped Spans %",
+    "name": "dropped_spans_percentage",
+    "unit": "%",
+    "value": -3.4018523693084717
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Gzip (Traces)/800k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 93.84075470205457
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Gzip (Traces)/800k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.46535491905355
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Gzip (Traces)/800k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 136.19192708333333
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Gzip (Traces)/800k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 138.3203125
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Gzip (Traces)/800k - Span Throughput",
+    "name": "spans_produced_rate",
+    "unit": "spans/sec",
+    "value": 497134.9140761792
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Gzip (Traces)/800k - Span Throughput",
+    "name": "spans_received_rate",
+    "unit": "spans/sec",
+    "value": 502624.1866353683
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Gzip (Traces)/800k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000738
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Gzip (Traces)/800k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 21158248.951621216
+  },
+  {
+    "extra": "DFE OTAP Baseline w/ Gzip (Traces)/800k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 21095907.61610866
+  }
+]

@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - Dropped Spans %",
+    "name": "dropped_spans_percentage",
+    "unit": "%",
+    "value": 61.454166412353516
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.43199443323816
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.92146938775511
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 180.10286458333334
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 185.734375
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - Span Throughput",
+    "name": "spans_produced_rate",
+    "unit": "spans/sec",
+    "value": 401945.1600091764
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - Span Throughput",
+    "name": "spans_received_rate",
+    "unit": "spans/sec",
+    "value": 154667.71394648525
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.00069
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 21853837.486749902
+  },
+  {
+    "extra": "DFE OTLP Baseline w/ Gzip (Traces)/400k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 56554918.13638927
+  }
+]
