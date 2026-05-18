@@ -25,61 +25,9 @@ if (!DATA_PATH) {
 }
 
 // ── Metric display config ──────────────────────────────────────────────────
-
-const METRIC_LABELS = {
-  cpu_percentage_normalized_avg: "CPU Average",
-  cpu_percentage_normalized_max: "CPU Max",
-  ram_mib_avg: "Memory Average",
-  ram_mib_max: "Memory Max",
-  network_tx_bytes_rate_avg: "Network TX Rate",
-  network_rx_bytes_rate_avg: "Network RX Rate",
-  dropped_logs_percentage: "Dropped Logs",
-  dropped_metrics_percentage: "Dropped Metrics",
-  dropped_spans_percentage: "Dropped Spans",
-  logs_delivery_deviation_percentage: "Logs Delivery Deviation",
-  logs_produced_rate: "Offered Load Rate",
-  metrics_produced_rate: "Offered Load Rate",
-  spans_produced_rate: "Offered Load Rate",
-  loadgen_logs_sent_rate: "Loadgen Sent Rate",
-  logs_received_rate: "Collector Received Rate",
-  metrics_received_rate: "Collector Received Rate",
-  spans_received_rate: "Collector Received Rate",
-  collector_logs_sent_rate: "Collector Sent Rate",
-  backend_logs_received_rate: "Backend Received Rate",
-  test_duration: "Test Duration",
-};
-
-const METRIC_UNITS = {
-  cpu_percentage_normalized_avg: "%",
-  cpu_percentage_normalized_max: "%",
-  ram_mib_avg: "MiB",
-  ram_mib_max: "MiB",
-  network_tx_bytes_rate_avg: "bytes/sec",
-  network_rx_bytes_rate_avg: "bytes/sec",
-  dropped_logs_percentage: "%",
-  dropped_metrics_percentage: "%",
-  dropped_spans_percentage: "%",
-  logs_delivery_deviation_percentage: "%",
-  logs_produced_rate: "logs/sec",
-  metrics_produced_rate: "metrics/sec",
-  spans_produced_rate: "spans/sec",
-  loadgen_logs_sent_rate: "logs/sec",
-  logs_received_rate: "logs/sec",
-  metrics_received_rate: "metrics/sec",
-  spans_received_rate: "spans/sec",
-  collector_logs_sent_rate: "logs/sec",
-  backend_logs_received_rate: "logs/sec",
-  test_duration: "seconds",
-};
-
-const DASHBOARD_METRICS = [
-  "cpu_percentage_normalized_avg",
-  "cpu_percentage_normalized_max",
-  "ram_mib_avg",
-  "ram_mib_max",
-  "network_tx_bytes_rate_avg",
-  "network_rx_bytes_rate_avg",
-];
+// Display labels come from window.METRICS_META (emitted by dashboard.py from
+// manifest.yaml). Units come from each per-test metric record's `unit` field
+// in the published JSON.
 
 const AUTO_COLORS = [
   "#f97316", "#3b82f6", "#22c55e", "#a855f7",
@@ -422,10 +370,8 @@ const TIMESERIES_METRICS = [
 ];
 
 const SCALAR_ONLY_METRICS = [
-  { name: "dropped_logs_percentage", label: "Dropped Logs", unit: "%" },
-  { name: "dropped_metrics_percentage", label: "Dropped Metrics", unit: "%" },
-  { name: "dropped_spans_percentage", label: "Dropped Spans", unit: "%" },
-  { name: "test_duration", label: "Test Duration", unit: "seconds" },
+  { name: "dropped_logs_percentage" },
+  { name: "test_duration" },
 ];
 
 function tmTitle(tm) { return tm.unit ? `${tm.label} (${tm.unit})` : tm.label; }
@@ -485,17 +431,34 @@ function formatBytes(v) {
 }
 
 function metricLabel(name) {
-  return METRIC_LABELS[name] || name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const meta = (window.METRICS_META || {})[name];
+  if (meta && meta.label) return meta.label;
+  return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function metricTitle(name) {
+function lookupMetricUnit(suiteData, comparison, name) {
+  for (const ref of comparison.suites || []) {
+    for (const t of getSuiteTests(suiteData, ref.slug)) {
+      if (!t.metrics) continue;
+      const m = t.metrics.find((x) => x.name === name);
+      if (m && m.unit) return m.unit;
+    }
+  }
+  return null;
+}
+
+function metricTitle(name, suiteData, comparison) {
   const label = metricLabel(name);
-  const unit = METRIC_UNITS[name];
+  const unit = suiteData && comparison ? lookupMetricUnit(suiteData, comparison, name) : null;
   return unit ? `${label} (${unit})` : label;
 }
 
 function findAvailableMetrics(suiteData, comparison) {
-  return DASHBOARD_METRICS.filter((mn) =>
+  const chartList = comparison.metrics && comparison.metrics.chart;
+  const candidates = chartList && chartList.length
+    ? chartList
+    : Object.keys(window.METRICS_META || {});
+  return candidates.filter((mn) =>
     (comparison.suites || []).some((ref) =>
       getSuiteTests(suiteData, ref.slug).some((t) =>
         t.metrics && t.metrics.some((m) => m.name === mn && m.value != null))));
@@ -713,7 +676,7 @@ function renderComparisonChart(suiteData, comparison, tests, onBarClick) {
   target.innerHTML = `
     <div class="scenario-section">
       <div class="scenario-section-head">
-        <div class="scenario-section-title">${escapeHtml(metricTitle(sel))}</div>
+        <div class="scenario-section-title">${escapeHtml(metricTitle(sel, suiteData, comparison))}</div>
         <select id="metric-select" class="scenario-metric-select">${optsHtml}</select>
       </div>
       <div class="chart-container"><canvas></canvas></div>
@@ -727,7 +690,7 @@ function renderComparisonChart(suiteData, comparison, tests, onBarClick) {
     sel = ms.value;
     updateBarChartData(chart, suiteData, comparison, tests, sel);
     const t = target.querySelector(".scenario-section-title");
-    if (t) t.textContent = metricTitle(sel);
+    if (t) t.textContent = metricTitle(sel, suiteData, comparison);
   };
 }
 
@@ -778,8 +741,8 @@ function renderComparisonDetail(suiteData, comparison, tests, initialSuiteIdx, i
 
     let scalarsHtml = "";
     if (test && metrics.length) {
-      const cards = SCALAR_ONLY_METRICS.map((sm) => { const m = getAgg(sm.name); if (!m) return ""; const bad = /^dropped_(logs|metrics|spans)_percentage$/.test(sm.name) && m.value > DATA_LOSS_THRESHOLD;
-        return `<div class="metric-scalar-card${bad ? " backpressure" : ""}"><div class="metric-scalar-name">${escapeHtml(sm.label)}</div><div class="metric-scalar-value">${formatMetricValue(m.value, m.unit || sm.unit)}</div></div>`; }).filter(Boolean).join("");
+      const cards = SCALAR_ONLY_METRICS.map((sm) => { const m = getAgg(sm.name); if (!m) return ""; const bad = sm.name === "dropped_logs_percentage" && m.value > DATA_LOSS_THRESHOLD;
+        return `<div class="metric-scalar-card${bad ? " backpressure" : ""}"><div class="metric-scalar-name">${escapeHtml(metricLabel(sm.name))}</div><div class="metric-scalar-value">${formatMetricValue(m.value, m.unit)}</div></div>`; }).filter(Boolean).join("");
       if (cards) scalarsHtml = `<div class="metric-scalars">${cards}</div>`;
     }
 
