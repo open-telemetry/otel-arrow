@@ -73,7 +73,7 @@ than reproduce the current implementation.
 Classify important findings before they become part of the Rust design:
 
 | Classification | Meaning |
-|---|---|
+| --- | --- |
 | Preserve | Required for compatibility, user expectation, or interoperability. |
 | Improve | Useful behavior that should be safer, clearer, faster, or more robust. |
 | Simplify | Can be represented with a simpler OTAP model. |
