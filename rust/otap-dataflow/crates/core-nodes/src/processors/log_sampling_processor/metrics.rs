@@ -7,7 +7,7 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
 /// Metrics for the log sampling processor.
-#[metric_set(name = "log_sampling.processor.pdata.metrics")]
+#[metric_set(name = "processor.log_sampling.pdata")]
 #[derive(Debug, Default, Clone)]
 pub struct LogSamplingMetrics {
     /// Total log records received by the processor.

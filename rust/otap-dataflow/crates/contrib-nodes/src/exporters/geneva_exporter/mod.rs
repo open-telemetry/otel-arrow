@@ -52,7 +52,7 @@ use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 // Geneva uploader dependencies
 use futures::StreamExt;
@@ -709,12 +709,6 @@ impl Exporter<OtapPdata> for GenevaExporter {
             message = "Geneva exporter starting"
         );
 
-        // Start periodic telemetry collection so CollectTelemetry messages
-        // are delivered to this exporter's message channel.
-        let timer_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         // Message loop
         loop {
             match msg_chan.recv().await? {
@@ -724,7 +718,6 @@ impl Exporter<OtapPdata> for GenevaExporter {
                         message = "Geneva exporter shutting down"
                     );
 
-                    _ = timer_cancel_handle.cancel().await;
                     return Ok(TerminalState::new(
                         deadline,
                         [self.pdata_metrics.snapshot(), self.metrics.snapshot()],

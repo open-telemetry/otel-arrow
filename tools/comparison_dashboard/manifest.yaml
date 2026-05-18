@@ -7,20 +7,23 @@
 #   - `dashboard.py validate` (manifest checks only)
 #   - `dashboard.py build`    (builds the static site)
 #   - `dashboard.py run`      (resolves which suites are runnable)
-#   - `dashboard.py serve`    (locates the site root)
-
-site_root: site
+#   - `dashboard.py serve`    (serves a built site directory)
 
 # Variables passed straight through to Jinja template rendering at the top
 # level. The scripts have no special knowledge of these keys -- add them as
 # orchestrator templates require.
 variables:
   df_engine_image: df_engine:latest
+  otelcol_image: otel/opentelemetry-collector-contrib:latest
 
 # Allowed values for every meta key a suite may declare. Validation rejects
 # any meta key not listed here, and any value (or list element) outside the
 # allowed set.
-meta: {}
+meta:
+  binary: [dfe, otc]
+  protocols: [otap, otlp, otlphttp]
+  signals: [logs, metrics, traces]
+  compression: [none, gzip, zstd]
 
 # Suite definitions, listed by path. Each entry must point at an existing
 # YAML file with at least `name`, `slug`, `variables`, and `orchestrator_template`.
@@ -28,7 +31,53 @@ suites:
   - suites/dfe/dfe-logs-otap-none-baseline.yaml
   - suites/dfe/dfe-logs-otap-gzip-baseline.yaml
   - suites/dfe/dfe-logs-otap-zstd-baseline.yaml
+  - suites/dfe/dfe-logs-otlp-none-baseline.yaml
+  - suites/dfe/dfe-logs-otlp-gzip-baseline.yaml
+  - suites/dfe/dfe-logs-otlp-zstd-baseline.yaml
+  - suites/dfe/dfe-logs-otlphttp-none-baseline.yaml
+  - suites/dfe/dfe-logs-otlphttp-gzip-baseline.yaml
+  - suites/dfe/dfe-logs-otlphttp-zstd-baseline.yaml
+  - suites/dfe/dfe-metrics-otap-none-baseline.yaml
+  - suites/dfe/dfe-metrics-otap-gzip-baseline.yaml
+  - suites/dfe/dfe-metrics-otap-zstd-baseline.yaml
+  - suites/dfe/dfe-metrics-otlp-none-baseline.yaml
+  - suites/dfe/dfe-metrics-otlp-gzip-baseline.yaml
+  - suites/dfe/dfe-metrics-otlp-zstd-baseline.yaml
+  - suites/dfe/dfe-metrics-otlphttp-none-baseline.yaml
+  - suites/dfe/dfe-metrics-otlphttp-gzip-baseline.yaml
+  - suites/dfe/dfe-metrics-otlphttp-zstd-baseline.yaml
+  - suites/dfe/dfe-traces-otap-none-baseline.yaml
+  - suites/dfe/dfe-traces-otap-gzip-baseline.yaml
+  - suites/dfe/dfe-traces-otap-zstd-baseline.yaml
+  - suites/dfe/dfe-traces-otlp-none-baseline.yaml
+  - suites/dfe/dfe-traces-otlp-gzip-baseline.yaml
+  - suites/dfe/dfe-traces-otlp-zstd-baseline.yaml
+  - suites/dfe/dfe-traces-otlphttp-none-baseline.yaml
+  - suites/dfe/dfe-traces-otlphttp-gzip-baseline.yaml
+  - suites/dfe/dfe-traces-otlphttp-zstd-baseline.yaml
+  - suites/otc/otc-logs-otap-none-baseline.yaml
+  - suites/otc/otc-logs-otap-gzip-baseline.yaml
+  - suites/otc/otc-logs-otap-zstd-baseline.yaml
+  - suites/otc/otc-logs-otlp-none-baseline.yaml
+  - suites/otc/otc-logs-otlp-gzip-baseline.yaml
+  - suites/otc/otc-logs-otlp-zstd-baseline.yaml
+  - suites/otc/otc-logs-otlphttp-none-baseline.yaml
+  - suites/otc/otc-metrics-otap-none-baseline.yaml
+  - suites/otc/otc-metrics-otap-gzip-baseline.yaml
+  - suites/otc/otc-metrics-otap-zstd-baseline.yaml
+  - suites/otc/otc-metrics-otlp-none-baseline.yaml
+  - suites/otc/otc-metrics-otlp-gzip-baseline.yaml
+  - suites/otc/otc-metrics-otlp-zstd-baseline.yaml
+  - suites/otc/otc-metrics-otlphttp-none-baseline.yaml
+  - suites/otc/otc-traces-otap-none-baseline.yaml
+  - suites/otc/otc-traces-otap-gzip-baseline.yaml
+  - suites/otc/otc-traces-otap-zstd-baseline.yaml
+  - suites/otc/otc-traces-otlp-none-baseline.yaml
+  - suites/otc/otc-traces-otlp-gzip-baseline.yaml
+  - suites/otc/otc-traces-otlp-zstd-baseline.yaml
+  - suites/otc/otc-traces-otlphttp-none-baseline.yaml
 
 # Comparison definitions, listed by path. Each entry must point at an
 # existing YAML file with `slug` and `suites` (a list of suite refs).
-comparisons: []
+comparisons:
+  - comparisons/dfe_baselines.yaml

@@ -20,12 +20,13 @@ import argparse
 import fnmatch
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
@@ -38,17 +39,25 @@ from jinja2 import Environment, BaseLoader, StrictUndefined
 # ---------------------------------------------------------------------------
 DEFAULT_MANIFEST = Path("manifest.yaml")
 STAGING_DIR = Path(".data")
-SITE_SUITE_DATA_DIR = Path("site/data/suite")
+
+# Default build output layout, used when no explicit paths are passed.
+DEFAULT_SITE_ROOT = Path(".site")
+DEFAULT_DATA_SUBDIR = Path("data")
+DEFAULT_COMPARE_SUBDIR = Path("compare")
+DEFAULT_DATA_DIR = DEFAULT_SITE_ROOT / DEFAULT_DATA_SUBDIR
+
+# Name of the static-assets directory. The source lives at
+# <manifest-dir>/<SHARED_DIR_NAME>/ and is copied into
+# <compare-dir>/<SHARED_DIR_NAME>/ at build time. The name is also reserved
+# as a comparison slug so it can't collide with a generated page directory.
+SHARED_DIR_NAME = "shared"
+SHARED_SOURCE_SUBDIR = Path(SHARED_DIR_NAME)
 
 # File extensions included when scanning test directories during build
 ALLOWED_EXTENSIONS = {".toml", ".yaml", ".yml", ".json", ".txt"}
 
-# File extensions to publish from staging to site/data after a run
+# File extensions to publish from staging to the data dir after a run
 PUBLISH_CONFIG_EXTENSIONS = {".yaml", ".yml", ".toml"}
-
-# Standard test names (hardcoded in the orchestrator templates)
-STANDARD_TESTS = ["100k", "200k", "300k", "400k"]
-
 
 # ---------------------------------------------------------------------------
 # Manifest
@@ -56,24 +65,11 @@ STANDARD_TESTS = ["100k", "200k", "300k", "400k"]
 @dataclass
 class Manifest:
     path: Path                    # absolute path to manifest.yaml
-    site_dir: Path                # absolute path to site root
+    base_dir: Path                # absolute path to manifest.yaml's parent (source root)
     suite_files: list[Path]       # absolute paths to suite YAMLs
     comparison_files: list[Path]  # absolute paths to comparison YAMLs
     variables: dict               # template variables passed to Jinja at top level
     meta: dict                    # allowed values per meta key (key -> [values])
-
-    @property
-    def site_suite_data_dir(self) -> Path:
-        return self.site_dir / "data" / "suite"
-
-    @property
-    def compare_stubs_dir(self) -> Path:
-        return self.site_dir / "compare"
-
-    @property
-    def index_path(self) -> Path:
-        return self.site_dir / "index.html"
-
 
 def load_manifest(manifest_path: Path) -> Manifest:
     """Load and validate the manifest file. Resolves all listed paths."""
@@ -92,7 +88,7 @@ def load_manifest(manifest_path: Path) -> Manifest:
         print(f"ERROR: manifest must be a mapping at top level: {manifest_path}")
         sys.exit(1)
 
-    for key in ("site_root", "suites", "comparisons", "variables", "meta"):
+    for key in ("suites", "comparisons", "variables", "meta"):
         if key not in data:
             print(f"ERROR: manifest missing required key '{key}': {manifest_path}")
             sys.exit(1)
@@ -112,13 +108,12 @@ def load_manifest(manifest_path: Path) -> Manifest:
             sys.exit(1)
 
     base = manifest_path.parent
-    site_dir = (base / data["site_root"]).resolve()
     suite_files = [_resolve_listed_path(base, p, "suite") for p in data["suites"]]
     comparison_files = [_resolve_listed_path(base, p, "comparison") for p in data["comparisons"]]
 
     return Manifest(
         path=manifest_path,
-        site_dir=site_dir,
+        base_dir=base,
         suite_files=suite_files,
         comparison_files=comparison_files,
         variables=variables,
@@ -147,6 +142,197 @@ def simplify_suite_yaml(suite: dict) -> dict:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Run environment capture
+#
+# Per-suite run metadata captured at `dashboard.py run` time. Written as
+# <staging>/run_env.json, published as <data-dir>/suite/<slug>/run_env.json,
+# and consumed by `build` to (a) surface env info in the UI and (b) reject
+# comparisons across suites whose env fingerprints disagree.
+#
+# Fingerprint fields used for equality (build-time mismatch check):
+#   cpu.model, cpu.architecture, cpu.physical_cores,
+#   memory.total_gib_rounded, os.release
+# Times are captured/displayed but not part of equality.
+# ---------------------------------------------------------------------------
+
+
+def now_utc_iso() -> str:
+    """Return the current UTC time as an ISO 8601 string with a 'Z' suffix."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def collect_run_env(started_at: str, ended_at: str) -> dict:
+    """
+    Collect hardware/OS metadata for the current process. `started_at` and
+    `ended_at` are ISO 8601 UTC strings (see `now_utc_iso`) bracketing the
+    test run.
+    """
+    assert isinstance(started_at, str) and started_at, "started_at must be a non-empty ISO 8601 string"
+    assert isinstance(ended_at, str) and ended_at, "ended_at must be a non-empty ISO 8601 string"
+    return {
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "cpu": _collect_cpu(),
+        "os": _collect_os(),
+        "memory": _collect_memory(),
+    }
+
+
+def _collect_cpu() -> dict:
+    """CPU details: model, arch, physical/logical cores, max frequency."""
+    psutil = _require_psutil()
+    cpuinfo = _require_cpuinfo()
+    info = cpuinfo.get_cpu_info() or {}
+    physical = psutil.cpu_count(logical=False)
+    logical = psutil.cpu_count(logical=True)
+    try:
+        freq = psutil.cpu_freq()
+        max_freq_mhz = float(freq.max) if freq and freq.max else None
+    except Exception:
+        max_freq_mhz = None
+    return {
+        "model": info.get("brand_raw") or "unknown",
+        "architecture": platform.machine() or "unknown",
+        "physical_cores": int(physical) if physical else None,
+        "logical_cores": int(logical) if logical else None,
+        "max_freq_mhz": max_freq_mhz,
+    }
+
+
+def _collect_os() -> dict:
+    """OS details: system name, kernel release/version, distro (Linux)."""
+    distro: dict | None = None
+    reader = getattr(platform, "freedesktop_os_release", None)
+    if callable(reader):
+        try:
+            info = reader()
+            distro = {
+                k: info[k]
+                for k in ("NAME", "VERSION", "VERSION_ID", "ID")
+                if k in info
+            }
+        except (OSError, AttributeError):
+            distro = None
+    return {
+        "system": platform.system() or "unknown",
+        "release": platform.release() or "unknown",
+        "version": platform.version() or "",
+        "distro": distro,
+    }
+
+
+def _collect_memory() -> dict:
+    """Total RAM in bytes plus a GiB-rounded bucket for fingerprinting."""
+    psutil = _require_psutil()
+    total = int(psutil.virtual_memory().total)
+    assert total > 0, "virtual_memory().total must be positive"
+    return {
+        "total_bytes": total,
+        "total_gib_rounded": int(round(total / (1024 ** 3))),
+    }
+
+
+def _require_psutil():
+    """Import psutil with an actionable error if missing.
+
+    The orchestrator already depends on psutil; `dashboard.py run` runs in
+    the same Python env, so the import is expected to succeed there. `build`
+    does not call this -- it only reads existing run_env.json files.
+    """
+    try:
+        import psutil  # noqa: WPS433 (local import is intentional)
+    except ImportError as exc:
+        print(
+            "ERROR: psutil is required for `dashboard.py run` (captures hardware info).\n"
+            "  pip install -r tools/comparison_dashboard/requirements.txt",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+    return psutil
+
+
+def _require_cpuinfo():
+    """Import py-cpuinfo with an actionable error if missing.
+
+    Only called from `dashboard.py run`. `build` reads existing
+    run_env.json files and never invokes this.
+    """
+    try:
+        import cpuinfo  # noqa: WPS433
+    except ImportError as exc:
+        print(
+            "ERROR: py-cpuinfo is required for `dashboard.py run` (captures CPU model).\n"
+            "  pip install -r tools/comparison_dashboard/requirements.txt",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+    return cpuinfo
+
+
+def env_fingerprint(env: dict | None) -> dict | None:
+    """
+    Return the equality-check subset of an env dict, or None if `env` is None.
+
+    OS portion intentionally uses `system` + distro name+version (e.g.
+    "Linux" + "Ubuntu 24.04") rather than the kernel release. A kernel
+    point upgrade should not invalidate hours of comparison data; the
+    kernel release is still captured in `run_env.json` and shown in the
+    per-test detail pane.
+    """
+    if env is None:
+        return None
+    cpu = env.get("cpu") or {}
+    mem = env.get("memory") or {}
+    return {
+        "cpu_model": cpu.get("model"),
+        "architecture": cpu.get("architecture"),
+        "physical_cores": cpu.get("physical_cores"),
+        "total_gib_rounded": mem.get("total_gib_rounded"),
+        "os_system": (env.get("os") or {}).get("system"),
+        "os_distro": _distro_label(env.get("os") or {}),
+    }
+
+
+def _distro_label(os_info: dict) -> str | None:
+    """Build a "NAME VERSION_ID" string from os.distro for fingerprinting.
+
+    Returns None if no distro info was captured (common on macOS / Windows
+    or pre-py3.10 Linux). Two None values compare equal -- so two macOS
+    runs on the same hardware still match.
+    """
+    distro = os_info.get("distro") or {}
+    name = distro.get("NAME")
+    version = distro.get("VERSION_ID") or distro.get("VERSION")
+    if not name and not version:
+        return None
+    return " ".join(part for part in (name, version) if part)
+
+
+def env_fingerprint_str(fp: dict | None) -> str:
+    """Human-readable single-line summary used in CLI output and UI headers."""
+    if fp is None:
+        return "unknown environment"
+    parts = []
+    cpu = fp.get("cpu_model") or "unknown CPU"
+    arch = fp.get("architecture") or "?"
+    parts.append(f"{cpu} / {arch}")
+    cores = fp.get("physical_cores")
+    if cores is not None:
+        parts.append(f"{cores} cores")
+    gib = fp.get("total_gib_rounded")
+    if gib is not None:
+        parts.append(f"{gib} GiB")
+    distro = fp.get("os_distro")
+    if distro:
+        parts.append(distro)
+    else:
+        system = fp.get("os_system")
+        if system:
+            parts.append(system)
+    return " / ".join(parts)
+
+
 # ===========================================================================
 # `run` subcommand
 # ===========================================================================
@@ -170,9 +356,12 @@ def cmd_run(args) -> int:
     suite_paths = resolve_suites_from_manifest_obj(args.suites, manifest)
     total = len(suite_paths)
 
+    publish_dir = (args.data_dir or DEFAULT_DATA_DIR).resolve()
+
     print(f"Resolved {total} suite(s):")
     for p in suite_paths:
         print(f"  - {p}")
+    print(f"Publishing to: {publish_dir}")
     print()
 
     passed: list[str] = []
@@ -187,6 +376,7 @@ def cmd_run(args) -> int:
         success = run_single_suite(
             suite_path,
             manifest,
+            publish_dir,
             args.generate_only,
             args.observation_interval,
             tests=args.tests,
@@ -280,6 +470,7 @@ def load_suite(path: Path) -> dict:
 def run_single_suite(
     suite_path: Path,
     manifest: Manifest,
+    publish_dir: Path,
     generate_only: bool,
     observation_interval: int,
     tests: str | None = None,
@@ -288,7 +479,7 @@ def run_single_suite(
     Load, render, and run a single suite.
 
     All artifacts are staged in .data/<slug>/<timestamp>/ and then
-    published to site/data/suite/<slug>/ after a successful run.
+    published to <publish_dir>/suite/<slug>/ after a successful run.
 
     Returns True on success, False on failure.
     """
@@ -325,7 +516,9 @@ def run_single_suite(
         return True
 
     log_path = staging_dir / "orchestrator.log"
+    started_at = now_utc_iso()
     rc = run_orchestrator(config_path, log_path, tests=tests)
+    ended_at = now_utc_iso()
     if rc != 0:
         print(
             f"\nError: orchestrator exited with code {rc}\nFull log: {log_path}",
@@ -333,7 +526,17 @@ def run_single_suite(
         )
         return False
 
-    publish_results(staging_dir, suite)
+    # Capture run-time environment for the dashboard. Written here (not in
+    # the orchestrator) because the orchestrator may also be invoked outside
+    # the dashboard, where this metadata is not desired.
+    env = collect_run_env(started_at, ended_at)
+    env_path = staging_dir / "run_env.json"
+    with open(env_path, "w") as f:
+        json.dump(env, f, indent=2)
+    print(f"  Captured run env: {env_path}")
+    print(f"  Environment:      {env_fingerprint_str(env_fingerprint(env))}")
+
+    publish_results(staging_dir, suite, publish_dir)
     return True
 
 
@@ -437,27 +640,32 @@ def sanitize_for_json(obj):
     return obj
 
 
-def publish_results(staging_dir: Path, suite: dict) -> None:
+def publish_results(staging_dir: Path, suite: dict, publish_dir: Path) -> None:
     """
-    Publish run artifacts from staging to site/data/suite/<slug>/.
+    Publish run artifacts from staging to <publish_dir>/suite/<slug>/.
 
     For each test directory in the staging area:
-    1. Clear the corresponding site test directory (clean slate)
+    1. Clear the corresponding published test directory (clean slate)
     2. Copy rendered config files (.yaml, .yml, .toml)
     3. Convert latest sql_report-*.json to metrics.json
     4. Copy timeseries.json if present
 
-    Also writes a simplified suite.yaml to the site directory.
+    Also writes a simplified suite.yaml under the suite directory.
     """
     slug = suite["slug"]
-    site_suite_dir = SITE_SUITE_DATA_DIR / slug
-    site_suite_dir.mkdir(parents=True, exist_ok=True)
+    suite_dir = publish_dir / "suite" / slug
+    suite_dir.mkdir(parents=True, exist_ok=True)
 
     print("\nPublishing results...")
     simplified = simplify_suite_yaml(suite)
-    with open(site_suite_dir / "suite.yaml", "w") as f:
+    with open(suite_dir / "suite.yaml", "w") as f:
         yaml.dump(simplified, f, default_flow_style=False, sort_keys=False)
-    print(f"  Updated {site_suite_dir / 'suite.yaml'}")
+    print(f"  Updated {suite_dir / 'suite.yaml'}")
+
+    env_src = staging_dir / "run_env.json"
+    if env_src.exists():
+        shutil.copy2(env_src, suite_dir / "run_env.json")
+        print(f"  Updated {suite_dir / 'run_env.json'}")
 
     staging_tests = staging_dir / "tests"
     if not staging_tests.exists():
@@ -469,15 +677,15 @@ def publish_results(staging_dir: Path, suite: dict) -> None:
             continue
 
         test_name = test_dir.name
-        site_test_dir = site_suite_dir / test_name
+        out_test_dir = suite_dir / test_name
 
-        if site_test_dir.exists():
-            shutil.rmtree(site_test_dir)
-        site_test_dir.mkdir(parents=True, exist_ok=True)
+        if out_test_dir.exists():
+            shutil.rmtree(out_test_dir)
+        out_test_dir.mkdir(parents=True, exist_ok=True)
 
         for f in sorted(test_dir.iterdir()):
             if f.is_file() and f.suffix in PUBLISH_CONFIG_EXTENSIONS:
-                shutil.copy2(f, site_test_dir / f.name)
+                shutil.copy2(f, out_test_dir / f.name)
 
         latest = latest_sql_report(test_dir)
         if latest:
@@ -485,7 +693,7 @@ def publish_results(staging_dir: Path, suite: dict) -> None:
                 with open(latest) as f:
                     data = json.load(f)
                 data = sanitize_for_json(data)
-                with open(site_test_dir / "metrics.json", "w") as f:
+                with open(out_test_dir / "metrics.json", "w") as f:
                     json.dump(data, f, indent=2)
                 print(f"  {test_name}: metrics.json from {latest.name}")
             except Exception as e:
@@ -495,44 +703,125 @@ def publish_results(staging_dir: Path, suite: dict) -> None:
 
         ts_file = test_dir / "timeseries.json"
         if ts_file.exists():
-            shutil.copy2(ts_file, site_test_dir / "timeseries.json")
+            shutil.copy2(ts_file, out_test_dir / "timeseries.json")
 
-        published = list(site_test_dir.iterdir())
+        published = list(out_test_dir.iterdir())
         print(f"  {test_name}: {len(published)} files published")
 
-    print(f"  Published to {site_suite_dir}")
+    print(f"  Published to {suite_dir}")
 
 
 # ===========================================================================
 # `build` subcommand
 # ===========================================================================
+@dataclass
+class BuildPaths:
+    """Resolved output paths for a single build invocation.
+
+    Layout:
+      <site_root>/
+        <compare_dir basename>/        # the compare-dir
+          index.html                   # landing
+          shared/                      # static assets (copied each build)
+          <comparison-slug>/index.html # per-comparison pages
+        <data_dir basename>/           # the data-dir
+          suite/<slug>/data.js
+          suite/<slug>/<test>/...
+    """
+    site_root: Path        # absolute, dashboard-owned territory
+    data_dir: Path         # absolute, subdir of site_root
+    compare_dir: Path      # absolute, subdir of site_root
+    shared_src: Path       # absolute, source location of shared/ assets
+
+    @property
+    def shared_dst(self) -> Path:
+        return self.compare_dir / SHARED_DIR_NAME
+
+    def compare_page_dir(self, slug: str) -> Path:
+        return self.compare_dir / slug
+
+    def suite_dir(self, slug: str) -> Path:
+        return self.data_dir / "suite" / slug
+
+
+def resolve_build_paths(args, manifest: Manifest) -> BuildPaths:
+    """Resolve build paths from CLI args, applying defaults relative to cwd."""
+    site_root = (args.site_root or DEFAULT_SITE_ROOT).resolve()
+    data_dir = (args.data_dir or (site_root / DEFAULT_DATA_SUBDIR)).resolve()
+    compare_dir = (args.compare_dir or (site_root / DEFAULT_COMPARE_SUBDIR)).resolve()
+
+    # data_dir and compare_dir must live inside site_root so that a single
+    # `dashboard.py serve <site_root>` can serve the entire generated site.
+    for name, path in (("--data-dir", data_dir), ("--compare-dir", compare_dir)):
+        if not path.is_relative_to(site_root):
+            print(
+                f"ERROR: {name} must be a subdirectory of --site-root.\n"
+                f"  site-root: {site_root}\n"
+                f"  {name}:    {path}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    shared_src = (manifest.base_dir / SHARED_SOURCE_SUBDIR).resolve()
+    if not shared_src.exists():
+        print(f"ERROR: shared assets not found at {shared_src}", file=sys.stderr)
+        sys.exit(1)
+
+    return BuildPaths(
+        site_root=site_root,
+        data_dir=data_dir,
+        compare_dir=compare_dir,
+        shared_src=shared_src,
+    )
+
+
 def cmd_build(args) -> int:
     """Build the static dashboard site from the manifest."""
     manifest = load_manifest(args.manifest)
+    paths = resolve_build_paths(args, manifest)
 
-    if not manifest.site_dir.exists():
-        print(f"ERROR: Site directory not found: {manifest.site_dir}")
-        return 1
-
-    manifest.site_suite_data_dir.mkdir(parents=True, exist_ok=True)
+    paths.site_root.mkdir(parents=True, exist_ok=True)
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
+    paths.compare_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Using manifest: {manifest.path}")
-    print(f"Site root: {manifest.site_dir}")
+    print(f"Site root:      {paths.site_root}")
+    print(f"Data dir:       {paths.data_dir}")
+    print(f"Compare dir:    {paths.compare_dir}")
+    print()
+
+    # Copy static assets fresh each build so changes to shared/ propagate.
+    if paths.shared_dst.exists():
+        shutil.rmtree(paths.shared_dst)
+    shutil.copytree(paths.shared_src, paths.shared_dst)
+    print(f"  Copied {paths.shared_src} -> {paths.shared_dst}")
+    print()
+
+    comparisons, parsed_suites = validate_all(manifest)
+
+    manifest_slugs = {s["slug"] for _, s in parsed_suites if s.get("slug")}
+    comparison_slugs = {c["slug"] for c in comparisons}
+
+    print("Reconciling data and compare directories...")
+    reconcile_data_dir(paths.data_dir, manifest_slugs)
+    reconcile_compare_dir(paths, comparison_slugs)
     print()
 
     print("Regenerating suite.yaml files from manifest suites...")
-    regenerate_suite_yamls(manifest)
+    regenerate_suite_yamls(parsed_suites, paths)
     print()
 
     print("Building suite data...")
-    suites = build_suites(manifest)
+    suites = build_suites(parsed_suites, paths)
     print()
 
-    comparisons = validate_all(manifest)
+    print("Checking comparison env consistency...")
+    check_comparison_env_consistency(comparisons, suites, args.allow_env_mismatch)
+    print()
 
     if suites:
         print("Generating data.js files...")
-        generate_suite_data_js(manifest, suites)
+        generate_suite_data_js(suites, paths)
         print()
 
     total_tests = sum(len(s["tests"]) for s in suites.values())
@@ -541,32 +830,73 @@ def cmd_build(args) -> int:
     print()
 
     print("Generating index.html...")
-    generate_index_html(manifest, comparisons, suites)
+    generate_index_html(comparisons, suites, paths)
     print()
 
     print("Generating comparison stubs...")
-    generate_compare_stubs(manifest, comparisons, suites)
+    generate_compare_stubs(comparisons, suites, paths)
     print()
 
     print("Build complete.")
     return 0
 
 
-def regenerate_suite_yamls(manifest: Manifest) -> None:
-    """
-    Regenerate <site>/data/suite/<slug>/suite.yaml from the full suite
-    definitions listed in the manifest.
-    """
+def load_parsed_suites(manifest: Manifest) -> list[tuple[Path, dict]]:
+    """Parse every suite YAML listed in the manifest. The build, validation,
+    and regeneration steps all consume the result; reading once avoids
+    re-parsing each file three or four times per build."""
+    parsed: list[tuple[Path, dict]] = []
     for suite_file in manifest.suite_files:
         with open(suite_file) as f:
-            suite = yaml.safe_load(f)
+            parsed.append((suite_file, yaml.safe_load(f) or {}))
+    return parsed
 
+
+def reconcile_data_dir(data_dir: Path, manifest_slugs: set[str]) -> None:
+    """Delete any <data_dir>/suite/<slug>/ whose slug is not in the manifest."""
+    suite_root = data_dir / "suite"
+    if not suite_root.exists():
+        return
+    for child in sorted(suite_root.iterdir()):
+        if not child.is_dir():
+            continue
+        if child.name not in manifest_slugs:
+            shutil.rmtree(child)
+            print(f"  Pruned stale data: {child}")
+
+
+def reconcile_compare_dir(paths: BuildPaths, comparison_slugs: set[str]) -> None:
+    """
+    Delete any directory child of `compare_dir` that is not the reserved
+    `shared/` subtree and not a manifested comparison slug. The compare-dir
+    is dashboard-owned territory.
+    """
+    reserved = {SHARED_DIR_NAME}
+    for child in sorted(paths.compare_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        if child.name in reserved or child.name in comparison_slugs:
+            continue
+        shutil.rmtree(child)
+        print(f"  Pruned stale comparison page: {child}")
+
+
+def regenerate_suite_yamls(
+    parsed_suites: list[tuple[Path, dict]],
+    paths: BuildPaths,
+) -> None:
+    """
+    Regenerate <data_dir>/suite/<slug>/suite.yaml from the full suite
+    definitions listed in the manifest.
+    """
+    for _, suite in parsed_suites:
         slug = suite.get("slug")
         if not slug:
             continue
 
-        target_dir = manifest.site_suite_data_dir / slug
+        target_dir = paths.suite_dir(slug)
         if not target_dir.exists():
+            # Per-test data hasn't been published yet for this suite; skip.
             continue
 
         simplified = simplify_suite_yaml(suite)
@@ -627,20 +957,25 @@ def scan_test_directory(test_dir: Path) -> dict:
     }
 
 
-def build_suites(manifest: Manifest) -> dict:
+def build_suites(
+    parsed_suites: list[tuple[Path, dict]],
+    paths: BuildPaths,
+) -> dict:
     """
     Build suite data structures.
 
-    Pass 1 walks <site>/data/suite/ for published test results. Pass 2 ensures
-    every suite listed in the manifest has an entry, even without data.
+    Pass 1 walks <data_dir>/suite/ for published test results. Pass 2
+    ensures every suite listed in the manifest has an entry, even without
+    data.
 
     Returns dict of slug -> suite_data.
     """
     suites: dict = {}
 
-    manifest.site_suite_data_dir.mkdir(parents=True, exist_ok=True)
+    suite_root = paths.data_dir / "suite"
+    suite_root.mkdir(parents=True, exist_ok=True)
 
-    for suite_dir in sorted(manifest.site_suite_data_dir.iterdir()):
+    for suite_dir in sorted(suite_root.iterdir()):
         if not suite_dir.is_dir():
             continue
 
@@ -652,6 +987,7 @@ def build_suites(manifest: Manifest) -> dict:
             suite = yaml.safe_load(f)
 
         slug = suite_dir.name
+        env = load_suite_env(suite_dir)
 
         tests = []
         for test_dir in sorted(suite_dir.iterdir()):
@@ -673,20 +1009,19 @@ def build_suites(manifest: Manifest) -> dict:
             "slug": slug,
             "description": suite.get("description", ""),
             "meta": suite.get("meta", {}),
+            "env": env,
             "tests": tests,
         }
 
-        print(f"  {slug}: {len(tests)} tests")
+        env_note = env_fingerprint_str(env_fingerprint(env)) if env else "no env recorded"
+        print(f"  {slug}: {len(tests)} tests [{env_note}]")
 
-    for suite_file in manifest.suite_files:
-        with open(suite_file) as f:
-            suite = yaml.safe_load(f)
-
+    for _, suite in parsed_suites:
         slug = suite.get("slug")
         if not slug or slug in suites:
             continue
 
-        suite_dir = manifest.site_suite_data_dir / slug
+        suite_dir = paths.suite_dir(slug)
         suite_dir.mkdir(parents=True, exist_ok=True)
         simplified = simplify_suite_yaml(suite)
         with open(suite_dir / "suite.yaml", "w") as f:
@@ -697,12 +1032,30 @@ def build_suites(manifest: Manifest) -> dict:
             "slug": slug,
             "description": suite.get("description", ""),
             "meta": suite.get("meta", {}),
+            "env": None,
             "tests": [],
         }
 
         print(f"  {slug}: 0 tests (no data yet)")
 
     return suites
+
+
+def load_suite_env(suite_dir: Path) -> dict | None:
+    """Load <suite_dir>/run_env.json if present; return None on absence or parse error."""
+    env_path = suite_dir / "run_env.json"
+    if not env_path.exists():
+        return None
+    try:
+        with open(env_path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  WARNING: failed to read {env_path}: {exc}")
+        return None
+    if not isinstance(data, dict):
+        print(f"  WARNING: {env_path} is not a JSON object; ignoring")
+        return None
+    return data
 
 
 def load_comparisons(manifest: Manifest) -> list:
@@ -725,27 +1078,32 @@ def load_comparisons(manifest: Manifest) -> list:
     return comparisons
 
 
-def validate_all(manifest: Manifest) -> list:
+def validate_all(manifest: Manifest) -> tuple[list, list[tuple[Path, dict]]]:
     """
     Single validation entry point used by both `build` and `validate` verbs.
 
-    Loads comparisons and runs every manifest-level check. Aborts with
-    sys.exit(1) on any failure. Returns the loaded comparisons list so the
-    caller doesn't have to reload them.
+    Returns (comparisons, parsed_suites) so callers can reuse both without
+    re-reading the suite or comparison files. Aborts via sys.exit(1) on any
+    validation failure.
     """
-    print("Loading comparisons...")
+    print("Loading suites and comparisons...")
+    parsed_suites = load_parsed_suites(manifest)
     comparisons = load_comparisons(manifest)
     print()
 
     print("Validating manifest...")
-    validate_manifest(manifest, comparisons)
+    validate_manifest(manifest, comparisons, parsed_suites)
     print("  OK")
     print()
 
-    return comparisons
+    return comparisons, parsed_suites
 
 
-def validate_manifest(manifest: Manifest, comparisons: list) -> None:
+def validate_manifest(
+    manifest: Manifest,
+    comparisons: list,
+    parsed_suites: list[tuple[Path, dict]],
+) -> None:
     """
     Validate slug uniqueness and cross-references. Aborts on any failure.
 
@@ -760,9 +1118,7 @@ def validate_manifest(manifest: Manifest, comparisons: list) -> None:
     errors: list[str] = []
 
     suite_slug_sources: dict[str, list[Path]] = {}
-    for suite_file in manifest.suite_files:
-        with open(suite_file) as f:
-            suite = yaml.safe_load(f)
+    for suite_file, suite in parsed_suites:
         slug = suite.get("slug")
         if not slug:
             errors.append(f"suite missing 'slug' field: {suite_file}")
@@ -803,6 +1159,16 @@ def validate_manifest(manifest: Manifest, comparisons: list) -> None:
             joined = ", ".join(sources)
             errors.append(f"duplicate comparison slug '{slug}' in: {joined}")
 
+    # Comparison slugs become directories under <compare-dir>/<slug>/.
+    # `shared/` is reserved there for static assets.
+    reserved_slugs = {SHARED_DIR_NAME}
+    for slug, sources in comp_slug_sources.items():
+        if slug in reserved_slugs:
+            joined = ", ".join(sources)
+            errors.append(
+                f"comparison slug '{slug}' is reserved (collides with <compare-dir>/{slug}/): {joined}"
+            )
+
     for comp in comparisons:
         for suite_ref in comp.get("suites", []):
             ref_slug = suite_ref.get("slug")
@@ -824,10 +1190,100 @@ def validate_manifest(manifest: Manifest, comparisons: list) -> None:
         sys.exit(1)
 
 
-def generate_suite_data_js(manifest: Manifest, suites: dict) -> None:
-    """Generate <site>/data/suite/<slug>/data.js for each suite."""
+def check_comparison_env_consistency(
+    comparisons: list,
+    suites: dict,
+    allow_mismatch: bool,
+) -> None:
+    """
+    Reject (or warn about) comparisons that mix data collected on different
+    hardware. Issue #2949: "never compare across different hardware."
+
+    Per-comparison single-pass check: every suite in the comparison that
+    actually has published test data must share one env fingerprint. Suites
+    with no published tests contribute no data points to the chart and are
+    skipped entirely. The first fingerprint encountered is the reference;
+    the first subsequent fingerprint that differs short-circuits the check
+    and identifies the offending pair (we do not enumerate every conflict).
+    """
+    errors: list[tuple[str, dict]] = []
+
+    for comp in comparisons:
+        slug = comp.get("slug", "?")
+        reference: tuple[str, dict | None] | None = None
+        conflict: tuple[str, dict | None] | None = None
+
+        for ref in comp.get("suites", []):
+            ref_slug = ref.get("slug")
+            if ref_slug is None:
+                continue
+            suite = suites.get(ref_slug) or {}
+            if not suite.get("tests"):
+                # No data published -> the suite contributes nothing to the
+                # comparison's actual content; its env is irrelevant here.
+                continue
+            fp = env_fingerprint(suite.get("env"))
+            if reference is None:
+                reference = (ref_slug, fp)
+                continue
+            if fp != reference[1]:
+                conflict = (ref_slug, fp)
+                break
+
+        if conflict is None:
+            continue
+
+        ref_slug, ref_fp = reference
+        con_slug, con_fp = conflict
+        payload = {
+            "reference": {
+                "slug": ref_slug,
+                "fingerprint": ref_fp,
+                "fingerprintStr": env_fingerprint_str(ref_fp)
+                if ref_fp is not None else "no env recorded",
+            },
+            "conflict": {
+                "slug": con_slug,
+                "fingerprint": con_fp,
+                "fingerprintStr": env_fingerprint_str(con_fp)
+                if con_fp is not None else "no env recorded",
+            },
+        }
+
+        if allow_mismatch:
+            comp["envMismatch"] = payload
+            print(f"  WARNING: comparison '{slug}': env mismatch")
+            print(f"    reference: {ref_slug}: {payload['reference']['fingerprintStr']}")
+            print(f"    conflict:  {con_slug}: {payload['conflict']['fingerprintStr']}")
+        else:
+            errors.append((slug, payload))
+
+    if errors:
+        print(
+            "ERROR: build refused -- comparisons reference suites with mismatched envs.",
+            file=sys.stderr,
+        )
+        print(
+            "Pass --allow-env-mismatch to render a warning banner and proceed anyway.",
+            file=sys.stderr,
+        )
+        for slug, p in errors:
+            print(f"  - comparison '{slug}':", file=sys.stderr)
+            print(
+                f"      reference: {p['reference']['slug']}: {p['reference']['fingerprintStr']}",
+                file=sys.stderr,
+            )
+            print(
+                f"      conflict:  {p['conflict']['slug']}: {p['conflict']['fingerprintStr']}",
+                file=sys.stderr,
+            )
+        sys.exit(1)
+
+
+def generate_suite_data_js(suites: dict, paths: BuildPaths) -> None:
+    """Generate <data_dir>/suite/<slug>/data.js for each suite."""
     for slug, suite_data in suites.items():
-        data_js_path = manifest.site_suite_data_dir / slug / "data.js"
+        data_js_path = paths.suite_dir(slug) / "data.js"
 
         payload = json.dumps(suite_data, indent=2)
         js_content = (
@@ -839,8 +1295,20 @@ def generate_suite_data_js(manifest: Manifest, suites: dict) -> None:
         print(f"  Generated {data_js_path}")
 
 
-def generate_index_html(manifest: Manifest, comparisons: list, suites: dict) -> None:
-    """Generate <site>/index.html with comparison sections."""
+def _url_relpath(target: Path, start: Path) -> str:
+    """
+    Like os.path.relpath, but always returns POSIX-style separators so the
+    result is usable as a URL inside generated HTML/JS even when build runs
+    on a non-POSIX OS.
+    """
+    return Path(os.path.relpath(target, start)).as_posix()
+
+
+def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> None:
+    """Generate <compare_dir>/index.html with comparison sections."""
+    shared_rel = _url_relpath(paths.shared_dst, paths.compare_dir)
+    data_rel = _url_relpath(paths.data_dir, paths.compare_dir)
+
     referenced_slugs = set()
     for comp in comparisons:
         for suite_ref in comp["suites"]:
@@ -849,7 +1317,7 @@ def generate_index_html(manifest: Manifest, comparisons: list, suites: dict) -> 
     available_slugs = sorted(slug for slug in referenced_slugs if slug in suites)
 
     data_script_tags = "\n".join(
-        f'  <script src="data/suite/{slug}/data.js"></script>'
+        f'  <script src="{data_rel}/suite/{slug}/data.js"></script>'
         for slug in available_slugs
     )
 
@@ -862,8 +1330,8 @@ def generate_index_html(manifest: Manifest, comparisons: list, suites: dict) -> 
         '<head>',
         '  <meta charset="utf-8">',
         '  <meta name="viewport" content="width=device-width, initial-scale=1">',
-        '  <title>Telemetry Engine Benchmark Dashboard</title>',
-        '  <link rel="stylesheet" href="shared/styles.css">',
+        '  <title>Telemetry Engine Benchmarks</title>',
+        f'  <link rel="stylesheet" href="{shared_rel}/styles.css">',
         '</head>',
         '<body>',
         '  <div class="wip-banner" role="alert">',
@@ -873,7 +1341,7 @@ def generate_index_html(manifest: Manifest, comparisons: list, suites: dict) -> 
         '  </div>',
         '  <div class="wrap">',
         '    <h1>Telemetry Engine Benchmark Dashboard</h1>',
-        '    <div class="sub">Suite-based comparison of OTel Dataflow Engine (DFE) and OTel Collector (OTC) benchmark results.</div>',
+        '    <div class="sub">Compare telemetry engines across a variety of use-cases and protocols.</div>',
         '    <div id="app"></div>',
         '    <div id="comparison-cards"></div>',
         '  </div>',
@@ -890,15 +1358,17 @@ def generate_index_html(manifest: Manifest, comparisons: list, suites: dict) -> 
         '',
         '  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>',
         data_script_tags,
+        f'  <script>window.DATA_PATH = "{data_rel}/suite";</script>',
         f'  <script>window.COMPARISONS = {comparisons_json};</script>',
-        '  <script type="module" src="shared/app.js"></script>',
+        f'  <script type="module" src="{shared_rel}/app.js"></script>',
         '</body>',
         '</html>',
     ]
     html = "\n".join(lines) + "\n"
 
-    manifest.index_path.write_text(html)
-    print(f"  Generated {manifest.index_path}")
+    index_path = paths.compare_dir / "index.html"
+    index_path.write_text(html)
+    print(f"  Generated {index_path}")
 
 
 def _strip_internal(comp: dict) -> dict:
@@ -906,15 +1376,22 @@ def _strip_internal(comp: dict) -> dict:
     return {k: v for k, v in comp.items() if not (isinstance(k, str) and k.startswith("_"))}
 
 
-def generate_compare_stubs(manifest: Manifest, comparisons: list, suites: dict) -> None:
-    """Generate <site>/compare/<slug>/index.html stub pages."""
-    if manifest.compare_stubs_dir.exists():
-        shutil.rmtree(manifest.compare_stubs_dir)
-    manifest.compare_stubs_dir.mkdir(parents=True, exist_ok=True)
+def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths) -> None:
+    """Generate <compare_dir>/<slug>/index.html stub pages."""
+    # Per-comparison pages are all siblings under compare_dir, so the
+    # relpaths to shared/ and data/ are identical for every slug.
+    sample_stub = paths.compare_page_dir("_")
+    shared_rel = _url_relpath(paths.shared_dst, sample_stub)
+    data_rel = _url_relpath(paths.data_dir, sample_stub)
 
     for comp in comparisons:
         comp_slug = comp["slug"]
-        stub_dir = manifest.compare_stubs_dir / comp_slug
+        stub_dir = paths.compare_page_dir(comp_slug)
+        # Clear any prior contents (renamed/removed files within a still-
+        # manifested slug). Unmanifested slug dirs are dropped earlier by
+        # reconcile_compare_dir.
+        if stub_dir.exists():
+            shutil.rmtree(stub_dir)
         stub_dir.mkdir(parents=True, exist_ok=True)
 
         title = comp.get("name", comp_slug)
@@ -924,7 +1401,7 @@ def generate_compare_stubs(manifest: Manifest, comparisons: list, suites: dict) 
             slug = suite_ref["slug"]
             if slug in suites:
                 suite_script_tags.append(
-                    f'  <script src="../../data/suite/{slug}/data.js"></script>'
+                    f'  <script src="{data_rel}/suite/{slug}/data.js"></script>'
                 )
 
         suite_scripts = "\n".join(suite_script_tags)
@@ -938,7 +1415,7 @@ def generate_compare_stubs(manifest: Manifest, comparisons: list, suites: dict) 
             '  <meta charset="utf-8">',
             '  <meta name="viewport" content="width=device-width, initial-scale=1">',
             f'  <title>{title} - Benchmark Dashboard</title>',
-            '  <link rel="stylesheet" href="../../shared/styles.css">',
+            f'  <link rel="stylesheet" href="{shared_rel}/styles.css">',
             '</head>',
             '<body>',
             '  <div class="wip-banner" role="alert">',
@@ -961,10 +1438,11 @@ def generate_compare_stubs(manifest: Manifest, comparisons: list, suites: dict) 
             '  </div>',
             '',
             '  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>',
+            f'  <script>window.DATA_PATH = "{data_rel}/suite";</script>',
             f'  <script>window.COMPARISON_SLUG = "{comp_slug}";</script>',
             suite_scripts,
             f'  <script>window.COMPARISON = {comp_json};</script>',
-            '  <script type="module" src="../../shared/app.js"></script>',
+            f'  <script type="module" src="{shared_rel}/app.js"></script>',
             '</body>',
             '</html>',
         ]
@@ -1007,21 +1485,16 @@ class _DashboardHandler(SimpleHTTPRequestHandler):
 
 def cmd_serve(args) -> int:
     """Serve the dashboard site directory over HTTP."""
-    manifest = load_manifest(args.manifest)
-    site_dir = manifest.site_dir
+    site_dir = (args.site_root or DEFAULT_SITE_ROOT).resolve()
 
     if not site_dir.exists():
-        print(f"Error: site/ directory not found: {site_dir}", file=sys.stderr)
+        print(f"Error: site root not found: {site_dir}", file=sys.stderr)
+        print("Hint: run `dashboard.py build` first.", file=sys.stderr)
         return 1
-
-    if not manifest.index_path.exists():
-        print(
-            "Warning: index.html not found. Run `dashboard.py build` first.",
-            file=sys.stderr,
-        )
 
     print(f"Site dir:    {site_dir}")
     print(f"Serving at:  http://localhost:{args.port}")
+    print(f"Landing:     http://localhost:{args.port}/{DEFAULT_COMPARE_SUBDIR}/")
     print()
 
     handler = lambda *a, **kw: _DashboardHandler(*a, directory=str(site_dir), **kw)
@@ -1079,6 +1552,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--clean", action="store_true",
         help="Remove all old staging directories in .data/ before running.",
     )
+    p_run.add_argument(
+        "--data-dir", type=Path, default=None,
+        help=(
+            "Directory to publish per-test results into "
+            f"(default: {DEFAULT_DATA_DIR}). Results land at "
+            "<data-dir>/suite/<slug>/<test>/."
+        ),
+    )
     p_run.set_defaults(func=cmd_run)
 
     # ---- build ----
@@ -1089,6 +1570,41 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument(
         "--manifest", type=Path, default=DEFAULT_MANIFEST,
         help=f"Path to dashboard manifest.yaml (default: {DEFAULT_MANIFEST})",
+    )
+    p_build.add_argument(
+        "--site-root", type=Path, default=None,
+        help=(
+            f"Root directory for the generated site (default: {DEFAULT_SITE_ROOT}). "
+            "Treated as dashboard-owned: stale comparison-page directories are "
+            "pruned on every build."
+        ),
+    )
+    p_build.add_argument(
+        "--data-dir", type=Path, default=None,
+        help=(
+            "Per-suite data directory; must be a subdirectory of --site-root. "
+            f"Default: <site-root>/{DEFAULT_DATA_SUBDIR}. Layout: "
+            "<data-dir>/suite/<slug>/<test>/{metrics.json,timeseries.json,*.yaml}."
+        ),
+    )
+    p_build.add_argument(
+        "--compare-dir", type=Path, default=None,
+        help=(
+            "Compare directory; must be a subdirectory of --site-root. "
+            f"Default: <site-root>/{DEFAULT_COMPARE_SUBDIR}. Holds the "
+            "landing page at <compare-dir>/index.html and per-comparison "
+            "pages at <compare-dir>/<slug>/index.html, plus the copied "
+            "shared/ static assets."
+        ),
+    )
+    p_build.add_argument(
+        "--allow-env-mismatch", action="store_true",
+        help=(
+            "Allow building comparisons whose referenced suites have "
+            "differing hardware/OS fingerprints (or are missing run_env.json). "
+            "Without this flag, such comparisons cause the build to fail. "
+            "When set, the affected comparison pages render a warning banner."
+        ),
     )
     p_build.set_defaults(func=cmd_build)
 
@@ -1109,8 +1625,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Serve the dashboard site directory over HTTP.",
     )
     p_serve.add_argument(
-        "--manifest", type=Path, default=DEFAULT_MANIFEST,
-        help=f"Path to dashboard manifest.yaml (default: {DEFAULT_MANIFEST})",
+        "--site-root", type=Path, default=None,
+        help=(
+            f"Site root directory to serve (default: {DEFAULT_SITE_ROOT}). "
+            "Run `dashboard.py build` first to populate it."
+        ),
     )
     p_serve.add_argument(
         "--port", type=int, default=3000,
