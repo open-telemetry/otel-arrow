@@ -48,20 +48,18 @@ use session::EtwEventData;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::ReceiverFactory;
 use otap_df_engine::{
-    effect_handler::TelemetryTimerCancelHandle,
-    error::Error,
-    local::receiver as local,
+    effect_handler::TelemetryTimerCancelHandle, error::Error, local::receiver as local,
 };
-use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::otel_info;
@@ -161,9 +159,7 @@ impl Config {
                 }
                 (None, None) => {
                     return Err(otap_df_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "provider[{i}]: either 'name' or 'guid' must be specified"
-                        ),
+                        error: format!("provider[{i}]: either 'name' or 'guid' must be specified"),
                     });
                 }
                 _ => {} // Valid: exactly one of name or guid is specified.
@@ -216,12 +212,11 @@ impl EtwReceiver {
         // Acquire this core's consumer channel from the singleton session.
         // The first call initializes the session; subsequent calls pop from
         // the pre-allocated pool.
-        let event_rx =
-            session::subscribe(&cfg, num_cores).map_err(|e| {
-                otap_df_config::error::Error::InvalidUserConfig {
-                    error: format!("ETW session initialization failed: {e}"),
-                }
-            })?;
+        let event_rx = session::subscribe(&cfg, num_cores).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: format!("ETW session initialization failed: {e}"),
+            }
+        })?;
 
         Ok(EtwReceiver {
             config: cfg,

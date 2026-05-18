@@ -1,4 +1,4 @@
-# ETW → Console pipeline
+# ETW to Console pipeline
 #
 # Subscribes to Windows ETW providers and prints events to the console.
 #
@@ -36,3 +36,4 @@ groups:
         connections:
           - from: etw
             to: console
+

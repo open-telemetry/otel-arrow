@@ -11,6 +11,3 @@ pub mod receivers;
 
 /// Processor implementations for contrib nodes.
 pub mod processors;
-
-/// Receiver implementations for contrib nodes.
-pub mod receivers;

@@ -45,8 +45,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Mutex;
 
-use one_collect::etw::{self, EtwSession};
 use one_collect::Guid;
+use one_collect::etw::{self, EtwSession};
 use otap_df_engine::error::Error;
 use tokio::sync::mpsc;
 
@@ -118,11 +118,9 @@ fn parse_guid(s: &str) -> Result<Guid, Error> {
     // Concatenate hex parts and parse.
     let hex: String = parts.concat();
     let val = u128::from_str_radix(&hex, 16).map_err(|e| {
-        Error::ConfigError(Box::new(
-            otap_df_config::error::Error::InvalidUserConfig {
-                error: format!("invalid GUID '{s}': {e}"),
-            },
-        ))
+        Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+            error: format!("invalid GUID '{s}': {e}"),
+        }))
     })?;
 
     Ok(Guid::from_u128(val))
@@ -199,10 +197,7 @@ static SESSION: Mutex<Option<Vec<mpsc::Receiver<EtwEventData>>>> = Mutex::new(No
 ///    `AncillaryData` to extract header fields and round-robins the resulting
 ///    `EtwEventData` across the N senders.
 /// 4. Calls `parse_until` which blocks until the process exits.
-fn spawn_etw_session(
-    config: &Config,
-    txs: Vec<mpsc::Sender<EtwEventData>>,
-) -> Result<(), Error> {
+fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> Result<(), Error> {
     // Resolve all provider GUIDs up-front so configuration errors are
     // reported synchronously (before the session thread is spawned).
     let resolved_providers: Vec<(Guid, u8, Option<u64>)> = config
@@ -372,10 +367,7 @@ mod tests {
         assert_eq!(guid.data1, 0x22fb2cd6);
         assert_eq!(guid.data2, 0x0e7b);
         assert_eq!(guid.data3, 0x422b);
-        assert_eq!(
-            guid.data4,
-            [0xa0, 0xc7, 0x2f, 0xad, 0x1f, 0xd0, 0xe7, 0x16]
-        );
+        assert_eq!(guid.data4, [0xa0, 0xc7, 0x2f, 0xad, 0x1f, 0xd0, 0xe7, 0x16]);
     }
 
     #[test]
@@ -406,17 +398,11 @@ mod tests {
             etw::LEVEL_CRITICAL
         );
         assert_eq!(trace_level_to_etw(&TraceLevel::Error), etw::LEVEL_ERROR);
-        assert_eq!(
-            trace_level_to_etw(&TraceLevel::Warning),
-            etw::LEVEL_WARNING
-        );
+        assert_eq!(trace_level_to_etw(&TraceLevel::Warning), etw::LEVEL_WARNING);
         assert_eq!(
             trace_level_to_etw(&TraceLevel::Information),
             etw::LEVEL_INFORMATION
         );
-        assert_eq!(
-            trace_level_to_etw(&TraceLevel::Verbose),
-            etw::LEVEL_VERBOSE
-        );
+        assert_eq!(trace_level_to_etw(&TraceLevel::Verbose), etw::LEVEL_VERBOSE);
     }
 }
