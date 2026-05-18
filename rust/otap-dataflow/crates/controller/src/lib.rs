@@ -305,11 +305,6 @@ impl<
                     .get_exporter_factory_map()
                     .get(urn_str)
                     .map(|factory| factory.validate_config),
-                NodeKind::Extension => {
-                    // Extensions are not yet validated here because PipelineFactory
-                    // does not expose an extension factory registry.
-                    continue;
-                }
             };
 
             let Some(validate_fn) = validate_config_fn else {
@@ -317,7 +312,6 @@ impl<
                     NodeKind::Receiver => "receiver",
                     NodeKind::Processor | NodeKind::ProcessorChain => "processor",
                     NodeKind::Exporter => "exporter",
-                    NodeKind::Extension => unreachable!("handled above"),
                 };
                 return Err(format!(
                     "Unknown {} component `{}` in pipeline_group={} pipeline={} node={}",

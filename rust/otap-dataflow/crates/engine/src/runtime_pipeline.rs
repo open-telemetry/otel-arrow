@@ -110,6 +110,13 @@ pub struct RuntimePipeline<PData: Debug> {
     processors: Vec<ProcessorWrapper<PData>>,
     /// A map node id to exporter runtime node.
     exporters: Vec<ExporterWrapper<PData>>,
+    /// Extension wrappers that survived the build-time consumed-tracker pruning.
+    /// One entry per surviving local-or-shared variant. Active extensions in
+    /// this list have their lifecycle tasks spawned by `run_forever` before
+    /// data-path nodes; passive extensions hold their instance factories so
+    /// `Capabilities::require_*` calls keep working at run time but are not
+    /// spawned themselves.
+    extensions: Vec<crate::extension::ExtensionWrapper>,
 
     /// A precomputed map of all node IDs to their Node trait objects (? @@@) for efficient access
     /// Indexed by NodeIndex
@@ -120,7 +127,10 @@ pub struct RuntimePipeline<PData: Debug> {
     telemetry_policy: TelemetryPolicy,
 }
 
-fn report_terminal_metrics(metrics_reporter: &MetricsReporter, terminal_state: TerminalState) {
+pub(crate) fn report_terminal_metrics(
+    metrics_reporter: &MetricsReporter,
+    terminal_state: TerminalState,
+) {
     for snapshot in terminal_state.into_metrics() {
         let _ = metrics_reporter.try_report_snapshot(snapshot);
     }
@@ -147,6 +157,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         receivers: Vec<ReceiverWrapper<PData>>,
         processors: Vec<ProcessorWrapper<PData>>,
         exporters: Vec<ExporterWrapper<PData>>,
+        extensions: Vec<crate::extension::ExtensionWrapper>,
         nodes: NodeDefs<PData, PipeNode>,
         telemetry_policy: TelemetryPolicy,
     ) -> Self {
@@ -155,6 +166,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             receivers,
             processors,
             exporters,
+            extensions,
             nodes,
             channel_metrics: Default::default(),
             telemetry_policy,
@@ -203,6 +215,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             receivers,
             processors,
             exporters,
+            extensions,
             nodes: _nodes,
             channel_metrics,
             telemetry_policy,
@@ -219,6 +232,39 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let local_tasks = LocalSet::new();
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
+
+        // Lifecycle invariant: "extensions start first, shut down last".
+        // Concretely, `start()` is invoked on every active extension before
+        // any data-path node task is spawned, and `Shutdown` is delivered
+        // to extensions only after the data path has fully drained.
+        //
+        // NOTE: this orders *lifecycle calls*, not init completion.
+        // `start()` is async, so invoking it merely enqueues a future onto
+        // the LocalSet; the extension's init body runs concurrently with
+        // the data path once polling begins. Capability *construction*
+        // happens at build time (before any spawn), so structural wiring
+        // is always in place — but if an extension performs deferred async
+        // init in `start()` (opening a connection, loading config, warming
+        // a cache), capability consumers may observe the pre-init state
+        // until that work completes.
+        //
+        // Today, extensions handle this themselves (e.g., produce final
+        // state at capability construction time, or have the capability
+        // surface a not-ready error/default until init progresses).
+        //
+        // TODO: Revisit when an extension actually needs an init-complete
+        // guarantee. Likely shape: opt-in readiness probe registered at
+        // build time (e.g. `builder.with_readiness_probe()` returns a
+        // handle the extension fires from `start()`); the engine awaits
+        // only the registered probes via `try_join_all` before spawning
+        // data-path tasks. Extensions that don't opt in keep today's
+        // behavior with zero overhead.
+        let mut extension_lifecycle = crate::extension_lifecycle::ExtensionLifecycle::spawn(
+            extensions,
+            &local_tasks,
+            metrics_reporter.clone(),
+        );
+
         let mut control_senders = ControlSenders::default();
         let mut node_metric_entries: Vec<(usize, NodeMetricHandles)> = Vec::new();
 
@@ -492,32 +538,94 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         }));
 
         // Drive all local tasks until completion, returning the first error if any.
+        // Data-path tasks (`futures`) and extension tasks (owned by
+        // `extension_lifecycle`) run concurrently. When the data-path
+        // drains, broadcast `Shutdown` to extensions so they can
+        // terminate gracefully, then continue draining extension
+        // futures.
+        //
+        // Errors from either side short-circuit out of the inner
+        // async block. The outer code then unconditionally
+        // broadcasts `Shutdown` and bounded-drains extensions before
+        // propagating the error. This guarantees that extensions
+        // owning sockets, files, or background work get the same
+        // cleanup signal on the error path that they would on the
+        // normal path, and that a misbehaving extension that ignores
+        // `Shutdown` cannot hang the pipeline beyond
+        // `EXTENSION_SHUTDOWN_GRACE`.
         rt.block_on(async {
             local_tasks
                 .run_until(async {
-                    let mut task_results = Vec::new();
+                    // Inner async block isolates the loop's
+                    // `return Err(...)` short-circuits from the
+                    // outer cleanup, giving us an "async finally"
+                    // shape: cleanup always runs, then the loop's
+                    // result is propagated.
+                    let loop_result: Result<Vec<_>, Error> = async {
+                        let mut task_results = Vec::new();
+                        loop {
+                            // `biased;`: prefer data-path completions when both
+                            // arms are simultaneously ready. Functionally
+                            // optional — kept to make intent explicit.
+                            tokio::select! {
+                                biased;
+                                Some(result) = futures.next(), if !futures.is_empty() => {
+                                    match result {
+                                        Ok(Ok(res)) => task_results.push(res),
+                                        Ok(Err(e)) => return Err(e),
+                                        Err(e) => return Err(Error::JoinTaskError {
+                                            is_canceled: e.is_cancelled(),
+                                            is_panic: e.is_panic(),
+                                            error: e.to_string(),
+                                        }),
+                                    }
+                                }
+                                Some(result) = extension_lifecycle.next_completion(), if !extension_lifecycle.is_empty() => {
+                                    match result {
+                                        Ok(Ok(())) => {}
+                                        Ok(Err(e)) => return Err(e),
+                                        Err(e) => return Err(Error::JoinTaskError {
+                                            is_canceled: e.is_cancelled(),
+                                            is_panic: e.is_panic(),
+                                            error: e.to_string(),
+                                        }),
+                                    }
+                                }
+                                else => break,
+                            }
 
-                    // Process each future as they complete and handle errors
-                    while let Some(result) = futures.next().await {
-                        match result {
-                            Ok(Ok(res)) => {
-                                // Task completed successfully, collect its result
-                                task_results.push(res);
-                            }
-                            Ok(Err(e)) => {
-                                // A task returned an error
-                                return Err(e);
-                            }
-                            Err(e) => {
-                                // JoinError (panic or cancellation)
-                                return Err(Error::JoinTaskError {
-                                    is_canceled: e.is_cancelled(),
-                                    is_panic: e.is_panic(),
-                                    error: e.to_string(),
-                                });
+                            // Once data-path is drained, fire the shutdown
+                            // broadcast exactly once. The lifecycle holder
+                            // gates on its own one-shot latch and uses a
+                            // local `now() + EXTENSION_SHUTDOWN_GRACE`
+                            // deadline — extensions shut down after every
+                            // data-path task has terminated, so this is
+                            // the start of a fresh extension cleanup
+                            // window, not a continuation of the
+                            // pipeline-wide deadline.
+                            if futures.is_empty() {
+                                extension_lifecycle.broadcast_shutdown();
                             }
                         }
+                        Ok(task_results)
                     }
+                    .await;
+
+                    // "Async finally": unconditional cleanup that
+                    // runs on both the normal and error paths.
+                    // `broadcast_shutdown` is idempotent (latched by
+                    // `shutdown_broadcast_fired`), so a no-op on the
+                    // normal path; on the error path it ensures
+                    // already-started extensions still receive
+                    // `Shutdown` before the pipeline exits, so they
+                    // can release sockets, files, or background work
+                    // cleanly. `drain_until_deadline` then bounds the
+                    // wait so a misbehaving extension can't hang the
+                    // runtime.
+                    extension_lifecycle.broadcast_shutdown();
+                    extension_lifecycle.drain_until_deadline().await;
+
+                    let task_results = loop_result?;
                     let mut final_metrics_reporter = final_metrics_reporter.clone();
                     if let Err(err) = report_node_metrics_with_handles(
                         &final_node_metric_handles,

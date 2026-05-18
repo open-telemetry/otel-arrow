@@ -271,6 +271,7 @@ pub(super) fn try_create_processor(
         node,
         Arc::new(node_config),
         rt.config(),
+        &otap_df_engine::capability::registry::Capabilities::empty(),
     )
     .map(|proc| (rt, proc))
 }
