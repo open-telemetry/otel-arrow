@@ -44,6 +44,8 @@ receivers:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver v0.149.0
   # OTLP receiver is included for the OTLP/HTTP Receiver, test and validation.
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.149.0
+  # Syslog receiver is included for syslog performance testing.
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/syslogreceiver v0.149.0
 processors:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.149.0
 
