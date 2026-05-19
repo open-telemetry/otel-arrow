@@ -4,7 +4,8 @@
 # to fully saturate the single SUT core.
 #
 # NUMA-aware layout: SUT on NUMA node 0, loadgen+backend on NUMA node 1
-# Layout: SUT=1 core, Backend=2 cores, Loadgen=4 cores (7 total)
+# Layout: SUT=1 core, Backend=4 cores, Loadgen=8 cores (13 total)
+# OTAP is ~5x faster than OTLP, so needs more loadgen/backend to saturate.
 name: Continuous - Saturation - Max Throughput OTAP
 components:
   load-generator:
@@ -20,12 +21,12 @@ components:
           - "--config"
           - "./config.yaml"
           - "--core-id-range"
-          - "32-35"
+          - "32-39"
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
       docker_component:
-        allocated_cores: 4
+        allocated_cores: 8
       prometheus:
         endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
   df-engine:
@@ -62,12 +63,12 @@ components:
           - "--config"
           - "./config.yaml"
           - "--core-id-range"
-          - "36-37"
+          - "40-43"
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
       docker_component:
-        allocated_cores: 2
+        allocated_cores: 4
       prometheus:
         endpoint: http://localhost:8087/api/v1/telemetry/metrics?format=prometheus&reset=false
 
