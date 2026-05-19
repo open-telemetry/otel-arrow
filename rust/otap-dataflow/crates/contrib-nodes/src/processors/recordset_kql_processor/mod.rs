@@ -35,6 +35,7 @@ pub fn create_recordset_kql_processor(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
+    _capabilities: &otap_df_engine::capability::registry::Capabilities,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let config: RecordsetKqlProcessorConfig = serde_json::from_value(node_config.config.clone())
         .map_err(|e| ConfigError::InvalidUserConfig {

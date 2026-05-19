@@ -103,7 +103,7 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
 ///     const NAME: &'static str = "bearer_token_provider";
 ///     type Local = dyn local::BearerTokenProvider;
 ///     type Shared = dyn shared::BearerTokenProvider;
-///     fn wrap_shared_as_local(...) -> Rc<Self::Local> { /* wraps in adapter */ }
+///     fn wrap_shared_as_local(...) -> Box<Self::Local> { /* wraps in adapter */ }
 /// }
 ///
 /// // 6. KNOWN_CAPABILITIES entry — link-time registration for config validation.
@@ -121,7 +121,7 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
 /// registration struct:
 ///
 /// ```rust,ignore
-/// // Local consumer — returns Rc<dyn local::BearerTokenProvider>
+/// // Local consumer — returns Box<dyn local::BearerTokenProvider>
 /// let auth = capabilities.require_local::<BearerTokenProvider>()?;
 ///
 /// // Shared consumer — returns Box<dyn shared::BearerTokenProvider>
