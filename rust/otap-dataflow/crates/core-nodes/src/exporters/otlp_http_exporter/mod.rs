@@ -250,7 +250,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         // that fits our requests and we won't have to constantly realloc while
         // compressing. So in theory we always do one alloc + copy.
         //
-        // We could alternatively create a new buffer every time and but then
+        // We could alternatively create a new buffer every time, but then
         // we'll do some number of reallocs + copy to find the right final
         // buffer size.
         let mut compressed_buffer: Vec<u8> = Vec::new();
