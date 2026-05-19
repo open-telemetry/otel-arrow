@@ -5,6 +5,12 @@ permissions:
 on:
   push:
     branches: [main]
+    paths:
+      - 'rust/**'
+      - 'tools/pipeline_perf_test/**'
+      - 'tools/comparison_dashboard/**'
+      - '.github/workflows/scripts/**'
+      - '.github/workflows/pipeline-perf-test-continuous.yml'
   workflow_dispatch:
 
 jobs:
