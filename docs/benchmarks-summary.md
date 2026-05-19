@@ -2,11 +2,19 @@
 
 ## Overview
 
-The OpenTelemetry Arrow (OTel Arrow) project delivers an end-to-end,
-Arrow-native telemetry pipeline in Rust. It extends Apache Arrow's columnar
-representation through the entire in-process pipeline and across the wire,
-delivering large gains in CPU efficiency in addition to the network bandwidth
-savings already established by the OTAP wire protocol.
+The OpenTelemetry Arrow (OTel Arrow) project is building an end-to-end,
+Arrow-native telemetry pipeline in Rust. Phase 1 reduced collector-to-collector
+network traffic using the OTAP wire protocol and is complete. Phase 2 — the
+focus of this document — extends Arrow's columnar representation through the
+entire in-process pipeline, delivering large gains in CPU efficiency on top of
+the existing network savings.
+
+**Status:** Phase 2 is actively under development. The dataflow engine is not
+yet a stable, production-ready release — APIs, configuration, and component
+coverage are still evolving. The performance characteristics documented here
+are real and measured on every commit through automated benchmarks, but
+readers evaluating OTel Arrow for production adoption should plan for
+continued change until Phase 2 reaches a stable milestone.
 
 The OTel Arrow dataflow engine is designed for predictable performance and
 efficient resource use across the full load spectrum, from near-idle edge
