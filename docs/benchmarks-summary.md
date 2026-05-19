@@ -126,10 +126,10 @@ edge and gateway deployments.
 - Test duration: 60 seconds
 - *OTLP is [gRPC][otlp-grpc] with Protobuf encoding, no TLS.*
 
-| Protocol                | CPU Utilization | Memory Usage | Network In | Network Out | Egress Bytes/Log |
-| ----------------------- | --------------- | ------------ | ---------- | ----------- | ---------------- |
+| Protocol                | CPU Utilization | Memory Usage | Network In | Network Out | Egress Bytes/Log  |
+| ----------------------- | --------------- | ------------ | ---------- | ----------- | ----------------- |
 | OTAP -> OTAP (Native)   | **23%**         | 20 MB        | 727 KB/s   | 790 KB/s    | **8.7 bytes/log** |
-| OTLP -> OTLP (Standard) | 65%             | 17 MB        | 2.7 MB/s   | 2.9 MB/s    | 31 bytes/log     |
+| OTLP -> OTLP (Standard) | 65%             | 17 MB        | 2.7 MB/s   | 2.9 MB/s    | 31 bytes/log      |
 
 At 100K logs/sec, end-to-end OTAP delivers a **~2.8x reduction in CPU
 utilization** and a **~3.6x reduction in network egress** compared to OTLP.
