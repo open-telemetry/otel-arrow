@@ -10,15 +10,17 @@
 //! Two coordination styles are supported:
 //!
 //! 1. **External flip (manual)** — register with [`register_state`] (or
-//!    [`register_state_with_auto_flip`] passing `0`) and later call
-//!    [`set_should_ack_by_id`] from the test thread. Required when the test
-//!    needs to interleave permanent/transient NACK phases.
+//!    [`register_state_with_auto_flip`] passing `0` for `nack_first_n`) and
+//!    later call [`set_should_ack_by_id`] from the test thread. Required when
+//!    the test needs to interleave permanent/transient NACK phases.
 //! 2. **Auto-flip (deterministic)** — register with
-//!    [`register_state_with_auto_flip(id, counter, nack_first_n)`] where
-//!    `nack_first_n > 0`. The exporter sends exactly `nack_first_n` NACKs and
-//!    then atomically flips itself to ACK mode in the same task that handles
-//!    the inbound PData. This removes any cross-thread timing race between the
-//!    test thread polling for a NACK and the pipeline actually producing one.
+//!    [`register_state_with_auto_flip`] and pass a positive `nack_first_n`.
+//!    The exporter sends NACKs until the combined count of transient and
+//!    permanent NACKs reaches `nack_first_n`, then atomically flips itself to
+//!    ACK mode in the same task that handles the inbound PData. This removes
+//!    any cross-thread timing race between the test thread polling for a NACK
+//!    and the pipeline actually producing one. See
+//!    [`register_state_with_auto_flip`] for the full parameter list.
 //!
 //! This design avoids global state issues when tests run in parallel.
 
@@ -55,9 +57,10 @@ struct FlakyState {
     permanent_nack: Arc<AtomicBool>,
     /// Count of permanent NACKs sent.
     permanent_nack_count: Arc<AtomicU64>,
-    /// If non-zero, the exporter atomically flips `should_ack` to true once it
-    /// has sent at least this many transient NACKs, making the flip
-    /// deterministic instead of requiring an external coordinating thread.
+    /// If non-zero, the exporter atomically flips `should_ack` to true once
+    /// the combined count of transient and permanent NACKs sent reaches at
+    /// least this value, making the flip deterministic instead of requiring
+    /// an external coordinating thread.
     /// A value of `0` disables auto-flip (callers must call
     /// [`set_should_ack_by_id`] explicitly).
     auto_ack_after_nacks: Arc<AtomicU64>,
