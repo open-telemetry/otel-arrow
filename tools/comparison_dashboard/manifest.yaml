@@ -25,6 +25,39 @@ meta:
   signals: [logs, metrics, traces]
   compression: [none, gzip, zstd]
 
+# Display registry for dashboard metrics. Names must match the `name` field on
+# per-test metric records in published suite data; units come from those
+# records (manifest declares label only).
+metrics:
+  - name: cpu_percentage_normalized_avg
+    label: CPU Average
+  - name: cpu_percentage_normalized_max
+    label: CPU Max
+  - name: ram_mib_avg
+    label: Memory Average
+  - name: ram_mib_max
+    label: Memory Max
+  - name: network_tx_bytes_rate_avg
+    label: Network TX Rate
+  - name: network_rx_bytes_rate_avg
+    label: Network RX Rate
+  - name: dropped_logs_percentage
+    label: Dropped Logs
+  - name: logs_delivery_deviation_percentage
+    label: Logs Delivery Deviation
+  - name: logs_produced_rate
+    label: Offered Load Rate
+  - name: loadgen_logs_sent_rate
+    label: Loadgen Sent Rate
+  - name: logs_received_rate
+    label: Collector Received Rate
+  - name: collector_logs_sent_rate
+    label: Collector Sent Rate
+  - name: backend_logs_received_rate
+    label: Backend Received Rate
+  - name: test_duration
+    label: Test Duration
+
 # Suite definitions, listed by path. Each entry must point at an existing
 # YAML file with at least `name`, `slug`, `variables`, and `orchestrator_template`.
 suites:

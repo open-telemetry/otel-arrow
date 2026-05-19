@@ -2,6 +2,12 @@ slug: dfe_traces_baselines
 name: Dataflow Engine Traces
 description: Baseline DFE traces runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
 
+chart:
+  axes:
+    x:
+      title: Generated Load (spans/sec)
+      description: Rate at which the load generator is configured to submit spans e.g. "100k" == "100,000 spans/sec".
+
 tests:
   - name: 100k
     loadgen_rate: 100000
