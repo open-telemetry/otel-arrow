@@ -366,10 +366,8 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
 
                     let body = if let Some(method) = compression {
                         if let Err(e) = method.encode(body.as_ref(), &mut compressed_buffer) {
-                            let mut nack = NackMsg::new(
-                                e.to_string(),
-                                OtapPdata::new(context, saved_payload),
-                            );
+                            let mut nack =
+                                NackMsg::new(e.to_string(), OtapPdata::new(context, saved_payload));
                             nack.permanent = true;
                             _ = effect_handler.notify_nack(nack).await;
                             self.pdata_metrics.add_failed(signal_type, 1);

@@ -8,8 +8,8 @@ use std::io::{self, Write};
 
 use flate2::Compression;
 use flate2::write::{DeflateEncoder, GzEncoder};
-use serde::{Deserialize, Deserializer, Serialize};
 use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 use tonic::codec::CompressionEncoding;
 
 /// Default zstd compression level. Matches tonic's default (3).
@@ -231,7 +231,9 @@ mod tests {
         assert_eq!(decoded.as_slice(), payload);
 
         // deflate
-        CompressionMethod::Deflate.encode(payload, &mut buf).unwrap();
+        CompressionMethod::Deflate
+            .encode(payload, &mut buf)
+            .unwrap();
         decoded.clear();
         _ = flate2::read::DeflateDecoder::new(buf.as_slice())
             .read_to_end(&mut decoded)
