@@ -49,11 +49,11 @@ quantify what each of those choices costs and saves.
 All numbers below are for a **single CPU core** — not a node, not a server,
 one core:
 
-- **Idle footprint:** ~27 MB of memory and 0.1% of one core.
+- **Idle footprint:** ~14 MB of memory and 0.06% of one core.
 - **100K logs/sec** (typical production load) sustained on one core at
   **~23% CPU on OTAP** end-to-end, or **~65% CPU on OTLP** end-to-end.
 - **Peak throughput on one core, pass-through (forwarding only):**
-  **~2.64 million logs/sec on OTAP** vs ~607K logs/sec on OTLP — **~4.3x**.
+  **~2.64 million logs/sec on OTAP** vs ~625K logs/sec on OTLP — **~4.2x**.
 - **Peak throughput on one core, with attribute processing:**
   **~2.58 million logs/sec on OTAP** vs ~360K logs/sec on OTLP — **~7.2x**.
   Adding the processor costs OTAP less than 3% of its throughput, but costs
@@ -99,10 +99,10 @@ overhead of a fully operational but unloaded engine.
 
 | CPU Utilization | Memory Usage |
 | --------------- | ------------ |
-| 0.1%            | 27 MB        |
+| 0.06%           | 14 MB        |
 
 *Note: CPU utilization is normalized to total system capacity (128 logical
-CPUs), so 0.1% corresponds to roughly 0.13 of one core — effectively idle.
+CPUs), so 0.06% corresponds to roughly 0.08 of one core — effectively idle.
 Memory usage is the Docker container's cgroup memory
 (`container.memory.usage` from `docker stats`); the engine also exposes a
 process-level `memory_rss` metric via its Prometheus endpoint, matching what
@@ -166,10 +166,10 @@ materialize the in-memory representation of each record.
 
 | Protocol                | Max Throughput      | CPU Utilization | Memory Usage |
 | ----------------------- | ------------------- | --------------- | ------------ |
-| OTLP -> OTLP (Standard) | ~607K logs/sec      | ~100%           | ~30 MB       |
-| OTAP -> OTAP (Native)   | **~2.64M logs/sec** | ~100%           | ~45 MB       |
+| OTLP -> OTLP (Standard) | ~625K logs/sec      | ~100%           | ~27 MB       |
+| OTAP -> OTAP (Native)   | **~2.64M logs/sec** | ~100%           | ~47 MB       |
 
-OTAP pass-through is **~4.3x faster than OTLP** on the same core. A single core
+OTAP pass-through is **~4.2x faster than OTLP** on the same core. A single core
 sustains over **2.6 million log records per second** end-to-end in the native
 protocol.
 
@@ -189,7 +189,7 @@ OTAP with attribute processing is **~7.2x faster than OTLP** on the same core.
 Equally important is how little the processing step costs in OTAP: adding the
 attribute processor reduces OTAP throughput by less than 3% (2.64M -> 2.58M
 logs/sec), because Arrow's columnar layout enables in-place processing without
-deserialization. The equivalent OTLP path loses ~40% of its throughput (607K ->
+deserialization. The equivalent OTLP path loses ~42% of its throughput (625K ->
 360K logs/sec) to the deserialize / mutate / reserialize cycle that row-oriented
 Protobuf requires.
 
@@ -221,22 +221,16 @@ pipeline with no cross-core locks or shared mutable state.
 | 2 Cores   | ~266K logs/sec  | ~91%            | 92%                | ~52 MB       |
 | 4 Cores   | ~543K logs/sec  | ~95%            | 94%                | ~98 MB       |
 | 8 Cores   | ~980K logs/sec  | ~91%            | 85%                | ~211 MB      |
-| 16 Cores  | ~1.25M logs/sec | ~78%            | 54%*               | ~477 MB      |
 
 Scaling Efficiency = (Throughput at N cores) / (N × Single-core throughput).
 
-*\* The 16-core run is measurement-limited, not engine-limited: CPU utilization
-falls to ~78%, meaning the engine cores are not fully fed. With 16 SUT cores
-each consuming over a million log records per second of decoded Protobuf, the
-load generator and backend (also running on the same bare-metal box) become
-the bottleneck before the engine does. Investigating and removing this
-load-generator ceiling is an active workstream.*
-
-Across the 2-, 4-, and 8-core configurations — where the load generator can
-still saturate the engine — scaling efficiency holds at **~85-94%**, and the
-1-core baseline runs at a fully saturated 100% CPU. Memory grows linearly at
-roughly **~30 MB per added core**, making capacity planning a straightforward
-multiplication.
+Across the 2-, 4-, and 8-core configurations scaling efficiency holds at
+**~85–94%**, and the 1-core baseline runs at a fully saturated 100% CPU.
+Memory grows linearly at roughly **~30 MB per added core**, making capacity
+planning a straightforward multiplication. Validation of scaling beyond 8
+cores is an active workstream — pushing those runs to engine saturation
+requires removing a load-generator ceiling on the test harness, not changes
+to the engine itself.
 
 ---
 
