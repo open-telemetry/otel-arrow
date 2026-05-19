@@ -232,7 +232,7 @@ themselves, and they never touch pipeline data directly.
    second is unrepresentable in the typestate. The choice
    of `.shared(...)` vs `.local(...)` only governs how the
    engine hosts the instance (`Send + Clone` vs
-   `Clone + !Send`, per-pipeline). Background extensions
+   `Clone` but not `Send`, per-pipeline). Background extensions
    never appear as the right-hand side of a capability
    binding; their factory's `capabilities` field is
    `Option<_>::None`, and that `None` is the engine's
