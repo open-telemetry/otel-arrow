@@ -20,14 +20,15 @@ isolation across tenants or signals. For detailed technical documentation, see
 the [OTAP Dataflow Engine Documentation](../rust/otap-dataflow/README.md) and
 [Phase 2 Design](phase2-design.md).
 
-At a glance, on a single CPU core:
+At a glance — all numbers below are for a **single CPU core** (not a node, not
+a server — one core):
 
 - **Idle footprint:** ~27 MB of memory and 0.1% of one core.
-- **100K logs/sec** (typical production load) sustained at **~23% CPU** on the
-  native OTAP protocol, or ~65% CPU on standard OTLP.
-- **Peak throughput:** **~2.64 million logs/sec** in OTAP pass-through, and
-  **~2.58 million logs/sec** with attribute processing — roughly **7x the
-  throughput of OTLP** on the same hardware.
+- **100K logs/sec** (typical production load) sustained at **~23% of one core**
+  on the native OTAP protocol, or ~65% of one core on standard OTLP.
+- **Peak throughput on one core:** **~2.64 million logs/sec** in OTAP
+  pass-through, and **~2.58 million logs/sec** with attribute processing —
+  roughly **7x the throughput of OTLP** on the same single core.
 - **Scaling:** ~97% average scaling efficiency from 1 to 16 cores in the
   multi-core suite, with memory growth of roughly ~30 MB per added core.
 
