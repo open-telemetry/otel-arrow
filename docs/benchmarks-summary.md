@@ -59,7 +59,8 @@ one core:
   Adding the processor costs OTAP less than 3% of its throughput, but costs
   OTLP roughly 40%, because Arrow's columnar layout enables in-place
   processing without deserialization.
-- **Scaling:** ~97% average scaling efficiency from 1 to 16 cores, with
+- **Scaling:** **~85–94% scaling efficiency** at 2, 4, and 8 cores in the
+  multi-core suite (1-core baseline runs at fully saturated 100% CPU), with
   memory growth of roughly ~30 MB per added core. Capacity planning reduces
   to multiplication.
 
@@ -216,21 +217,26 @@ pipeline with no cross-core locks or shared mutable state.
 
 | CPU Cores | Max Throughput  | CPU Utilization | Scaling Efficiency | Memory Usage |
 | --------- | --------------- | --------------- | ------------------ | ------------ |
-| 1 Core    | ~125K logs/sec  | ~91%            | 100% (baseline)    | ~29 MB       |
-| 2 Cores   | ~274K logs/sec  | ~99%            | 110%               | ~51 MB       |
-| 4 Cores   | ~495K logs/sec  | ~93%            | 99%                | ~99 MB       |
-| 8 Cores   | ~936K logs/sec  | ~91%            | 94%                | ~211 MB      |
-| 16 Cores  | ~1.74M logs/sec | ~90%            | 87%                | ~480 MB      |
+| 1 Core    | ~144K logs/sec  | ~100%           | 100% (baseline)    | ~31 MB       |
+| 2 Cores   | ~266K logs/sec  | ~91%            | 92%                | ~52 MB       |
+| 4 Cores   | ~543K logs/sec  | ~95%            | 94%                | ~98 MB       |
+| 8 Cores   | ~980K logs/sec  | ~91%            | 85%                | ~211 MB      |
+| 16 Cores  | ~1.25M logs/sec | ~78%            | 54%*               | ~477 MB      |
 
 Scaling Efficiency = (Throughput at N cores) / (N × Single-core throughput).
-Values above 100% reflect cache-warming and measurement noise; values at 16
-cores are bounded in part by the load generator's ability to push traffic
-rather than by the engine itself.
 
-The average scaling efficiency across all multi-core tests is **97%**,
-confirming the near-linear scalability of the thread-per-core architecture.
-Memory grows linearly at roughly **~30 MB per additional core**, making
-capacity planning a straightforward multiplication.
+*\* The 16-core run is measurement-limited, not engine-limited: CPU utilization
+falls to ~78%, meaning the engine cores are not fully fed. With 16 SUT cores
+each consuming over a million log records per second of decoded Protobuf, the
+load generator and backend (also running on the same bare-metal box) become
+the bottleneck before the engine does. Investigating and removing this
+load-generator ceiling is an active workstream.*
+
+Across the 2-, 4-, and 8-core configurations — where the load generator can
+still saturate the engine — scaling efficiency holds at **~85-94%**, and the
+1-core baseline runs at a fully saturated 100% CPU. Memory grows linearly at
+roughly **~30 MB per added core**, making capacity planning a straightforward
+multiplication.
 
 ---
 
