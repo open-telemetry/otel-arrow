@@ -20,17 +20,41 @@ isolation across tenants or signals. For detailed technical documentation, see
 the [OTAP Dataflow Engine Documentation](../rust/otap-dataflow/README.md) and
 [Phase 2 Design](phase2-design.md).
 
-At a glance — all numbers below are for a **single CPU core** (not a node, not
-a server — one core):
+### OTLP vs OTAP: what the comparisons below mean
+
+Two wire protocols are referenced throughout this document:
+
+- **OTLP** — the standard OpenTelemetry Protocol. Row-oriented Protobuf over
+  gRPC. This is what every OpenTelemetry SDK and the OpenTelemetry Collector
+  speak today, and is the baseline most existing deployments use.
+- **OTAP** — the OpenTelemetry Arrow Protocol. Columnar Apache Arrow records
+  over gRPC, with delta-dictionary encoding. The native protocol of this
+  engine. OTAP is a strict superset of OTLP semantics; the same data, on the
+  wire in a far more efficient shape.
+
+OTel Arrow speaks both. The engine can be deployed as a drop-in OTLP-only
+component (no client changes required), as an OTLP-in / OTAP-out gateway, or
+fully end-to-end OTAP for maximum efficiency. The performance numbers below
+quantify what each of those choices costs and saves.
+
+### At a glance
+
+All numbers below are for a **single CPU core** — not a node, not a server,
+one core:
 
 - **Idle footprint:** ~27 MB of memory and 0.1% of one core.
-- **100K logs/sec** (typical production load) sustained at **~23% of one core**
-  on the native OTAP protocol, or ~65% of one core on standard OTLP.
-- **Peak throughput on one core:** **~2.64 million logs/sec** in OTAP
-  pass-through, and **~2.58 million logs/sec** with attribute processing —
-  roughly **7x the throughput of OTLP** on the same single core.
-- **Scaling:** ~97% average scaling efficiency from 1 to 16 cores in the
-  multi-core suite, with memory growth of roughly ~30 MB per added core.
+- **100K logs/sec** (typical production load) sustained on one core at
+  **~23% CPU on OTAP** end-to-end, or **~65% CPU on OTLP** end-to-end.
+- **Peak throughput on one core, pass-through (forwarding only):**
+  **~2.64 million logs/sec on OTAP** vs ~607K logs/sec on OTLP — **~4.3x**.
+- **Peak throughput on one core, with attribute processing:**
+  **~2.58 million logs/sec on OTAP** vs ~360K logs/sec on OTLP — **~7.2x**.
+  Adding the processor costs OTAP less than 3% of its throughput, but costs
+  OTLP roughly 40%, because Arrow's columnar layout enables in-place
+  processing without deserialization.
+- **Scaling:** ~97% average scaling efficiency from 1 to 16 cores, with
+  memory growth of roughly ~30 MB per added core. Capacity planning reduces
+  to multiplication.
 
 This document presents a curated set of key performance metrics across the
 load scenarios that matter for capacity planning. For the complete set of
