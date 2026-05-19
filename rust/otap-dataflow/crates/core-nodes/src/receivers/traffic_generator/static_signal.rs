@@ -1017,28 +1017,49 @@ const DEFAULT_BODY_TEMPLATES: &[&str] = &[
     "Batch export succeeded protocol=otlp/grpc destination=collector.prod:4317 spans=0 metrics=0 logs=500 bytes=612394 duration_ms=89 compression=zstd retries=0 stream=arrow",
 ];
 
+/// Minimum number of bodies in the pool when `log_body_size_bytes` is set.
+/// This ensures enough variety within a single batch (default batch_size=512)
+/// to produce realistic compression ratios.
+const MIN_BODY_POOL_SIZE: usize = 512;
+
 /// Build a pool of body strings for log generation.
 ///
-/// When `size_bytes` is specified, each template from [`DEFAULT_BODY_TEMPLATES`]
-/// is repeated to fill the target size, then truncated to exactly `size_bytes`.
+/// When `size_bytes` is specified, generates a pool of at least
+/// [`MIN_BODY_POOL_SIZE`] unique bodies. Each body is built by cycling through
+/// *different* templates from [`DEFAULT_BODY_TEMPLATES`] (starting at a
+/// different offset per entry) and prepending a deterministic unique prefix
+/// (`seq=N`) so that no two pool entries are identical. This produces
+/// realistic entropy that avoids inflating compression ratios.
+///
 /// When `None`, the templates are used as-is.
 fn build_body_pool(size_bytes: Option<usize>) -> Vec<String> {
     match size_bytes {
         Some(0) => Vec::new(),
-        Some(n) => DEFAULT_BODY_TEMPLATES
-            .iter()
-            .map(|template| {
-                let mut body = String::with_capacity(n);
-                while body.len() < n {
-                    if !body.is_empty() {
-                        body.push(' ');
+        Some(n) => {
+            let pool_size = MIN_BODY_POOL_SIZE.max(DEFAULT_BODY_TEMPLATES.len());
+            (0..pool_size)
+                .map(|pool_idx| {
+                    let mut body = String::with_capacity(n);
+                    // Deterministic unique prefix so no two bodies are identical.
+                    let prefix = format!("seq={pool_idx:04} ");
+                    body.push_str(&prefix);
+                    // Fill by cycling through different templates starting at
+                    // a unique offset.
+                    let mut tmpl_idx = pool_idx;
+                    while body.len() < n {
+                        if body.len() > prefix.len() {
+                            body.push(' ');
+                        }
+                        body.push_str(
+                            DEFAULT_BODY_TEMPLATES[tmpl_idx % DEFAULT_BODY_TEMPLATES.len()],
+                        );
+                        tmpl_idx += 1;
                     }
-                    body.push_str(template);
-                }
-                body.truncate(n);
-                body
-            })
-            .collect(),
+                    body.truncate(n);
+                    body
+                })
+                .collect()
+        }
         None => DEFAULT_BODY_TEMPLATES
             .iter()
             .map(|s| s.to_string())

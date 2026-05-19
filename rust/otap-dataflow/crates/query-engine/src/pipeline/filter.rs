@@ -2748,6 +2748,129 @@ mod test {
         .await;
     }
 
+    #[tokio::test]
+    async fn test_filter_event_name_using_starts_with_opl() {
+        let input = vec![
+            LogRecord::build().event_name("hello world").finish(),
+            LogRecord::build().event_name("hello arrow").finish(),
+            LogRecord::build().event_name("world hello").finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("hello").finish(),
+        ];
+
+        let query = r#"logs | where starts_with(event_name, "hello")"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone(), input[4].clone()]
+        );
+
+        // column on the right
+        let query = r#"logs | where starts_with("hello world", event_name)"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[4].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_event_name_using_ends_with_opl() {
+        let input = vec![
+            LogRecord::build().event_name("hello world").finish(),
+            LogRecord::build().event_name("goodbye world").finish(),
+            LogRecord::build().event_name("hello arrow").finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().event_name("world").finish(),
+        ];
+
+        let query = r#"logs | where ends_with(event_name, "world")"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone(), input[4].clone()]
+        );
+
+        // column on the right
+        let query = r#"logs | where ends_with("hello world", event_name)"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[4].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_attrs_using_starts_with_opl() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "username",
+                    AnyValue::new_string("albert"),
+                )])
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "username",
+                    AnyValue::new_string("alice"),
+                )])
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("username", AnyValue::new_string("bob"))])
+                .event_name("3")
+                .finish(),
+        ];
+
+        let query = r#"logs | where starts_with(attributes["username"], "al")"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_attrs_using_ends_with_opl() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "filename",
+                    AnyValue::new_string("report.pdf"),
+                )])
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "filename",
+                    AnyValue::new_string("notes.pdf"),
+                )])
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "filename",
+                    AnyValue::new_string("README.md"),
+                )])
+                .event_name("3")
+                .finish(),
+        ];
+
+        let query = r#"logs | where ends_with(attributes["filename"], ".pdf")"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+    }
+
     async fn test_filter_matches_regex<P: Parser>(q1: &str, q2: &str) {
         let log_records = vec![
             LogRecord::build()
