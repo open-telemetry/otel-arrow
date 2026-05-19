@@ -83,4 +83,3 @@ tests:
         observation_interval: 60
         signals_per_second: null
         max_batch_size: 1000
-        num_connections: 4
