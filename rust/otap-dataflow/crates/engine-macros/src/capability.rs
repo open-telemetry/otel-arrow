@@ -46,7 +46,8 @@
 //!   handles, and dyn-compatibility (object safety) forbids generic type
 //!   or const parameters on dispatchable methods because each
 //!   monomorphization would need its own vtable slot. Use a concrete type
-//!   (or a sealed enum) at the trait method signature instead.
+//!   (or a sealed enum) at the trait method signature instead. Method-level
+//!   *lifetime* parameters are accepted.
 //! - **Supertraits** (`trait Foo: Bar`) — the `SharedAsLocal` adapter only
 //!   delegates methods defined directly on the `#[capability]` trait. It cannot
 //!   auto-implement supertrait methods. Define all methods directly on the
@@ -56,13 +57,16 @@
 //!   implementations could have different associated types, making a single
 //!   registry entry impossible.
 //! - **Associated constants** — same fundamental issue as associated types.
-//! - **Receiver shapes** — only `&self` and `&mut self` are supported.
-//!   Other shapes (consuming `self`, arbitrary self types like
-//!   `self: Box<Self>`, no-`self` associated functions) make the
-//!   trait either non-object-safe or non-dispatchable through `dyn`,
-//!   so the generated `Box<dyn shared::Trait>` field on
-//!   `SharedAsLocal` (or its delegating method bodies) will fail to
-//!   compile right at the capability definition.
+//! - **Receiver shapes other than `&self` / `&mut self`** — rejected at the
+//!   macro level with a fail-fast diagnostic. Specifically:
+//!     - No `self` associated functions (`fn foo()`) — not dispatchable through
+//!       `dyn Trait`.
+//!     - Consuming `self` (`fn foo(self)`) — non-object-safe; the
+//!       `SharedAsLocal` adapter holds `Box<dyn shared::Trait>` and cannot
+//!       call methods that consume the trait object.
+//!     - Arbitrary self types (`self: Box<Self>`, `self: Arc<Self>`, …) — the
+//!       adapter delegates through a `Box<dyn shared::Trait>` field and only
+//!       knows how to forward `&self` / `&mut self` receivers.
 //!
 //! # Generated code paths
 //!
@@ -141,12 +145,16 @@ impl Parse for CapabilityArgs {
 ///
 /// Returns a compile error if unsupported features are used.
 fn validate_trait(trait_item: &ItemTrait) -> Result<(), TokenStream> {
-    // Reject trait-level generics (including lifetimes).
+    // Reject trait-level generics (including lifetimes). Method-level
+    // lifetimes are accepted; method-level type/const parameters are
+    // rejected separately below with their own diagnostic.
     if !trait_item.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
             &trait_item.generics,
             "#[capability] does not support trait-level generics or lifetimes; \
-             use method-level generics instead",
+             method-level lifetimes are supported, but type or const parameters \
+             must be expressed with concrete method signatures (or by splitting \
+             the family into separate capability traits)",
         )
         .to_compile_error());
     }
@@ -180,6 +188,57 @@ fn validate_trait(trait_item: &ItemTrait) -> Result<(), TokenStream> {
                 .to_compile_error());
             }
             TraitItem::Fn(f) => {
+                // Reject unsupported receiver shapes up front so the
+                // diagnostic points at the bad receiver rather than at
+                // generated `dyn Trait` / adapter code far from the
+                // capability definition.
+                //
+                // Supported: `&self`, `&mut self` (with or without an
+                //            explicit lifetime, e.g. `&'a self`).
+                // Rejected: no `self` associated functions, consuming
+                //           `self`, and arbitrary self types
+                //           (`self: Box<Self>`, `self: Arc<Self>`, …).
+                match f.sig.inputs.first() {
+                    Some(FnArg::Receiver(recv)) => {
+                        if recv.colon_token.is_some() {
+                            // Typed receiver such as `self: Box<Self>`.
+                            return Err(syn::Error::new_spanned(
+                                recv,
+                                "#[capability] does not support arbitrary self types \
+                                 (e.g. `self: Box<Self>`, `self: Arc<Self>`); the \
+                                 SharedAsLocal adapter delegates through a `Box<dyn \
+                                 shared::Trait>` field and can only forward `&self` / \
+                                 `&mut self` receivers",
+                            )
+                            .to_compile_error());
+                        }
+                        if recv.reference.is_none() {
+                            // Consuming `self`.
+                            return Err(syn::Error::new_spanned(
+                                recv,
+                                "#[capability] does not support methods that consume \
+                                 `self`; the SharedAsLocal adapter holds a \
+                                 `Box<dyn shared::Trait>` and cannot call methods \
+                                 that take `self` by value. Use `&self` or `&mut self` \
+                                 instead.",
+                            )
+                            .to_compile_error());
+                        }
+                    }
+                    _ => {
+                        // First input is not a receiver — either no inputs
+                        // at all or `fn foo(arg: T)` style associated fn.
+                        return Err(syn::Error::new_spanned(
+                            &f.sig,
+                            "#[capability] does not support associated functions \
+                             without a `self` receiver; every method must take \
+                             `&self` or `&mut self` because the registry dispatches \
+                             through `Box<dyn local::Trait>` / `Box<dyn shared::Trait>`",
+                        )
+                        .to_compile_error());
+                    }
+                }
+
                 // Reject method-level generic type and const parameters.
                 // The macro generates `Box<dyn local::Trait>` /
                 // `Box<dyn shared::Trait>` handles, and dyn-compatibility
@@ -598,6 +657,53 @@ mod tests {
             validate("trait Cap { fn set(&self, (a, b): (u64, u64)); }").expect("should reject");
         assert!(
             err.contains("simple identifier parameters"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_no_self_associated_fn() {
+        let err = validate("trait Cap { fn make() -> u32; }").expect("should reject");
+        assert!(
+            err.contains("without a `self` receiver"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_consuming_self() {
+        let err = validate("trait Cap { fn finish(self); }").expect("should reject");
+        assert!(err.contains("consume `self`"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn rejects_typed_self_receiver_box() {
+        let err = validate("trait Cap { fn run(self: Box<Self>); }").expect("should reject");
+        assert!(
+            err.contains("arbitrary self types"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_typed_self_receiver_arc() {
+        let err =
+            validate("trait Cap { fn run(self: std::sync::Arc<Self>); }").expect("should reject");
+        assert!(
+            err.contains("arbitrary self types"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn trait_level_generics_error_mentions_method_lifetimes() {
+        // Regression for the previously misleading wording that just said
+        // "use method-level generics instead" — method-level type/const
+        // generics are also rejected, so the error should clarify that
+        // only method-level lifetimes are supported.
+        let err = validate("trait Cap<T> { fn get(&self) -> T; }").expect("should reject");
+        assert!(
+            err.contains("method-level lifetimes are supported"),
             "unexpected error: {err}"
         );
     }
