@@ -443,7 +443,11 @@ impl LogsBodyBuilder {
         self.nulls.append_null();
     }
 
-    /// Finish this builder try to build the resulting `StructArray` for the log body
+    /// Finish this builder and try to build the resulting `StructArray` for the log body.
+    ///
+    /// Returns `None` when the body is entirely null. Otherwise, returns `Some(Err(_))`
+    /// if building the `StructArray` fails, or `Some(Ok(_))` with the resulting array
+    /// on success.
     pub fn finish(&mut self) -> Option<Result<StructArray, ArrowError>> {
         let len = self.nulls.len();
         let nulls = self.nulls.finish();
