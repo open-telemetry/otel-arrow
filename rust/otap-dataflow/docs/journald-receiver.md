@@ -23,7 +23,7 @@ depend on the #2844 filelog assignment extension landing first.
 
 | Decision | Choice |
 | --- | --- |
-| Source API | `sd-journal` via a small internal `libsystemd` FFI wrapper loaded at runtime |
+| Source API | `sd-journal` behind a small internal `JournalSource` boundary |
 | Progress unit | Opaque journald cursor (`__CURSOR`) |
 | First implementation | Linux-only, default local system journal, single-instance source pipeline (one core) |
 | Delivery model | At-least-once from the last committed cursor |
@@ -38,6 +38,14 @@ receiver needs only a narrow `sd-journal` API surface and should keep
 `libsystemd` as a runtime dependency for this receiver path, instead of adding
 native `pkg-config`/linker setup to normal builds. If `libsystemd.so.0` is not
 available when the receiver starts, startup fails with an explicit error.
+
+In v1, `SdJournalSource` is the only production `JournalSource`
+implementation. The boundary exists to keep the worker and Ack/checkpoint
+logic independent from the raw FFI wrapper and to allow deterministic
+`FakeJournalSource` tests. Its surface should stay narrow: open the source,
+seek after a cursor, read the next entry, wait for new entries, and close. It
+does not imply v1 support for `journalctl`, offline journal files, remote
+journals, or multiple source backends.
 
 ## Journald vs Filelog
 
@@ -67,26 +75,48 @@ filelog design proves the shared shape. Source-specific logic stays separate:
 journald owns journal cursors and journal matching; filelog owns file identity,
 byte offsets, framing, and rotation.
 
+## Go Receiver Compatibility / Classification
+
+This design uses the Go contrib journald receiver as a reference, but it does
+not copy every behavior directly. The v1 classification is:
+
+| Go receiver behavior | Classification | OTAP dataflow v1 choice |
+| --- | --- | --- |
+| `journalctl` backend | Reject | Use `sd-journal` through runtime-loaded `libsystemd`; no `journalctl` fallback |
+| `start_at` | Preserve | Keep `start_at: beginning/end`, applied only when no checkpoint exists |
+| Cursor storage | Improve | Ack-driven durable cursor envelope keyed by stable `source_id` |
+| Priority default | Improve | Go defaults to `info`; v1 includes all priorities `0..=7` unless configured |
+| `units` | Preserve | Keep exact unit matches |
+| `matches` | Defer | V1 exposes common filters; arbitrary field matches can be added after the first implementation |
+| `grep` | Defer | Content filtering belongs in a processor unless a receiver-side need is proven |
+| `dmesg` | Reject | Kernel ring-buffer ingestion is a different source, not journald v1 |
+| `directory` / `files` | Reject | Do not read `.journal` files directly in v1 |
+| `root_path` | Decompose | Use `journal.root_path` only as host-root selection for `sd-journal` |
+| `operators` | Decompose | Receiver emits mechanical OTAP logs; processors own parsing and normalization |
+| Field projection | Improve | Define timestamp/cursor APIs, duplicate fields, binary fields, and extraction limits |
+
 ## Architecture
 
 ```mermaid
 flowchart LR
-    J["systemd journal<br/>accessed via sd-journal API"] --> W["JournalWorker<br/>blocking thread"]
+    J["systemd journal<br/>accessed via sd-journal API"] --> S["SdJournalSource<br/>JournalSource implementation"]
+    S --> W["JournalWorker<br/>blocking thread"]
     W -->|"bounded batches<br/>batch_id + cursor range"| A["Async receiver task<br/>df-engine runtime"]
     A --> P["Processors<br/>parse / enrich / route"]
     P --> E["Exporters"]
     E -->|"Ack / Nack"| A
     A -->|"Commit { cursor }"| W
-    W --> C[("Checkpoint file<br/>namespace -> cursor")]
+    W --> C[("Checkpoint file<br/>source_id -> cursor")]
 ```
 
 Flow:
 
 1. At startup, the async receiver task validates configuration, takes the
-   process-local namespace lease, and starts one blocking worker thread for the
-   assigned journal source.
-2. The worker opens `sd-journal`, applies filters, seeks from the checkpoint or
-   configured start position, and builds bounded log batches.
+   process-local journal-source lease, and starts one blocking worker thread
+   for the assigned journal source.
+2. The worker opens the v1 `SdJournalSource`, applies filters, resumes after
+   the committed checkpoint cursor or configured start position, and builds
+   bounded log batches.
 3. The worker hands each batch to the async receiver task over a bounded
    channel.
 4. The async receiver emits the batch into the df-engine pipeline with Ack/Nack
@@ -101,15 +131,17 @@ Flow:
 
 In v1 the receiver reads one logical journal source per receiver instance
 (default: the local system journal). When #2844 introduces assignment, startup
-namespace selection can be replaced with assignment events without changing the
+source selection can be replaced with assignment events without changing the
 read, Ack, or checkpoint model.
 
 ## Startup and Instance Model
 
-`namespace` is the stable OTAP source identifier. In v1, only `system` is
-accepted and it means the default local system journal. Named systemd journal
-namespaces require `sd_journal_open_namespace` wiring and are rejected until
-that support lands.
+`source_id` is the stable OTAP source identifier used for checkpoint identity,
+telemetry labels, and operator-facing source naming. It is separate from the
+systemd journal namespace selection. In v1, `source_id: system` is the default
+logical source id, while `journal.namespace: null` selects the default systemd
+journal namespace. Named systemd journal namespaces require
+`sd_journal_open_namespace` wiring and are rejected until that support lands.
 
 A single journal source is not sharded across per-core receiver instances. The
 factory rejects `pipeline_ctx.num_cores() > 1` with a clear error directing
@@ -123,15 +155,16 @@ multicore pipeline:
   receiver:topic -> processors/exporters
 ```
 
-A process-local startup lease keyed by `journald:<namespace>` prevents duplicate
-readers in the same process, even across different pipelines. Cross-process
-duplication is not prevented in v1.
+A process-local startup lease keyed by the concrete journal source selection
+(`journal.root_path` plus `journal.namespace`) prevents duplicate readers in
+the same process, even across different pipelines. Cross-process duplication is
+not prevented in v1.
 
 Multiple journald receivers in the *same* engine are not useful in v1 because
-only the `system` namespace is supported and the process-local lease rejects
-duplicate readers. With named-namespace support or a future assignment
-extension, non-owner instances can stay Ready but idle until assigned a
-namespace.
+only the default systemd journal namespace is supported and the process-local
+lease rejects duplicate readers. With named-namespace support or a future
+assignment extension, non-owner instances can stay Ready but idle until
+assigned a source.
 
 ## Execution Model
 
@@ -139,7 +172,7 @@ All `sd_journal_*` calls are synchronous. Checkpoint writes also perform
 blocking filesystem I/O (`write`, `fsync`, `rename`). None of these run on the
 df-engine per-core async pipeline task.
 
-The receiver uses one long-lived blocking worker thread per assigned namespace:
+The receiver uses one long-lived blocking worker thread per assigned source:
 
 - worker owns the `sd_journal*` handle
 - async task owns the engine `EffectHandler`, lifecycle state, and Ack tracker
@@ -151,6 +184,11 @@ The receiver uses one long-lived blocking worker thread per assigned namespace:
 The async-to-worker command channel is a bounded `sync_channel` with small
 fixed capacity. With `max_in_flight_batches = 1`, at most one commit or rewind
 plus a terminal shutdown should be outstanding; the bound is defense-in-depth.
+The async task must never perform a blocking send on the df-engine runtime
+thread. Commit, rewind, and shutdown commands must use `try_send`, an async
+channel, or another non-blocking handoff. If the command channel is full, the
+receiver treats it as a lifecycle/protocol error instead of blocking the
+single-threaded runtime.
 
 This follows the existing `host_metrics_receiver` pattern for blocking system
 calls: use a dedicated worker to cap the blast radius instead of using Tokio's
@@ -163,7 +201,7 @@ Read and handoff path:
 ```mermaid
 flowchart TD
     Async["Async receiver task<br/>df-engine runtime"] -->|"spawn"| Start["Start journal worker thread"]
-    Start --> Init["Open journal<br/>apply filters<br/>seek start"]
+    Start --> Init["Open journal<br/>apply filters<br/>resume start"]
     Init --> Next[sd_journal_next]
     Next -->|entry| Build["Read fields<br/>get cursor<br/>append to batch"]
     Next -->|no entry| Wait["sd_journal_wait(timeout)"]
@@ -171,7 +209,11 @@ flowchart TD
     Build --> Ready{Batch ready?}
     Ready -->|no| Next
     Ready -->|yes| Send["try_send batch"]
-    Send -->|sent| Next
+    Send -->|sent| Await["Wait for terminal<br/>Ack/Nack command"]
+    Await -->|commit| Next
+    Await -->|rewind| Resume["resume after<br/>committed cursor"]
+    Resume --> Next
+    Await -->|shutdown| Stop
     Send -->|full| Hold["Hold batch<br/>do not read more"]
     Hold --> PollShutdown["Poll shutdown command"]
     PollShutdown -->|shutdown| Stop["Stop worker"]
@@ -184,7 +226,7 @@ Ack/Nack and lifecycle control path:
 flowchart TD
     Async["Async receiver task<br/>Ack / Nack / lifecycle"] --> Control["Send worker command"]
     Control -->|commit| Commit["write / fsync / rename"]
-    Control -->|rewind| Reopen["reopen journal<br/>seek committed cursor"]
+    Control -->|rewind| Reopen["reopen journal<br/>resume after committed cursor"]
     Control -->|shutdown| Stop["drain and close"]
     Commit --> Continue["read next batch"]
     Reopen --> Continue
@@ -194,9 +236,14 @@ flowchart TD
 If a completed batch cannot be handed to the async task, the worker keeps that
 batch in memory and does not call `sd_journal_next()` again until the batch is
 accepted or shutdown begins. While the held batch is waiting for handoff, the
-worker performs no further reads or batch construction, so the namespace's
+worker performs no further reads or batch construction, so the source's
 in-flight budget remains saturated until either the batch is accepted or
 shutdown begins.
+
+After a successful handoff, v1 also stops reading until the batch receives a
+terminal Ack/Nack and the worker processes the resulting commit or rewind. This
+keeps the source to one in-flight batch and avoids ordered multi-batch
+cursor commits.
 
 While a batch is held and not yet accepted by the async task, the worker polls
 the command channel for shutdown only. With `max_in_flight_batches = 1`, no
@@ -224,13 +271,35 @@ Expected completion behavior:
 - Nack does not advance the cursor and may rewind to the last committed cursor
 - missing completion before shutdown/drain does not advance the checkpoint
 
+Checkpoint resume means **start after the committed cursor**. The committed
+entry was already Acked before the checkpoint was written, so replaying that
+entry is unnecessary and can duplicate data. The `JournalSource` resume helper
+therefore performs the `sd_journal_seek_cursor` positioning and verifies
+whether the selected entry is the committed entry before reading the next
+uncommitted entry:
+
+```text
+seek_after_committed_cursor(cursor):
+  seek_cursor(cursor)
+  state = next()
+  if state == no_entry:
+    wait_or_return_empty()
+  if test_cursor(cursor):
+    return next()
+  return invalid_or_stale_cursor
+```
+
+If the committed cursor is invalid, stale, or vacuumed, v1 fails closed and
+does not silently fall back to tail or head. The operator must remove the
+checkpoint or choose an explicit recovery action.
+
 Each emitted batch carries:
 
 - `batch_id`
 - `first_cursor`
 - `last_cursor`
 
-The v1 receiver allows one in-flight batch per namespace. The async task marks
+The v1 receiver allows one in-flight batch per source. The async task marks
 the first Ack or Nack for a `batch_id` as terminal and ignores duplicate or late
 opposite completions for that batch.
 
@@ -266,8 +335,7 @@ only from inputs that are stable across restart and across instance churn:
 - pipeline group id (operator-defined, stable)
 - pipeline id (operator-defined, stable)
 - receiver node name (operator-defined, stable)
-- journal namespace identifier (`system` in v1; a named namespace in a future
-  implementation)
+- `source_id` (operator-defined, stable; `system` in the default v1 config)
 
 It MUST NOT include per-run inputs:
 
@@ -282,16 +350,16 @@ It MUST NOT include per-run inputs:
 Recommended on-disk layout:
 
 ```text
-${engine.state_dir}/journald/<pipeline_group>/<pipeline_id>/<receiver_name>/<namespace>.cursor
+${engine.state_dir}/journald/<pipeline_group>/<pipeline_id>/<receiver_name>/<source_id>.cursor
 ```
 
-The `<namespace>` segment is `system` for the default local journal. Future
-named namespace support can use the namespace name in the same segment. There
-is no `instance_id` or `core_id` segment.
+The final segment is the configured `source_id`; it is `system` for the
+default local journal. It is not the systemd journal namespace. There is no
+`instance_id` or `core_id` segment.
 
 A single cursor file must not be written by two processes concurrently. In
 v1, cross-process duplication is prevented operationally by running one engine
-per host against the `system` namespace. The process-local lease covers
+per host against the default systemd journal namespace. The process-local lease covers
 in-process duplication. A future enhancement may add a file lock alongside the
 cursor file; that addition does not change the checkpoint key shape above.
 
@@ -300,6 +368,41 @@ checksum). Corrupt or unknown-version envelopes fail closed; see [Failure
 Policy](#failure-policy). The local v1 envelope is provisional -- if #2844
 later freezes a shared envelope format, this receiver will perform a one-time
 migration but the **key/path identity above will not change**.
+
+## Container / Host Journal Access
+
+The receiver intentionally reads through `sd-journal` and does not exec
+`journalctl`. Containerized host collection therefore depends on the
+`libsystemd` runtime and host journal mounts, not on `journalctl_path` or
+filelog-style root-path handling.
+
+For v1, the supported source-root shape is:
+
+```yaml
+journal:
+  # Unset or "/" reads the receiver process's local journal view.
+  # In a container, "/host" means the host root is mounted at /host.
+  root_path: /host
+```
+
+When `journal.root_path` is unset or `/`, the receiver opens the local journal
+view. When it is set to a host-root mount such as `/host`, `SdJournalSource`
+opens that root with `sd_journal_open_directory(..., SD_JOURNAL_OS_ROOT | ...)`
+so journald resolves the usual journal locations below that root, such as
+`/host/run/log/journal` and `/host/var/log/journal`.
+
+Containerized host collection requires:
+
+- the container image includes a compatible `libsystemd.so.0`
+- the host journal directories are mounted under `journal.root_path`
+- the process has permission to read the mounted journals, usually by running
+  as root or with a host-compatible `systemd-journal` group mapping
+- SELinux, AppArmor, seccomp, and read-only mount policy allow the required
+  `sd-journal` reads
+
+If `libsystemd.so.0` is missing, the root path is invalid, no journal
+directory is visible, or permissions deny access, receiver startup fails with
+an explicit error. V1 does not support a `journalctl` fallback.
 
 ## Configuration
 
@@ -314,9 +417,13 @@ groups:
           journald:
             type: receiver:journald
             config:
-              # Stable OTAP source identifier. "system" means the default
-              # local system journal.
-              namespace: system
+              # Stable OTAP source identifier for checkpoints and telemetry.
+              source_id: system
+
+              journal:
+                # null selects the default systemd journal namespace.
+                namespace: null
+                root_path: /host
 
               units: ["nginx.service", "ssh.service"]
               identifiers: []
@@ -329,9 +436,15 @@ groups:
                 max_records: 1024
                 max_flush_period: 200ms
 
+              extraction:
+                max_entry_bytes: 1MiB
+                max_field_bytes: 256KiB
+                max_fields_per_entry: 256
+                large_field_policy: drop_and_count
+
               checkpoint:
                 # Receiver appends:
-                # <pipeline_group>/<pipeline_id>/<receiver_name>/<namespace>.cursor
+                # <pipeline_group>/<pipeline_id>/<receiver_name>/<source_id>.cursor
                 directory: "${engine.state_dir}/journald"
                 max_in_flight_batches: 1
                 on_nack: rewind
@@ -358,10 +471,37 @@ processors.
 | OTAP field | Source |
 | --- | --- |
 | `body` | `MESSAGE`, unset when missing |
-| `time_unix_nano` | default `__REALTIME_TIMESTAMP`; `_SOURCE_REALTIME_TIMESTAMP` can be a future option |
+| `time_unix_nano` | `sd_journal_get_realtime_usec() * 1000` |
 | `severity_number` | derived from `PRIORITY` |
-| `attributes` | all other native journal fields, key names preserved |
-| internal completion state | cursor range and batch id, not emitted as attributes |
+| `attributes` | native journal fields, key names preserved, with duplicate and binary rules below |
+| internal completion state | cursor from `sd_journal_get_cursor()`, plus range and batch id; not emitted as attributes |
+
+The receiver uses `sd_journal_get_data` and field enumeration for journal
+fields such as `MESSAGE` and `PRIORITY`. Data returned by those APIs is owned
+by the journal handle and is only valid until the journal pointer advances, so
+the receiver must copy the required field names and values before calling
+`sd_journal_next`, `sd_journal_previous`, seeking, or reopening the handle.
+
+Attribute projection rules:
+
+- a single occurrence of a field becomes a scalar attribute
+- repeated occurrences of the same field become an array attribute in journal
+  enumeration order
+- the first `MESSAGE` value becomes the OTAP body; all `MESSAGE` values are
+  also preserved in a native journal attribute using the duplicate-field rules
+- binary values are preserved as OTAP bytes when supported; otherwise they are
+  base64 encoded with an explicit encoding marker
+- field values must not be lossy-decoded
+
+Extraction has hard resource limits. `sd_journal_set_data_threshold` may be
+used as an optimization hint, but it is not treated as a safety boundary. The
+receiver enforces `max_field_bytes`, `max_entry_bytes`, and
+`max_fields_per_entry` while copying fields out of the journal handle. With the
+v1 `large_field_policy: drop_and_count`, any field value that exceeds the
+per-field limit, any field that would exceed the per-entry copied-byte budget,
+and any field beyond the per-entry field-count limit is omitted and counted.
+If the first `MESSAGE` value is dropped, the body is unset; preserved
+`MESSAGE` values still follow the duplicate-field rules above.
 
 Initial severity mapping:
 
@@ -376,15 +516,13 @@ Initial severity mapping:
 | `6` | info | `INFO` |
 | `7` | debug | `DEBUG` |
 
-Binary `MESSAGE` handling depends on the current OTAP body/attribute support.
-If bytes can be represented directly, preserve bytes. Otherwise encode as
-base64 and mark the encoding explicitly; do not lossy-decode.
-
 ## Failure Policy
 
 | Case | Behavior |
 | --- | --- |
+| `libsystemd.so.0` load failure | startup failure; this receiver has no `journalctl` fallback |
 | `sd_journal_open` / permission failure | startup failure; not treated as an empty stream |
+| invalid `journal.root_path` / no visible journal directory | startup failure; operator must fix the mount or config |
 | checkpoint missing | apply `start_at` |
 | checkpoint corrupt / unknown version | fail closed; operator must remove or migrate it |
 | cursor vacuumed / stale | fail closed; operator must remove the checkpoint or choose an explicit recovery action |
@@ -393,12 +531,31 @@ base64 and mark the encoding explicitly; do not lossy-decode.
 | Nack | do not advance checkpoint; rewind or fail according to config |
 | drain deadline | stop ingress and wait for the pending Ack/Nack until the earlier of engine deadline or `drain_timeout`; uncommitted pending data may replay on restart |
 | shutdown deadline | stop ingress immediately without advancing uncommitted checkpoints |
-| duplicate namespace in same process | process-local lease rejects the second receiver |
-| duplicate across processes | not prevented in v1; operators must run one engine per host against `system` |
+| duplicate journal source in same process | process-local lease rejects the second receiver |
+| duplicate across processes | not prevented in v1; operators must run one engine per host against the default systemd journal namespace |
 | `pipeline_ctx.num_cores() > 1` | factory rejects with "journald must run in a one-core source pipeline" |
 
 Worker thread panic fails the receiver source, releases its process-local lease, and
 surfaces an error through the receiver/engine path.
+
+## Receiver Self-Telemetry
+
+The first implementation emits receiver self-telemetry because journald access
+is operationally sensitive and failures can otherwise look like an idle source.
+Metric names should follow the repository's receiver metric conventions, but
+the v1 signal set includes:
+
+| Signal | Type |
+| --- | --- |
+| entries read, emitted, and dropped | counters |
+| batches emitted, Acked, and Nacked | counters |
+| checkpoint commits and commit failures | counters |
+| invalid or stale cursor events | counter |
+| permission or partial-journal warnings | counter plus warning log |
+| field drops and large-field drops | counters |
+| last observed entry timestamp | gauge |
+| worker restarts | counter |
+| downstream backpressure duration | histogram or counter duration |
 
 ## NUMA and Placement
 
@@ -426,6 +583,7 @@ journal storage NUMA node -> journald worker thread -> same-node pipeline
 Included in the first implementation:
 
 - Linux-only local journald ingestion through `sd-journal`
+- containerized host journal access through `journal.root_path`
 - one logical `system` journal source per receiver instance
 - one-core source pipeline with downstream fanout through topics
 - process-local duplicate-reader protection
@@ -433,11 +591,13 @@ Included in the first implementation:
 - dedicated blocking worker thread with bounded handoff channels
 - Ack-driven checkpoint advancement and Nack-aware rewind/fail behavior
 - raw journald field projection without semantic-convention normalization
+- receiver self-telemetry for reads, drops, batches, checkpoints, cursor
+  failures, permission warnings, worker restarts, and backpressure
 
 Excluded from the first implementation:
 
 - #2844 assignment extension integration
-- named namespace support and multi-namespace discovery
+- named systemd namespace support and multi-source discovery
 - NUMA pinning or scheduler co-location
 - `journalctl` fallback
 - semantic-convention normalization processor
