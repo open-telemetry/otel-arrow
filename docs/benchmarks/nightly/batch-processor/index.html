@@ -386,6 +386,24 @@
     }
   }
 
+
+  function formatValue(value, unit) {
+    const v = Number(value);
+    if (!Number.isFinite(v)) return '-';
+    if (unit === 'bytes/sec' || unit === 'bytes/s') {
+      if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(1) + ' GB/s';
+      if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + ' MB/s';
+      if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(1) + ' KB/s';
+      return Math.round(v) + ' B/s';
+    }
+    if (unit === 'bytes/log' || unit === 'bytes/span' || unit === 'bytes/metric') {
+      if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + ' MB/' + unit.split('/')[1];
+      if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(1) + ' KB/' + unit.split('/')[1];
+      return Math.round(v) + ' B/' + unit.split('/')[1];
+    }
+    return v % 1 === 0 ? String(v) + ' ' + unit : v.toFixed(2) + ' ' + unit;
+  }
+
   function init() {
     function collectBenchesPerTestCase(entries) {
       const byGroup = new Map();
@@ -551,7 +569,13 @@
               display: true,
               labelString: results?.[0]?.dataset.find(d => d !== null)?.bench.unit ?? '',
             },
-            ticks: { beginAtZero: true },
+            ticks: {
+              beginAtZero: true,
+              callback: function(value) {
+                const unit = this.chart.options.scales.yAxes[0].scaleLabel.labelString || '';
+                return formatValue(value, unit);
+              }
+            },
           }]
         },
         tooltips: {
