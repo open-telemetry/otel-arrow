@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779148848103,
+  "lastUpdate": 1779149657872,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "AaronRM@users.noreply.github.com",
-            "name": "Aaron Marten",
-            "username": "AaronRM"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "00b00e301d89f9b298ef3b5d8256d210b497fc2f",
-          "message": "fix(tests): increase shutdown deadlines from 200ms to 1s in parquet adaptive_schema tests (#2812)\n\n# Change Summary\n\nIncrease shutdown timeouts in parquet adaptive_schema tests to address\ntest flakiness on slow CI runs.\n\n## What issue does this PR close?\n\n* Addresses a flaky test reported in #2720 \n\n## How are these changes tested?\n\n* Verified tests pass locally\n\n## Are there any user-facing changes?\n\nNo. This is a test-only change.",
-          "timestamp": "2026-05-04T16:09:28Z",
-          "tree_id": "e000a86f0b4799ab6c345f344796d646e134257b",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/00b00e301d89f9b298ef3b5d8256d210b497fc2f"
-        },
-        "date": 1777921854288,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.42796003818511963,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 5.813802893372647,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 6.517434826332483,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 16.577734375,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 17.9375,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 5981.311301912284,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 6006.908925172964,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.005571,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 213465.2698569727,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 176525.44291488072,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8476,6 +8392,96 @@ window.BENCHMARK_DATA = {
           {
             "name": "egress_bytes_per_log",
             "value": 28.617708027025426,
+            "unit": "bytes/log",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wbutler@microsoft.com",
+            "name": "Will Butler",
+            "username": "wbutler"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "f89428238800fc80fe7929104a2a300d26963202",
+          "message": "Better config-time validation for overlapping flow metrics configuration (#2983)\n\nCloses #2784.\n\nThis change implements a BFS walk of the processor pipeline at\nconstruction time to validate that flow metrics do not collide.\n\n- In `runtime_pipeline.rs`, introduce a helper func to capture a flat\nedge list vector of pipeline connections and pass the result as a new\nparam on `build_flow_metric_state`. Saves us from having to pass in some\npart of `_config` into that function and keeps data types better\nseparated.\n- In `flow_metrics.rs`:\n- In `build_flow_metric_state`, add a new data structure that captures\nstart\\end pairs for registered flow metrics.\n  - at the end of the main loop, iff the count of flow metrics > 1\n- convert the list of edges into a one-to-many adjacency data structure\n    - for each flow metric\n      - do a BFS to find all the nodes between the start and the end\n- check for nodes in this set that also appear as a start node in the\ndata structure above.\n      - If found, throw an error, halting pipeline construction.\n\n## Tests\n\nWithin `flow_metrics.rs`, this change adds 10 unit tests, as follows:\n- 7 tests exercise the interleaving detection logic on synthetically\ncreated pipeline topologies.\n  - Three expected-pass tests include:\n    - Linear topology with disjoint ranges\n    - Branching topology with disjoint ranges\n    - Linear topology with a single flow metric\n  - Four expected-reject tests include:\n    - Linear topology with interleaving\n    - Linear topology with interleaving, reverse declaration order\n    - Diamond topology with interleaving\n    - Linear topology with fully nested ranges\n- 3 tests exercise a helper function directly.\n\n## Validation\n\nThe following commands pass cleanly:\n\n`cargo check -p otap-df-engine`\n`cargo test -p otap-df-engine` (contains new tests)\n`cargo clippy -p otap-df-engine --all-targets -- -D warnings`\n`cargo fmt --all -- --check`\n`cargo xtask quick-check`",
+          "timestamp": "2026-05-18T23:21:18Z",
+          "tree_id": "8bf8eb494dd43929ebb06d2eb1085b482496217a",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f89428238800fc80fe7929104a2a300d26963202"
+        },
+        "date": 1779149657340,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.6462161540985107,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 95.41041125097983,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 98.9038761609907,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 34.58033854166667,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 35.36328125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 547953.6794840003,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 544412.7144110346,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.00624,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_mb_per_sec",
+            "value": 14.858830020400045,
+            "unit": "MB/s",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_mb_per_sec",
+            "value": 14.793328591388102,
+            "unit": "MB/s",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 28.619119530165033,
             "unit": "bytes/log",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Egress Bytes Per Log"
           }
