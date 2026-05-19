@@ -1,6 +1,11 @@
-# Passthrough test (no processor in middle)
+# Single-core saturation test: measures maximum throughput per core
+# Uses semantic_conventions (~300 byte logs) -- same payload as other benchmarks
+# for direct comparability. Loadgen is unleashed (no rate cap) with enough cores
+# to fully saturate the single SUT core.
+#
 # NUMA-aware layout: SUT on NUMA node 0, loadgen+backend on NUMA node 1
-name: Continuous - Passthrough
+# Layout: SUT=1 core, Backend=2 cores, Loadgen=4 cores (7 total)
+name: Continuous - Saturation - Max Throughput
 components:
   load-generator:
     deployment:
@@ -67,12 +72,12 @@ components:
         endpoint: http://localhost:8087/api/v1/telemetry/metrics?format=prometheus&reset=false
 
 tests:
-  - name: OTLP-OTLP
+  - name: OTLP-ATTR-OTLP
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
-        result_dir: continuous_passthrough
-        engine_config_template: test_suites/integration/templates/configs/engine/passthrough/otlp-otlp.yaml
+        result_dir: "continuous_saturation_max_throughput_otlp"
+        engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
         observation_interval: 60

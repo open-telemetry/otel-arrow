@@ -68,10 +68,17 @@ jobs:
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
 
-      - name: Run passthrough performance test
+      - name: Run passthrough performance test (OTLP)
+        if: ${{ !cancelled() }}
         run: |
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/passthrough.yaml
+
+      - name: Run passthrough performance test (OTAP)
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/passthrough-otap.yaml
 
       - name: Upload benchmark results for processing
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
