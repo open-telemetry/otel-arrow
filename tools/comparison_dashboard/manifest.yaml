@@ -55,6 +55,10 @@ metrics:
     label: Collector Sent Rate
   - name: backend_logs_received_rate
     label: Backend Received Rate
+  - name: uncompressed_bytes_per_log
+    label: Uncompressed Bytes Per Log
+  - name: egress_bytes_per_log
+    label: Egress Bytes Per Log
   - name: test_duration
     label: Test Duration
 
