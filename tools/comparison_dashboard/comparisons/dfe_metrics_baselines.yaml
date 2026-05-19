@@ -3,8 +3,10 @@ name: Dataflow Engine Metrics
 description: Baseline DFE metrics runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
 
 chart:
-  metrics:
-    default: cpu_percentage_normalized_avg
+  axes:
+    x:
+      title: Generated Load (datapoints/sec)
+      description: Rate at which the load generator is configured to submit metric datapoints e.g. "100k" == "100,000 datapoints/sec".
 
 tests:
   - name: 100k
