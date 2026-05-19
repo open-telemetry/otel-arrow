@@ -2,12 +2,11 @@
 
 ## Overview
 
-The OpenTelemetry Arrow (OTel Arrow) project is building an end-to-end,
-Arrow-native telemetry pipeline in Rust. Phase 1 reduced collector-to-collector
-network traffic using the OTAP wire protocol. Phase 2 — currently in progress —
-extends Arrow's columnar representation through the entire in-process pipeline,
-delivering large gains in CPU efficiency on top of the existing network
-savings.
+The OpenTelemetry Arrow (OTel Arrow) project delivers an end-to-end,
+Arrow-native telemetry pipeline in Rust. It extends Apache Arrow's columnar
+representation through the entire in-process pipeline and across the wire,
+delivering large gains in CPU efficiency in addition to the network bandwidth
+savings already established by the OTAP wire protocol.
 
 The OTel Arrow dataflow engine is designed for predictable performance and
 efficient resource use across the full load spectrum, from near-idle edge
@@ -96,9 +95,9 @@ overhead of a fully operational but unloaded engine.
 *Note: CPU utilization is normalized to total system capacity (128 logical
 CPUs), so 0.1% corresponds to roughly 0.13 of one core — effectively idle.
 Memory usage is the Docker container's cgroup memory
-(`container.memory.usage` from `docker stats`). The engine also exposes a
-process-level `memory_rss` metric via its Prometheus endpoint for direct
-comparison with `ps` / `htop`.*
+(`container.memory.usage` from `docker stats`); the engine also exposes a
+process-level `memory_rss` metric via its Prometheus endpoint, matching what
+`ps` or `htop` would report.*
 
 This validates that the engine maintains a minimal resource footprint when
 idle, ensuring efficient operation in environments with highly variable
