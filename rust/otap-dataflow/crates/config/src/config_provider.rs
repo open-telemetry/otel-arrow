@@ -548,6 +548,7 @@ mod tests {
 
     #[test]
     fn integration_env_var_to_yaml() {
+        ensure_crypto_provider();
         let var_name = "OTAP_TEST_CFG_INTEGRATION";
         let yaml = r#"
 version: otel_dataflow/v1
