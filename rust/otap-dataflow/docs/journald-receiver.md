@@ -351,7 +351,7 @@ older entries that now match.
 
 ## Field Projection
 
-The receiver performs only mechanical OTLP projection. It preserves native
+The receiver performs only mechanical OTAP projection. It preserves native
 journal fields as attributes and leaves semantic-convention mapping to
 processors.
 
