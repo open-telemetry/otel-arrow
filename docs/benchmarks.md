@@ -71,11 +71,26 @@ the impact of batch size on CPU, memory, and network efficiency.
 
 **URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/saturation/>
 
-Tests performance at saturation across different CPU configurations: 1, 2, 4, 8,
-and 16 cores. Runs nightly to validate scaling characteristics.
+Validates the shared-nothing, thread-per-core architecture by measuring how
+throughput scales as more CPU cores are added. Each test pushes load until the
+engine is fully saturated (CPU-bound) at 1, 2, 4, 8, and 16 cores, then computes
+scaling efficiency:
 
-*TODO: Update test output to include scalability ratios in addition to raw
-throughput numbers.*
+```txt
+Scaling Efficiency = Actual Throughput / (Baseline 1-core Throughput x Core Count)
+```
+
+A value of 1.0 means perfect linear scaling -- doubling cores doubles throughput.
+Values below 1.0 indicate contention, shared resources, or measurement
+limitations (e.g., loadgen unable to push enough traffic). The architecture
+targets >0.90 efficiency at all core counts.
+
+Uses static 1KB log bodies with realistic entropy (512 unique bodies) -- unlike
+other tests which use `semantic_conventions` (~300 byte logs) -- to better
+exercise the serialization/compression/network path at saturation.
+
+Scaling efficiency ratios are tracked over time:
+<https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/scaling-efficiency/>
 
 #### 7. Pass-through Mode
 
