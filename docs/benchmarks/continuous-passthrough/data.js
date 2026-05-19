@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779163952954,
+  "lastUpdate": 1779170199175,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "33842784+JakeDern@users.noreply.github.com",
-            "name": "Jake Dern",
-            "username": "JakeDern"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "1884c67d731ae445dcab2d6642d7344b37bbad38",
-          "message": "fix(otlp_grpc_exporter): Set accept_compressed in addition to send_compressed (#2829)\n\n# Change Summary\n\nSet `accept_compressed` so that we can process responses if the replies\nare compressed with the same codec.\n\n## What issue does this PR close?\n\n\n* Closes #2828\n\n## How are these changes tested?\n\nI tried them locally and verified the warnings in the issue went away.\n\n## Are there any user-facing changes?\n\nNo.",
-          "timestamp": "2026-05-04T23:33:25Z",
-          "tree_id": "5320b9c5a6c8d4ab00dc7b87d62023ae0e477125",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/1884c67d731ae445dcab2d6642d7344b37bbad38"
-        },
-        "date": 1777941342653,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.9900990128517151,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 5.78102318177053,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 6.248904713987151,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 17.01328125,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.76171875,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 6032.745422972894,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 6092.475575675596,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003195,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 213528.98204685643,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 176473.58791924306,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8500,6 +8416,96 @@ window.BENCHMARK_DATA = {
           {
             "name": "egress_bytes_per_log",
             "value": 28.652291478415496,
+            "unit": "bytes/log",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "cijo.thomas@gmail.com",
+            "name": "Cijo Thomas",
+            "username": "cijothomas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "2688ea1753a3c8717044a4fb5a8cfb49e0a6b333",
+          "message": "Add single-core saturation benchmark (semantic_conventions payload) (#3023)\n\n## Summary\n\nAdds single-core saturation tests that measure maximum throughput per\ncore using the same payload as all other benchmarks\n(`semantic_conventions`, ~300 byte logs). Tests both OTLP and OTAP\nprotocols as separate test configs.\n\n### Results (single core, fully saturated)\n\n| Protocol | Max Throughput | CPU (avg) | RAM (avg) |\n|----------|---------------|-----------|-----------|\n| **OTLP-ATTR-OTLP** | **360K logs/sec** | 100% | 23 MiB |\n| **OTAP-ATTR-OTAP** | **2.58M logs/sec** | 100% | 48 MiB |\n\nOTAP is **7.2x faster** than OTLP on a single core using the Arrow\nprotocol.\n\n### Test configs\n\n**OTLP (`saturation-max-throughput.yaml`):**\n- SUT: 1 core (core 0, NUMA0)\n- Loadgen: 4 cores (cores 32-35, NUMA1), unleashed\n- Backend: 2 cores (cores 36-37, NUMA1)\n- `num_connections: 4`\n\n**OTAP (`saturation-max-throughput-otap.yaml`):**\n- SUT: 1 core (core 0, NUMA0)\n- Loadgen: 8 cores (cores 32-39, NUMA1), unleashed\n- Backend: 4 cores (cores 40-43, NUMA1)\n- OTAP needs more loadgen/backend cores because the Arrow protocol is\n~7x more efficient\n\nBoth use NUMA-aware pinning: SUT on NUMA node 0, loadgen+backend on NUMA\nnode 1 to avoid L3 cache contention.\n\n### Changes\n- New: `saturation-max-throughput.yaml` (OTLP single-core saturation)\n- New: `saturation-max-throughput-otap.yaml` (OTAP single-core\nsaturation)\n- Modified: `pipeline-perf-test-nightly.yml` -- added both tests to\nnightly runs\n- Modified: `docs/benchmarks.md` -- added section 6a (Max Throughput)\nand renamed existing section to 6b (Scaling Efficiency)\n- `pipeline-perf-on-label.yaml` -- no changes (reverted validation-only\nmodifications)\n\nCloses: #3022",
+          "timestamp": "2026-05-19T04:47:25Z",
+          "tree_id": "a5c262435ca8dbc5d74f35ce803963baefdafb86",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/2688ea1753a3c8717044a4fb5a8cfb49e0a6b333"
+        },
+        "date": 1779170198619,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.4579867124557495,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 100.12439948266343,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.44172889233151,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 34.72044270833333,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 35.41796875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 547769.2994129409,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 545260.5887230415,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002136,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_mb_per_sec",
+            "value": 14.923133584861556,
+            "unit": "MB/s",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_mb_per_sec",
+            "value": 14.890193104624654,
+            "unit": "MB/s",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 28.69827756766045,
             "unit": "bytes/log",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Egress Bytes Per Log"
           }
