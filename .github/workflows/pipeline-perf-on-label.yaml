@@ -90,27 +90,21 @@ jobs:
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
 
-      # - name: Run pipeline performance test suite
-      #   run: |
-      #     cd tools/pipeline_perf_test
-      #     python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
+      - name: Run pipeline performance test suite
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
 
-      - name: Run single-core saturation test (OTAP)
+      - name: Run saturation/scaling performance test suite
         if: ${{ !cancelled() }}
         run: |
           cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/saturation-max-throughput-otap.yaml
-
-      # - name: Run saturation/scaling performance test suite
-      #   if: ${{ !cancelled() }}
-      #   run: |
-      #     cd tools/pipeline_perf_test
-      #     ./scripts/run-saturation-tests.sh --output-json results/scaling-efficiency.json \
-      #       | tee saturation-scaling-report.txt
-      #     echo "### Saturation/Scaling Test Analysis" >> $GITHUB_STEP_SUMMARY
-      #     echo '```' >> $GITHUB_STEP_SUMMARY
-      #     sed -n '/^=.*SCALING ANALYSIS/,/^=\{10,\}$/p' saturation-scaling-report.txt >> $GITHUB_STEP_SUMMARY
-      #     echo '```' >> $GITHUB_STEP_SUMMARY
+          ./scripts/run-saturation-tests.sh --output-json results/scaling-efficiency.json \
+            | tee saturation-scaling-report.txt
+          echo "### Saturation/Scaling Test Analysis" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          sed -n '/^=.*SCALING ANALYSIS/,/^=\{10,\}$/p' saturation-scaling-report.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Post-run disk usage diagnostics
         if: always()

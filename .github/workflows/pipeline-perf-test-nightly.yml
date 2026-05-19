@@ -126,6 +126,18 @@ jobs:
           sed -n '/^=.*SCALING ANALYSIS/,/^=\{10,\}$/p' saturation-scaling-report.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
+      - name: Run single-core saturation max throughput test (OTLP)
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/saturation-max-throughput.yaml
+
+      - name: Run single-core saturation max throughput test (OTAP)
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/saturation-max-throughput-otap.yaml
+
       - name: Upload syslog results for processing
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
