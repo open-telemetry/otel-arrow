@@ -82,21 +82,23 @@ cores) by constraining the engine to specific core allocations.
 
 ### Performance Metrics
 
-#### Idle State Performance
+#### Idle State Performance (Single Core)
 
 Baseline resource consumption with no active telemetry traffic, measured after
 startup stabilization over a 60-second period. The engine's internal telemetry
 (self-monitoring metrics, health checks) remains active, so this measures the
 overhead of a fully operational but unloaded engine.
 
-| Configuration | CPU Utilization | Memory Usage |
-| ------------- | --------------- | ------------ |
-| Single Core   | 0.1%            | 27 MB        |
+| CPU Utilization | Memory Usage |
+| --------------- | ------------ |
+| 0.1%            | 27 MB        |
 
-*Note: CPU utilization is normalized to total system capacity. Memory usage is
-the Docker container's cgroup memory (`container.memory.usage` from `docker
-stats`). The engine also exposes a process-level `memory_rss` metric via its
-Prometheus endpoint for direct comparison with `ps` / `htop`.*
+*Note: CPU utilization is normalized to total system capacity (128 logical
+CPUs), so 0.1% corresponds to roughly 0.13 of one core — effectively idle.
+Memory usage is the Docker container's cgroup memory
+(`container.memory.usage` from `docker stats`). The engine also exposes a
+process-level `memory_rss` metric via its Prometheus endpoint for direct
+comparison with `ps` / `htop`.*
 
 This validates that the engine maintains a minimal resource footprint when
 idle, ensuring efficient operation in environments with highly variable
