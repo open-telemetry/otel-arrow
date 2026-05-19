@@ -68,6 +68,7 @@ const EVENT_CHANNEL_CAPACITY: usize = 4096;
 #[derive(Debug, Clone)]
 pub struct EtwEventData {
     /// Provider GUID that produced the event.
+    #[expect(dead_code, reason = "captured for future use")]
     pub provider_id: [u8; 16],
     /// ETW event timestamp (QPC ticks from `EVENT_HEADER.TimeStamp`).
     pub timestamp: u64,
@@ -80,6 +81,7 @@ pub struct EtwEventData {
     /// Opcode from the event descriptor.
     pub opcode: u8,
     /// Version from the event descriptor.
+    #[expect(dead_code, reason = "captured for future use")]
     pub version: u8,
     /// ETW level from the event descriptor.
     pub level: u8,

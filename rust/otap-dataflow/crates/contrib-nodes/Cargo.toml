@@ -65,6 +65,7 @@ tracepoint_decode = { workspace = true, optional = true }
 [features]
 etw-receiver = ["dep:one_collect"]
 contrib-receivers = [
+    "etw-receiver",
     "user_events-receiver",
 ]
 user_events-receiver = [

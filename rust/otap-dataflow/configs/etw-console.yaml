@@ -3,7 +3,7 @@
 # Subscribes to Windows ETW providers and prints events to the console.
 #
 # Usage (run as Administrator for ETW access):
-#   cargo run -- -c configs/etw-console.yaml
+#   cargo run --features etw-receiver -- -c configs/etw-console.yaml
 #
 # The receiver captures raw ETW events from the configured providers
 # and emits summary as an internal log/event. Full Arrow encoding is a TODO.
