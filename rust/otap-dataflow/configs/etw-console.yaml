@@ -1,3 +1,4 @@
+# platform: windows-only
 # ETW to Console pipeline
 #
 # Subscribes to Windows ETW providers and prints events to the console.
