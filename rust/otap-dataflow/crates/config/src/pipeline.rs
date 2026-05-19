@@ -443,9 +443,52 @@ impl IntoIterator for PipelineNodes {
 /// Mirrors [`PipelineNodes`] but uses [`ExtensionUserConfig`] instead of
 /// [`NodeUserConfig`], reflecting that extensions have a simpler configuration
 /// model (no output ports, wiring, or header policies).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
+///
+/// Deserialization rejects duplicate extension IDs (see
+/// [`Self::deserialize`]) so a config that accidentally repeats an
+/// `extensions.<id>` entry fails fast instead of silently overwriting
+/// the earlier one.
+#[derive(Debug, Clone, Serialize, JsonSchema, Default, PartialEq)]
 #[serde(transparent)]
 pub struct PipelineExtensions(HashMap<ExtensionId, Arc<ExtensionUserConfig>>);
+
+impl<'de> Deserialize<'de> for PipelineExtensions {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{MapAccess, Visitor};
+        use std::fmt;
+
+        struct NoDupExtensionVisitor;
+
+        impl<'de> Visitor<'de> for NoDupExtensionVisitor {
+            type Value = PipelineExtensions;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a map of extension IDs to extension configs with no duplicate keys")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut result: HashMap<ExtensionId, Arc<ExtensionUserConfig>> = HashMap::new();
+                while let Some((key, value)) =
+                    map.next_entry::<ExtensionId, ExtensionUserConfig>()?
+                {
+                    if result.contains_key(&key) {
+                        return Err(serde::de::Error::custom(format!(
+                            "duplicate extension key '{}'",
+                            key.as_ref()
+                        )));
+                    }
+                    let _ = result.insert(key, Arc::new(value));
+                }
+                Ok(PipelineExtensions(result))
+            }
+        }
+
+        deserializer.deserialize_map(NoDupExtensionVisitor)
+    }
+}
 
 impl PipelineExtensions {
     /// Returns true if the extensions collection is empty.
@@ -3161,6 +3204,43 @@ extensions:
         assert!(
             result.is_err(),
             "extensions at group level should be rejected by serde"
+        );
+    }
+
+    #[test]
+    fn extensions_reject_duplicate_keys_yaml() {
+        let yaml = r#"
+nodes: {}
+extensions:
+  auth:
+    type: "urn:test:extension:auth"
+  auth:
+    type: "urn:test:extension:other"
+"#;
+        let result: Result<super::PipelineConfig, _> = serde_yaml::from_str(yaml);
+        let err = result.expect_err("should reject duplicate extension keys");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate extension key"),
+            "error should mention duplicate extension key: {msg}"
+        );
+    }
+
+    #[test]
+    fn extensions_reject_duplicate_keys_json() {
+        let json = r#"{
+            "nodes": {},
+            "extensions": {
+                "auth": { "type": "urn:test:extension:auth" },
+                "auth": { "type": "urn:test:extension:other" }
+            }
+        }"#;
+        let result: Result<super::PipelineConfig, _> = serde_json::from_str(json);
+        let err = result.expect_err("should reject duplicate extension keys");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate extension key"),
+            "error should mention duplicate extension key: {msg}"
         );
     }
 }
