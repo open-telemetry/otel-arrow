@@ -115,55 +115,31 @@ zero load.
 #### Standard Load Performance (Single Core)
 
 Resource utilization at 100,000 log records per second (100K logs/sec) on a
-single CPU core. Tests are conducted with different batch sizes to demonstrate
-the impact of batching on performance.
+single CPU core. This is a representative production-volume load for many
+edge and gateway deployments.
 
 **Test Parameters:**
 
-- Ingress: ~100 MB/s (100,000 log records/second x ~1 KB average record size)
-- Egress: varies by batch size (see Network Out column)
-- Batch sizes tested: 10, 100, 512, 1024, 4096, and 8192 records per request
+- Ingress: ~100 MB/s (100,000 log records/second × ~1 KB average record size)
+- Batch size: 512 records per request (the OpenTelemetry SDK default, and the
+  most common production batch size)
 - Test duration: 60 seconds
+- *OTLP is [gRPC][otlp-grpc] with Protobuf encoding, no TLS.*
 
-This wide range of batch sizes evaluates performance across diverse deployment
-scenarios. Small batches (10-100) represent edge collectors or real-time
-streaming requirements, while large batches (1024-8192) represent gateway
-collectors and high-throughput aggregation points. This approach ensures a fair
-assessment, highlighting both the overhead for small batches and the significant
-efficiency gains inherent to Arrow's columnar format at larger batch sizes.
+| Protocol                | CPU Utilization | Memory Usage | Network In | Network Out | Egress Bytes/Log |
+| ----------------------- | --------------- | ------------ | ---------- | ----------- | ---------------- |
+| OTAP -> OTAP (Native)   | **23%**         | 20 MB        | 727 KB/s   | 790 KB/s    | **8.7 bytes/log** |
+| OTLP -> OTLP (Standard) | 65%             | 17 MB        | 2.7 MB/s   | 2.9 MB/s    | 31 bytes/log     |
 
-##### Standard Load - OTAP -> OTAP (Native Protocol)
+At 100K logs/sec, end-to-end OTAP delivers a **~2.8x reduction in CPU
+utilization** and a **~3.6x reduction in network egress** compared to OTLP.
+Per-log network egress drops from 31 bytes (OTLP) to 8.7 bytes (OTAP) — a
+direct result of Arrow's columnar layout with delta-dictionary encoding.
+Memory footprint stays under 25 MB in either configuration.
 
-| Batch Size | CPU Utilization | Memory Usage | Network In | Network Out | Egress Bytes/Log |
-| ---------- | --------------- | ------------ | ---------- | ----------- | ---------------- |
-| 512/batch  | 23%             | 20 MB        | 727 KB/s   | 790 KB/s    | 8.7 bytes/log    |
-
-This represents the optimal scenario where the dataflow engine operates with its
-native protocol end-to-end, eliminating protocol conversion overhead. At
-512/batch, OTAP delivers a **~3x reduction in CPU utilization** and a **~3.6x
-reduction in network egress** compared to OTLP at the same batch size. Per-log
-network egress drops from 31 bytes (OTLP) to 8.7 bytes (OTAP) — a direct result
-of Arrow's columnar layout with delta-dictionary encoding.
-
-##### Standard Load - OTLP -> OTLP (Standard Protocol)
-
-*OTLP is [gRPC][otlp-grpc] with Protobuf encoding, no TLS.*
-
-| Batch Size | CPU Utilization | Memory Usage | Network In | Network Out | Egress Bytes/Log |
-| ---------- | --------------- | ------------ | ---------- | ----------- | ---------------- |
-| 10/batch   | 68%*            | 18 MB        | 4.0 MB/s   | 4.2 MB/s    | 133 bytes/log    |
-| 100/batch  | 67%             | 16 MB        | 4.6 MB/s   | 4.7 MB/s    | 51 bytes/log     |
-| 512/batch  | 65%             | 17 MB        | 2.7 MB/s   | 2.9 MB/s    | 31 bytes/log     |
-| 1024/batch | 65%             | 19 MB        | 2.5 MB/s   | 2.6 MB/s    | 28 bytes/log     |
-| 4096/batch | 57%             | 22 MB        | 2.3 MB/s   | 2.4 MB/s    | 26 bytes/log     |
-| 8192/batch | 54%             | 30 MB        | 2.2 MB/s   | 2.4 MB/s    | 26 bytes/log     |
-
-*\* At batch size 10, the engine saturates at ~33K logs/sec and cannot reach the
-100K target. The per-request overhead at very small batch sizes dominates.*
-
-This scenario processes OTLP end-to-end using the standard OpenTelemetry
-protocol, providing a baseline for comparison with traditional OTLP-based
-pipelines.
+For batch-size sensitivity (10, 100, 512, 1024, 4096, 8192 records per
+request) across the same load, see the [detailed standard-load batch-size
+results](benchmarks.md#5-normal-load-with-batch-size-variations).
 
 #### Saturation Performance (Single Core)
 
