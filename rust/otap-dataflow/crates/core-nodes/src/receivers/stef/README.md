@@ -37,6 +37,9 @@ Supported fields:
 - `request_compression`: accepted inbound compression methods. Supported
   values are `zstd`, `gzip`, `deflate`, a list of those values, or
   `none`. If omitted, all supported methods are accepted.
+- Native STEF frame payload compression is decoded from the STEF fixed
+  header. The receiver accepts uncompressed STEF and `zstd` STEF frames
+  produced by the Go STEF exporter.
 - `response_compression`: compression methods allowed for gRPC
   responses. If omitted, responses are uncompressed.
 - `max_concurrent_requests`, `max_concurrent_streams`,

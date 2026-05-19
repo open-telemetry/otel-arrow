@@ -133,21 +133,21 @@ impl DirectNumberDataPointsRecordBatchBuilder {
 }
 
 #[derive(Default)]
-pub(super) struct DirectNumberDpAttrsRecordBatchBuilder<'a> {
+pub(super) struct DirectNumberDpAttrsRecordBatchBuilder {
     parent_id: Vec<u32>,
-    key: Vec<&'a str>,
+    key: Vec<Arc<str>>,
     attr_type: Vec<u8>,
-    str_value: Vec<Option<&'a str>>,
+    str_value: Vec<Option<Arc<str>>>,
     int_value: Vec<Option<i64>>,
     double_value: Vec<Option<f64>>,
     bool_value: Vec<Option<bool>>,
-    bytes_value: Vec<Option<&'a [u8]>>,
+    bytes_value: Vec<Option<Arc<[u8]>>>,
     pending_frame_points: Option<usize>,
     reserved_row_capacity: usize,
-    repeated_plan: DirectNumberDpAttrsAppendPlan<'a>,
+    repeated_plan: DirectNumberDpAttrsAppendPlan,
 }
 
-impl<'a> DirectNumberDpAttrsRecordBatchBuilder<'a> {
+impl DirectNumberDpAttrsRecordBatchBuilder {
     pub(super) fn begin_frame(&mut self, point_count: usize) {
         self.pending_frame_points = Some(point_count);
         self.reserve_additional_rows(point_count);
@@ -185,7 +185,7 @@ impl<'a> DirectNumberDpAttrsRecordBatchBuilder<'a> {
         }
     }
 
-    pub(super) fn append_all(&mut self, parent_id: u32, attrs: &[DecodedAttribute<'a>]) {
+    pub(super) fn append_all(&mut self, parent_id: u32, attrs: &[DecodedAttribute]) {
         self.reserve_frame_rows_for_attr_count(attrs.len());
         if self.repeated_plan.key.len() != attrs.len() {
             self.repeated_plan.rebuild(attrs);
@@ -193,7 +193,7 @@ impl<'a> DirectNumberDpAttrsRecordBatchBuilder<'a> {
         self.append_repeated_plan(parent_id);
     }
 
-    pub(super) fn rebuild_repeated_plan(&mut self, attrs: &[DecodedAttribute<'a>]) {
+    pub(super) fn rebuild_repeated_plan(&mut self, attrs: &[DecodedAttribute]) {
         self.repeated_plan.rebuild(attrs);
     }
 
@@ -201,14 +201,14 @@ impl<'a> DirectNumberDpAttrsRecordBatchBuilder<'a> {
         self.repeated_plan.key.len()
     }
 
-    pub(super) fn update_repeated_plan_value(&mut self, index: usize, attr: &DecodedAttribute<'a>) {
+    pub(super) fn update_repeated_plan_value(&mut self, index: usize, attr: &DecodedAttribute) {
         self.repeated_plan.update_value(index, attr);
     }
 
-    pub(super) fn append(&mut self, parent_id: u32, kv: &DecodedAttribute<'a>) {
+    pub(super) fn append(&mut self, parent_id: u32, kv: &DecodedAttribute) {
         let row_index = self.parent_id.len();
         self.parent_id.push(parent_id);
-        self.key.push(kv.key);
+        self.key.push(kv.key.clone());
 
         match &kv.value {
             DecodedAnyValue::Empty => {
@@ -315,12 +315,12 @@ impl<'a> DirectNumberDpAttrsRecordBatchBuilder<'a> {
         self.push_null_bytes_value();
     }
 
-    pub(super) fn push_str_value(&mut self, row_index: usize, value: &'a str) {
+    pub(super) fn push_str_value(&mut self, row_index: usize, value: &Arc<str>) {
         if self.str_value.is_empty() {
             self.str_value.resize(row_index, None);
             reserve_vec_to(&mut self.str_value, self.reserved_row_capacity);
         }
-        self.str_value.push(Some(value));
+        self.str_value.push(Some(value.clone()));
     }
 
     pub(super) fn push_null_str_value(&mut self) {
@@ -371,12 +371,12 @@ impl<'a> DirectNumberDpAttrsRecordBatchBuilder<'a> {
         }
     }
 
-    pub(super) fn push_bytes_value(&mut self, row_index: usize, value: &'a [u8]) {
+    pub(super) fn push_bytes_value(&mut self, row_index: usize, value: &Arc<[u8]>) {
         if self.bytes_value.is_empty() {
             self.bytes_value.resize(row_index, None);
             reserve_vec_to(&mut self.bytes_value, self.reserved_row_capacity);
         }
-        self.bytes_value.push(Some(value));
+        self.bytes_value.push(Some(value.clone()));
     }
 
     pub(super) fn push_null_bytes_value(&mut self) {
@@ -399,7 +399,9 @@ impl<'a> DirectNumberDpAttrsRecordBatchBuilder<'a> {
         );
         columns.push(array);
 
-        let array = Arc::new(StringArray::from_iter_values(self.key.iter().copied())) as ArrayRef;
+        let array = Arc::new(StringArray::from_iter_values(
+            self.key.iter().map(AsRef::as_ref),
+        )) as ArrayRef;
         self.key.clear();
         fields.push(Field::new(
             consts::ATTRIBUTE_KEY,
@@ -417,8 +419,9 @@ impl<'a> DirectNumberDpAttrsRecordBatchBuilder<'a> {
         columns.push(array);
 
         if !self.str_value.is_empty() {
-            let array =
-                Arc::new(StringArray::from_iter(self.str_value.iter().copied())) as ArrayRef;
+            let array = Arc::new(StringArray::from_iter(
+                self.str_value.iter().map(Option::as_deref),
+            )) as ArrayRef;
             self.str_value.clear();
             fields.push(Field::new(
                 consts::ATTRIBUTE_STR,
@@ -461,8 +464,9 @@ impl<'a> DirectNumberDpAttrsRecordBatchBuilder<'a> {
         }
 
         if !self.bytes_value.is_empty() {
-            let array =
-                Arc::new(BinaryArray::from_iter(self.bytes_value.iter().copied())) as ArrayRef;
+            let array = Arc::new(BinaryArray::from_iter(
+                self.bytes_value.iter().map(Option::as_deref),
+            )) as ArrayRef;
             self.bytes_value.clear();
             fields.push(Field::new(
                 consts::ATTRIBUTE_BYTES,
@@ -477,14 +481,14 @@ impl<'a> DirectNumberDpAttrsRecordBatchBuilder<'a> {
 }
 
 #[derive(Default)]
-pub(super) struct DirectNumberDpAttrsAppendPlan<'a> {
-    key: Vec<&'a str>,
+pub(super) struct DirectNumberDpAttrsAppendPlan {
+    key: Vec<Arc<str>>,
     attr_type: Vec<u8>,
-    str_value: Vec<Option<&'a str>>,
+    str_value: Vec<Option<Arc<str>>>,
     int_value: Vec<Option<i64>>,
     double_value: Vec<Option<f64>>,
     bool_value: Vec<Option<bool>>,
-    bytes_value: Vec<Option<&'a [u8]>>,
+    bytes_value: Vec<Option<Arc<[u8]>>>,
     has_str_value: bool,
     has_int_value: bool,
     has_double_value: bool,
@@ -492,8 +496,8 @@ pub(super) struct DirectNumberDpAttrsAppendPlan<'a> {
     has_bytes_value: bool,
 }
 
-impl<'a> DirectNumberDpAttrsAppendPlan<'a> {
-    pub(super) fn rebuild(&mut self, attrs: &[DecodedAttribute<'a>]) {
+impl DirectNumberDpAttrsAppendPlan {
+    pub(super) fn rebuild(&mut self, attrs: &[DecodedAttribute]) {
         self.key.clear();
         self.attr_type.clear();
         self.str_value.clear();
@@ -516,15 +520,15 @@ impl<'a> DirectNumberDpAttrsAppendPlan<'a> {
         self.bytes_value.reserve(attrs.len());
 
         for kv in attrs {
-            self.key.push(kv.key);
-            match kv.value {
+            self.key.push(kv.key.clone());
+            match &kv.value {
                 DecodedAnyValue::Empty => {
                     self.attr_type.push(AttributeValueType::Empty as u8);
                     self.push_null_values();
                 }
                 DecodedAnyValue::String(value) => {
                     self.attr_type.push(AttributeValueType::Str as u8);
-                    self.str_value.push(Some(value));
+                    self.str_value.push(Some(value.clone()));
                     self.int_value.push(None);
                     self.double_value.push(None);
                     self.bool_value.push(None);
@@ -536,14 +540,14 @@ impl<'a> DirectNumberDpAttrsAppendPlan<'a> {
                     self.str_value.push(None);
                     self.int_value.push(None);
                     self.double_value.push(None);
-                    self.bool_value.push(Some(value));
+                    self.bool_value.push(Some(*value));
                     self.bytes_value.push(None);
                     self.has_bool_value = true;
                 }
                 DecodedAnyValue::Int(value) => {
                     self.attr_type.push(AttributeValueType::Int as u8);
                     self.str_value.push(None);
-                    self.int_value.push(Some(value));
+                    self.int_value.push(Some(*value));
                     self.double_value.push(None);
                     self.bool_value.push(None);
                     self.bytes_value.push(None);
@@ -553,7 +557,7 @@ impl<'a> DirectNumberDpAttrsAppendPlan<'a> {
                     self.attr_type.push(AttributeValueType::Double as u8);
                     self.str_value.push(None);
                     self.int_value.push(None);
-                    self.double_value.push(Some(value));
+                    self.double_value.push(Some(*value));
                     self.bool_value.push(None);
                     self.bytes_value.push(None);
                     self.has_double_value = true;
@@ -564,23 +568,23 @@ impl<'a> DirectNumberDpAttrsAppendPlan<'a> {
                     self.int_value.push(None);
                     self.double_value.push(None);
                     self.bool_value.push(None);
-                    self.bytes_value.push(Some(value));
+                    self.bytes_value.push(Some(value.clone()));
                     self.has_bytes_value = true;
                 }
             }
         }
     }
 
-    pub(super) fn update_value(&mut self, index: usize, attr: &DecodedAttribute<'a>) {
-        self.key[index] = attr.key;
-        match attr.value {
+    pub(super) fn update_value(&mut self, index: usize, attr: &DecodedAttribute) {
+        self.key[index] = attr.key.clone();
+        match &attr.value {
             DecodedAnyValue::Empty => {
                 self.attr_type[index] = AttributeValueType::Empty as u8;
                 self.set_null_values(index);
             }
             DecodedAnyValue::String(value) => {
                 self.attr_type[index] = AttributeValueType::Str as u8;
-                self.str_value[index] = Some(value);
+                self.str_value[index] = Some(value.clone());
                 self.int_value[index] = None;
                 self.double_value[index] = None;
                 self.bool_value[index] = None;
@@ -592,14 +596,14 @@ impl<'a> DirectNumberDpAttrsAppendPlan<'a> {
                 self.str_value[index] = None;
                 self.int_value[index] = None;
                 self.double_value[index] = None;
-                self.bool_value[index] = Some(value);
+                self.bool_value[index] = Some(*value);
                 self.bytes_value[index] = None;
                 self.has_bool_value = true;
             }
             DecodedAnyValue::Int(value) => {
                 self.attr_type[index] = AttributeValueType::Int as u8;
                 self.str_value[index] = None;
-                self.int_value[index] = Some(value);
+                self.int_value[index] = Some(*value);
                 self.double_value[index] = None;
                 self.bool_value[index] = None;
                 self.bytes_value[index] = None;
@@ -609,7 +613,7 @@ impl<'a> DirectNumberDpAttrsAppendPlan<'a> {
                 self.attr_type[index] = AttributeValueType::Double as u8;
                 self.str_value[index] = None;
                 self.int_value[index] = None;
-                self.double_value[index] = Some(value);
+                self.double_value[index] = Some(*value);
                 self.bool_value[index] = None;
                 self.bytes_value[index] = None;
                 self.has_double_value = true;
@@ -620,7 +624,7 @@ impl<'a> DirectNumberDpAttrsAppendPlan<'a> {
                 self.int_value[index] = None;
                 self.double_value[index] = None;
                 self.bool_value[index] = None;
-                self.bytes_value[index] = Some(value);
+                self.bytes_value[index] = Some(value.clone());
                 self.has_bytes_value = true;
             }
         }
@@ -649,7 +653,7 @@ pub(super) fn reserve_vec_to<T>(values: &mut Vec<T>, target_capacity: usize) {
     }
 }
 
-pub(super) fn extend_optional_values<T: Copy>(
+pub(super) fn extend_optional_values<T: Clone>(
     values: &mut Vec<Option<T>>,
     row_index: usize,
     rows: &[Option<T>],
@@ -664,14 +668,14 @@ pub(super) fn extend_optional_values<T: Copy>(
         reserve_vec_to(values, target_capacity);
     }
     if !values.is_empty() {
-        values.extend_from_slice(rows);
+        values.extend(rows.iter().cloned());
     }
 }
 
 pub(super) fn append_decoded_attribute_with_parent<T>(
     attribute_rb_builder: &mut AttributesRecordBatchBuilder<T>,
     parent_id: &<<T as crate::otlp::attributes::parent_id::ParentId>::ArrayType as ArrowPrimitiveType>::Native,
-    kv: &DecodedAttribute<'_>,
+    kv: &DecodedAttribute,
 ) where
     T: crate::otlp::attributes::parent_id::ParentId + AttributesRecordBatchBuilderConstructorHelper,
 {
@@ -681,7 +685,7 @@ pub(super) fn append_decoded_attribute_with_parent<T>(
 
 pub(super) fn append_decoded_attribute_value<T>(
     attribute_rb_builder: &mut AttributesRecordBatchBuilder<T>,
-    kv: &DecodedAttribute<'_>,
+    kv: &DecodedAttribute,
 ) where
     T: crate::otlp::attributes::parent_id::ParentId + AttributesRecordBatchBuilderConstructorHelper,
 {

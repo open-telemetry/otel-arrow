@@ -24,11 +24,11 @@ use crate::otap::Metrics;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata_views::views::metrics as metrics_view;
 
-pub(super) struct DirectOtapMetricsBuilder<'a> {
+pub(super) struct DirectOtapMetricsBuilder {
     resource_attrs: AttributesRecordBatchBuilder<u16>,
     scope_attrs: AttributesRecordBatchBuilder<u16>,
     metric_attrs: AttributesRecordBatchBuilder<u16>,
-    pub(super) ndp_attrs: DirectNumberDpAttrsRecordBatchBuilder<'a>,
+    pub(super) ndp_attrs: DirectNumberDpAttrsRecordBatchBuilder,
     metrics: MetricsRecordBatchBuilder,
     ndp: DirectNumberDataPointsRecordBatchBuilder,
     next_resource_id: u16,
@@ -40,7 +40,7 @@ pub(super) struct DirectOtapMetricsBuilder<'a> {
     current_metric_id: Option<u16>,
 }
 
-impl<'a> Default for DirectOtapMetricsBuilder<'a> {
+impl Default for DirectOtapMetricsBuilder {
     fn default() -> Self {
         Self {
             resource_attrs: AttributesRecordBatchBuilder::<u16>::new(),
@@ -60,7 +60,7 @@ impl<'a> Default for DirectOtapMetricsBuilder<'a> {
     }
 }
 
-impl<'a> DirectOtapMetricsBuilder<'a> {
+impl DirectOtapMetricsBuilder {
     pub(super) fn reserve_number_points(&mut self, additional: usize) {
         self.ndp.reserve(additional);
         self.ndp_attrs.begin_frame(additional);
@@ -69,9 +69,9 @@ impl<'a> DirectOtapMetricsBuilder<'a> {
     pub(super) fn prepare_record(
         &mut self,
         modified: RootModified,
-        resource: &DirectDecResource<'a>,
-        scope: &DirectDecScope<'a>,
-        metric: &DirectDecMetric<'a>,
+        resource: &DirectDecResource,
+        scope: &DirectDecScope,
+        metric: &DirectDecMetric,
     ) -> Result<u16, Error> {
         if self.current_resource_id.is_none() || modified.resource {
             self.start_resource(resource)?;
@@ -117,15 +117,11 @@ impl<'a> DirectOtapMetricsBuilder<'a> {
         }
     }
 
-    pub(super) fn append_number_point_attrs(
-        &mut self,
-        point_id: u32,
-        attrs: &[DecodedAttribute<'a>],
-    ) {
+    pub(super) fn append_number_point_attrs(&mut self, point_id: u32, attrs: &[DecodedAttribute]) {
         self.ndp_attrs.append_all(point_id, attrs);
     }
 
-    pub(super) fn start_resource(&mut self, resource: &DirectDecResource<'a>) -> Result<(), Error> {
+    pub(super) fn start_resource(&mut self, resource: &DirectDecResource) -> Result<(), Error> {
         let resource_id = self.allocate_resource_id()?;
         self.current_resource_id = Some(resource_id);
         self.current_scope_id = None;
@@ -137,7 +133,7 @@ impl<'a> DirectOtapMetricsBuilder<'a> {
         Ok(())
     }
 
-    pub(super) fn start_scope(&mut self, scope: &DirectDecScope<'a>) -> Result<(), Error> {
+    pub(super) fn start_scope(&mut self, scope: &DirectDecScope) -> Result<(), Error> {
         let scope_id = self.allocate_scope_id()?;
         self.current_scope_id = Some(scope_id);
         self.current_metric_id = None;
@@ -150,9 +146,9 @@ impl<'a> DirectOtapMetricsBuilder<'a> {
 
     pub(super) fn start_metric(
         &mut self,
-        resource: &DirectDecResource<'a>,
-        scope: &DirectDecScope<'a>,
-        metric: &DirectDecMetric<'a>,
+        resource: &DirectDecResource,
+        scope: &DirectDecScope,
+        metric: &DirectDecMetric,
     ) -> Result<(), Error> {
         let metric_id = self.allocate_metric_id()?;
         let resource_id = self

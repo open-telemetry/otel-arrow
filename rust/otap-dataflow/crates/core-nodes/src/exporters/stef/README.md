@@ -32,9 +32,14 @@ Supported fields:
 
 - `grpc_endpoint`: required target endpoint, for example
   `"http://127.0.0.1:4320"` or `"https://collector.example:4320"`.
-- `compression`: outbound request compression. Supported values are
-  `zstd`, `gzip`, and `deflate`. The legacy alias
-  `compression_method` is also accepted.
+- `stef_compression`: native STEF frame payload compression. Supported
+  values are `zstd` and `none`. This maps to the STEF fixed-header
+  compression flag and is compatible with the Go STEF exporter
+  `compression: zstd` behavior.
+- `compression`: optional gRPC message compression. Supported values are
+  `zstd`, `gzip`, and `deflate`. The legacy alias `compression_method`
+  is also accepted. For Go parity, prefer `stef_compression` for STEF
+  payload compression rather than gRPC compression.
 - `concurrency_limit`: maximum in-flight transport requests.
 - `connect_timeout`: TCP connection timeout.
 - `tcp_nodelay`, `tcp_keepalive`, `tcp_keepalive_interval`, and
@@ -108,8 +113,8 @@ Go Collector interoperability tests, and end-to-end benchmarks.
   staying close to the existing OTLP support and keeping validation
   straightforward.
 - Codec logic stays in the `pdata` crate. This exporter owns gRPC, TLS,
-  compression, telemetry, and ACK/NACK routing through the original OTAP
-  context.
+  native STEF compression selection, telemetry, and ACK/NACK routing
+  through the original OTAP context.
 - Invalid STEF or unsupported OTLP values surface as explicit export
   failures instead of best-effort partial conversion.
 

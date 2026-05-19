@@ -5,7 +5,7 @@
 
 use crate::stef_grpc::{
     StefClientFirstMessage, StefClientMessage, StefDataResponse, StefDestinationClient,
-    stef_server_message,
+    StefServerMessage, stef_server_message,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -29,8 +29,7 @@ use otap_df_otap::metrics::ExporterPDataMetrics;
 use otap_df_otap::otap_grpc::client_settings::GrpcClientSettings;
 use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_pdata::stef::{
-    METRICS_ROOT_STRUCT_NAME, METRICS_WIRE_SCHEMA, encode_metrics_otap_with_count,
-    encode_metrics_view_with_count,
+    METRICS_ROOT_STRUCT_NAME, METRICS_WIRE_SCHEMA, MetricsStreamEncoder, StefCompression,
 };
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
@@ -39,8 +38,9 @@ use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, Sender};
 use tonic::Request;
+use tonic::Streaming;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 
@@ -51,6 +51,10 @@ pub const STEF_EXPORTER_URN: &str = "urn:otel:exporter:stef";
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Native STEF frame payload compression.
+    #[serde(default)]
+    pub stef_compression: StefCompression,
+
     /// Shared gRPC client settings for the STEF destination.
     #[serde(flatten)]
     pub grpc: GrpcClientSettings,
@@ -110,7 +114,8 @@ impl Exporter<OtapPdata> for StefExporter {
     ) -> Result<TerminalState, Error> {
         otel_info!(
             "stef.exporter.grpc.start",
-            grpc_endpoint = self.config.grpc.grpc_endpoint.as_str()
+            grpc_endpoint = self.config.grpc.grpc_endpoint.as_str(),
+            stef_compression = ?self.config.stef_compression
         );
         self.config.grpc.log_proxy_info();
 
@@ -134,11 +139,13 @@ impl Exporter<OtapPdata> for StefExporter {
                 }
             })?;
         let compression = self.config.grpc.compression_encoding();
+        let mut connection: Option<StefExportConnection> = None;
 
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     otel_info!("stef.exporter.grpc.shutdown");
+                    drop(connection.take());
                     _ = timer_cancel_handle.cancel().await;
                     return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
@@ -152,12 +159,55 @@ impl Exporter<OtapPdata> for StefExporter {
                     let (context, payload) = pdata.into_parts();
                     self.pdata_metrics.inc_consumed(signal_type);
 
-                    let prepared = prepare_metrics_export(payload, context, signal_type);
+                    if signal_type != SignalType::Metrics {
+                        let saved_payload = save_payload(&context, signal_type, payload);
+                        self.pdata_metrics.add_failed(signal_type, 1);
+                        notify_prepare_error(
+                            Box::new(PrepareFailure {
+                                reason: "STEF exporter currently supports metrics only".to_owned(),
+                                saved_payload,
+                                context,
+                                reset_connection: false,
+                            }),
+                            &effect_handler,
+                        )
+                        .await?;
+                        continue;
+                    }
+
+                    if connection.is_none() {
+                        match StefExportConnection::connect(
+                            channel.clone(),
+                            compression,
+                            self.config.stef_compression,
+                        )
+                        .await
+                        {
+                            Ok(conn) => connection = Some(conn),
+                            Err(status) => {
+                                let saved_payload = save_payload(&context, signal_type, payload);
+                                route_export_result(
+                                    Err(status),
+                                    context,
+                                    saved_payload,
+                                    &effect_handler,
+                                    &mut self.pdata_metrics,
+                                )
+                                .await;
+                                continue;
+                            }
+                        }
+                    }
+
+                    let conn = connection.as_mut().expect("connection exists");
+                    let prepared = prepare_metrics_export(payload, context, conn);
 
                     match prepared {
                         Ok(export) => {
-                            let result =
-                                export_stef_metrics(channel.clone(), compression, &export).await;
+                            let result = conn.export(&export).await;
+                            if result.is_err() {
+                                connection = None;
+                            }
                             route_export_result(
                                 result,
                                 export.context,
@@ -168,6 +218,9 @@ impl Exporter<OtapPdata> for StefExporter {
                             .await;
                         }
                         Err(failure) => {
+                            if failure.reset_connection {
+                                connection = None;
+                            }
                             self.pdata_metrics.add_failed(signal_type, 1);
                             notify_prepare_error(failure, &effect_handler).await?;
                         }
@@ -181,7 +234,8 @@ impl Exporter<OtapPdata> for StefExporter {
 
 struct PreparedStefExport {
     bytes: Vec<u8>,
-    record_count: u64,
+    frame_record_count: u64,
+    ack_record_id: u64,
     context: Context,
     saved_payload: OtapPayload,
 }
@@ -190,28 +244,21 @@ struct PrepareFailure {
     reason: String,
     context: Context,
     saved_payload: OtapPayload,
+    reset_connection: bool,
 }
 
 fn prepare_metrics_export(
     payload: OtapPayload,
     context: Context,
-    signal_type: SignalType,
+    conn: &mut StefExportConnection,
 ) -> Result<PreparedStefExport, Box<PrepareFailure>> {
-    if signal_type != SignalType::Metrics {
-        return Err(Box::new(PrepareFailure {
-            reason: "STEF exporter currently supports metrics only".to_owned(),
-            saved_payload: save_payload(&context, signal_type, payload),
-            context,
-        }));
-    }
-
     match payload {
         OtapPayload::OtlpBytes(OtlpProtoBytes::ExportMetricsRequest(bytes)) => {
             let encoded = {
                 let view = RawMetricsData::new(bytes.as_ref());
-                encode_metrics_view_with_count(&view)
+                conn.encoder.encode_metrics_view_frame(&view)
             };
-            let (stef_bytes, record_count) = match encoded {
+            let frame = match encoded {
                 Ok(result) => result,
                 Err(e) => {
                     let saved_payload = if context.may_return_payload() {
@@ -223,6 +270,7 @@ fn prepare_metrics_export(
                         reason: format!("STEF metrics encode error: {e}"),
                         context,
                         saved_payload,
+                        reset_connection: true,
                     }));
                 }
             };
@@ -232,107 +280,145 @@ fn prepare_metrics_export(
                 OtlpProtoBytes::ExportMetricsRequest(Bytes::new()).into()
             };
             Ok(PreparedStefExport {
-                bytes: stef_bytes,
-                record_count,
+                bytes: frame.bytes,
+                frame_record_count: frame.frame_record_count,
+                ack_record_id: frame.stream_record_count,
                 context,
                 saved_payload,
             })
         }
         OtapPayload::OtapArrowRecords(otap_batch) => {
-            let encoded = encode_metrics_otap_with_count(&otap_batch);
+            let encoded = conn.encoder.encode_metrics_otap_frame(&otap_batch);
+            let saved_payload = save_otap_batch(&context, otap_batch);
             match encoded {
-                Ok((stef_bytes, record_count)) => {
-                    let saved_payload = save_otap_batch(&context, otap_batch);
-                    Ok(PreparedStefExport {
-                        bytes: stef_bytes,
-                        record_count,
-                        context,
-                        saved_payload,
-                    })
-                }
-                Err(e) => {
-                    let saved_payload = save_otap_batch(&context, otap_batch);
-                    Err(Box::new(PrepareFailure {
-                        reason: format!("STEF metrics encode error: {e}"),
-                        context,
-                        saved_payload,
-                    }))
-                }
+                Ok(frame) => Ok(PreparedStefExport {
+                    bytes: frame.bytes,
+                    frame_record_count: frame.frame_record_count,
+                    ack_record_id: frame.stream_record_count,
+                    context,
+                    saved_payload,
+                }),
+                Err(e) => Err(Box::new(PrepareFailure {
+                    reason: format!("STEF metrics encode error: {e}"),
+                    context,
+                    saved_payload,
+                    reset_connection: true,
+                })),
             }
         }
         other => Err(Box::new(PrepareFailure {
             reason: "STEF exporter received non-metrics OTLP payload".to_owned(),
-            saved_payload: save_payload(&context, signal_type, other),
+            saved_payload: save_payload(&context, SignalType::Metrics, other),
             context,
+            reset_connection: false,
         })),
     }
 }
 
-async fn export_stef_metrics(
-    channel: Channel,
-    compression: Option<CompressionEncoding>,
-    export: &PreparedStefExport,
-) -> Result<(), tonic::Status> {
-    let mut client = StefDestinationClient::new(channel);
-    if let Some(compression) = compression {
-        client = client
-            .send_compressed(compression)
-            .accept_compressed(compression);
-    }
+struct StefExportConnection {
+    tx: Sender<StefClientMessage>,
+    inbound: Streaming<StefServerMessage>,
+    encoder: MetricsStreamEncoder,
+    ack_record_id: u64,
+}
 
-    let (tx, rx) = mpsc::channel(2);
-    tx.send(StefClientMessage {
-        first_message: Some(StefClientFirstMessage {
-            root_struct_name: METRICS_ROOT_STRUCT_NAME.to_owned(),
-        }),
-        stef_bytes: Vec::new(),
-        is_end_of_chunk: false,
-    })
-    .await
-    .map_err(|_| tonic::Status::internal("failed to queue STEF first message"))?;
+impl StefExportConnection {
+    async fn connect(
+        channel: Channel,
+        compression: Option<CompressionEncoding>,
+        stef_compression: StefCompression,
+    ) -> Result<Self, tonic::Status> {
+        let mut client = StefDestinationClient::new(channel);
+        if let Some(compression) = compression {
+            client = client
+                .send_compressed(compression)
+                .accept_compressed(compression);
+        }
 
-    let outbound = stream::unfold(rx, |mut rx| async {
-        rx.recv().await.map(|message| (message, rx))
-    });
-
-    let mut inbound = client.stream(Request::new(outbound)).await?.into_inner();
-    let caps = inbound
-        .message()
-        .await?
-        .and_then(|message| match message.message {
-            Some(stef_server_message::Message::Capabilities(caps)) => Some(caps),
-            _ => None,
+        let (tx, rx) = mpsc::channel(8);
+        tx.send(StefClientMessage {
+            first_message: Some(StefClientFirstMessage {
+                root_struct_name: METRICS_ROOT_STRUCT_NAME.to_owned(),
+            }),
+            stef_bytes: Vec::new(),
+            is_end_of_chunk: false,
         })
-        .ok_or_else(|| tonic::Status::unavailable("missing STEF capabilities"))?;
-    if caps.schema != METRICS_WIRE_SCHEMA {
-        return Err(tonic::Status::failed_precondition(
-            "STEF destination metrics schema is incompatible",
-        ));
+        .await
+        .map_err(|_| tonic::Status::internal("failed to queue STEF first message"))?;
+
+        let outbound = stream::unfold(rx, |mut rx| async {
+            rx.recv().await.map(|message| (message, rx))
+        });
+
+        let mut inbound = client.stream(Request::new(outbound)).await?.into_inner();
+        let caps = inbound
+            .message()
+            .await?
+            .and_then(|message| match message.message {
+                Some(stef_server_message::Message::Capabilities(caps)) => Some(caps),
+                _ => None,
+            })
+            .ok_or_else(|| tonic::Status::unavailable("missing STEF capabilities"))?;
+        if caps.schema != METRICS_WIRE_SCHEMA {
+            return Err(tonic::Status::failed_precondition(
+                "STEF destination metrics schema is incompatible",
+            ));
+        }
+
+        let mut encoder = MetricsStreamEncoder::new(stef_compression)
+            .map_err(|e| tonic::Status::internal(format!("STEF encoder init error: {e}")))?;
+        if let Some((fixed_header, var_header)) = encoder
+            .stream_header_chunks()
+            .map_err(|e| tonic::Status::internal(format!("STEF header encode error: {e}")))?
+        {
+            send_stef_chunk(&tx, fixed_header).await?;
+            send_stef_chunk(&tx, var_header).await?;
+        }
+
+        Ok(Self {
+            tx,
+            inbound,
+            encoder,
+            ack_record_id: 0,
+        })
     }
 
+    async fn export(&mut self, export: &PreparedStefExport) -> Result<(), tonic::Status> {
+        if export.frame_record_count == 0 {
+            return Ok(());
+        }
+
+        send_stef_chunk(&self.tx, export.bytes.clone()).await?;
+
+        if self.ack_record_id >= export.ack_record_id {
+            return Ok(());
+        }
+
+        while let Some(message) = self.inbound.message().await? {
+            if let Some(stef_server_message::Message::Response(response)) = message.message {
+                validate_response(&response)?;
+                self.ack_record_id = response.ack_record_id;
+                if response.ack_record_id >= export.ack_record_id {
+                    return Ok(());
+                }
+            }
+        }
+
+        Err(tonic::Status::unavailable("STEF stream closed before ack"))
+    }
+}
+
+async fn send_stef_chunk(
+    tx: &Sender<StefClientMessage>,
+    stef_bytes: Vec<u8>,
+) -> Result<(), tonic::Status> {
     tx.send(StefClientMessage {
         first_message: None,
-        stef_bytes: export.bytes.clone(),
+        stef_bytes,
         is_end_of_chunk: true,
     })
     .await
-    .map_err(|_| tonic::Status::unavailable("failed to send STEF chunk"))?;
-    drop(tx);
-
-    if export.record_count == 0 {
-        return Ok(());
-    }
-
-    while let Some(message) = inbound.message().await? {
-        if let Some(stef_server_message::Message::Response(response)) = message.message {
-            validate_response(&response)?;
-            if response.ack_record_id >= export.record_count {
-                return Ok(());
-            }
-        }
-    }
-
-    Err(tonic::Status::unavailable("STEF stream closed before ack"))
+    .map_err(|_| tonic::Status::unavailable("failed to send STEF chunk"))
 }
 
 fn validate_response(response: &StefDataResponse) -> Result<(), tonic::Status> {
@@ -391,6 +477,7 @@ async fn notify_prepare_error(
         reason,
         context,
         saved_payload,
+        reset_connection: _,
     } = *failure;
     otel_debug!("stef.exporter.prepare_error", error = reason.as_str());
     effect_handler

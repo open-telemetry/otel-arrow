@@ -10,10 +10,11 @@
 use super::super::Error;
 use super::super::wire::{
     ArrayDecoder, BitReader, BoolDecoder, BytesReader, DecodeColumn, DirectStringDict,
-    Float64Decoder, I64Decoder, U64Decoder,
+    Float64Decoder, Float64DecoderState, I64Decoder, U64Decoder, U64DecoderState,
 };
 use super::builder::DirectOtapMetricsBuilder;
 use super::record_builders::DirectNumberDpAttrsRecordBatchBuilder;
+use std::sync::Arc;
 
 #[derive(Default)]
 pub(super) struct DirectMetricsFrameDecoder<'a> {
@@ -26,27 +27,35 @@ pub(super) struct DirectMetricsFrameDecoder<'a> {
 }
 
 impl<'a> DirectMetricsFrameDecoder<'a> {
-    pub(super) fn new(columns: &DecodeColumn<'a>) -> Self {
+    pub(super) fn new(columns: &DecodeColumn<'a>, codecs: &DirectDecoderCodecs) -> Self {
         Self {
             root: BitReader::new(columns.data),
-            metric: DirectMetricDecoder::new(&columns.children[1]),
-            resource: DirectResourceDecoder::new(&columns.children[2]),
-            scope: DirectScopeDecoder::new(&columns.children[3]),
-            attributes: AttributesDecoder::new(&columns.children[4]),
-            point: PointDecoder::new(&columns.children[5]),
+            metric: DirectMetricDecoder::new(&columns.children[1], &codecs.metric),
+            resource: DirectResourceDecoder::new(&columns.children[2], &codecs.resource),
+            scope: DirectScopeDecoder::new(&columns.children[3], &codecs.scope),
+            attributes: AttributesDecoder::new(&columns.children[4], &codecs.attributes),
+            point: PointDecoder::new(&columns.children[5], &codecs.point),
         }
+    }
+
+    pub(super) fn save_codecs(&self, codecs: &mut DirectDecoderCodecs) {
+        self.metric.save_codecs(&mut codecs.metric);
+        self.resource.save_codecs(&mut codecs.resource);
+        self.scope.save_codecs(&mut codecs.scope);
+        self.attributes.save_codecs(&mut codecs.attributes);
+        self.point.save_codecs(&mut codecs.point);
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_record(
         &mut self,
-        builder: &mut DirectOtapMetricsBuilder<'a>,
-        resource: &mut DirectDecResource<'a>,
-        scope: &mut DirectDecScope<'a>,
-        metric: &mut DirectDecMetric<'a>,
-        attrs: &mut Vec<DecodedAttribute<'a>>,
+        builder: &mut DirectOtapMetricsBuilder,
+        resource: &mut DirectDecResource,
+        scope: &mut DirectDecScope,
+        metric: &mut DirectDecMetric,
+        attrs: &mut Vec<DecodedAttribute>,
         point: &mut DecPoint,
-        state: &mut DirectDecoderState<'a>,
+        state: &mut DirectDecoderState,
     ) -> Result<(), Error> {
         let mask = self.root.read_bits(6)?;
         let modified = RootModified {
@@ -91,21 +100,74 @@ pub(super) struct RootModified {
     pub(super) scope: bool,
 }
 
-pub(super) struct DirectDecoderState<'a> {
-    schema_url: DirectStringDict<'a>,
-    metric_name: DirectStringDict<'a>,
-    metric_description: DirectStringDict<'a>,
-    metric_unit: DirectStringDict<'a>,
-    scope_name: DirectStringDict<'a>,
-    scope_version: DirectStringDict<'a>,
-    attribute_key: DirectStringDict<'a>,
-    any_value_string: DirectStringDict<'a>,
-    resources: Vec<DirectDecResource<'a>>,
-    scopes: Vec<DirectDecScope<'a>>,
-    metrics: Vec<DirectDecMetric<'a>>,
+#[derive(Clone, Default)]
+pub(super) struct DirectDecoderCodecs {
+    metric: MetricDecoderCodecs,
+    resource: ResourceDecoderCodecs,
+    scope: ScopeDecoderCodecs,
+    attributes: AttributesDecoderCodecs,
+    point: PointDecoderCodecs,
 }
 
-impl<'a> Default for DirectDecoderState<'a> {
+#[derive(Clone, Default)]
+struct MetricDecoderCodecs {
+    r#type: U64DecoderState,
+    metadata: AttributesDecoderCodecs,
+    aggregation_temporality: U64DecoderState,
+}
+
+#[derive(Clone, Default)]
+struct ResourceDecoderCodecs {
+    attributes: AttributesDecoderCodecs,
+    dropped_attributes_count: U64DecoderState,
+}
+
+#[derive(Clone, Default)]
+struct ScopeDecoderCodecs {
+    attributes: AttributesDecoderCodecs,
+    dropped_attributes_count: U64DecoderState,
+}
+
+#[derive(Clone, Default)]
+struct PointDecoderCodecs {
+    start_timestamp: U64DecoderState,
+    timestamp: U64DecoderState,
+    value: PointValueDecoderCodecs,
+}
+
+#[derive(Clone, Default)]
+struct PointValueDecoderCodecs {
+    int64: U64DecoderState,
+    float64: Float64DecoderState,
+}
+
+#[derive(Clone, Default)]
+struct AttributesDecoderCodecs {
+    value: AnyValueDecoderCodecs,
+}
+
+#[derive(Clone, Default)]
+struct AnyValueDecoderCodecs {
+    int64: U64DecoderState,
+    float64: Float64DecoderState,
+}
+
+pub(super) struct DirectDecoderState {
+    schema_url: DirectStringDict,
+    metric_name: DirectStringDict,
+    metric_description: DirectStringDict,
+    metric_unit: DirectStringDict,
+    scope_name: DirectStringDict,
+    scope_version: DirectStringDict,
+    attribute_key: DirectStringDict,
+    any_value_string: DirectStringDict,
+    resources: Vec<DirectDecResource>,
+    scopes: Vec<DirectDecScope>,
+    metrics: Vec<DirectDecMetric>,
+    pub(super) codecs: DirectDecoderCodecs,
+}
+
+impl Default for DirectDecoderState {
     fn default() -> Self {
         let mut state = Self {
             schema_url: DirectStringDict::default(),
@@ -119,13 +181,14 @@ impl<'a> Default for DirectDecoderState<'a> {
             resources: Vec::new(),
             scopes: Vec::new(),
             metrics: Vec::new(),
+            codecs: DirectDecoderCodecs::default(),
         };
         state.reset_dictionaries();
         state
     }
 }
 
-impl<'a> DirectDecoderState<'a> {
+impl DirectDecoderState {
     pub(super) fn reset_dictionaries(&mut self) {
         self.schema_url.reset();
         self.metric_name.reset();
@@ -143,7 +206,9 @@ impl<'a> DirectDecoderState<'a> {
         self.metrics.push(DirectDecMetric::default());
     }
 
-    pub(super) fn reset_codecs(&mut self) {}
+    pub(super) fn reset_codecs(&mut self) {
+        self.codecs = DirectDecoderCodecs::default();
+    }
 }
 
 #[derive(Clone, Default)]
@@ -161,48 +226,93 @@ pub(super) enum DecPointValue {
     Float64(f64),
 }
 
-#[derive(Clone, Default)]
-pub(super) struct DirectDecResource<'a> {
-    pub(super) schema_url: &'a str,
-    pub(super) attributes: Vec<DecodedAttribute<'a>>,
+#[derive(Clone)]
+pub(super) struct DirectDecResource {
+    pub(super) schema_url: Arc<str>,
+    pub(super) attributes: Vec<DecodedAttribute>,
     pub(super) dropped_attributes_count: u32,
 }
 
-#[derive(Clone, Default)]
-pub(super) struct DirectDecScope<'a> {
-    pub(super) name: &'a str,
-    pub(super) version: &'a str,
-    pub(super) schema_url: &'a str,
-    pub(super) attributes: Vec<DecodedAttribute<'a>>,
+impl Default for DirectDecResource {
+    fn default() -> Self {
+        Self {
+            schema_url: Arc::from(""),
+            attributes: Vec::new(),
+            dropped_attributes_count: 0,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct DirectDecScope {
+    pub(super) name: Arc<str>,
+    pub(super) version: Arc<str>,
+    pub(super) schema_url: Arc<str>,
+    pub(super) attributes: Vec<DecodedAttribute>,
     pub(super) dropped_attributes_count: u32,
 }
 
-#[derive(Clone, Default)]
-pub(super) struct DirectDecMetric<'a> {
-    pub(super) name: &'a str,
-    pub(super) description: &'a str,
-    pub(super) unit: &'a str,
+impl Default for DirectDecScope {
+    fn default() -> Self {
+        Self {
+            name: Arc::from(""),
+            version: Arc::from(""),
+            schema_url: Arc::from(""),
+            attributes: Vec::new(),
+            dropped_attributes_count: 0,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct DirectDecMetric {
+    pub(super) name: Arc<str>,
+    pub(super) description: Arc<str>,
+    pub(super) unit: Arc<str>,
     pub(super) r#type: u64,
-    pub(super) metadata: Vec<DecodedAttribute<'a>>,
+    pub(super) metadata: Vec<DecodedAttribute>,
     pub(super) aggregation_temporality: u64,
     pub(super) monotonic: bool,
 }
 
-#[derive(Clone, Copy, Default, PartialEq)]
-pub(super) struct DecodedAttribute<'a> {
-    pub(super) key: &'a str,
-    pub(super) value: DecodedAnyValue<'a>,
+impl Default for DirectDecMetric {
+    fn default() -> Self {
+        Self {
+            name: Arc::from(""),
+            description: Arc::from(""),
+            unit: Arc::from(""),
+            r#type: 0,
+            metadata: Vec::new(),
+            aggregation_temporality: 0,
+            monotonic: false,
+        }
+    }
 }
 
-#[derive(Clone, Copy, Default, PartialEq)]
-pub(super) enum DecodedAnyValue<'a> {
+#[derive(Clone, PartialEq)]
+pub(super) struct DecodedAttribute {
+    pub(super) key: Arc<str>,
+    pub(super) value: DecodedAnyValue,
+}
+
+impl Default for DecodedAttribute {
+    fn default() -> Self {
+        Self {
+            key: Arc::from(""),
+            value: DecodedAnyValue::Empty,
+        }
+    }
+}
+
+#[derive(Clone, Default, PartialEq)]
+pub(super) enum DecodedAnyValue {
     #[default]
     Empty,
-    String(&'a str),
+    String(Arc<str>),
     Bool(bool),
     Int(i64),
     Double(f64),
-    Bytes(&'a [u8]),
+    Bytes(Arc<[u8]>),
 }
 
 #[derive(Default)]
@@ -219,24 +329,33 @@ pub(super) struct DirectMetricDecoder<'a> {
 }
 
 impl<'a> DirectMetricDecoder<'a> {
-    pub(super) fn new(column: &DecodeColumn<'a>) -> Self {
+    fn new(column: &DecodeColumn<'a>, codecs: &MetricDecoderCodecs) -> Self {
         Self {
             bits: BitReader::new(column.data),
             name: BytesReader::new(column.children[0].data),
             description: BytesReader::new(column.children[1].data),
             unit: BytesReader::new(column.children[2].data),
-            r#type: U64Decoder::new(column.children[3].data),
-            metadata: AttributesDecoder::new(&column.children[4]),
+            r#type: U64Decoder::with_state(column.children[3].data, codecs.r#type),
+            metadata: AttributesDecoder::new(&column.children[4], &codecs.metadata),
             histogram_bounds: ArrayDecoder::new(&column.children[5]),
-            aggregation_temporality: U64Decoder::new(column.children[6].data),
+            aggregation_temporality: U64Decoder::with_state(
+                column.children[6].data,
+                codecs.aggregation_temporality,
+            ),
             monotonic: BoolDecoder::new(column.children[7].data),
         }
     }
 
+    fn save_codecs(&self, codecs: &mut MetricDecoderCodecs) {
+        codecs.r#type = self.r#type.state();
+        self.metadata.save_codecs(&mut codecs.metadata);
+        codecs.aggregation_temporality = self.aggregation_temporality.state();
+    }
+
     pub(super) fn decode(
         &mut self,
-        target: &mut DirectDecMetric<'a>,
-        state: &mut DirectDecoderState<'a>,
+        target: &mut DirectDecMetric,
+        state: &mut DirectDecoderState,
     ) -> Result<(), Error> {
         if !self.bits.read_bit()? {
             let ref_num = usize::try_from(self.bits.read_uvarint_compact()?)
@@ -292,19 +411,27 @@ pub(super) struct DirectResourceDecoder<'a> {
 }
 
 impl<'a> DirectResourceDecoder<'a> {
-    pub(super) fn new(column: &DecodeColumn<'a>) -> Self {
+    fn new(column: &DecodeColumn<'a>, codecs: &ResourceDecoderCodecs) -> Self {
         Self {
             bits: BitReader::new(column.data),
             schema_url: BytesReader::new(column.children[0].data),
-            attributes: AttributesDecoder::new(&column.children[1]),
-            dropped_attributes_count: U64Decoder::new(column.children[2].data),
+            attributes: AttributesDecoder::new(&column.children[1], &codecs.attributes),
+            dropped_attributes_count: U64Decoder::with_state(
+                column.children[2].data,
+                codecs.dropped_attributes_count,
+            ),
         }
+    }
+
+    fn save_codecs(&self, codecs: &mut ResourceDecoderCodecs) {
+        self.attributes.save_codecs(&mut codecs.attributes);
+        codecs.dropped_attributes_count = self.dropped_attributes_count.state();
     }
 
     pub(super) fn decode(
         &mut self,
-        target: &mut DirectDecResource<'a>,
-        state: &mut DirectDecoderState<'a>,
+        target: &mut DirectDecResource,
+        state: &mut DirectDecoderState,
     ) -> Result<(), Error> {
         if !self.bits.read_bit()? {
             let ref_num = usize::try_from(self.bits.read_uvarint_compact()?)
@@ -350,21 +477,29 @@ pub(super) struct DirectScopeDecoder<'a> {
 }
 
 impl<'a> DirectScopeDecoder<'a> {
-    pub(super) fn new(column: &DecodeColumn<'a>) -> Self {
+    fn new(column: &DecodeColumn<'a>, codecs: &ScopeDecoderCodecs) -> Self {
         Self {
             bits: BitReader::new(column.data),
             name: BytesReader::new(column.children[0].data),
             version: BytesReader::new(column.children[1].data),
             schema_url: BytesReader::new(column.children[2].data),
-            attributes: AttributesDecoder::new(&column.children[3]),
-            dropped_attributes_count: U64Decoder::new(column.children[4].data),
+            attributes: AttributesDecoder::new(&column.children[3], &codecs.attributes),
+            dropped_attributes_count: U64Decoder::with_state(
+                column.children[4].data,
+                codecs.dropped_attributes_count,
+            ),
         }
+    }
+
+    fn save_codecs(&self, codecs: &mut ScopeDecoderCodecs) {
+        self.attributes.save_codecs(&mut codecs.attributes);
+        codecs.dropped_attributes_count = self.dropped_attributes_count.state();
     }
 
     pub(super) fn decode(
         &mut self,
-        target: &mut DirectDecScope<'a>,
-        state: &mut DirectDecoderState<'a>,
+        target: &mut DirectDecScope,
+        state: &mut DirectDecoderState,
     ) -> Result<(), Error> {
         if !self.bits.read_bit()? {
             let ref_num = usize::try_from(self.bits.read_uvarint_compact()?)
@@ -417,14 +552,23 @@ pub(super) struct PointDecoder<'a> {
 }
 
 impl<'a> PointDecoder<'a> {
-    pub(super) fn new(column: &DecodeColumn<'a>) -> Self {
+    fn new(column: &DecodeColumn<'a>, codecs: &PointDecoderCodecs) -> Self {
         Self {
             bits: BitReader::new(column.data),
-            start_timestamp: U64Decoder::new(column.children[0].data),
-            timestamp: U64Decoder::new(column.children[1].data),
-            value: PointValueDecoder::new(&column.children[2]),
+            start_timestamp: U64Decoder::with_state(
+                column.children[0].data,
+                codecs.start_timestamp,
+            ),
+            timestamp: U64Decoder::with_state(column.children[1].data, codecs.timestamp),
+            value: PointValueDecoder::new(&column.children[2], &codecs.value),
             exemplars: ArrayDecoder::new(&column.children[3]),
         }
+    }
+
+    fn save_codecs(&self, codecs: &mut PointDecoderCodecs) {
+        codecs.start_timestamp = self.start_timestamp.state();
+        codecs.timestamp = self.timestamp.state();
+        self.value.save_codecs(&mut codecs.value);
     }
 
     pub(super) fn decode(&mut self, target: &mut DecPoint) -> Result<(), Error> {
@@ -453,12 +597,17 @@ pub(super) struct PointValueDecoder<'a> {
 }
 
 impl<'a> PointValueDecoder<'a> {
-    pub(super) fn new(column: &DecodeColumn<'a>) -> Self {
+    fn new(column: &DecodeColumn<'a>, codecs: &PointValueDecoderCodecs) -> Self {
         Self {
             bits: BitReader::new(column.data),
-            int64: I64Decoder::new(column.children[0].data),
-            float64: Float64Decoder::new(column.children[1].data),
+            int64: I64Decoder::with_state(column.children[0].data, codecs.int64),
+            float64: Float64Decoder::with_state(column.children[1].data, codecs.float64),
         }
+    }
+
+    fn save_codecs(&self, codecs: &mut PointValueDecoderCodecs) {
+        codecs.int64 = self.int64.state();
+        codecs.float64 = self.float64.state();
     }
 
     pub(super) fn decode(&mut self) -> Result<DecPointValue, Error> {
@@ -479,18 +628,22 @@ pub(super) struct AttributesDecoder<'a> {
 }
 
 impl<'a> AttributesDecoder<'a> {
-    pub(super) fn new(column: &DecodeColumn<'a>) -> Self {
+    fn new(column: &DecodeColumn<'a>, codecs: &AttributesDecoderCodecs) -> Self {
         Self {
             header: BytesReader::new(column.data),
             key: BytesReader::new(column.children[0].data),
-            value: AnyValueDecoder::new(&column.children[1]),
+            value: AnyValueDecoder::new(&column.children[1], &codecs.value),
         }
+    }
+
+    fn save_codecs(&self, codecs: &mut AttributesDecoderCodecs) {
+        self.value.save_codecs(&mut codecs.value);
     }
 
     pub(super) fn decode_direct(
         &mut self,
-        target: &mut Vec<DecodedAttribute<'a>>,
-        state: &mut DirectDecoderState<'a>,
+        target: &mut Vec<DecodedAttribute>,
+        state: &mut DirectDecoderState,
     ) -> Result<(), Error> {
         let count_or_changed = self.header.read_uvarint()?;
         if count_or_changed == 0 {
@@ -520,10 +673,10 @@ impl<'a> AttributesDecoder<'a> {
 
     pub(super) fn decode_direct_number_point_attrs(
         &mut self,
-        target: &mut Vec<DecodedAttribute<'a>>,
-        state: &mut DirectDecoderState<'a>,
+        target: &mut Vec<DecodedAttribute>,
+        state: &mut DirectDecoderState,
         point_id: u32,
-        attribute_rb_builder: &mut DirectNumberDpAttrsRecordBatchBuilder<'a>,
+        attribute_rb_builder: &mut DirectNumberDpAttrsRecordBatchBuilder,
     ) -> Result<(), Error> {
         let count_or_changed = self.header.read_uvarint()?;
         if count_or_changed == 0 {
@@ -577,21 +730,26 @@ pub(super) struct AnyValueDecoder<'a> {
 }
 
 impl<'a> AnyValueDecoder<'a> {
-    pub(super) fn new(column: &DecodeColumn<'a>) -> Self {
+    fn new(column: &DecodeColumn<'a>, codecs: &AnyValueDecoderCodecs) -> Self {
         Self {
             bits: BitReader::new(column.data),
             string: BytesReader::new(column.children[0].data),
             bool_: BoolDecoder::new(column.children[1].data),
-            int64: I64Decoder::new(column.children[2].data),
-            float64: Float64Decoder::new(column.children[3].data),
+            int64: I64Decoder::with_state(column.children[2].data, codecs.int64),
+            float64: Float64Decoder::with_state(column.children[3].data, codecs.float64),
             bytes: BytesReader::new(column.children[6].data),
         }
     }
 
+    fn save_codecs(&self, codecs: &mut AnyValueDecoderCodecs) {
+        codecs.int64 = self.int64.state();
+        codecs.float64 = self.float64.state();
+    }
+
     pub(super) fn decode_direct(
         &mut self,
-        state: &mut DirectDecoderState<'a>,
-    ) -> Result<DecodedAnyValue<'a>, Error> {
+        state: &mut DirectDecoderState,
+    ) -> Result<DecodedAnyValue, Error> {
         match self.bits.read_bits(4)? {
             0 => Ok(DecodedAnyValue::Empty),
             1 => Ok(DecodedAnyValue::String(

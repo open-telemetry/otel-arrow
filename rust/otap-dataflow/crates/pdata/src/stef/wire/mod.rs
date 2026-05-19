@@ -16,7 +16,11 @@ pub(super) use self::encode::*;
 pub(super) const HDR_SIGNATURE: &[u8; 4] = b"STEF";
 pub(super) const HDR_FORMAT_VERSION: u8 = 0;
 pub(super) const COMPRESSION_NONE: u8 = 0;
+pub(super) const COMPRESSION_ZSTD: u8 = 1;
 pub(super) const FRAME_FLAG_NONE: u8 = 0;
+pub(super) const FRAME_FLAG_RESTART_COMPRESSION: u8 = 1 << 1;
+pub(super) const FRAME_FLAGS_MASK: u8 = 0b111;
+pub(super) const FRAME_SIZE_LIMIT: usize = 1 << 26;
 
 pub(super) const METRIC_FIELD_MASK: u64 = 0b11111111;
 pub(super) const RESOURCE_FIELD_MASK: u64 = 0b111;
@@ -27,7 +31,9 @@ pub(super) const ROOT_SCOPE_FIELD: u64 = 1 << 3;
 pub(super) const ROOT_ATTRIBUTES_FIELD: u64 = 1 << 4;
 pub(super) const ROOT_POINT_FIELD: u64 = 1 << 5;
 
-use super::{Error, METRICS_WIRE_SCHEMA};
+use zstd::stream::raw::{Encoder as ZstdEncoder, InBuffer, Operation, OutBuffer};
+
+use super::{Error, METRICS_WIRE_SCHEMA, StefCompression};
 
 #[derive(Default)]
 pub(super) struct Column {
@@ -262,22 +268,138 @@ pub(super) fn write_column_data(column: &Column, dst: &mut Vec<u8>) {
     }
 }
 
-pub(super) fn write_fixed_header(dst: &mut Vec<u8>) {
+pub(super) fn write_fixed_header(dst: &mut Vec<u8>, compression: StefCompression) {
     dst.extend_from_slice(HDR_SIGNATURE);
     append_uvarint(2, dst);
     dst.push(HDR_FORMAT_VERSION);
-    dst.push(COMPRESSION_NONE);
+    dst.push(match compression {
+        StefCompression::None => COMPRESSION_NONE,
+        StefCompression::Zstd => COMPRESSION_ZSTD,
+    });
 }
 
-pub(super) fn write_var_header_frame(dst: &mut Vec<u8>) {
+pub(super) fn write_var_header_frame(
+    frame_encoder: &mut FrameEncoder,
+    dst: &mut Vec<u8>,
+) -> Result<(), Error> {
     let mut var_header = Vec::with_capacity(METRICS_WIRE_SCHEMA.len() + 4);
     append_uvarint(METRICS_WIRE_SCHEMA.len() as u64, &mut var_header);
     var_header.extend_from_slice(METRICS_WIRE_SCHEMA);
     append_uvarint(0, &mut var_header);
-    write_frame(dst, FRAME_FLAG_NONE, &var_header);
+    frame_encoder.write_frame(dst, FRAME_FLAG_NONE, &var_header)
 }
 
-pub(super) fn write_frame(dst: &mut Vec<u8>, flags: u8, content: &[u8]) {
+pub(super) struct FrameEncoder {
+    compression: StefCompression,
+    zstd: Option<ZstdEncoder<'static>>,
+    compressed: Vec<u8>,
+}
+
+impl FrameEncoder {
+    pub(super) fn new(compression: StefCompression) -> Result<Self, Error> {
+        let zstd = match compression {
+            StefCompression::None => None,
+            StefCompression::Zstd => Some(
+                ZstdEncoder::new(zstd::DEFAULT_COMPRESSION_LEVEL)
+                    .map_err(|_| Error::InvalidFrame("zstd encoder init failed"))?,
+            ),
+        };
+        Ok(Self {
+            compression,
+            zstd,
+            compressed: Vec::new(),
+        })
+    }
+
+    pub(super) fn write_frame(
+        &mut self,
+        dst: &mut Vec<u8>,
+        flags: u8,
+        content: &[u8],
+    ) -> Result<(), Error> {
+        if flags & !FRAME_FLAGS_MASK != 0 {
+            return Err(Error::InvalidFrame("unknown frame flags"));
+        }
+        if content.len() > FRAME_SIZE_LIMIT {
+            return Err(Error::ValueOutOfRange("frame"));
+        }
+
+        match self.compression {
+            StefCompression::None => {
+                write_uncompressed_frame(dst, flags, content);
+                Ok(())
+            }
+            StefCompression::Zstd => {
+                let compressed = self.compress_zstd_frame(flags, content)?;
+                dst.push(flags);
+                append_uvarint(content.len() as u64, dst);
+                append_uvarint(compressed.len() as u64, dst);
+                dst.extend_from_slice(compressed);
+                Ok(())
+            }
+        }
+    }
+
+    fn compress_zstd_frame(&mut self, flags: u8, content: &[u8]) -> Result<&[u8], Error> {
+        if flags & FRAME_FLAG_RESTART_COMPRESSION != 0 {
+            if let Some(encoder) = self.zstd.as_mut() {
+                encoder
+                    .reinit()
+                    .map_err(|_| Error::InvalidFrame("zstd encoder reset failed"))?;
+            }
+        }
+
+        self.compressed.clear();
+        self.compressed.reserve(
+            zstd::zstd_safe::compress_bound(content.len())
+                .saturating_add(1024)
+                .max(1024),
+        );
+
+        let encoder = self
+            .zstd
+            .as_mut()
+            .ok_or(Error::InvalidFrame("zstd encoder unavailable"))?;
+        let mut input = InBuffer::around(content);
+        while input.pos < content.len() {
+            let before_in = input.pos;
+            let before_out = self.compressed.len();
+            {
+                let mut output = OutBuffer::around_pos(&mut self.compressed, before_out);
+                let _remaining = encoder
+                    .run(&mut input, &mut output)
+                    .map_err(|_| Error::InvalidFrame("zstd frame encode failed"))?;
+            }
+            if input.pos == before_in && self.compressed.len() == before_out {
+                self.compressed.reserve(64 * 1024);
+            }
+        }
+
+        loop {
+            let before_out = self.compressed.len();
+            let remaining = {
+                let mut output = OutBuffer::around_pos(&mut self.compressed, before_out);
+                encoder
+                    .flush(&mut output)
+                    .map_err(|_| Error::InvalidFrame("zstd frame flush failed"))?
+            };
+            if remaining == 0 {
+                break;
+            }
+            if self.compressed.len() == before_out {
+                self.compressed.reserve(64 * 1024);
+            }
+        }
+
+        if self.compressed.len() > FRAME_SIZE_LIMIT {
+            return Err(Error::ValueOutOfRange("compressed frame"));
+        }
+
+        Ok(&self.compressed)
+    }
+}
+
+fn write_uncompressed_frame(dst: &mut Vec<u8>, flags: u8, content: &[u8]) {
     dst.push(flags);
     append_uvarint(content.len() as u64, dst);
     dst.extend_from_slice(content);

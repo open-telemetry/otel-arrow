@@ -32,12 +32,12 @@ use otap_df_pdata_views::views::{
     resource::ResourceView,
 };
 
-use super::Error;
 use super::wire::{
-    BitWriter, Column, FRAME_FLAG_NONE, ROOT_ATTRIBUTES_FIELD, ROOT_METRIC_FIELD, ROOT_POINT_FIELD,
-    ROOT_RESOURCE_FIELD, ROOT_SCOPE_FIELD, SharedStringDict, append_uvarint, metrics_column_tree,
-    write_columns, write_fixed_header, write_frame, write_var_header_frame,
+    BitWriter, Column, FRAME_FLAG_NONE, FrameEncoder, ROOT_ATTRIBUTES_FIELD, ROOT_METRIC_FIELD,
+    ROOT_POINT_FIELD, ROOT_RESOURCE_FIELD, ROOT_SCOPE_FIELD, SharedStringDict, append_uvarint,
+    metrics_column_tree, write_columns, write_fixed_header, write_var_header_frame,
 };
+use super::{Error, METRICS_WIRE_SCHEMA, StefCompression};
 
 /// Encodes a metrics view directly into a complete STEF metrics byte stream.
 pub fn encode_metrics_view<T>(metrics: &T) -> Result<Vec<u8>, Error>
@@ -52,9 +52,20 @@ pub fn encode_metrics_view_with_count<T>(metrics: &T) -> Result<(Vec<u8>, u64), 
 where
     T: MetricsView,
 {
-    let mut encoder = MetricsStreamEncoder::default();
+    encode_metrics_view_with_count_and_compression(metrics, StefCompression::None)
+}
+
+/// Encodes a metrics view directly into STEF with native STEF frame compression.
+pub fn encode_metrics_view_with_count_and_compression<T>(
+    metrics: &T,
+    compression: StefCompression,
+) -> Result<(Vec<u8>, u64), Error>
+where
+    T: MetricsView,
+{
+    let mut encoder = MetricsStreamEncoder::new(compression)?;
     encoder.encode_metrics_view(metrics)?;
-    let record_count = encoder.record_count;
+    let record_count = encoder.record_count();
     let bytes = encoder.finish()?;
     Ok((bytes, record_count))
 }
@@ -66,15 +77,43 @@ pub fn encode_metrics_otap(records: &OtapArrowRecords) -> Result<Vec<u8>, Error>
 
 /// Encodes OTAP metrics Arrow records directly into STEF and returns the encoded record count.
 pub fn encode_metrics_otap_with_count(records: &OtapArrowRecords) -> Result<(Vec<u8>, u64), Error> {
-    let mut encoder = MetricsStreamEncoder::default();
+    encode_metrics_otap_with_count_and_compression(records, StefCompression::None)
+}
+
+/// Encodes OTAP metrics Arrow records directly into STEF with native STEF frame compression.
+pub fn encode_metrics_otap_with_count_and_compression(
+    records: &OtapArrowRecords,
+    compression: StefCompression,
+) -> Result<(Vec<u8>, u64), Error> {
+    let mut encoder = MetricsStreamEncoder::new(compression)?;
     encoder.encode_metrics_otap(records)?;
-    let record_count = encoder.record_count;
+    let record_count = encoder.record_count();
     let bytes = encoder.finish()?;
     Ok((bytes, record_count))
 }
 
-struct MetricsStreamEncoder {
+/// A data frame emitted by a [`MetricsStreamEncoder`].
+pub struct EncodedFrame {
+    /// Complete STEF frame bytes ready to send as one STEF/gRPC chunk.
+    pub bytes: Vec<u8>,
+    /// Records encoded in this frame.
+    pub frame_record_count: u64,
+    /// Cumulative records encoded in the stream after this frame.
+    pub stream_record_count: u64,
+}
+
+/// Stateful STEF metrics stream encoder.
+///
+/// A single instance corresponds to one STEF byte stream. It writes the fixed and
+/// variable headers once, then each call to a frame encoder method emits one data
+/// frame while preserving STEF dictionaries, previous-value codecs, and native
+/// compression state across frames.
+pub struct MetricsStreamEncoder {
+    compression: StefCompression,
+    header_written: bool,
+    frame_encoder: FrameEncoder,
     record_count: u64,
+    frame_record_count: u64,
     root_bits: BitWriter,
     metric: MetricEncoder,
     resource: ResourceEncoder,
@@ -83,14 +122,19 @@ struct MetricsStreamEncoder {
     point: PointEncoder,
 }
 
-impl Default for MetricsStreamEncoder {
-    fn default() -> Self {
+impl MetricsStreamEncoder {
+    /// Creates a new STEF metrics stream encoder.
+    pub fn new(compression: StefCompression) -> Result<Self, Error> {
         let schema_url = SharedStringDict::default();
         let attribute_key = SharedStringDict::default();
         let any_value_string = SharedStringDict::default();
 
-        Self {
+        Ok(Self {
+            compression,
+            header_written: false,
+            frame_encoder: FrameEncoder::new(compression)?,
             record_count: 0,
+            frame_record_count: 0,
             root_bits: BitWriter::default(),
             metric: MetricEncoder::new(
                 SharedStringDict::default(),
@@ -113,11 +157,53 @@ impl Default for MetricsStreamEncoder {
             ),
             attributes: AttributesEncoder::new(attribute_key, any_value_string),
             point: PointEncoder::default(),
-        }
+        })
     }
-}
 
-impl MetricsStreamEncoder {
+    /// Returns the cumulative number of metric records written to this stream.
+    #[must_use]
+    pub fn record_count(&self) -> u64 {
+        self.record_count
+    }
+
+    /// Writes the STEF fixed-header chunk and variable-header frame chunk.
+    ///
+    /// The returned chunks should be sent before data frames. The first chunk is
+    /// the fixed header and the second chunk is the variable-header frame, matching
+    /// the Go STEF/gRPC writer's chunking behavior.
+    pub fn stream_header_chunks(&mut self) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
+        if self.header_written {
+            return Ok(None);
+        }
+
+        let mut fixed_header = Vec::with_capacity(8);
+        write_fixed_header(&mut fixed_header, self.compression);
+
+        let mut var_header = Vec::with_capacity(METRICS_WIRE_SCHEMA.len() + 16);
+        write_var_header_frame(&mut self.frame_encoder, &mut var_header)?;
+
+        self.header_written = true;
+        Ok(Some((fixed_header, var_header)))
+    }
+
+    /// Encodes a metrics view into the next STEF data frame.
+    pub fn encode_metrics_view_frame<T>(&mut self, metrics: &T) -> Result<EncodedFrame, Error>
+    where
+        T: MetricsView,
+    {
+        self.encode_metrics_view(metrics)?;
+        self.flush_frame()
+    }
+
+    /// Encodes direct OTAP metrics records into the next STEF data frame.
+    pub fn encode_metrics_otap_frame(
+        &mut self,
+        records: &OtapArrowRecords,
+    ) -> Result<EncodedFrame, Error> {
+        self.encode_metrics_otap(records)?;
+        self.flush_frame()
+    }
+
     fn encode_metrics_view<T>(&mut self, metrics: &T) -> Result<(), Error>
     where
         T: MetricsView,
@@ -247,6 +333,7 @@ impl MetricsStreamEncoder {
                 value: point_value,
             })?;
             self.record_count += 1;
+            self.frame_record_count += 1;
             wrote = true;
             encode_metric = false;
             encode_resource = false;
@@ -459,6 +546,7 @@ impl MetricsStreamEncoder {
             )?;
             self.point.encode_otap_number_point(number_dp, dp_row)?;
             self.record_count += 1;
+            self.frame_record_count += 1;
             wrote = true;
             encode_metric = false;
             encode_resource = false;
@@ -470,20 +558,41 @@ impl MetricsStreamEncoder {
 
     fn finish(mut self) -> Result<Vec<u8>, Error> {
         let mut stream = Vec::with_capacity(16 * 1024);
-        write_fixed_header(&mut stream);
-        write_var_header_frame(&mut stream);
-
-        if self.record_count == 0 {
-            return Ok(stream);
+        if let Some((fixed_header, var_header)) = self.stream_header_chunks()? {
+            stream.extend_from_slice(&fixed_header);
+            stream.extend_from_slice(&var_header);
         }
 
+        let frame = self.flush_frame()?;
+        stream.extend_from_slice(&frame.bytes);
+        Ok(stream)
+    }
+
+    fn flush_frame(&mut self) -> Result<EncodedFrame, Error> {
+        let frame_record_count = self.frame_record_count;
+        if frame_record_count == 0 {
+            return Ok(EncodedFrame {
+                bytes: Vec::new(),
+                frame_record_count: 0,
+                stream_record_count: self.record_count,
+            });
+        }
+
+        let mut frame = Vec::with_capacity(16 * 1024);
         let mut content = Vec::with_capacity(16 * 1024);
-        append_uvarint(self.record_count, &mut content);
+        append_uvarint(frame_record_count, &mut content);
 
         let columns = self.collect_columns();
         write_columns(&columns, &mut content)?;
-        write_frame(&mut stream, FRAME_FLAG_NONE, &content);
-        Ok(stream)
+        self.frame_encoder
+            .write_frame(&mut frame, FRAME_FLAG_NONE, &content)?;
+        self.frame_record_count = 0;
+
+        Ok(EncodedFrame {
+            bytes: frame,
+            frame_record_count,
+            stream_record_count: self.record_count,
+        })
     }
 
     fn collect_columns(&mut self) -> Column {

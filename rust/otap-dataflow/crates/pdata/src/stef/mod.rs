@@ -16,12 +16,28 @@ mod error;
 mod tests;
 mod wire;
 
-pub use decode::{decode_metrics_otap, decode_metrics_otap_with_count};
+pub use decode::{MetricsStreamDecoder, decode_metrics_otap, decode_metrics_otap_with_count};
 pub use encode::{
-    encode_metrics_otap, encode_metrics_otap_with_count, encode_metrics_view,
-    encode_metrics_view_with_count,
+    EncodedFrame, MetricsStreamEncoder, encode_metrics_otap, encode_metrics_otap_with_count,
+    encode_metrics_otap_with_count_and_compression, encode_metrics_view,
+    encode_metrics_view_with_count, encode_metrics_view_with_count_and_compression,
 };
 pub use error::Error;
+use serde::Deserialize;
+
+/// Native STEF frame payload compression.
+///
+/// This is encoded in the STEF fixed header and applies to each frame's content.
+/// It is distinct from gRPC message compression.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum StefCompression {
+    /// Store STEF frame content without native payload compression.
+    #[default]
+    None,
+    /// Compress STEF frame content with zstd, matching the Go STEF implementation.
+    Zstd,
+}
 
 /// Root struct name used by the STEF metrics schema.
 pub const METRICS_ROOT_STRUCT_NAME: &str = "Metrics";

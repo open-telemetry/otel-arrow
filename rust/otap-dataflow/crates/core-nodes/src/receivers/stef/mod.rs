@@ -35,9 +35,7 @@ use otap_df_otap::otap_grpc::server_settings::GrpcServerSettings;
 use otap_df_otap::otlp_metrics::OtlpReceiverMetrics;
 use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
-use otap_df_pdata::stef::{
-    METRICS_ROOT_STRUCT_NAME, METRICS_WIRE_SCHEMA, decode_metrics_otap_with_count,
-};
+use otap_df_pdata::stef::{METRICS_ROOT_STRUCT_NAME, METRICS_WIRE_SCHEMA, MetricsStreamDecoder};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::otel_info;
 use parking_lot::Mutex;
@@ -380,6 +378,7 @@ impl StreamingService<StefClientMessage> for StefStreamService {
                 yield capabilities_message(max_dict_bytes);
 
                 let mut chunk = Vec::with_capacity(64 * 1024);
+                let mut decoder = MetricsStreamDecoder::default();
                 let mut ack_record_id = 0_u64;
                 while let Some(message) = inbound.message().await? {
                     if message.first_message.is_some() {
@@ -391,8 +390,12 @@ impl StreamingService<StefClientMessage> for StefStreamService {
                         continue;
                     }
 
-                    let (otap_records, point_count) = decode_metrics_otap_with_count(&chunk)
-                        .map_err(|e| Status::invalid_argument(format!("STEF decode error: {e}")))?;
+                    let Some((otap_records, point_count)) = decoder.decode_chunk(&chunk)
+                        .map_err(|e| Status::invalid_argument(format!("STEF decode error: {e}")))? else {
+                        chunk.clear();
+                        continue;
+                    };
+                    chunk.clear();
                     let pdata = OtapPdata::new(
                         Context::default(),
                         otap_records.into(),
@@ -403,7 +406,6 @@ impl StreamingService<StefClientMessage> for StefStreamService {
                         .map_err(|e| Status::internal(format!("failed to send to pipeline: {e}")))?;
 
                     ack_record_id = ack_record_id.saturating_add(point_count);
-                    chunk.clear();
                     yield ack_message(ack_record_id);
                 }
 
