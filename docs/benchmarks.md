@@ -71,6 +71,8 @@ the impact of batch size on CPU, memory, and network efficiency.
 
 ##### 6a. Max Throughput (Single Core)
 
+**URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/saturation/>
+
 Measures the absolute maximum throughput a single core can sustain, for both
 OTLP and OTAP protocols. Uses `semantic_conventions` (~300 byte logs) -- the
 same payload as all other benchmarks -- for direct comparability. Loadgen is

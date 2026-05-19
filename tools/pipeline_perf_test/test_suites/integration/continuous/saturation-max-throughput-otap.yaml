@@ -5,7 +5,7 @@
 #
 # NUMA-aware layout: SUT on NUMA node 0, loadgen+backend on NUMA node 1
 # Layout: SUT=1 core, Backend=4 cores, Loadgen=8 cores (13 total)
-# OTAP is ~5x faster than OTLP, so needs more loadgen/backend to saturate.
+# OTAP is significantly faster than OTLP, so needs more loadgen/backend to saturate.
 name: Continuous - Saturation - Max Throughput OTAP
 components:
   load-generator:
@@ -77,7 +77,7 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
-        result_dir: "continuous_saturation_max_throughput"
+        result_dir: "continuous_saturation_max_throughput_otap"
         engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otap-attr-otap.yaml
         loadgen_exporter_type: otap
         backend_receiver_type: otap

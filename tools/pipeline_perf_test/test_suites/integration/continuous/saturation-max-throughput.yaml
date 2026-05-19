@@ -76,7 +76,7 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
-        result_dir: "continuous_saturation_max_throughput"
+        result_dir: "continuous_saturation_max_throughput_otlp"
         engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
