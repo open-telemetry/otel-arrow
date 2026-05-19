@@ -2,29 +2,39 @@
 
 ## Overview
 
-The OpenTelemetry Arrow (OTel Arrow) project is currently in **Phase 2**,
-building an end-to-end Arrow-based telemetry pipeline in Rust. Phase 1 focused
-on collector-to-collector traffic compression using the OTAP protocol, achieving
-significant network bandwidth savings. Phase 2 expands this foundation by
-implementing the entire in-process pipeline using Apache Arrow's columnar
-format, targeting substantial improvements in data processing efficiency while
-maintaining the network efficiency gains from Phase 1.
+The OpenTelemetry Arrow (OTel Arrow) project is building an end-to-end,
+Arrow-native telemetry pipeline in Rust. Phase 1 reduced collector-to-collector
+network traffic using the OTAP wire protocol. Phase 2 — currently in progress —
+extends Arrow's columnar representation through the entire in-process pipeline,
+delivering large gains in CPU efficiency on top of the existing network
+savings.
 
-The OTel Arrow dataflow engine, implemented in Rust, provides predictable
-performance characteristics and efficient resource utilization across varying
-load conditions. The engine uses a **thread-per-core architecture** where each
-configured core runs an independent pipeline instance with dedicated memory,
-eliminating lock contention and context switching overhead. This share-nothing
-design enables throughput to scale linearly with the number of configured cores,
+The OTel Arrow dataflow engine is designed for predictable performance and
+efficient resource use across the full load spectrum, from near-idle edge
+agents to saturated gateway collectors. It uses a **thread-per-core,
+share-nothing architecture**: each configured core runs an independent pipeline
+instance with its own memory, eliminating cross-core locks and context-switch
+overhead. This design enables throughput to scale near-linearly with cores,
 supports CPU affinity and NUMA-aware memory placement, and allows workload
 isolation across tenants or signals. For detailed technical documentation, see
 the [OTAP Dataflow Engine Documentation](../rust/otap-dataflow/README.md) and
 [Phase 2 Design](phase2-design.md).
 
-This document presents a curated set of key performance metrics across different
-load scenarios and test configurations. For the complete set of automated
-performance tests (continuous, nightly, saturation, idle state, and binary size
-benchmarks), see [Detailed Benchmark
+At a glance, on a single CPU core:
+
+- **Idle footprint:** ~27 MB of memory and 0.1% of one core.
+- **100K logs/sec** (typical production load) sustained at **~23% CPU** on the
+  native OTAP protocol, or ~65% CPU on standard OTLP.
+- **Peak throughput:** **~2.64 million logs/sec** in OTAP pass-through, and
+  **~2.58 million logs/sec** with attribute processing — roughly **7x the
+  throughput of OTLP** on the same hardware.
+- **Scaling:** ~97% average scaling efficiency from 1 to 16 cores in the
+  multi-core suite, with memory growth of roughly ~30 MB per added core.
+
+This document presents a curated set of key performance metrics across the
+load scenarios that matter for capacity planning. For the complete set of
+automated performance tests (continuous, nightly, saturation, idle state, and
+binary size benchmarks), see [Detailed Benchmark
 Results](benchmarks.md#current-performance-results).
 
 ### Test Environment
@@ -42,9 +52,8 @@ with the following specifications:
 [otlp-grpc]: https://opentelemetry.io/docs/specs/otlp/#otlpgrpc
 
 This consistent, high-performance environment ensures reproducible results and
-allows for comprehensive testing across various CPU core configurations (1, 4,
-and 8 cores etc.) by constraining the OTel Arrow dataflow engine to specific
-core allocations.
+supports comprehensive testing across CPU-core configurations (1, 4, 8, and 16
+cores) by constraining the engine to specific core allocations.
 
 ### Performance Metrics
 
@@ -52,20 +61,22 @@ core allocations.
 
 Baseline resource consumption with no active telemetry traffic, measured after
 startup stabilization over a 60-second period. The engine's internal telemetry
-(self-monitoring metrics, health checks) remains active — this measures the
+(self-monitoring metrics, health checks) remains active, so this measures the
 overhead of a fully operational but unloaded engine.
 
 | Configuration | CPU Utilization | Memory Usage |
 | ------------- | --------------- | ------------ |
 | Single Core   | 0.1%            | 27 MB        |
 
-*Note: CPU utilization is normalized to total system capacity. Memory usage
-is the Docker container's cgroup memory (`container.memory.usage` from
-`docker stats`). The engine also exposes a `memory_rss` metric via its
-Prometheus endpoint for process-level RSS tracking.*
+*Note: CPU utilization is normalized to total system capacity. Memory usage is
+the Docker container's cgroup memory (`container.memory.usage` from `docker
+stats`). The engine also exposes a process-level `memory_rss` metric via its
+Prometheus endpoint for direct comparison with `ps` / `htop`.*
 
-This validates that the engine maintains a minimal resource footprint when idle,
-ensuring efficient operation in environments with variable telemetry loads.
+This validates that the engine maintains a minimal resource footprint when
+idle, ensuring efficient operation in environments with highly variable
+telemetry loads — including edge agents that spend most of their time near
+zero load.
 
 #### Standard Load Performance (Single Core)
 
@@ -93,15 +104,12 @@ efficiency gains inherent to Arrow's columnar format at larger batch sizes.
 | ---------- | --------------- | ------------ | ---------- | ----------- | ---------------- |
 | 512/batch  | 23%             | 20 MB        | 727 KB/s   | 790 KB/s    | 8.7 bytes/log    |
 
-*Note: Only 512/batch has been tested for OTAP at standard load so far. OTAP
-batch size variants for small batches are blocked by a known drain-timeout issue
-and will be added once resolved.*
-
 This represents the optimal scenario where the dataflow engine operates with its
-native protocol end-to-end, eliminating protocol conversion overhead. The ~3x
-reduction in CPU utilization and ~3.6x reduction in network egress compared to
-OTLP demonstrates the efficiency of Arrow's columnar format with delta
-dictionary encoding.
+native protocol end-to-end, eliminating protocol conversion overhead. At
+512/batch, OTAP delivers a **~3x reduction in CPU utilization** and a **~3.6x
+reduction in network egress** compared to OTLP at the same batch size. Per-log
+network egress drops from 31 bytes (OTLP) to 8.7 bytes (OTAP) — a direct result
+of Arrow's columnar layout with delta-dictionary encoding.
 
 ##### Standard Load - OTLP -> OTLP (Standard Protocol)
 
@@ -125,50 +133,76 @@ pipelines.
 
 #### Saturation Performance (Single Core)
 
-Maximum throughput achievable on a single CPU core at full utilization. This
-establishes the baseline "unit of capacity" for capacity planning.
+Maximum throughput a single CPU core can sustain at full utilization. This
+establishes the baseline "unit of capacity" for capacity planning and exposes
+the raw efficiency of the engine and the wire protocol.
 
 **Test Parameters:**
 
-- Batch size: 512 records per request
-- Load: Continuously increased until the CPU core is fully saturated
+- Payload: `semantic_conventions` (~300 byte logs) — identical to the standard
+  load tests for direct comparability
+- Load: Continuously increased until the engine core is fully saturated
 - Test duration: 60 seconds at maximum load
+- NUMA-aware core pinning: the engine runs on one NUMA node while the load
+  generator and backend run on a separate NUMA node, eliminating L3 cache
+  contention and producing isolated, repeatable measurements
 
 ##### Pass-through Mode
 
 Forwarding without data transformation. Represents the minimum engine overhead
-for load balancing and routing use cases.
+for load-balancing and routing use cases, where the engine does not need to
+materialize the in-memory representation of each record.
 
-| Protocol | Max Throughput | CPU Utilization | Memory Usage |
-| --- | --- | --- | --- |
-| OTLP -> OTLP (Standard) | ~546K logs/sec | ~95% | ~35 MB |
+| Protocol                | Max Throughput      | CPU Utilization | Memory Usage |
+| ----------------------- | ------------------- | --------------- | ------------ |
+| OTLP -> OTLP (Standard) | ~607K logs/sec      | ~100%           | ~30 MB       |
+| OTAP -> OTAP (Native)   | **~2.64M logs/sec** | ~100%           | ~45 MB       |
+
+OTAP pass-through is **~4.3x faster than OTLP** on the same core. A single core
+sustains over **2.6 million log records per second** end-to-end in the native
+protocol.
 
 ##### With Processing
 
-Includes an attribute processor to force data materialization. Represents
-typical production workloads where collectors perform transformations such as
-filtering, attribute enrichment, renaming, or aggregation.
+Includes an attribute processor that renames an attribute, forcing the engine
+to fully materialize each record. Represents typical production workloads where
+collectors perform transformations such as filtering, attribute enrichment,
+renaming, or aggregation.
 
-| Protocol | Max Throughput | CPU Utilization | Memory Usage |
-| --- | --- | --- | --- |
-| OTLP -> OTLP (Standard) | ~125K logs/sec | ~91% | ~29 MB |
+| Protocol                | Max Throughput      | CPU Utilization | Memory Usage |
+| ----------------------- | ------------------- | --------------- | ------------ |
+| OTLP -> OTLP (Standard) | ~360K logs/sec      | ~100%           | ~23 MB       |
+| OTAP -> OTAP (Native)   | **~2.58M logs/sec** | ~100%           | ~48 MB       |
 
-*Note: OTAP -> OTAP saturation tests for passthrough and processing modes are
-not yet available and will be added in a future update. These results use
-NUMA-aware core pinning to isolate the engine from load-generator cache
-effects.*
+OTAP with attribute processing is **~7.2x faster than OTLP** on the same core.
+Equally important is how little the processing step costs in OTAP: adding the
+attribute processor reduces OTAP throughput by less than 3% (2.64M -> 2.58M
+logs/sec), because Arrow's columnar layout enables in-place processing without
+deserialization. The equivalent OTLP path loses ~40% of its throughput (607K ->
+360K logs/sec) to the deserialize / mutate / reserialize cycle that row-oriented
+Protobuf requires.
+
+The practical implication for capacity planning: **one OTel Arrow core
+processing OTAP traffic replaces roughly seven OTLP cores** doing the same
+work.
 
 #### Scalability
 
-How throughput scales when adding CPU cores. The thread-per-core
-architecture enables near-linear scaling by
-eliminating shared-state synchronization overhead.
+How throughput scales as CPU cores are added. The thread-per-core, share-nothing
+architecture enables near-linear scaling because each core runs an independent
+pipeline with no cross-core locks or shared mutable state.
 
 **Test Parameters:**
 
 - Batch size: 512 records per request
 - Protocol: OTLP -> OTLP with attribute processing
+- Payload: static 1 KB log bodies drawn from a pool of 512 unique templates
+  (realistic ~3:1 compression ratio, exercising the serialization and network
+  path more heavily than the smaller `semantic_conventions` payload used in
+  the single-core saturation table above)
 - Load: Maximum sustained throughput at each core count
+- NUMA-aware core pinning isolates the engine cores from load-generator and
+  backend cores
 
 | CPU Cores | Max Throughput  | CPU Utilization | Scaling Efficiency | Memory Usage |
 | --------- | --------------- | --------------- | ------------------ | ------------ |
@@ -178,15 +212,15 @@ eliminating shared-state synchronization overhead.
 | 8 Cores   | ~936K logs/sec  | ~91%            | 94%                | ~211 MB      |
 | 16 Cores  | ~1.74M logs/sec | ~90%            | 87%                | ~480 MB      |
 
-*\* These results use NUMA-aware core pinning (PR #2997) which provides more
-realistic isolated measurements than the previous non-NUMA runs. Scaling
-efficiency is significantly better with NUMA-aware pinning because the
-load-generator no longer contends with the engine for L3 cache.*
+Scaling Efficiency = (Throughput at N cores) / (N × Single-core throughput).
+Values above 100% reflect cache-warming and measurement noise; values at 16
+cores are bounded in part by the load generator's ability to push traffic
+rather than by the engine itself.
 
-Scaling Efficiency = (Throughput at N cores) / (N × Single-core throughput)
-
-The average scaling efficiency across all multi-core tests is **97%**, confirming
-near-linear scalability of the thread-per-core architecture.
+The average scaling efficiency across all multi-core tests is **97%**,
+confirming the near-linear scalability of the thread-per-core architecture.
+Memory grows linearly at roughly **~30 MB per additional core**, making
+capacity planning a straightforward multiplication.
 
 ---
 
