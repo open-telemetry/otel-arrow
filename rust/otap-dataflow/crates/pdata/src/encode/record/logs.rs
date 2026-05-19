@@ -444,7 +444,7 @@ impl LogsBodyBuilder {
     }
 
     /// Finish this builder try to build the resulting `StructArray` for the log body
-    fn finish(&mut self) -> Option<Result<StructArray, ArrowError>> {
+    pub fn finish(&mut self) -> Option<Result<StructArray, ArrowError>> {
         let len = self.nulls.len();
         let nulls = self.nulls.finish();
 
