@@ -7,7 +7,7 @@
 use std::io::{self, Write};
 
 use flate2::Compression;
-use flate2::write::{DeflateEncoder, GzEncoder};
+use flate2::write::{GzEncoder, ZlibEncoder};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use tonic::codec::CompressionEncoding;
@@ -68,7 +68,10 @@ impl CompressionMethod {
                 Ok(())
             }
             CompressionMethod::Deflate => {
-                let mut encoder = DeflateEncoder::new(out, Compression::default());
+                // HTTP `Content-Encoding: deflate` per RFC 9110 is zlib-wrapped
+                // DEFLATE (RFC 1950 wrapping RFC 1951), not raw DEFLATE. The
+                // OTLP/HTTP receiver uses `ZlibDecoder` to match.
+                let mut encoder = ZlibEncoder::new(out, Compression::default());
                 encoder.write_all(input)?;
                 _ = encoder.finish()?;
                 Ok(())
@@ -230,12 +233,12 @@ mod tests {
             .unwrap();
         assert_eq!(decoded.as_slice(), payload);
 
-        // deflate
+        // deflate (zlib-wrapped, per HTTP Content-Encoding: deflate)
         CompressionMethod::Deflate
             .encode(payload, &mut buf)
             .unwrap();
         decoded.clear();
-        _ = flate2::read::DeflateDecoder::new(buf.as_slice())
+        _ = flate2::read::ZlibDecoder::new(buf.as_slice())
             .read_to_end(&mut decoded)
             .unwrap();
         assert_eq!(decoded.as_slice(), payload);
@@ -244,6 +247,38 @@ mod tests {
         CompressionMethod::Zstd.encode(payload, &mut buf).unwrap();
         decoded.clear();
         zstd::stream::copy_decode(buf.as_slice(), &mut decoded).unwrap();
+        assert_eq!(decoded.as_slice(), payload);
+    }
+
+    #[test]
+    fn deflate_encode_produces_zlib_wrapped_stream() {
+        // HTTP `Content-Encoding: deflate` per RFC 9110 is zlib-wrapped DEFLATE
+        // (RFC 1950), not raw DEFLATE (RFC 1951). The OTLP/HTTP receiver
+        // decodes deflate request bodies with `flate2::read::ZlibDecoder`, so
+        // the encoder must produce a matching zlib stream or compressed
+        // requests will fail to decode on the receiving end.
+        use std::io::Read;
+
+        let payload = b"deflate must be zlib-wrapped to match the receiver";
+        let mut buf = Vec::new();
+        CompressionMethod::Deflate
+            .encode(payload, &mut buf)
+            .unwrap();
+
+        // zlib streams begin with a 2-byte header whose first byte's low
+        // nibble is 8 (DEFLATE compression method). Reject raw-DEFLATE output.
+        assert!(buf.len() >= 2, "encoded output too short");
+        assert_eq!(
+            buf[0] & 0x0f,
+            0x08,
+            "expected zlib header (CM=8), got byte {:#04x}",
+            buf[0]
+        );
+
+        let mut decoded = Vec::new();
+        _ = flate2::read::ZlibDecoder::new(buf.as_slice())
+            .read_to_end(&mut decoded)
+            .expect("receiver-side ZlibDecoder must decode encoder output");
         assert_eq!(decoded.as_slice(), payload);
     }
 

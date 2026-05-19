@@ -2916,8 +2916,9 @@ mod test {
                 out
             }
             Some("deflate") => {
+                // Match the OTLP/HTTP receiver: zlib-wrapped DEFLATE, not raw.
                 let mut out = Vec::new();
-                _ = flate2::read::DeflateDecoder::new(body)
+                _ = flate2::read::ZlibDecoder::new(body)
                     .read_to_end(&mut out)
                     .unwrap();
                 out
