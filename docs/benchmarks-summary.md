@@ -46,8 +46,7 @@ quantify what each of those choices costs and saves.
 
 ### At a glance
 
-All numbers below are for a **single CPU core** — not a node, not a server,
-one core:
+The headline single-core numbers (multi-core scaling appears further below):
 
 - **Idle footprint:** ~14 MB of memory and 0.06% of one core.
 - **100K logs/sec** (typical production load) sustained on one core at
@@ -57,17 +56,16 @@ one core:
 - **Peak throughput on one core, with attribute processing:**
   **~2.58 million logs/sec on OTAP** vs ~360K logs/sec on OTLP — **~7.2x**.
   Adding the processor costs OTAP less than 3% of its throughput, but costs
-  OTLP roughly 40%, because Arrow's columnar layout enables in-place
+  OTLP roughly 42%, because Arrow's columnar layout enables in-place
   processing without deserialization.
-- **Scaling:** **~85–94% scaling efficiency** at 2, 4, and 8 cores in the
-  multi-core suite (1-core baseline runs at fully saturated 100% CPU), with
-  memory growth of roughly ~30 MB per added core. Capacity planning reduces
-  to multiplication.
+- **Multi-core scaling:** **~85–94% scaling efficiency** at 2, 4, and 8 cores
+  (1-core baseline runs at fully saturated 100% CPU), with memory growth of
+  roughly ~30 MB per added core. Capacity planning reduces to multiplication.
 
-This document presents a curated set of key performance metrics across the
-load scenarios that matter for capacity planning. For the complete set of
-automated performance tests (continuous, nightly, saturation, idle state, and
-binary size benchmarks), see [Detailed Benchmark
+The sections that follow back each of these numbers with full test
+parameters and conditions. For the complete set of automated performance
+tests (continuous, nightly, saturation, idle state, and binary size
+benchmarks), see [Detailed Benchmark
 Results](benchmarks.md#current-performance-results).
 
 ### Test Environment
@@ -85,7 +83,7 @@ with the following specifications:
 [otlp-grpc]: https://opentelemetry.io/docs/specs/otlp/#otlpgrpc
 
 This consistent, high-performance environment ensures reproducible results and
-supports comprehensive testing across CPU-core configurations (1, 4, 8, and 16
+supports comprehensive testing across CPU-core configurations (1, 2, 4, and 8
 cores) by constraining the engine to specific core allocations.
 
 ### Performance Metrics
@@ -127,10 +125,10 @@ edge and gateway deployments.
 - Test duration: 60 seconds
 - *OTLP is [gRPC][otlp-grpc] with Protobuf encoding, no TLS.*
 
-| Protocol                | CPU Utilization | Memory Usage | Network In | Network Out | Egress Bytes/Log  |
-| ----------------------- | --------------- | ------------ | ---------- | ----------- | ----------------- |
-| OTAP -> OTAP (Native)   | **23%**         | 20 MB        | 727 KB/s   | 790 KB/s    | **8.7 bytes/log** |
-| OTLP -> OTLP (Standard) | 65%             | 17 MB        | 2.7 MB/s   | 2.9 MB/s    | 31 bytes/log      |
+| Protocol                | CPU Utilization | Memory Usage | Egress Bytes/Log  |
+| ----------------------- | --------------- | ------------ | ----------------- |
+| OTAP -> OTAP (Native)   | **23%**         | 20 MB        | **8.7 bytes/log** |
+| OTLP -> OTLP (Standard) | 65%             | 17 MB        | 31 bytes/log      |
 
 At 100K logs/sec, end-to-end OTAP delivers a **~2.8x reduction in CPU
 utilization** and a **~3.6x reduction in network egress** compared to OTLP.
@@ -150,8 +148,9 @@ the raw efficiency of the engine and the wire protocol.
 
 **Test Parameters:**
 
-- Payload: `semantic_conventions` (~300 byte logs) — identical to the standard
-  load tests for direct comparability
+- Payload: realistic ~300-byte log records (the OpenTelemetry semantic
+  conventions data shape), identical to the standard-load tests above for
+  direct comparability
 - Load: Continuously increased until the engine core is fully saturated
 - Test duration: 60 seconds at maximum load
 - NUMA-aware core pinning: the engine runs on one NUMA node while the load
@@ -197,7 +196,7 @@ The practical implication for capacity planning: **one OTel Arrow core
 processing OTAP traffic replaces roughly seven OTLP cores** doing the same
 work.
 
-#### Scalability
+#### Multi-Core Scalability
 
 How throughput scales as CPU cores are added. The thread-per-core, share-nothing
 architecture enables near-linear scaling because each core runs an independent
@@ -209,8 +208,8 @@ pipeline with no cross-core locks or shared mutable state.
 - Protocol: OTLP -> OTLP with attribute processing
 - Payload: static 1 KB log bodies drawn from a pool of 512 unique templates
   (realistic ~3:1 compression ratio, exercising the serialization and network
-  path more heavily than the smaller `semantic_conventions` payload used in
-  the single-core saturation table above)
+  path more heavily than the smaller ~300-byte payload used in the
+  single-core saturation table above)
 - Load: Maximum sustained throughput at each core count
 - NUMA-aware core pinning isolates the engine cores from load-generator and
   backend cores
