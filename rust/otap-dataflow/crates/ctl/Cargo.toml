@@ -20,7 +20,7 @@ workspace = true
 rustls-symcrypt = { workspace = true, optional = true }
 
 [features]
-default = ["crypto-ring"]
+default = ["crypto-aws-lc"]
 crypto-ring = ["otap-df-admin-api/crypto-ring", "dep:rustls", "rustls/ring"]
 crypto-aws-lc = ["otap-df-admin-api/crypto-aws-lc", "dep:rustls", "rustls/aws_lc_rs"]
 crypto-openssl = ["otap-df-admin-api/crypto-openssl", "dep:rustls", "dep:rustls-openssl"]

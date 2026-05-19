@@ -81,7 +81,7 @@ fluke-hpack.workspace = true
 flume.workspace = true
 otap-df-channel = { workspace = true }
 otap-df-engine = { workspace = true, features = ["test-utils"] }
-otap-df-otap = { workspace = true, features = ["test-utils", "crypto-ring"] }
+otap-df-otap = { workspace = true, features = ["test-utils", "crypto-aws-lc"] }
 otap-df-pdata = { workspace = true, features = ["testing"] }
 otap-df-telemetry = { workspace = true }
 flate2.workspace = true

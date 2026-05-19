@@ -16,7 +16,7 @@ workspace = true
 rustls-symcrypt = { workspace = true, optional = true }
 
 [features]
-default = ["http-client", "crypto-ring"]
+default = ["http-client", "crypto-aws-lc"]
 http-client = ["dep:async-trait", "dep:reqwest"]
 crypto-ring = ["dep:rustls", "rustls/ring"]
 crypto-aws-lc = ["dep:rustls", "rustls/aws_lc_rs"]

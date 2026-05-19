@@ -82,7 +82,7 @@ weaver_common = { workspace = true, optional = true }
 rustls-symcrypt = { workspace = true, optional = true }
 
 [features]
-test-utils = ["rustls/ring", "otap-df-pdata/testing"]
+test-utils = ["rustls/aws_lc_rs", "otap-df-pdata/testing"]
 # Integration tests that depend on the traffic_generator receiver and the
 # `weaver_common` crate (used to load semconv schemas). Gating these behind
 # an opt-in feature lets builds that don't need them avoid pulling weaver,
@@ -101,7 +101,7 @@ pretty_assertions.workspace = true
 tempfile.workspace = true
 tokio-util.workspace = true
 time.workspace = true
-rustls = { workspace = true, features = ["ring"] }
+rustls = { workspace = true, features = ["aws_lc_rs"] }
 tokio-rustls.workspace = true
 rustls-pki-types.workspace = true
 tokio-stream.workspace = true
