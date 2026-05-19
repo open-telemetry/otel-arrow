@@ -4,3 +4,6 @@
 /// Linux user_events receiver.
 #[cfg(all(feature = "user_events-receiver", target_os = "linux"))]
 pub mod user_events_receiver;
+
+/// STEF receiver.
+pub mod stef;

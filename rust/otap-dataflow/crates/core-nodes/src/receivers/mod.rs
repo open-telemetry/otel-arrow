@@ -20,8 +20,5 @@ pub mod otap_receiver;
 /// OTLP receiver.
 pub mod otlp_receiver;
 
-/// STEF receiver.
-pub mod stef;
-
 /// Host metrics receiver.
 pub mod host_metrics_receiver;

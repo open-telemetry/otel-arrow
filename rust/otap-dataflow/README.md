@@ -267,16 +267,18 @@ establish the performance of the OTAP Dataflow system.
 
 [See crate README.](./crates/contrib-nodes/README.md)
 
-The `otap-df-contrib-nodes` crate contains optional, feature-gated
-exporters and processors that are registered into the OTAP pipeline
-factory maps when enabled.
+The `otap-df-contrib-nodes` crate contains contrib receivers, exporters, and
+processors that are registered into the OTAP pipeline factory maps when the
+crate is linked. Some contrib nodes are feature-gated.
 
 Contrib feature model:
 
+- Aggregate receiver feature:
+  - `contrib-receivers` enables all feature-gated contrib receivers
 - Aggregate exporter feature:
-  - `contrib-exporters` enables all contrib exporters
+  - `contrib-exporters` enables all feature-gated contrib exporters
 - Aggregate processor feature:
-  - `contrib-processors` enables all contrib processors
+  - `contrib-processors` enables all feature-gated contrib processors
 - Individual feature flags can still be enabled independently for
   smaller builds.
 

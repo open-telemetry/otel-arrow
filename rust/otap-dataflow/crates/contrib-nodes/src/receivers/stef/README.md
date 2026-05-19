@@ -4,6 +4,9 @@ The STEF receiver is registered as `urn:otel:receiver:stef`. It accepts
 OpenTelemetry metrics over the Collector-compatible STEF gRPC destination
 stream and decodes them into OTAP Arrow records for downstream nodes.
 
+This contrib receiver is experimental and is registered whenever the
+`otap-df-contrib-nodes` crate is linked into the engine.
+
 ## Reference Implementations
 
 Compatibility is validated against the OpenTelemetry Collector Contrib

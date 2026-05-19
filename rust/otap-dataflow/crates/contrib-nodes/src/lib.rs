@@ -3,6 +3,8 @@
 
 //! Implementation of the Contrib nodes (receiver, exporter, processor).
 
+mod stef_grpc;
+
 /// Exporter implementations for contrib nodes.
 pub mod exporters;
 

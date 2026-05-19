@@ -4,6 +4,9 @@ The STEF exporter is registered as `urn:otel:exporter:stef`. It sends
 OpenTelemetry metrics to a Collector-compatible STEF destination service
 over gRPC.
 
+This contrib exporter is experimental and is registered whenever the
+`otap-df-contrib-nodes` crate is linked into the engine.
+
 ## Reference Implementations
 
 Compatibility is validated against the OpenTelemetry Collector Contrib
