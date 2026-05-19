@@ -242,8 +242,18 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         let mut proto_buffer = ProtoBuffer::default();
 
         let compression = self.config.http.compression();
+        // Buffer to hold compressed bytes. We re-use this scratch space to place
+        // the compressed bytes and then allocate an exact sized Bytes to copy
+        // them into for exporting.
+        //
+        // The rationale is that this buffer will eventually settle on a size
+        // that fits our requests and we won't have to constantly realloc while
+        // compressing. So in theory we always do one alloc + copy.
+        //
+        // We could alternatively create a new buffer every time and but then
+        // we'll do some number of reallocs + copy to find the right final
+        // buffer size.
         let mut compressed_buffer: Vec<u8> = Vec::new();
-
         loop {
             // Opportunistically drain completions before we park on a recv.
             while let Some(completed) = inflight_exports.next_completion().now_or_never().flatten()
@@ -313,18 +323,29 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     let signal_type = pdata.signal_type();
                     let (context, payload) = pdata.into_parts();
 
+                    // For the OtapArrowRecords path we keep the uncompressed bytes in
+                    // `proto_buffer` rather than materializing them into a `Bytes` up front: when
+                    // compression is enabled we feed the slice directly into the encoder, avoiding
+                    // an alloc+memcpy of the full uncompressed payload.
+                    enum Uncompressed {
+                        // Already a refcounted Bytes (OtlpBytes path).
+                        Bytes(Bytes),
+                        // Lives in `proto_buffer` (OtapArrowRecords path).
+                        InProtoBuffer,
+                    }
+
                     // proto encode the payload into the request body, while keeping a copy of the
-                    // original payload if the context allows it to be returned
-                    let (body, saved_payload) = match payload {
+                    // original payload if the context allows it to be returned.
+                    let (uncompressed, saved_payload) = match payload {
                         OtapPayload::OtlpBytes(mut otlp_bytes) => {
                             if context.may_return_payload() {
                                 // use cheap clone of bytes as the request body
                                 let body = otlp_bytes.clone_bytes();
-                                (body, otlp_bytes.into())
+                                (Uncompressed::Bytes(body), otlp_bytes.into())
                             } else {
                                 // take the bytes and replace with empty bytes in original payload
                                 let body = otlp_bytes.replace_bytes(Bytes::new());
-                                (body, otlp_bytes.into())
+                                (Uncompressed::Bytes(body), otlp_bytes.into())
                             }
                         }
                         OtapPayload::OtapArrowRecords(mut otap_batch) => {
@@ -346,7 +367,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 _ = otap_batch.take_payload();
                             }
 
-                            let body = if let Err(e) = encode_result {
+                            if let Err(e) = encode_result {
                                 // encoding error, we must have received an invalid structured batch
                                 let mut nack = NackMsg::new(
                                     e.to_string(),
@@ -356,26 +377,38 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 _ = effect_handler.notify_nack(nack).await;
                                 self.pdata_metrics.add_failed(signal_type, 1);
                                 continue;
-                            } else {
-                                Bytes::copy_from_slice(proto_buffer.as_ref())
-                            };
+                            }
 
-                            (body, otap_batch.into())
+                            (Uncompressed::InProtoBuffer, otap_batch.into())
                         }
                     };
 
-                    let body = if let Some(method) = compression {
-                        if let Err(e) = method.encode(body.as_ref(), &mut compressed_buffer) {
-                            let mut nack =
-                                NackMsg::new(e.to_string(), OtapPdata::new(context, saved_payload));
-                            nack.permanent = true;
-                            _ = effect_handler.notify_nack(nack).await;
-                            self.pdata_metrics.add_failed(signal_type, 1);
-                            continue;
+                    let body = match compression {
+                        Some(method) => {
+                            let uncompressed_slice: &[u8] = match &uncompressed {
+                                Uncompressed::Bytes(b) => b.as_ref(),
+                                Uncompressed::InProtoBuffer => proto_buffer.as_ref(),
+                            };
+                            if let Err(e) =
+                                method.encode(uncompressed_slice, &mut compressed_buffer)
+                            {
+                                let mut nack = NackMsg::new(
+                                    e.to_string(),
+                                    OtapPdata::new(context, saved_payload),
+                                );
+                                nack.permanent = true;
+                                _ = effect_handler.notify_nack(nack).await;
+                                self.pdata_metrics.add_failed(signal_type, 1);
+                                continue;
+                            }
+                            Bytes::copy_from_slice(&compressed_buffer)
                         }
-                        Bytes::copy_from_slice(&compressed_buffer)
-                    } else {
-                        body
+                        None => match uncompressed {
+                            Uncompressed::Bytes(b) => b,
+                            Uncompressed::InProtoBuffer => {
+                                Bytes::copy_from_slice(proto_buffer.as_ref())
+                            }
+                        },
                     };
 
                     let endpoint: Rc<String> = Rc::clone(match signal_type {
