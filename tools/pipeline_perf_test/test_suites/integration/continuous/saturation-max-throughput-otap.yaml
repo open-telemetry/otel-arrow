@@ -78,8 +78,8 @@ tests:
       variables:
         result_dir: "continuous_saturation_max_throughput"
         engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otap-attr-otap.yaml
-        loadgen_exporter_type: otelarrow
-        backend_receiver_type: otelarrow
+        loadgen_exporter_type: otap
+        backend_receiver_type: otap
         observation_interval: 60
         signals_per_second: null
         max_batch_size: 1000
