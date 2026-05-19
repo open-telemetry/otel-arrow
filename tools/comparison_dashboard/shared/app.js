@@ -349,9 +349,9 @@ function createBarChart(canvas, suiteData, comparison, tests, selectedMetric, on
   return chart;
 }
 
-// Resolve x/y axis titles for a chart. Both come exclusively from
-// chart.axes.x.title; the y-axis is left unlabeled because the metric
-// (with unit) is already shown in the chart's title dropdown.
+// Only the x-axis title is configurable; the y-axis is left unlabeled
+// because the metric (with unit) is already shown in the chart's title
+// dropdown.
 function resolveXAxisTitle(comparison) {
   const axes = chartAxesConfig(comparison);
   return (axes.x && axes.x.title) ? axes.x.title : null;
@@ -367,17 +367,25 @@ function sizeChartContainer(chart, canvas, baseHeight = 220) {
   chart.resize();
 }
 
-// Wire mousemove on the chart canvas so hovering over an axis title or an
-// individual tick label reveals a floating tooltip. Axis title hover shows
-// the configured chart.axes.{x,y}.description. Tick label hover shows a
-// per-tick string (currently derived from each test's loadgen_rate). No-op
-// when there is nothing to show.
+// Wire mousemove on the chart canvas so hovering over the x-axis title or
+// an individual tick label reveals a floating tooltip. Axis title hover
+// shows chart.axes.x.description. Tick label hover shows a per-tick string
+// (currently derived from each test's loadgen_rate). No-op when there is
+// nothing to show.
+//
+// Charts are destroyed and recreated on the same <canvas> when filters or
+// metrics change — detach any previously-attached handlers before adding
+// new ones so listeners don't accumulate on the reused canvas element.
 function attachAxisHoverTooltips(chart, canvas, comparison, tests) {
+  detachAxisHoverTooltips(canvas);
   const axes = chartAxesConfig(comparison);
   const xDesc = axes.x && typeof axes.x.description === "string" && axes.x.description.trim() ? axes.x.description : null;
   const tickTexts = (tests || []).map(tickHoverText);
   const hasTickHovers = tickTexts.some(Boolean);
   if (!xDesc && !hasTickHovers) return;
+  // Text width for the x-axis title is static for the chart's lifetime;
+  // measure it once instead of recomputing in xTitleBox on every mousemove.
+  const xTitleWidth = xDesc ? measureXAxisTitleWidth(chart, canvas) : 0;
   const PAD = 4;
   const onMove = (ev) => {
     const sx = chart.scales && chart.scales.x;
@@ -386,10 +394,8 @@ function attachAxisHoverTooltips(chart, canvas, comparison, tests) {
     const px = ev.clientX - rect.left;
     const py = ev.clientY - rect.top;
 
-    // 1) X-axis title: a box sized to the rendered text, centered along
-    //    the x scale's bottom strip.
     if (xDesc) {
-      const box = xTitleBox(sx, canvas);
+      const box = xTitleBoxFromWidth(sx, xTitleWidth);
       if (box && px >= box.left - PAD && px <= box.right + PAD
               && py >= box.top - PAD && py <= box.bottom + PAD) {
         showAxisHoverTooltip(ev.clientX, ev.clientY, xDesc);
@@ -397,12 +403,9 @@ function attachAxisHoverTooltips(chart, canvas, comparison, tests) {
       }
     }
 
-    // 2) Per-tick x label hover.
     if (hasTickHovers) {
       const xLabelH = tickFontSize(sx) + 4;
-      const xLabelTop = sx.top;
-      const xLabelBot = sx.top + xLabelH;
-      if (py >= xLabelTop - PAD && py <= xLabelBot + PAD
+      if (py >= sx.top - PAD && py <= sx.top + xLabelH + PAD
           && px >= sx.left - PAD && px <= sx.right + PAD) {
         const i = nearestTickIndex(sx, px);
         const text = i >= 0 ? tickTexts[i] : null;
@@ -414,6 +417,15 @@ function attachAxisHoverTooltips(chart, canvas, comparison, tests) {
   };
   canvas.addEventListener("mousemove", onMove);
   canvas.addEventListener("mouseleave", hideAxisHoverTooltip);
+  canvas._axisHoverHandlers = { onMove, onLeave: hideAxisHoverTooltip };
+}
+
+function detachAxisHoverTooltips(canvas) {
+  const h = canvas._axisHoverHandlers;
+  if (!h) return;
+  canvas.removeEventListener("mousemove", h.onMove);
+  canvas.removeEventListener("mouseleave", h.onLeave);
+  canvas._axisHoverHandlers = null;
 }
 
 function tickHoverText(test) {
@@ -429,21 +441,29 @@ function tickFontSize(scale) {
   return (scale.options && scale.options.ticks && scale.options.ticks.font && scale.options.ticks.font.size) || 12;
 }
 
-// Bounding box for the x-axis title text, in canvas-relative pixels. Title
-// is rendered centered horizontally at the bottom of the scale.
-function xTitleBox(scale, canvas) {
-  const t = scale.options && scale.options.title;
-  if (!t || !t.display || !t.text) return null;
+function measureXAxisTitleWidth(chart, canvas) {
+  const sx = chart.scales && chart.scales.x;
+  const t = sx && sx.options && sx.options.title;
+  if (!t || !t.display || !t.text) return 0;
   const fs = (t.font && t.font.size) || 12;
   const weight = (t.font && t.font.weight) || "normal";
-  const textW = measureCanvasText(canvas, t.text, fs, weight);
+  return measureCanvasText(canvas, t.text, fs, weight);
+}
+
+// Bounding box for the x-axis title text, in canvas-relative pixels. Title
+// is rendered centered horizontally at the bottom of the scale. Width is
+// precomputed (see measureXAxisTitleWidth) so this is cheap to call per
+// mousemove.
+function xTitleBoxFromWidth(scale, textW) {
+  const t = scale.options && scale.options.title;
+  if (!t || !t.display || !t.text || !textW) return null;
+  const fs = (t.font && t.font.size) || 12;
   const centerX = (scale.left + scale.right) / 2;
-  const bottom = scale.bottom;
   return {
     left: centerX - textW / 2,
     right: centerX + textW / 2,
-    top: bottom - fs - 2,
-    bottom: bottom,
+    top: scale.bottom - fs - 2,
+    bottom: scale.bottom,
   };
 }
 
@@ -490,7 +510,7 @@ function showAxisHoverTooltip(clientX, clientY, text) {
 }
 
 function hideAxisHoverTooltip() {
-  if (axisHoverTooltipEl) axisHoverTooltipEl.hidden = true;
+  if (axisHoverTooltipEl && !axisHoverTooltipEl.hidden) axisHoverTooltipEl.hidden = true;
 }
 
 function updateBarChartData(chart, suiteData, comparison, tests, selectedMetric) {
