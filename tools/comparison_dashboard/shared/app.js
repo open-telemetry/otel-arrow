@@ -814,7 +814,13 @@ function renderComparisonChart(suiteData, comparison, tests, onBarClick) {
   const target = document.getElementById("comparison-chart");
   if (!target) return;
   const metrics = findAvailableMetrics(suiteData, comparison);
-  let sel = metrics.includes("cpu_percentage_normalized_avg") ? "cpu_percentage_normalized_avg" : metrics[0] || "cpu_percentage_normalized_avg";
+  // Preserve the user's selection across re-renders (e.g. filter changes).
+  // Fall back to the comparison's configured default, then the first
+  // available metric.
+  const compSlug = window.COMPARISON_SLUG;
+  const prev = perComparisonMetrics.get(compSlug);
+  let sel = prev && metrics.includes(prev) ? prev : defaultMetric(comparison, metrics);
+  perComparisonMetrics.set(compSlug, sel);
   const optsHtml = metrics.map((n) => `<option value="${escapeHtml(n)}" ${n === sel ? "selected" : ""}>${escapeHtml(metricTitle(n, suiteData, comparison))}</option>`).join("");
 
   const onClick = onBarClick ? (event, elements) => {
