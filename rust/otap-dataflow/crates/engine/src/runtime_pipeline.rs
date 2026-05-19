@@ -594,17 +594,15 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                                 else => break,
                             }
 
-                            // Once data-path is drained, fire the shutdown
-                            // broadcast exactly once. The lifecycle holder
-                            // gates on its own one-shot latch and uses a
-                            // local `now() + EXTENSION_SHUTDOWN_GRACE`
-                            // deadline — extensions shut down after every
-                            // data-path task has terminated, so this is
-                            // the start of a fresh extension cleanup
-                            // window, not a continuation of the
-                            // pipeline-wide deadline.
+                            // Once the data path is drained, broadcast
+                            // `Shutdown` and exit the loop so the
+                            // bounded `drain_until_deadline` below owns
+                            // the wait for remaining extension tasks —
+                            // staying in this `select!` would let a
+                            // misbehaving extension hang the pipeline.
                             if futures.is_empty() {
-                                extension_lifecycle.broadcast_shutdown();
+                                extension_lifecycle.broadcast_shutdown().await;
+                                break;
                             }
                         }
                         Ok(task_results)
@@ -622,7 +620,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     // cleanly. `drain_until_deadline` then bounds the
                     // wait so a misbehaving extension can't hang the
                     // runtime.
-                    extension_lifecycle.broadcast_shutdown();
+                    extension_lifecycle.broadcast_shutdown().await;
                     extension_lifecycle.drain_until_deadline().await;
 
                     let task_results = loop_result?;

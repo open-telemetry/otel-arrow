@@ -334,6 +334,34 @@ impl<
                 )
             })?;
         }
+
+        // Mirror the per-node validation pass for extensions so live
+        // reconfiguration enforces the same boundary as startup
+        // (`startup::validate_pipeline_components`).
+        for (ext_id, ext_cfg) in pipeline_cfg.extension_iter() {
+            let urn_str = ext_cfg.r#type.as_str();
+            let Some(ext_factory) = pipeline_factory.get_extension_factory_map().get(urn_str)
+            else {
+                return Err(format!(
+                    "Unknown extension component `{}` in pipeline_group={} pipeline={} extension={}",
+                    urn_str,
+                    pipeline_group_id.as_ref(),
+                    pipeline_id.as_ref(),
+                    ext_id.as_ref()
+                ));
+            };
+
+            (ext_factory.validate_config)(&ext_cfg.config).map_err(|err| {
+                format!(
+                    "Invalid config for extension `{}` in pipeline_group={} pipeline={} extension={}: {}",
+                    urn_str,
+                    pipeline_group_id.as_ref(),
+                    pipeline_id.as_ref(),
+                    ext_id.as_ref(),
+                    err
+                )
+            })?;
+        }
         Ok(())
     }
 

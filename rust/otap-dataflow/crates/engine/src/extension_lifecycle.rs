@@ -49,6 +49,11 @@ pub(crate) const EXTENSION_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 /// terminating correctly.
 pub(crate) const EXTENSION_SHUTDOWN_DRAIN_SLACK: Duration = Duration::from_millis(500);
 
+/// Per-extension upper bound on how long `broadcast_shutdown` will
+/// wait to enqueue `Shutdown`. Prevents one backed-up extension from
+/// stalling delivery to the others.
+pub(crate) const EXTENSION_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_millis(500);
+
 const SHUTDOWN_REASON: &str = "pipeline data-path drained";
 
 /// Holds the spawned extension tasks, control senders, and passive
@@ -144,14 +149,11 @@ impl ExtensionLifecycle {
     }
 
     /// Broadcasts `Shutdown` to all active+background extensions.
-    /// Idempotent — subsequent calls are no-ops.
-    ///
-    /// The deadline is computed locally as
-    /// `now() + EXTENSION_SHUTDOWN_GRACE`. Extensions are expected
-    /// to be invoked only after every data-path task has terminated,
-    /// so this is the start of the extension cleanup window — not a
-    /// continuation of the pipeline-wide deadline.
-    pub fn broadcast_shutdown(&mut self) {
+    /// Idempotent. Sends fan out concurrently, each bounded by
+    /// [`EXTENSION_SHUTDOWN_SEND_TIMEOUT`]; the deadline carried in
+    /// the message is `now() + EXTENSION_SHUTDOWN_GRACE` (a fresh
+    /// cleanup window, not a continuation of the pipeline deadline).
+    pub async fn broadcast_shutdown(&mut self) {
         if self.shutdown_broadcast_fired || self.shutdown_senders.is_empty() {
             return;
         }
@@ -159,22 +161,35 @@ impl ExtensionLifecycle {
 
         let deadline = Instant::now() + EXTENSION_SHUTDOWN_GRACE;
         self.shutdown_deadline = Some(deadline);
-        for sender in &self.shutdown_senders {
-            // Non-blocking: data path has already drained so the
-            // small mpsc should have room. Warn on the rare failure
-            // (extension backed up or already torn down) rather than
-            // silently dropping the cleanup signal.
-            if let Err(e) = sender.sender.try_send(ExtensionControlMsg::Shutdown {
+
+        let sends = self.shutdown_senders.iter().map(|sender| {
+            let msg = ExtensionControlMsg::Shutdown {
                 deadline,
                 reason: SHUTDOWN_REASON.to_string(),
-            }) {
-                otel_warn!(
-                    "extension.shutdown.send_failed",
-                    extension = sender.name.as_ref(),
-                    error = format!("{e}"),
-                );
+            };
+            async move {
+                match tokio::time::timeout(EXTENSION_SHUTDOWN_SEND_TIMEOUT, sender.sender.send(msg))
+                    .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        otel_warn!(
+                            "extension.shutdown.send_failed",
+                            extension = sender.name.as_ref(),
+                            error = format!("{e}"),
+                        );
+                    }
+                    Err(_elapsed) => {
+                        otel_warn!(
+                            "extension.shutdown.send_timeout",
+                            extension = sender.name.as_ref(),
+                            timeout_ms = EXTENSION_SHUTDOWN_SEND_TIMEOUT.as_millis() as u64,
+                        );
+                    }
+                }
             }
-        }
+        });
+        let _: Vec<()> = futures::future::join_all(sends).await;
     }
 
     /// Drain remaining active+background extension tasks, but never
@@ -231,5 +246,58 @@ impl ExtensionLifecycle {
                 remaining = self.futures.len()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test: a misbehaving extension that never returns
+    /// must not stall `drain_until_deadline` past its deadline. The
+    /// deadline is injected directly to keep the test fast.
+    #[test]
+    fn drain_until_deadline_is_bounded_for_stuck_extension() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let futures = FuturesUnordered::new();
+            futures.push(tokio::task::spawn_local(async {
+                // Misbehaving extension that ignores `Shutdown` and
+                // never returns from `start()`. `pending` is cancelled
+                // when the surrounding `LocalSet` drops at the end of
+                // the test, so this does not actually run forever.
+                std::future::pending::<()>().await;
+                Ok(())
+            }));
+
+            let injected_deadline = Instant::now() + Duration::from_millis(100);
+            let mut lifecycle = ExtensionLifecycle {
+                futures,
+                shutdown_senders: Vec::new(),
+                _passive: Vec::new(),
+                shutdown_broadcast_fired: true,
+                shutdown_deadline: Some(injected_deadline),
+            };
+
+            let start = Instant::now();
+            lifecycle.drain_until_deadline().await;
+            let elapsed = start.elapsed();
+
+            // The drain must return shortly after the deadline +
+            // slack, not hang on the never-completing extension task.
+            let upper_bound = Duration::from_millis(100)
+                + EXTENSION_SHUTDOWN_DRAIN_SLACK
+                + Duration::from_secs(1);
+            assert!(
+                elapsed < upper_bound,
+                "drain_until_deadline did not honor the deadline: elapsed={:?}, upper_bound={:?}",
+                elapsed,
+                upper_bound,
+            );
+            assert!(
+                !lifecycle.futures.is_empty(),
+                "stuck extension should still be in `futures` after the bounded drain timed out",
+            );
+        }));
     }
 }
