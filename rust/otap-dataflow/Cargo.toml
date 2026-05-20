@@ -251,7 +251,6 @@ tonic-prost-build = "0.14"
 tracepoint = { version = "0.5.0", features = ["user_events"] }
 tracepoint_decode = "0.5.0"
 urlencoding = "2"
-# Pinned to open-telemetry/opentelemetry-rust-contrib main on 2026-04-25.
 geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "199b00f488c5d198f9d1e0771230aec3b191e403" }
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
