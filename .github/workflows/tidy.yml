@@ -12,6 +12,9 @@ jobs:
   tidy:
     runs-on: ubuntu-latest
     # This workflow is used to ensure Renovate and Dependabot PRs to Go code are 'tidy' and are reflected in the generated code produced by makefile command
+    # Note: fork PRs are blocked at the commit stage (tidy-commit.yml) via
+    # `workflow_run.head_repository.fork == false`. This run has no write
+    # permissions and no secrets, so executing PR code here is safe.
     if: ${{ contains(fromJson('["renovate[bot]", "dependabot[bot]"]'), github.actor) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

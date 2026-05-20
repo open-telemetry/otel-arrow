@@ -35,8 +35,20 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.workflow_run.head_branch }}
-      - name: Apply patch and commit
+      - name: Verify HEAD matches workflow_run head_sha
+        id: verify
         if: steps.download.outcome == 'success'
+        run: |
+          expected="${{ github.event.workflow_run.head_sha }}"
+          actual="$(git rev-parse HEAD)"
+          if [ "$expected" != "$actual" ]; then
+            echo "PR branch advanced to $actual past the SHA the patch was generated for ($expected); skipping to avoid pushing stale changes."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Apply patch and commit
+        if: steps.download.outcome == 'success' && steps.verify.outputs.skip != 'true'
         run: |
           set -euo pipefail
 
