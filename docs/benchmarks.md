@@ -69,7 +69,21 @@ the impact of batch size on CPU, memory, and network efficiency.
 
 #### 6. Saturation and Scaling
 
+##### 6a. Max Throughput (Single Core)
+
 **URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/saturation/>
+
+Measures the absolute maximum throughput a single core can sustain, for both
+OTLP and OTAP protocols. Uses `semantic_conventions` (~300 byte logs) -- the
+same payload as all other benchmarks -- for direct comparability. Loadgen is
+unleashed (no rate cap) with enough cores to fully saturate the single SUT core.
+
+OTAP uses 8 loadgen + 4 backend cores (vs 4+2 for OTLP) because the Arrow
+protocol is significantly more efficient and requires more load to saturate.
+
+##### 6b. Scaling Efficiency (Multi-Core)
+
+**URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/scaling-efficiency/>
 
 Validates the shared-nothing, thread-per-core architecture by measuring how
 throughput scales as more CPU cores are added. Each test pushes load until the
@@ -89,19 +103,16 @@ Uses static 1KB log bodies with realistic entropy (512 unique bodies) -- unlike
 other tests which use `semantic_conventions` (~300 byte logs) -- to better
 exercise the serialization/compression/network path at saturation.
 
-Scaling efficiency ratios are tracked over time:
-<https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/scaling-efficiency/>
-
 #### 7. Pass-through Mode
 
 **URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-passthrough/>
 
 Tests maximum throughput in pass-through mode where the engine forwards data
-without transformation. This scenario represents the minimum engine overhead for
-load balancing and routing use cases. Unlike the saturation tests which include
-an attribute processor, pass-through mode allows the engine to forward data
-without materializing the internal representation, achieving significantly
-higher throughput.
+without transformation (run nightly). This scenario represents the minimum
+engine overhead for load balancing and routing use cases. Unlike the saturation
+tests which include an attribute processor, pass-through mode allows the engine
+to forward data without materializing the internal representation, achieving
+significantly higher throughput.
 
 #### 8. Idle State
 

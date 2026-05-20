@@ -212,6 +212,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 ### Approvers
 
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
+- [Jake Dern](https://github.com/JakeDern), F5
 - [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
 - [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
 
