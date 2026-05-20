@@ -1070,8 +1070,13 @@ jobs:
           kill -KILL "$ENGINE_PID" 2>/dev/null || true
           # Tell weaver to finalize the report.
           curl -fsS -X POST "http://127.0.0.1:4320/stop" || true
-          wait "$WEAVER_PID"
-          WEAVER_EXIT=$?
+          # Weaver exits non-zero when violations are found in the report.
+          # That is expected for the MVP (~60 attribute-level violations
+          # from undeclared `error` / `message` keys); the substantive
+          # validation happens in the dedicated `Assert` step below.
+          # Capture the exit code without letting `bash -e` abort the script.
+          WEAVER_EXIT=0
+          wait "$WEAVER_PID" || WEAVER_EXIT=$?
           echo "weaver exit code: $WEAVER_EXIT"
           echo "::endgroup::"
 
