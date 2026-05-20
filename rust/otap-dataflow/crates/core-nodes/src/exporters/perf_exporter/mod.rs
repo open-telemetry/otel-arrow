@@ -70,7 +70,8 @@ pub static PERF_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
+             exporter_config: &ExporterConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         Ok(ExporterWrapper::local(
             PerfExporter::from_config(pipeline, &node_config.config)?,
             node,

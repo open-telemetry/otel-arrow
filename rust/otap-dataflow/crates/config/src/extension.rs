@@ -62,7 +62,7 @@ mod tests {
     #[test]
     fn test_extension_user_config_deserialize() {
         let yaml = r#"
-type: "urn:otap:sample_kv_store"
+type: "urn:otap:extension:sample_kv_store"
 config:
   capacity: 100
 "#;
@@ -74,7 +74,7 @@ config:
     #[test]
     fn test_extension_user_config_rejects_capabilities() {
         let yaml = r#"
-type: "urn:otap:auth"
+type: "urn:otap:extension:auth"
 capabilities:
   some_cap: "ext"
 "#;

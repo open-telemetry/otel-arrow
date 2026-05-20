@@ -198,7 +198,8 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig| {
+             receiver_config: &ReceiverConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         let mut receiver = OTLPReceiver::from_config(pipeline, &node_config.config)?;
         receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
 

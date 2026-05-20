@@ -88,6 +88,7 @@ fn factory_create(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     exporter_config: &ExporterConfig,
+    _capabilities: &otap_df_engine::capability::registry::Capabilities,
 ) -> Result<ExporterWrapper<OtapPdata>, ConfigError> {
     Ok(ExporterWrapper::local(
         OtlpHttpExporter::from_config(pipeline, &node_config.config)?,

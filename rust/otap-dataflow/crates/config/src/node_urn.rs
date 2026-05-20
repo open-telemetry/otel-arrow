@@ -1,17 +1,31 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Plugin URN parsing and validation helpers.
+//! Node URN parsing and validation.
+//!
+//! Node URNs follow the canonical form `urn:<namespace>:<kind>:<id>` where
+//! `<kind>` is one of `receiver`, `processor`, or `exporter`. The shortcut
+//! `<kind>:<id>` (no scheme/namespace) expands to `urn:otel:<kind>:<id>`.
+//!
+//! Extensions deliberately do NOT use this type — they have a separate
+//! [`crate::extension_urn::ExtensionUrn`] type so the rest of the codebase
+//! cannot accidentally treat extensions as nodes. The underlying parsing
+//! primitives are shared via the private [`crate::urn`] module.
 
 use crate::error::Error;
 use crate::node::NodeKind;
+use crate::urn::{URN_DOCS_PATH, build_canonical_urn, is_valid_segment, parse_kinded_urn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::ops::Range;
 
-const URN_DOCS_PATH: &str = "rust/otap-dataflow/docs/urns.md";
-const EXPECTED_SEGMENT_COUNT: usize = 2;
+/// Kind segments accepted by node URNs. Extensions use a disjoint set
+/// in [`crate::extension_urn`].
+const NODE_KINDS: &[&str] = &["receiver", "processor", "exporter"];
+
+/// Human-friendly URN label used in error messages.
+const URN_LABEL: &str = "plugin urn";
 
 /// Canonical node URN with zero-copy access to namespace and id segments.
 ///
@@ -27,21 +41,6 @@ pub struct NodeUrn {
 }
 
 impl NodeUrn {
-    #[must_use]
-    pub(crate) fn from_canonical_parts(
-        raw: String,
-        namespace_range: Range<usize>,
-        id_range: Range<usize>,
-        kind: NodeKind,
-    ) -> Self {
-        Self {
-            raw,
-            namespace_range,
-            id_range,
-            kind,
-        }
-    }
-
     /// Returns the canonical URN string (`urn:<namespace>:<kind>:<id>`).
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -74,35 +73,16 @@ impl NodeUrn {
 
     /// Parses and canonicalizes a node URN.
     pub fn parse(raw: &str) -> Result<Self, Error> {
-        let raw = raw.trim();
-        let parts: Vec<&str> = raw.split(':').collect();
-
-        match parts.as_slice() {
-            [_kind, _id] => {
-                validate_segments(raw, "otel", parts.as_slice())?;
-                let (kind, id) = split_segments(raw, parts.as_slice())?;
-                let inferred_kind = parse_kind(raw, kind)?;
-                Ok(build_node_urn("otel", id, kind, inferred_kind))
-            }
-            [scheme, namespace, _kind, _id] => {
-                if !scheme.eq_ignore_ascii_case("urn") {
-                    return Err(invalid_plugin_urn(
-                        raw,
-                        "expected `urn:<namespace>:<kind>:<id>`".to_string(),
-                    ));
-                }
-                let namespace = namespace.to_ascii_lowercase();
-                let kind_id = &parts[2..];
-                validate_segments(raw, &namespace, kind_id)?;
-                let (kind, id) = split_segments(raw, kind_id)?;
-                let inferred_kind = parse_kind(raw, kind)?;
-                Ok(build_node_urn(namespace.as_str(), id, kind, inferred_kind))
-            }
-            _ => Err(invalid_plugin_urn(
-                raw,
-                "expected `urn:<namespace>:<kind>:<id>` or `<kind>:<id>` for otel".to_string(),
-            )),
-        }
+        let parsed = parse_kinded_urn(raw, NODE_KINDS, URN_LABEL)?;
+        let kind = node_kind_from_segment(parsed.kind);
+        let (raw, namespace_range, id_range) =
+            build_canonical_urn(&parsed.namespace, parsed.kind, &parsed.id);
+        Ok(NodeUrn {
+            raw,
+            namespace_range,
+            id_range,
+            kind,
+        })
     }
 }
 
@@ -169,7 +149,18 @@ impl From<&'static str> for NodeUrn {
 /// - shortcut form (OTel only): `<kind>:<id>` (expanded to `urn:otel:<kind>:<id>`)
 pub fn validate_plugin_urn(raw: &str, expected_kind: NodeKind) -> Result<NodeUrn, Error> {
     let normalized = NodeUrn::parse(raw)?;
-    validate_expected_kind(raw.trim(), expected_kind, normalized.kind())?;
+    if !kinds_match(expected_kind, normalized.kind()) {
+        let expected_suffix = kind_suffix(expected_kind);
+        let actual_suffix = kind_suffix(normalized.kind());
+        return Err(Error::InvalidUserConfig {
+            error: format!(
+                "invalid {URN_LABEL} `{}`: expected kind `{expected_suffix}`, found \
+                 `{actual_suffix}`; expected `urn:<namespace>:<kind>:<id>` or \
+                 `<kind>:<id>` for otel (see {URN_DOCS_PATH})",
+                raw.trim()
+            ),
+        });
+    }
     Ok(normalized)
 }
 
@@ -187,10 +178,23 @@ pub fn normalize_plugin_urn_for_kind(raw: &str, expected_kind: NodeKind) -> Resu
         return validate_plugin_urn(raw, expected_kind);
     }
 
-    validate_segments(raw, "otel", &[raw])?;
-    let expected_suffix = kind_suffix(expected_kind);
-    let kind = parse_kind(raw, expected_suffix)?;
-    Ok(build_node_urn("otel", raw, expected_suffix, kind))
+    if !is_valid_segment(raw) {
+        return Err(Error::InvalidUserConfig {
+            error: format!(
+                "invalid {URN_LABEL} `{raw}`: id `{raw}` must match [a-z0-9._-]; expected \
+                 `urn:<namespace>:<kind>:<id>` or `<kind>:<id>` for otel (see {URN_DOCS_PATH})"
+            ),
+        });
+    }
+
+    let suffix = kind_suffix(expected_kind);
+    let (canonical, namespace_range, id_range) = build_canonical_urn("otel", suffix, raw);
+    Ok(NodeUrn {
+        raw: canonical,
+        namespace_range,
+        id_range,
+        kind: node_kind_from_segment(suffix),
+    })
 }
 
 /// Canonicalize a node type URN.
@@ -208,108 +212,26 @@ const fn kind_suffix(expected_kind: NodeKind) -> &'static str {
         NodeKind::Receiver => "receiver",
         NodeKind::Processor | NodeKind::ProcessorChain => "processor",
         NodeKind::Exporter => "exporter",
-        NodeKind::Extension => "extension",
     }
 }
 
-fn validate_expected_kind(raw: &str, expected_kind: NodeKind, kind: NodeKind) -> Result<(), Error> {
-    let expected_suffix = kind_suffix(expected_kind);
-    let actual_suffix = kind_suffix(kind);
-    if actual_suffix != expected_suffix {
-        return Err(invalid_plugin_urn(
-            raw,
-            format!("expected kind `{expected_suffix}`, found `{actual_suffix}`"),
-        ));
-    }
-    Ok(())
+/// Returns true if `expected` and `actual` correspond to the same URN
+/// kind segment. Treats `Processor` and `ProcessorChain` as equivalent
+/// because they both serialize to the `processor` segment.
+fn kinds_match(expected: NodeKind, actual: NodeKind) -> bool {
+    kind_suffix(expected) == kind_suffix(actual)
 }
 
-fn parse_kind(raw: &str, kind: &str) -> Result<NodeKind, Error> {
-    match kind {
-        "receiver" => Ok(NodeKind::Receiver),
-        "processor" => Ok(NodeKind::Processor),
-        "exporter" => Ok(NodeKind::Exporter),
-        "extension" => Ok(NodeKind::Extension),
-        _ => Err(invalid_plugin_urn(
-            raw,
-            format!(
-                "expected kind `receiver`, `processor`, `exporter`, or `extension`, found `{kind}`"
-            ),
-        )),
-    }
-}
-
-fn split_segments<'a>(raw: &str, segs: &'a [&'a str]) -> Result<(&'a str, &'a str), Error> {
-    if segs.len() != EXPECTED_SEGMENT_COUNT {
-        return Err(invalid_plugin_urn(
-            raw,
-            format!("expected exactly {EXPECTED_SEGMENT_COUNT} segments in `<kind>:<id>`"),
-        ));
-    }
-
-    let kind = segs[0];
-    let id = segs[1];
-    if kind.is_empty() || id.is_empty() {
-        return Err(invalid_plugin_urn(
-            raw,
-            "segments must be non-empty".to_string(),
-        ));
-    }
-
-    Ok((kind, id))
-}
-
-fn validate_segments(raw: &str, namespace: &str, segs: &[&str]) -> Result<(), Error> {
-    if namespace.is_empty() {
-        return Err(invalid_plugin_urn(
-            raw,
-            "namespace must be non-empty".to_string(),
-        ));
-    }
-
-    if segs.is_empty() || segs.iter().any(|s| s.is_empty()) {
-        return Err(invalid_plugin_urn(
-            raw,
-            "segments must be non-empty".to_string(),
-        ));
-    }
-
-    if !is_valid_segment(namespace) {
-        return Err(invalid_plugin_urn(
-            raw,
-            format!("namespace `{namespace}` must match [a-z0-9._-]"),
-        ));
-    }
-
-    if segs.iter().any(|s| !is_valid_segment(s)) {
-        return Err(invalid_plugin_urn(
-            raw,
-            "segments must match [a-z0-9._-]".to_string(),
-        ));
-    }
-
-    Ok(())
-}
-
-fn is_valid_segment(seg: &str) -> bool {
-    seg.chars()
-        .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-' | '.'))
-}
-
-fn build_node_urn(namespace: &str, id: &str, kind_str: &str, kind: NodeKind) -> NodeUrn {
-    let raw = format!("urn:{namespace}:{kind_str}:{id}");
-    let namespace_start = "urn:".len();
-    let namespace_end = namespace_start + namespace.len();
-    let id_start = namespace_end + 1 + kind_str.len() + 1;
-    let id_end = id_start + id.len();
-    NodeUrn::from_canonical_parts(raw, namespace_start..namespace_end, id_start..id_end, kind)
-}
-
-fn invalid_plugin_urn(raw: &str, details: String) -> Error {
-    Error::InvalidUserConfig {
-        error: format!(
-            "invalid plugin urn `{raw}`: {details}; expected `urn:<namespace>:<kind>:<id>` or `<kind>:<id>` for otel (see {URN_DOCS_PATH})"
-        ),
+/// Map a known kind segment back to a `NodeKind`. The segment must be
+/// one of [`NODE_KINDS`] (the parser guarantees this).
+fn node_kind_from_segment(segment: &str) -> NodeKind {
+    match segment {
+        "receiver" => NodeKind::Receiver,
+        "processor" => NodeKind::Processor,
+        "exporter" => NodeKind::Exporter,
+        // Unreachable because `parse_kinded_urn` only returns a kind from
+        // `NODE_KINDS`; documented as a defensive panic for clarity.
+        other => unreachable!("node URN parser returned unexpected kind `{other}`"),
     }
 }
 
@@ -363,6 +285,13 @@ mod tests {
             infer_node_kind("processor:debug").unwrap(),
             NodeKind::Processor
         ));
+    }
+
+    #[test]
+    fn rejects_extension_kind() {
+        // Extensions are not nodes; their URNs must not parse as NodeUrn.
+        assert!(NodeUrn::parse("urn:otap:extension:foo").is_err());
+        assert!(NodeUrn::parse("extension:foo").is_err());
     }
 
     #[test]
