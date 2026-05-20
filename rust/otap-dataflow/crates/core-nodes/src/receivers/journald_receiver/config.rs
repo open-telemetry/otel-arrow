@@ -409,6 +409,16 @@ fn validate_journal(
     if journal.root_path.as_os_str().is_empty() {
         return Err(invalid("journal.root_path must not be empty"));
     }
+    if journal.root_path.as_os_str().to_str().is_none() {
+        return Err(invalid("journal.root_path must be valid UTF-8"));
+    }
+    if journal
+        .root_path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(invalid("journal.root_path must not contain '..'"));
+    }
     journal.root_path = normalize_path(&journal.root_path);
     if let Some(namespace) = &journal.namespace {
         if namespace.is_empty() {
@@ -434,9 +444,6 @@ fn normalize_path(path: &Path) -> PathBuf {
     for component in path.components() {
         match component {
             Component::CurDir => {}
-            Component::ParentDir => {
-                let _ = normalized.pop();
-            }
             _ => normalized.push(component.as_os_str()),
         }
     }
@@ -574,6 +581,18 @@ mod tests {
         let runtime = RuntimeConfig::try_from(cfg).expect("must validate");
         assert_eq!(runtime.journal.root_path, PathBuf::from("/host"));
         assert_eq!(runtime.lease_key, "journald:/host:<default>");
+    }
+
+    #[test]
+    fn rejects_parent_dir_in_journal_root_path() {
+        let cfg = Config {
+            journal: JournalConfig {
+                root_path: PathBuf::from("../host"),
+                ..JournalConfig::default()
+            },
+            ..base()
+        };
+        assert!(RuntimeConfig::try_from(cfg).is_err());
     }
 
     #[test]
