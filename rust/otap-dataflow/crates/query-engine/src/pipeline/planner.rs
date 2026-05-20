@@ -669,7 +669,7 @@ impl PipelinePlanner {
                     DataScope::StaticScalar => false,
 
                     // visit the expression applied to the root and search for any column exprs
-                    DataScope::Root | DataScope::StructField(_) => {
+                    DataScope::Root | DataScope::RootParent(_) => {
                         let mut source_contains_refed_column = false;
                         _ = source_expr.logical_expr.apply(|expr| {
                             if let Expr::Column(column) = expr {

@@ -57,7 +57,8 @@ use crate::pipeline::expr::types::{
 };
 use crate::pipeline::expr::{
     DataScope, ExprPhysicalPlanner, LogicalExprDataSource, PhysicalExprEvalResult,
-    SCALAR_RECORD_BATCH_INPUT, ScopedLogicalExpr, ScopedPhysicalExpr, VALUE_COLUMN_NAME,
+    RootParentStruct, SCALAR_RECORD_BATCH_INPUT, ScopedLogicalExpr, ScopedPhysicalExpr,
+    VALUE_COLUMN_NAME,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::anyval::{
@@ -460,17 +461,22 @@ impl AssignPipelineStage {
                     let mut new_columns = struct_array.columns().to_vec();
                     _ = new_columns.remove(field_index);
 
-                    let new_struct = Arc::new(StructArray::new(
-                        Fields::from(new_fields),
-                        new_columns,
-                        struct_array.nulls().cloned(),
-                    ));
-
                     let root_payload_type = otap_batch.root_payload_type();
-                    otap_batch.set(
-                        root_payload_type,
-                        try_upsert_column(struct_col_name, new_struct, root_batch)?,
-                    )?;
+                    if new_columns.is_empty() {
+                        let mut new_root_batch = root_batch.clone();
+                        _ = new_root_batch.remove_column(struct_col_index);
+                        otap_batch.set(root_payload_type, new_root_batch)?;
+                    } else {
+                        let new_struct = Arc::new(StructArray::new(
+                            Fields::from(new_fields),
+                            new_columns,
+                            struct_array.nulls().cloned(),
+                        ));
+                        otap_batch.set(
+                            root_payload_type,
+                            try_upsert_column(struct_col_name, new_struct, root_batch)?,
+                        )?;
+                    }
                 } else {
                     return Err(Error::ExecutionError {
                         cause: format!(
@@ -535,7 +541,7 @@ impl AssignPipelineStage {
         )?;
 
         // Check if the source rows are already aligned with the root batch rows.
-        // Scalars broadcast to any row count; Root and StructField both live in the root batch
+        // Scalars broadcast to any row count; Root and RootParent both live in the root batch
         // so their row order matches. If the source is an Attributes batch, it has fewer rows
         // (one per scope/resource) than the root batch (one per log/span/metric), so we need
         // a join to expand and reorder the values to match the root batch row count.
@@ -543,7 +549,7 @@ impl AssignPipelineStage {
             || eval_result.data_scope.as_ref() == dest_scope.as_ref()
             || matches!(
                 eval_result.data_scope.as_ref(),
-                DataScope::Root | DataScope::StructField(_)
+                DataScope::Root | DataScope::RootParent(_)
             );
 
         if !already_aligned {
@@ -761,7 +767,7 @@ impl AssignPipelineStage {
                                 .rows_to_take(left_join_input, &eval_result, &otap_batch)?
                         }
                     }
-                    DataScope::Root | DataScope::StructField(_) => RootAttrsToRootJoin::new()
+                    DataScope::Root | DataScope::RootParent(_) => RootAttrsToRootJoin::new()
                         .rows_to_take(left_join_input, &eval_result, &otap_batch)?,
                     DataScope::StaticScalar => {
                         // safety: if the data scope was scalar, the result would have also been a
@@ -1652,7 +1658,7 @@ fn validate_attribute_assign_cardinality(
                 // we've already determined we're not assigning to a root attribute, so the
                 // destination must be something that has a one:many relationship with root like
                 // resource or scope
-                DataScope::Root | DataScope::StructField(_) => false,
+                DataScope::Root | DataScope::RootParent(_) => false,
 
                 DataScope::Attributes(source_attrs_id, _) => {
                     dest_attrs_id == *source_attrs_id
@@ -1741,13 +1747,13 @@ fn validate_struct_col_assign_cardinality(
                 DataScope::StaticScalar => true,
                 // root (log/span/metric level) is always lower than resource or scope
                 DataScope::Root => false,
-                DataScope::StructField(source_payload_type) => match dest_struct_name {
+                DataScope::RootParent(source_parent) => match dest_struct_name {
                     consts::RESOURCE => {
-                        matches!(source_payload_type, ArrowPayloadType::ResourceAttrs)
+                        matches!(source_parent, RootParentStruct::Resource)
                     }
                     consts::SCOPE => matches!(
-                        source_payload_type,
-                        ArrowPayloadType::ResourceAttrs | ArrowPayloadType::ScopeAttrs
+                        source_parent,
+                        RootParentStruct::Resource | RootParentStruct::Scope
                     ),
                     _ => false,
                 },
@@ -3441,7 +3447,7 @@ mod test {
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string().contains(
-                "cannot assign data scope StructField(ScopeAttrs) to struct column resource"
+                "cannot assign data scope RootParent(Scope) to struct column resource"
             ),
             "unexpected error: {}",
             err

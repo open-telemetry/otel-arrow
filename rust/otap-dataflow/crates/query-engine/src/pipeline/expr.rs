@@ -125,6 +125,13 @@ pub(crate) fn arg_column_name(index: usize) -> String {
     format!("arg_{index}")
 }
 
+/// Identifies which root-level parent struct column a [`DataScope::RootParent`] belongs to.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum RootParentStruct {
+    Resource,
+    Scope,
+}
+
 /// Identifies OTAP data either consumed or produced by some expression.
 ///
 /// OTAP batches contain multiple [`RecordBatch`]s, and within a given record batch, some expression
@@ -145,10 +152,10 @@ pub(crate) enum DataScope {
     /// in the input expression tree, rather than data from the OTAP batch.
     StaticScalar,
 
-    /// A field read from a struct column in the root record batch (e.g., resource.schema_url or
-    /// instrumentation_scope.name). Physically the data lives in the root batch (same as Root),
-    /// but the payload type records the hierarchy level for cardinality validation.
-    StructField(ArrowPayloadType),
+    /// A field read from a resource or scope struct column in the root record batch (e.g.,
+    /// resource.schema_url or scope.name). Physically the data lives in the root batch (same
+    /// as Root), but the parent struct records the hierarchy level for cardinality validation.
+    RootParent(RootParentStruct),
 }
 
 impl DataScope {
@@ -158,13 +165,13 @@ impl DataScope {
     /// Rules:
     /// - Any scope can combine with StaticScalar (constants)
     /// - Same scopes can combine (e.g., Root + Root), because the row order is the same.
-    /// - Root and StructField can combine because both live in the root record batch.
+    /// - Root and RootParent can combine because both live in the root record batch.
     pub(crate) fn can_combine(&self, other: &Self) -> bool {
         if self.is_scalar() || other.is_scalar() {
             return true;
         }
-        let self_in_root = matches!(self, Self::Root | Self::StructField(_));
-        let other_in_root = matches!(other, Self::Root | Self::StructField(_));
+        let self_in_root = matches!(self, Self::Root | Self::RootParent(_));
+        let other_in_root = matches!(other, Self::Root | Self::RootParent(_));
         (self_in_root && other_in_root) || self == other
     }
 
@@ -179,8 +186,8 @@ impl From<&ColumnAccessor> for DataScope {
         match value {
             ColumnAccessor::ColumnName(_) => Self::Root,
             ColumnAccessor::StructCol(struct_name, _) => match *struct_name {
-                consts::RESOURCE => Self::StructField(ArrowPayloadType::ResourceAttrs),
-                consts::SCOPE => Self::StructField(ArrowPayloadType::ScopeAttrs),
+                consts::RESOURCE => Self::RootParent(RootParentStruct::Resource),
+                consts::SCOPE => Self::RootParent(RootParentStruct::Scope),
                 _ => Self::Root,
             },
             ColumnAccessor::Attributes(attrs_id, attrs_key) => {
@@ -328,9 +335,9 @@ impl ExprLogicalPlanner {
                             })?;
                         let data_scope = match column_name {
                             consts::RESOURCE => {
-                                DataScope::StructField(ArrowPayloadType::ResourceAttrs)
+                                DataScope::RootParent(RootParentStruct::Resource)
                             }
-                            consts::SCOPE => DataScope::StructField(ArrowPayloadType::ScopeAttrs),
+                            consts::SCOPE => DataScope::RootParent(RootParentStruct::Scope),
                             _ => DataScope::Root,
                         };
                         Ok(ScopedLogicalExpr {
@@ -1033,7 +1040,7 @@ impl ScopedPhysicalExpr {
         let (source_rb, result_data_scope) = match &mut self.source {
             PhysicalExprDataSource::DataSource(data_scope_id) => {
                 let input_rb = match data_scope_id.as_ref() {
-                    DataScope::Root | DataScope::StructField(_) => {
+                    DataScope::Root | DataScope::RootParent(_) => {
                         otap_batch.root_record_batch().map(Cow::Borrowed)
                     }
                     DataScope::Attributes(attrs_id, key) => {
@@ -1342,7 +1349,7 @@ pub(crate) struct PhysicalExprEvalResult {
 
 impl PhysicalExprEvalResult {
     pub fn new(values: ColumnarValue, data_scope: Rc<DataScope>, source: &RecordBatch) -> Self {
-        let is_root = matches!(*data_scope, DataScope::Root | DataScope::StructField(_));
+        let is_root = matches!(*data_scope, DataScope::Root | DataScope::RootParent(_));
 
         let mut result = Self {
             values,
