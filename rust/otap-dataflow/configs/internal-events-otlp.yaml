@@ -1,0 +1,79 @@
+version: otel_dataflow/v1
+# df_engine config that fires a single internal event so the
+# `df-engine-events-weaver-live-check-mvp` CI job can validate it
+# end-to-end against the in-tree semantic-conventions registry under
+# `rust/otap-dataflow/semconv/`.
+#
+# Tracking issue: https://github.com/open-telemetry/otel-arrow/issues/1613
+#
+# Wiring:
+#
+#   groups.default.pipelines.main
+#     urn:otel:receiver:otlp                            <-- plaintext HTTP
+#       :: gRPC on 127.0.0.1:14317                          from CI triggers
+#       :: TLS enabled                                      a TLS handshake
+#           |                                               failure, which
+#           v                                               emits the event
+#     urn:otel:exporter:noop                                `tls.handshake.failed`.
+#
+#   engine.observability.pipeline
+#     urn:otel:receiver:internal_telemetry              <-- captures internal
+#           |                                               logs from the
+#           v                                               engine thread
+#     urn:otel:exporter:otlp_grpc                       --> 127.0.0.1:4317
+#       :: 127.0.0.1:4317 (plaintext)                       (the weaver
+#                                                           live-check
+#                                                           OTLP listener)
+#
+# Cert + key are read from /tmp/df-engine-tls; CI generates a
+# self-signed pair there before launching df_engine.
+
+engine:
+  telemetry:
+    logs:
+      # Make sure the WARN-level `tls.handshake.failed` event from
+      # crate `otap-df-otap` is captured (not filtered out) and routed
+      # through ITS to the internal_telemetry receiver.
+      level: "warn"
+      providers:
+        global: its
+        engine: its
+        # Avoid feedback: nodes downstream of the internal receiver
+        # must not themselves emit through ITS.
+        internal: noop
+        admin: console_direct
+
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "urn:otel:receiver:internal_telemetry"
+          config: {}
+        otlp_out:
+          type: "urn:otel:exporter:otlp_grpc"
+          config:
+            grpc_endpoint: "http://127.0.0.1:4317"
+      connections:
+        - from: itr
+          to: otlp_out
+
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          otlp_in:
+            type: "urn:otel:receiver:otlp"
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:14317"
+                  tls:
+                    cert_file: "/tmp/df-engine-tls/cert.pem"
+                    key_file: "/tmp/df-engine-tls/key.pem"
+          sink:
+            type: "urn:otel:exporter:noop"
+            config: {}
+        connections:
+          - from: otlp_in
+            to: sink

@@ -949,6 +949,210 @@ jobs:
           path: live-check-report
           if-no-files-found: warn
 
+  # MVP for tracking issue
+  # https://github.com/open-telemetry/otel-arrow/issues/1613 -- validate
+  # df_engine's internal Event surface against the in-tree semantic
+  # conventions registry under `rust/otap-dataflow/semconv/`.
+  #
+  # Scope: one event (`tls.handshake.failed`). The job (1) boots
+  # `weaver registry live-check` against the in-tree registry, (2) runs
+  # df_engine configured with an internal_telemetry receiver -> OTLP
+  # exporter pipeline plus a TLS-enabled OTLP receiver, (3) sends a
+  # plain-HTTP request to the TLS port to force the rustls acceptor to
+  # fail handshakes (firing the event N times), and (4) asserts that
+  # the weaver report contains a recognised `tls.handshake.failed`
+  # event sample whose own `live_check_result.highest_advice_level` is
+  # not `violation`. Attribute-level violations (the bare `error` /
+  # `message` keys are not yet in the registry) are tolerated and will
+  # be addressed when this MVP is expanded to cover more events.
+  #
+  # Intentionally NOT in `rust-required-status-check.needs` for now,
+  # mirroring the staged rollout used for the host-metrics live-check.
+  df-engine-events-weaver-live-check-mvp:
+    runs-on: ubuntu-latest
+    env:
+      WEAVER_VERSION: v0.23.0
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: ./rust/otap-dataflow
+          cache-bin: false
+      - name: Setup Weaver
+        uses: open-telemetry/weaver/.github/actions/setup-weaver@3a3b7cc98e08f84bccda45c0f20522b51d64a88c # v0.23.0
+        with:
+          version: ${{ env.WEAVER_VERSION }}
+      - name: Generate self-signed TLS cert
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/df-engine-tls
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout /tmp/df-engine-tls/key.pem \
+            -out   /tmp/df-engine-tls/cert.pem \
+            -subj "/CN=127.0.0.1" \
+            -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" \
+            >/dev/null 2>&1
+          ls -la /tmp/df-engine-tls
+      - name: Build df_engine
+        run: cargo build --release --bin df_engine
+        working-directory: ./rust/otap-dataflow
+      - name: Run df_engine against weaver live-check
+        timeout-minutes: 5
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -uo pipefail
+          mkdir -p live-check-report
+
+          echo "Weaver version:       ${WEAVER_VERSION}"
+          weaver --version || true
+
+          echo "::group::Start weaver live-check listener"
+          weaver registry live-check \
+            --registry rust/otap-dataflow/semconv \
+            --input-source otlp \
+            --otlp-grpc-port 4317 \
+            --admin-port 4320 \
+            --inactivity-timeout 60 \
+            --format json \
+            --output live-check-report \
+            > live-check-report/weaver.log 2>&1 &
+          WEAVER_PID=$!
+          echo "weaver pid: $WEAVER_PID"
+          echo "::endgroup::"
+
+          # Wait for the OTLP listener to come up.
+          for i in $(seq 1 30); do
+            if (echo > /dev/tcp/127.0.0.1/4317) >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          echo "::group::Start df_engine"
+          ./rust/otap-dataflow/target/release/df_engine \
+            --config rust/otap-dataflow/configs/internal-events-otlp.yaml \
+            --num-cores 1 \
+            > live-check-report/df_engine.log 2>&1 &
+          ENGINE_PID=$!
+          echo "df_engine pid: $ENGINE_PID"
+          echo "::endgroup::"
+
+          # Wait for the engine's TLS listener to come up.
+          for i in $(seq 1 30); do
+            if (echo > /dev/tcp/127.0.0.1/14317) >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          echo "::group::Trigger tls.handshake.failed (plaintext HTTP -> TLS port)"
+          for i in 1 2 3 4 5; do
+            # The TLS acceptor receives raw HTTP bytes and rejects them,
+            # firing `tls.handshake.failed` from
+            # `crates/otap/src/tls_utils.rs::create_tls_stream`.
+            curl --max-time 2 -sS http://127.0.0.1:14317/ 2>&1 | head -1 || true
+            sleep 0.3
+          done
+          echo "::endgroup::"
+
+          # Allow the internal_telemetry receiver to drain and the OTLP
+          # exporter to flush to weaver.
+          sleep 8
+
+          echo "::group::Stop services"
+          # df_engine does not implement SIGINT shutdown today; hard-kill it
+          # and do NOT `wait` on it (would block indefinitely).
+          kill -KILL "$ENGINE_PID" 2>/dev/null || true
+          # Tell weaver to finalize the report.
+          curl -fsS -X POST "http://127.0.0.1:4320/stop" || true
+          wait "$WEAVER_PID"
+          WEAVER_EXIT=$?
+          echo "weaver exit code: $WEAVER_EXIT"
+          echo "::endgroup::"
+
+          echo "::group::Weaver log (tail)"
+          tail -n 200 live-check-report/weaver.log || true
+          echo "::endgroup::"
+
+          echo "::group::df_engine log (tail)"
+          tail -n 100 live-check-report/df_engine.log || true
+          echo "::endgroup::"
+      - name: Assert tls.handshake.failed was validated
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          REPORT=live-check-report/live_check.json
+          if [ ! -s "$REPORT" ]; then
+            echo "::error::No live-check report found at $REPORT"
+            exit 1
+          fi
+
+          python3 - "$REPORT" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          samples = d.get("samples") or []
+
+          # Find every sample where the OTLP log record's event_name is
+          # the one we're validating in this MVP.
+          tls = [
+              s for s in samples
+              if isinstance(s.get("log"), dict)
+              and s["log"].get("event_name") == "tls.handshake.failed"
+          ]
+          print(f"## df_engine events live-check (MVP)")
+          print()
+          print(f"- Samples received: **{len(samples)}**")
+          print(f"- `tls.handshake.failed` samples: **{len(tls)}**")
+
+          if not tls:
+              print()
+              print("::error::No `tls.handshake.failed` samples received."
+                    " The exerciser pipeline did not fire the event, or the"
+                    " internal_telemetry -> OTLP path is broken.")
+              sys.exit(1)
+
+          # The CI gate is scoped to event-level findings: if the event
+          # name itself is recognised by the registry, the per-record
+          # `live_check_result` will have advice level <= improvement
+          # (e.g. `not_stable`). Attribute-level findings (`error` and
+          # `message` are not yet declared in the registry) are
+          # tolerated for the MVP and will be tightened in follow-ups.
+          bad = []
+          for s in tls:
+              level = (s["log"].get("live_check_result") or {}).get(
+                  "highest_advice_level"
+              )
+              if level == "violation":
+                  bad.append(s["log"].get("live_check_result"))
+
+          if bad:
+              print()
+              print(f"::error::`tls.handshake.failed` event has"
+                    f" {len(bad)} violation-level finding(s) at the event level.")
+              for r in bad[:3]:
+                  print(json.dumps(r, indent=2))
+              sys.exit(1)
+
+          print()
+          print("> Event name `tls.handshake.failed` matched the in-tree"
+                " semantic-conventions registry. Attribute-level findings"
+                " (improvements / `missing_attribute`) are deferred"
+                " -- see issue #1613.")
+          PY
+      - name: Upload live-check report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: weaver-live-check-df-engine-events-mvp
+          path: live-check-report
+          if-no-files-found: warn
+
   # Required matrix combinations for deny: otap-dataflow only
   deny_required:
     runs-on: ubuntu-latest
