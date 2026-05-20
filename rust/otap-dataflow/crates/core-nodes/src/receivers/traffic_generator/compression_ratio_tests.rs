@@ -227,7 +227,7 @@ fn print_ratio(label: &str, raw: usize, compressed: usize, ratio: f64) {
     );
 }
 
-/// Print compression ratios for all four (source × strategy) combinations.
+/// Print compression ratios for all six (source × strategy) combinations.
 /// Numbers are informational — run with `--nocapture` to inspect them. The
 /// asserts enforce only loose, order-of-magnitude bounds:
 ///
