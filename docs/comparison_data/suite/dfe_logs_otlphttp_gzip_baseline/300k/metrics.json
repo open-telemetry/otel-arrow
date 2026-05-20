@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 0.0
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 38.37946252279398
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 39.63498288204171
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 52.32578125
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 53.39453125
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 298287.44079942245
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 298796.78585816757
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000606
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 7750529.19578962
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 107463804.8720831
+  },
+  {
+    "extra": "DFE OTLP/HTTP Baseline w/ Gzip (Logs)/300k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 25.93913175313951
+  }
+]
