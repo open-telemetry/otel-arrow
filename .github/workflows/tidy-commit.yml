@@ -38,6 +38,8 @@ jobs:
       - name: Apply patch and commit
         if: steps.download.outcome == 'success'
         run: |
+          set -euo pipefail
+
           git apply changes.patch
 
           # Configure git for otelbot
