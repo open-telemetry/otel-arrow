@@ -531,6 +531,7 @@ mod tests {
 
     #[test]
     fn resolve_config_none_with_no_default_config() {
+        ensure_crypto_provider();
         // Run from a temp directory to ensure config.yaml does not exist.
         let tmp_dir = tempfile::tempdir().expect("create temp dir");
         let _guard = env::current_dir().ok();
@@ -548,6 +549,7 @@ mod tests {
 
     #[test]
     fn integration_env_var_to_yaml() {
+        ensure_crypto_provider();
         let var_name = "OTAP_TEST_CFG_INTEGRATION";
         let yaml = r#"
 version: otel_dataflow/v1

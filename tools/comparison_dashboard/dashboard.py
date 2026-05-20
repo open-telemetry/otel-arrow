@@ -59,6 +59,11 @@ ALLOWED_EXTENSIONS = {".toml", ".yaml", ".yml", ".json", ".txt"}
 # File extensions to publish from staging to the data dir after a run
 PUBLISH_CONFIG_EXTENSIONS = {".yaml", ".yml", ".toml"}
 
+# Banner text pinned to each page
+BANNER_TEXT = "The Dataflow Engine and these benchmarks are a work in progress. Do you have feedback?"
+BANNER_LINK_TEXT = "Tell us here!"
+ISSUE_URL = "https://github.com/open-telemetry/otel-arrow/issues"
+
 # ---------------------------------------------------------------------------
 # Manifest
 # ---------------------------------------------------------------------------
@@ -1503,7 +1508,7 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths, mani
         '<body>',
         '  <div class="wip-banner" role="alert">',
         '    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>',
-        '    <span class="wip-text">All benchmarks are WIP and not final. Inaccuracies may exist.</span>',
+        f'   <span class="wip-text">{BANNER_TEXT} <a class="wip-link" href="{ISSUE_URL}" target="_blank" rel="noopener">{BANNER_LINK_TEXT}</a></span>',
         '    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>',
         '  </div>',
         '  <div class="wrap">',
@@ -1590,7 +1595,7 @@ def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths, m
             '<body>',
             '  <div class="wip-banner" role="alert">',
             '    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>',
-            '    <span class="wip-text">All benchmarks are WIP and not final. Inaccuracies may exist.</span>',
+            f'   <span class="wip-text">{BANNER_TEXT} <a class="wip-link" href="{ISSUE_URL}" target="_blank" rel="noopener">{BANNER_LINK_TEXT}</a></span>',
             '    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>',
             '  </div>',
             '  <div class="wrap">',
