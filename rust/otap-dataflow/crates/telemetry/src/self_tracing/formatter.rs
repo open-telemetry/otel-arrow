@@ -846,9 +846,12 @@ mod tests {
         assert_eq!(decoded.time_unix_nano, 1_705_321_845_678_000_000);
         assert_eq!(decoded.severity_number, 9); // INFO
         assert!(decoded.severity_text.is_empty()); // Not coded
-        // OTLP `event_name` is the bare callsite name; the module path
-        // (`callsite.target()`) is conveyed through
-        // `InstrumentationScope.name` by `encode_export_logs_request`.
+        // `DirectLogRecordEncoder` only writes the `LogRecord` message;
+        // `event_name` here is the bare callsite name. The owning
+        // `InstrumentationScope` (which carries `callsite.target()` as
+        // its `name`) is written by `encode_export_logs_request` and is
+        // covered by `encode_export_logs_request_with_scope_attributes`
+        // in encoder.rs.
         assert_eq!(decoded.event_name, "test_event");
     }
 
