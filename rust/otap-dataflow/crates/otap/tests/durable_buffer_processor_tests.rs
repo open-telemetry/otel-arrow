@@ -206,7 +206,7 @@ impl TestConfigBuilder {
         pipeline_id: &PipelineId,
     ) -> PipelineConfig {
         // Use Static data source to avoid network dependency on semantic conventions git repo.
-        // Build config as JSON since DataSource::Static doesn't need registry_path.
+        // Build config as JSON since DataSource::Synthetic doesn't need registry_path.
         let receiver_config_value = json!({
             "traffic_config": {
                 "signals_per_second": self.signals_per_second,
@@ -217,7 +217,7 @@ impl TestConfigBuilder {
                 "log_weight": self.log_weight,
                 "use_trace_context": self.use_trace_context
             },
-            "data_source": "static"
+            "data_source": "synthetic"
         });
 
         let mut buffer_config = json!({
