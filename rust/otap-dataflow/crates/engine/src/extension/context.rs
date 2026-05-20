@@ -18,9 +18,8 @@
 //! entity, and that's it. The parent attribute hierarchy is an
 //! implementation detail of `ExtensionContext`.
 
-use crate::attributes::PipelineAttributeSet;
+use crate::attributes::{ExtensionAttributeSet, PipelineAttributeSet};
 use crate::context::PipelineContext;
-use crate::extension_lifecycle::ExtensionAttributeSet;
 use otap_df_config::ExtensionId;
 use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
 

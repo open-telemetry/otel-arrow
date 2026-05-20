@@ -23,7 +23,6 @@
 //!
 //! See `runtime_pipeline.rs::run_forever` for how this is wired in.
 
-use crate::attributes::PipelineAttributeSet;
 use crate::control::{ExtensionControlMsg, ExtensionControlSender};
 use crate::error::Error;
 use crate::extension::ExtensionContext;
@@ -36,8 +35,7 @@ use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{attribute_set, metric_set};
-use std::borrow::Cow;
+use otap_df_telemetry_macros::metric_set;
 use std::collections::{HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
@@ -66,26 +64,6 @@ pub(crate) const EXTENSION_SHUTDOWN_DRAIN_SLACK: Duration = Duration::from_milli
 pub(crate) const EXTENSION_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_millis(500);
 
 const SHUTDOWN_REASON: &str = "pipeline data-path drained";
-
-/// Entity attributes that scope the per-extension lifecycle metric set.
-///
-/// Colocated with the metric set, matching the pattern in `flow_metrics.rs`.
-///
-/// **Scope.** Extensions are pipeline-scoped today, so this attribute set
-/// composes [`PipelineAttributeSet`]. If a future engine-scoped (cross-
-/// pipeline) extension lifecycle is added, introduce a sibling attribute
-/// set composing the engine-level hierarchy; the [`ExtensionLifecycleMetrics`]
-/// metric set itself is scope-agnostic and can be reused.
-#[attribute_set(name = "extension.attrs")]
-#[derive(Debug, Clone, Default, Hash)]
-pub struct ExtensionAttributeSet {
-    /// Extension identifier (`extension.id`).
-    #[attribute(key = "extension.id")]
-    pub extension_id: Cow<'static, str>,
-    /// Pipeline attributes (engine + pipeline).
-    #[compose]
-    pub pipeline_attrs: PipelineAttributeSet,
-}
 
 /// Per-extension lifecycle metrics.
 ///
@@ -509,6 +487,15 @@ impl ExtensionLifecycle {
                 grace_secs = EXTENSION_SHUTDOWN_GRACE.as_secs(),
                 remaining = self.futures.len()
             );
+            // Abort surviving tasks BEFORE recording the timeout so the
+            // `active=0` gauge we're about to publish matches reality:
+            // once we mark the extension timed out, the runtime has
+            // already cancelled its task and it will not run again.
+            // `JoinHandle::abort` is best-effort cancellation, but it
+            // guarantees the future will not be polled further.
+            for handle in self.futures.iter() {
+                handle.abort();
+            }
             // Anything still in `pending` after the bounded drain
             // failed to honour `Shutdown` within the grace window.
             // Tick the per-extension `shutdown.timeout` counter so
@@ -645,6 +632,7 @@ mod tests {
     use crate::context::{ControllerContext, PipelineContext};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
+    use std::borrow::Cow;
 
     fn make_pipeline_context() -> PipelineContext {
         let registry = TelemetryRegistryHandle::new();
@@ -672,10 +660,13 @@ mod tests {
             registered_entities.push(entity_key);
             let mut metrics =
                 registry.register_metric_set_for_entity::<ExtensionLifecycleMetrics>(entity_key);
-            // Mirror what `broadcast_shutdown` does on successful
-            // delivery so tests exercise the post-delivery code paths
-            // by default. Tests that need the pre-delivery scenario
-            // can clear both the anchor and the gauge.
+            // Mirror what `spawn` and `broadcast_shutdown` do on
+            // successful delivery so tests exercise the post-delivery
+            // code paths by default and `active` transitions from
+            // `1` to `0` on completion/timeout instead of starting at
+            // its default `0`. Tests that need the pre-delivery
+            // scenario can clear these.
+            metrics.active.set(1);
             metrics.shutdown_delivered.set(1);
             let _ = ext_metrics.insert(
                 ext_id.clone(),

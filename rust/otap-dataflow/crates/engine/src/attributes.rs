@@ -97,6 +97,23 @@ pub struct PipelineAttributeSet {
     pub deployment_generation: u64,
 }
 
+/// Extension attributes.
+///
+/// Scopes per-extension metric sets (e.g. `extension.lifecycle`) under the
+/// pipeline hierarchy. Extensions are pipeline-scoped today; if an
+/// engine-scoped (cross-pipeline) extension lifecycle is added later,
+/// introduce a sibling attribute set composing the engine-level hierarchy.
+#[attribute_set(name = "extension.attrs")]
+#[derive(Debug, Clone, Default, Hash)]
+pub struct ExtensionAttributeSet {
+    /// Extension identifier (`extension.id`).
+    #[attribute(key = "extension.id")]
+    pub extension_id: Cow<'static, str>,
+    /// Pipeline attributes (engine + pipeline).
+    #[compose]
+    pub pipeline_attrs: PipelineAttributeSet,
+}
+
 /// Node attributes.
 #[attribute_set(name = "node.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
