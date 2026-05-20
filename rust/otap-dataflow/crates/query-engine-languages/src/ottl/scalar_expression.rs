@@ -32,6 +32,18 @@ pub(crate) fn parse_scalar_expression(
         }
         Rule::null_literal => ScalarExpression::Static(parse_standard_null_literal(scalar_rule)),
         Rule::scalar_expression => parse_scalar_expression(scalar_rule, _state)?,
+        Rule::identifier_expression => {
+            // parse this as a field on the source
+            let query_location = to_query_location(&scalar_rule);
+            let value_accessor = ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    query_location.clone(),
+                    scalar_rule.as_str(),
+                )),
+            )]);
+
+            ScalarExpression::Source(SourceScalarExpression::new(query_location, value_accessor))
+        }
         _ => panic!("Unexpected rule in scalar_expression: {scalar_rule}"),
     };
 
@@ -42,7 +54,7 @@ pub(crate) fn parse_scalar_expression(
 mod tests {
     use pest::Parser;
 
-    use crate::ottl::OttlPestParser;
+    use crate::ottl::parser::OttlPestParser;
 
     use super::*;
 
