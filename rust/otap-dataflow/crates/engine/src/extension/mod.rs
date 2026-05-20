@@ -16,6 +16,7 @@
 //! [`shared::extension`](crate::shared::extension).
 
 pub mod builder;
+pub mod context;
 pub mod wrapper;
 
 #[cfg(test)]
@@ -27,6 +28,7 @@ pub use builder::{
     PassiveClonedStage, PassiveConstructedCompleteStage, PassiveConstructedLocalStage,
     PassiveConstructedSharedStage, PassiveConstructedStage, PassiveStage, SharedDecomposed,
 };
+pub use context::ExtensionContext;
 pub use wrapper::{
     ControlChannel, ControlReceiver, EffectHandler, ExtensionBundle, ExtensionLifecycle,
     ExtensionWrapper,

@@ -286,10 +286,13 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         // only the registered probes via `try_join_all` before spawning
         // data-path tasks. Extensions that don't opt in keep today's
         // behavior with zero overhead.
+        let extension_context =
+            crate::extension::ExtensionContext::from_pipeline(&pipeline_context);
         let mut extension_lifecycle = crate::extension_lifecycle::ExtensionLifecycle::spawn(
             extensions,
             &local_tasks,
             metrics_reporter.clone(),
+            &extension_context,
         );
 
         let mut control_senders = ControlSenders::default();
