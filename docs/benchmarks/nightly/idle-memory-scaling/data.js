@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779245079089,
+  "lastUpdate": 1779303398692,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -228,6 +228,82 @@ window.BENCHMARK_DATA = {
             "value": 41.76,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=42.0 MiB, error=0.5%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Jake Dern",
+            "username": "JakeDern",
+            "email": "33842784+JakeDern@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "fabbe70cbf95113006d75b3e89725cd930d747c3",
+          "message": "task(comparison_dashboard): Update the banner (#3050)\n\n# Change Summary\n\nRather than remove, I thought we might want to update the banner with\nsome new text and a link to file issues for feedback.\n\nI know the name \"Dataflow Engine\" is up for some debate, though we\nalready use this name elsewhere in the site.\n\nOpen to suggestions on all fronts including just removing the banner!\n\n## What issue does this PR close?\n\n* Closes #3019\n\n## How are these changes tested?\n\n<img width=\"2435\" height=\"817\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/b3cb0454-37b5-4afd-81f0-7dc6acac0136\"\n/>\n\n## Are there any user-facing changes?\n\nYes - Banner update.\n\nCo-authored-by: Cijo Thomas <cijo.thomas@gmail.com>",
+          "timestamp": "2026-05-20T16:17:47Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/fabbe70cbf95113006d75b3e89725cd930d747c3"
+        },
+        "date": 1779303398052,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 15.81,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.77,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9974,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 16.38,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=16.6 MiB, error=1.2%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 17.02,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=17.3 MiB, error=1.9%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 18.91,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.9 MiB, error=0.1%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 22.05,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=22.0 MiB, error=0.3%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 29.02,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=28.2 MiB, error=3.0%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 40.07,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=40.5 MiB, error=1.1%"
           }
         ]
       }
