@@ -28,6 +28,7 @@ use crate::error::Error;
 use crate::extension::ExtensionContext;
 use crate::extension::ExtensionWrapper;
 use futures::FutureExt;
+use futures::future::LocalBoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use otap_df_config::ExtensionId;
 use otap_df_telemetry::instrument::{Counter, Gauge};
@@ -39,7 +40,7 @@ use otap_df_telemetry_macros::metric_set;
 use std::collections::{HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
-use tokio::task::{JoinError, JoinHandle, LocalSet};
+use tokio::task::{AbortHandle, JoinError, LocalSet};
 use tokio::time::Instant as TokioInstant;
 
 /// Cleanup window granted to extensions after the data path has
@@ -64,6 +65,15 @@ pub(crate) const EXTENSION_SHUTDOWN_DRAIN_SLACK: Duration = Duration::from_milli
 pub(crate) const EXTENSION_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_millis(500);
 
 const SHUTDOWN_REASON: &str = "pipeline data-path drained";
+
+/// Wrapped extension task future used in [`ExtensionLifecycle::futures`].
+///
+/// Each spawned extension `JoinHandle` is wrapped so the yielded tuple
+/// always carries the [`ExtensionId`] — even when the inner task is
+/// cancelled and the join produces an [`Err(JoinError)`]. Without this
+/// wrapping, cancellation would leave the per-extension entry stranded
+/// in `pending` and risk being misattributed as a `shutdown.timeout`.
+type ExtensionFuture = LocalBoxFuture<'static, (ExtensionId, Result<Result<(), Error>, JoinError>)>;
 
 /// Per-extension lifecycle metrics.
 ///
@@ -154,11 +164,18 @@ struct ExtensionMetricsEntry {
 /// Holds the spawned extension tasks, control senders, and passive
 /// wrappers for the duration of a pipeline run.
 pub(crate) struct ExtensionLifecycle {
-    /// Active+background extension `JoinHandle`s, awaited concurrently
-    /// with the data path. The task yields the extension's id alongside
-    /// its result so completions can be attributed back to the right
-    /// per-extension metric set.
-    futures: FuturesUnordered<JoinHandle<(ExtensionId, Result<(), Error>)>>,
+    /// Wrapped active+background extension futures, awaited
+    /// concurrently with the data path. Each future yields the
+    /// extension's id alongside the join result so completions can be
+    /// attributed back to the right per-extension metric set even
+    /// when the underlying task is cancelled.
+    futures: FuturesUnordered<ExtensionFuture>,
+    /// Abort handles for the tasks in [`Self::futures`], kept
+    /// alongside the wrapped futures (which can no longer call
+    /// `JoinHandle::abort` directly). Used by
+    /// [`Self::drain_until_deadline`] and `Drop` to force-cancel
+    /// extensions that overran the cooperative shutdown budget.
+    abort_handles: Vec<AbortHandle>,
     /// Control senders for the extensions in [`Self::futures`], used
     /// once to broadcast `Shutdown` after the data path drains.
     shutdown_senders: Vec<ExtensionControlSender>,
@@ -216,7 +233,8 @@ impl ExtensionLifecycle {
         metrics_reporter: MetricsReporter,
         extension_context: &ExtensionContext,
     ) -> Self {
-        let futures = FuturesUnordered::new();
+        let futures: FuturesUnordered<ExtensionFuture> = FuturesUnordered::new();
+        let mut abort_handles: Vec<AbortHandle> = Vec::new();
         let mut shutdown_senders = Vec::new();
         let mut passive = Vec::new();
         let mut ext_metrics: HashMap<ExtensionId, ExtensionMetricsEntry> = HashMap::new();
@@ -298,11 +316,24 @@ impl ExtensionLifecycle {
                 };
                 (fut_ext_id, result)
             };
-            futures.push(local_tasks.spawn_local(fut));
+            let handle = local_tasks.spawn_local(fut);
+            abort_handles.push(handle.abort_handle());
+            // Wrap the join so the yielded tuple always carries the
+            // extension id, even on `JoinError` (cancellation). The
+            // inner task normally returns its own id; we fall back to
+            // the captured `id_for_wrap` only when the join errors.
+            let id_for_wrap = ext_id.clone();
+            futures.push(Box::pin(async move {
+                match handle.await {
+                    Ok((id, res)) => (id, Ok(res)),
+                    Err(e) => (id_for_wrap, Err(e)),
+                }
+            }));
         }
 
         Self {
             futures,
+            abort_handles,
             shutdown_senders,
             _passive: passive,
             shutdown_broadcast_fired: false,
@@ -329,9 +360,9 @@ impl ExtensionLifecycle {
     /// then flushes its metric set inline so observers see the
     /// transition immediately.
     pub async fn next_completion(&mut self) -> Option<Result<Result<(), Error>, JoinError>> {
-        let joined = self.futures.next().await?;
+        let (ext_id, joined) = self.futures.next().await?;
         Some(match joined {
-            Ok((ext_id, result)) => {
+            Ok(result) => {
                 self.record_completion(&ext_id, result.is_err());
                 Ok(result)
             }
@@ -340,9 +371,10 @@ impl ExtensionLifecycle {
                 // attributed to a specific extension, so a `JoinError`
                 // here can only mean the task was cancelled by the
                 // runtime (e.g. `LocalSet` drop, explicit abort). That
-                // is not an extension fault, so do not bump
-                // `task.error` for innocent siblings — just surface
-                // the error to the caller.
+                // is not an extension fault — finalize the entry so
+                // it isn't later misattributed as a `shutdown.timeout`,
+                // but don't bump `task.error` for innocent siblings.
+                self.record_cancellation(&ext_id);
                 Err(e)
             }
         })
@@ -448,12 +480,12 @@ impl ExtensionLifecycle {
         let drain_deadline = TokioInstant::from_std(*deadline + EXTENSION_SHUTDOWN_DRAIN_SLACK);
 
         let drain = async {
-            while let Some(result) = self.futures.next().await {
+            while let Some((ext_id, result)) = self.futures.next().await {
                 match result {
-                    Ok((ext_id, Ok(()))) => {
+                    Ok(Ok(())) => {
                         self.record_completion(&ext_id, false);
                     }
-                    Ok((ext_id, Err(e))) => {
+                    Ok(Err(e)) => {
                         otel_warn!(
                             "extension.shutdown.task.error",
                             extension = ext_id.as_ref(),
@@ -464,15 +496,18 @@ impl ExtensionLifecycle {
                     Err(e) => {
                         otel_warn!(
                             "extension.shutdown.task.join_error",
+                            extension = ext_id.as_ref(),
                             is_canceled = e.is_cancelled(),
                             is_panic = e.is_panic(),
                             error = e.to_string()
                         );
                         // Panics are caught and attributed inside the
                         // task wrapper, so a `JoinError` here can only
-                        // be cancellation. Do not fan `task.error` out
-                        // to all pending extensions — that blames
-                        // innocents for a runtime-driven event.
+                        // be cancellation. Finalize the entry so it
+                        // isn't misattributed as a `shutdown.timeout`,
+                        // but don't fan `task.error` out to all
+                        // pending extensions.
+                        self.record_cancellation(&ext_id);
                     }
                 }
             }
@@ -491,9 +526,9 @@ impl ExtensionLifecycle {
             // `active=0` gauge we're about to publish matches reality:
             // once we mark the extension timed out, the runtime has
             // already cancelled its task and it will not run again.
-            // `JoinHandle::abort` is best-effort cancellation, but it
+            // `AbortHandle::abort` is best-effort cancellation, but it
             // guarantees the future will not be polled further.
-            for handle in self.futures.iter() {
+            for handle in &self.abort_handles {
                 handle.abort();
             }
             // Anything still in `pending` after the bounded drain
@@ -569,6 +604,26 @@ impl ExtensionLifecycle {
         entry.metrics.shutdown_send_timeout.inc();
         let _ = reporter.report(&mut entry.metrics);
     }
+
+    /// Finalize an extension whose task was cancelled by the runtime
+    /// (`JoinError`). Flushes `active=0`, removes from `pending` (so
+    /// it isn't later misattributed as a `shutdown.timeout`), and
+    /// marks the entry finalized. Does NOT bump `task.error` or
+    /// `shutdown.timeout` — cancellation is a runtime event, not an
+    /// extension fault. Idempotent via the `finalized` flag.
+    fn record_cancellation(&mut self, ext_id: &ExtensionId) {
+        let _ = self.pending.remove(ext_id);
+        let mut reporter = self.metrics_reporter.clone();
+        let Some(entry) = self.ext_metrics.get_mut(ext_id) else {
+            return;
+        };
+        if entry.finalized {
+            return;
+        }
+        entry.finalized = true;
+        entry.metrics.active.set(0);
+        let _ = reporter.report(&mut entry.metrics);
+    }
 }
 
 /// Best-effort extraction of a human-readable message from a panic
@@ -591,9 +646,9 @@ impl Drop for ExtensionLifecycle {
         // futures when its bound fires. Abort those tasks BEFORE
         // unregistering their metric entities so a still-running task
         // cannot race the registry tear-down and report into a freed
-        // slot. `JoinHandle::abort` is best-effort cancellation, but
+        // slot. `AbortHandle::abort` is best-effort cancellation, but
         // it guarantees the user future will not be polled again.
-        for handle in self.futures.iter() {
+        for handle in &self.abort_handles {
             handle.abort();
         }
         // Defensive: flip `active` to 0 for any extension that never
@@ -633,6 +688,30 @@ mod tests {
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
     use std::borrow::Cow;
+    use std::future::Future;
+
+    /// Push a wrapped extension future + abort handle in the same
+    /// shape `ExtensionLifecycle::spawn` produces, so tests exercise
+    /// the real wrapping (id-preserving on `JoinError`) instead of
+    /// hand-rolling it at every call site.
+    fn push_test_extension<F>(
+        futures: &mut FuturesUnordered<ExtensionFuture>,
+        abort_handles: &mut Vec<AbortHandle>,
+        ext_id: ExtensionId,
+        fut: F,
+    ) where
+        F: Future<Output = (ExtensionId, Result<(), Error>)> + 'static,
+    {
+        let handle = tokio::task::spawn_local(fut);
+        abort_handles.push(handle.abort_handle());
+        let id_for_wrap = ext_id;
+        futures.push(Box::pin(async move {
+            match handle.await {
+                Ok((id, res)) => (id, Ok(res)),
+                Err(e) => (id_for_wrap, Err(e)),
+            }
+        }));
+    }
 
     fn make_pipeline_context() -> PipelineContext {
         let registry = TelemetryRegistryHandle::new();
@@ -645,7 +724,8 @@ mod tests {
     }
 
     fn make_test_lifecycle(
-        futures: FuturesUnordered<JoinHandle<(ExtensionId, Result<(), Error>)>>,
+        futures: FuturesUnordered<ExtensionFuture>,
+        abort_handles: Vec<AbortHandle>,
         ext_ids: &[&'static str],
     ) -> ExtensionLifecycle {
         let pipeline_ctx = make_pipeline_context();
@@ -680,6 +760,7 @@ mod tests {
         }
         ExtensionLifecycle {
             futures,
+            abort_handles,
             shutdown_senders: Vec::new(),
             _passive: Vec::new(),
             shutdown_broadcast_fired: true,
@@ -699,19 +780,24 @@ mod tests {
     fn drain_until_deadline_is_bounded_for_stuck_extension() {
         let (rt, local_tasks) = crate::testing::setup_test_runtime();
         rt.block_on(local_tasks.run_until(async {
-            let futures: FuturesUnordered<JoinHandle<(ExtensionId, Result<(), Error>)>> =
-                FuturesUnordered::new();
-            futures.push(tokio::task::spawn_local(async {
-                // Misbehaving extension that ignores `Shutdown` and
-                // never returns from `start()`. `pending` is cancelled
-                // when the surrounding `LocalSet` drops at the end of
-                // the test, so this does not actually run forever.
-                std::future::pending::<()>().await;
-                (Cow::Borrowed("stuck"), Ok(()))
-            }));
+            let mut futures: FuturesUnordered<ExtensionFuture> = FuturesUnordered::new();
+            let mut abort_handles: Vec<AbortHandle> = Vec::new();
+            push_test_extension(
+                &mut futures,
+                &mut abort_handles,
+                Cow::Borrowed("stuck"),
+                async {
+                    // Misbehaving extension that ignores `Shutdown` and
+                    // never returns from `start()`. `pending` is cancelled
+                    // when the surrounding `LocalSet` drops at the end of
+                    // the test, so this does not actually run forever.
+                    std::future::pending::<()>().await;
+                    (Cow::Borrowed("stuck"), Ok(()))
+                },
+            );
 
             let injected_deadline = Instant::now() + Duration::from_millis(100);
-            let mut lifecycle = make_test_lifecycle(futures, &["stuck"]);
+            let mut lifecycle = make_test_lifecycle(futures, abort_handles, &["stuck"]);
             lifecycle.shutdown_deadline = Some(injected_deadline);
 
             let start = Instant::now();
@@ -753,14 +839,19 @@ mod tests {
     fn next_completion_records_per_extension_completion() {
         let (rt, local_tasks) = crate::testing::setup_test_runtime();
         rt.block_on(local_tasks.run_until(async {
-            let futures: FuturesUnordered<JoinHandle<(ExtensionId, Result<(), Error>)>> =
-                FuturesUnordered::new();
-            futures.push(tokio::task::spawn_local(async {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                (Cow::Borrowed("clean"), Ok(()))
-            }));
+            let mut futures: FuturesUnordered<ExtensionFuture> = FuturesUnordered::new();
+            let mut abort_handles: Vec<AbortHandle> = Vec::new();
+            push_test_extension(
+                &mut futures,
+                &mut abort_handles,
+                Cow::Borrowed("clean"),
+                async {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    (Cow::Borrowed("clean"), Ok(()))
+                },
+            );
 
-            let mut lifecycle = make_test_lifecycle(futures, &["clean"]);
+            let mut lifecycle = make_test_lifecycle(futures, abort_handles, &["clean"]);
             // Backdate the broadcast so elapsed > 0 deterministically.
             if let Some(entry) = lifecycle.ext_metrics.get_mut(&Cow::Borrowed("clean")) {
                 entry.shutdown_delivered_at = Some(Instant::now() - Duration::from_millis(1));
@@ -797,18 +888,23 @@ mod tests {
     fn next_completion_records_task_error_on_err() {
         let (rt, local_tasks) = crate::testing::setup_test_runtime();
         rt.block_on(local_tasks.run_until(async {
-            let futures: FuturesUnordered<JoinHandle<(ExtensionId, Result<(), Error>)>> =
-                FuturesUnordered::new();
-            futures.push(tokio::task::spawn_local(async {
-                (
-                    Cow::Borrowed("boom"),
-                    Err(Error::InternalError {
-                        message: "boom".to_string(),
-                    }),
-                )
-            }));
+            let mut futures: FuturesUnordered<ExtensionFuture> = FuturesUnordered::new();
+            let mut abort_handles: Vec<AbortHandle> = Vec::new();
+            push_test_extension(
+                &mut futures,
+                &mut abort_handles,
+                Cow::Borrowed("boom"),
+                async {
+                    (
+                        Cow::Borrowed("boom"),
+                        Err(Error::InternalError {
+                            message: "boom".to_string(),
+                        }),
+                    )
+                },
+            );
 
-            let mut lifecycle = make_test_lifecycle(futures, &["boom"]);
+            let mut lifecycle = make_test_lifecycle(futures, abort_handles, &["boom"]);
 
             let result = lifecycle
                 .next_completion()
@@ -835,12 +931,15 @@ mod tests {
     fn record_completion_skips_duration_when_shutdown_not_delivered() {
         let (rt, local_tasks) = crate::testing::setup_test_runtime();
         rt.block_on(local_tasks.run_until(async {
-            let futures: FuturesUnordered<JoinHandle<(ExtensionId, Result<(), Error>)>> =
-                FuturesUnordered::new();
-            futures.push(tokio::task::spawn_local(async {
-                (Cow::Borrowed("undelivered"), Ok(()))
-            }));
-            let mut lifecycle = make_test_lifecycle(futures, &["undelivered"]);
+            let mut futures: FuturesUnordered<ExtensionFuture> = FuturesUnordered::new();
+            let mut abort_handles: Vec<AbortHandle> = Vec::new();
+            push_test_extension(
+                &mut futures,
+                &mut abort_handles,
+                Cow::Borrowed("undelivered"),
+                async { (Cow::Borrowed("undelivered"), Ok(())) },
+            );
+            let mut lifecycle = make_test_lifecycle(futures, abort_handles, &["undelivered"]);
             // Simulate the "send failed / timed out" outcome: no
             // delivery anchor and `shutdown.delivered` stays 0.
             if let Some(entry) = lifecycle.ext_metrics.get_mut(&Cow::Borrowed("undelivered")) {
@@ -877,15 +976,20 @@ mod tests {
     fn record_timeout_skips_increment_when_shutdown_not_delivered() {
         let (rt, local_tasks) = crate::testing::setup_test_runtime();
         rt.block_on(local_tasks.run_until(async {
-            let futures: FuturesUnordered<JoinHandle<(ExtensionId, Result<(), Error>)>> =
-                FuturesUnordered::new();
-            futures.push(tokio::task::spawn_local(async {
-                std::future::pending::<()>().await;
-                (Cow::Borrowed("stuck-no-delivery"), Ok(()))
-            }));
+            let mut futures: FuturesUnordered<ExtensionFuture> = FuturesUnordered::new();
+            let mut abort_handles: Vec<AbortHandle> = Vec::new();
+            push_test_extension(
+                &mut futures,
+                &mut abort_handles,
+                Cow::Borrowed("stuck-no-delivery"),
+                async {
+                    std::future::pending::<()>().await;
+                    (Cow::Borrowed("stuck-no-delivery"), Ok(()))
+                },
+            );
 
             let injected_deadline = Instant::now() + Duration::from_millis(50);
-            let mut lifecycle = make_test_lifecycle(futures, &["stuck-no-delivery"]);
+            let mut lifecycle = make_test_lifecycle(futures, abort_handles, &["stuck-no-delivery"]);
             lifecycle.shutdown_deadline = Some(injected_deadline);
             if let Some(entry) = lifecycle
                 .ext_metrics
@@ -919,22 +1023,27 @@ mod tests {
     fn panic_in_extension_is_attributed_via_task_error() {
         let (rt, local_tasks) = crate::testing::setup_test_runtime();
         rt.block_on(local_tasks.run_until(async {
-            let futures: FuturesUnordered<JoinHandle<(ExtensionId, Result<(), Error>)>> =
-                FuturesUnordered::new();
-            futures.push(tokio::task::spawn_local(async {
-                let payload = AssertUnwindSafe(async { panic!("boom from extension") })
-                    .catch_unwind()
-                    .await;
-                let result = match payload {
-                    Ok(()) => Ok(()),
-                    Err(p) => Err(Error::InternalError {
-                        message: panic_payload_to_string(&*p),
-                    }),
-                };
-                (Cow::Borrowed("panicker"), result)
-            }));
+            let mut futures: FuturesUnordered<ExtensionFuture> = FuturesUnordered::new();
+            let mut abort_handles: Vec<AbortHandle> = Vec::new();
+            push_test_extension(
+                &mut futures,
+                &mut abort_handles,
+                Cow::Borrowed("panicker"),
+                async {
+                    let payload = AssertUnwindSafe(async { panic!("boom from extension") })
+                        .catch_unwind()
+                        .await;
+                    let result = match payload {
+                        Ok(()) => Ok(()),
+                        Err(p) => Err(Error::InternalError {
+                            message: panic_payload_to_string(&*p),
+                        }),
+                    };
+                    (Cow::Borrowed("panicker"), result)
+                },
+            );
 
-            let mut lifecycle = make_test_lifecycle(futures, &["panicker"]);
+            let mut lifecycle = make_test_lifecycle(futures, abort_handles, &["panicker"]);
             let result = lifecycle.next_completion().await.expect("queued");
             assert!(matches!(result, Ok(Err(_))));
 
@@ -944,6 +1053,65 @@ mod tests {
                 .expect("metric entry exists");
             assert_eq!(entry.metrics.task_error.get(), 1);
             assert_eq!(entry.metrics.active.get(), 0);
+        }));
+    }
+
+    /// Regression: a task cancelled by the runtime (e.g. via
+    /// `AbortHandle::abort`) yields a `JoinError`, but the per-extension
+    /// entry must still be finalized — `active` flipped to `0`, removed
+    /// from `pending` — so a later `drain_until_deadline` does NOT
+    /// misattribute the cancellation as a `shutdown.timeout`, and the
+    /// `task.error` counter is NOT bumped (cancellation is a runtime
+    /// event, not an extension fault).
+    #[test]
+    fn next_completion_finalizes_entry_on_cancellation() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let mut futures: FuturesUnordered<ExtensionFuture> = FuturesUnordered::new();
+            let mut abort_handles: Vec<AbortHandle> = Vec::new();
+            push_test_extension(
+                &mut futures,
+                &mut abort_handles,
+                Cow::Borrowed("cancelled"),
+                async {
+                    std::future::pending::<()>().await;
+                    (Cow::Borrowed("cancelled"), Ok(()))
+                },
+            );
+
+            let mut lifecycle = make_test_lifecycle(futures, abort_handles, &["cancelled"]);
+            // Force a `JoinError` by aborting the spawned task before
+            // awaiting the wrapped future.
+            for handle in &lifecycle.abort_handles {
+                handle.abort();
+            }
+
+            let result = lifecycle.next_completion().await.expect("queued");
+            assert!(
+                matches!(&result, Err(e) if e.is_cancelled()),
+                "cancellation must surface as Err(JoinError::cancelled), got {result:?}",
+            );
+
+            assert!(
+                !lifecycle.pending.contains(&Cow::Borrowed("cancelled")),
+                "cancelled extension must be removed from `pending` so a later \
+                 `drain_until_deadline` does not misattribute it as a timeout",
+            );
+            let entry = lifecycle
+                .ext_metrics
+                .get(&Cow::Borrowed("cancelled"))
+                .expect("metric entry exists");
+            assert_eq!(entry.metrics.active.get(), 0);
+            assert_eq!(
+                entry.metrics.task_error.get(),
+                0,
+                "cancellation is a runtime event, not an extension fault",
+            );
+            assert_eq!(
+                entry.metrics.shutdown_timeout.get(),
+                0,
+                "cancellation must not be misattributed as a shutdown timeout",
+            );
         }));
     }
 }
