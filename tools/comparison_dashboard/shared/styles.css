@@ -1346,6 +1346,13 @@ a.scenario-section-title:hover {
   flex: 0 1 auto;
   text-align: center;
 }
+.wip-banner .wip-link {
+  color: #78350f;
+  text-decoration: underline;
+}
+.wip-banner .wip-link:hover {
+  color: #92400e;
+}
 
 /* ── Environment summary (comparison header) ─────────────────────────────── */
 .env-summary {
