@@ -337,7 +337,8 @@ pub static ETW_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig| {
+             receiver_config: &ReceiverConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         Ok(ReceiverWrapper::local(
             EtwReceiver::from_config(pipeline, &node_config.config)?,
             node,
