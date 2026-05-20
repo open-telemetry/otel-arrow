@@ -1,0 +1,1222 @@
+\documentclass{article}
+\usepackage{epsfig}
+\usepackage{hyperref}
+\usepackage{amssymb}
+\usepackage{amsmath}
+\usepackage{textcomp}
+
+\input{opl.sty}
+\begin{document}
+\title{OPL Language Specification\\
+{\large Version 0.01}
+}
+\maketitle
+
+\tableofcontents
+
+\section{Introduction}
+\label{introduction}
+
+OPL, the Observability Programming Language, is a domain specific language (DSL) designed to support the specification of telemetry pipelines. These pipelines [\ref{pipelines}] process {\em streams} of telemetry data by applying  {\em operators} [\ref{operators}] to them.  The set of operators is predefined by the language.
+
+OPL supports user defined {\em functions} [\ref{functions}].  Functions are used in expressions that are parameters to operators. Thus, functions are first-order, whereas operators are potentially higher-order. 
+
+The data in a stream is always of some known {\em signal type} [\ref{streamSignalTypes}]. signal types belong to a type hierarchy derived from open telemetry (OTel) standards. The structure of each signal type includes a known, fixed part, and a dynamic part that allows for extensions. The static part consist of a set of named fields that remains fixed for the duration of an OPL program. ,The dynamic part contains a set of named attributes that may vary during program execution. The values  of both fields and attributes belong to a family of {\em attribute types} [\ref{attributeTypes}]. Attribute types are a subset of {\em basic types}. Basic types are manipulated  by functions and expressions.  Basic types and signal types are distinct and disjoint.
+
+
+OPL encourages static typechecking of pipelines; however, because signal types may include dynamically typed data, typechecking is not always possible, and so OPL provides an optional type system.
+
+OPL programs may be invoked as nodes in a {\em global data flow graph} composed of varied processes and resources that produce or consume streams of data. An OPL program used in such a graph is called an {\em OPL processor} (when no confusion may arise, we may simply refer to such a program as a {\em processor}).
+
+\subsection{Levels}
+\label{levels}
+
+OPL  is intended to evolve to support more extensive capabilities in the future. This document focuses on {\em level 1} capabilities, which deal with stateless stream processing.
+Level  2 is intended to support stateful stream processing.
+{\em This includes operations such as reduce/fold, notions such as windows etc. }
+Level 3 will support  database features {\em Examples might include joins, persistence and/or materialized views.}
+\subsection{Notation}
+\label{notation}
+
+In this specification, normative text appears in roman font. Defined concepts are given in {\em italic font}. Non-normative commentary is given in {\em italic font}.
+
+{\em Commentary is useful for adding explanations, motivations, context etc.}
+
+\comment{Ongoing design commentary is given in purple italics}
+
+
+\section{Program Structure}
+\label{programStructure}
+
+A program consists of optional declarations and policies [\ref{policies}] and one or more pipelines [\ref{pipelines}]. Declarations include functions [\ref{functions}] and let bindings [\ref{letBindings}]. The declarations may be preceded by a level declaration [\ref{levels}], indicating what level of this specification the program requires.  If no level specification is given, it defaults to level 1.
+
+
+\OPLProgram{}
+\LevelDecl{}
+\Decl{}
+
+
+
+\comment{We should we have a notion of language version that is orthogonal to levels.  The language version may be given explicitly, but is optional, defaulting to the most recent version.}
+
+\section{Scopes}
+\label{scopes}
+
+A {\em scope} is a mapping from names to entities such as variables [\ref{letBindings}, function declarations [\ref{functions}] or pipelines [\ref{pipelines}]. Scopes exist at both compile-time and runtime. An OPL program always has a {\em global compile-time scope}.
+
+{\em 
+Note that the term scope used herein should not be confused with the Otel concept of an instrumentation scope. 
+}
+
+
+Declarations effect scopes by adding elements to them. 
+Function declarations [\ref{functions}] introduce scopes at compile-time. 
+
+Execution introduces scopes at runtime. Scopes introduced at runtime are always based on scopes created at compile-time. They will typically differ in that they map names to values or functions rather than types. We say that a scope $rs$ is {\em derived} from a scope $cs$ if $rs$ has entries for the same keys as $cs$.
+
+Let $s_1, s_2$ be scopes.  We write $s_1 \leftarrow s_2$, pronounced {\em $s_1$ overridden by $s_2$}, to denote the scope  which maps all names defined in $s_2$ to their values in $s_2$ and any other name to its mapping in $s_1$, if any. We write $\{id_1 \mapsto v_1, \ldots, id_n \mapsto v_n\}$ to denote a scope that defines $id_i$ and binds it to $v_i$,  $\{id_1 \rightsquigarrow  T_1, \ldots, id_n \rightsquigarrow T_n\}$ to denote a scope that associates $id_i$ with a type $T_i $ without regard to value, and  $\{id_1 \mapsto v_1: T_1, \ldots, id_n \mapsto  v_n: T_n\}$ to denote a scope that defines $id_i$ and binds it to $v_i$ with type or type schema $T_i$, $i \in 1..n$.
+
+Scopes may nest. Nested scopes override their immediately enclosing scope: if a scope $s_{inner}$ is nested in a scope $s_{outer}$, then the effective scope is $s \triangleq s_{outer} \leftarrow s_{inner}$, and so all elements of $s_{outer}$ are {\em available in} $s$ unless an element with the same name is added to $s_{inner}$. 
+
+The compile-time scope of a function declaration is always nested in the global compile-time scope.  
+
+{\em
+In short, we have lexical scoping.
+}
+
+The technical use of the term {\em scope} should not be confused with its informal use in phrases such as {\em beyond the scope of this specification.}
+
+\section{Let Bindings}
+\label{letBindings}
+
+A {\em let binding} binds a policy [\ref{policies}],  pipeline [\ref{pipelines}], a port tied to an externally declared stream or a value of a basic type to a {\em variable} denoted by an identifier.
+
+\LetBinding{}
+
+\Block{}
+
+\PropertyList{}
+
+\Property{}
+
+\PropertyName{}
+
+\PropertyValue{}
+
+\Scalar{}
+
+\ScalarArray{}
+
+A {\em port} may be either a {\em source port} or a {\em destination port}.  A source port is indicated by the keyword \RECEIVER{}, and destination port is indicated by the keyword \EXPORTER. Ports are referenced by their declared name. 
+
+{\em A port is analogous to a formal parameter of a function; in this analogy, the OPL program is the function.  OPL programs may be bound to other  processes or resources (which may themselves be OPL programs) in a manner analogous to function calls. How this binding is done is a matter for level 2 of this specification; for now it is out of scope.
+}
+
+The port is followed by a block that indicates the configuration of the port, given as a list of key-value pairs, known as {\em attributes}. This specification does not assign any specific meaning to any given attribute; the interpretation of the attributes in a port configuration is determined by the resource or process  bound to the port. Ports are bound to resources outside the OPL program.
+
+{\em See discussion above. }
+
+Let  $l \triangleq $ \LET{} $ID$  \BIND{} $e$
+
+Processing of $l$  has the following effect:
+
+The variable $ID$ is added to the compile-time global  scope, with type [\ref{types}] $T$, where  $T$ is the type of $e$.
+
+Execution of $l$  has the following effect:
+
+If $e$ is an expression, $e$ is evaluated to $v_e$ and $v_e$ is associated with the variable $ID$ in the global runtime scope.
+
+The expression $\LET{}$ $ID$\COLON{} $T$ \BIND{} $e$ is equivalent to $\LET{}$ $ID$ \BIND{} $(e: T)$ [\ref{parenthesizedExpressions}].
+
+It is a compile-time error if the compile-time global scope contains another declaration named $ID$. 
+
+\section{Functions}
+\label{functions}
+
+A {\em function declaration} declares an OPL function. It consists of a function signature, followed by an equal sign and an expression denoting the function body.
+
+\FunctionDeclaration{}
+
+A {\em function signature} consists of an identifier $F$  that specifies the name of the function, a parenthesized list of formal parameter declarations, and optionally, a return type $T_r$. 
+
+\FunctionSignature{}
+
+The parameter declarations each include the name of a parameter, $p_i$ and may optionally declare a type $T_i$ for the parameter, $i \in 1 \ldots k$.
+
+\ParameterList{}
+
+\Parameter{}
+
+If $p_i$ does not declare a type, then $T_i =  *$ [ \ref{theErrorType}]. If $T_r$ is not explicitly declared, $T_r = T_e$, where $T_e$ is  the type of the function's body defined below.
+
+Let $f \triangleq$ \FUNC{} $F\LPAREN{}p_1\COLON T_1\COMMA{} \ldots\COMMA{} p_n\COLON T_n\RPAREN{}\COLON T_r$  \BIND{} $e$.
+
+The signature of $f$ corresponds to the function type [\ref{functionTypes}] $T_1, \ldots, T_n \to T_r$.
+
+Processing of $f$  has the following effect:
+
+A new scope, $s_{f}$, is introduced. The scope $s_{f}$ is nested in the global  scope of the enclosing program, $s_g$, yielding a scope $s \triangleq s_g \leftarrow s_{f}$. The scope $s_f$ maps $p_i$ to type $T_i, i \in 1 \ldots n$. The scope $s$ is known as {\em the compile-time scope of the function}.
+The current compile-time scope is set to $s$, and the  expression $e$ is typechecked. Let $T_e$ be the type of $e$ in scope $s$.
+
+Then the current compile-time scope is set back to $s_g$.
+
+A binding of $F$ to $f$ is added to the global scope of the enclosing program with the type  $T_1, \ldots, T_n \to T_r$ [\ref{functionTypes}]. 
+
+It is a type warning if $T_i= *$, $i \in 1 \ldots n$.
+It is a type warning if $T_r = *$.
+It is a compile-time error if the name $F$ already exists in the global scope.
+It is a compile-time error if $p_i = p_j, i \ne j$.
+
+\section{Policies}
+\label{policies}
+
+A {\em policy} may control error handling [\ref{errorHandlingPolicies}], 
+rate limiting [\ref{rateLimitingPolicies}] and timeouts  [\ref{timeoutPolicies}]. Policies may be  {\em global} or they may be restricted to a specific pipeline [\ref{pipelines}] or operator [\ref{operators}].
+
+{\em In the next level, we will also define policies for retrying. }
+
+\Policy{}
+
+A  policy declared at the top-level of an OPL program is said to be {\em global}. A policy $p$ declared on a particular pipeline is {\em pipeline policy} for $p$. A policy declared on a single operator $o$ is an {\em operator policy} for $o$.
+
+A  policy {\em governs execution} of certain operations. A global policy governs the execution of all operations in the program. A pipeline policy for pipeline $p$ governs execution of all operations in $p$. An operator policy for operator $o$ governs execution of the operation of $o$. If the execution of an operation is governed by a policy $p$, we say the operation is {\em governed} by $p$.
+
+\subsection{Error Handling Policies}
+\label{errorHandlingPolicies}
+
+An {\em error-handling policy} controls error handling 
+
+\ErrorPolicy{}
+\ErrorStrategy{}
+\ErrorAction{}
+
+Let $ep \triangleq$ \POLICY{} \ERROR{} \STRATEGY{} $es$ be an error policy.
+
+If $es = \DROPSIGNAL$ then any error signaled during execution of any operation governed by $ep$ is ignored.
+
+If $es = \ROUTETO$ $d$ then any error signaled during execution of any operation governed by $ep$ is directed to the port denoted by  $d$.
+
+If $es = \PROPAGATE$  then any error signaled during execution of any operation governed by $ep$ causes execution of the OPL program to be terminated. The signaled error is propagated to the process that invoked the OPL program.
+
+{\em The \PROPAGATE{} action is analogous to raising an unhandled exception in the OPL program.}
+
+If $es = \LOGANDCONTINUE$ $d$ then any error signaled during execution of any operation governed by $ep$ is logged, and execution continues.
+
+{\em The binding of specific logs to an OPL program is outside the scope of this specification.}
+
+
+\label{retryPolicies}
+
+\subsection{Rate Limiting Policies}
+\label{rateLimitingPolicies}
+
+A {\em rate-limiting policy} determines how the system may throttle operations to prevent overloading of subsequent ones.
+
+
+\RateLimitPolicy{}
+\RateLimitConfig{}
+\RateLimitStrategy{}
+\LimitAction{}
+\TokenBucketConfig{}
+\FixedWindowConfig{}
+\SlidingWindowConfig{}
+\Rate{}
+
+Let $rp \triangleq$ \POLICY{} \RATELIMIT{} \LCURLY{}
+   \STRATEGY \COLON{} $rs$ \COMMA      
+    \ONLIMIT \COLON{} $la$ 
+    \RCURLY{} be a rate-limiting policy.
+
+\subsection{Timeout Policies}
+\label{timeoutPolicies}
+
+A {\em timeout policy} determines if and when operations will time out if they do not meet latency requirements, and what to do if such a timeout occurs.
+
+
+\TimeoutPolicy{}
+\TimeoutConfig{}
+\TimeoutAction{}
+
+Let $bp \triangleq$ \POLICY{} \TIMEOUT{} \LCURLY
+  \OPERATION\COLON{}$d_1$ \COMMA \PIPELINE\COLON{} $d_2$ \COMMA \ONTIMEOUT\COLON{} $ta$  \RCURLY{} be a timeout policy.
+  
+  If $ta = \FAIL$ then  if any operation governed by $tp$ takes longer than $d_1$ an $OperationTimeout$ runtime error occurs. The error should provide the name and of the operation that failed, its source code location and the timeout period that was exceeded.       
+
+If any pipeline governed by $tp$ takes longer than $d_2$ a $PipelineTimeout$ runtime error occurs. The error should provide the pipeline's  source code location and the timeout period that was exceeded.
+
+if $ta = \ROUTETO$ $d$ then:
+  \begin{itemize}
+  \item  if any operation governed by $tp$ takes longer than $d_1$ the results of that operation are redirected to the timeout sink.
+  \item If any pipeline governed by $tp$ takes longer than $d_2$ the results of that pipeline are redirected to the timeout sink.
+\end{itemize} 
+
+It is a compile-time error if either $d_1$ or $d_2$ are not valid \DURATION{} tagged literals [\ref{dateTimeLiterals}].
+
+\comment{Do we insist on having literals here? Without mandatory typechecking, we could not ensure that variables are of type \DURATION.}
+
+\section{Pipelines}
+\label{pipelines}
+
+A {\em pipeline} is a function on streams.
+
+{\em These functions are distinct from user defined functions [\ref{functions}]. }
+
+{\em In all but the most trivial cases, a pipeline arises from the composition of a number of stream functions.
+}
+
+\Pipeline{}
+\Source{}
+\Stage{}
+
+A pipeline consists of a {\em source} and a series of {\em stages} [\ref{stages}]. A source represents a stream of data. The first stage processes the  source. Each subsequent  stage processes the result of the previous stage.
+
+A pipeline $s_1 | \ldots |  \ s_n$ evaluates to  $(s_n \circ s_{n-1}  \ldots \circ s_2)(s_1)$ for $n > 1$, and to $s_1$ otherwise.
+
+{\em The pipe syntax $s_1 | s_2$  is really stream function composition in reverse order, or if you prefer, an alternate form of stream function application which is left-associative.}
+
+
+\section{Operators}
+\label{operators}
+
+{\em Operators} are built in functions that operate on signal types [\ref{streamSignalTypes}]. 
+
+{\em 
+As such, operators are distinct from OPL's user-defined functions [\ref{functions}] which are restricted to basic types [\ref{basicTypes}].
+}
+
+The set of operators in OPL  is fixed. Operators  are often parameterized by expressions. Operators are applied to streams of signal type  via operator calls [\ref{operatorCalls}]. OPL defines the following operators:
+
+\subsection{Extend}
+\label{extend}
+
+The \EXTEND{} operator allows the assignment of an element of a map.
+
+{\em The purpose of \EXTEND{} is to add or mutate dynamic attributes of a stream eleement.}
+
+{\em Or, equivalently, to an element of a list of key-value pairs.}
+
+Let $x$ be the current element of the input stream $s$. The operator call $\EXTEND{}$  $id[k] = e$ produces an element $x'$ such that $x'$ is equivalent to $x$ except for the value of the field $id$, whose value in $x'$ is the same as $x[$, except that $x'.id[k] = v$ where $v$ is the result of evaluating $e$.
+
+\subsection{Identity}
+\label{identity}
+
+The \IDENTITY{} operator returns its input unchanged.
+
+{\em This may seem pointless at first glance, but in fact is a basic operation needed in order to define the behavior of other key operations.}
+
+\subsection{Keep}
+\label{keep}
+
+The \KEEP{} operator allows for removing all but a specified set of dynamic attributes of a stream element.
+
+{\em \KEEP{} removes all attributes except those explicitly listed, which are kept.}
+
+\KEEP{} can also be referenced using the predefined alias \PROJECTKEEP.
+
+\subsection{Remove}
+\label{remove}
+
+The \REMOVE{} operator allows for removing a set of dynamic attributes of a stream eleement.
+
+\REMOVE{} can also be referenced using the predefined alias \PROJECTREMOVE.
+
+\subsection{Rename}
+\label{rename}
+
+
+The \RENAME{} operator allows for renaming a set of dynamic attributes of a stream eleement.
+
+\RENAME{} can also be referenced using the predefined alias \PROJECTRENAME.
+
+\subsection{Set}
+\label{set}
+
+The \SET{} operator allows the assignment of a field of a signal.
+
+Let $x$ be the current element of the input stream $s$. The operator call $\SET$ $ id = e$ produces an element $x'$ such that $x'$ is equivalent to $x$ except for the value of the field $id$, whose value in $x'$ is $v$, where $v$ is the result of evaluating $e$.
+
+Let $Stream \lt T \gt$ be the type of $s$.  It is a runtime error if $id$ is not a member of  $T$.
+
+\comment{Even though we give a type warning at compile time, in an optional type system we do not preclude the code from being run (say, for test purposes). If it runs, it must fail at this point.
+}
+
+It is a type warning if $id$ is not a member of  $T$. It is a type warning if the type of $e$ is not compatible with $T$.
+
+\subsection{Casts: Accept and Reject}
+\label{casts}
+
+The \ACCEPT{} and \REJECT{} operators are identity operators that cast the input type to the type given as their argument.
+
+The operator \ACCEPT{} $T$ is equivalent to \WHERE{} $\IS{}$ $T$.
+
+The operator \REJECT{} $T$ is equivalent to \WHERE{} \NOT{} $\IS{}$ $T$.
+
+It is a compile time error if $T$ is not a signal type [\ref{streamSignalTypes}].
+
+
+\section{Stages}
+\label{stages}
+
+{\em Stages} operate on streams.  A stage has an {\em input stream} and, unless it is the terminal stage of a pipeline, and an {\em output stream}. OPL provides distinct syntactic forms for different kinds of stream processing functions.
+
+Evaluation of a stage always takes place in a scope. $s_g \leftarrow s_{stage}$, where $s_{stage}$  maps the name of  every attribute of the current stream element to its value.
+
+\subsection{Control Flow}
+\label{controlFlow}
+
+OPL supports control flow by means of several stream combinators, that allow streams to be forked and reunified, possibly conditionally.
+
+{\em
+Stream combinators are distinct from operators, because they do not work on individual stream elements, but rather on entire streams.
+}
+\Control{}
+
+\subsubsection{If}
+\label{if}
+
+The \IF{} combinator allows a stream to split into multiple streams, each subject to distinct treatment  by a different pipeline based on specific conditions.
+
+\IfExpression{}
+
+Given an \IF{} expression of the form $\IF{}$ $c_1$ $\LPAREN{} p_1 \RPAREN{}$ $\ELSE{} \IF{}$ $c_2$  $\LPAREN{} p_2 \RPAREN{} \ldots$ $\ELSE{} \IF{} $ $c_{n-1}$  $\LPAREN{} p_{n-1} \RPAREN{}$  $\ELSE$  $c_n$ $\LPAREN{} p_n \RPAREN{}$, the conditions $c_i , i \in 1 .. n$ are evaluated on each element of the input stream(s). If an element matches $c_i$ and does not match any condition $c_j, j < i$, the element is appended to the input stream for $p_i$, $ i \in 1 .. n$. Any element of $s$ that does not match any $c_i, i \in 1..n$ becomes part of a residual stream $s_{n+1}$. Let $s_i$ be  the input stream of  $p_i, i \in 1..n+1$. For any two elements of $e_k, e_l$ of $s_i$, if $e_k$ precedes $e_l$ in $s$, $e_k$ precedes $e_l$ ins $s_i$.
+
+ The result of the \IF{} combinator is the \UNION{} [\ref{union}] of $s_i, i  \in 1..n+1$.
+
+\subsubsection{Union}
+\label{union}
+
+The \UNION{} combinator takes two streams and produces a stream composed of the union of their elements. 
+
+\Union{}
+
+The only constraint on the order of the elements in the result stream is that that if $e_i$ precedes $e_j \in s$ , then  $e_i$ precedes $e_j$ in the result, where $s$  is one of the input streams of the \UNION{} combinator. 
+
+{\em There is no other constraint on the order of the result. Thus the ordering between elements of the streams $s_1$ and $s_2$ is undefined.
+}
+
+
+\subsubsection{Fork}
+\label{fork}
+
+The \FORK{} combinator feeds the elements of its input stream into two or more \comment{The original syntax said it limited to two, but other parts of the doc contradict that, and it doesn't seem to be necessary, or a good fit with the rest of the system. Is there a real reason to limit?} child pipelines.
+
+\ForkExpression{}
+
+Given an \FORK{} expression of the form $\FORK{}  \LPAREN{} p_1 \RPAREN{} \ldots  \LPAREN{} p_n \RPAREN{}$, its input stream $s$ is replicated into $n$ identical streams $s_i$ and $s_i$  becomes the input for $p_i,  i \in 1..n$.
+
+The result of the \FORK{} combinator is the \UNION [\ref{union}] on the results of the children $p_i, i \in 1..n$.
+
+{\em It follows from the definition \UNION{} that  no de-duplication occurs even if the children are identical, and that the ordering among the children is undefined, but elements of each child pipeline preserve their relative order }
+
+\subsection{Operator Calls}
+\label{operatorCalls}
+
+An operator call takes a named operator and lifts it to the stream domain. 
+
+\OperatorCall{}
+
+The first argument of the operator is implicitly an element of the stage's incoming stream, and other arguments are provided explicitly.
+
+{The entire call expression is treated as a function from the stream signal type to itself, and it is implicitly mapped over the stream.}
+
+An operator call of the form  $id$ is equivalent to the operator call $id()$.
+
+Let $oc \triangleq id (a_1, \ldots a_n)$ be an operator call. Let $o$ be the operator denoted by $id$ and let $f = \lambda x. o(x, a_1, \ldots a_n)$. Let $s$ be the input stream of the call. 
+
+{\em Recall that operator calls are a form of stage, and thus always have an input stream.}
+
+Then the value of $oc$ is $map(f, s)$. The value of $oc$ is the output stream of the operator call/stage.
+
+\subsection{Routing}
+\label{routing}
+
+Routing operations direct stream data to destinations. There are two such operations. 
+
+\ROUTETO{} directs data to a specified destination, which may be a pipeline or an external stream.
+
+{\em We can think of \ROUTETO by itself as a meta-operation, which, given a destination, produces an operation that takes its input and writes to the destination. The syntax ensures that only applications of \ROUTETO (i.e., operations) appear in pipelines.}
+
+\DROP{} simply absorbs its argument.  
+
+\Terminal{}
+
+It is a compile-time error if a routing operation appears anywhere except the last position in a pipeline, unless the pipeline is nested in a fork [\ref{fork}] or conditional [\ref{if}].
+It is a compile-time error if the destination of a routing operation does not denote an externally specified destination stream, unless the pipeline is nested in a fork or conditional. 
+
+
+\subsection{Where}
+\label{where}
+
+The \WHERE{} combinator filters a stream based on a predicate.
+
+\WHERE{} $c$ is equivalent to \IF{} $c$ \IDENTITY{} \ELSE{} \DROP.
+
+\WHERE{} can also be referenced using the predefined alias \FILTER.
+
+
+\section{Expressions}
+\label{expressions}
+
+Expressions describe computations on basic types [\ref{basicTypes}].
+
+\subsection{Boolean Literals}
+\label{booleanLiterals}
+
+The identifiers \TRUE{} and \FALSE{} are predefined,  denoting the booleans true and false respectively, and have type \BOOL{} [\ref{bool}].
+
+{\bf BoolLiteral} $\rightarrow$ \TRUE{} $|$ \FALSE{}
+
+\subsection{Numeric Literals}
+\label{numericLiterals}
+
+A {\em numeric literal} is either an {\em integer literal} or a {\em floating-point literal}.
+
+An integer literal represents an integer that can be represented by one of the integer types.
+An integer literal has the smallest signed integer type that can represent it.
+
+A floating point literal represents an IEEE floating point number and has type \FSIXTYFOUR.
+
+The numeric types form a lattice, defined by the relationships \UINTTHIRTYTWO $\le$ \UINTSIXTYFOUR,   \INTTHIRTYTWO $\le$ \INTSIXTYFOUR,   \INTTHIRTYTWO $\le$ \FSIXTYFOUR{},
+
+The type \FSIXTYFOUR{} is a {\em floating-point type}. Other numeric types are {\em integer types}. The types \UINTTHIRTYTWO{} and \UINTSIXTYFOUR{} are {\em unsigned types}; all other numeric types are {\em signed types}.
+
+Numeric literals can be expressed in decimal and hexadecimal systems. The prefix `0x` or `0X` indicates a hexadecimal number literal. Numeric decimals may also be expressed in scientific notation using `E` or `e`.
+
+
+\NumberLiteral{}
+\LEXDECIMAL{}
+\LEXHEX{}
+\LEXFRAC{}
+\LEXEXPO{}
+\LEXFLOAT{}
+\LEXINT{}
+
+The predefined identifier {\tt system::nan}  denotes an IEEE floating point NaN value and has type \FSIXTYFOUR{}.
+The predefined identifier {\tt system::infinity} denotes IEEE floating point positive infinity and has type \FSIXTYFOUR{}.
+
+{\em
+OPL does not distinguish among NaN values. An implication is that any foreign function called from OPL should not expect any specific NaN variants.
+}
+
+
+
+\subsection{String Literals}
+\label{stringLiterals}
+
+String literals are represented in the UTF-8 encoding. String literals are delimited by either a pair of double quotes or a pair of single quotes. A backslash ($\backslash$) character is used for conventional character escaping.
+
+\StringLiteral{}
+
+\LEXDQSTRING{}
+
+\LEXDQCHAR{}
+
+\LEXLINETERMINAL{}
+
+\LEXESCAPE{}
+
+\LEXSQSTRING{}
+
+\LEXSQCHAR{}
+
+
+String literals are enclosed in double quotes (\textsf{"}), for example \textsf{"}A simple  string\textsf{"}. A backslash ($\backslash$) character is used for conventional character escaping.
+
+\comment{We want to support string interpolation.}
+
+
+\subsection{\NULL}
+\label{null}
+
+The value  \NULL{} denotes the absence of a normal value. OPL always pairs \NULL{} with a {\em provenance}  [\ref{theNullType}] to produce a value of type \NULLTYPE.
+
+\subsection{Identifier Expressions}
+\label{identifierExpressions}
+
+An {\em identifier expression} consists of a single identifier.
+
+\IdentifierExpression{}
+
+Let $i \triangleq ID$.
+Evaluation of $i$ proceeds as follows:
+
+Let $s$ be the current runtime scope.
+The value $v$ of $ID$ is looked up in $s$. The value of $i$ is $v$.
+
+The type of $i$ is the type associated with $ID$ in the enclosing compile-time scope.
+
+It is a compile-time error if $ID$ is not bound to a variable declaration.
+
+{\em  Note that this implies that it is an error if $ID$ is undeclared, but also if it denotes a function or type. Neither functions nor types are values in OPL. }
+
+\subsection{Tagged Literals}
+\label{taggedLiterals}
+
+{\em Tagged literals} are either  tagged string literals [\ref{taggedStringLiterals}] or tagged numeric literals [\ref{taggedNumericLiterals}]. String tagged literals consist of a string literal prefixed by an identifier, known as the {\em tag}. Numeric tagged literals consist of a numeric literal suffixed by a tag.
+
+\TaggedLiteral{}
+
+Each tag must name a unique {\em tag handler} function.
+
+Tagged literals represent either regexes [\ref{regexes}] or date/time values [\ref{dateTimeLiterals}].
+
+\subsubsection{Tagged String Literals}
+\label{taggedStringLiterals}
+
+Let $tl \triangleq Tl$.
+It is a compile-time error if $T$ is not one of the predefined functions \REGEXTAG, \DATE, \TIME, \TIMESTAMP,   \DURATION{} or \INTERVAL.
+
+{\it
+This restriction can and should be lifted, to allow for arbitrary tag functions. However, the special status of r and the various date/time tags remains, as they are used to facilitate compile time checking of the literal string format.
+}
+
+\subsubsection{Tagged Numeric Literals}
+\label{taggedNumericLiterals}
+
+Let $tl \triangleq lT$.
+It is a compile-time error if $T$ is not one of the predefined functions \MILLISECOND, \SECOND, \MINUTE{} or \HOUR.
+
+{\it
+As above, this restriction should be lifted. The notation would then allow for a wide range of user-defined units.
+}
+
+
+In either case:
+
+Evaluation of $tl$ is proceeds as follows:
+Let $vl$ be the result of evaluating $l$, and let $h$ be the tag handler for $T$. The value of $lT$ is $h(vl)$.
+
+{\em
+If the same literal repeats, it is not re-evaluated, as tagged literals are compile-time constants. In principle it should not matter (but if the constructor is stateful, it might). Thus OPL calls the tag handler once per literal, at compile-time.
+}
+
+The type of a tagged literal $Ts$, where $T$ the tag and $s$ is the literal, is the type returned by the handler associated with $T$.
+
+\comment{To be added when we allow user-defined tags:
+ It is a compile-time error if $t$ does not denote the name of a function in the compile-time scope of $tl$.}
+
+
+\subsubsection{Regexes}
+\label{regexes}
+
+A regular expression literals are tagged literals whose tag is the identifier \REGEXTAG. The meaning of the regular expression literal is defined by interpreting the contents of its string literal component as a regular expression as defined by IETF RFC 9485 (https://datatracker.ietf.org/doc/html/rfc9485).
+
+\comment{
+If we allow string interpolation, string literals are no longer compile-time constants, and our ability to validate the contents is (partially) lost. One solution is to distinguish constant string literals from non-constant ones, and enforce syntax checks only on constants, perhaps warning in the non-constant case. We could try to be even smarter, depending on what is being interpolated, but that seems a rathole.
+}
+
+It is a compile-time error if the  contents of the string literal component of a regular expression literal does not conform to IETF RFC 9485 (https://datatracker.ietf.org/doc/html/rfc9485).
+
+Regular expression literals have type \REGEX [\ref{regexp}].
+
+\subsubsection{Date/Time Literals}
+\label{dateTimeLiterals}
+
+Date/Time literals are either  string tagged literals whose tag is one of the identifiers: \DATE, \TIME, \TIMESTAMP, \DURATION{} or \INTERVAL{}, or numeric tagged literals whose tag is one of  \MILLISECOND, \SECOND, \MINUTE{} or \HOUR. The meaning of the date/time  literal is defined as follows :
+
+\begin{itemize}
+\item If the literal's tag is \DATE, then its string literal component is interpreted as a date,  as defined by ISO 8601.
+\item If the literal's tag is \TIME, then its string literal component is interpreted as a time,  as defined by ISO 8601.
+\item If the literal's tag is \TIMESTAMP, then its string literal component is interpreted as a combined ate and time,  as defined by ISO 8601.
+\item If the literal's tag is \DURATION, then its string literal component is interpreted as a duration,  as defined by ISO 8601.
+\item If the literal's tag is \INTERVAL, then its string literal component is interpreted as an interval,  as defined by ISO 8601.
+ \item If the literal's tag is \MILLISECOND{} then $d$ denotes a \DURATION{} of $k$ milliseconds.
+ \item If the literal's tag is \SECOND{} then $d$ denotes a \DURATION{}  of $k$ seconds.
+ \item If the literal's tag is \MINUTE{} then $d$ denotes a \DURATION{}  of $k$ minutes.             
+  \item Ifthe literal's tag is  \HOUR{} then $d$ denotes a \DURATION{}  of $k$ hours.    
+\end{itemize}
+
+It is a compile-time error if the contents of string literal component of a date/time literal with tag \DATE{}  does not conform to the format of a date in ISO 8601. It is a compile-time error if the contents of string literal component of a date/time literal with tag \TIME{}  does not conform to the format of a date in ISO 8601. It is a compile-time error if the contents of string literal component of a date/time literal with tag \TIMESTAMP{}  does not conform to the format of a combined date and time in ISO 8601. It is a compile-time error if the contents of string literal component of a date/time literal with tag \DURATION{}  does not conform to the format of a duration in ISO 8601. It is a compile-time error if the contents of string literal component of a date/time literal with tag \INTERVAL{}  does not conform to the format of an interval in ISO 8601.
+
+\comment{ Are there size limits of ISO 8601 that we should enforce for numeric date/time literals?}
+
+The type of a date/time literal is the type specified by its tag [\ref{dateTime}].
+
+\comment{ISO 8601 does not support  Date/Time arithmetic and comparisons.  We expect to add support for that shortly. }
+
+{\em We expect to generalize this approach to additional units, per the Unified Code for Units of Measure (UCUM) specification.}
+
+
+
+\subsection{Parenthesized Expressions}
+\label{parenthesizedExpressions}
+
+\ParenthesizedExpression{}
+
+
+The expression  $\LPAREN{}e \RPAREN{}$ is equivalent to the expression $\LPAREN{}e \COLON{} T \RPAREN{}$ where $T$ is the type of $e$.
+
+Let $p \triangleq \LPAREN{}e \COLON{} T \RPAREN{}$.
+
+Evaluation of $p$ proceeds as follows:
+
+The expression $e$ is evaluated to $v$. The value of $p$ is $v$.
+
+The type of $p$ is $T$.
+
+It is a type warning if the type of  $e$ is not a subtype of type $T$. 
+
+\subsection{Index Expressions}
+\label{indexExpressions}
+
+An {\em index expression} provides random access to the members of a map  [\ref{attributeTypes}].
+
+\IndexExpression{}
+
+Let $i \triangleq e_1\LBRACK{}e_2\RBRACK{}$.
+
+Evaluation of $i$ proceeds as follows:
+
+The expression  $e_1$ is evaluated to a value $v_1$.  If $v_1$ is \NULL{}, the value of $i$ is \NULL{} with provenance $e_1$. 
+Otherwise,  the expression $e_2$ is evaluated to a value $v_2$
+ if $v_2$  is \NULL{}, the value of $i$ is \NULL{} with provenance $e_2$.
+Otherwise, the value of $i$ is the element of $e_1$ stored under key $v_2$, if there is one, or \NULL{} with provenance $i$ otherwise.
+
+Let $T_1$ be the type of $e_1$. It is a type warning if $T_1$ is not a map type.
+Let $T_2$ be the type of $e_2$. It is a type warning if $T_2$ is not compatible with type \STRING.
+
+{\em In particular, if  either $T_1$ or $T_2$ or both are nullable, a type warning arises.}
+
+\comment{
+Unclear what checking we can do here. At a minimum, $T_1$ must be attributeValue and the overall type of the expresision is attributeValue. Hopefully, we can do better.
+}
+
+\subsection{Attribute Selection Expressions}
+\label{attributeSelectionExpressions}
+
+An {\em attribute selection expression} provides a way to access a member of a stream element [\ref{streamSignalTypes}].
+
+\AttributeSelectionExpression
+Let $m \triangleq e\DOT{}p$.
+
+Evaluation of $m$ proceeds as follows:
+
+The expression $e$ is evaluated to $v$.  If $v$ is \NULL{}, then the $m$ evaluates to \NULL{} with provenance $m$. Otherwise, the value of $m$ is the value $v_p$ of the field $p$ of $v$.
+
+Let $T$ be the type of $e$. If $T = \LCURLY{}p_1\COLON{} T_1\COMMA{} \ldots\COMMA{} p_n\COLON{} T_n\RCURLY$ where $p_k = p$, then the type of $m$ is $T_k$. If $T = \LCURLY{}p_1\COLON{} T_1\COMMA{} \ldots\COMMA{} p_n\COLON{} T_n\RCURLY\QUESTIONMARK$ where $p_k = p$, then the type of $m$ is $T_k\QUESTIONMARK$. 
+
+Otherwise, the type of $m$ is *. 
+
+It is a type warning if $T$ not a non-nullable type with a member named $p$. 
+
+
+\subsection{\space Member Expressions}
+\label{memberExpression}
+
+A {\em member expression} is either an identifier expression [\ref{identifierExpressions}], a parenthesized expression [\ref{parenthesizedExpressions}], a function call [\ref{calls}], a literal ([\ref{booleanLiterals}, \ref{numericLiterals}, \ref{stringLiterals}]),  an attribute selection expression [\ref{attributeSelectionExpressions}] or an index expression [\ref{indexExpressions}]. It serves exclusively as a syntactic grouping.
+
+\MemberExpression{}
+
+\PrimitiveExpression{}
+
+\subsection{\space Unary Expressions}
+\label{unaryExpressions}
+
+A {\em unary expression} is either a member expression [\ref{memberExpression}] or the application of a unary operator to two unary expressions.
+A {\em unary operator} is one of the operators \MINUS, \BNOT{} or  \NOT{}. The \MINUS{} operator implements negation. If $T$ is a numeric type, the \MINUS{} operator has type $T \to T$. Otherwise the type of \MINUS is $T \to *$.
+
+The \BNOT{} operator implements bitwise negation. If $e$ has type $T$, where $T$ is either a numeric type, \BOOL{} or \BOOL\QUESTIONMARK{},  \BNOT{} has type $T \to T$. Otherwise the type of \BNOT is $T \to *$.
+
+The \NOT{} operator implements boolean negation. \NOT{} has type $\BOOL{} \to \BOOL$.
+
+
+\UnaryExpression{}
+
+Let $u \triangleq \theta{} e$ where $\theta$ is a unary operator.
+
+Evaluation of $u$ proceeds as follows:
+
+The expression $e$ is evaluated to $v$.  If  $v$ is \NULL{}, the value of $u$ is \NULL{} with provenance $e$. Otherwise, the value of $u$ is the result of $\theta(v)$.
+
+Let $T$ be the type of $e$ and let $R$ be the type of $\theta{} e$. The type of $u$ is $R$ if $T$ is non-nullable, and $R\QUESTIONMARK$ otherwise. It is a type warning if the call $\theta(u)$ would give rise to a type warning. It is a type warning if $\theta = \MINUS$ and $T$ is not a numeric type.
+It is a type warning if $\theta = \BNOT$ and $T$ is neither \BOOL{} nor a numeric type.
+
+{\em In particular, if $T$ is nullable, a type warning arises, even if $T!$ would be an appropriate argument for $\theta$.}
+
+
+
+\subsection{\space Multiplicative Expressions}
+\label{multiplicativeExpressions}
+
+A {\em multiplicative expression} $m$ is either  a unary expression [\ref{unaryExpressions}] or the application of a multiplicative operator to two multiplicative expressions.
+A {\em multiplicative operator} is one of the operators \TIMES{}, \DIV{}, \MOD{}. The \TIMES{}, \DIV{}, and \MOD{ operators implement  multiplication, division and remainder, respectively. 
+
+Specifically, each such operator converts its arguments to their least common supertype and performs the operation.
+
+\MultiplicativeExpression{}
+\MultiplicativeOp{}
+
+Let $m \triangleq e_1 \theta e_2$ where $\theta$ is a multiplicative operator.
+
+Evaluation of $m$ proceeds as follows:
+
+The expression $e_1$ is evaluated to $v_1$.  If  $v_1$ is \NULL{}, the value of $m$ is \NULL{} with provenance $e_1$. Otherwise, $e_2$ is evaluated to $v_2$. If  $v_2$ is \NULL{}, the value of $m$ is \NULL{} with provenance $e_2$. Otherwise, the value of $m$ is the result of $\theta(v_1, v_2)$.
+
+Let $e_1$ have type $T_1$ and $e_2$ have type $T_2$.   If $T_1$ and $T_2$ are  numeric types: $m$ has type $LCS(T_1, T_2)$. Otherwise, the type of $m$ is *. 
+
+It is a type warning if either $T_1$ or $T_2$  are not non-nullable numeric types.
+
+\subsection{\space Additive Expressions}
+\label{additiveExpressions}
+
+An {\em additive expression} is either a multiplicative expression [\ref{multiplicativeExpressions}] or the application of an additive operator to two additive expressions.
+An {\em additive operator} is one of the operators \PLUS{} or \MINUS{} which  implement addition and subtraction, respectively. 
+
+\AdditiveExpression{}
+\AdditiveOp{}
+
+Let $a \triangleq e_1 \theta e_2$ where $\theta$ is an additive operator.
+
+Evaluation of $a$ proceeds as follows:
+
+The expression $e_1$ is evaluated to $v_1$.  If  $v_1$ is \NULL{}, the value of $a$ is \NULL{} with provenance $e_1$. Otherwise, $e_2$ is evaluated to $v_2$. If  $v_2$ is \NULL{}, the value of $a$ is \NULL{} with provenance $e_2$. Otherwise, the value of $a$ is the result of $\theta(v_1, v_2)$.
+
+Let $e_1$ have type $T_1$ and $e_2$ have type $T_2$.  If $T_1$ and $T_2$ are  numeric types:
+ $a$ has type $LCS(T_1, T_2)$. Otherwise, the type of $a$ is *. It is a type warning if the types of $e_1$ and $e_2$  are not non-nullable numeric types.
+ 
+\comment {This will need to change if we allow adding dates and times.}
+
+
+\subsection{\space Relational Expressions}
+\label{relationalExpressions}
+
+A {\em relational expression} is either an additive expression [\ref{additiveExpressions}] or the application of a relational operator to two relational expressions.
+A {\em relational operator} is one of the operators \EQ{}, \NEQ{}, \LT{}, \GT{}, \LTE{}, \GTE{}.
+
+The operators \EQ{}, \NEQ{}, \LT{}, \GT{}, \LTE{}, \GTE{} implement the equal, not equal,  less than, greater than,  less than or equal, greater or equal operators respectively. The \EQ{} and \LT{} operators are defined by equality and the linear orderings among values of types as given in sections \ref{bool}, \ref{string}, \ref{f64}, \ref{integerTypes}.
+
+\comment {This will need to change if we allow comparing dates and times.}
+
+
+Let $v_1 \ne {\tt system::nan}, v_2 \ne {\tt system::nan}$ be values. 
+
+$v_1 \NEQ{} v2$ iff it is not the case that $v_1 = v_2$.
+
+$v_1 \LT{} v_2$ iff $v_1 < v_2$.
+
+$v_1 \LTE{} v_2$ iff either $v_1 = v_2$ or $v_1 < v_2$.
+
+$v_1 \GT{} v_2$ iff $v_1 > v_2$.
+
+$v_1 \GTE{} v_2$ iff either $v_1 = v_2$ or $v_1 > v_2$.
+
+In any other case (i.e, if one or both of $v_1, v2$ are {\tt system::nan}) then all the relational operators return false, per the rules of IEEE floating point.
+
+
+
+\RelExpression{}
+\RelOp{}
+
+
+Let $r \triangleq e_1 \theta{} e_2$ where $\theta$ is a relational operator.
+
+Let $T_i$ be the type of $e_i, i \in 1..2$.
+
+Evaluation of $r$ proceeds as follows:
+
+If $e_1$ is \NULL{}, the value of $r$ is \NULL{} with provenance $e_1$. 
+Otherwise, if $e_2$ is \NULL{}, the value of $r$ is \NULL{} with provenance $e_2$. 
+Otherwise $r$ is equivalent to $\theta\LPAREN{}e_1\COMMA{} e_2\RPAREN$. For $\theta{} \in$ \EQ{}, \NEQ{},  the signature of $\theta$ is $\theta\LPAREN{}p_1\COLON{} any \COMMA{} p_2\COLON{} any \RPAREN\COLON{}\BOOL$, if the  $T_1$ and $T_2$ are both non-nullable [\ref{nullableTypes}] and $\theta\LPAREN{}p_1\COLON{} any \COMMA{} p_2\COLON{} any \RPAREN\COLON{}\BOOL\QUESTIONMARK$ otherwise.
+
+For $\theta{} \in  \LT{}, \GT{}, \LTE{}, \GTE{}$ the signature of $\theta$ is $\theta\LPAREN{}p_1\COLON{} T\COMMA{} p_2\COLON{} T\RPAREN\COLON{}\BOOL$ if the  types of $T_1$ and $T_2$ are both non-nullable [\ref{nullableTypes}] and $\theta\LPAREN{}p_1\COLON{} T\COMMA{} p_2\COLON{} T\RPAREN\COLON{}\BOOL\QUESTIONMARK$ otherwise, where $T = LCS(T_1, T_2)$. It is a type warning if either $T_1$ or $T_2$ is nullable. 
+
+
+\subsection{\space Bitwise And}
+\label{bitwiseAnd}
+
+A {\em bitwise and expression} is either a relational expression [\ref{relationalExpressions}] or the application of the bitwise and operator, \BAND{}, to two bitwise and expressions.
+
+Let $a \triangleq e_1$ \BAND{} $e_2$.
+
+Evaluation of $a$ proceeds as follows:
+
+The expression $e_1$ is evaluated to $v_1$.  If  $v_1$ is \NULL{}, the value of $a$ is \NULL{} with provenance $e_1$. Otherwise, $e_2$ is evaluated to $v_2$. If  $v_2$ is \NULL{}, the value of $a$ is \NULL{} with provenance $e_2$. Otherwise, the value of $a$ is the bitwise AND of $v_1$ and $v_2$.
+
+Let $T_1, T_2$ be the types of $e_1, e_2$ respectively.  
+
+Let $T = LCS(T_1, T_2)$. \BAND{} has type $T,T  \to T$. 
+It is a type warning if either $T_1$ or $T_2$ is not a non-nullable numeric type.
+
+\comment{
+The actual warning given will vary depending on whether the type of $e_i, i \in 1..2$ is a nullable numeric type or a non-numeric type. In the former case, we warn that we might encounter a \NULL and propagate it; in the latter, we warn that this is truly a type mismatch. Same for other bitwise operators below, and similarly for other parts of the specification We may want to make this behavior normative.
+}
+
+
+\BitwiseAndExpression{}
+
+\subsection{\space Bitwise Xor}
+\label{bitwiseXor}
+
+A {\em bitwise xor expression} is either a bitwise and [\ref{bitwiseAnd}] or the application of the bitwise xor operator, \XOR{}, to two bitwise xor expressions.
+
+Let $x \triangleq e_1$ \XOR{} $e_2$.
+
+Evaluation of $x$ proceeds as follows:
+
+The expression $e_1$ is evaluated to $v_1$.  If  $v_1$ is \NULL{}, the value of $a$ is \NULL{} with provenance $e_1$. Otherwise, $e_2$ is evaluated to $v_2$. If  $v_2$ is \NULL{}, the value of $x$ is \NULL{} with provenance $e_2$. Otherwise, the value of $x$ is the bitwise XOR of $v_1$ and $v_2$.
+
+Let $T_1, T_2$ be the types of $e_1, e_2$ respectively.  
+
+Let $T = LCS(T_1, T_2)$. \XOR{} has type $T, T \to T$. 
+It is a type warning if either $T_1$ or $T_2$ is not a non-nullable numeric type.
+
+
+\BitwiseXorExpression{}
+
+\subsection{\space Bitwise Or}
+\label{bitwiseOr}
+
+A {\em bitwise or expression} is either a bitwise xor [\ref{bitwiseXor}] or the application of the bitwise or operator, \BOR{}, to two bitwise or expressions.
+
+Let $o \triangleq e_1$ \BOR{} $e_2$.
+
+Evaluation of $o$ proceeds as follows:
+
+The expression $e_1$ is evaluated to $v_1$.  If  $v_1$ is \NULL{}, the value of $o$ is \NULL{} with provenance $e_1$. Otherwise, $e_2$ is evaluated to $v_2$. If  $v_2$ is \NULL{}, the value of $o$ is \NULL{} with provenance $e_2$. Otherwise, the value of $o$ is the bitwise OR of $v_1$ and $v_2$.
+
+Let $T_1, T_2$ be the types of $e_1, e_2$ respectively.  
+
+Let $T = LCS(T_1, T_2)$. \BOR{} has type $T, T \to T$. 
+It is a type warning if either $T_1$ or $T_2$ is not a non-nullable numeric type.
+
+
+\BitwiseOrExpression{}
+
+\subsection{\space Logical And}
+\label{logicalAnd}
+
+A {\em logical and expression} is either a bitwise or [\ref{bitwiseOr}] or the application of the logical and operator, \AND{}, to two logical and expressions.
+
+\AndExpression{}
+
+Let $a \triangleq e_1$ \AND{} $e_2$.
+
+Evaluation of $a$ proceeds as follows:
+
+The expression $e_1$ is evaluated to $v_1$.  If  $v_1$ is \NULL{}, the value of $a$ is \NULL{} with provenance $e_1$. If $v_1$ is false, the value of $a$ is false. Otherwise, $e_2$ is evaluated to $v_2$. If  $v_2$ is \NULL{}, the value of $a$ is \NULL{} with provenance $e_2$. Otherwise, if the value of $a$ is the result of $v_2$.
+
+The type of $a$ is \BOOL{} [\ref{bool}].
+
+Let $T_1, T_2$ be the types of $e1, e_2$ respectively.  It is a type warning if either $T_1$ or $T_2$ is not of type \BOOL{}.
+
+\comment{
+The actual warning given will vary depending on whether the type of $e_i, i \in 1..2$ is \BOOL\QUESTIONMARK or some other type $T \ne \BOOL$. In the former case, we warn that we might encounter a \NULL and propagate it; in the latter, we warn that this truly type mismatch. Same for \OR{} below. We may want to make this behavior normative.
+}
+
+{\em
+Note that logical and is not commutative.
+}
+
+\subsection{\space Logical Or}
+\label{logicalOr}
+
+A {\em logical or expression} is either a logical and expression [\ref{logicalAnd}] or the application of the logical or operator, \OR{}, to two logical or expressions.
+
+\OrExpression{}
+
+Let $o \triangleq e_1$ \OR{} $e_2$.
+
+Evaluation of $o$ proceeds as follows:
+
+The expression $e_1$ is evaluated to $v_1$.  If  $v_1$ is \NULL{}, the value of $o$ is \NULL{} with provenance $e_1$. If $v_1$ is true, the value of $o$ is true. Otherwise, $e_2$ is evaluated to $v_2$. If $v_2$ is \NULL{}, the value of $o$ is \NULL{} with provenance $e_2$. Otherwise, if the value of $o$ is the result of $v_2$.
+
+The type of $o$ is \BOOL{} [\ref{bool}].
+
+Let $T_1, T_2$ be the types of $e1, e_2$ respectively.  It is a type warning if either $T_1$ or $T_2$ is not of type \BOOL{}.
+
+{\em
+Note that logical or is not commutative.
+}
+
+\subsection{\space Calls}
+\label{calls}
+
+A {\em call} invokes a function [\ref{functions}] with {\em arguments}.
+
+\FunctionCall{}
+\ArgumentList{}
+
+Let $c \triangleq F\LPAREN{}a_1\COMMA{} \ldots\COMMA{} a_k\RPAREN$. Evaluation of $c$ proceeds as follows. 
+
+Let $f$ be the function denoted by $F$, and let $p_i, i \in 1 \ldots k$ be its formal parameters, and let $b_f$ be its body.
+
+The arguments $a_i$ are evaluated, in the order they appear in the source code to values $v_i , i \in 1..k$. 
+
+If any argument evaluates to \NULL{}, $c$ evaluates to \NULL{} with provenance $c$. 
+
+Otherwise, $[p_i \leftarrow v_i]b_f$ is evaluated to $r$. The value of $c$ is $r$.
+
+It is a compile-time error if $F$ is not bound to a function. 
+
+It is a compile-time error if $f$ does not have exactly $k$ formal parameters.
+Let $T_{a_i}$ be the type of $a_i, i \in 1..k$, and let $S_i$ be the type of the $i$th parameter of $f$. It is a type warning if $T_{a_i}$ is not a subtype of $S_i$, $i \in 1..n$.
+
+The type of $c$ is the  return type of $f$.
+
+{\em Note that even if no return type was explicitly written, there is an implicit return type, which is the type of the body of $f$, per section \ref{functions}.}
+
+\section{Types}
+\label{types}
+
+
+\subsection{The Error Type}
+\label{theErrorType}
+
+The error type, written *,  represents type errors. For all types $T, * < T$ and $T < *$.
+
+{\em 
+ The alert reader will note that these  rules destroy the type lattice. This is deliberate. The error type indicates a logical contradiction in the type structure of the program. No type correct program can ever contain any expression of  type *. 
+
+The type * cannot be written explicitly in OPL. However, it is assigned by the type system whenever an expression does not have a valid type. For example, if a variable or formal parameter does not have a declared type, or if an expression does not respect the type rules requires for correctness.
+
+This allows us to give warnings when we cannot find a correct typing, but prevent the propagation of errors throughout the program.
+}
+
+\subsection{Nullable Types}
+\label{nullableTypes}
+
+Null values are those values that are members of \NULLTYPE{} [\ref{theNullType}].  A type is {\em nullable} iff it contains null values.  A {\em non-nullable} type is a type that does not contain any null value.  We write  $T\QUESTIONMARK{}$ to denote the nullable superset of type $T$.
+
+We write $T!$ to denote the type expression that is constructed by removing all trailing $\QUESTIONMARK{}$ type constructors from $T$. 
+
+{\em Note that $T!$ is a meta-notation used in this specification, and not part of the OPL language syntax.}
+
+
+We will sometimes speak of an expression being nullable (respectively non-nullable) if the type of the expression is nullable (respectively non-nullable).
+
+The following equivalence always holds $X\QUESTIONMARK\QUESTIONMARK= X\QUESTIONMARK$.
+
+{\em The \QUESTIONMARK{} operator is idempotent.}
+
+\comment{
+With non-nullable types, there are two possible approaches. In one, types are nullable by default; \NULL is by default a member of any ordinary type $T$, and we designate a non-nullable type explicitly, with a notation like $T\BANG$. The alternative is that types are non-nullable by default. We mark nullable types explicitly via the notation $T\QUESTIONMARK$. The latter is safer, because it means that when you write a type, you must explicitly acknowledge that it might be \NULL{}, or else get a warning. On the other hand, it is also more burdensome. In a language like OPL, where \NULL{} is very often propagated across pipelines, there may be many warnings, and the need to be explicit might be seen as too painful. For now, we have opted for the safer approach, but this is a key design decision that is open for discussion.
+}
+
+\comment{
+Furthermore, these rules have implications for performance. If we can identify types as non-nullable, we can elide null checks.
+}
+
+\subsection{The Null Type}
+\label{theNullType}
+
+The type \NULLTYPE is the set of pairs $(\NULL, p)$ where \NULL{} is a unique value and $p$ is a {\em provenance}.  A provenance is an expression [\ref{expressions}], possibly combined with additional, implementation-specific information such as a trace and/or a runtime scope [\ref{scopes}]. The expression will typically be the expression  that gave rise to the \NULL{} value in question. 
+
+
+\subsection{Stream Signal Types}
+\label{streamSignalTypes}
+
+Signal types are the types of the elements of streams, and processed by builtin stream operators/combinators. Signal types have both mandatory well typed attributes, and dynamic attributes.  The signal types form a subtype  hierarchy; we write $ T < S$ when signal type $T$ is  a subtype of signal type $S$.
+
+The set of signal types is:
+
+ $\{Signal, Log, Metric, Span,  
+Counter, UpdownCounter, Gauge, Histogram, \\ ExponentialHistogram, Summary\}$.
+
+For all signal types $T$, $T < Signal$.
+
+{\em The top of the signal type hierarchy is type $Signal$.}
+
+For all $T \in \{Counter, UpdownCounter, Gauge, Histogram, ExponentialHistogram, Summary\}, \\ T < Metric$.
+
+\subsubsection{Signal}
+\label{signal}
+
+Type $Signal$ includes the record valued fields resource and scope.
+
+\comment{Are these two mandatory or optional? That is, since all their fields are optional, if they are empty need they be present all?}
+ 
+ \paragraph{resource} The resource record may contain the following fields, all of which are optional: $\{attributes: map[\STRING,  any], dropped\_attributes\_count: uint32, enitity\_ref: EntityRef[], schema\_url:  \STRING \}$, where the type $EntityRef$ has the form $\{schema\_url:  \STRING , type: \STRING, id\_keys: \STRING[], description\_keys: \STRING[]\}$ where the $type$ and $id\_keys$ fields are mandatory, and the remaining fields are optional.
+ 
+ \paragraph{scope} The scope record may contain the following fields, all of which are optional: $\{name: \STRING, version: \STRING, attributes: map, dropped\_attributes\_count: uint32,  schema\_url:  \STRING \}$.
+
+\subsubsection{Log}
+\label{log}
+
+$Log$s inherit all the fields of $Signal$. In addition a Log has a mandatory filed $time\_unix\_nano$, which is a an $int64$ [\ref{integerTypes}] value indicating the time stamp of the log entry in nanoseconds \comment{since when?}. If a $Log$ value denotes an event, it must also have an $event\_name$ field of type \STRING.  
+
+The following additional fields are optional: $\{body: any, attributes: map, trace\_id: byte[], trace\_id\_string: \STRING, span_id: byte[], span\_id\_string: \STRING, observed\_time\_unix\_nano: int64, severity\_number: int32, severity\_text: \STRING, dropped\_attributes\_count: uint32, flags: uint32\}$.
+
+\comment{The meanings of these should be defined somewhere.}
+
+\subsubsection{Metric}
+\label{metric}
+
+$Metric$s inherit all the fields of $Signal$. In addition a $Span$ has the following mandatory fields: $\{name: \STRING, type: byte\}$.
+
+A $Metric$ may also include the following optional fields
+$\{description: \STRING, unit: \STRING, metadata: map\}$.
+
+Types $Counter$ and $upDownCounter$  inherit all the fields of $Metric$. In addition a they may have the optional field $agregation\_temporality: int32$.
+
+
+
+
+\subsubsection{Span}
+\label{span}
+
+$Span$s inherit all the fields of $Signal$. In addition a $Span$ has the following mandatory fields: 
+$\{name: \STRING, trace\_id: byte[], span_id: byte[], start\_time\_unix\_nano: int64, end\_time\_unix\_nano: int64\}$.
+
+A $Span$ may also include the following optional fields
+$\{attributes: map, parent\_span\_id: byte[], trace\_state: \STRING, status\_code: int32, status\_message: \STRING, kind: int32, kind\_string: \STRING, kind\_deprecated\_string: \STRING,  events: SpanEvent[], links: SpanLink[], dropped\_attributes\_count: uint32, dropped\_events\_count: uint32, dropped\_links\_count: uint32, flags: uint32\}$.
+
+The type $SpanEvent$ consists of the required fields  $\{span: Span, name: \STRING\}$ . The $span$ field  is a back link to its parent $Span$. A $SpanEvent$  may also include the optional  fields $\{time\_unix\_nano: int64, attributes: map, dropped\_attributes\_count: int64\}$.
+
+The type $SpanLink$ consists of the required field $span: Span$ which is a back link to its parent $Span$, and may include the optional  fields $\{ trace\_id: byte[], span_id: byte[], trace\_state: \STRING, attributes: map, dropped\_attributes\_count: uint32,  flags: uint32\}$.
+
+
+
+\subsection{Basic Types}
+\label{basicTypes}
+
+{\em Basic types} are the types usable in expressions. They comprise the attribute types [\ref{attributeTypes}] and the types $any$, $byte$, $int32$, $uint32$ and $uint64$.
+
+For any basic type $T, T < any$.
+
+{\em Type  $any$ is the supertype of all basic types.}
+
+\subsubsection{Attribute Types}
+\label{attributeTypes}
+
+Attribute types are those types whose values may be assigned to attributes of signal types. 
+Attribute are types transmitable via the protobuf protocol.
+These are the attribute types: $\{attributeValue, \STRING, \INTSIXTYFOUR, \FSIXTYFOUR, \BOOL, \BYTE[], []attributeValue,  map\}$.
+
+The type $attributeValue$ corresponds to the protobuf type $AnyValue$. Therefore, for all attribute types $T, T < attributeValue$.
+
+{\em In other words, $attributeValue$  is a supertype of all attribute types.}
+
+The $map$ type maps $string$ values to values of other attribute types.
+
+{\em that is, it is parametric type, $map<string, attributeValue>$.}
+
+ The remaining types all correspond to the types of the same name in the protobuf specification.
+
+
+Optional type system insists on explicit cast from dynamic to any specific type.
+Later, we can introduce implicit type test (but not conversion) and provide distinct optional type system that allows dynamic to passed freely, relying on said implicit testing.
+
+The separation is intentional, to optimize the data pipeline for OTEL signals, and to allow richer types in functions while using OTEL protobuf infrastructure.
+
+ 
+\subsubsection{bool}
+\label{bool}
+
+The predefined type \BOOL{} contains the values true and false.  A boolean value is equal only to itself. The value true is greater than false. The type \BOOL{} is equal only to itself.
+
+ 
+ \subsubsection{float64}
+ \label{f64}
+ 
+ The predefined type \FSIXTYFOUR{} is consists of the set of IEEE double precision floating point values.
+ 
+ Equality and ordering are defined by the IEEE floating point standard.
+
+ \subsubsection{Integer Types}
+ \label{integerTypes}
+ 
+The {\em integer types} are {\em signed integer types} \INTTHIRTYTWO{} and  \INTSIXTYFOUR{}, and the {\em unsigned integer types} \UINTTHIRTYTWO{} and \UINTSIXTYFOUR.
+ 
+Equality and ordering are defined by the laws of mathematics. However, arithmetic is not, because computations may overflow or underflow.  Operations on integers do not indicate overflow or underflow. 
+
+\comment{Note on overflow: At the moment, no construct for dealing with this is defined in error policies [\ref{errorHandlingPolicies}],  but we expect to choose trap/wrap behavior based on the error policy. Need to ensure that is compositional. We avoid bigInts as consumers cannot easily deal with them (no protobuf support except byte arrays).
+}
+
+The integer types are these:
+ 
+ \paragraph{int64}
+ \label{int64}
+ 
+ The predefined type \INTSIXTYFOUR{} consists of the integer values between -9,223,372,036,854,775,808 and 9,223,372,036,854,775,807, inclusive.
+ 
+  \paragraph{int32}
+ \label{int32}
+ 
+The predefined type \INTTHIRTYTWO{} consists of the integer values between -2,147,483,648 and 2,147,483,647, inclusive.
+ 
+  
+ \paragraph{uint64}
+ \label{uint64}
+ 
+ The predefined type \UINTSIXTYFOUR{} consists of the integer values between 0 and 18,446,744,073,709,551,615, inclusive.
+ 
+  \paragraph{uint32}
+ \label{uint32}
+ 
+The predefined type \UINTTHIRTYTWO{} consists of the integer values between 0 and 4,294,967,295, inclusive.
+ 
+\subsubsection{string}
+\label{string}
+
+The predefined type \STRING{} consists of all sequences of  UTF8 encoded characters.
+
+\subsubsection{regexp}
+\label{regexp}
+
+The type \REGEX{} consists of all valid IETF RFC 9485 regular expressions.
+
+\subsubsection{Date/time types}
+\label{dateTime}
+
+The type date/time types represent dates, times, durations or intervals as defined by ISO 8601. 
+
+\paragraph{\DATE}
+ \label{date}
+The predefined type \DATE represents a date as defined by ISO 8601.
+
+\paragraph{\TIME}
+ \label{time}
+ 
+The predefined type \TIME represents a time as defined by ISO 8601.
+
+\paragraph{\TIMESTAMP}
+ \label{timestamp}
+ 
+ The predefined type \TIMESTAMP represents a combined date and time as defined by ISO 8601.
+ 
+\paragraph{\DURATION}
+ \label{duration}
+ 
+  The predefined type \DURATION represents a duration as defined by ISO 8601.
+
+\paragraph{\INTERVAL}
+\label{interval}
+
+ The predefined type \INTERVAL represents an interval as defined by ISO 8601.
+
+
+\subsection{Function Types}
+\label{functionTypes}
+
+A {\em function type} describes the type of a function [\ref{functions}].
+
+A function type consists of a domain and a range. A {\em domain} is a product of a list of basic types [\ref{basicTypes}], composed from the types of the formal parameters of a function, in the order they appear in the function declaration. A {\em range} is a result type of a function. 
+We write a  function type as $T_1, \ldots, T_n \to T_r$, where $T_1, \ldots, T_n$ is the domain and $T_r$ is the range.
+
+Function types are used internally in this specification, but have no direct syntactic representation.
+
+{\em 
+Naturally, as OPL does not support higher order functions.
+
+Function types  are derived from function signatures.
+}
+
+\section{Syntax}
+\label{syntax}
+
+\subsection{Lexical Rules}
+\label{lexicalRules}
+\printlexitable
+
+\subsection{Grammar}
+\label{grammar}
+
+\printgrammartable
+
+\section{Version History}
+\label{versionHistory}
+\begin{itemize}
+\item 0.01. Initial public version.
+
+\end{itemize}
+\end{document}

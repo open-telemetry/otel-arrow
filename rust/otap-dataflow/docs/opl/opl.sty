@@ -1,0 +1,593 @@
+\usepackage{xcolor}
+\usepackage{xspace}
+\usepackage{syntax}
+\usepackage{calc}
+\usepackage{tikz}
+
+\newcommand\keyword[1]{\texttt{\color{blue} #1}\xspace}
+\def\comment#1{\textit{\color{purple}#1}}
+\def\capt#1{\rmfamily \caption{#1}}
+\newcommand\cd[1]{\textsf{#1}}
+\def\lt{\tt<}
+\def\gt{\tt>}
+
+\newenvironment{dex}[1][!ht] {
+  \def\@programcr{\@addfield\strut}
+  \let\\=\@programcr
+  \relax\@vobeyspaces\obeylines
+
+  \sffamily
+}{b
+}
+
+\def\grammartable#1{}
+\newcommand\bnf[2]{
+  \expandafter\newcommand\csname#1\endcsname{
+    \setlength{\grammarindent}{\widthof{\synt{#1}} + 3em}
+    \begin{grammar}
+      <\textbf{#1}> $\rightarrow$ #2
+    \end{grammar}
+  }
+  \edef\grammartable{\grammartable,#1}
+}
+\newcommand\printgrammartable{
+  \foreach \name in \grammartable {
+    \csname \name\endcsname
+    }
+}
+
+\def\lexitable#1{}
+\newcommand{\lex}[2]{
+  \expandafter\newcommand\csname LEX#1\endcsname{
+    \setlength{\grammarindent}{\widthof{\synt{#1}} + 3em}
+    \begin{grammar}
+      <\textbf{#1}> ::= #2
+    \end{grammar}
+  }
+  \expandafter\newcommand\csname #1\endcsname{\synt{#1}}
+  \edef\lexitable{\lexitable,#1}
+}
+\newcommand\printlexitable{
+  \foreach \name in \lexitable {
+    \csname LEX\name\endcsname
+  }
+}
+
+
+% Lexical Rules
+
+\lex{LINETERMINAL}{
+the ASCII LF character, also known as ``newline''
+\alt
+the ASCII CR character, also known as ``return''
+\alt
+the ASCII CR character followed by the ASCII LF character
+}
+
+\lex{SLCOMMENT}{ {\keyword {//}} any character until the first encountering of \LINETERMINAL{} or \synt{EOF} }
+
+\lex{MLCOMMENT}{ {\keyword {/*}} any character until the first encountering of {\keyword {*/}} }
+
+\lex{WS}{
+	 the ASCII SP character, also known as ``space''
+\alt the ASCII HT character, also known as ``horizontal tab''
+\alt the ASCII FF character, also known as ``form feed''
+\alt \LINETERMINAL
+\alt \SLCOMMENT
+\alt \MLCOMMENT
+}
+
+\lex{IDENTSTART}{
+{\keyword A} ... {\keyword Z}
+\alt
+{\keyword a} ... {\keyword z}
+\alt
+{\keyword \_}
+}
+
+\lex{IDENTPART}{
+{\keyword A} ... {\keyword Z}
+\alt {\keyword a} ... {\keyword z}
+\alt {\keyword 0} ... {\keyword 9}
+\alt {\keyword \_}	
+}
+
+\lex{IDENT}{\IDENTSTART{} \IDENTPART*}
+
+%\lex{URN}{A Uniform Resource Name as defined by the IETF.}
+
+\lex{TYPEPARAM}{{\DOLLAR}\IDENT}
+
+\lex{DECIMAL}{{\keyword 0} ... {\keyword 9}}
+
+\lex{HEX}{{\keyword 0} ... {\keyword 9}
+\alt {\keyword a} ... {\keyword f}
+\alt {\keyword A} ... {\keyword F}
+}
+
+\lex{FRAC}{\DECIMAL+}
+
+\lex{EXPO}{({\keyword e} $|$ {\keyword E}) ({\keyword +} $|$ {\keyword -})? \FRAC}
+
+\lex{FLOAT}{
+	 \FRAC{} {\keyword .} \FRAC{}? \EXPO{}?
+\alt \FRAC{} \EXPO{}?
+\alt {\keyword .} \FRAC{} \EXPO{}?
+}
+
+\lex{INT}{
+     ({\keyword 1} ... {\keyword 9})\FRAC?
+\alt {\keyword 0} lookahead $\notin$ {\keyword 0} ... {\keyword 9}
+\alt {\keyword 0} ({\keyword x} $|$ {\keyword X}) \HEX+
+}
+
+\lex{ESCAPE}{
+	the ASCII SP character, also known as ``space''
+\alt
+	one of
+	{\keyword t}, {\keyword v}, {\keyword r}, {\keyword n}, {\keyword f}, {\keyword b}, {\keyword {$\backslash$}}, {\keyword \textquotesingle}, {\keyword "}
+}
+
+\lex{DQCHAR}{
+	any one character except {\keyword "}, \LINETERMINAL{} or \keyword{$\backslash$}
+\alt
+	{\keyword {$\backslash$}} \ESCAPE
+}
+
+\lex{DQSTRING}{
+	{\keyword "} \DQCHAR* {\keyword "}
+}
+
+\lex{SQSTRING}{
+	{\keyword  \textquotesingle} \SQCHAR* {\keyword  \textquotesingle}
+}
+
+\lex{SQBYTE}{
+	 any one character in the range 0-255 except {\keyword \textquotesingle}, \LINETERMINAL{} or \keyword{$\backslash$}
+\alt {\keyword {$\backslash$}} \ESCAPE
+}
+
+\lex{SQCHAR}{
+	 any one character except {\keyword \textquotesingle}, \LINETERMINAL{} or \keyword{$\backslash$}
+\alt {\keyword {$\backslash$}} \ESCAPE
+}
+
+
+% Token types
+
+\def\LANGNAME{\keyword{Vibe}}
+\def\PARTIAL{\keyword{partial}}
+\def\IMPORT{\keyword{import}}
+\def\AS{\keyword{as}}
+\def\IS{\keyword{is}}
+\def\TYPE{\keyword{type}}
+\def\FROM{\keyword{from}}
+\def\FLAG{\keyword{flag}}
+\def\DATA{\keyword{data}}
+\def\FUNC{\keyword{func}}
+\def\EXTERN{\keyword{extern}}
+\def\DEFINE{\keyword{define}}
+\def\LET{\keyword{let}}
+\def\WHILE{\keyword{while}}
+\def\IF{\keyword{if}}
+\def\THEN{\keyword{then}}
+\def\ELSE{\keyword{else}}
+\def\FOR{\keyword{for}}
+\def\IN{\keyword{in}}
+\def\NEW{\keyword{new}}
+\def\THIS{\keyword{this}}
+\def\ASSERT{\keyword{assert}}
+\def\RETURN{\keyword{return}}
+\def\OF{\keyword{of}}
+\def\WHERE{\keyword{where}}
+\def\REPORT{\keyword{report}}
+\def\DEFAULTS{\keyword{defaults}}
+\def\CONTAINS{\keyword{contains}}
+\def\MATCHES{\keyword{matches}}
+\def\EQ{\keyword{==}}
+\def\NEQ{\keyword{!=}}
+\def\LT{\keyword{\lt}}
+\def\GT{\keyword{\gt}}
+\def\LTE{\keyword{\lt=}}
+\def\GTE{\keyword{\gt=}}
+
+\def\NUMBER{\keyword{number}}
+\def\FSIXTYFOUR{\keyword{float64}}
+\def\FTHIRTYTWO{\keyword{f32}}
+\def\INTSIXTYFOUR{\keyword{int64}}
+\def\INTTHIRTYTWO{\keyword{int32}}
+\def\UINTSIXTYFOUR{\keyword{uint64}}
+\def\UINTTHIRTYTWO{\keyword{uint32}}
+\def\BOOL{\keyword{bool}}
+\def\STRING{\keyword{string}}
+\def\BYTE{\keyword{byte}}
+\def\ATTRIBUTEVALUE{\keyword{attributeValue}}
+\def\ANY{\keyword{any}}
+\def\MAP{\keyword{map}}
+
+
+
+\def\PUBLIC{\keyword{public}}
+\def\PRIVATE{\keyword{private}}
+\def\PROTECTED{\keyword{protected}}
+\def\INTERFACE{\keyword{interface}}
+\def\CLASS{\keyword{class}}
+\def\STATIC{\keyword{static}}
+\def\ABSTRACT{\keyword{abstract}}
+
+\def\EXTEND{\keyword{extend}}
+\def\SET{\keyword{set}}
+\def\IMPLEMENTS{\keyword{implements}}
+
+\def\VBAR{\keyword{$|$}}
+
+\def\OR{\keyword{or}}
+\def\AND{\keyword{and}}
+\def\NOT{\keyword{not}}
+\def\BOR{\keyword{$|$}}
+\def\XOR{\keyword{\^{}}}
+\def\BAND{\keyword{\&}}
+\def\BNOT{\keyword{\~{}}}
+
+\def\REQUIRES{\keyword{requires}}
+\def\LEVEL{\keyword{level}}
+
+\def\POLICY{\keyword{policy}}
+\def\ERROR{\keyword{error}}
+\def\BATCH{\keyword{batch}}
+\def\RETRY{\keyword{retry}}
+\def\RATELIMIT{\keyword{rate\_limit}}
+\def\TIMEOUT{\keyword{timeout}}
+
+\def\STRATEGY{\keyword{strategy}}
+ \def\DROPSIGNAL{\keyword{drop\_signal}}
+  \def\ROUTETO{\keyword{route\_to}}
+  \def\PROPAGATE{\keyword{propagate}} 
+  \def\LOGANDCONTINUE{\keyword{log\_and\_continue}}
+
+
+\def\RECEIVER{\keyword{receiver}}
+\def\EXPORTER{\keyword{exporter}}
+\def\ACCEPT{\keyword{accept}}
+\def\REJECT{\keyword{reject}}
+\def\UNION{\keyword{union}}
+\def\ROUTETO{\keyword{route\_to}}
+\def\DROP{\keyword{drop}}
+\def\FORK{\keyword{fork}}
+
+\def\MAXATTEMPTS{\keyword{max\_attempts}}
+\def\BACKOFF{\keyword{backoff}}
+\def\FIXED{\keyword{fixed}}
+\def\EXPONENTIAL{\keyword{exponential}}
+\def\JITTER{\keyword{jitter}}
+\def\INITIAL{\keyword{initial}}
+\def\MAX{\keyword{max}}
+\def\MULTIPLIER{\keyword{multiplier}}
+\def\BASE{\keyword{base}}
+\def\JITTERFACTOR{\keyword{jitter\_factor}}
+\def\NETWORK{\keyword{network}}
+\def\SERVERERROR{\keyword{server\_error}}
+\def\UNAVAILABLE{\keyword{unavailable}}
+\def\FIXEDWINDOW{\keyword{fixed\_window}}
+\def\SLIDINGWINDOW{\keyword{sliding\_window}}
+\def\WINDOW{\keyword{window}}
+\def\BACKPRESSURE{\keyword{back\_pressure}}
+\def\RATE{\keyword{rate}}
+\def\BURST{\keyword{burst}}
+\def\BLOCKKW{\keyword{block}}
+\def\TOKENBUCKET{\keyword{token\_bucket}}
+\def\GRANULARITY{\keyword{granularity}}
+\def\RETRYON{\keyword{retry\_on}}
+\def\ONLIMIT{\keyword{on\_limit}}
+\def\ONTIMEOUT{\keyword{on\_timeout}}
+\def\SECOND{\keyword{s}}
+\def\MILLISECOND{\keyword{ms}}
+\def\MINUTE{\keyword{m}}
+\def\HOUR{\keyword{h}}
+\def\SIZE{\keyword{size}}
+\def\FLUSHON{\keyword{flush\_on}}
+\def\OPERATION{\keyword{operation}}
+\def\DROP{\keyword{drop}}
+\def\FAIL{\keyword{fail}}
+
+
+\def\PIPELINE{\keyword{pipeline}}
+\def\IDENTITY{\keyword{identity}}
+\def\FILTER{\keyword{filter}}
+\def\REDACT{\keyword{redact}}
+\def\RENAME{\keyword{rename}}
+\def\REMOVE{\keyword{remove}}
+\def\KEEP{\keyword{keep}}
+\def\PROJECT{\keyword{project}}
+\def\PROJECTRENAME{\keyword{project\_rename}}
+\def\PROJECTREMOVE{\keyword{project\_remove}}
+\def\PROJECTKEEP{\keyword{project\_keep}}
+
+\def\NULL{\keyword{null}}
+\def\NULLTYPE{\keyword{Null}}
+
+\def\TRUE{\keyword{true}}
+\def\FALSE{\keyword{false}}
+\def\IP{\keyword{ip}}
+\def\GLOB{\keyword{glob}}
+\def\REGEX{\keyword{regex}}
+
+\def\COLON{\keyword{:}}
+\def\DOUBLECOLON{\keyword{::}}
+\def\BANG{\keyword{!}}
+\def\QUESTIONMARK{\keyword{?}}
+\def\LPAREN{\keyword{(}}
+\def\RPAREN{\keyword{)}}
+\def\LBRACK{\keyword{[}}
+\def\RBRACK{\keyword{]}}
+\def\LCURLY{\keyword{$\{$}}
+\def\RCURLY{\keyword{$\}$}}
+\def\BIND{\keyword{=}}
+\def\COMMA{\keyword{,}}
+\def\DOT{\keyword{.}}
+\def\CONCAT{\keyword{..}}
+\def\DOUBLESLASH{\keyword{//}}
+\def\PLUS{\keyword{+}}
+\def\MINUS{\keyword{-}}
+\def\TIMES{\keyword{*}}  
+\def\DIV{\keyword{/}}
+\def\MOD{\keyword{\%}}
+\def\DOLLAR{\keyword{\$}}
+\def\ID{\keyword{id}}
+
+\def\REGEXTAG{\keyword{regex}} 
+\def\DATE{\keyword{date}}
+\def\TIME{\keyword{time}}
+\def\TIMESTAMP{\keyword{timestamp}}
+\def\DURATION{\keyword{duration}}
+\def\INTERVAL{\keyword{interval}}
+
+
+% Grammar Rules
+
+\def\List#1#2{{#2}({#1} {#2})* {#1}?}
+\def\ListOp#1#2{(\List{#1}{#2})?}
+\def\CommaList#1{\List{\COMMA{}}{#1}}
+\def\CommaListOp#1{\ListOp{\COMMA{}}{#1}}
+\def\ParamList#1{\LPAREN{} \CommaList{#1}{} \RPAREN}
+\def\ParamListOp#1{\LPAREN{} \CommaListOp{#1}{} \RPAREN}
+
+%% Declarations
+
+\bnf{OPLProgram}{\synt{LevelDecl}? (\synt{Decl} \alt \synt{Policy})* \synt{Pipeline}+}
+\bnf{LevelDecl}{\REQUIRES{} \LEVEL{} $>=$ \synt{NumberLiteral}}
+\bnf{Decl}{\synt{FunctionDeclaration} \alt \synt{LetBinding}}
+\bnf {FunctionDeclaration} {\FUNC{} \synt{FunctionSignature} \BIND \synt{Expression}}
+\bnf {FunctionSignature} {\IDENT{} \synt{ParameterList}  \synt{TypeSigSuffix}?}
+\bnf{LetBinding}{\LET{} \synt{Ident} \synt{TypeSuffix}? = (\RECEIVER{} \IDENT{} \synt{Block} \alt  \EXPORTER{} \IDENT{} \synt{Block})}
+\bnf{Policy}{
+   \synt{ErrorPolicy}
+   \alt \synt{BatchPolicy}
+   \alt \synt{RetryPolicy}
+   \alt \synt{RateLimitPolicy}
+   \alt  \synt{TimeoutPolicy}
+   }
+\bnf{ErrorPolicy} {\POLICY{} \ERROR{} \synt{ErrorStrategy }}
+
+\bnf{ErrorStrategy}{\STRATEGY{} \synt{ErrorAction}}
+\bnf{ErrorAction}{
+  \DROPSIGNAL{}
+  \alt \ROUTETO{} \synt{Destination}
+  \alt \PROPAGATE{} 
+  \alt \LOGANDCONTINUE{}
+  }
+
+\bnf{BatchPolicy} {\POLICY{} \BATCH{} \synt{BatchConfig }}
+\bnf{BatchConfig}{
+   \LCURLY{}
+   \SIZE \COLON{} Integer \COMMA              
+    \TIMEOUT \COLON{} \synt{Duration} \COMMA         
+    \FLUSHON \COLON{} \synt{FlushTrigger}    
+    \RCURLY     
+}
+
+\bnf{FlushTrigger}{
+    \SIZE                         
+    \alt \TIMEOUT                       
+    \alt \ANY                            
+}
+\bnf{Duration}{\synt{TaggedLiteral}}
+\bnf{TimeUnit}{\MILLISECOND \alt \SECOND \alt  \MINUTE \alt \HOUR}
+
+\bnf{RetryPolicy} {\POLICY{} \RETRY{} \synt{RetryConfig }}
+
+\bnf{RetryConfig}{ \LCURLY
+    \MAXATTEMPTS \COLON{} Integer \COMMA    
+    \BACKOFF \COLON{} \synt{BackoffStrategy} \COMMA
+    \RETRYON \COLON{} \LBRACK{} \synt{ErrorCondition} (\COMMA{} \synt{ErrorCondition})* \RBRACK{}(\COMMA 
+    \TIMEOUT \COLON{} \synt{Duration}   \RCURLY           
+}
+\bnf{BackoffStrategy}{
+    \FIXED  \synt{Duration} \COLON{} \synt{Duration}        
+    \alt \EXPONENTIAL \synt{ExponentialConfig}          
+    \alt \JITTER \synt{JitterConfig}
+    }                  
+
+\bnf{ExponentialConfig}{
+    \INITIAL \COLON{} \synt{Duration} \COMMA                          
+    \MAX \COLON{} \synt{Duration} \COMMA                           
+    \MULTIPLIER \COLON{} \FLOAT                          
+}
+\bnf{JitterConfig}{
+    \BASE \COLON{} \synt{BackoffStrategy} \COMMA            
+    \JITTERFACTOR \COLON{} \FLOAT                        
+}
+\bnf{ErrorCondition}{
+    \NETWORK                                      
+    \alt \TIMEOUT                                         
+    \alt \RATELIMIT                                     
+    \alt \SERVERERROR
+    \alt \UNAVAILABLE                                 
+    \alt \TIMES                                              
+}
+
+\bnf{RateLimitPolicy} {\POLICY{} \RATELIMIT{} \synt{RateLimitConfig }}
+\bnf{RateLimitConfig}{\LCURLY
+    \STRATEGY \COLON{} \synt{RateLimitStrategy} \COMMA      
+    \ONLIMIT \COLON{} \synt{LimitAction}   \RCURLY
+    }               
+
+\bnf{RateLimitStrategy}{
+    \TOKENBUCKET \synt{TokenBucketConfig}
+    \alt \FIXEDWINDOW \synt{FixedWindowConfig}
+    \alt \SLIDINGWINDOW \synt{SlidingWindowConfig}
+}
+
+\bnf{TokenBucketConfig}{
+    \RATE \COLON{} \synt{Rate} \COMMA                    
+    \BURST \COLON{} Integer                       
+}
+\bnf{FixedWindowConfig}{
+    \RATE \COLON{} \synt{Rate} \COMMA                    
+    \WINDOW \COLON{} \synt{Duration}                
+}
+\bnf{SlidingWindowConfig}{
+    \RATE \COLON{} \synt{Rate} \COMMA                    
+    \WINDOW \COLON{} \synt{Duration} \COMMA                 
+    \GRANULARITY \COLON{} \synt{Duration}
+    }
+\bnf{Rate}{ Integer "/" \synt{TimeUnit} }
+
+\bnf{LimitAction}{
+    \DROP                                   
+    \alt \ROUTETO Destination                   
+    \alt \BLOCKKW                                  
+    \alt \BACKPRESSURE                          
+}
+
+\bnf{TimeoutPolicy} {\POLICY{} \TIMEOUT{} \synt{TimeoutConfig }}
+\bnf{TimeoutConfig}{
+\LCURLY
+  \OPERATION\COLON{} \synt{Duration} \COMMA \PIPELINE\COLON{} \synt{Duration} \COMMA \ONTIMEOUT\COLON{} \synt{TimeoutAction} \RCURLY
+}
+\bnf{TimeoutAction}{\FAIL{} 
+%\alt \PARTIAL{} not implemented in L1
+\alt \ROUTETO{} \synt{Destination} }
+
+\bnf{Block}{\LCURLY{} \synt{PropertyList} \RCURLY}
+
+\bnf{Pipeline}{\synt{Source} (\VBAR{}  \synt{Stage})* \synt{Terminal}?}
+\bnf{Source}{\synt{Ident} } 
+\bnf{Stage}{\synt{OperatorCall} \alt \synt{Control} \alt \synt{PolicyStage} \alt \synt{StreamComb}}
+\bnf{OperatorCall}{\synt{Ident} \synt{Args}?}
+\bnf{Control}{\synt{IfExpression} \alt \synt{Union} \alt \synt{ForkExpression}}
+\bnf{StreamComb}{\synt{Union} \alt \synt{Cast}}
+\bnf{Cast}{\ACCEPT{} \synt{TypeList} \alt \REJECT{} \synt{TypeList}}
+\bnf{Union}{\UNION{} \synt{Pipeline}*}
+\bnf{Terminal}{\ROUTETO {}\synt{Ident} \alt \DROP}
+
+\bnf {ParameterList} {\ParamList{\synt{Parameter}}}
+\bnf {Parameter} {\IDENT{} \synt{TypeSigSuffix}?}
+
+\bnf{PropertyList}{(Property (\COMMA{} Property)*)?}
+\bnf {PropertyName} {\IDENT{} \alt \synt{StringLiteral}}
+
+%% Type signatures
+\bnf {TypeSigSuffix} {\COLON{} \synt{TypeSig}}
+
+\bnf {NonNullableTypeSig} {
+  \synt{TYPEPARAM}
+  \alt \synt{RefType}
+  \alt \synt{BuiltinType}
+  \alt \synt{StructType}
+  \alt \synt{ListType}
+  \alt \synt{MapType}
+}
+
+\bnf {TypeSig}{\synt{NonNullableTypeSig } \QUESTIONMARK{}}
+
+\bnf {BuiltinType} {\BOOL{} \alt \NUMBER{} \alt \STRING{} \alt \BYTE \alt \UINTTHIRTYTWO \alt \UINTSIXTYFOUR \alt \INTTHIRTYTWO \alt \INTSIXTYFOUR \alt \FSIXTYFOUR \alt \ANY \alt \ATTRIBUTEVALUE \alt \MAP }
+
+\bnf {PropertySig} {\synt{PropertyName} \COLON \synt{TypeSig}}
+
+\bnf {RefType} {\synt{Qualifier} \IDENT{} (\synt{TypeArgumentList})?}
+
+
+% Expressions
+\bnf {Expression} {\synt{IfExpression} \alt \synt{BitwiseOrExpression}}
+\bnf {IfExpression} {\IF{} \synt{Expression}  \LPAREN{} \synt{Pipeline} \RPAREN{} 
+(\ELSE{} \IF{} \LPAREN{} \synt{Pipeline} \RPAREN) *
+(\ELSE{} \LPAREN{} \synt{Pipeline} \RPAREN)?}
+\bnf {OrExpression} {\synt{AndExpression} \alt  \synt{OrExpression} \OR{} \synt{AndExpression}}
+\bnf {AndExpression} {\synt{RelExpression} \alt \synt{AndExpression} \AND{} \synt{RelExpression}}
+\bnf {BitwiseOrExpression} {\synt{BitwiseXorExpression} \alt  \synt{BitwiseOrExpression} \BOR{} \synt{BitwiseXorExpression}}
+\bnf {BitwiseXorExpression} {\synt{BitwiseAndExpression} \alt  \synt{BitwiseXorExpression} \XOR{} \synt{BitwiseAndExpression}}
+\bnf {BitwiseAndExpression} {\synt{RelExpression} \alt \synt{BitwiseAndExpression} \BAND{} \synt{RelExpression}}
+\bnf {RelExpression} {\synt{AdditiveExpression} \alt \synt{RelExpression} \synt{RelOp} \synt{AdditiveExpression}}
+\bnf {RelOp} {\EQ{} \alt \NEQ{} \alt \LT{} \alt \GT{} \alt \LTE{} \alt \GTE{}}
+\bnf {AdditiveExpression} {\synt{MultiplicativeExpression} \alt \synt{AdditiveExpression} \synt{AdditiveOp} \synt{MultiplicativeExpression}}
+\bnf {AdditiveOp} {\PLUS{} \alt \MINUS{}}
+\bnf {MultiplicativeExpression} {\synt{UnaryExpression} \alt \synt{MultiplicativeExpression} \synt{MultiplicativeOp} \synt{UnaryExpression}}
+\bnf {MultiplicativeOp} {\TIMES{} \alt \DIV{} \alt \MOD{}}
+
+\bnf{ForkExpression}{\FORK{}  \LPAREN{\synt{Pipeline}} \RPAREN{} *}
+%\LPAREN{\synt{Pipeline}} \RPAREN{}}
+
+\bnf {UnaryExpression} {
+      \synt{NumberLiteral}
+  \alt \MINUS{} \synt{UnaryExpression}
+  \alt \BNOT{} \synt{UnaryExpression}       
+  \alt \NOT{} \synt{UnaryExpression}
+  \alt \synt{MemberExpression}
+}
+
+\bnf{ParenthesizedExpression}{
+\LPAREN{} \synt{Expression} \alt \synt{ExpressionTypeSigSuffix} \RPAREN
+}
+
+\bnf {MemberExpression} {
+  \synt{IndexExpression}
+  \alt \synt{AttributeSelectionExpression}
+  \alt \synt{FunctionCall}
+  \alt \synt{ExtensionExpression}
+  \alt \synt{PrimitiveExpression}
+}
+\bnf {IndexExpression} {\synt{MemberExpression} \LBRACK{} \synt{Expression} \RBRACK{}}
+\bnf {AttributeSelectionExpression} {\synt{MemberExpression} \DOT{} \synt{PropertyName}}
+\bnf {FunctionCall} {\synt{Ident} \synt{ArgumentList}}
+\bnf {ArgumentList} {\LPAREN{} \CommaListOp {\synt{Expression}} \RPAREN{}}
+\bnf {ExtensionExpression} {\synt{MemberExpression} \DOT{} \synt{StructLiteral}}
+
+
+
+\bnf {PrimitiveExpression} {
+  \synt{IdentifierExpression}
+  \alt \synt{StringLiteral}
+   \alt \synt{TaggedLiteral}
+  \alt \TRUE{}
+  \alt \FALSE{}
+  \alt \NULL{}
+  \alt \LPAREN{} \synt{ParenthesizedExpression}
+}
+\bnf {IdentifierExpression} {\IDENT}
+
+\bnf {Property} {\synt{PropertyName} \COLON{} \synt{PropertyValue}}
+\bnf{PropertyValue}{
+\synt{Scalar}
+ \alt \synt{Block}
+   }
+   
+ \bnf{Scalar}{
+ \synt{NumberLiteral}
+ \alt \synt{StringLiteral} 
+ \alt \TRUE 
+ \alt \FALSE
+  \alt \NULL 
+  \alt
+  \synt{ScalarArray}
+ } 
+ 
+  \bnf{ScalarArray}{\LBRACK{}  \synt{Scalar} (\COMMA{} \synt{Scalar})* \RBRACK}
+   
+\bnf {StringLiteral} {\DQSTRING \alt \SQSTRING}
+\bnf {NumberLiteral} {\FLOAT \alt \INT}
+\bnf {TaggedLiteral} {\IDENT{}  \synt{StringLiteral} \alt \synt{NumberLiteral} \IDENT}
+
+
+\bnf {MapElement} {\synt{Expression} \COLON{} \synt{Expression}}
+
