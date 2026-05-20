@@ -3446,9 +3446,8 @@ mod test {
         let mut pipeline = Pipeline::new(pipeline_expr);
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
-            err.to_string().contains(
-                "cannot assign data scope RootParent(Scope) to struct column resource"
-            ),
+            err.to_string()
+                .contains("cannot assign data scope RootParent(Scope) to struct column resource"),
             "unexpected error: {}",
             err
         );

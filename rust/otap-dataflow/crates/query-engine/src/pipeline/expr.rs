@@ -334,9 +334,7 @@ impl ExprLogicalPlanner {
                                 ),
                             })?;
                         let data_scope = match column_name {
-                            consts::RESOURCE => {
-                                DataScope::RootParent(RootParentStruct::Resource)
-                            }
+                            consts::RESOURCE => DataScope::RootParent(RootParentStruct::Resource),
                             consts::SCOPE => DataScope::RootParent(RootParentStruct::Scope),
                             _ => DataScope::Root,
                         };
