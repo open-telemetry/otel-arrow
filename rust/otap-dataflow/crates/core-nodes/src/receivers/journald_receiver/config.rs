@@ -435,8 +435,33 @@ pub(crate) fn journal_source_lease_key(journal: &JournalConfig) -> String {
     let namespace = journal.namespace.as_deref().unwrap_or("<default>");
     format!(
         "journald:{}:{namespace}",
-        normalize_path(&journal.root_path).display()
+        stable_path_key(&journal.root_path)
     )
+}
+
+fn stable_path_key(path: &Path) -> String {
+    let normalized = normalize_path(path);
+    let mut parts = Vec::new();
+    let mut absolute = false;
+    for component in normalized.components() {
+        match component {
+            Component::RootDir => absolute = true,
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+            _ => {}
+        }
+    }
+    let joined = parts.join("/");
+    if absolute {
+        if joined.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{joined}")
+        }
+    } else if joined.is_empty() {
+        ".".to_owned()
+    } else {
+        joined
+    }
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -581,6 +606,18 @@ mod tests {
         let runtime = RuntimeConfig::try_from(cfg).expect("must validate");
         assert_eq!(runtime.journal.root_path, PathBuf::from("/host"));
         assert_eq!(runtime.lease_key, "journald:/host:<default>");
+    }
+
+    #[test]
+    fn lease_key_uses_stable_path_separators() {
+        let journal = JournalConfig {
+            root_path: PathBuf::from("host/journal"),
+            ..JournalConfig::default()
+        };
+        assert_eq!(
+            journal_source_lease_key(&journal),
+            "journald:host/journal:<default>"
+        );
     }
 
     #[test]
