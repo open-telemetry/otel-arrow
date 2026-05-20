@@ -1,3 +1,4 @@
+# platform: linux-only
 version: otel_dataflow/v1
 engine: {}
 groups:
