@@ -22,7 +22,7 @@
 use otap_df_config::ExtensionId;
 use std::any::TypeId;
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// Tracks which capability variants were consumed by node factories.
@@ -61,7 +61,10 @@ impl std::fmt::Debug for ConsumedTracker {
 
 /// A single consumption tracking entry.
 pub(crate) struct ConsumedEntry {
-    /// Human-readable capability name (for warnings).
+    /// Human-readable capability name (used by tests inspecting the
+    /// `unconsumed_*` views; carried unconditionally so the production
+    /// path can switch to using it later without churn).
+    #[allow(dead_code)]
     pub(crate) name: &'static str,
     /// The extension that provides this capability.
     pub(crate) extension_id: ExtensionId,
@@ -130,7 +133,9 @@ impl ConsumedTracker {
     }
 
     /// Returns extension IDs whose local variant was never consumed.
-    /// Used by the engine to call `drop_local()` on those extensions.
+    /// Retained for test diagnostics; production pruning uses
+    /// [`consumed_local`](Self::consumed_local) (see lib.rs).
+    #[allow(dead_code)]
     pub(crate) fn unconsumed_local(&self) -> Vec<(ExtensionId, &'static str)> {
         self.local
             .values()
@@ -140,12 +145,38 @@ impl ConsumedTracker {
     }
 
     /// Returns extension IDs whose shared variant was never consumed.
-    /// Used by the engine to call `drop_shared()` on those extensions.
+    /// Retained for test diagnostics; production pruning uses
+    /// [`consumed_shared`](Self::consumed_shared) (see lib.rs).
+    #[allow(dead_code)]
     pub(crate) fn unconsumed_shared(&self) -> Vec<(ExtensionId, &'static str)> {
         self.shared
             .values()
             .filter(|e| !e.consumed.get())
             .map(|e| (e.extension_id.clone(), e.name))
+            .collect()
+    }
+
+    /// Returns the set of extension IDs whose local variant had **at
+    /// least one** capability consumed by some node. An extension that
+    /// exposes multiple local capabilities appears here as long as any
+    /// one of them was bound — the variant is in use and must not be
+    /// dropped, even if other capabilities it provides went unused.
+    pub(crate) fn consumed_local(&self) -> HashSet<ExtensionId> {
+        self.local
+            .values()
+            .filter(|e| e.consumed.get())
+            .map(|e| e.extension_id.clone())
+            .collect()
+    }
+
+    /// Returns the set of extension IDs whose shared variant had **at
+    /// least one** capability consumed by some node. See
+    /// [`consumed_local`](Self::consumed_local) for the precise semantics.
+    pub(crate) fn consumed_shared(&self) -> HashSet<ExtensionId> {
+        self.shared
+            .values()
+            .filter(|e| e.consumed.get())
+            .map(|e| e.extension_id.clone())
             .collect()
     }
 }

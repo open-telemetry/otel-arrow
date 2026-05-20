@@ -47,7 +47,7 @@ serde.workspace = true
 tokio-stream.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
 humantime.workspace = true
-reqwest = { workspace = true, features = ["http2", "rustls-no-provider", "stream"] }
+reqwest = { workspace = true, features = ["http2", "rustls-no-provider", "stream", "gzip", "deflate", "zstd"] }
 tower = { workspace = true }
 hyper-util = { workspace = true }
 hyper = { workspace = true }

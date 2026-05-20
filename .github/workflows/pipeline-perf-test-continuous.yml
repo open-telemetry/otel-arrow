@@ -5,6 +5,12 @@ permissions:
 on:
   push:
     branches: [main]
+    paths:
+      - 'rust/**'
+      - 'tools/pipeline_perf_test/**'
+      - 'tools/comparison_dashboard/**'
+      - '.github/workflows/scripts/**'
+      - '.github/workflows/pipeline-perf-test-continuous.yml'
   workflow_dispatch:
 
 jobs:
@@ -62,46 +68,11 @@ jobs:
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
 
-      - name: Run idle state performance tests
-        run: |
-          cd tools/pipeline_perf_test
-          ./scripts/run-idle-state-tests.sh --output-json results/idle-memory-scaling.json \
-            | tee idle-memory-scaling-report.txt
-          # Add memory scaling report to job summary
-          echo "### Idle State Memory Scaling Analysis" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          # Extract just the analysis section from the report
-          sed -n '/^=.*MEMORY SCALING/,/^=\{10,\}$/p' idle-memory-scaling-report.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Run passthrough performance test
-        run: |
-          cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/passthrough.yaml
-
       - name: Upload benchmark results for processing
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: benchmark-results-pipeline
           path: tools/pipeline_perf_test/results/integration/gh-actions-benchmark/*.json
-
-      - name: Upload benchmark results for processing (Idle State)
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: benchmark-results-idle-state
-          path: tools/pipeline_perf_test/results/idle_state*/gh-actions-benchmark/*.json
-
-      - name: Upload idle state memory scaling metrics
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: benchmark-results-idle-memory-scaling
-          path: tools/pipeline_perf_test/results/idle-memory-scaling.json
-
-      - name: Upload benchmark results for processing (Passthrough)
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: benchmark-results-passthrough
-          path: tools/pipeline_perf_test/results/continuous_passthrough/gh-actions-benchmark/*.json
 
       - name: Add benchmark link to job summary
         run: |
@@ -126,31 +97,9 @@ jobs:
           merge-multiple: true
           path: results-pipeline
 
-      - name: Download benchmark artifacts (Idle State)
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: benchmark-results-idle-state*
-          merge-multiple: true
-          path: results-idle-state
-
-      - name: Download benchmark artifacts (Passthrough)
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: benchmark-results-passthrough*
-          merge-multiple: true
-          path: results-passthrough
-
       - name: Consolidate pipeline benchmark data
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-pipeline output-pipeline.json
-
-      - name: Consolidate idle state benchmark data
-        run: |
-          bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-idle-state output-idle-state.json
-
-      - name: Consolidate passthrough benchmark data
-        run: |
-          bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-passthrough output-passthrough.json
 
       - name: Update pipeline benchmark data and deploy to GitHub Pages
         uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
@@ -164,33 +113,7 @@ jobs:
           auto-push: true
           save-data-file: true
 
-      - name: Update idle state benchmark data and deploy to GitHub Pages
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
-        with:
-          tool: "customSmallerIsBetter"
-          output-file-path: output-idle-state.json
-          gh-pages-branch: benchmarks
-          max-items-in-chart: 100
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          benchmark-data-dir-path: "docs/benchmarks/continuous-idle-state"
-          auto-push: true
-          save-data-file: true
-
-      - name: Update passthrough benchmark data and deploy to GitHub Pages
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
-        with:
-          tool: "customSmallerIsBetter"
-          output-file-path: output-passthrough.json
-          gh-pages-branch: benchmarks
-          max-items-in-chart: 100
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          benchmark-data-dir-path: "docs/benchmarks/continuous-passthrough"
-          auto-push: true
-          save-data-file: true
-
       - name: Add benchmark link to job summary
         run: |
           echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "[View the pipeline benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY
-          echo "[View the idle state benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-idle-state/)" >> $GITHUB_STEP_SUMMARY
-          echo "[View the passthrough benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-passthrough/)" >> $GITHUB_STEP_SUMMARY

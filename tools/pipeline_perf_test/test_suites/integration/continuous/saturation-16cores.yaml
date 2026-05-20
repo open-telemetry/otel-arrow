@@ -1,11 +1,14 @@
 # Saturation test with 16 core df_engine
+# NUMA-aware layout: SUT on NUMA node 0, loadgen+backend on NUMA node 1.
+# Loadgen uses 32 physical cores (32-63) + 16 HT siblings (96-111).
+# Backend uses 16 HT siblings (112-127).
 from_template:
   path: test_suites/integration/continuous/saturation-cores-template.yaml.j2
   variables:
     num_cores: 16
     engine_core_range: "0-15"
     loadgen_cores: 48
-    loadgen_core_range: "16-63"
+    loadgen_core_range: "32-63,96-111"
     backend_cores: 16
-    backend_core_range: "64-79"
+    backend_core_range: "112-127"
     max_batch_size: 512
