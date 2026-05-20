@@ -47,9 +47,10 @@ use std::sync::{LazyLock, Mutex};
 
 mod config;
 
+use config::RuntimeConfig;
 pub use config::{
     BatchConfig, CheckpointConfig, Config, DEFAULT_JOURNAL_ROOT_PATH, DEFAULT_SOURCE_ID,
-    JournalConfig, MaxPriority, OnNack, RuntimeConfig, StartAt, severity_number_from_priority,
+    JournalConfig, MaxPriority, OnNack, StartAt, severity_number_from_priority,
 };
 
 /// URN for the journald receiver.
@@ -330,5 +331,32 @@ mod tests {
         let b = SourceLease::acquire("journald:/test-lease-b:<default>").expect("b");
         drop(a);
         drop(b);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn factory_rejects_multi_core_pipeline() {
+        let registry = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller = otap_df_engine::context::ControllerContext::new(registry);
+        let pipeline =
+            controller.pipeline_context_with("test-group".into(), "test-pipeline".into(), 0, 2, 0);
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(JOURNALD_RECEIVER_URN));
+        let receiver_config = ReceiverConfig::new("journald");
+        let result = create_journald_receiver(
+            pipeline,
+            NodeId {
+                index: 0,
+                name: "journald".into(),
+            },
+            node_config,
+            &receiver_config,
+        );
+        match result {
+            Err(otap_df_config::error::Error::InvalidUserConfig { error }) => {
+                assert!(error.contains("one-core"));
+            }
+            Err(other) => panic!("unexpected error: {other:?}"),
+            Ok(_) => panic!("multi-core journald receiver must be rejected"),
+        }
     }
 }

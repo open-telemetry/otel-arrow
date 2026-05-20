@@ -22,6 +22,8 @@ const DEFAULT_BATCH_MAX_RECORDS: usize = 1024;
 const DEFAULT_BATCH_MAX_FLUSH_PERIOD: Duration = Duration::from_millis(200);
 /// Default `sd_journal_wait` timeout. Bounds shutdown / pause responsiveness.
 const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
+/// Maximum `sd_journal_wait` timeout until the worker uses interruptible fd polling.
+const MAX_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Default drain deadline budget; must exceed `wait_timeout`.
 const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Default in-flight bound; v1 uses 1 to keep checkpoint advancement simple.
@@ -286,29 +288,29 @@ impl Default for Config {
 /// Parsing produces this from `Config` once and the receiver hot path consumes
 /// it without re-validating.
 #[derive(Clone, Debug)]
-pub struct RuntimeConfig {
+pub(crate) struct RuntimeConfig {
     /// Stable OTAP source identifier.
-    pub source_id: String,
+    pub(crate) source_id: String,
     /// Concrete systemd journal source selection.
-    pub journal: JournalConfig,
+    pub(crate) journal: JournalConfig,
     /// Process-local duplicate-reader lease key.
-    pub lease_key: String,
+    pub(crate) lease_key: String,
     /// Optional `_SYSTEMD_UNIT` matches (deduplicated, order preserved).
-    pub units: Vec<String>,
+    pub(crate) units: Vec<String>,
     /// Optional `SYSLOG_IDENTIFIER` matches (deduplicated, order preserved).
-    pub identifiers: Vec<String>,
+    pub(crate) identifiers: Vec<String>,
     /// Sorted, deduplicated set of accepted journald `PRIORITY` levels.
-    pub priorities: Vec<u8>,
+    pub(crate) priorities: Vec<u8>,
     /// Where to start when there is no committed cursor.
-    pub start_at: StartAt,
+    pub(crate) start_at: StartAt,
     /// Batch shaping.
-    pub batch: BatchConfig,
+    pub(crate) batch: BatchConfig,
     /// Checkpoint configuration.
-    pub checkpoint: CheckpointConfig,
+    pub(crate) checkpoint: CheckpointConfig,
     /// `sd_journal_wait` timeout.
-    pub wait_timeout: Duration,
+    pub(crate) wait_timeout: Duration,
     /// Drain deadline budget.
-    pub drain_timeout: Duration,
+    pub(crate) drain_timeout: Duration,
 }
 
 impl TryFrom<Config> for RuntimeConfig {
@@ -359,6 +361,11 @@ impl TryFrom<Config> for RuntimeConfig {
         }
         if wait_timeout.is_zero() {
             return Err(invalid("wait_timeout must be greater than zero"));
+        }
+        if wait_timeout > MAX_WAIT_TIMEOUT {
+            return Err(invalid(
+                "wait_timeout must be <= 5s until interruptible sd_journal_get_fd support lands",
+            ));
         }
         if drain_timeout <= wait_timeout {
             return Err(invalid("drain_timeout must be greater than wait_timeout"));
@@ -411,6 +418,17 @@ fn validate_journal(
     }
     if journal.root_path.as_os_str().to_str().is_none() {
         return Err(invalid("journal.root_path must be valid UTF-8"));
+    }
+    let root_path_text = journal
+        .root_path
+        .as_os_str()
+        .to_str()
+        .expect("journal.root_path UTF-8 checked above");
+    if !journal.root_path.is_absolute() && !root_path_text.starts_with('/') {
+        return Err(invalid(&format!(
+            "journal.root_path must be absolute: {}",
+            journal.root_path.display()
+        )));
     }
     if journal
         .root_path
@@ -611,13 +629,25 @@ mod tests {
     #[test]
     fn lease_key_uses_stable_path_separators() {
         let journal = JournalConfig {
-            root_path: PathBuf::from("host/journal"),
+            root_path: PathBuf::from("/host/journal"),
             ..JournalConfig::default()
         };
         assert_eq!(
             journal_source_lease_key(&journal),
-            "journald:host/journal:<default>"
+            "journald:/host/journal:<default>"
         );
+    }
+
+    #[test]
+    fn rejects_relative_journal_root_path() {
+        let cfg = Config {
+            journal: JournalConfig {
+                root_path: PathBuf::from("host"),
+                ..JournalConfig::default()
+            },
+            ..base()
+        };
+        assert!(RuntimeConfig::try_from(cfg).is_err());
     }
 
     #[test]
@@ -697,6 +727,16 @@ mod tests {
         let cfg = Config {
             wait_timeout: Duration::from_secs(2),
             drain_timeout: Duration::from_secs(2),
+            ..base()
+        };
+        assert!(RuntimeConfig::try_from(cfg).is_err());
+    }
+
+    #[test]
+    fn rejects_wait_timeout_above_v1_cap() {
+        let cfg = Config {
+            wait_timeout: Duration::from_secs(6),
+            drain_timeout: Duration::from_secs(7),
             ..base()
         };
         assert!(RuntimeConfig::try_from(cfg).is_err());
