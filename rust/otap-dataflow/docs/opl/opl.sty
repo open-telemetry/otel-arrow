@@ -11,15 +11,6 @@
 \def\lt{\tt<}
 \def\gt{\tt>}
 
-\newenvironment{dex}[1][!ht] {
-  \def\@programcr{\@addfield\strut}
-  \let\\=\@programcr
-  \relax\@vobeyspaces\obeylines
-
-  \sffamily
-}{b
-}
-
 \def\grammartable#1{}
 \newcommand\bnf[2]{
   \expandafter\newcommand\csname#1\endcsname{
@@ -251,7 +242,6 @@ the ASCII CR character followed by the ASCII LF character
 \def\ACCEPT{\keyword{accept}}
 \def\REJECT{\keyword{reject}}
 \def\UNION{\keyword{union}}
-\def\ROUTETO{\keyword{route\_to}}
 \def\DROP{\keyword{drop}}
 \def\FORK{\keyword{fork}}
 
@@ -287,7 +277,6 @@ the ASCII CR character followed by the ASCII LF character
 \def\SIZE{\keyword{size}}
 \def\FLUSHON{\keyword{flush\_on}}
 \def\OPERATION{\keyword{operation}}
-\def\DROP{\keyword{drop}}
 \def\FAIL{\keyword{fail}}
 
 
@@ -537,7 +526,7 @@ the ASCII CR character followed by the ASCII LF character
 }
 
 \bnf{ParenthesizedExpression}{
-\LPAREN{} \synt{Expression} \alt \synt{ExpressionTypeSigSuffix} \RPAREN
+\LPAREN{} \synt{Expression} \alt \synt{Expression TypeSigSuffix} \RPAREN
 }
 
 \bnf {MemberExpression} {

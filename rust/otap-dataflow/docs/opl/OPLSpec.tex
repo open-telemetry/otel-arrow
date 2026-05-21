@@ -8,7 +8,7 @@
 \input{opl.sty}
 \begin{document}
 \title{OPL Language Specification\\
-{\large Version 0.01}
+{\large Version 0.02}
 }
 \maketitle
 
@@ -21,7 +21,7 @@ OPL, the Observability Programming Language, is a domain specific language (DSL)
 
 OPL supports user defined {\em functions} [\ref{functions}].  Functions are used in expressions that are parameters to operators. Thus, functions are first-order, whereas operators are potentially higher-order. 
 
-The data in a stream is always of some known {\em signal type} [\ref{streamSignalTypes}]. signal types belong to a type hierarchy derived from open telemetry (OTel) standards. The structure of each signal type includes a known, fixed part, and a dynamic part that allows for extensions. The static part consist of a set of named fields that remains fixed for the duration of an OPL program. ,The dynamic part contains a set of named attributes that may vary during program execution. The values  of both fields and attributes belong to a family of {\em attribute types} [\ref{attributeTypes}]. Attribute types are a subset of {\em basic types}. Basic types are manipulated  by functions and expressions.  Basic types and signal types are distinct and disjoint.
+The data in a stream is always of some known {\em signal type} [\ref{streamSignalTypes}]. Signal types belong to a type hierarchy derived from open telemetry (OTel) standards. The structure of each signal type includes a known, fixed part, and a dynamic part that allows for extensions. The static part consists of a set of named fields that remains fixed for the duration of an OPL program. The dynamic part contains a set of named attributes that may vary during program execution. The values  of both fields and attributes belong to a family of {\em attribute types} [\ref{attributeTypes}]. Attribute types are a subset of {\em basic types}. Basic types are manipulated  by functions and expressions.  Basic types and signal types are distinct and disjoint.
 
 
 OPL encourages static typechecking of pipelines; however, because signal types may include dynamically typed data, typechecking is not always possible, and so OPL provides an optional type system.
@@ -237,10 +237,10 @@ A {\em timeout policy} determines if and when operations will time out if they d
 \TimeoutConfig{}
 \TimeoutAction{}
 
-Let $bp \triangleq$ \POLICY{} \TIMEOUT{} \LCURLY
+Let $tp \triangleq$ \POLICY{} \TIMEOUT{} \LCURLY
   \OPERATION\COLON{}$d_1$ \COMMA \PIPELINE\COLON{} $d_2$ \COMMA \ONTIMEOUT\COLON{} $ta$  \RCURLY{} be a timeout policy.
   
-  If $ta = \FAIL$ then  if any operation governed by $tp$ takes longer than $d_1$ an $OperationTimeout$ runtime error occurs. The error should provide the name and of the operation that failed, its source code location and the timeout period that was exceeded.       
+  If $ta = \FAIL$ then  if any operation governed by $tp$ takes longer than $d_1$ an $OperationTimeout$ runtime error occurs. The error should provide the name of the operation that failed, its source code location and the timeout period that was exceeded.       
 
 If any pipeline governed by $tp$ takes longer than $d_2$ a $PipelineTimeout$ runtime error occurs. The error should provide the pipeline's  source code location and the timeout period that was exceeded.
 
@@ -291,11 +291,11 @@ The set of operators in OPL  is fixed. Operators  are often parameterized by exp
 
 The \EXTEND{} operator allows the assignment of an element of a map.
 
-{\em The purpose of \EXTEND{} is to add or mutate dynamic attributes of a stream eleement.}
+{\em The purpose of \EXTEND{} is to add or mutate dynamic attributes of a stream element.}
 
 {\em Or, equivalently, to an element of a list of key-value pairs.}
 
-Let $x$ be the current element of the input stream $s$. The operator call $\EXTEND{}$  $id[k] = e$ produces an element $x'$ such that $x'$ is equivalent to $x$ except for the value of the field $id$, whose value in $x'$ is the same as $x[$, except that $x'.id[k] = v$ where $v$ is the result of evaluating $e$.
+Let $x$ be the current element of the input stream $s$. The operator call $\EXTEND{}$  $id[k] = e$ produces an element $x'$ such that $x'$ is equivalent to $x$ except for the value of the field $id$, whose value in $x'$ is the same as $x$, except that $x'.id[k] = v$ where $v$ is the result of evaluating $e$.
 
 \subsection{Identity}
 \label{identity}
@@ -659,7 +659,7 @@ It is a type warning if the type of  $e$ is not a subtype of type $T$.
 \subsection{Index Expressions}
 \label{indexExpressions}
 
-An {\em index expression} provides random access to the members of a map  [\ref{attributeTypes}].
+An {\em index expression} provides random access to the members of a map  [\ref{attributeTypes}] or an array [\ref{arrays}].
 
 \IndexExpression{}
 
@@ -672,8 +672,8 @@ Otherwise,  the expression $e_2$ is evaluated to a value $v_2$
  if $v_2$  is \NULL{}, the value of $i$ is \NULL{} with provenance $e_2$.
 Otherwise, the value of $i$ is the element of $e_1$ stored under key $v_2$, if there is one, or \NULL{} with provenance $i$ otherwise.
 
-Let $T_1$ be the type of $e_1$. It is a type warning if $T_1$ is not a map type.
-Let $T_2$ be the type of $e_2$. It is a type warning if $T_2$ is not compatible with type \STRING.
+Let $T_1$ be the type of $e_1$. It is a type warning if $T_1$ is neither a map type or an array type.
+Let $T_2$ be the type of $e_2$. If $T_1$ is a map type, it is a type warning if $T_2$ is not compatible with type \STRING. If $T_1$ is an array type, it is a type warning if $T_2$ is not an integer type [\ref{integerTypes}].
 
 {\em In particular, if  either $T_1$ or $T_2$ or both are nullable, a type warning arises.}
 
@@ -1032,7 +1032,7 @@ Type $Signal$ includes the record valued fields resource and scope.
 \subsubsection{Log}
 \label{log}
 
-$Log$s inherit all the fields of $Signal$. In addition a Log has a mandatory filed $time\_unix\_nano$, which is a an $int64$ [\ref{integerTypes}] value indicating the time stamp of the log entry in nanoseconds \comment{since when?}. If a $Log$ value denotes an event, it must also have an $event\_name$ field of type \STRING.  
+$Log$s inherit all the fields of $Signal$. In addition a $Log$ has a mandatory field $time\_unix\_nano$, which is an $int64$ [\ref{integerTypes}] value indicating the timestamp of the log entry in nanoseconds \comment{since when?}. If a $Log$ value denotes an event, it must also have an $event\_name$ field of type \STRING.  
 
 The following additional fields are optional: $\{body: any, attributes: map, trace\_id: byte[], trace\_id\_string: \STRING, span_id: byte[], span\_id\_string: \STRING, observed\_time\_unix\_nano: int64, severity\_number: int32, severity\_text: \STRING, dropped\_attributes\_count: uint32, flags: uint32\}$.
 
@@ -1041,7 +1041,7 @@ The following additional fields are optional: $\{body: any, attributes: map, tra
 \subsubsection{Metric}
 \label{metric}
 
-$Metric$s inherit all the fields of $Signal$. In addition a $Span$ has the following mandatory fields: $\{name: \STRING, type: byte\}$.
+$Metric$s inherit all the fields of $Signal$. In addition a $Metric$ has the following mandatory fields: $\{name: \STRING, type: byte\}$.
 
 A $Metric$ may also include the following optional fields
 $\{description: \STRING, unit: \STRING, metadata: map\}$.
@@ -1145,6 +1145,12 @@ The predefined type \INTTHIRTYTWO{} consists of the integer values between -2,14
  
 The predefined type \UINTTHIRTYTWO{} consists of the integer values between 0 and 4,294,967,295, inclusive.
  
+ \subsubsection{Arrays}
+\label{arrays}
+
+Arrays are fixed-size, ordered collections of either bytes or attribute values. They are indexed by non-negative integers.
+ 
+ 
 \subsubsection{string}
 \label{string}
 
@@ -1217,6 +1223,7 @@ Function types  are derived from function signatures.
 \label{versionHistory}
 \begin{itemize}
 \item 0.01. Initial public version.
+\item 0.02 Add missing section on arrays. Make indexing expressions cover arrays as well. Fix various typos.
 
 \end{itemize}
 \end{document}
