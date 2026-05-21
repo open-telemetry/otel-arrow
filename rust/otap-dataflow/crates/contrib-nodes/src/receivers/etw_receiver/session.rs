@@ -3,13 +3,13 @@
 
 //! ETW session management using the `one_collect` library.
 //!
-//! ## Singleton session with round-robin fan-out
+//! ## One session per `session_name` with round-robin fan-out
 //!
 //! Windows allows only **one** real-time ETW trace session per session name.
 //! The OTAP engine, however, may create multiple receiver replicas (one per
-//! allocated core).  To reconcile these two models this module maintains a
-//! **process-global singleton session** and pre-creates N consumer channels
-//! (one per core).  Each factory call pops one receiver from the pool.
+//! allocated core).  To reconcile these two models this module maintains one
+//! session per `session_name` and pre-creates N consumer channels (one per
+//! core).  Each factory call pops one receiver from the pool.
 //!
 //! ```text
 //! ProcessTrace OS thread  (lazily spawned on first factory call)
@@ -42,6 +42,8 @@
 //! (i.e. no receivers remain) the callback becomes a no-op.
 
 use std::cell::Cell;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::rc::Rc;
 use std::sync::Mutex;
 
@@ -55,7 +57,8 @@ use super::{Config, ProviderConfig, TraceLevel};
 /// Channel capacity for ETW events sent from the blocking session thread to
 /// each per-core async receiver loop.  A bounded channel provides implicit
 /// backpressure: when a core's channel is full the round-robin callback skips
-/// that core for the current event (the event is dropped for that core only).
+/// that core for the current event (the event is dropped entirely from the
+/// pipeline).
 const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
 // ── Event data transferred across the channel ────────────────────────────────
@@ -180,15 +183,27 @@ fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
     unreachable!("validated upstream: provider must specify either 'name' or 'guid'")
 }
 
-// ── Singleton session state ──────────────────────────────────────────────────
+// ── Per-session state ────────────────────────────────────────────────────────
 
-/// Process-global session state.  Initialized on the first call to
-/// [`subscribe`]; subsequent calls pop one receiver from the pool.
+/// State for a single ETW session keyed by `session_name`.
+struct SessionEntry {
+    /// Pre-allocated consumer channels, one per core.  Popped one at a time
+    /// as each per-core receiver factory call arrives.
+    pool: Vec<mpsc::Receiver<EtwEventData>>,
+}
+
+/// Process-global session registry.  Keyed by `session_name` so that:
 ///
-/// We use `Mutex<Option<Vec<…>>>` rather than `OnceLock` / `LazyLock` because:
+/// - Two `receiver:etw` nodes with **different** `session_name`s each get
+///   their own independent kernel session.
+/// - Two nodes with the **same** `session_name` produce a clear
+///   `InvalidUserConfig` error instead of silently sharing or failing with
+///   a misleading "pool exhausted" message.
+///
+/// We use `Mutex<HashMap<…>>` rather than `OnceLock` / `LazyLock` because:
 /// - Initialization is fallible (GUID parsing, thread spawn).
 /// - We need post-init mutation (`Vec::pop`).
-static SESSION: Mutex<Option<Vec<mpsc::Receiver<EtwEventData>>>> = Mutex::new(None);
+static SESSIONS: Mutex<Option<HashMap<String, SessionEntry>>> = Mutex::new(None);
 
 /// Spawn the ETW session and block on `parse_until`.
 ///
@@ -234,12 +249,13 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
             // timestamp, provider GUID, etc.) before dispatching each event.
             let ancillary = session.ancillary_data();
 
-            // Shared round-robin counter and sender list.  All provider
-            // callbacks run on the single `ProcessTrace` thread, so `Cell`
-            // is safe — no atomics or locking needed.  Sharing the counter
-            // ensures uniform core distribution even at startup when
+            // Shared round-robin counter, drop counter, and sender list.
+            // All provider callbacks run on the single `ProcessTrace` thread,
+            // so `Cell` is safe — no atomics or locking needed.  Sharing the
+            // counter ensures uniform core distribution even at startup when
             // multiple providers would otherwise all start at index 0.
             let next: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+            let dropped: Rc<Cell<u64>> = Rc::new(Cell::new(0));
             let txs: Rc<Vec<mpsc::Sender<EtwEventData>>> = Rc::new(txs);
 
             // Register a provider-wide event for each configured provider.
@@ -256,6 +272,7 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
 
                 let ancillary = ancillary.clone();
                 let next = Rc::clone(&next);
+                let dropped = Rc::clone(&dropped);
                 let txs = Rc::clone(&txs);
 
                 wide_event.add_callback(move |_event_data| {
@@ -287,9 +304,21 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                     let i = next.get();
                     next.set(i.wrapping_add(1));
 
-                    // Best-effort send; if this core's channel is full,
-                    // drop the event for that core only.
-                    let _ = txs[i % txs.len()].try_send(data);
+                    // Best-effort send; if this core's channel is full the
+                    // event is dropped from the pipeline entirely (each event
+                    // is assigned to exactly one core via round-robin).
+                    if txs[i % txs.len()].try_send(data).is_err() {
+                        let count = dropped.get() + 1;
+                        dropped.set(count);
+                        // Rate-limited log: first drop, then every 10,000th.
+                        if count == 1 || count % 10_000 == 0 {
+                            eprintln!(
+                                "[etw-session] event dropped (total dropped: {count}); \
+                                 channel full for core {}",
+                                i % txs.len()
+                            );
+                        }
+                    }
 
                     Ok(())
                 });
@@ -299,7 +328,12 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
 
             // `parse_until` blocks on `ProcessTrace`.  We never signal stop,
             // so the session runs until the process exits.
-            let _result = session.parse_until(&session_name, || false);
+            // TODO: Surface startup failures via a oneshot readiness channel
+            // once the one-collect API stabilizes (TDH decoding work).
+            let result = session.parse_until(&session_name, || false);
+            if let Err(ref e) = result {
+                eprintln!("[etw-session-{session_name}] parse_until failed: {e}");
+            }
 
             // The session thread exits only on unrecoverable ETW errors or
             // process shutdown.  When it exits, all senders are dropped,
@@ -314,48 +348,59 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/// Acquire one consumer channel from the process-global ETW session.
+/// Acquire one consumer channel from the ETW session for the given
+/// `session_name`.
 ///
-/// On the **first** call, this function:
+/// On the **first** call for a given `session_name`, this function:
 /// 1. Creates `num_cores` bounded MPSC channels.
 /// 2. Spawns the ETW session thread with round-robin fan-out across all
 ///    senders.
-/// 3. Stores the receivers in a process-global pool.
+/// 3. Stores the receivers in the session registry.
 ///
 /// On each call (including the first) it pops one receiver from the pool and
 /// returns it.  The engine calls the receiver factory once per allocated core,
-/// so exactly `num_cores` calls are expected.
+/// so exactly `num_cores` calls are expected per `session_name`.
 ///
 /// # Errors
 ///
 /// Returns an error if:
-/// - Provider GUID parsing fails (first call only).
+/// - Provider GUID parsing fails (first call for this `session_name` only).
 /// - The ETW session thread cannot be spawned (first call only).
-/// - All consumers have already been handed out (more calls than `num_cores`).
+/// - The `session_name` is already in use by another `receiver:etw` node
+///   (all consumers for that session have been handed out).
 /// - The session lock is poisoned (indicates a prior panic).
 pub(super) fn subscribe(
     config: &Config,
     num_cores: usize,
 ) -> Result<mpsc::Receiver<EtwEventData>, Error> {
-    let mut guard = SESSION.lock().map_err(|e| Error::InternalError {
-        message: format!("ETW session lock poisoned: {e}"),
+    let mut guard = SESSIONS.lock().map_err(|e| Error::InternalError {
+        message: format!("ETW sessions lock poisoned: {e}"),
     })?;
 
-    if guard.is_none() {
-        // First call — initialize the session.
-        let (txs, rxs): (Vec<_>, Vec<_>) = (0..num_cores)
-            .map(|_| mpsc::channel(EVENT_CHANNEL_CAPACITY))
-            .unzip();
+    let sessions = guard.get_or_insert_with(HashMap::new);
 
-        spawn_etw_session(config, txs)?;
+    let entry = match sessions.entry(config.session_name.clone()) {
+        Entry::Vacant(v) => {
+            // First call for this session_name — initialize the session.
+            let (txs, rxs): (Vec<_>, Vec<_>) = (0..num_cores)
+                .map(|_| mpsc::channel(EVENT_CHANNEL_CAPACITY))
+                .unzip();
 
-        *guard = Some(rxs);
-    }
+            spawn_etw_session(config, txs)?;
 
-    let pool = guard.as_mut().expect("session initialized above");
-    pool.pop().ok_or_else(|| Error::InternalError {
-        message: "ETW consumer pool exhausted; engine requested more receivers than num_cores"
-            .to_string(),
+            v.insert(SessionEntry { pool: rxs })
+        }
+        Entry::Occupied(o) => o.into_mut(),
+    };
+
+    entry.pool.pop().ok_or_else(|| {
+        Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+            error: format!(
+                "ETW session_name '{}' is already in use; \
+                     each receiver:etw node must specify a distinct session_name",
+                config.session_name,
+            ),
+        }))
     })
 }
 
