@@ -26,10 +26,10 @@ pub enum DataSource {
     #[default]
     SemanticConventions,
 
-    /// Use minimal static hardcoded signals
+    /// Use minimal synthetic hardcoded signals
     /// - No external dependencies or network access
     /// - Fixed set of attributes (e.g., service.name, http.method, etc.)
-    Static,
+    Synthetic,
 }
 
 /// Strategy for generating telemetry batches
@@ -113,7 +113,7 @@ pub struct Config {
     enable_ack_nack: bool,
 
     /// Resource attribute sets to rotate across generated batches.
-    /// Only applies to `data_source: static`. With `pre_generated`, only the
+    /// Only applies to `data_source: synthetic`. With `pre_generated`, only the
     /// first attribute set is used.
     ///
     /// Accepted forms (all backward-compatible):
@@ -184,7 +184,7 @@ pub struct TrafficConfig {
     #[serde(default = "default_weight")]
     pub log_weight: u32,
 
-    /// Target size of each log record body in bytes (Static data source only).
+    /// Target size of each log record body in bytes (Synthetic data source only).
     /// When set, pre-generates a pool of 50 distinct body strings of this size;
     /// records cycle through the pool for realistic dictionary cardinality.
     /// When 0, the body is omitted entirely.
@@ -192,7 +192,7 @@ pub struct TrafficConfig {
     #[serde(default)]
     pub log_body_size_bytes: Option<usize>,
 
-    /// Number of attributes to attach to each log record (Static data source only).
+    /// Number of attributes to attach to each log record (Synthetic data source only).
     /// When set, generates this many key-value string attributes.
     /// When unset, uses the default 2 attributes (thread.id, thread.name).
     #[serde(default)]
@@ -203,13 +203,13 @@ pub struct TrafficConfig {
     #[serde(default)]
     pub use_trace_context: bool,
 
-    /// Number of attributes to attach to each metric data point (Static data source only).
+    /// Number of attributes to attach to each metric data point (Synthetic data source only).
     /// When set, generates this many key-value attributes per data point.
     /// When unset, uses the default 3 attributes (http.method, http.route, http.status_code).
     #[serde(default)]
     pub num_metric_attributes: Option<usize>,
 
-    /// Number of data points per metric (Static data source only).
+    /// Number of data points per metric (Synthetic data source only).
     /// When set, generates this many data points per metric.
     /// When unset, uses the default of 1 data point per metric.
     #[serde(default)]
@@ -283,11 +283,11 @@ impl Config {
     }
 
     /// Provide a reference to the ResolvedRegistry.
-    /// Returns None if data_source is Static.
+    /// Returns None if data_source is Synthetic.
     pub fn get_registry(&self) -> Result<Option<ResolvedRegistry>, String> {
         let mut semconv_errors = Vec::new();
         match self.data_source {
-            DataSource::Static => Ok(None),
+            DataSource::Synthetic => Ok(None),
             DataSource::SemanticConventions => {
                 let registry_repo =
                     RegistryRepo::try_new(None, &self.registry_path, &mut semconv_errors)
@@ -552,13 +552,13 @@ mod tests {
                 "trace_weight": 0,
                 "log_weight": 1
             },
-            "data_source": "static",
+            "data_source": "synthetic",
             "generation_strategy": "pre_generated"
         }))
         .expect("config should parse");
 
         assert!(!cfg.enable_ack_nack());
-        assert_eq!(cfg.data_source(), &DataSource::Static);
+        assert_eq!(cfg.data_source(), &DataSource::Synthetic);
         assert_eq!(cfg.generation_strategy(), &GenerationStrategy::PreGenerated);
     }
 
@@ -573,7 +573,7 @@ mod tests {
                 "trace_weight": 0,
                 "log_weight": 1
             },
-            "data_source": "static",
+            "data_source": "synthetic",
             "generation_strategy": "fresh",
             "enable_ack_nack": true
         }))
@@ -597,7 +597,7 @@ mod tests {
     fn resource_attributes_absent_yields_empty() {
         let cfg: Config = serde_json::from_value(json!({
             "traffic_config": base_traffic(),
-            "data_source": "static"
+            "data_source": "synthetic"
         }))
         .expect("config should parse");
         assert!(cfg.resource_attributes().is_empty());
@@ -608,7 +608,7 @@ mod tests {
     fn resource_attributes_plain_single_map() {
         let cfg: Config = serde_json::from_value(json!({
             "traffic_config": base_traffic(),
-            "data_source": "static",
+            "data_source": "synthetic",
             "resource_attributes": {"tenant.id": "prod"}
         }))
         .expect("config should parse");
@@ -626,7 +626,7 @@ mod tests {
     fn resource_attributes_list_of_plain_maps() {
         let cfg: Config = serde_json::from_value(json!({
             "traffic_config": base_traffic(),
-            "data_source": "static",
+            "data_source": "synthetic",
             "resource_attributes": [
                 {"tenant.id": "prod"},
                 {"tenant.id": "ppe"}
@@ -642,7 +642,7 @@ mod tests {
     fn resource_attributes_weighted_entries() {
         let cfg: Config = serde_json::from_value(json!({
             "traffic_config": base_traffic(),
-            "data_source": "static",
+            "data_source": "synthetic",
             "resource_attributes": [
                 {"attrs": {"tenant.id": "prod"}, "weight": 3},
                 {"attrs": {"tenant.id": "ppe"},  "weight": 1}
@@ -661,7 +661,7 @@ mod tests {
     fn resource_attributes_weighted_default_weight() {
         let cfg: Config = serde_json::from_value(json!({
             "traffic_config": base_traffic(),
-            "data_source": "static",
+            "data_source": "synthetic",
             "resource_attributes": [
                 {"attrs": {"tenant.id": "prod"}}
             ]
@@ -674,7 +674,7 @@ mod tests {
     fn resource_attributes_weight_zero_is_rejected() {
         let result = serde_json::from_value::<Config>(json!({
             "traffic_config": base_traffic(),
-            "data_source": "static",
+            "data_source": "synthetic",
             "resource_attributes": [
                 {"attrs": {"tenant.id": "prod"}, "weight": 0}
             ]
@@ -688,7 +688,7 @@ mod tests {
         // to weight=1 with the stray field ignored.
         let result = serde_json::from_value::<Config>(json!({
             "traffic_config": base_traffic(),
-            "data_source": "static",
+            "data_source": "synthetic",
             "resource_attributes": [
                 {"attrs": {"tenant.id": "prod"}, "weights": 3}
             ]
@@ -703,7 +703,7 @@ mod tests {
     fn resource_attributes_weighted_empty_attrs_is_rejected() {
         let result = serde_json::from_value::<Config>(json!({
             "traffic_config": base_traffic(),
-            "data_source": "static",
+            "data_source": "synthetic",
             "resource_attributes": [
                 {"attrs": {}, "weight": 2}
             ]
@@ -739,7 +739,7 @@ mod tests {
     fn parse_config_transport_headers_default_empty() {
         let cfg: Config = serde_json::from_value(json!({
             "traffic_config": base_traffic(),
-            "data_source": "static",
+            "data_source": "synthetic",
             "generation_strategy": "fresh"
         }))
         .expect("config should parse");
@@ -754,7 +754,7 @@ mod tests {
     fn parse_config_transport_headers_with_values() {
         let cfg: Config = serde_json::from_value(json!({
             "traffic_config": base_traffic(),
-            "data_source": "static",
+            "data_source": "synthetic",
             "generation_strategy": "fresh",
             "transport_headers": {
                 "x-tenant-id": "acme",

@@ -15,7 +15,7 @@ use super::config::{
     Config, DataSource, GenerationStrategy, ResourceAttributeSet, TrafficConfig,
     build_rotation_table,
 };
-use super::{semconv_signal, static_signal};
+use super::{semconv_signal, synthetic_signal};
 
 /// A SignalProducer yields the signals that need to be exported in a given
 /// second in order to meet the data volume production requirements with a
@@ -56,10 +56,10 @@ impl TrafficProducer {
                     .expect("SemanticConventions data source should return Some registry");
                 Box::new(WeaverGenerator { registry })
             }
-            DataSource::Static => {
+            DataSource::Synthetic => {
                 let entries = config.resource_attributes().to_vec();
                 let rotation = build_rotation_table(&entries);
-                Box::new(StaticGenerator {
+                Box::new(SyntheticGenerator {
                     idx: 0,
                     entries,
                     rotation,
@@ -477,11 +477,11 @@ impl SignalGenerator for WeaverGenerator {
     }
 }
 
-/// Signal generator that produces signals from hardcoded static templates.
+/// Signal generator that produces signals from hardcoded synthetic templates.
 ///
 /// Resource attributes are rotated across batches according to a weighted
 /// round-robin table built from the configured [`ResourceAttributeSet`] entries.
-pub struct StaticGenerator {
+pub struct SyntheticGenerator {
     idx: usize,
     entries: Vec<ResourceAttributeSet>,
     rotation: Vec<usize>,
@@ -497,7 +497,7 @@ pub struct StaticGenerator {
     num_data_points_per_metric: Option<usize>,
 }
 
-impl StaticGenerator {
+impl SyntheticGenerator {
     /// Return the resource attributes for the current batch, or `None` when no
     /// custom attributes are configured.
     ///
@@ -514,10 +514,10 @@ impl StaticGenerator {
     }
 }
 
-impl SignalGenerator for StaticGenerator {
+impl SignalGenerator for SyntheticGenerator {
     fn generate_logs(&mut self, count: usize) -> GenerateResult {
         let attrs = self.attrs_for_batch();
-        let payload = static_signal::static_otlp_logs_with_config(
+        let payload = synthetic_signal::static_otlp_logs_with_config(
             count,
             self.log_body_size_bytes,
             self.num_log_attributes,
@@ -532,7 +532,7 @@ impl SignalGenerator for StaticGenerator {
 
     fn generate_metrics(&mut self, count: usize) -> GenerateResult {
         let attrs = self.attrs_for_batch();
-        let payload = static_signal::static_otlp_metrics_with_config(
+        let payload = synthetic_signal::static_otlp_metrics_with_config(
             count,
             self.num_metric_attributes,
             self.num_data_points_per_metric,
@@ -546,7 +546,7 @@ impl SignalGenerator for StaticGenerator {
 
     fn generate_traces(&mut self, count: usize) -> GenerateResult {
         let attrs = self.attrs_for_batch();
-        let payload = static_signal::static_otlp_traces(count, attrs);
+        let payload = synthetic_signal::static_otlp_traces(count, attrs);
         let payload = OtlpProtoMessage::Traces(payload);
 
         self.idx += 1;
@@ -559,9 +559,9 @@ mod tests {
     use super::super::config::TrafficConfig;
     use super::*;
 
-    /// Helper to build a minimal `StaticGenerator` with no resource attributes.
-    fn static_generator() -> StaticGenerator {
-        StaticGenerator {
+    /// Helper to build a minimal `SyntheticGenerator` with no resource attributes.
+    fn synthetic_generator() -> SyntheticGenerator {
+        SyntheticGenerator {
             idx: 0,
             entries: Vec::new(),
             rotation: Vec::new(),
@@ -581,7 +581,7 @@ mod tests {
         TrafficProducer {
             strategy,
             signal_count,
-            generator: Box::new(static_generator()),
+            generator: Box::new(synthetic_generator()),
             max_signal_count,
             produced_count: 0,
         }
@@ -677,7 +677,7 @@ mod tests {
         let mut producer = TrafficProducer {
             strategy,
             signal_count,
-            generator: Box::new(static_generator()),
+            generator: Box::new(synthetic_generator()),
             max_signal_count: None,
             produced_count: 0,
         };
@@ -719,7 +719,7 @@ mod tests {
         );
 
         let shape = create_shape(&cfg);
-        let mut generator = static_generator();
+        let mut generator = synthetic_generator();
         let payloads =
             create_fresh_payloads(&mut generator, &shape).expect("pre-generation should succeed");
         let expected_count = payloads.len();
@@ -731,7 +731,7 @@ mod tests {
         let mut producer = TrafficProducer {
             strategy,
             signal_count,
-            generator: Box::new(static_generator()),
+            generator: Box::new(synthetic_generator()),
             max_signal_count: None,
             produced_count: 0,
         };
@@ -769,7 +769,7 @@ mod tests {
         let entries = vec![make_entry("prod"), make_entry("staging")];
         let rotation = build_rotation_table(&entries);
 
-        let mut generator = StaticGenerator {
+        let mut generator = SyntheticGenerator {
             idx: 0,
             entries,
             rotation,
@@ -848,8 +848,8 @@ mod tests {
         use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
         use prost::Message;
 
-        // static_generator() has empty entries and rotation — no custom resource attrs.
-        let mut generator = static_generator();
+        // synthetic_generator() has empty entries and rotation — no custom resource attrs.
+        let mut generator = synthetic_generator();
 
         let batch_1 = generator
             .generate_logs(1)
