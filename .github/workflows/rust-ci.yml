@@ -1050,11 +1050,14 @@ jobs:
             sleep 1
           done
 
-          echo "::group::Trigger tls.handshake.failed (plaintext HTTP -> TLS port)"
+          echo "::group::Trigger declared events"
+          # Per-event triggers go here. Adding a new event to the registry
+          # also requires a snippet below that exercises it -- the assert
+          # step fails if any declared event receives zero samples.
+
+          # tls.handshake.failed: raw HTTP bytes to the TLS port are
+          # rejected by `crates/otap/src/tls_utils.rs::create_tls_stream`.
           for i in 1 2 3 4 5; do
-            # The TLS acceptor receives raw HTTP bytes and rejects them,
-            # firing `tls.handshake.failed` from
-            # `crates/otap/src/tls_utils.rs::create_tls_stream`.
             curl --max-time 2 -sS http://127.0.0.1:14317/ 2>&1 | head -1 || true
             sleep 0.3
           done
@@ -1087,7 +1090,7 @@ jobs:
           echo "::group::df_engine log (tail)"
           tail -n 100 live-check-report/df_engine.log || true
           echo "::endgroup::"
-      - name: Assert tls.handshake.failed was validated
+      - name: Assert every registered event was validated
         if: always()
         working-directory: ${{ github.workspace }}
         run: |
@@ -1098,57 +1101,85 @@ jobs:
             exit 1
           fi
 
-          python3 - "$REPORT" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
-          import json, sys
-          d = json.load(open(sys.argv[1]))
+          python3 -m pip install --quiet pyyaml
+
+          python3 - "$REPORT" rust/otap-dataflow/semconv/groups \
+            <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob, json, os, sys
+          import yaml
+
+          report_path, groups_dir = sys.argv[1], sys.argv[2]
+
+          # Discover every `type: event` group declared in the in-tree
+          # semconv registry. Adding a new event = drop a new YAML file
+          # under semconv/groups/ and trigger it; no edits needed here.
+          expected = set()
+          for path in sorted(glob.glob(os.path.join(groups_dir, "*.yaml"))):
+              with open(path) as f:
+                  doc = yaml.safe_load(f) or {}
+              for g in doc.get("groups") or []:
+                  if g.get("type") == "event" and g.get("id"):
+                      expected.add(g["id"])
+
+          d = json.load(open(report_path))
           samples = d.get("samples") or []
 
-          # Find every sample where the OTLP log record's event_name is
-          # the one we're validating in this MVP.
-          tls = [
-              s for s in samples
-              if isinstance(s.get("log"), dict)
-              and s["log"].get("event_name") == "tls.handshake.failed"
-          ]
-          print(f"## df_engine events live-check (MVP)")
+          # Bucket received OTLP log samples by event_name.
+          by_name = {}
+          for s in samples:
+              log = s.get("log")
+              if not isinstance(log, dict):
+                  continue
+              name = log.get("event_name")
+              if name:
+                  by_name.setdefault(name, []).append(log)
+
+          print("## df_engine events live-check")
           print()
           print(f"- Samples received: **{len(samples)}**")
-          print(f"- `tls.handshake.failed` samples: **{len(tls)}**")
-
-          if not tls:
-              print()
-              print("::error::No `tls.handshake.failed` samples received."
-                    " The exerciser pipeline did not fire the event, or the"
-                    " internal_telemetry -> OTLP path is broken.")
-              sys.exit(1)
-
-          # The CI gate is scoped to event-level findings: if the event
-          # name itself is recognised by the registry, the per-record
-          # `live_check_result` will have advice level <= improvement
-          # (e.g. `not_stable`). Attribute-level findings (`error` and
-          # `message` are not yet declared in the registry) are
-          # tolerated for the MVP and will be tightened in follow-ups.
-          bad = []
-          for s in tls:
-              level = (s["log"].get("live_check_result") or {}).get(
-                  "highest_advice_level"
-              )
-              if level == "violation":
-                  bad.append(s["log"].get("live_check_result"))
-
-          if bad:
-              print()
-              print(f"::error::`tls.handshake.failed` event has"
-                    f" {len(bad)} violation-level finding(s) at the event level.")
-              for r in bad[:3]:
-                  print(json.dumps(r, indent=2))
-              sys.exit(1)
-
+          print(f"- Events declared in registry: **{len(expected)}**")
           print()
-          print("> Event name `tls.handshake.failed` matched the in-tree"
-                " semantic-conventions registry. Attribute-level findings"
-                " (improvements / `missing_attribute`) are deferred"
-                " -- see issue #1613.")
+          print("| Event | Samples | Worst event-level advice |")
+          print("| --- | ---: | --- |")
+
+          missing, violators = [], []
+          for name in sorted(expected):
+              logs = by_name.get(name) or []
+              # Event-level gate: attribute-level findings (e.g. undeclared
+              # `error` / `message` keys) are tolerated for now and will be
+              # tightened in follow-ups under issue #1613.
+              levels = [
+                  (lg.get("live_check_result") or {}).get("highest_advice_level")
+                  for lg in logs
+              ]
+              worst = "n/a"
+              for lvl in ("violation", "improvement", "information", "not_stable"):
+                  if lvl in levels:
+                      worst = lvl
+                      break
+              print(f"| `{name}` | {len(logs)} | {worst} |")
+              if not logs:
+                  missing.append(name)
+              elif "violation" in levels:
+                  violators.append(name)
+
+          ok = True
+          if missing:
+              ok = False
+              print()
+              print(f"::error::{len(missing)} declared event(s) received zero"
+                    f" samples: {', '.join(missing)}. The exerciser did not"
+                    " fire them, or the internal_telemetry -> OTLP path is"
+                    " broken.")
+          if violators:
+              ok = False
+              print()
+              print(f"::error::{len(violators)} event(s) have event-level"
+                    f" violations: {', '.join(violators)}.")
+              for name in violators[:3]:
+                  res = (by_name[name][0].get("live_check_result") or {})
+                  print(json.dumps({name: res}, indent=2))
+          sys.exit(0 if ok else 1)
           PY
       - name: Upload live-check report
         if: always()
