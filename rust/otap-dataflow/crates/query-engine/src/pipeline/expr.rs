@@ -175,7 +175,7 @@ impl From<&ColumnAccessor> for DataScope {
 ///
 /// - [`execute_as_value`](Self::execute_as_value) — produces a [`ScopedValue`] containing actual
 ///   values. Used when the consumer needs materialized data (assignment, arithmetic, function
-///  arguments).
+///   arguments).
 ///
 /// - [`execute_as_id_mask`](Self::execute_as_id_mask) — produces an
 ///   [`IdMask`](crate::pipeline::id_mask::IdMask) bitmap of matching IDs. Used when the consumer
