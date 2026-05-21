@@ -725,11 +725,11 @@ where
             .sum();
         let schema_url = resource_metric.schema_url();
 
+        metrics
+            .resource
+            .append_schema_url_n(schema_url, metric_count);
+        metrics.resource.append_id_n(curr_resource_id, metric_count);
         if let Some(resource) = resource_metric.resource() {
-            metrics
-                .resource
-                .append_schema_url_n(schema_url, metric_count);
-            metrics.resource.append_id_n(curr_resource_id, metric_count);
             metrics.resource.append_dropped_attributes_count_n(
                 resource.dropped_attributes_count(),
                 metric_count,
@@ -741,10 +741,6 @@ where
         } else {
             // OTLP may omit `resource`; same as an empty Resource. Still emit one resource row
             // per metric-definition row so the `resource` struct column matches `id` length.
-            metrics
-                .resource
-                .append_schema_url_n(schema_url, metric_count);
-            metrics.resource.append_id_n(curr_resource_id, metric_count);
             metrics
                 .resource
                 .append_dropped_attributes_count_n(0, metric_count);
@@ -774,12 +770,10 @@ where
 
             for metric in scope_metric.metrics() {
                 metrics.append_scope_schema_url(scope_schema_url);
-                metrics.scope.append_id_n(curr_scope_id, 1);
-                metrics.scope.append_name_n(scope_name, 1);
-                metrics.scope.append_version_n(scope_version, 1);
-                metrics
-                    .scope
-                    .append_dropped_attributes_count_n(scope_dropped_attributes_count, 1);
+                metrics.scope.append_id(Some(curr_scope_id));
+                metrics.scope.append_name(scope_name);
+                metrics.scope.append_version(scope_version);
+                metrics.scope.append_dropped_attributes_count(scope_dropped_attributes_count);
 
                 metrics.append_id(curr_metric_id);
                 let data_obj = metric.data();
