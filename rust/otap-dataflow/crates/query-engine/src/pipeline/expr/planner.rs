@@ -52,6 +52,8 @@ use crate::pipeline::expr::{
 use crate::pipeline::expr::{LeafEval, RootParentStruct, ScopedExpr, SignalTypePredicate};
 use crate::pipeline::functions::expr_fn::contains;
 use crate::pipeline::functions::is_type::IsTypeFunc;
+#[cfg(feature = "sha1-hash")]
+use crate::pipeline::functions::sha1_hash;
 use crate::pipeline::functions::{
     arity_range, fnv_hash, murmur3_hash, regexp_substr, substring, uuidv7, xxh3_hash, xxh128_hash,
 };
