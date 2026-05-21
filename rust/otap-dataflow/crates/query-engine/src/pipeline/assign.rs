@@ -507,12 +507,8 @@ impl AssignPipelineStage {
             }
         };
 
-        let root_payload_type = otap_batch.root_payload_type();
-        let column_supports_dict_encoding = nested_struct_field_supports_dict_encoding(
-            dest_column_name,
-            dest_field_name,
-            root_payload_type,
-        );
+        let column_supports_dict_encoding =
+            nested_struct_field_supports_dict_encoding(dest_column_name, dest_field_name);
 
         if let ColumnarValue::Array(values) = &eval_result.values {
             if is_any_value_data_type(values.data_type()) {
@@ -572,7 +568,7 @@ impl AssignPipelineStage {
         }
 
         otap_batch.set(
-            root_payload_type,
+            otap_batch.root_payload_type(),
             try_upsert_struct_col(dest_column_name, dest_field_name, values, root_batch)?,
         )?;
 
@@ -1713,21 +1709,12 @@ fn is_valid_struct_field(struct_name: &str, field_name: &str) -> bool {
 }
 
 /// Returns true if the given struct field supports dictionary encoding for the given payload type.
-fn nested_struct_field_supports_dict_encoding(
-    struct_name: &str,
-    field_name: &str,
-    payload_type: ArrowPayloadType,
-) -> bool {
+fn nested_struct_field_supports_dict_encoding(struct_name: &str, field_name: &str) -> bool {
     matches!(
-        (struct_name, field_name, payload_type),
-        (consts::RESOURCE, consts::SCHEMA_URL, ArrowPayloadType::Logs)
-            | (
-                consts::RESOURCE,
-                consts::SCHEMA_URL,
-                ArrowPayloadType::Spans
-            )
-            | (consts::SCOPE, consts::NAME, ArrowPayloadType::Logs)
-            | (consts::SCOPE, consts::VERSION, ArrowPayloadType::Logs)
+        (struct_name, field_name),
+        (consts::RESOURCE, consts::SCHEMA_URL)
+            | (consts::SCOPE, consts::NAME)
+            | (consts::SCOPE, consts::VERSION)
     )
 }
 
