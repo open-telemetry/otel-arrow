@@ -8,7 +8,7 @@
 \input{opl.sty}
 \begin{document}
 \title{OPL Language Specification\\
-{\large Version 0.02}
+{\large Version 0.03}
 }
 \maketitle
 
@@ -62,7 +62,9 @@ A program consists of optional declarations and policies [\ref{policies}] and on
 \section{Scopes}
 \label{scopes}
 
-A {\em scope} is a mapping from names to entities such as variables [\ref{letBindings}, function declarations [\ref{functions}] or pipelines [\ref{pipelines}]. Scopes exist at both compile-time and runtime. An OPL program always has a {\em global compile-time scope}.
+A {\em scope} is a mapping from names to entities such as variables [\ref{letBindings}, function declarations [\ref{functions}], pipelines [\ref{pipelines}] or ports [\ref{ports}]. 
+
+Scopes exist at both compile-time and runtime. An OPL program always has a {\em global compile-time scope}.
 
 {\em 
 Note that the term scope used herein should not be confused with the Otel concept of an instrumentation scope. 
@@ -89,32 +91,9 @@ The technical use of the term {\em scope} should not be confused with its inform
 \section{Let Bindings}
 \label{letBindings}
 
-A {\em let binding} binds a policy [\ref{policies}],  pipeline [\ref{pipelines}], a port tied to an externally declared stream or a value of a basic type to a {\em variable} denoted by an identifier.
+A {\em let binding} binds a policy [\ref{policies}],  pipeline [\ref{pipelines}] or a value of a basic type [\ref{basicTypes}] to a {\em variable} denoted by an identifier.
 
 \LetBinding{}
-
-\Block{}
-
-\PropertyList{}
-
-\Property{}
-
-\PropertyName{}
-
-\PropertyValue{}
-
-\Scalar{}
-
-\ScalarArray{}
-
-A {\em port} may be either a {\em source port} or a {\em destination port}.  A source port is indicated by the keyword \RECEIVER{}, and destination port is indicated by the keyword \EXPORTER. Ports are referenced by their declared name. 
-
-{\em A port is analogous to a formal parameter of a function; in this analogy, the OPL program is the function.  OPL programs may be bound to other  processes or resources (which may themselves be OPL programs) in a manner analogous to function calls. How this binding is done is a matter for level 2 of this specification; for now it is out of scope.
-}
-
-The port is followed by a block that indicates the configuration of the port, given as a list of key-value pairs, known as {\em attributes}. This specification does not assign any specific meaning to any given attribute; the interpretation of the attributes in a port configuration is determined by the resource or process  bound to the port. Ports are bound to resources outside the OPL program.
-
-{\em See discussion above. }
 
 Let  $l \triangleq $ \LET{} $ID$  \BIND{} $e$
 
@@ -124,7 +103,7 @@ The variable $ID$ is added to the compile-time global  scope, with type [\ref{ty
 
 Execution of $l$  has the following effect:
 
-If $e$ is an expression, $e$ is evaluated to $v_e$ and $v_e$ is associated with the variable $ID$ in the global runtime scope.
+If $e$ is an expression, $e$ is evaluated to $v_e$ and $v_e$ is associated with the variable $ID$ in the global runtime scope. Otherwise, $e$ necessarily denotes a pipeline or policy $p$, and $p$ is s associated with the variable $ID$ in the global runtime scope.
 
 The expression $\LET{}$ $ID$\COLON{} $T$ \BIND{} $e$ is equivalent to $\LET{}$ $ID$ \BIND{} $(e: T)$ [\ref{parenthesizedExpressions}].
 
@@ -132,6 +111,9 @@ It is a compile-time error if the compile-time global scope contains another dec
 
 \section{Functions}
 \label{functions}
+
+\subsection{OPL Functions}
+\label{oplFunctions}
 
 A {\em function declaration} declares an OPL function. It consists of a function signature, followed by an equal sign and an expression denoting the function body.
 
@@ -166,6 +148,50 @@ It is a type warning if $T_i= *$, $i \in 1 \ldots n$.
 It is a type warning if $T_r = *$.
 It is a compile-time error if the name $F$ already exists in the global scope.
 It is a compile-time error if $p_i = p_j, i \ne j$.
+
+
+\subsection{Foreign Functions}
+\label{foreignFunctions}
+
+A {\em foreign function} is a function declared in another programming language. A foreign function declaration is bound to an actual foreign function by the host environment [\ref{programStructure}]. 
+
+\ForeignFunctionDeclaration{}
+
+Let $d \triangleq $ \EXTERN{}  $F\LPAREN{}p_1\COLON T_1\COMMA{} \ldots\COMMA{} p_n\COLON T_n\RPAREN{}\COLON T_r$.
+
+Processing of $d$  has the following effect:
+ 
+Let $f$ be the foreign function named $F$ defined by the host environment.
+ A binding of $F$ to $f$ is added to the global scope.
+ Then the function signature is processed.
+ 
+It is a compile-time error if the compile-time scope of the enclosing module definition contains another declaration named $F$.
+
+If a foreign function does not obey its declared signature, does not terminate, or has effects, the semantics of the calling OPL program are undefined.
+
+\comment{ Do we want to tighten this? For example, we could say that the results of a call are always cached. We could say that the result type is dynamically checked and we will return \NULL{}  if it is wrong (what if it is non-nullable? We can ban that).
+What if we want side-effects? Do we want to have extern procs, that return unit, and can be called repeatedly?
+}
+
+{\em
+Foreign functions should:
+\begin{itemize}
+\item Be {\bf pure}; that is, the return value of the function is only determined by its arguments, without observable side-effects.
+\item Terminate on all inputs provided to them from within an OPL program.
+\end{itemize}
+
+Otherwise, a call to a foreign function would undermine the semantic guarantees of the OPL language. For example, if a foreign function goes into an infinite loop, the calling OPL program will diverge; if the function crashes, so does the OPL program etc. If a function is impure, it may return different results at different times, or impact the results of other impure foreign functions, all of which may cause results to vary among OPL implementations that might order calls differently. If the function does not conform to its signature, undefined behavior may result.
+}
+
+
+\section{Ports}
+\label{ports}
+
+Ports represent processes (which may manufacture an incoming stream of data, or consume an outgoing one) or resources (which may again provide or store data) outside the OPL program. Ports are specified  and bound to an OPL program from outside the program.  The binding process adds the port name to the global scope [\ref{scopes}] and associates it with the process or resource the port represents.
+
+{\em A port is analogous to a formal parameter of a function; in this analogy, the OPL program is the function.  OPL programs are bound to other  processes or resources (which may themselves be OPL programs) in a manner analogous to function calls. How this binding is done is a matter for level 2 of this specification; for now it is out of scope.
+}
+
 
 \section{Policies}
 \label{policies}
@@ -686,7 +712,10 @@ Unclear what checking we can do here. At a minimum, $T_1$ must be attributeValue
 
 An {\em attribute selection expression} provides a way to access a member of a stream element [\ref{streamSignalTypes}].
 
-\AttributeSelectionExpression
+\AttributeSelectionExpression{}
+
+\PropertyName{}
+
 Let $m \triangleq e\DOT{}p$.
 
 Evaluation of $m$ proceeds as follows:
@@ -1224,6 +1253,7 @@ Function types  are derived from function signatures.
 \begin{itemize}
 \item 0.01. Initial public version.
 \item 0.02 Add missing section on arrays. Make indexing expressions cover arrays as well. Fix various typos.
+\item 0.03. Revise let bindings to cover binding to pipelines and policies, but not ports. Add section on ports. Add external functions.
 
 \end{itemize}
 \end{document}

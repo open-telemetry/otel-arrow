@@ -345,10 +345,15 @@ the ASCII CR character followed by the ASCII LF character
 
 \bnf{OPLProgram}{\synt{LevelDecl}? (\synt{Decl} \alt \synt{Policy})* \synt{Pipeline}+}
 \bnf{LevelDecl}{\REQUIRES{} \LEVEL{} $>=$ \synt{NumberLiteral}}
-\bnf{Decl}{\synt{FunctionDeclaration} \alt \synt{LetBinding}}
+\bnf{Decl}{\synt{FunctionDeclaration} \alt  \synt{ForeignFunctionDeclaration} \alt \synt{LetBinding}}
 \bnf {FunctionDeclaration} {\FUNC{} \synt{FunctionSignature} \BIND \synt{Expression}}
 \bnf {FunctionSignature} {\IDENT{} \synt{ParameterList}  \synt{TypeSigSuffix}?}
-\bnf{LetBinding}{\LET{} \synt{Ident} \synt{TypeSuffix}? = (\RECEIVER{} \IDENT{} \synt{Block} \alt  \EXPORTER{} \IDENT{} \synt{Block})}
+\bnf {ForeignFunctionDeclaration} {\EXTERN{} \synt{FunctionSignature}}
+\bnf{LetBinding}{\LET{} \synt{Ident} \synt{TypeSuffix}? = 
+  \synt{Expression} 
+  \alt  \synt{Policy} 
+  \alt \synt{Pipeline}
+  }
 \bnf{Policy}{
    \synt{ErrorPolicy}
    \alt \synt{BatchPolicy}
