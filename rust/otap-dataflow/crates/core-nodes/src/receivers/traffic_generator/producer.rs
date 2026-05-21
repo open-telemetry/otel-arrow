@@ -252,7 +252,19 @@ fn create_shape(cfg: &TrafficConfig) -> TrafficShape {
     let metric_percent = signal_percent(cfg.metric_weight, total_weight);
     let trace_percent = signal_percent(cfg.trace_weight, total_weight);
 
-    let signals_per_second = cfg.signals_per_second.unwrap_or(cfg.max_batch_size) as u32;
+    // When signals_per_second is None (uncapped / saturation mode), use a high
+    // target so the shape contains enough batches to keep the open-loop sender
+    // busy for a full 1-second run window. We use 1024 × max_batch_size which
+    // is large enough for any realistic throughput while remaining bounded for
+    // PreGenerated mode memory usage.
+    //
+    // When max_signal_count is also set, cap the uncapped target to that value
+    // since the producer will never emit more than max_signal_count total.
+    let uncapped_target = match cfg.get_max_signal_count() {
+        Some(max) => (max as usize).min(cfg.max_batch_size.saturating_mul(1024)),
+        None => cfg.max_batch_size.saturating_mul(1024),
+    };
+    let signals_per_second = cfg.signals_per_second.unwrap_or(uncapped_target) as u32;
     let logs_per_second = signal_per_second(signals_per_second, log_percent);
     let metrics_per_second = signal_per_second(signals_per_second, metric_percent);
     let traces_per_second = signal_per_second(signals_per_second, trace_percent);
@@ -616,6 +628,35 @@ mod tests {
             (48..=52).contains(&trace_total),
             "traces should get ~50 signals, got {trace_total}"
         );
+    }
+
+    #[test]
+    fn test_create_shape_uncapped_produces_large_shape() {
+        let cfg = TrafficConfig::new(
+            None, // signals_per_second = None means uncapped
+            None, // max_signal_count
+            512,  // max_batch_size
+            0,    // metric_weight
+            0,    // trace_weight
+            100,  // log_weight
+        );
+
+        let shape = create_shape(&cfg);
+
+        // With uncapped mode, the shape should contain many batches (1024 * max_batch_size / max_batch_size = 1024).
+        assert_eq!(shape.len(), 1024, "uncapped shape should have 1024 batches");
+
+        let total: usize = shape.iter().map(|(_, c)| c).sum();
+        assert_eq!(
+            total,
+            512 * 1024,
+            "uncapped shape total signals should be max_batch_size * 1024"
+        );
+
+        // Every entry should be max_batch_size.
+        for (_, count) in &shape {
+            assert_eq!(*count, 512, "each batch should be max_batch_size");
+        }
     }
 
     #[test]

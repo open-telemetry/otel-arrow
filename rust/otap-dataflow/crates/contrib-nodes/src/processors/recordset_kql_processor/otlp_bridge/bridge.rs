@@ -1,0 +1,1275 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use std::sync::{LazyLock, RwLock};
+
+use data_engine_expressions::*;
+use data_engine_kql_parser::*;
+use data_engine_recordset::*;
+
+use crate::processors::recordset_kql_processor::otlp_bridge::*;
+
+const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
+const OTLP_BUFFER_INITIAL_CAPACITY: usize = 1024 * 64;
+
+static EXPRESSIONS: LazyLock<RwLock<Vec<BridgePipeline>>> =
+    LazyLock::new(|| RwLock::new(Vec::new()));
+
+static LOG_RECORD_SCHEMA: LazyLock<ParserMapSchema> = LazyLock::new(|| {
+    // Canonical schema definition comes from LogRecord proto definition
+    // https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/crates/pdata/src/views/otlp/proto/logs.rs
+    ParserMapSchema::new()
+        .set_default_map_key("attributes")
+        .with_key_definition("time_unix_nano", ParserMapKeySchema::DateTime)
+        .with_key_definition("observed_time_unix_nano", ParserMapKeySchema::DateTime)
+        .with_key_definition("severity_number", ParserMapKeySchema::Integer)
+        .with_key_definition("severity_text", ParserMapKeySchema::String)
+        .with_key_definition("body", ParserMapKeySchema::Any)
+        .with_key_definition("trace_id", ParserMapKeySchema::Array)
+        .with_key_definition("span_id", ParserMapKeySchema::Array)
+        .with_key_definition("flags", ParserMapKeySchema::Integer)
+        .with_key_definition("event_name", ParserMapKeySchema::String)
+        .with_key_aliases([
+            // Support aliases to the Log and Event definition naming
+            // https://opentelemetry.io/docs/specs/otel/logs/data-model/
+            ("Attributes", "attributes"),
+            ("Timestamp", "time_unix_nano"),
+            ("ObservedTimestamp", "observed_time_unix_nano"),
+            ("SeverityNumber", "severity_number"),
+            ("SeverityText", "severity_text"),
+            ("Body", "body"),
+            ("TraceId", "trace_id"),
+            ("SpanId", "span_id"),
+            ("TraceFlags", "flags"),
+            ("EventName", "event_name"),
+            // Support aliases from OTLP JSON encoding
+            // https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding
+            ("timeUnixNano", "time_unix_nano"),
+            ("observedTimeUnixNano", "observed_time_unix_nano"),
+            ("severityNumber", "severity_number"),
+            ("severityText", "severity_text"),
+            ("traceId", "trace_id"),
+            ("spanId", "span_id"),
+            ("eventName", "event_name"),
+        ])
+});
+
+/// Get the static schema for LogRecord fields and their aliases
+pub fn get_log_record_schema() -> &'static ParserMapSchema {
+    &LOG_RECORD_SCHEMA
+}
+
+#[derive(Debug)]
+pub struct BridgePipeline {
+    attributes_schema: Option<ParserMapSchema>,
+    pipeline: PipelineExpression,
+    options: BridgeOptions,
+}
+
+impl BridgePipeline {
+    pub fn get_pipeline(&self) -> &PipelineExpression {
+        &self.pipeline
+    }
+}
+
+#[derive(Debug)]
+pub struct BridgeResponse {
+    pub included_records: Option<ExportLogsServiceRequest>,
+    pub included_record_count: usize,
+    pub dropped_records: Option<ExportLogsServiceRequest>,
+    pub dropped_record_count: usize,
+}
+
+impl BridgeResponse {
+    pub fn into_otlp_bytes(self) -> Result<(Vec<u8>, Vec<u8>), BridgeError> {
+        let mut included_records_otlp_response = Vec::new();
+        if let Some(ref included) = self.included_records {
+            match ExportLogsServiceRequest::to_protobuf(included, OTLP_BUFFER_INITIAL_CAPACITY) {
+                Ok(r) => {
+                    included_records_otlp_response = r.to_vec();
+                }
+                Err(e) => {
+                    return Err(BridgeError::OtlpProtobufWriteError(e));
+                }
+            }
+        }
+
+        let mut dropped_records_otlp_response = Vec::new();
+        if let Some(ref dropped) = self.dropped_records {
+            match ExportLogsServiceRequest::to_protobuf(dropped, OTLP_BUFFER_INITIAL_CAPACITY) {
+                Ok(r) => {
+                    dropped_records_otlp_response = r.to_vec();
+                }
+                Err(e) => {
+                    return Err(BridgeError::OtlpProtobufWriteError(e));
+                }
+            }
+        }
+
+        Ok((
+            included_records_otlp_response,
+            dropped_records_otlp_response,
+        ))
+    }
+}
+
+pub fn parse_kql_logs_query_into_pipeline(
+    query: &str,
+    options: Option<BridgeOptions>,
+) -> Result<BridgePipeline, Vec<ParserError>> {
+    let mut options = options.unwrap_or_default();
+
+    let parser_options = build_parser_options_for_logs_query(&mut options).map_err(|e| vec![e])?;
+    let attributes_schema = match parser_options
+        .get_source_map_schema()
+        .and_then(|s| s.get_schema_for_key("Attributes"))
+    {
+        Some(ParserMapKeySchema::Map(Some(attributes_schema))) => Some(attributes_schema.clone()),
+        _ => None,
+    };
+    let result = KqlParser::parse_with_options(query, parser_options)?;
+    Ok(BridgePipeline {
+        attributes_schema,
+        pipeline: result.pipeline,
+        options,
+    })
+}
+
+pub fn register_pipeline_for_kql_logs_query(
+    query: &str,
+    options: Option<BridgeOptions>,
+) -> Result<usize, Vec<ParserError>> {
+    let pipeline = parse_kql_logs_query_into_pipeline(query, options)?;
+
+    let mut expressions = EXPRESSIONS.write().unwrap();
+    expressions.push(pipeline);
+    Ok(expressions.len() - 1)
+}
+
+pub fn process_protobuf_otlp_export_logs_service_request_using_registered_pipeline(
+    pipeline: usize,
+    log_level: RecordSetEngineDiagnosticLevel,
+    export_logs_service_request_protobuf_data: &[u8],
+) -> Result<BridgeResponse, BridgeError> {
+    let expressions = EXPRESSIONS.read().unwrap();
+
+    let pipeline_registration = expressions.get(pipeline);
+
+    let pipeline = match pipeline_registration {
+        Some(v) => v,
+        None => return Err(BridgeError::PipelineNotFound(pipeline)),
+    };
+
+    process_protobuf_otlp_export_logs_service_request_using_pipeline(
+        pipeline,
+        log_level,
+        export_logs_service_request_protobuf_data,
+    )
+}
+
+pub fn process_protobuf_otlp_export_logs_service_request_using_pipeline(
+    pipeline: &BridgePipeline,
+    log_level: RecordSetEngineDiagnosticLevel,
+    export_logs_service_request_protobuf_data: &[u8],
+) -> Result<BridgeResponse, BridgeError> {
+    let request =
+        ExportLogsServiceRequest::from_protobuf(export_logs_service_request_protobuf_data);
+
+    if let Err(e) = request {
+        return Err(BridgeError::OtlpProtobufReadError(e));
+    }
+
+    process_export_logs_service_request_using_pipeline(pipeline, log_level, request.unwrap())
+}
+
+pub fn process_export_logs_service_request_using_pipeline(
+    pipeline: &BridgePipeline,
+    log_level: RecordSetEngineDiagnosticLevel,
+    mut export_logs_service_request: ExportLogsServiceRequest,
+) -> Result<BridgeResponse, BridgeError> {
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new().with_diagnostic_level(log_level),
+    );
+
+    let mut batch = engine
+        .begin_batch(&pipeline.pipeline)
+        .map_err(|e| BridgeError::PipelineInitializationError(e.to_string()))?;
+
+    if let Some(attributes_schema) = &pipeline.attributes_schema {
+        // Note: This block is a not-so-elegant fix to OTLP not supporting
+        // roundtrip of extended types. What we do is if we know something is a
+        // DateTime via the schema and the value is a string we will try to
+        // convert to a real DateTime.
+        let schema = attributes_schema.get_schema();
+
+        for resource in &mut export_logs_service_request.resource_logs {
+            for scope in &mut resource.scope_logs {
+                for log in &mut scope.log_records {
+                    let attributes = log.attributes.get_values_mut();
+
+                    for (key, schema) in schema {
+                        match schema {
+                            ParserMapKeySchema::DateTime => {
+                                if let Some(v) = attributes.get(key)
+                                    && v.get_value_type() == ValueType::String
+                                {
+                                    if let Some(d) = Value::convert_to_datetime(&v.to_value()) {
+                                        attributes.insert(
+                                            key.clone(),
+                                            AnyValue::Extended(ExtendedValue::DateTime(
+                                                DateTimeValueStorage::new(d),
+                                            )),
+                                        );
+                                    } else {
+                                        attributes.remove(key);
+                                    }
+                                }
+                            }
+                            _ => {
+                                // todo: Fix up Regex & TimeSpan types and look into maps if we have sub-schema
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let initial_dropped_records = batch.push_records(&mut export_logs_service_request);
+
+    let mut final_results = batch.flush();
+
+    let mut dropped_records = None;
+    let dropped_record_count = if pipeline.options.get_include_dropped_records() {
+        for record in initial_dropped_records.into_iter() {
+            final_results.dropped_records.push(record);
+        }
+
+        if !final_results.dropped_records.is_empty() {
+            let mut dropped_records_request = ExportLogsServiceRequest::new();
+
+            for original_resource_logs in &export_logs_service_request.resource_logs {
+                let mut resource_logs = ResourceLogs::new();
+
+                resource_logs.resource = original_resource_logs.resource.clone();
+                resource_logs.extra_fields = original_resource_logs.extra_fields.clone();
+
+                for original_scope_logs in &original_resource_logs.scope_logs {
+                    let mut scope_logs = ScopeLogs::new();
+
+                    scope_logs.instrumentation_scope =
+                        original_scope_logs.instrumentation_scope.clone();
+                    scope_logs.extra_fields = original_scope_logs.extra_fields.clone();
+
+                    resource_logs.scope_logs.push(scope_logs);
+                }
+
+                dropped_records_request.resource_logs.push(resource_logs);
+            }
+
+            let count = final_results.dropped_records.len();
+
+            process_log_record_results(
+                pipeline.options.get_diagnostic_options(),
+                &mut dropped_records_request,
+                final_results.dropped_records,
+            );
+
+            dropped_records = Some(dropped_records_request);
+
+            count
+        } else {
+            0
+        }
+    } else {
+        initial_dropped_records.len() + final_results.dropped_records.len()
+    };
+
+    let mut included_records = None;
+
+    let mut included_record_count = final_results.included_records.len();
+    let has_included_records = included_record_count > 0;
+
+    let has_summaries = !final_results.summaries.included_summaries.is_empty();
+    if has_summaries || has_included_records {
+        if has_included_records {
+            process_log_record_results(
+                pipeline.options.get_diagnostic_options(),
+                &mut export_logs_service_request,
+                final_results.included_records,
+            );
+        }
+
+        if has_summaries {
+            let schema = get_log_record_schema();
+            let mut log_records = Vec::new();
+
+            for summary in final_results.summaries.included_summaries {
+                let diagnostics = summary.diagnostics;
+
+                let mut log_record = if let Some(map) = summary.map {
+                    let mut log_record = LogRecord::new();
+
+                    let mut attributes: Vec<(Box<str>, AnyValue)> = Vec::with_capacity(map.len());
+
+                    for (key, value) in map.take_values().drain() {
+                        push_value(schema, &mut log_record, &mut attributes, key, value);
+                    }
+
+                    log_record.with_attributes(attributes)
+                } else {
+                    let mut log_record = LogRecord::new();
+
+                    let mut attributes: Vec<(Box<str>, AnyValue)> = Vec::with_capacity(
+                        summary.aggregation_values.len() + summary.group_by_values.len(),
+                    );
+
+                    for (key, value) in summary.group_by_values {
+                        push_value(schema, &mut log_record, &mut attributes, key, value);
+                    }
+
+                    for (key, value) in summary.aggregation_values {
+                        match value {
+                            SummaryAggregation::Average { count, sum } => {
+                                let avg = sum.to_double() / count as f64;
+
+                                push_value(
+                                    schema,
+                                    &mut log_record,
+                                    &mut attributes,
+                                    key,
+                                    OwnedValue::Double(DoubleValueStorage::new(avg)),
+                                );
+                            }
+                            SummaryAggregation::Count(v) => {
+                                push_value(
+                                    schema,
+                                    &mut log_record,
+                                    &mut attributes,
+                                    key,
+                                    OwnedValue::Integer(IntegerValueStorage::new(v as i64)),
+                                );
+                            }
+                            SummaryAggregation::Maximum(v) | SummaryAggregation::Minimum(v) => {
+                                push_value(schema, &mut log_record, &mut attributes, key, v);
+                            }
+                            SummaryAggregation::Sum(v) => {
+                                let v = match v {
+                                    SummaryValue::Double(d) => {
+                                        OwnedValue::Double(DoubleValueStorage::new(d))
+                                    }
+                                    SummaryValue::Integer(i) => {
+                                        OwnedValue::Integer(IntegerValueStorage::new(i))
+                                    }
+                                };
+                                push_value(schema, &mut log_record, &mut attributes, key, v);
+                            }
+                        }
+                    }
+
+                    log_record.with_attributes(attributes)
+                };
+
+                handle_diagnostics(
+                    pipeline.options.get_diagnostic_options(),
+                    &mut (&mut log_record, &diagnostics),
+                    |s| BridgeLogRecordDiagnostics::new(&pipeline.pipeline, s.0, s.1),
+                    |s, n, v| {
+                        s.0.attributes.get_values_mut().insert(n.into(), v);
+                    },
+                );
+
+                log_records.push(log_record);
+                included_record_count += 1;
+            }
+
+            let summary_otlp = ResourceLogs::new().with_scope_logs(
+                ScopeLogs::new()
+                    .with_instrumentation_scope(
+                        InstrumentationScope::new()
+                            .with_name("query_engine.otlp_bridge".into())
+                            .with_version(CRATE_VERSION.into()),
+                    )
+                    .with_log_records(log_records),
+            );
+
+            export_logs_service_request.resource_logs.push(summary_otlp);
+        }
+
+        included_records = Some(export_logs_service_request);
+    }
+
+    Ok(BridgeResponse {
+        included_records,
+        included_record_count,
+        dropped_records,
+        dropped_record_count,
+    })
+}
+
+fn push_value(
+    schema: &ParserMapSchema,
+    log_record: &mut LogRecord,
+    attributes: &mut Vec<(Box<str>, AnyValue)>,
+    key: Box<str>,
+    value: OwnedValue,
+) {
+    if schema
+        .get_schema_for_key(schema.normalize_key(&key))
+        .is_some()
+    {
+        log_record.set(&key, ResolvedValue::Computed(value));
+    } else {
+        attributes.push((key, value.into()));
+    }
+}
+
+fn build_parser_options_for_logs_query(
+    options: &mut BridgeOptions,
+) -> Result<ParserOptions, ParserError> {
+    let mut parser_options = ParserOptions::new().with_attached_data_names(&[
+        "resource",
+        "instrumentation_scope",
+        "scope",
+    ]);
+
+    let (log_record_schema, summary_schema) =
+        build_log_record_schema(options.take_attributes_schema())?;
+
+    if let Some(summary_schema) = summary_schema {
+        parser_options = parser_options.with_summary_map_schema(summary_schema);
+    }
+
+    Ok(parser_options.with_source_map_schema(log_record_schema))
+}
+
+fn build_log_record_schema(
+    attributes_schema: Option<ParserMapSchema>,
+) -> Result<(ParserMapSchema, Option<ParserMapSchema>), ParserError> {
+    let mut log_record_schema = LOG_RECORD_SCHEMA.clone();
+
+    if let Some(mut attributes_schema) = attributes_schema {
+        let schema = attributes_schema.get_schema_mut();
+        for (top_level_key, top_level_key_schema) in log_record_schema.get_schema() {
+            // Note: If any top-level fields are duplicated on Attributes Schema
+            // they get removed automatically. This is done for two purposes.
+            // The first is to make it easy for callers to pass in something
+            // like a table schema. Many backends flatten log records into
+            // columns. This feature is essentially a convenience thing so
+            // callers with table schema don't need to map columns back to the
+            // log record schema. The second reason is to prevent
+            // accidental\confusing query results. If for example "Body" is
+            // present in Attributes users might query with ambiguous naming.
+            // For example: source | extend Body = 'something' will write to the
+            // top-level field and not Attributes.
+
+            // Check both the canonical key and all its aliases
+            for key_name in log_record_schema.get_all_key_names_for_canonical_key(top_level_key) {
+                if let Some(removed) = schema.remove(key_name.as_ref())
+                    && &removed != top_level_key_schema
+                {
+                    return Err(ParserError::SchemaError(format!(
+                        "'{key_name}' key cannot be declared as '{}' type",
+                        &removed
+                    )));
+                }
+            }
+        }
+
+        let allow_undefined_keys = attributes_schema.get_allow_undefined_keys();
+
+        log_record_schema = log_record_schema.with_key_definition(
+            "attributes",
+            ParserMapKeySchema::Map(Some(attributes_schema)),
+        );
+
+        let mut summary_schema = ParserMapSchema::new();
+
+        if allow_undefined_keys {
+            summary_schema = summary_schema.set_allow_undefined_keys();
+        }
+
+        for (top_level_key, top_level_key_schema) in log_record_schema.get_schema() {
+            if top_level_key.as_ref() == "attributes" {
+                if let ParserMapKeySchema::Map(Some(attributes_schema)) = top_level_key_schema {
+                    for (top_level_key, top_level_key_schema) in attributes_schema.get_schema() {
+                        summary_schema = summary_schema
+                            .with_key_definition(top_level_key, top_level_key_schema.clone());
+                    }
+                }
+                continue;
+            }
+            summary_schema =
+                summary_schema.with_key_definition(top_level_key, top_level_key_schema.clone());
+        }
+
+        return Ok((log_record_schema, Some(summary_schema)));
+    }
+
+    Ok((log_record_schema, None))
+}
+
+fn process_log_record_results(
+    options: &BridgeDiagnosticOptions,
+    response: &mut ExportLogsServiceRequest,
+    records: Vec<RecordSetEngineRecord<LogRecord>>,
+) {
+    for mut record_result in records {
+        handle_diagnostics(
+            options,
+            &mut record_result,
+            |s| s.into(),
+            |s, n, v| {
+                s.get_record_mut()
+                    .attributes
+                    .get_values_mut()
+                    .insert(n.into(), v);
+            },
+        );
+
+        let log_record = record_result.take_record();
+
+        let resource_id = log_record
+            .resource_id
+            .expect("resource_id was not set on log record");
+
+        let resource_logs = response
+            .resource_logs
+            .get_mut(resource_id)
+            .expect("resource_logs were not found");
+
+        let scope_id = log_record
+            .scope_id
+            .expect("scope_id was not set on log record");
+
+        let scope_logs = resource_logs
+            .scope_logs
+            .get_mut(scope_id)
+            .expect("scope_logs were not found");
+
+        scope_logs.log_records.push(log_record);
+    }
+}
+
+fn handle_diagnostics<S, FBuild, FAddAddtribute>(
+    options: &BridgeDiagnosticOptions,
+    state: &mut S,
+    build: FBuild,
+    add_attribute: FAddAddtribute,
+) where
+    FBuild: Fn(&S) -> BridgeLogRecordDiagnostics,
+    FAddAddtribute: Fn(&mut S, &str, AnyValue),
+{
+    let diagnostics = build(state);
+
+    if !diagnostics.is_empty() {
+        match options {
+            BridgeDiagnosticOptions::AddAttribute { attribute_name } => {
+                let diagnostics = diagnostics.to_string();
+                add_attribute(
+                    state,
+                    attribute_name.as_ref(),
+                    AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                        diagnostics,
+                    ))),
+                );
+            }
+            BridgeDiagnosticOptions::Callback(c) => c(diagnostics),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use bytes::BytesMut;
+    use prost::Message;
+
+    type OtlpExportLogsServiceRequest =
+        opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+    type OtlpResourceLogs = opentelemetry_proto::tonic::logs::v1::ResourceLogs;
+    type OtlpScopeLogs = opentelemetry_proto::tonic::logs::v1::ScopeLogs;
+    type OtlpLogRecord = opentelemetry_proto::tonic::logs::v1::LogRecord;
+    type OtlpResource = opentelemetry_proto::tonic::resource::v1::Resource;
+    type OtlpEntityRef = opentelemetry_proto::tonic::common::v1::EntityRef;
+    type OtlpInstrumentationScope = opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+    type OtlpKeyValue = opentelemetry_proto::tonic::common::v1::KeyValue;
+    type OtlpAnyValue = opentelemetry_proto::tonic::common::v1::AnyValue;
+    type OtlpValue = opentelemetry_proto::tonic::common::v1::any_value::Value;
+
+    #[test]
+    fn test_otlp_round_trip() {
+        let request = OtlpExportLogsServiceRequest {
+            resource_logs: vec![
+                OtlpResourceLogs {
+                    resource: Some(OtlpResource {
+                        attributes: vec![OtlpKeyValue {
+                            key: "key1".into(),
+                            value: Some(OtlpAnyValue {
+                                value: Some(OtlpValue::IntValue(18)),
+                            }),
+                        }],
+                        dropped_attributes_count: 18,
+                        entity_refs: vec![OtlpEntityRef {
+                            schema_url: "SchemaA".into(),
+                            r#type: "service".into(),
+                            id_keys: vec!["key1".into()],
+                            description_keys: vec![],
+                        }],
+                    }),
+                    scope_logs: vec![
+                        OtlpScopeLogs {
+                            scope: Some(OtlpInstrumentationScope {
+                                name: "name".into(),
+                                version: "version".into(),
+                                attributes: vec![OtlpKeyValue {
+                                    key: "key1".into(),
+                                    value: Some(OtlpAnyValue {
+                                        value: Some(OtlpValue::IntValue(18)),
+                                    }),
+                                }],
+                                dropped_attributes_count: 18,
+                            }),
+                            log_records: vec![OtlpLogRecord {
+                                time_unix_nano: 1,
+                                observed_time_unix_nano: 1,
+                                severity_number: 1,
+                                severity_text: "Info".into(),
+                                body: Some(OtlpAnyValue {
+                                    value: Some(OtlpValue::StringValue("value".into())),
+                                }),
+                                attributes: vec![OtlpKeyValue {
+                                    key: "key1".into(),
+                                    value: Some(OtlpAnyValue {
+                                        value: Some(OtlpValue::IntValue(18)),
+                                    }),
+                                }],
+                                dropped_attributes_count: 18,
+                                flags: 1,
+                                trace_id: vec![0x00, 0xFF],
+                                span_id: vec![0x00, 0xFF],
+                                event_name: "eventname".into(),
+                            }],
+                            schema_url: "".into(),
+                        },
+                        OtlpScopeLogs {
+                            scope: None,
+                            log_records: vec![],
+                            schema_url: "SchemaB".into(),
+                        },
+                    ],
+                    schema_url: "".into(),
+                },
+                OtlpResourceLogs {
+                    resource: None,
+                    scope_logs: vec![],
+                    schema_url: "SchemaA".into(),
+                },
+            ],
+        };
+
+        let mut protobuf_data = BytesMut::new();
+
+        request.encode(&mut protobuf_data).unwrap();
+
+        let protobuf_data = protobuf_data.freeze();
+
+        {
+            // Include everything
+            let pipeline_id = register_pipeline_for_kql_logs_query("s | where true", None).unwrap();
+
+            let (included, _) =
+                process_protobuf_otlp_export_logs_service_request_using_registered_pipeline(
+                    pipeline_id,
+                    RecordSetEngineDiagnosticLevel::Error,
+                    &protobuf_data,
+                )
+                .unwrap()
+                .into_otlp_bytes()
+                .unwrap();
+
+            let response = OtlpExportLogsServiceRequest::decode(&included[..]).unwrap();
+
+            assert_eq!(request, response);
+        }
+
+        {
+            // Drop everything
+            let pipeline_id =
+                register_pipeline_for_kql_logs_query("s | where false", None).unwrap();
+
+            let (_, dropped) =
+                process_protobuf_otlp_export_logs_service_request_using_registered_pipeline(
+                    pipeline_id,
+                    RecordSetEngineDiagnosticLevel::Error,
+                    &protobuf_data,
+                )
+                .unwrap()
+                .into_otlp_bytes()
+                .unwrap();
+
+            let response = OtlpExportLogsServiceRequest::decode(&dropped[..]).unwrap();
+
+            assert_eq!(request, response);
+        }
+
+        {
+            // Drop everything but turn off include dropped records
+            let pipeline_id = register_pipeline_for_kql_logs_query(
+                "s | where false",
+                Some(BridgeOptions::new().set_include_dropped_records(false)),
+            )
+            .unwrap();
+
+            let response =
+                process_protobuf_otlp_export_logs_service_request_using_registered_pipeline(
+                    pipeline_id,
+                    RecordSetEngineDiagnosticLevel::Error,
+                    &protobuf_data,
+                )
+                .unwrap();
+
+            assert_eq!(1, response.dropped_record_count);
+            assert!(response.dropped_records.is_none())
+        }
+    }
+
+    #[test]
+    fn test_process_parsed_export_logs_service_request_all_dropped() {
+        let request = ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(LogRecord::new())),
+        );
+
+        let pipeline = parse_kql_logs_query_into_pipeline("source | where false", None).unwrap();
+
+        let response = process_export_logs_service_request_using_pipeline(
+            &pipeline,
+            RecordSetEngineDiagnosticLevel::Verbose,
+            request,
+        )
+        .unwrap();
+
+        assert_eq!(0, response.included_record_count);
+        assert_eq!(1, response.dropped_record_count);
+
+        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+
+        assert!(included_records.is_empty());
+        assert!(!dropped_records.is_empty());
+    }
+
+    #[test]
+    fn test_process_parsed_export_logs_service_request_all_included() {
+        let request = ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(LogRecord::new())),
+        );
+
+        let pipeline = parse_kql_logs_query_into_pipeline("source | where true", None).unwrap();
+
+        let response = process_export_logs_service_request_using_pipeline(
+            &pipeline,
+            RecordSetEngineDiagnosticLevel::Verbose,
+            request,
+        )
+        .unwrap();
+
+        assert_eq!(1, response.included_record_count);
+        assert_eq!(0, response.dropped_record_count);
+
+        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+
+        assert!(!included_records.is_empty());
+        assert!(dropped_records.is_empty());
+    }
+
+    #[test]
+    fn test_process_parsed_export_logs_service_request_summary() {
+        let request = ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(LogRecord::new())),
+        );
+
+        let pipeline =
+            parse_kql_logs_query_into_pipeline("source | summarize Count = count()", None).unwrap();
+
+        let response = process_export_logs_service_request_using_pipeline(
+            &pipeline,
+            RecordSetEngineDiagnosticLevel::Verbose,
+            request,
+        )
+        .unwrap();
+
+        assert_eq!(1, response.included_record_count);
+        assert_eq!(1, response.dropped_record_count);
+
+        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+
+        assert!(!included_records.is_empty());
+        assert!(!dropped_records.is_empty());
+    }
+
+    #[test]
+    fn test_process_parsed_export_logs_service_request_summary_field_mapping() {
+        let request = ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(
+                ScopeLogs::new()
+                    .with_log_record(LogRecord::new().with_severity_text("INFO".into()))
+                    .with_log_record(LogRecord::new().with_severity_text("WARN".into())),
+            ),
+        );
+
+        let pipeline = parse_kql_logs_query_into_pipeline(
+            "source | summarize Count = count() by severityText",
+            None,
+        )
+        .unwrap();
+
+        let mut response = process_export_logs_service_request_using_pipeline(
+            &pipeline,
+            RecordSetEngineDiagnosticLevel::Verbose,
+            request,
+        )
+        .unwrap();
+
+        assert_eq!(2, response.included_record_count);
+        assert_eq!(2, response.dropped_record_count);
+
+        let response_otlp = response.included_records.as_mut().unwrap();
+
+        let response_summaries = &mut response_otlp.resource_logs[1].scope_logs[0].log_records;
+
+        response_summaries.sort_by(|l, r| {
+            let l = l
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+                .unwrap_or("");
+            let r = r
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+                .unwrap_or("");
+            l.cmp(r)
+        });
+
+        assert_eq!(
+            Some("INFO"),
+            response_summaries[0]
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+        );
+        assert_eq!(
+            Some(Value::Integer(&IntegerValueStorage::new(1))),
+            response_summaries[0]
+                .attributes
+                .get("Count")
+                .map(|v| v.to_value())
+        );
+
+        assert_eq!(
+            Some("WARN"),
+            response_summaries[1]
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+        );
+        assert_eq!(
+            Some(Value::Integer(&IntegerValueStorage::new(1))),
+            response_summaries[1]
+                .attributes
+                .get("Count")
+                .map(|v| v.to_value())
+        );
+
+        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+
+        assert!(!included_records.is_empty());
+        assert!(!dropped_records.is_empty());
+    }
+
+    #[test]
+    fn test_process_parsed_export_logs_service_request_summary_field_mapping_post_pipeline() {
+        let request = ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(
+                ScopeLogs::new()
+                    .with_log_record(LogRecord::new().with_severity_text("INFO".into()))
+                    .with_log_record(LogRecord::new().with_severity_text("WARN".into())),
+            ),
+        );
+
+        let pipeline =
+            parse_kql_logs_query_into_pipeline("source | summarize Count = count() by severityText | extend body = 'hello world', attr1 = 'goodbye world'", None).unwrap();
+
+        let mut response = process_export_logs_service_request_using_pipeline(
+            &pipeline,
+            RecordSetEngineDiagnosticLevel::Verbose,
+            request,
+        )
+        .unwrap();
+
+        assert_eq!(2, response.included_record_count);
+        assert_eq!(2, response.dropped_record_count);
+
+        let response_otlp = response.included_records.as_mut().unwrap();
+
+        let response_summaries = &mut response_otlp.resource_logs[1].scope_logs[0].log_records;
+
+        response_summaries.sort_by(|l, r| {
+            let l = l
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+                .unwrap_or("");
+            let r = r
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+                .unwrap_or("");
+            l.cmp(r)
+        });
+
+        assert_eq!(
+            Some("INFO"),
+            response_summaries[0]
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+        );
+        assert_eq!(
+            Some(Value::Integer(&IntegerValueStorage::new(1))),
+            response_summaries[0]
+                .attributes
+                .get("Count")
+                .map(|v| v.to_value())
+        );
+        assert_eq!(
+            Some(Value::String(&StringValueStorage::new(
+                "hello world".into()
+            ))),
+            response_summaries[0].body.as_ref().map(|v| v.to_value())
+        );
+        assert_eq!(
+            Some(Value::String(&StringValueStorage::new(
+                "goodbye world".into()
+            ))),
+            response_summaries[0]
+                .attributes
+                .get("attr1")
+                .map(|v| v.to_value())
+        );
+
+        assert_eq!(
+            Some("WARN"),
+            response_summaries[1]
+                .severity_text
+                .as_ref()
+                .map(|v| v.get_value())
+        );
+        assert_eq!(
+            Some(Value::Integer(&IntegerValueStorage::new(1))),
+            response_summaries[1]
+                .attributes
+                .get("Count")
+                .map(|v| v.to_value())
+        );
+        assert_eq!(
+            Some(Value::String(&StringValueStorage::new(
+                "hello world".into()
+            ))),
+            response_summaries[1].body.as_ref().map(|v| v.to_value())
+        );
+        assert_eq!(
+            Some(Value::String(&StringValueStorage::new(
+                "goodbye world".into()
+            ))),
+            response_summaries[1]
+                .attributes
+                .get("attr1")
+                .map(|v| v.to_value())
+        );
+
+        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+
+        assert!(!included_records.is_empty());
+        assert!(!dropped_records.is_empty());
+    }
+
+    #[test]
+    fn test_parse_kql_query_into_pipeline_with_attributes_schema() {
+        let run_test_success = |query: &str| {
+            println!("Testing: {query}");
+
+            parse_kql_logs_query_into_pipeline(
+                query,
+                Some(
+                    BridgeOptions::new().with_attributes_schema(
+                        ParserMapSchema::new()
+                            .with_key_definition("body", ParserMapKeySchema::Any)
+                            .with_key_definition("int_value", ParserMapKeySchema::Integer),
+                    ),
+                ),
+            )
+            .unwrap();
+        };
+
+        let run_test_failure = |query: &str| {
+            println!("Testing: {query}");
+
+            parse_kql_logs_query_into_pipeline(
+                query,
+                Some(
+                    BridgeOptions::new().with_attributes_schema(
+                        ParserMapSchema::new()
+                            .with_key_definition("body", ParserMapKeySchema::Any)
+                            .with_key_definition("int_value", ParserMapKeySchema::Integer),
+                    ),
+                ),
+            )
+            .unwrap_err();
+        };
+
+        run_test_success("source | extend int_value = 1234");
+        run_test_failure("source | extend Custom = 1234");
+
+        run_test_success("source | summarize int_value = count()");
+        run_test_success("source | summarize by int_value");
+        run_test_success("source | summarize by int_value | extend int_value = 1");
+
+        run_test_failure("source | summarize by unknown");
+        run_test_failure("source | summarize by unknown = int_value");
+        run_test_failure("source | summarize Count = count()");
+        run_test_failure("source | summarize int_value = count() | extend Custom = 1234");
+
+        run_test_success(
+            "source | summarize by int_value | extend int_value = 1 | summarize int_value = count()",
+        );
+        run_test_failure(
+            "source | summarize by int_value | extend int_value = 1 | summarize Count = count()",
+        );
+
+        run_test_success(
+            "source | summarize by int_value | extend int_value = 1 | summarize int_value = count() | extend int_value = 1234",
+        );
+        run_test_failure(
+            "source | summarize by int_value | extend int_value = 1 | summarize int_value = count() | extend Custom = 1234",
+        );
+
+        run_test_success("source | extend body = 'hello world'");
+        // Note: body gets removed from attributes schema because it is defined at the root
+        run_test_failure("source | extend attributes.body = 'hello world'");
+    }
+
+    #[test]
+    fn test_process_parsed_export_logs_service_request_with_attributes_schema() {
+        let request = ExportLogsServiceRequest::new().with_resource_logs(
+            ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(
+                LogRecord::new().with_attribute(
+                    "TimeGenerated",
+                    AnyValue::Native(crate::processors::recordset_kql_processor::otlp_bridge::OtlpAnyValue::StringValue(StringValueStorage::new(
+                        "10/22/2025".into(),
+                    ))),
+                ),
+            )),
+        );
+
+        let pipeline = parse_kql_logs_query_into_pipeline(
+            "source | where gettype(TimeGenerated) == 'datetime'",
+            Some(
+                BridgeOptions::new().with_attributes_schema(
+                    ParserMapSchema::new()
+                        .with_key_definition("TimeGenerated", ParserMapKeySchema::DateTime),
+                ),
+            ),
+        )
+        .unwrap();
+
+        let response = process_export_logs_service_request_using_pipeline(
+            &pipeline,
+            RecordSetEngineDiagnosticLevel::Verbose,
+            request,
+        )
+        .unwrap();
+
+        assert_eq!(1, response.included_record_count);
+        assert_eq!(0, response.dropped_record_count);
+
+        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+
+        assert!(!included_records.is_empty());
+        assert!(dropped_records.is_empty());
+    }
+
+    #[test]
+    fn test_parse_kql_query_into_pipeline_with_attributes_schema_and_allow_undefined_keys() {
+        let run_test_success = |query: &str| {
+            parse_kql_logs_query_into_pipeline(
+                query,
+                Some(
+                    BridgeOptions::new().with_attributes_schema(
+                        ParserMapSchema::new()
+                            .with_key_definition("body", ParserMapKeySchema::Any)
+                            .with_key_definition("int_value", ParserMapKeySchema::Integer)
+                            .set_allow_undefined_keys(),
+                    ),
+                ),
+            )
+            .unwrap();
+        };
+
+        run_test_success("source | extend int_value = 1234");
+        run_test_success("source | extend Custom = 1234");
+
+        run_test_success("source | summarize by int_value");
+        run_test_success("source | summarize by unknown");
+    }
+
+    #[test]
+    fn test_parse_kql_query_into_pipeline_with_attributes_schema_error() {
+        let e = parse_kql_logs_query_into_pipeline(
+            "",
+            Some(BridgeOptions::new().with_attributes_schema(
+                ParserMapSchema::new().with_key_definition("body", ParserMapKeySchema::Map(None)),
+            )),
+        )
+        .unwrap_err();
+
+        assert_eq!(1, e.len());
+        assert!(matches!(e[0], ParserError::SchemaError(_)));
+    }
+
+    #[test]
+    fn test_parse_kql_query_with_field_aliases() {
+        let run_test = |query: &str| {
+            parse_kql_logs_query_into_pipeline(query, None).unwrap();
+        };
+
+        // Test canonical names
+        run_test("source | where severity_text == 'Info'");
+        run_test("source | extend x = severity_number");
+        run_test("source | project time_unix_nano, body");
+
+        // Test aliases
+        run_test("source | where SeverityText == 'Info'");
+        run_test("source | extend x = SeverityNumber");
+        run_test("source | project Timestamp, Body");
+        run_test("source | where severityText == 'Info'");
+        run_test("source | extend x = severityNumber");
+        run_test("source | project timeUnixNano, body");
+
+        // Test mixing aliases and canonical names
+        run_test("source | where SeverityText == 'Info' and severity_number > 0");
+        run_test("source | extend ts = Timestamp, sev = severityText");
+
+        // Test default map key alias
+        run_test("source | where attributes.custom_field == 'value'");
+        run_test("source | where Attributes.custom_field == 'value'");
+    }
+
+    #[test]
+    fn test_attributes_schema_removes_top_level_aliases() {
+        // Test that when user provides an attributes schema with aliases
+        // of top-level fields, they get removed properly
+        let result = parse_kql_logs_query_into_pipeline(
+            "source | extend SeverityText = 'Debug'",
+            Some(
+                BridgeOptions::new().with_attributes_schema(
+                    ParserMapSchema::new()
+                        // This should be removed because SeverityText is an alias for severity_text
+                        .with_key_definition("SeverityText", ParserMapKeySchema::String)
+                        .with_key_definition("custom_field", ParserMapKeySchema::Integer),
+                ),
+            ),
+        );
+
+        // Should succeed - SeverityText should write to top-level field
+        assert!(result.is_ok());
+
+        // Test with canonical name (snake_case) too
+        let result = parse_kql_logs_query_into_pipeline(
+            "source | extend severity_text = 'Debug'",
+            Some(
+                BridgeOptions::new().with_attributes_schema(
+                    ParserMapSchema::new()
+                        .with_key_definition("severity_text", ParserMapKeySchema::String)
+                        .with_key_definition("custom_field", ParserMapKeySchema::Integer),
+                ),
+            ),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_field_aliases_in_log_record_processing() {
+        let create_request = || {
+            ExportLogsServiceRequest::new().with_resource_logs(ResourceLogs::new().with_scope_logs(
+                ScopeLogs::new().with_log_records(vec![
+                    LogRecord::new()
+                        .with_severity_text("Info".into())
+                        .with_severity_number(9),
+                    LogRecord::new()
+                        .with_severity_text("Warning".into())
+                        .with_severity_number(13),
+                ]),
+            ))
+        };
+
+        let pipeline_canonical = parse_kql_logs_query_into_pipeline(
+            "source | where severity_text == 'Info' and severity_number == 9",
+            None,
+        )
+        .unwrap();
+        let response_canonical = process_export_logs_service_request_using_pipeline(
+            &pipeline_canonical,
+            RecordSetEngineDiagnosticLevel::Error,
+            create_request(),
+        )
+        .unwrap();
+
+        let pipeline_with_aliases = parse_kql_logs_query_into_pipeline(
+            "source | where SeverityText == 'Info' and SeverityNumber == 9",
+            None,
+        )
+        .unwrap();
+        let response_with_aliases = process_export_logs_service_request_using_pipeline(
+            &pipeline_with_aliases,
+            RecordSetEngineDiagnosticLevel::Error,
+            create_request(),
+        )
+        .unwrap();
+
+        let canonical_logs = &response_canonical.included_records.unwrap().resource_logs[0]
+            .scope_logs[0]
+            .log_records;
+        let aliased_logs = &response_with_aliases
+            .included_records
+            .unwrap()
+            .resource_logs[0]
+            .scope_logs[0]
+            .log_records;
+
+        assert_eq!(canonical_logs.len(), 1);
+        assert_eq!(aliased_logs.len(), 1);
+        assert_eq!(
+            canonical_logs[0]
+                .severity_text
+                .as_ref()
+                .unwrap()
+                .get_value(),
+            aliased_logs[0].severity_text.as_ref().unwrap().get_value()
+        );
+        assert_eq!(
+            canonical_logs[0]
+                .severity_number
+                .as_ref()
+                .unwrap()
+                .get_value(),
+            aliased_logs[0]
+                .severity_number
+                .as_ref()
+                .unwrap()
+                .get_value()
+        );
+    }
+}

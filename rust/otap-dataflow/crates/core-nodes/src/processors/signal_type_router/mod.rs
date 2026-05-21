@@ -83,7 +83,7 @@ pub const PORT_METRICS: &str = "metrics";
 pub const PORT_LOGS: &str = "logs";
 
 /// Metrics for the SignalTypeRouter processor.
-#[metric_set(name = "signal_type_router.processor")]
+#[metric_set(name = "processor.signal_type_router")]
 #[derive(Debug, Default, Clone)]
 pub struct SignalTypeRouterMetrics {
     /// Number of log messages received by the router.
@@ -682,7 +682,8 @@ pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFa
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             proc_cfg: &ProcessorConfig| {
+             proc_cfg: &ProcessorConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         // Deserialize the (currently empty) router configuration
         let router_config: SignalTypeRouterConfig =
             serde_json::from_value(node_config.config.clone()).map_err(|e| {

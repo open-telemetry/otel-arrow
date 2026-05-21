@@ -607,6 +607,12 @@ impl<PData> ControlSenders<PData> {
             .collect()
     }
 
+    /// Returns all registered node ids.
+    #[must_use]
+    pub fn node_ids(&self) -> Vec<usize> {
+        self.senders.keys().copied().collect()
+    }
+
     /// Returns the registered non-receiver ids.
     #[must_use]
     pub fn non_receiver_ids(&self) -> Vec<usize> {
@@ -785,7 +791,6 @@ impl ExtensionControlMsg {
 /// [`ExtensionControlMsg`] (PData-free) rather than [`NodeControlMsg<PData>`].
 pub struct ExtensionControlSender {
     /// Unique identifier of the extension.
-    #[allow(dead_code)] // Used by runtime pipeline in a follow-up PR.
     pub(crate) name: otap_df_config::ExtensionId,
     /// The control message sender for the extension.
     pub(crate) sender: Sender<ExtensionControlMsg>,

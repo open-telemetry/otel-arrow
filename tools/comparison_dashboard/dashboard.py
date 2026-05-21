@@ -20,12 +20,13 @@ import argparse
 import fnmatch
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
@@ -58,6 +59,11 @@ ALLOWED_EXTENSIONS = {".toml", ".yaml", ".yml", ".json", ".txt"}
 # File extensions to publish from staging to the data dir after a run
 PUBLISH_CONFIG_EXTENSIONS = {".yaml", ".yml", ".toml"}
 
+# Banner text pinned to each page
+BANNER_TEXT = "The Dataflow Engine and these benchmarks are a work in progress. Do you have feedback?"
+BANNER_LINK_TEXT = "Tell us here!"
+ISSUE_URL = "https://github.com/open-telemetry/otel-arrow/issues"
+
 # ---------------------------------------------------------------------------
 # Manifest
 # ---------------------------------------------------------------------------
@@ -69,6 +75,7 @@ class Manifest:
     comparison_files: list[Path]  # absolute paths to comparison YAMLs
     variables: dict               # template variables passed to Jinja at top level
     meta: dict                    # allowed values per meta key (key -> [values])
+    metrics: list                 # ordered list of {name, label} for dashboard metrics
 
 def load_manifest(manifest_path: Path) -> Manifest:
     """Load and validate the manifest file. Resolves all listed paths."""
@@ -87,7 +94,7 @@ def load_manifest(manifest_path: Path) -> Manifest:
         print(f"ERROR: manifest must be a mapping at top level: {manifest_path}")
         sys.exit(1)
 
-    for key in ("suites", "comparisons", "variables", "meta"):
+    for key in ("suites", "comparisons", "variables", "meta", "metrics"):
         if key not in data:
             print(f"ERROR: manifest missing required key '{key}': {manifest_path}")
             sys.exit(1)
@@ -106,6 +113,30 @@ def load_manifest(manifest_path: Path) -> Manifest:
             print(f"ERROR: manifest meta.{key} must be a list of allowed values: {manifest_path}")
             sys.exit(1)
 
+    metrics_raw = data["metrics"]
+    if not isinstance(metrics_raw, list) or not metrics_raw:
+        print(f"ERROR: manifest 'metrics' must be a non-empty list: {manifest_path}")
+        sys.exit(1)
+    metrics: list = []
+    seen_metric_names: set[str] = set()
+    for i, m in enumerate(metrics_raw):
+        if not isinstance(m, dict):
+            print(f"ERROR: manifest metrics[{i}] must be a mapping: {manifest_path}")
+            sys.exit(1)
+        name = m.get("name")
+        label = m.get("label")
+        if not isinstance(name, str) or not name:
+            print(f"ERROR: manifest metrics[{i}] missing non-empty 'name': {manifest_path}")
+            sys.exit(1)
+        if not isinstance(label, str) or not label:
+            print(f"ERROR: manifest metrics[{i}] missing non-empty 'label': {manifest_path}")
+            sys.exit(1)
+        if name in seen_metric_names:
+            print(f"ERROR: duplicate manifest metric name '{name}': {manifest_path}")
+            sys.exit(1)
+        seen_metric_names.add(name)
+        metrics.append({"name": name, "label": label})
+
     base = manifest_path.parent
     suite_files = [_resolve_listed_path(base, p, "suite") for p in data["suites"]]
     comparison_files = [_resolve_listed_path(base, p, "comparison") for p in data["comparisons"]]
@@ -117,6 +148,7 @@ def load_manifest(manifest_path: Path) -> Manifest:
         comparison_files=comparison_files,
         variables=variables,
         meta=meta,
+        metrics=metrics,
     )
 
 
@@ -139,6 +171,197 @@ def simplify_suite_yaml(suite: dict) -> dict:
         if key in suite:
             result[key] = suite[key]
     return result
+
+
+# ---------------------------------------------------------------------------
+# Run environment capture
+#
+# Per-suite run metadata captured at `dashboard.py run` time. Written as
+# <staging>/run_env.json, published as <data-dir>/suite/<slug>/run_env.json,
+# and consumed by `build` to (a) surface env info in the UI and (b) reject
+# comparisons across suites whose env fingerprints disagree.
+#
+# Fingerprint fields used for equality (build-time mismatch check):
+#   cpu.model, cpu.architecture, cpu.physical_cores,
+#   memory.total_gib_rounded, os.release
+# Times are captured/displayed but not part of equality.
+# ---------------------------------------------------------------------------
+
+
+def now_utc_iso() -> str:
+    """Return the current UTC time as an ISO 8601 string with a 'Z' suffix."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def collect_run_env(started_at: str, ended_at: str) -> dict:
+    """
+    Collect hardware/OS metadata for the current process. `started_at` and
+    `ended_at` are ISO 8601 UTC strings (see `now_utc_iso`) bracketing the
+    test run.
+    """
+    assert isinstance(started_at, str) and started_at, "started_at must be a non-empty ISO 8601 string"
+    assert isinstance(ended_at, str) and ended_at, "ended_at must be a non-empty ISO 8601 string"
+    return {
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "cpu": _collect_cpu(),
+        "os": _collect_os(),
+        "memory": _collect_memory(),
+    }
+
+
+def _collect_cpu() -> dict:
+    """CPU details: model, arch, physical/logical cores, max frequency."""
+    psutil = _require_psutil()
+    cpuinfo = _require_cpuinfo()
+    info = cpuinfo.get_cpu_info() or {}
+    physical = psutil.cpu_count(logical=False)
+    logical = psutil.cpu_count(logical=True)
+    try:
+        freq = psutil.cpu_freq()
+        max_freq_mhz = float(freq.max) if freq and freq.max else None
+    except Exception:
+        max_freq_mhz = None
+    return {
+        "model": info.get("brand_raw") or "unknown",
+        "architecture": platform.machine() or "unknown",
+        "physical_cores": int(physical) if physical else None,
+        "logical_cores": int(logical) if logical else None,
+        "max_freq_mhz": max_freq_mhz,
+    }
+
+
+def _collect_os() -> dict:
+    """OS details: system name, kernel release/version, distro (Linux)."""
+    distro: dict | None = None
+    reader = getattr(platform, "freedesktop_os_release", None)
+    if callable(reader):
+        try:
+            info = reader()
+            distro = {
+                k: info[k]
+                for k in ("NAME", "VERSION", "VERSION_ID", "ID")
+                if k in info
+            }
+        except (OSError, AttributeError):
+            distro = None
+    return {
+        "system": platform.system() or "unknown",
+        "release": platform.release() or "unknown",
+        "version": platform.version() or "",
+        "distro": distro,
+    }
+
+
+def _collect_memory() -> dict:
+    """Total RAM in bytes plus a GiB-rounded bucket for fingerprinting."""
+    psutil = _require_psutil()
+    total = int(psutil.virtual_memory().total)
+    assert total > 0, "virtual_memory().total must be positive"
+    return {
+        "total_bytes": total,
+        "total_gib_rounded": int(round(total / (1024 ** 3))),
+    }
+
+
+def _require_psutil():
+    """Import psutil with an actionable error if missing.
+
+    The orchestrator already depends on psutil; `dashboard.py run` runs in
+    the same Python env, so the import is expected to succeed there. `build`
+    does not call this -- it only reads existing run_env.json files.
+    """
+    try:
+        import psutil  # noqa: WPS433 (local import is intentional)
+    except ImportError as exc:
+        print(
+            "ERROR: psutil is required for `dashboard.py run` (captures hardware info).\n"
+            "  pip install -r tools/comparison_dashboard/requirements.txt",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+    return psutil
+
+
+def _require_cpuinfo():
+    """Import py-cpuinfo with an actionable error if missing.
+
+    Only called from `dashboard.py run`. `build` reads existing
+    run_env.json files and never invokes this.
+    """
+    try:
+        import cpuinfo  # noqa: WPS433
+    except ImportError as exc:
+        print(
+            "ERROR: py-cpuinfo is required for `dashboard.py run` (captures CPU model).\n"
+            "  pip install -r tools/comparison_dashboard/requirements.txt",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+    return cpuinfo
+
+
+def env_fingerprint(env: dict | None) -> dict | None:
+    """
+    Return the equality-check subset of an env dict, or None if `env` is None.
+
+    OS portion intentionally uses `system` + distro name+version (e.g.
+    "Linux" + "Ubuntu 24.04") rather than the kernel release. A kernel
+    point upgrade should not invalidate hours of comparison data; the
+    kernel release is still captured in `run_env.json` and shown in the
+    per-test detail pane.
+    """
+    if env is None:
+        return None
+    cpu = env.get("cpu") or {}
+    mem = env.get("memory") or {}
+    return {
+        "cpu_model": cpu.get("model"),
+        "architecture": cpu.get("architecture"),
+        "physical_cores": cpu.get("physical_cores"),
+        "total_gib_rounded": mem.get("total_gib_rounded"),
+        "os_system": (env.get("os") or {}).get("system"),
+        "os_distro": _distro_label(env.get("os") or {}),
+    }
+
+
+def _distro_label(os_info: dict) -> str | None:
+    """Build a "NAME VERSION_ID" string from os.distro for fingerprinting.
+
+    Returns None if no distro info was captured (common on macOS / Windows
+    or pre-py3.10 Linux). Two None values compare equal -- so two macOS
+    runs on the same hardware still match.
+    """
+    distro = os_info.get("distro") or {}
+    name = distro.get("NAME")
+    version = distro.get("VERSION_ID") or distro.get("VERSION")
+    if not name and not version:
+        return None
+    return " ".join(part for part in (name, version) if part)
+
+
+def env_fingerprint_str(fp: dict | None) -> str:
+    """Human-readable single-line summary used in CLI output and UI headers."""
+    if fp is None:
+        return "unknown environment"
+    parts = []
+    cpu = fp.get("cpu_model") or "unknown CPU"
+    arch = fp.get("architecture") or "?"
+    parts.append(f"{cpu} / {arch}")
+    cores = fp.get("physical_cores")
+    if cores is not None:
+        parts.append(f"{cores} cores")
+    gib = fp.get("total_gib_rounded")
+    if gib is not None:
+        parts.append(f"{gib} GiB")
+    distro = fp.get("os_distro")
+    if distro:
+        parts.append(distro)
+    else:
+        system = fp.get("os_system")
+        if system:
+            parts.append(system)
+    return " / ".join(parts)
 
 
 # ===========================================================================
@@ -324,13 +547,25 @@ def run_single_suite(
         return True
 
     log_path = staging_dir / "orchestrator.log"
+    started_at = now_utc_iso()
     rc = run_orchestrator(config_path, log_path, tests=tests)
+    ended_at = now_utc_iso()
     if rc != 0:
         print(
             f"\nError: orchestrator exited with code {rc}\nFull log: {log_path}",
             file=sys.stderr,
         )
         return False
+
+    # Capture run-time environment for the dashboard. Written here (not in
+    # the orchestrator) because the orchestrator may also be invoked outside
+    # the dashboard, where this metadata is not desired.
+    env = collect_run_env(started_at, ended_at)
+    env_path = staging_dir / "run_env.json"
+    with open(env_path, "w") as f:
+        json.dump(env, f, indent=2)
+    print(f"  Captured run env: {env_path}")
+    print(f"  Environment:      {env_fingerprint_str(env_fingerprint(env))}")
 
     publish_results(staging_dir, suite, publish_dir)
     return True
@@ -457,6 +692,11 @@ def publish_results(staging_dir: Path, suite: dict, publish_dir: Path) -> None:
     with open(suite_dir / "suite.yaml", "w") as f:
         yaml.dump(simplified, f, default_flow_style=False, sort_keys=False)
     print(f"  Updated {suite_dir / 'suite.yaml'}")
+
+    env_src = staging_dir / "run_env.json"
+    if env_src.exists():
+        shutil.copy2(env_src, suite_dir / "run_env.json")
+        print(f"  Updated {suite_dir / 'run_env.json'}")
 
     staging_tests = staging_dir / "tests"
     if not staging_tests.exists():
@@ -606,6 +846,10 @@ def cmd_build(args) -> int:
     suites = build_suites(parsed_suites, paths)
     print()
 
+    print("Checking comparison env consistency...")
+    check_comparison_env_consistency(comparisons, suites, args.allow_env_mismatch)
+    print()
+
     if suites:
         print("Generating data.js files...")
         generate_suite_data_js(suites, paths)
@@ -617,11 +861,11 @@ def cmd_build(args) -> int:
     print()
 
     print("Generating index.html...")
-    generate_index_html(comparisons, suites, paths)
+    generate_index_html(comparisons, suites, paths, manifest)
     print()
 
     print("Generating comparison stubs...")
-    generate_compare_stubs(comparisons, suites, paths)
+    generate_compare_stubs(comparisons, suites, paths, manifest)
     print()
 
     print("Build complete.")
@@ -774,6 +1018,7 @@ def build_suites(
             suite = yaml.safe_load(f)
 
         slug = suite_dir.name
+        env = load_suite_env(suite_dir)
 
         tests = []
         for test_dir in sorted(suite_dir.iterdir()):
@@ -795,10 +1040,12 @@ def build_suites(
             "slug": slug,
             "description": suite.get("description", ""),
             "meta": suite.get("meta", {}),
+            "env": env,
             "tests": tests,
         }
 
-        print(f"  {slug}: {len(tests)} tests")
+        env_note = env_fingerprint_str(env_fingerprint(env)) if env else "no env recorded"
+        print(f"  {slug}: {len(tests)} tests [{env_note}]")
 
     for _, suite in parsed_suites:
         slug = suite.get("slug")
@@ -816,12 +1063,30 @@ def build_suites(
             "slug": slug,
             "description": suite.get("description", ""),
             "meta": suite.get("meta", {}),
+            "env": None,
             "tests": [],
         }
 
         print(f"  {slug}: 0 tests (no data yet)")
 
     return suites
+
+
+def load_suite_env(suite_dir: Path) -> dict | None:
+    """Load <suite_dir>/run_env.json if present; return None on absence or parse error."""
+    env_path = suite_dir / "run_env.json"
+    if not env_path.exists():
+        return None
+    try:
+        with open(env_path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  WARNING: failed to read {env_path}: {exc}")
+        return None
+    if not isinstance(data, dict):
+        print(f"  WARNING: {env_path} is not a JSON object; ignoring")
+        return None
+    return data
 
 
 def load_comparisons(manifest: Manifest) -> list:
@@ -832,14 +1097,14 @@ def load_comparisons(manifest: Manifest) -> list:
         with open(comp_file) as f:
             comp = yaml.safe_load(f)
 
-        for key in ("slug", "suites"):
+        for key in ("slug", "suites", "tests"):
             if key not in comp:
                 print(f"  ERROR: {comp_file.name}: missing required key '{key}'")
                 sys.exit(1)
 
         comp["_source"] = str(comp_file)
         comparisons.append(comp)
-        print(f"  {comp['slug']}: {len(comp['suites'])} suites")
+        print(f"  {comp['slug']}: {len(comp['suites'])} suites, {len(comp['tests'])} tests")
 
     return comparisons
 
@@ -949,10 +1214,239 @@ def validate_manifest(
                     f"'{ref_slug}' (source: {comp.get('_source')})"
                 )
 
+    known_metric_names = {m["name"] for m in manifest.metrics}
+    for comp in comparisons:
+        chart = comp.get("chart")
+        if chart is None:
+            continue
+        slug = comp.get("slug")
+        src = comp.get("_source", "?")
+        if not isinstance(chart, dict):
+            errors.append(f"comparison '{slug}' 'chart' must be a mapping (source: {src})")
+            continue
+
+        chart_metrics = chart.get("metrics")
+        if chart_metrics is not None:
+            if not isinstance(chart_metrics, dict):
+                errors.append(
+                    f"comparison '{slug}' 'chart.metrics' must be a mapping (source: {src})"
+                )
+            else:
+                allowed = chart_metrics.get("allowed")
+                if allowed is not None:
+                    if not isinstance(allowed, list) or not allowed:
+                        errors.append(
+                            f"comparison '{slug}' 'chart.metrics.allowed' must be a non-empty list (source: {src})"
+                        )
+                    else:
+                        for j, name in enumerate(allowed):
+                            if not isinstance(name, str) or not name:
+                                errors.append(
+                                    f"comparison '{slug}' chart.metrics.allowed[{j}] must be a non-empty string (source: {src})"
+                                )
+                                continue
+                            if name not in known_metric_names:
+                                errors.append(
+                                    f"comparison '{slug}' chart.metrics.allowed references unknown metric '{name}' (source: {src})"
+                                )
+                default = chart_metrics.get("default")
+                if default is not None:
+                    if not isinstance(default, str) or not default:
+                        errors.append(
+                            f"comparison '{slug}' 'chart.metrics.default' must be a non-empty string (source: {src})"
+                        )
+                    elif default not in known_metric_names:
+                        errors.append(
+                            f"comparison '{slug}' chart.metrics.default references unknown metric '{default}' (source: {src})"
+                        )
+                    elif isinstance(allowed, list) and allowed and default not in allowed:
+                        errors.append(
+                            f"comparison '{slug}' chart.metrics.default '{default}' is not in chart.metrics.allowed (source: {src})"
+                        )
+
+        axes = chart.get("axes")
+        if axes is not None:
+            _validate_chart_axes(slug, src, axes, errors)
+
+    for comp in comparisons:
+        comp_slug = comp.get("slug")
+        src = comp.get("_source", "?")
+        tests = comp.get("tests")
+        if not isinstance(tests, list) or not tests:
+            errors.append(
+                f"comparison '{comp_slug}' must define a non-empty 'tests' list (source: {src})"
+            )
+            continue
+        seen_names: set[str] = set()
+        for i, t in enumerate(tests):
+            if not isinstance(t, dict):
+                errors.append(
+                    f"comparison '{comp_slug}' tests[{i}] must be a mapping (source: {src})"
+                )
+                continue
+            name = t.get("name")
+            rate = t.get("loadgen_rate")
+            if not isinstance(name, str) or not name:
+                errors.append(
+                    f"comparison '{comp_slug}' tests[{i}] missing non-empty 'name' (source: {src})"
+                )
+            if "label" in t:
+                label = t.get("label")
+                if not isinstance(label, str) or not label:
+                    errors.append(
+                        f"comparison '{comp_slug}' tests[{i}] 'label' must be a non-empty string when provided (source: {src})"
+                    )
+            elif isinstance(name, str) and name:
+                t["label"] = name
+            if not isinstance(rate, int) or isinstance(rate, bool) or rate <= 0:
+                errors.append(
+                    f"comparison '{comp_slug}' tests[{i}] 'loadgen_rate' must be a positive integer (source: {src})"
+                )
+            if isinstance(name, str) and name:
+                if name in seen_names:
+                    errors.append(
+                        f"comparison '{comp_slug}' has duplicate test name '{name}' (source: {src})"
+                    )
+                seen_names.add(name)
+
     if errors:
         print("ERROR: manifest validation failed:")
         for msg in errors:
             print(f"  - {msg}")
+        sys.exit(1)
+
+
+def _validate_chart_axes(slug: str, src: str, axes: object, errors: list) -> None:
+    """
+    Validate a comparison's `chart.axes` block.
+
+    Schema: { x?: AxisCfg } where AxisCfg = { title?: str, description?: str }.
+    Only the x-axis is exposed for configuration today; the y-axis is left
+    unlabeled because the chart's title dropdown already names the metric.
+    Empty strings are permitted (treated as "not set" by the renderer).
+    Unknown keys are rejected to catch typos early.
+    """
+    if not isinstance(axes, dict):
+        errors.append(f"comparison '{slug}' 'chart.axes' must be a mapping (source: {src})")
+        return
+    allowed_axes = {"x"}
+    for ax_key in axes.keys():
+        if ax_key not in allowed_axes:
+            errors.append(
+                f"comparison '{slug}' chart.axes has unknown key '{ax_key}' (allowed: {sorted(allowed_axes)}) (source: {src})"
+            )
+    allowed_axis_fields = {"title", "description"}
+    for ax_key in allowed_axes:
+        ax_cfg = axes.get(ax_key)
+        if ax_cfg is None:
+            continue
+        if not isinstance(ax_cfg, dict):
+            errors.append(
+                f"comparison '{slug}' chart.axes.{ax_key} must be a mapping (source: {src})"
+            )
+            continue
+        for field in ax_cfg.keys():
+            if field not in allowed_axis_fields:
+                errors.append(
+                    f"comparison '{slug}' chart.axes.{ax_key} has unknown field '{field}' (allowed: {sorted(allowed_axis_fields)}) (source: {src})"
+                )
+        for field in allowed_axis_fields:
+            if field not in ax_cfg:
+                continue
+            val = ax_cfg[field]
+            if not isinstance(val, str):
+                errors.append(
+                    f"comparison '{slug}' chart.axes.{ax_key}.{field} must be a string (source: {src})"
+                )
+
+
+def check_comparison_env_consistency(
+    comparisons: list,
+    suites: dict,
+    allow_mismatch: bool,
+) -> None:
+    """
+    Reject (or warn about) comparisons that mix data collected on different
+    hardware. Issue #2949: "never compare across different hardware."
+
+    Per-comparison single-pass check: every suite in the comparison that
+    actually has published test data must share one env fingerprint. Suites
+    with no published tests contribute no data points to the chart and are
+    skipped entirely. The first fingerprint encountered is the reference;
+    the first subsequent fingerprint that differs short-circuits the check
+    and identifies the offending pair (we do not enumerate every conflict).
+    """
+    errors: list[tuple[str, dict]] = []
+
+    for comp in comparisons:
+        slug = comp.get("slug", "?")
+        reference: tuple[str, dict | None] | None = None
+        conflict: tuple[str, dict | None] | None = None
+
+        for ref in comp.get("suites", []):
+            ref_slug = ref.get("slug")
+            if ref_slug is None:
+                continue
+            suite = suites.get(ref_slug) or {}
+            if not suite.get("tests"):
+                # No data published -> the suite contributes nothing to the
+                # comparison's actual content; its env is irrelevant here.
+                continue
+            fp = env_fingerprint(suite.get("env"))
+            if reference is None:
+                reference = (ref_slug, fp)
+                continue
+            if fp != reference[1]:
+                conflict = (ref_slug, fp)
+                break
+
+        if conflict is None:
+            continue
+
+        ref_slug, ref_fp = reference
+        con_slug, con_fp = conflict
+        payload = {
+            "reference": {
+                "slug": ref_slug,
+                "fingerprint": ref_fp,
+                "fingerprintStr": env_fingerprint_str(ref_fp)
+                if ref_fp is not None else "no env recorded",
+            },
+            "conflict": {
+                "slug": con_slug,
+                "fingerprint": con_fp,
+                "fingerprintStr": env_fingerprint_str(con_fp)
+                if con_fp is not None else "no env recorded",
+            },
+        }
+
+        if allow_mismatch:
+            comp["envMismatch"] = payload
+            print(f"  WARNING: comparison '{slug}': env mismatch")
+            print(f"    reference: {ref_slug}: {payload['reference']['fingerprintStr']}")
+            print(f"    conflict:  {con_slug}: {payload['conflict']['fingerprintStr']}")
+        else:
+            errors.append((slug, payload))
+
+    if errors:
+        print(
+            "ERROR: build refused -- comparisons reference suites with mismatched envs.",
+            file=sys.stderr,
+        )
+        print(
+            "Pass --allow-env-mismatch to render a warning banner and proceed anyway.",
+            file=sys.stderr,
+        )
+        for slug, p in errors:
+            print(f"  - comparison '{slug}':", file=sys.stderr)
+            print(
+                f"      reference: {p['reference']['slug']}: {p['reference']['fingerprintStr']}",
+                file=sys.stderr,
+            )
+            print(
+                f"      conflict:  {p['conflict']['slug']}: {p['conflict']['fingerprintStr']}",
+                file=sys.stderr,
+            )
         sys.exit(1)
 
 
@@ -980,7 +1474,7 @@ def _url_relpath(target: Path, start: Path) -> str:
     return Path(os.path.relpath(target, start)).as_posix()
 
 
-def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> None:
+def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths, manifest: Manifest) -> None:
     """Generate <compare_dir>/index.html with comparison sections."""
     shared_rel = _url_relpath(paths.shared_dst, paths.compare_dir)
     data_rel = _url_relpath(paths.data_dir, paths.compare_dir)
@@ -999,6 +1493,8 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> N
 
     comparisons_public = [_strip_internal(c) for c in comparisons]
     comparisons_json = json.dumps(comparisons_public, indent=2)
+    metrics_meta = {m["name"]: {"label": m["label"]} for m in manifest.metrics}
+    metrics_meta_json = json.dumps(metrics_meta)
 
     lines = [
         '<!DOCTYPE html>',
@@ -1006,18 +1502,18 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> N
         '<head>',
         '  <meta charset="utf-8">',
         '  <meta name="viewport" content="width=device-width, initial-scale=1">',
-        '  <title>Telemetry Engine Benchmark Dashboard</title>',
+        '  <title>Telemetry Engine Benchmarks</title>',
         f'  <link rel="stylesheet" href="{shared_rel}/styles.css">',
         '</head>',
         '<body>',
         '  <div class="wip-banner" role="alert">',
         '    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>',
-        '    <span class="wip-text">All benchmarks are WIP and not final. Inaccuracies may exist.</span>',
+        f'   <span class="wip-text">{BANNER_TEXT} <a class="wip-link" href="{ISSUE_URL}" target="_blank" rel="noopener">{BANNER_LINK_TEXT}</a></span>',
         '    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>',
         '  </div>',
         '  <div class="wrap">',
         '    <h1>Telemetry Engine Benchmark Dashboard</h1>',
-        '    <div class="sub">Suite-based comparison of OTel Dataflow Engine (DFE) and OTel Collector (OTC) benchmark results.</div>',
+        '    <div class="sub">Compare telemetry engines across a variety of use-cases and protocols.</div>',
         '    <div id="app"></div>',
         '    <div id="comparison-cards"></div>',
         '  </div>',
@@ -1035,6 +1531,7 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> N
         '  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>',
         data_script_tags,
         f'  <script>window.DATA_PATH = "{data_rel}/suite";</script>',
+        f'  <script>window.METRICS_META = {metrics_meta_json};</script>',
         f'  <script>window.COMPARISONS = {comparisons_json};</script>',
         f'  <script type="module" src="{shared_rel}/app.js"></script>',
         '</body>',
@@ -1052,13 +1549,15 @@ def _strip_internal(comp: dict) -> dict:
     return {k: v for k, v in comp.items() if not (isinstance(k, str) and k.startswith("_"))}
 
 
-def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths) -> None:
+def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths, manifest: Manifest) -> None:
     """Generate <compare_dir>/<slug>/index.html stub pages."""
     # Per-comparison pages are all siblings under compare_dir, so the
     # relpaths to shared/ and data/ are identical for every slug.
     sample_stub = paths.compare_page_dir("_")
     shared_rel = _url_relpath(paths.shared_dst, sample_stub)
     data_rel = _url_relpath(paths.data_dir, sample_stub)
+    metrics_meta = {m["name"]: {"label": m["label"]} for m in manifest.metrics}
+    metrics_meta_json = json.dumps(metrics_meta)
 
     for comp in comparisons:
         comp_slug = comp["slug"]
@@ -1096,7 +1595,7 @@ def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths) -
             '<body>',
             '  <div class="wip-banner" role="alert">',
             '    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>',
-            '    <span class="wip-text">All benchmarks are WIP and not final. Inaccuracies may exist.</span>',
+            f'   <span class="wip-text">{BANNER_TEXT} <a class="wip-link" href="{ISSUE_URL}" target="_blank" rel="noopener">{BANNER_LINK_TEXT}</a></span>',
             '    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>',
             '  </div>',
             '  <div class="wrap">',
@@ -1115,6 +1614,7 @@ def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths) -
             '',
             '  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>',
             f'  <script>window.DATA_PATH = "{data_rel}/suite";</script>',
+            f'  <script>window.METRICS_META = {metrics_meta_json};</script>',
             f'  <script>window.COMPARISON_SLUG = "{comp_slug}";</script>',
             suite_scripts,
             f'  <script>window.COMPARISON = {comp_json};</script>',
@@ -1271,6 +1771,15 @@ def build_parser() -> argparse.ArgumentParser:
             "landing page at <compare-dir>/index.html and per-comparison "
             "pages at <compare-dir>/<slug>/index.html, plus the copied "
             "shared/ static assets."
+        ),
+    )
+    p_build.add_argument(
+        "--allow-env-mismatch", action="store_true",
+        help=(
+            "Allow building comparisons whose referenced suites have "
+            "differing hardware/OS fingerprints (or are missing run_env.json). "
+            "Without this flag, such comparisons cause the build to fail. "
+            "When set, the affected comparison pages render a warning banner."
         ),
     )
     p_build.set_defaults(func=cmd_build)

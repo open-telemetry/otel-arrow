@@ -67,9 +67,6 @@ use tower::util::Either;
 /// URN for the OTLP Receiver
 pub const OTLP_RECEIVER_URN: &str = "urn:otel:receiver:otlp";
 
-/// Interval for periodic telemetry collection.
-const TELEMETRY_INTERVAL: Duration = Duration::from_secs(1);
-
 /// Configuration for OTLP Receiver.
 ///
 /// The receiver supports three deployment modes matching the Go collector's `otlpreceiver`:
@@ -201,7 +198,8 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig| {
+             receiver_config: &ReceiverConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         let mut receiver = OTLPReceiver::from_config(pipeline, &node_config.config)?;
         receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
 
@@ -390,9 +388,6 @@ impl OTLPReceiver {
         &mut self,
         msg: NodeControlMsg<OtapPdata>,
         registry: &AckRegistry,
-        _telemetry_cancel_handle: &mut Option<
-            otap_df_engine::effect_handler::TelemetryTimerCancelHandle<OtapPdata>,
-        >,
     ) -> Result<(), Error> {
         match msg {
             NodeControlMsg::CollectTelemetry {
@@ -622,19 +617,12 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 None
             };
 
-        let mut telemetry_cancel_handle = Some(
-            effect_handler
-                .start_periodic_telemetry(TELEMETRY_INTERVAL)
-                .await?,
-        );
-
         // Run the event loop based on which protocols are enabled.
         let terminal_state = self
             .run_event_loop(
                 &mut ctrl_msg_recv,
                 &effect_handler,
                 &ack_registry,
-                &mut telemetry_cancel_handle,
                 grpc_task,
                 grpc_shutdown,
                 http_task,
@@ -659,9 +647,6 @@ impl OTLPReceiver {
         ctrl_msg_recv: &mut shared::ControlChannel<OtapPdata>,
         effect_handler: &shared::EffectHandler<OtapPdata>,
         ack_registry: &AckRegistry,
-        telemetry_cancel_handle: &mut Option<
-            otap_df_engine::effect_handler::TelemetryTimerCancelHandle<OtapPdata>,
-        >,
         grpc_task: Option<GrpcServerTask>,
         grpc_shutdown: CancellationToken,
         http_task: Option<HttpServerTask>,
@@ -703,9 +688,6 @@ impl OTLPReceiver {
                 }
 
                 if grpc_task_done && http_task_done && ack_registry.is_empty() {
-                    if let Some(handle) = telemetry_cancel_handle.take() {
-                        _ = handle.cancel().await;
-                    }
                     effect_handler.notify_receiver_drained().await?;
                     terminal_state = TerminalState::new(deadline, [self.metrics.lock().snapshot()]);
                     break;
@@ -749,9 +731,6 @@ impl OTLPReceiver {
                                     grpc_shutdown.cancel();
                                     http_shutdown.cancel();
                                     ack_registry.force_shutdown(&reason);
-                                    if let Some(handle) = telemetry_cancel_handle.take() {
-                                        _ = handle.cancel().await;
-                                    }
                                     terminal_state = TerminalState::new(deadline, [self.metrics.lock().snapshot()]);
                                     break;
                                 }
@@ -759,16 +738,12 @@ impl OTLPReceiver {
                                     self.handle_control_message(
                                         other,
                                         ack_registry,
-                                        telemetry_cancel_handle,
                                     )
                                     .await?;
                                 }
                             }
                         }
                         Err(e) => {
-                            if let Some(handle) = telemetry_cancel_handle.take() {
-                                _ = handle.cancel().await;
-                            }
                             return Err(Error::ChannelRecvError(e));
                         }
                     }
@@ -1112,13 +1087,11 @@ mod tests {
             };
 
             let receiver_handle = tokio::task::spawn_local(async move {
-                let mut telemetry_cancel_handle = None;
                 receiver
                     .run_event_loop(
                         &mut ctrl_chan,
                         &effect_handler,
                         &ack_registry,
-                        &mut telemetry_cancel_handle,
                         None,
                         CancellationToken::new(),
                         Some(http_task),
