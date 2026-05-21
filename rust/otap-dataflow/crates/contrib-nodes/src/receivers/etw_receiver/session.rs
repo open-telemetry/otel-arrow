@@ -50,6 +50,7 @@ use std::sync::Mutex;
 use one_collect::Guid;
 use one_collect::etw::{self, EtwSession};
 use otap_df_engine::error::Error;
+use otap_df_telemetry::{otel_error, otel_warn};
 use tokio::sync::mpsc;
 
 use super::{Config, ProviderConfig, TraceLevel};
@@ -311,11 +312,11 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                         let count = dropped.get() + 1;
                         dropped.set(count);
                         // Rate-limited log: first drop, then every 10,000th.
-                        if count == 1 || count % 10_000 == 0 {
-                            eprintln!(
-                                "[etw-session] event dropped (total dropped: {count}); \
-                                 channel full for core {}",
-                                i % txs.len()
+                        if count == 1 || count.is_multiple_of(10_000) {
+                            otel_warn!(
+                                "etw.event.dropped",
+                                total_dropped = count,
+                                core = i % txs.len(),
                             );
                         }
                     }
@@ -332,7 +333,11 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
             // once the one-collect API stabilizes (TDH decoding work).
             let result = session.parse_until(&session_name, || false);
             if let Err(ref e) = result {
-                eprintln!("[etw-session-{session_name}] parse_until failed: {e}");
+                otel_error!(
+                    "etw.parse_until.failed",
+                    session_name = session_name.as_str(),
+                    error = %e,
+                );
             }
 
             // The session thread exits only on unrecoverable ETW errors or
@@ -408,6 +413,128 @@ pub(super) fn subscribe(
 mod tests {
     use super::*;
 
+    /// Helper: insert a pre-built `SessionEntry` into the global registry
+    /// for testing.  Returns a guard-like struct that removes the entry on
+    /// drop to avoid leaking test state between tests.
+    struct TestSession {
+        name: String,
+    }
+
+    impl TestSession {
+        fn insert(name: &str, pool: Vec<mpsc::Receiver<EtwEventData>>) -> Self {
+            let mut guard = SESSIONS.lock().expect("lock not poisoned");
+            let sessions = guard.get_or_insert_with(HashMap::new);
+            let _ = sessions.insert(name.to_string(), SessionEntry { pool });
+            Self {
+                name: name.to_string(),
+            }
+        }
+    }
+
+    impl Drop for TestSession {
+        fn drop(&mut self) {
+            if let Ok(mut guard) = SESSIONS.lock() {
+                if let Some(sessions) = guard.as_mut() {
+                    let _ = sessions.remove(&self.name);
+                }
+            }
+        }
+    }
+
+    fn test_config(session_name: &str) -> Config {
+        Config {
+            session_name: session_name.to_string(),
+            providers: vec![ProviderConfig {
+                name: None,
+                guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+                level: TraceLevel::default(),
+                keywords: None,
+            }],
+        }
+    }
+
+    // ── Session registry ─────────────────────────────
+
+    #[test]
+    fn subscribe_rejects_exhausted_session_name() {
+        // Pre-populate the registry with an empty pool to simulate
+        // a session whose channels have all been handed out.
+        let _guard = TestSession::insert("test-exhausted", vec![]);
+
+        let config = test_config("test-exhausted");
+        let err = subscribe(&config, 1).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("already in use"),
+            "expected 'already in use' error, got: {msg}"
+        );
+        assert!(
+            msg.contains("test-exhausted"),
+            "error should mention the session name, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn subscribe_pops_from_existing_pool() {
+        // Pre-populate with a pool of 2 receivers.
+        let (_tx1, rx1) = mpsc::channel::<EtwEventData>(1);
+        let (_tx2, rx2) = mpsc::channel::<EtwEventData>(1);
+        let _guard = TestSession::insert("test-pool-pop", vec![rx1, rx2]);
+
+        let config = test_config("test-pool-pop");
+
+        // First pop should succeed.
+        let result1 = subscribe(&config, 2);
+        assert!(result1.is_ok(), "first subscribe should succeed");
+
+        // Second pop should succeed.
+        let result2 = subscribe(&config, 2);
+        assert!(result2.is_ok(), "second subscribe should succeed");
+
+        // Third pop — pool exhausted — should return InvalidUserConfig.
+        let err = subscribe(&config, 2).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("already in use"),
+            "expected 'already in use' error on exhausted pool, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn subscribe_different_session_names_are_independent() {
+        // Pre-populate two different session names, each with their own pool.
+        let (_tx_a, rx_a) = mpsc::channel::<EtwEventData>(1);
+        let (_tx_b, rx_b) = mpsc::channel::<EtwEventData>(1);
+        let _guard_a = TestSession::insert("test-session-a", vec![rx_a]);
+        let _guard_b = TestSession::insert("test-session-b", vec![rx_b]);
+
+        let config_a = test_config("test-session-a");
+        let config_b = test_config("test-session-b");
+
+        // Both should succeed independently.
+        let result_a = subscribe(&config_a, 1);
+        assert!(result_a.is_ok(), "session-a subscribe should succeed");
+
+        let result_b = subscribe(&config_b, 1);
+        assert!(result_b.is_ok(), "session-b subscribe should succeed");
+
+        // Exhausting one doesn't affect the other (both are now empty,
+        // so both should fail independently with their own session name).
+        let err_a = subscribe(&config_a, 1).unwrap_err();
+        assert!(
+            err_a.to_string().contains("test-session-a"),
+            "error should mention session-a"
+        );
+
+        let err_b = subscribe(&config_b, 1).unwrap_err();
+        assert!(
+            err_b.to_string().contains("test-session-b"),
+            "error should mention session-b"
+        );
+    }
+
+    // ── GUID parsing ─────────────────────────────────
+
     #[test]
     fn parse_guid_standard_format() {
         let guid = parse_guid("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716").expect("valid GUID");
@@ -437,6 +564,8 @@ mod tests {
         let result = parse_guid("22fb2cd6-0e7b");
         assert!(result.is_err());
     }
+
+    // ── Trace level mapping ──────────────────────────
 
     #[test]
     fn trace_level_mapping() {
