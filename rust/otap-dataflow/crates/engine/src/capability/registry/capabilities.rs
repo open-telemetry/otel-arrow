@@ -7,8 +7,6 @@
 use super::{Error, ResolvedLocalEntry, ResolvedSharedEntry};
 use std::any::TypeId;
 use std::collections::HashMap;
-use std::rc::Rc;
-
 /// Per-node capability bindings resolved from the
 /// [`CapabilityRegistry`](super::CapabilityRegistry).
 ///
@@ -42,17 +40,26 @@ impl Capabilities {
 
     /// Resolve a **required** local capability.
     ///
-    /// Returns `Rc<dyn C::Local>`. If the capability was registered by a
+    /// Returns `Box<dyn C::Local>` — a fresh local trait object minted
+    /// for this consumer. If the capability was registered by a
     /// shared-only extension, the `SharedAsLocal` adapter is returned
     /// transparently — the caller always gets a local trait object.
+    ///
+    /// Each consumer gets its own boxed instance, mirroring
+    /// [`Self::require_shared`]. Capabilities that need to share state
+    /// across consumers (across calls or across nodes that bound the
+    /// same instance) must use `Rc<RefCell<T>>` (local) or
+    /// `Arc<Mutex<T>>` (shared) fields explicitly — there is no
+    /// implicit fan-out via `Rc::clone`.
     ///
     /// # One-shot contract
     ///
     /// Each resolved entry is one-shot per node: a `require_local`
     /// claim consumes the local entry, and a `require_shared` claim
     /// consumes the shared entry. Node factories are expected to
-    /// call each accessor at most once at construction, store the
-    /// returned handle, and clone/share it within the node as needed.
+    /// call each accessor at most once at construction and store the
+    /// returned handle (wrapping it in `Rc<…>` themselves if they need
+    /// to fan out within the node).
     ///
     /// The contract is **per-binding**, not per-execution-model: a
     /// node claims a binding at most once, regardless of which
@@ -89,7 +96,7 @@ impl Capabilities {
     /// stored entry's concrete type matches `C::Local`).
     pub fn require_local<C: crate::capability::ExtensionCapability>(
         &self,
-    ) -> Result<Rc<C::Local>, Error> {
+    ) -> Result<Box<C::Local>, Error> {
         let id = TypeId::of::<C>();
 
         // Native local path. `Cell::take()` is the one-shot guard.
@@ -100,11 +107,11 @@ impl Capabilities {
                 .ok_or_else(|| Error::CapabilityAlreadyConsumed {
                     capability: C::name().to_owned(),
                 })?;
-            let rc_any = produce();
-            let trait_object = rc_any
-                .downcast_ref::<Rc<C::Local>>()
-                .cloned()
-                .unwrap_or_else(|| {
+            let box_any = produce();
+            let trait_object = box_any
+                .downcast::<Box<C::Local>>()
+                .map(|b| *b)
+                .unwrap_or_else(|_| {
                     panic!(
                         "BUG: capability '{}': local entry type mismatch in registry",
                         C::name(),
@@ -142,11 +149,11 @@ impl Capabilities {
             .ok_or_else(|| Error::CapabilityAlreadyConsumed {
                 capability: C::name().to_owned(),
             })?;
-        let rc_any = (entry.adapt_as_local)(produce());
-        let trait_object = rc_any
-            .downcast_ref::<Rc<C::Local>>()
-            .cloned()
-            .unwrap_or_else(|| {
+        let box_any = (entry.adapt_as_local)(produce());
+        let trait_object = box_any
+            .downcast::<Box<C::Local>>()
+            .map(|b| *b)
+            .unwrap_or_else(|_| {
                 panic!(
                     "BUG: capability '{}': SharedAsLocal adapter type mismatch in registry",
                     C::name(),
@@ -237,7 +244,7 @@ impl Capabilities {
     /// Panics on a type-erasure downcast mismatch (registry bug).
     pub fn optional_local<C: crate::capability::ExtensionCapability>(
         &self,
-    ) -> Result<Option<Rc<C::Local>>, Error> {
+    ) -> Result<Option<Box<C::Local>>, Error> {
         let id = TypeId::of::<C>();
         // Available either as a native local entry or as a
         // SharedAsLocal fallback through the shared entry.

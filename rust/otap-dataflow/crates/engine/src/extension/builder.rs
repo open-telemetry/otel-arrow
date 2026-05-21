@@ -148,10 +148,15 @@ impl ActiveStage {
     }
 
     /// Register the local (!Send) variant.
+    ///
+    /// `E: Clone` is required so capability consumers can each receive
+    /// an independent boxed clone of `*extension`. The original `Rc<E>`
+    /// is what the engine will hand to `local_ext::Extension::start`,
+    /// so the lifecycle wiring still uses an `Rc`-hosted instance.
     #[must_use]
     pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> ActiveLocalStage
     where
-        E: local_ext::Extension + 'static,
+        E: local_ext::Extension + Clone + 'static,
     {
         self.parent.set_local_active(extension);
         ActiveLocalStage {
@@ -169,10 +174,13 @@ pub struct ActiveSharedStage {
 impl ActiveSharedStage {
     /// Register the local (!Send) variant alongside the previously-registered
     /// shared variant.
+    ///
+    /// `E: Clone` is required for the same reason as
+    /// [`ActiveStage::local`].
     #[must_use]
     pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> ActiveCompleteStage
     where
-        E: local_ext::Extension + 'static,
+        E: local_ext::Extension + Clone + 'static,
     {
         self.parent.set_local_active(extension);
         ActiveCompleteStage {
@@ -293,11 +301,11 @@ impl PassiveClonedStage {
     }
 
     /// Register the local (!Send) variant. Consumers receive
-    /// `Rc::clone`s of the stored instance.
+    /// independent clones of the prototype, mirroring `.shared(...)`.
     #[must_use]
-    pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> PassiveClonedLocalStage
+    pub fn local<E>(mut self, extension: E) -> PassiveClonedLocalStage
     where
-        E: 'static,
+        E: Clone + 'static,
     {
         self.parent.set_local_cloned(extension);
         PassiveClonedLocalStage {
@@ -317,9 +325,9 @@ impl PassiveClonedSharedStage {
     /// Register the local (!Send) variant alongside the previously-registered
     /// shared variant.
     #[must_use]
-    pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> PassiveClonedCompleteStage
+    pub fn local<E>(mut self, extension: E) -> PassiveClonedCompleteStage
     where
-        E: 'static,
+        E: Clone + 'static,
     {
         self.parent.set_local_cloned(extension);
         PassiveClonedCompleteStage {
@@ -419,7 +427,7 @@ impl PassiveConstructedStage {
     pub fn local<E, F>(mut self, produce: F) -> PassiveConstructedLocalStage
     where
         E: 'static,
-        F: Fn() -> std::rc::Rc<E> + Clone + 'static,
+        F: Fn() -> E + Clone + 'static,
     {
         self.parent.set_local_constructed::<E, F>(produce);
         PassiveConstructedLocalStage {
@@ -442,7 +450,7 @@ impl PassiveConstructedSharedStage {
     pub fn local<E, F>(mut self, produce: F) -> PassiveConstructedCompleteStage
     where
         E: 'static,
-        F: Fn() -> std::rc::Rc<E> + Clone + 'static,
+        F: Fn() -> E + Clone + 'static,
     {
         self.parent.set_local_constructed::<E, F>(produce);
         PassiveConstructedCompleteStage {
@@ -553,7 +561,7 @@ impl BackgroundEmptyStage {
     #[must_use]
     pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> BackgroundCompleteStage
     where
-        E: local_ext::Extension + 'static,
+        E: local_ext::Extension + Clone + 'static,
     {
         self.parent.set_local_active(extension);
         BackgroundCompleteStage {
@@ -631,13 +639,13 @@ impl ExtensionBundleBuilder {
 
     fn set_local_active<E>(&mut self, extension: std::rc::Rc<E>)
     where
-        E: local_ext::Extension + 'static,
+        E: local_ext::Extension + Clone + 'static,
     {
         let for_factory = std::rc::Rc::clone(&extension);
         self.local = Some(LocalDecomposed {
             extension: Some(extension),
             instance_factory: LocalInstanceFactory::new(move || {
-                std::rc::Rc::clone(&for_factory) as std::rc::Rc<dyn Any>
+                Box::new((*for_factory).clone()) as Box<dyn Any>
             }),
             type_id: TypeId::of::<E>(),
         });
@@ -656,14 +664,14 @@ impl ExtensionBundleBuilder {
         });
     }
 
-    fn set_local_cloned<E>(&mut self, extension: std::rc::Rc<E>)
+    fn set_local_cloned<E>(&mut self, extension: E)
     where
-        E: 'static,
+        E: Clone + 'static,
     {
         self.local = Some(LocalDecomposed {
             extension: None,
             instance_factory: LocalInstanceFactory::new(move || {
-                std::rc::Rc::clone(&extension) as std::rc::Rc<dyn Any>
+                Box::new(extension.clone()) as Box<dyn Any>
             }),
             type_id: TypeId::of::<E>(),
         });
@@ -686,11 +694,13 @@ impl ExtensionBundleBuilder {
     fn set_local_constructed<E, F>(&mut self, produce: F)
     where
         E: 'static,
-        F: Fn() -> std::rc::Rc<E> + Clone + 'static,
+        F: Fn() -> E + Clone + 'static,
     {
         self.local = Some(LocalDecomposed {
             extension: None,
-            instance_factory: LocalInstanceFactory::new(move || produce() as std::rc::Rc<dyn Any>),
+            instance_factory: LocalInstanceFactory::new(move || {
+                Box::new(produce()) as Box<dyn Any>
+            }),
             type_id: TypeId::of::<E>(),
         });
     }

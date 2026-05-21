@@ -942,8 +942,11 @@ where
 /// - Data survives NACKs and is eventually delivered when downstream recovers
 ///
 /// Uses flaky_exporter which NACKs initially, then switches to ACK mode mid-run.
-/// A background thread waits for NACKs to occur (condition-based, not fixed timeout),
-/// then flips the exporter to ACK mode.
+/// Use the exporter's deterministic auto-flip: NACK the first 5 batches, then
+/// atomically flip to ACK mode in the same task that processes inbound PData.
+/// This makes recovery data-driven and removes the cross-thread race between
+/// detecting NACKs and the retry processor's elapsed-time budget — see issue
+/// #2720 for the same race observed in core-node liveness tests.
 #[test]
 fn test_durable_buffer_retries_on_nack() {
     let temp_dir = tempdir().expect("failed to create temp dir");
@@ -952,9 +955,11 @@ fn test_durable_buffer_retries_on_nack() {
     let pipeline_id: PipelineId = "retry-pipeline".into();
     let test_id = "retries_on_nack";
 
-    // Setup: Configure flaky exporter to NACK initially
+    // Setup: NACK the first 5 batches, then auto-flip to ACK. The auto-flip
+    // fires inside the exporter task synchronously with the 5th NACK, so by
+    // the time any retry attempt reaches the exporter it will be ACKed.
     let counter = Arc::new(AtomicU64::new(0));
-    flaky_exporter::register_state(test_id, counter.clone(), false); // Start in NACK mode
+    flaky_exporter::register_state_with_auto_flip(test_id, counter.clone(), false, 5);
 
     let config = TestConfigBuilder::new(buffer_path.clone())
         .max_signal_count(None) // Generate continuously
@@ -970,31 +975,8 @@ fn test_durable_buffer_retries_on_nack() {
         }))
         .build(&pipeline_group_id, &pipeline_id);
 
-    // Spawn a thread to flip the exporter after NACKs are observed
-    let flip_test_id = test_id.to_owned();
-    let flip_handle = std::thread::spawn(move || {
-        // Wait for at least 5 NACKs (condition-based, not fixed timeout).
-        // Use a generous timeout because this thread starts before the pipeline
-        // is running. On slow CI, pipeline startup (runtime init, engine init,
-        // segment finalization) can consume several seconds before the first
-        // NACK arrives.
-        let nacks_observed = wait_for_condition(
-            || flaky_exporter::nack_count_by_id(&flip_test_id) >= 5,
-            FLIP_CONDITION_TIMEOUT,
-            Duration::from_millis(10),
-        );
-        assert!(nacks_observed, "Expected at least 5 NACKs within timeout");
-
-        let nacks_before = flaky_exporter::nack_count_by_id(&flip_test_id);
-
-        // Switch to ACK mode - retries should now succeed
-        flaky_exporter::set_should_ack_by_id(&flip_test_id, true);
-
-        nacks_before
-    });
-
     // Run the pipeline - shut down as soon as we see delivered items
-    // (meaning retries succeeded after the flip to ACK mode).
+    // (meaning retries succeeded after the auto-flip to ACK mode).
     let delivered_counter = counter.clone();
     let metrics = run_pipeline_collecting_metrics(
         config,
@@ -1005,8 +987,6 @@ fn test_durable_buffer_retries_on_nack() {
         Some(move || delivered_counter.load(Ordering::Relaxed) > 0),
         true, // wait for telemetry cycle before shutdown so metrics are populated
     );
-
-    let nacks_before_flip = flip_handle.join().expect("flip thread panicked");
 
     // Cleanup and validate
     let delivered = counter.load(Ordering::Relaxed);
@@ -1021,19 +1001,13 @@ fn test_durable_buffer_retries_on_nack() {
 
     // Validate: NACKs occurred during the NACK phase
     assert!(
-        total_nacks >= nacks_before_flip,
-        "NACK count should be at least {} (captured before flip), got {}",
-        nacks_before_flip,
+        total_nacks >= 5,
+        "NACK count should be at least 5 (the auto-flip threshold), got {}",
         total_nacks
     );
 
     // Validate: The retry mechanism worked - data was NACKed but eventually delivered
     // This proves the durable buffer's retry logic is functioning.
-    assert!(
-        nacks_before_flip >= 5,
-        "Should have observed at least 5 NACKs before flip, got {}",
-        nacks_before_flip
-    );
 
     // Validate metrics: transient NACKs should increment bundles_nacked_deferred
     assert!(
@@ -1990,6 +1964,10 @@ fn test_durable_buffer_drop_oldest_policy() {
 ///
 /// Uses the flaky_exporter in permanent-NACK mode, then switches to ACK mode
 /// to verify the pipeline continues to function after permanent rejections.
+/// Uses the deterministic auto-flip: the exporter sends 3 permanent NACKs and
+/// then atomically flips to ACK mode in the same task that processes inbound
+/// PData. This removes the cross-thread race that previously caused this test
+/// to flake on slow CI (see closed issue #2354).
 #[test]
 fn test_durable_buffer_permanent_nack_rejects_without_retry() {
     let temp_dir = tempdir().expect("failed to create temp dir");
@@ -1998,9 +1976,12 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
     let pipeline_id: PipelineId = "permanent-nack-pipeline".into();
     let test_id = "permanent_nack_rejects";
 
-    // Setup: Configure flaky exporter to send permanent NACKs
+    // Setup: send 3 permanent NACKs then auto-flip to ACK. The auto-flip
+    // counter is shared between transient and permanent NACKs, but this test
+    // runs the exporter in permanent-only mode so all 3 NACKs will be
+    // permanent before the flip occurs.
     let counter = Arc::new(AtomicU64::new(0));
-    flaky_exporter::register_state(test_id, counter.clone(), false); // Start in NACK mode
+    flaky_exporter::register_state_with_auto_flip(test_id, counter.clone(), false, 3);
     flaky_exporter::set_permanent_nack_by_id(test_id, true); // Make NACKs permanent
 
     let config = TestConfigBuilder::new(buffer_path.clone())
@@ -2020,41 +2001,6 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
         }))
         .build(&pipeline_group_id, &pipeline_id);
 
-    // Spawn a thread to:
-    // 1. Wait for permanent NACKs to occur
-    // 2. Switch to ACK mode so the pipeline can deliver data and shut down
-    //
-    // Note: we do NOT wait for delivery here. The pipeline shutdown condition
-    // (`counter > 0`) handles that with a generous timeout. Adding a second,
-    // tighter timeout in this thread caused failures on slow CI (see #2354).
-    let flip_test_id = test_id.to_owned();
-    let flip_handle = std::thread::spawn(move || {
-        // Wait for at least 3 permanent NACKs.
-        // Use a generous timeout because this thread starts before the pipeline
-        // is running. On slow CI, pipeline startup can consume several seconds
-        // before the first NACK arrives.
-        let permanent_nacks_observed = wait_for_condition(
-            || flaky_exporter::permanent_nack_count_by_id(&flip_test_id) >= 3,
-            FLIP_CONDITION_TIMEOUT,
-            Duration::from_millis(10),
-        );
-        assert!(
-            permanent_nacks_observed,
-            "Expected at least 3 permanent NACKs within timeout, got {}",
-            flaky_exporter::permanent_nack_count_by_id(&flip_test_id)
-        );
-
-        let permanent_nacks_before = flaky_exporter::permanent_nack_count_by_id(&flip_test_id);
-        let transient_nacks_before = flaky_exporter::nack_count_by_id(&flip_test_id);
-
-        // Switch to ACK mode - new data should be delivered.
-        // The pipeline shutdown condition gates on delivered_counter > 0, so delivery
-        // is verified there (with PIPELINE_MAX_DURATION ceiling) rather than here.
-        flaky_exporter::set_should_ack_by_id(&flip_test_id, true);
-
-        (permanent_nacks_before, transient_nacks_before)
-    });
-
     // Run the pipeline - shut down once we see delivered items
     let delivered_counter = counter.clone();
     let metrics = run_pipeline_collecting_metrics(
@@ -2066,8 +2012,6 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
         Some(move || delivered_counter.load(Ordering::Relaxed) > 0),
         true, // wait for telemetry cycle before shutdown so metrics are populated
     );
-
-    let (_permanent_nacks, transient_nacks) = flip_handle.join().expect("flip thread panicked");
 
     // Cleanup and validate
     let delivered = counter.load(Ordering::Relaxed);
@@ -2084,9 +2028,9 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
 
     // Validate: No transient NACKs were sent (only permanent mode was used)
     assert_eq!(
-        transient_nacks, 0,
+        total_transient_nacks, 0,
         "Expected 0 transient NACKs during permanent NACK phase, got {}",
-        transient_nacks
+        total_transient_nacks
     );
 
     // Validate: Data was delivered after switching to ACK mode

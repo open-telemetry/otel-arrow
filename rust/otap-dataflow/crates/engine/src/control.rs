@@ -791,7 +791,6 @@ impl ExtensionControlMsg {
 /// [`ExtensionControlMsg`] (PData-free) rather than [`NodeControlMsg<PData>`].
 pub struct ExtensionControlSender {
     /// Unique identifier of the extension.
-    #[allow(dead_code)] // Used by runtime pipeline in a follow-up PR.
     pub(crate) name: otap_df_config::ExtensionId,
     /// The control message sender for the extension.
     pub(crate) sender: Sender<ExtensionControlMsg>,
