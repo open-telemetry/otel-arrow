@@ -48,7 +48,7 @@ fn fake_receiver_config(
             "trace_weight": 0,
             "log_weight": 100
         },
-        "data_source": "static",
+        "data_source": "synthetic",
         "enable_ack_nack": enable_ack_nack
     })
 }
@@ -68,7 +68,7 @@ fn rate_limited_fake_receiver_config(
             "trace_weight": 0,
             "log_weight": 100
         },
-        "data_source": "static",
+        "data_source": "synthetic",
         "generation_strategy": "pre_generated",
         "enable_ack_nack": enable_ack_nack
     })
