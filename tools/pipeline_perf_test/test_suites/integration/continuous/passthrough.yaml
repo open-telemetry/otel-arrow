@@ -1,4 +1,5 @@
 # Passthrough test (no processor in middle)
+# NUMA-aware layout: SUT on NUMA node 0, loadgen+backend on NUMA node 1
 name: Continuous - Passthrough
 components:
   load-generator:
@@ -14,12 +15,12 @@ components:
           - "--config"
           - "./config.yaml"
           - "--core-id-range"
-          - "1-12"
+          - "32-35"
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
       docker_component:
-        allocated_cores: 12
+        allocated_cores: 4
       prometheus:
         endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
   df-engine:
@@ -56,7 +57,7 @@ components:
           - "--config"
           - "./config.yaml"
           - "--core-id-range"
-          - "13-14"
+          - "36-37"
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
@@ -76,4 +77,5 @@ tests:
         backend_receiver_type: otlp
         observation_interval: 60
         signals_per_second: null
-        max_batch_size: 512
+        max_batch_size: 1000
+        num_connections: 4

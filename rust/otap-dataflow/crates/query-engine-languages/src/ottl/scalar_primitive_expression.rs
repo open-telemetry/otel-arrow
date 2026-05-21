@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod pest_tests {
-    use crate::ottl::{OttlPestParser, Rule};
+    use crate::ottl::parser::{OttlPestParser, Rule};
     use data_engine_parser_abstractions::*;
 
     #[test]
@@ -69,7 +69,7 @@ mod pest_tests {
 
 #[cfg(test)]
 mod parse_tests {
-    use crate::ottl::{OttlPestParser, Rule};
+    use crate::ottl::parser::{OttlPestParser, Rule};
     use data_engine_parser_abstractions::*;
 
     #[test]
