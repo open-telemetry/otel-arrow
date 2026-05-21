@@ -288,6 +288,7 @@ impl Default for Config {
 /// Parsing produces this from `Config` once and the receiver hot path consumes
 /// it without re-validating.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub(crate) struct RuntimeConfig {
     /// Stable OTAP source identifier.
     pub(crate) source_id: String,
