@@ -282,7 +282,7 @@ fn fake_receiver_config_value() -> serde_json::Value {
         refspec: None,
     };
     let receiver_config = TrafficGeneratorConfig::new(traffic_config, registry_path)
-        .with_data_source(DataSource::Static);
+        .with_data_source(DataSource::Synthetic);
     to_value(receiver_config).expect("failed to serialize receiver config")
 }
 
