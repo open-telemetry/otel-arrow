@@ -154,7 +154,7 @@ pub(super) fn eval_datafusion_expr_value(
                     if *missing_data_passes {
                         return Ok(Some(ScopedValue {
                             values: ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))),
-                            scope: scope.clone(), 
+                            scope: scope.clone(),
                             ids: None,
                             parent_ids: None,
                         }));
@@ -563,13 +563,13 @@ fn materialize_id_mask_to_value(
                     BooleanArray::new(builder.finish(), None)
                 }
                 None => {
-                    // This shouldn't happen, unless we somehow got an invalid batch. Basically it 
+                    // This shouldn't happen, unless we somehow got an invalid batch. Basically it
                     // means we did some filtering on a child batch that was present, but there is
                     // no ID column to join with it
-                    return Err(Error::InvalidPipelineError { 
+                    return Err(Error::InvalidPipelineError {
                         cause: "materialize_id_mask_to_value expected id column for materializing id bitmap".into(),
                         query_location: None
-                    })
+                    });
                 }
             }
         }

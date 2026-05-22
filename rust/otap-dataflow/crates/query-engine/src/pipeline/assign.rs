@@ -6568,6 +6568,51 @@ mod test {
         );
     }
 
+    #[tokio::test]
+    async fn test_assign_containing_logical_expr() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("attr", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("attr", AnyValue::new_string("world"))])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["result"] = attributes["attr"] == "hello""#;
+        let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let input_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert!(input_attrs.column_by_name(consts::ATTRIBUTE_STR).is_some());
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("attr", AnyValue::new_string("hello")),
+                KeyValue::new("result", AnyValue::new_bool(true)),
+            ]
+        );
+
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(
+            log_1.attributes,
+            vec![
+                KeyValue::new("attr", AnyValue::new_string("world")),
+                KeyValue::new("result", AnyValue::new_bool(false)),
+            ]
+        );
+    }
+
     async fn test_update_attr_to_concat_with_delim_with_scalars<P: Parser>(concat_fn_name: &str) {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
