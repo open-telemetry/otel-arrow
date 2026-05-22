@@ -188,6 +188,11 @@ fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
 
 /// State for a single ETW session keyed by `session_name`.
 struct SessionEntry {
+    /// The config used to create this session.  Subsequent `subscribe()`
+    /// calls for the same `session_name` must present an identical config;
+    /// a mismatch indicates a misconfigured pipeline (two different
+    /// `receiver:etw` nodes accidentally sharing a `session_name`).
+    config: Config,
     /// Pre-allocated consumer channels, one per core.  Popped one at a time
     /// as each per-core receiver factory call arrives.
     pool: Vec<mpsc::Receiver<EtwEventData>>,
@@ -394,7 +399,9 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
 /// - Provider GUID parsing fails (first call for this `session_name` only).
 /// - The ETW session thread cannot be spawned (first call only).
 /// - The `session_name` is already in use by another `receiver:etw` node
-///   (all consumers for that session have been handed out).
+///   with a **different** provider configuration (config mismatch).
+/// - The `session_name` pool is exhausted (all consumers for that session
+///   have already been handed out).
 /// - The session lock is poisoned (indicates a prior panic).
 pub(super) fn subscribe(
     config: &Config,
@@ -415,9 +422,31 @@ pub(super) fn subscribe(
 
             spawn_etw_session(config, txs)?;
 
-            v.insert(SessionEntry { pool: rxs })
+            v.insert(SessionEntry {
+                config: config.clone(),
+                pool: rxs,
+            })
         }
-        Entry::Occupied(o) => o.into_mut(),
+        Entry::Occupied(o) => {
+            let existing = o.into_mut();
+            // Guard against two different receiver:etw nodes accidentally
+            // sharing the same session_name with different provider configs.
+            // Without this check, node B would silently consume channels
+            // from node A's session and receive the wrong events.
+            if existing.config != *config {
+                return Err(Error::ConfigError(Box::new(
+                    otap_df_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "ETW session_name '{}' is already in use with a different \
+                             provider configuration; each receiver:etw node must use a \
+                             distinct session_name or an identical config",
+                            config.session_name,
+                        ),
+                    },
+                )));
+            }
+            existing
+        }
     };
 
     entry.pool.pop().ok_or_else(|| {
@@ -444,9 +473,17 @@ mod tests {
 
     impl TestSession {
         fn insert(name: &str, pool: Vec<mpsc::Receiver<EtwEventData>>) -> Self {
+            Self::insert_with_config(name, pool, test_config(name))
+        }
+
+        fn insert_with_config(
+            name: &str,
+            pool: Vec<mpsc::Receiver<EtwEventData>>,
+            config: Config,
+        ) -> Self {
             let mut guard = SESSIONS.lock().expect("lock not poisoned");
             let sessions = guard.get_or_insert_with(HashMap::new);
-            let _ = sessions.insert(name.to_string(), SessionEntry { pool });
+            let _ = sessions.insert(name.to_string(), SessionEntry { config, pool });
             Self {
                 name: name.to_string(),
             }
@@ -552,6 +589,37 @@ mod tests {
         assert!(
             err_b.to_string().contains("test-session-b"),
             "error should mention session-b"
+        );
+    }
+
+    #[test]
+    fn subscribe_rejects_config_mismatch() {
+        // Pre-populate with a session that has one provider config.
+        let (_tx, rx) = mpsc::channel::<EtwEventData>(1);
+        let original_config = test_config("test-mismatch");
+        let _guard = TestSession::insert_with_config("test-mismatch", vec![rx], original_config);
+
+        // Attempt to subscribe with a different provider config but the
+        // same session_name — this should be rejected.
+        let different_config = Config {
+            session_name: "test-mismatch".to_string(),
+            providers: vec![ProviderConfig {
+                name: None,
+                guid: Some("a0c1853b-5c40-4b15-8766-3cf1c58f985a".to_string()),
+                level: TraceLevel::Verbose,
+                keywords: None,
+            }],
+        };
+
+        let err = subscribe(&different_config, 1).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("different provider configuration"),
+            "expected config mismatch error, got: {msg}"
+        );
+        assert!(
+            msg.contains("test-mismatch"),
+            "error should mention the session name, got: {msg}"
         );
     }
 

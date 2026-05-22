@@ -78,7 +78,7 @@ pub const ETW_RECEIVER_URN: &str = "urn:otel:receiver:etw";
 // ── Configuration ────────────────────────────────────────────────────────────
 
 /// Trace level filter for ETW providers, matching the standard five ETW levels.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum TraceLevel {
     /// Critical errors only.
@@ -95,7 +95,7 @@ enum TraceLevel {
 }
 
 /// Configuration for a single ETW provider to trace.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct ProviderConfig {
     /// The ETW provider name (e.g. `"Microsoft-Windows-Kernel-Process"`).
@@ -119,7 +119,7 @@ struct ProviderConfig {
 }
 
 /// Top-level configuration for the ETW receiver.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct Config {
     /// One or more ETW providers to subscribe to.
