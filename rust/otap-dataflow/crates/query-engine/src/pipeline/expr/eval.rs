@@ -321,8 +321,6 @@ pub(super) fn join_and_eval_value(
         None => return Ok(None),
     };
 
-    arrow::util::pretty::print_batches(&[projected_rb.clone()]).unwrap();
-
     // handle AnyValue columns
     let any_value_indices = find_any_value_columns(projected_rb.schema_ref());
     let result_vals = if any_value_indices.is_empty() || *eval_anyval_as_struct {
