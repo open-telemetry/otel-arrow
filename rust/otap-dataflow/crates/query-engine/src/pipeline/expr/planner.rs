@@ -1075,6 +1075,9 @@ impl ExprPlanner {
 
         let possible_scope = try_combine_scopes(&haystack, &needle);
         if let Some(scope) = possible_scope {
+            // note: currently the InvalidPipelineError shouldn't happen, as the check to combine
+            // scopes checks if the expr is a DF Eval, which is the same condition that determines
+            // whether into_df_eval_expr will return Some. The error here is just being cautious
             let haystack_expr =
                 haystack
                     .expr
@@ -1091,6 +1094,7 @@ impl ExprPlanner {
                         cause: "invalid input to match".into(),
                         query_location: None,
                     })?;
+
             let dict_downcast = haystack.requires_dict_downcast || needle.requires_dict_downcast;
             let eval = if has_body_field {
                 LeafEval::new_df_expr_anyval_as_struct(

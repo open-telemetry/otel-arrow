@@ -26,6 +26,10 @@ use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::MaybeDictArrayAccessor;
 use otap_df_pdata::otap::filter::{ChildBatchFilterIdHelper, IdBitmapPool, filter_otap_batch};
 
+// TODO - need to wire this back into the expression evaluation code
+#[allow(dead_code)]
+pub(crate) mod compare;
+
 /// This stage evaluates a `ScopedExpr` tree to produce a root-aligned boolean selection
 /// vector, then filters the OTAP batch using that vector.
 pub struct FilterPipelineStage {
