@@ -187,7 +187,7 @@ impl ExtensionLifecycle {
                     Ok(Err(e)) => {
                         otel_warn!(
                             "extension.task.error",
-                            extension = fut_ext_id.as_ref(),
+                            extension = format!("{fut_ext_id}/{}", variant.as_str()),
                             error = format!("{e}"),
                         );
                         Err(e)
@@ -196,11 +196,14 @@ impl ExtensionLifecycle {
                         let msg = panic_payload_to_string(&*panic);
                         otel_warn!(
                             "extension.task.panic",
-                            extension = fut_ext_id.as_ref(),
+                            extension = format!("{fut_ext_id}/{}", variant.as_str()),
                             error = msg.as_str(),
                         );
                         Err(Error::InternalError {
-                            message: format!("extension {fut_ext_id} panicked: {msg}"),
+                            message: format!(
+                                "extension {fut_ext_id}/{} panicked: {msg}",
+                                variant.as_str()
+                            ),
                         })
                     }
                 };
@@ -329,7 +332,7 @@ impl ExtensionLifecycle {
                 BroadcastSendResult::SendFailed(err) => {
                     otel_warn!(
                         "extension.shutdown.send_failed",
-                        extension = key.0.as_ref(),
+                        extension = format!("{}/{}", key.0.as_ref(), key.1.as_str()),
                         error = err,
                     );
                     self.record_send_failed(&key);
@@ -362,7 +365,7 @@ impl ExtensionLifecycle {
                     Ok(Err(e)) => {
                         otel_warn!(
                             "extension.shutdown.task.error",
-                            extension = key.0.as_ref(),
+                            extension = format!("{}/{}", key.0.as_ref(), key.1.as_str()),
                             error = format!("{e}"),
                         );
                         self.record_completion(&key, true);
@@ -370,7 +373,7 @@ impl ExtensionLifecycle {
                     Err(e) => {
                         otel_warn!(
                             "extension.shutdown.task.join_error",
-                            extension = key.0.as_ref(),
+                            extension = format!("{}/{}", key.0.as_ref(), key.1.as_str()),
                             is_canceled = e.is_cancelled(),
                             is_panic = e.is_panic(),
                             error = e.to_string()
@@ -401,6 +404,10 @@ impl ExtensionLifecycle {
             // Anything still in `pending` failed to honour `Shutdown`
             // within the grace window.
             for key in self.pending.clone() {
+                otel_warn!(
+                    "extension.shutdown.timeout.extension",
+                    extension = format!("{}/{}", key.0.as_ref(), key.1.as_str()),
+                );
                 self.record_timeout(&key);
             }
         }
@@ -423,6 +430,7 @@ impl ExtensionLifecycle {
     /// channel — otherwise the failure is already attributed via
     /// `shutdown.send_failed`.
     fn record_timeout(&mut self, key: &ExtensionKey) {
+        let _ = self.pending.remove(key);
         if let Some(entry) = self.ext_metrics.get_mut(key) {
             entry.record_timeout(&self.registry);
         }

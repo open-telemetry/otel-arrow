@@ -53,8 +53,6 @@ pub struct ExtensionLifecycleMetrics {
     /// Not incremented when the send itself failed.
     #[metric(name = "shutdown.timeout", unit = "{1}")]
     pub shutdown_timeout: Counter<u64>,
-    /// Count of `Shutdown` sends that failed because the extension's
-    /// control channel was closed.
     /// Count of `Shutdown` sends that failed to reach the
     /// extension's control channel — either the channel was closed
     /// (receiver dropped) or the send did not complete before the
