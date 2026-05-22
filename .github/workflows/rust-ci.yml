@@ -1118,8 +1118,12 @@ jobs:
               with open(path) as f:
                   doc = yaml.safe_load(f) or {}
               for g in doc.get("groups") or []:
-                  if g.get("type") == "event" and g.get("id"):
-                      expected.add(g["id"])
+                  if g.get("type") == "event":
+                      # For event groups, the wire `event_name` is the
+                      # `name:` field; `id:` is the in-registry group id.
+                      ev = g.get("name") or g.get("id")
+                      if ev:
+                          expected.add(ev)
 
           d = json.load(open(report_path))
           samples = d.get("samples") or []
