@@ -88,7 +88,7 @@ config:
 ```
 
 For a runnable metric-name filter pipeline, see
-[`configs/fake-metric-filter-debug-noop.yaml`](../../../../configs/fake-metric-filter-debug-noop.yaml).
+[`configs/fake-metric-filter-debug-noop.yaml`](../../../../../configs/fake-metric-filter-debug-noop.yaml).
 
 ### Metrics
 
