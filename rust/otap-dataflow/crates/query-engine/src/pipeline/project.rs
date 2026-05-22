@@ -19,7 +19,7 @@ use crate::error::Result;
 
 pub mod anyval;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ProjectionOptions {
     /// Whether or not to downcast dictionary arrays to the native type. Some types of expressions,
     /// arithmetic operations for example, do not work on dictionary encoded columns.

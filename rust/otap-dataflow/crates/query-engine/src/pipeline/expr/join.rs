@@ -45,7 +45,7 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
-use crate::pipeline::expr::{DataScope, LEFT_COLUMN_NAME, RIGHT_COLUMN_NAME, arg_column_name};
+use crate::pipeline::expr::{DataScope, arg_column_name};
 use crate::pipeline::planner::AttributesIdentifier;
 
 /// Input to the join module, representing an evaluated expression result with its scope
@@ -137,6 +137,13 @@ pub fn join<'a>(
 
     // determine the join strategy from the source of the data
     match (left.data_scope.as_ref(), right.data_scope.as_ref()) {
+        (_, DataScope::StaticScalar) => {
+            let join_exec = ScalarJoin {
+                left_is_scalar: false,
+            };
+            let join_result = join_exec.join(left, right, otap_batch)?;
+            Ok((join_result, left.data_scope.clone()))
+        }
         (DataScope::Attribute(left_attrs_id, _), DataScope::Attribute(right_attrs_id, _)) => {
             if left_attrs_id == right_attrs_id {
                 let join_exec = AttributeToSameAttributeJoin::new();
@@ -623,14 +630,14 @@ fn to_join_result(left: &JoinInput, right_col: ArrayRef) -> Result<RecordBatch> 
 
     let left_values = left.values.to_array(right_col.len())?;
     fields.push(Field::new(
-        LEFT_COLUMN_NAME,
+        arg_column_name(0),
         left_values.data_type().clone(),
         true,
     ));
     columns.push(left_values.clone());
 
     fields.push(Field::new(
-        RIGHT_COLUMN_NAME,
+        arg_column_name(1),
         right_col.data_type().clone(),
         true,
     ));
@@ -743,6 +750,68 @@ impl JoinExec for EqualScopeJoin {
         };
 
         to_join_result(left, right_values)
+    }
+}
+
+/// Broadcasts the scalar
+struct ScalarJoin {
+    left_is_scalar: bool,
+}
+
+impl JoinExec for ScalarJoin {
+    fn rows_to_take(
+        &self,
+        _left: &JoinInput,
+        _right: &JoinInput,
+        _otap_batch: &OtapArrowRecords,
+    ) -> Result<Int32Array> {
+        // Not implemented - should not need to compute rows to take. instead, we just broadcast
+        // the scalar value
+        Err(Error::ExecutionError {
+            cause: "rows_to_take not implemented for ScalarJoin".into(),
+        })
+    }
+
+    fn join(
+        &self,
+        left: &JoinInput,
+        right: &JoinInput,
+        _otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        let (scalar_col, array_col) = if self.left_is_scalar {
+            (&left.values, &right.values)
+        } else {
+            (&right.values, &left.values)
+        };
+
+        let rows = match array_col {
+            ColumnarValue::Array(a) => a.len(),
+            ColumnarValue::Scalar(_) => 1,
+        };
+
+        if self.left_is_scalar {
+            // TODO - need tests for this
+            // join left to right, then switch the field names
+            let (schema, columns, _) =
+                to_join_result(right, scalar_col.to_array(rows)?)?.into_parts();
+            let fields = schema.fields.clone();
+            let (left_field_idx, left_field) = fields
+                .find(&arg_column_name(0))
+                .expect("left column present");
+            let (right_field_idx, right_field) = fields
+                .find(&arg_column_name(1))
+                .expect("right_column present");
+
+            let left_field_name_fixed = left_field.as_ref().clone().with_name(arg_column_name(1));
+            let right_field_name_fixed = right_field.as_ref().clone().with_name(arg_column_name(0));
+
+            let mut fields = fields.to_vec();
+            fields[left_field_idx] = Arc::new(left_field_name_fixed);
+            fields[right_field_idx] = Arc::new(right_field_name_fixed);
+            Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("valid schema"))
+        } else {
+            to_join_result(left, scalar_col.to_array(rows)?)
+        }
     }
 }
 
@@ -950,7 +1019,7 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
         let left_values = left.values.to_array(left_parent_ids.len())?;
         let joined_vals = take(&left_values, &to_take, None)?;
         fields.push(Field::new(
-            LEFT_COLUMN_NAME,
+            arg_column_name(0),
             joined_vals.data_type().clone(),
             true,
         ));
@@ -975,7 +1044,7 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
             .ok_or_else(|| invalid_column_type_error(right_ids.data_type()))?;
         let child_col = right.values.to_array(right_ids.len())?;
         fields.push(Field::new(
-            RIGHT_COLUMN_NAME,
+            arg_column_name(1),
             child_col.data_type().clone(),
             true,
         ));
@@ -1180,7 +1249,7 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
         let to_take = self.rows_to_take(left, right, otap_batch)?;
         let joined_vals = take(&left_values, &to_take, None)?;
         fields.push(Field::new(
-            LEFT_COLUMN_NAME,
+            arg_column_name(0),
             joined_vals.data_type().clone(),
             true,
         ));
@@ -1189,7 +1258,7 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
         let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
         let child_col = right.values.to_array(right_parent_ids.len())?;
         fields.push(Field::new(
-            RIGHT_COLUMN_NAME,
+            arg_column_name(1),
             child_col.data_type().clone(),
             true,
         ));

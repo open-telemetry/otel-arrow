@@ -133,6 +133,10 @@ pub fn root_field_type(field_name: &str) -> Option<ExprLogicalType> {
         // the virtual attributes "value" column
         VALUE_COLUMN_NAME => ExprLogicalType::AnyValue,
 
+        // attribute's "key" column may also be treated as a "root" field when
+        // applying a transformation pipeline directly to attributes:
+        consts::ATTRIBUTE_KEY => ExprLogicalType::String,
+
         _ => return None,
     })
 }

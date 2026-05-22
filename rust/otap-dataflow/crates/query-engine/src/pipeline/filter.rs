@@ -884,6 +884,43 @@ mod test {
         .await;
     }
 
+    #[tokio::test]
+    async fn test_filter_contains_args_from_expr() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("error happen")
+                .attributes(vec![
+                    KeyValue::new("username", AnyValue::new_string("bort")),
+                    KeyValue::new("email", AnyValue::new_string("foo@bar.co")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("username", AnyValue::new_string("tim")),
+                    KeyValue::new("email", AnyValue::new_string("hello@foo.com")),
+                ])
+                .event_name("the error was caught")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("username", AnyValue::new_string("terry")),
+                    KeyValue::new("email", AnyValue::new_string("mail@foo.com")),
+                ])
+                .event_name("3")
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where contains(concat(attributes[\"username\"], attributes[\"email\"]), \"e\")",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone(), log_records[2].clone()]
+        );
+    }
+
     async fn test_filter_text_contains_struct_cols<P: Parser>(q1: &str, q2: &str) {
         let input = LogsData {
             resource_logs: vec![

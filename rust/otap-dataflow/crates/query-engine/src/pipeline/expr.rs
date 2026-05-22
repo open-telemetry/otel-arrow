@@ -62,8 +62,6 @@ pub(crate) mod planner;
 pub(crate) mod types;
 
 pub(crate) const VALUE_COLUMN_NAME: &str = "value";
-pub(crate) const LEFT_COLUMN_NAME: &str = "left";
-pub(crate) const RIGHT_COLUMN_NAME: &str = "right";
 
 /// Returns a column name for a multi-join argument at the given index.
 ///
@@ -256,6 +254,7 @@ impl ScopedValue {
 
 /// Expression evaluation performed at the root of the `ScopedExpr` expression tree, e.g. where
 /// the node type will be `Eval` or `JoinAndEval`.
+#[derive(Debug)]
 pub(crate) enum LeafEval {
     /// A standard DataFusion expression, evaluated on the RecordBatch identified by the
     /// enclosing node's scope.
@@ -405,7 +404,7 @@ mod test {
     use otap_df_pdata::testing::round_trip::{otlp_to_otap, to_logs_data};
 
     use crate::pipeline::Pipeline;
-    use crate::pipeline::expr::{DataScope, VALUE_COLUMN_NAME};
+    use crate::pipeline::expr::{DataScope, VALUE_COLUMN_NAME, arg_column_name};
     use crate::pipeline::expr::{LeafEval, ScopedExpr, ScopedValue, SignalTypePredicate};
     use crate::pipeline::id_mask::IdMask;
     use crate::pipeline::planner::AttributesIdentifier;
@@ -626,7 +625,6 @@ mod test {
         // Note: severity_number is Int32 on the root batch, but the AnyValue int column is
         // Int64. We cast the left side to Int64 to match.
 
-        use crate::pipeline::expr::{LEFT_COLUMN_NAME, RIGHT_COLUMN_NAME};
         use datafusion::logical_expr::cast;
 
         // Left child: severity_number cast to Int64
@@ -653,9 +651,9 @@ mod test {
             children: vec![left_child, right_child],
             eval: LeafEval::new_df_expr(
                 Expr::BinaryExpr(datafusion::logical_expr::BinaryExpr::new(
-                    Box::new(col(LEFT_COLUMN_NAME)),
+                    Box::new(col(arg_column_name(0))),
                     Operator::Gt,
-                    Box::new(col(RIGHT_COLUMN_NAME)),
+                    Box::new(col(arg_column_name(1))),
                 )),
                 true,
             )

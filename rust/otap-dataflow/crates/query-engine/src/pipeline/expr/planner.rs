@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Planner that converts AST expressions (`ScalarExpression` and `LogicalExpression`)
-//! directly into `ScopedExpr` execution trees.
+//! into `ScopedExpr` execution trees.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -46,9 +46,7 @@ use crate::error::{Error, Result};
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
-use crate::pipeline::expr::{
-    DataScope, LEFT_COLUMN_NAME, RIGHT_COLUMN_NAME, VALUE_COLUMN_NAME, arg_column_name,
-};
+use crate::pipeline::expr::{DataScope, VALUE_COLUMN_NAME, arg_column_name};
 use crate::pipeline::expr::{LeafEval, RootParentStruct, ScopedExpr, SignalTypePredicate};
 use crate::pipeline::functions::expr_fn::contains;
 use crate::pipeline::functions::is_type::IsTypeFunc;
@@ -65,17 +63,12 @@ pub(crate) struct ExprPlanner {
     /// When `false`, attribute key filtering uses case-insensitive comparison.
     attr_key_case_sensitive: bool,
 
-    /// When `true`, the planner is producing `ScopedExpr` trees for direct evaluation on
-    /// an attributes `RecordBatch` (i.e., inside an `apply attributes { ... }` pipeline).
-    /// In this mode, unknown column names are accepted as-is (they are columns on the
-    /// attributes batch, not the root OTAP batch) and field-type validation is skipped.
+    /// When `true`, the planner is producing `ScopedExpr` trees for evaluation on an attributes
+    /// `RecordBatch` (i.e., inside an `apply attributes { ... }` pipeline).
     plan_for_attributes: bool,
 }
 
-/// Intermediate planning result that carries type information alongside the `ScopedExpr`.
-///
-/// Used during planning for type coercion and scope-combinability checks. After planning,
-/// callers extract `.op` for execution.
+/// Intermediate planning result that carries type information alongside the `ScopedExpr`
 pub(crate) struct PlannedOp {
     pub expr: ScopedExpr,
     pub expr_type: ExprLogicalType,
@@ -83,7 +76,7 @@ pub(crate) struct PlannedOp {
 }
 
 impl ExprPlanner {
-    /// Creates a new `ExprPlanner` with case-sensitive attribute key matching.
+    /// Creates a new `ExprPlanner` with case-sensitive attribute key matching
     #[cfg(test)]
     pub fn new() -> Self {
         Self {
@@ -92,7 +85,7 @@ impl ExprPlanner {
         }
     }
 
-    /// Creates a new `ExprPlanner` with the specified attribute key case sensitivity.
+    /// Creates a new `ExprPlanner` with the specified attribute key case sensitivity
     pub fn with_attr_key_case_sensitive(attr_key_case_sensitive: bool) -> Self {
         Self {
             attr_key_case_sensitive,
@@ -100,10 +93,7 @@ impl ExprPlanner {
         }
     }
 
-    /// Creates a new `ExprPlanner` configured for attribute-level evaluation.
-    ///
-    /// In this mode, unknown column names are accepted without validation (they are
-    /// columns on the attributes `RecordBatch`, not the root OTAP batch).
+    /// Creates a new `ExprPlanner` configured for attribute record batch evaluation
     pub fn for_attributes(attr_key_case_sensitive: bool) -> Self {
         Self {
             attr_key_case_sensitive,
@@ -111,7 +101,7 @@ impl ExprPlanner {
         }
     }
 
-    /// Plan a `ScalarExpression` into a `ScopedExpr` that produces a value.
+    /// Plan a `ScalarExpression` into a `ScopedExpr` that produces a value
     pub fn plan_scalar(
         &self,
         expr: &ScalarExpression,
@@ -124,24 +114,14 @@ impl ExprPlanner {
 
                 match column_accessor {
                     ColumnAccessor::ColumnName(column_name) => {
-                        let field_type = if self.plan_for_attributes {
-                            // In attribute-level mode, column names refer to columns on the
-                            // attributes RecordBatch (e.g., "key", "value", "type"). Skip
-                            // root field validation and use AnyValue as the type since the
-                            // actual type will be resolved at execution time.
-                            root_field_type(&column_name).unwrap_or(ExprLogicalType::AnyValue)
-                        } else {
-                            root_field_type(&column_name).ok_or_else(|| {
-                                Error::InvalidPipelineError {
-                                    cause: format!(
-                                        "unknown field {column_name} on root record batch"
-                                    ),
-                                    query_location: Some(
-                                        source_scalar_expr.get_query_location().clone(),
-                                    ),
-                                }
-                            })?
-                        };
+                        let field_type = root_field_type(&column_name).ok_or_else(|| {
+                            Error::InvalidPipelineError {
+                                cause: format!("unknown field {column_name} on record batch"),
+                                query_location: Some(
+                                    source_scalar_expr.get_query_location().clone(),
+                                ),
+                            }
+                        })?;
                         Ok(PlannedOp {
                             expr: ScopedExpr::Eval {
                                 scope: DataScope::Root,
@@ -359,6 +339,8 @@ impl ExprPlanner {
             ),
 
             LogicalExpression::And(and_expr) => {
+                // TOOD - when scopes are combinable or when planning for attrs, we should be
+                // combining these into a single DF logical expr.
                 let left = self.plan_logical(and_expr.get_left(), functions)?;
                 let right = self.plan_logical(and_expr.get_right(), functions)?;
                 Ok(ScopedExpr::BitmapAnd(Box::new(left), Box::new(right)))
@@ -439,7 +421,7 @@ impl ExprPlanner {
         coalesce_expr: &CoalesceScalarExpression,
         functions: &[PipelineFunction],
     ) -> Result<PlannedOp> {
-        let (df_args, scope, eval_scope, _) =
+        let (df_args, args_scope, data_scope, _) =
             self.plan_function_args(coalesce_expr.get_expressions().iter(), functions)?;
 
         // DataFusion's `coalesce` UDF does not support direct physical evaluation; the optimizer
@@ -448,6 +430,7 @@ impl ExprPlanner {
         let simplify_result = coalesce_func
             .simplify(df_args, &SimplifyContext::default())
             .map_err(Error::from)?;
+
         let case_expr = match simplify_result {
             ExprSimplifyResult::Simplified(expr) => expr,
             ExprSimplifyResult::Original(_) => {
@@ -459,7 +442,7 @@ impl ExprPlanner {
         };
 
         Ok(PlannedOp {
-            expr: self.build_eval_or_join(case_expr, scope, eval_scope, true)?,
+            expr: self.build_eval_or_join(case_expr, args_scope, data_scope, true)?,
             // Like `concat`, mixed attribute columns (often dictionary-encoded) and literals need
             // dictionary downcasting before CASE can build a single array.
             expr_type: ExprLogicalType::AnyValue,
@@ -513,7 +496,9 @@ impl ExprPlanner {
             }
         }
 
-        let (arg_exprs, scope, eval_scope, source_dict_downcast) = if invoke_arg_exprs.is_empty() {
+        let (arg_exprs, args_scope, data_scope, source_dict_downcast) = if invoke_arg_exprs
+            .is_empty()
+        {
             // For zero-arg functions (e.g. `uuid_v4()`, `uuid_v7()`), evaluate against the
             // root batch so that volatile UDFs produce one value per row rather than a single
             // scalar that gets broadcast across rows.
@@ -546,10 +531,10 @@ impl ExprPlanner {
             logical_expr = datafusion::logical_expr::cast(logical_expr, data_type);
         }
 
-        let dict_downcast = source_dict_downcast | df_udf.requires_dict_downcast;
+        let dict_downcast = source_dict_downcast || df_udf.requires_dict_downcast;
 
         Ok(PlannedOp {
-            expr: self.build_eval_or_join(logical_expr, scope, eval_scope, dict_downcast)?,
+            expr: self.build_eval_or_join(logical_expr, args_scope, data_scope, dict_downcast)?,
             expr_type: df_udf.return_type,
             requires_dict_downcast: dict_downcast,
         })
@@ -619,6 +604,7 @@ impl ExprPlanner {
                 .into_iter()
                 .filter_map(|a| a.expr.into_df_eval_expr())
                 .collect();
+
             Ok((
                 df_exprs,
                 FunctionArgScope::Combined(scope.clone()),
@@ -629,10 +615,11 @@ impl ExprPlanner {
             let arg_col_exprs: Vec<Expr> = (0..planned_args.len())
                 .map(|i| col(arg_column_name(i)))
                 .collect();
-            let children: Vec<ScopedExpr> = planned_args.into_iter().map(|a| a.expr).collect();
+            let children = planned_args.into_iter().map(|a| a.expr).collect();
+
             Ok((
                 arg_col_exprs,
-                FunctionArgScope::MultiJoin(children),
+                FunctionArgScope::Join(children),
                 None,
                 dict_downcast,
             ))
@@ -665,13 +652,14 @@ impl ExprPlanner {
     ) -> Result<PlannedOp> {
         match combine_expr.get_values_expression() {
             ScalarExpression::Collection(CollectionScalarExpression::List(list_expr)) => {
-                let (df_args, scope, eval_scope, _) =
+                let (df_args, args_scope, data_scope, _) =
                     self.plan_function_args(list_expr.get_value_expressions().iter(), functions)?;
+
                 Ok(PlannedOp {
                     expr: self.build_eval_or_join(
                         Expr::ScalarFunction(ScalarFunction::new_udf(concat(), df_args)),
-                        scope,
-                        eval_scope,
+                        args_scope,
+                        data_scope,
                         true,
                     )?,
                     expr_type: ExprLogicalType::String,
@@ -694,17 +682,18 @@ impl ExprPlanner {
     ) -> Result<PlannedOp> {
         match join_expr.get_values_expression() {
             ScalarExpression::Collection(CollectionScalarExpression::List(list_expr)) => {
-                let (df_args, scope, eval_scope, _) = self.plan_function_args(
+                let (df_args, args_scope, data_scope, _) = self.plan_function_args(
                     [join_expr.get_separator_expression()]
                         .into_iter()
                         .chain(list_expr.get_value_expressions().iter()),
                     functions,
                 )?;
+
                 Ok(PlannedOp {
                     expr: self.build_eval_or_join(
                         Expr::ScalarFunction(ScalarFunction::new_udf(concat_ws(), df_args)),
-                        scope,
-                        eval_scope,
+                        args_scope,
+                        data_scope,
                         true,
                     )?,
                     expr_type: ExprLogicalType::String,
@@ -725,7 +714,7 @@ impl ExprPlanner {
         replace_expr: &ReplaceTextScalarExpression,
         functions: &[PipelineFunction],
     ) -> Result<PlannedOp> {
-        let (df_args, scope, eval_scope, _) = self.plan_function_args(
+        let (df_args, args_scope, data_scope, _) = self.plan_function_args(
             [
                 replace_expr.get_haystack_expression(),
                 replace_expr.get_needle_expression(),
@@ -738,8 +727,8 @@ impl ExprPlanner {
         Ok(PlannedOp {
             expr: self.build_eval_or_join(
                 Expr::ScalarFunction(ScalarFunction::new_udf(replace(), df_args)),
-                scope,
-                eval_scope,
+                args_scope,
+                data_scope,
                 true,
             )?,
             expr_type: ExprLogicalType::String,
@@ -764,7 +753,7 @@ impl ExprPlanner {
             other => Cow::Borrowed(other),
         };
 
-        let (mut df_args, scope, eval_scope, dict_downcast) = self.plan_function_args(
+        let (mut df_args, args_scope, data_scope, dict_downcast) = self.plan_function_args(
             [
                 capture_expr.get_haystack(),
                 &capture_scalar_expr,
@@ -787,8 +776,8 @@ impl ExprPlanner {
                         df_args.remove(0), // group
                     ],
                 )),
-                scope,
-                eval_scope,
+                args_scope,
+                data_scope,
                 dict_downcast,
             )?,
             expr_type: ExprLogicalType::String,
@@ -841,6 +830,8 @@ impl ExprPlanner {
         // value-projection materialization step.
         // Skip for case-insensitive value comparisons (=~) since those need ILIKE on
         // the value column with proper escaping, which is more complex.
+        // TODO after arrow-rs release w/ fix from apache/arrow-rs/pull/9871, we can correct
+        // the logic here not to skip but instead to use eq_ascii_ignore_case.
         if !self.plan_for_attributes && case_sensitive {
             if let Some(fused) = self.try_plan_fused_attr_comparison(&left, operator, &right)? {
                 return Ok(fused);
@@ -864,8 +855,9 @@ impl ExprPlanner {
         if let (Some(le), Some(re), Some(lt), Some(rt)) =
             extract_coercion_parts(&mut left, &mut right)
         {
-            // TODO we shouldn't be using coerce_arithmetic for comparison. This method is
-            // potentially badly named or we need to somehow refactor
+            // TODO using coerce_arithmetic here is a trick to get numeric types to be cast to
+            // compatible types for comparison. Eventually we should refactor the signature of
+            // the type coercion helpers to make the intention more clear.
             let _ = coerce_arithmetic(le, lt, re, rt);
         }
 
@@ -942,6 +934,7 @@ impl ExprPlanner {
             .eval_scope()
             .cloned()
             .unwrap_or(DataScope::Root);
+
         let expr = planned
             .expr
             .into_df_eval_expr()
@@ -953,6 +946,94 @@ impl ExprPlanner {
             scope,
             eval: LeafEval::new_df_expr(expr.is_null(), false)?,
         })
+    }
+
+    /// Try to produce a fused attribute comparison expression that avoids the  key-filter +
+    /// value-projection materialization step.
+    ///
+    /// When one side of a comparison is a **simple** attribute access (`attributes["key"]`)
+    /// and the other is a typed literal (string, int, double, bool), we can evaluate the
+    /// comparison directly on the raw attributes RecordBatch with a single expression:
+    /// `col("key").eq(lit("key")).and(col("<typed_col>").<op>(lit(<value>)))`. This avoids
+    /// materializing an intermediate record batch containing only rows with a key match.
+    ///
+    /// Returns `None` when the pattern doesn't match (falls back to the normal path).
+    fn try_plan_fused_attr_comparison(
+        &self,
+        left: &PlannedOp,
+        operator: Operator,
+        right: &PlannedOp,
+    ) -> Result<Option<ScopedExpr>> {
+        // Identify which side is the attribute access and which is the literal.
+        let (attrs_op, literal_op, attrs_on_left) =
+            match (left.expr.eval_scope(), right.expr.eval_scope()) {
+                (Some(DataScope::Attribute(_, _)), Some(DataScope::StaticScalar)) => {
+                    (left, right, true)
+                }
+                (Some(DataScope::StaticScalar), Some(DataScope::Attribute(_, _))) => {
+                    (right, left, false)
+                }
+                _ => return Ok(None),
+            };
+
+        // Only apply when the attribute side is a simple `col("value")` reference —
+        // not when the attribute value is used in arithmetic, function calls, etc.
+        if !is_simple_attr_value_column(attrs_op) {
+            return Ok(None);
+        }
+
+        // Extract the attribute key and attrs_id
+        let (attrs_id, key) = match attrs_op.expr.eval_scope() {
+            Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
+            _ => return Ok(None),
+        };
+
+        // Determine the typed attribute column for the literal's type
+        let typed_col = match attr_value_column_for_expr_type(&literal_op.expr_type) {
+            Some(col_name) => col_name,
+            None => return Ok(None), // type not optimizable, fall back
+        };
+
+        // Extract the literal expression
+        let literal_expr = match literal_op.expr.as_df_eval_expr_ref() {
+            Some(expr) => expr.clone(),
+            None => return Ok(None),
+        };
+
+        // Build the key filter expression.
+        // For case-insensitive key matching, use ilike with escaped LIKE special chars.
+        let key_filter = if self.attr_key_case_sensitive {
+            col(consts::ATTRIBUTE_KEY).eq(lit(&key))
+        } else {
+            let escaped_key = if contains_like_pattern(&key) {
+                escape_like_pattern(&key)
+            } else {
+                key.clone()
+            };
+            col(consts::ATTRIBUTE_KEY).ilike(lit(escaped_key))
+        };
+
+        // Build the value comparison expression.
+        // If the attribute is on the right (literal on left), flip the operator.
+        let effective_operator = if attrs_on_left {
+            operator
+        } else {
+            flip_comparison_operator(operator)
+        };
+
+        let value_cmp = Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(col(typed_col)),
+            effective_operator,
+            Box::new(literal_expr),
+        ));
+
+        // Fuse: key_filter AND value_comparison
+        let fused_expr = key_filter.and(value_cmp);
+
+        Ok(Some(ScopedExpr::Eval {
+            scope: DataScope::AttributesAll(attrs_id),
+            eval: LeafEval::new_df_expr(fused_expr, false)?,
+        }))
     }
 
     fn plan_contains(
@@ -1028,11 +1109,56 @@ impl ExprPlanner {
             Ok(ScopedExpr::JoinAndEval {
                 children: vec![haystack.expr, needle.expr],
                 eval: LeafEval::new_df_expr(
-                    contains(col(LEFT_COLUMN_NAME), col(RIGHT_COLUMN_NAME)),
+                    contains(col(arg_column_name(0)), col(arg_column_name(1))),
                     true,
                 )?,
             })
         }
+    }
+
+    /// Try to produce a fused attribute `contains` expression.
+    ///
+    /// When the haystack is `attributes["key"]` and the needle is a string literal,
+    /// produces: `col("key").eq(lit("key")).and(contains(col("str"), lit("needle")))`
+    fn try_plan_fused_attr_contains(
+        &self,
+        haystack: &PlannedOp,
+        needle: &PlannedOp,
+    ) -> Result<Option<ScopedExpr>> {
+        // Haystack must be an attribute access, needle must be a static string literal
+        let (attrs_id, key) = match haystack.expr.eval_scope() {
+            Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
+            _ => return Ok(None),
+        };
+
+        if !matches!(needle.expr.eval_scope(), Some(DataScope::StaticScalar)) {
+            return Ok(None);
+        }
+
+        if !matches!(needle.expr_type, ExprLogicalType::String) {
+            return Ok(None);
+        }
+
+        let needle_expr = match needle.expr.as_df_eval_expr_ref() {
+            Some(expr) => expr.clone(),
+            None => return Ok(None),
+        };
+
+        let key_filter = if self.attr_key_case_sensitive {
+            col(consts::ATTRIBUTE_KEY).eq(lit(&key))
+        } else {
+            // TODO - do we need to escape key here? (yes)
+            col(consts::ATTRIBUTE_KEY).ilike(lit(&key))
+        };
+
+        let value_contains = contains(col(consts::ATTRIBUTE_STR), needle_expr);
+
+        let fused_expr = key_filter.and(value_contains);
+
+        Ok(Some(ScopedExpr::Eval {
+            scope: DataScope::AttributesAll(attrs_id),
+            eval: LeafEval::new_df_expr(fused_expr, false)?,
+        }))
     }
 
     fn plan_matches(
@@ -1101,6 +1227,41 @@ impl ExprPlanner {
         };
 
         Ok(ScopedExpr::Eval { scope, eval })
+    }
+
+    /// Try to produce a fused attribute `matches` (regex) expression.
+    ///
+    /// When the haystack is `attributes["key"]` and the pattern is a static regex,
+    /// produces: `col("key").eq(lit("key")).and(col("str") ~ lit("pattern"))`
+    fn try_plan_fused_attr_matches(
+        &self,
+        haystack: &PlannedOp,
+        pattern: &Expr,
+    ) -> Result<Option<ScopedExpr>> {
+        let (attrs_id, key) = match haystack.expr.eval_scope() {
+            Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
+            _ => return Ok(None),
+        };
+
+        let key_filter = if self.attr_key_case_sensitive {
+            col(consts::ATTRIBUTE_KEY).eq(lit(&key))
+        } else {
+            // TODO do we need to escape matches here? (yes)
+            col(consts::ATTRIBUTE_KEY).ilike(lit(&key))
+        };
+
+        let value_regex = binary_expr(
+            col(consts::ATTRIBUTE_STR),
+            Operator::RegexMatch,
+            pattern.clone(),
+        );
+
+        let fused_expr = key_filter.and(value_regex);
+
+        Ok(Some(ScopedExpr::Eval {
+            scope: DataScope::AttributesAll(attrs_id),
+            eval: LeafEval::new_df_expr(fused_expr, false)?,
+        }))
     }
 
     /// Try to plan as a batch-level type check (e.g., `is Log`).
@@ -1267,172 +1428,6 @@ impl ExprPlanner {
         }
     }
 
-    /// Try to produce a fused attribute comparison expression that avoids the expensive
-    /// key-filter + value-projection materialization step.
-    ///
-    /// When one side of a comparison is a **simple** attribute access (`attributes["key"]`)
-    /// and the other is a typed literal (string, int, double, bool), we can evaluate the
-    /// comparison directly on the raw attributes RecordBatch with a single expression:
-    /// `col("key").eq(lit("key")).and(col("<typed_col>").<op>(lit(<value>)))`. This avoids
-    /// materializing an intermediate record batch containing only rows with a key match.
-    ///
-    /// Returns `None` when the pattern doesn't match (falls back to the normal path).
-    fn try_plan_fused_attr_comparison(
-        &self,
-        left: &PlannedOp,
-        operator: Operator,
-        right: &PlannedOp,
-    ) -> Result<Option<ScopedExpr>> {
-        // Identify which side is the attribute access and which is the literal.
-        let (attrs_op, literal_op, attrs_on_left) =
-            match (left.expr.eval_scope(), right.expr.eval_scope()) {
-                (Some(DataScope::Attribute(_, _)), Some(DataScope::StaticScalar)) => {
-                    (left, right, true)
-                }
-                (Some(DataScope::StaticScalar), Some(DataScope::Attribute(_, _))) => {
-                    (right, left, false)
-                }
-                _ => return Ok(None),
-            };
-
-        // Only apply when the attribute side is a simple `col("value")` reference —
-        // not when the attribute value is used in arithmetic, function calls, etc.
-        if !is_simple_attr_value_column(attrs_op) {
-            return Ok(None);
-        }
-
-        // Extract the attribute key and attrs_id
-        let (attrs_id, key) = match attrs_op.expr.eval_scope() {
-            Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
-            _ => return Ok(None),
-        };
-
-        // Determine the typed attribute column for the literal's type
-        let typed_col = match attr_value_column_for_expr_type(&literal_op.expr_type) {
-            Some(col_name) => col_name,
-            None => return Ok(None), // type not optimizable, fall back
-        };
-
-        // Extract the literal expression
-        let literal_expr = match literal_op.expr.as_df_eval_expr_ref() {
-            Some(expr) => expr.clone(),
-            None => return Ok(None),
-        };
-
-        // Build the key filter expression.
-        // For case-insensitive key matching, use ilike with escaped LIKE special chars.
-        let key_filter = if self.attr_key_case_sensitive {
-            col(consts::ATTRIBUTE_KEY).eq(lit(&key))
-        } else {
-            let escaped_key = if contains_like_pattern(&key) {
-                escape_like_pattern(&key)
-            } else {
-                key.clone()
-            };
-            col(consts::ATTRIBUTE_KEY).ilike(lit(escaped_key))
-        };
-
-        // Build the value comparison expression.
-        // If the attribute is on the right (literal on left), flip the operator.
-        let effective_operator = if attrs_on_left {
-            operator
-        } else {
-            flip_comparison_operator(operator)
-        };
-
-        let value_cmp = Expr::BinaryExpr(BinaryExpr::new(
-            Box::new(col(typed_col)),
-            effective_operator,
-            Box::new(literal_expr),
-        ));
-
-        // Fuse: key_filter AND value_comparison
-        let fused_expr = key_filter.and(value_cmp);
-
-        Ok(Some(ScopedExpr::Eval {
-            scope: DataScope::AttributesAll(attrs_id),
-            eval: LeafEval::new_df_expr(fused_expr, false)?,
-        }))
-    }
-
-    /// Try to produce a fused attribute `contains` expression.
-    ///
-    /// When the haystack is `attributes["key"]` and the needle is a string literal,
-    /// produces: `col("key").eq(lit("key")).and(contains(col("str"), lit("needle")))`
-    fn try_plan_fused_attr_contains(
-        &self,
-        haystack: &PlannedOp,
-        needle: &PlannedOp,
-    ) -> Result<Option<ScopedExpr>> {
-        // Haystack must be an attribute access, needle must be a static string literal
-        let (attrs_id, key) = match haystack.expr.eval_scope() {
-            Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
-            _ => return Ok(None),
-        };
-
-        if !matches!(needle.expr.eval_scope(), Some(DataScope::StaticScalar)) {
-            return Ok(None);
-        }
-
-        if !matches!(needle.expr_type, ExprLogicalType::String) {
-            return Ok(None);
-        }
-
-        let needle_expr = match needle.expr.as_df_eval_expr_ref() {
-            Some(expr) => expr.clone(),
-            None => return Ok(None),
-        };
-
-        let key_filter = if self.attr_key_case_sensitive {
-            col(consts::ATTRIBUTE_KEY).eq(lit(&key))
-        } else {
-            col(consts::ATTRIBUTE_KEY).ilike(lit(&key))
-        };
-
-        let value_contains = contains(col(consts::ATTRIBUTE_STR), needle_expr);
-
-        let fused_expr = key_filter.and(value_contains);
-
-        Ok(Some(ScopedExpr::Eval {
-            scope: DataScope::AttributesAll(attrs_id),
-            eval: LeafEval::new_df_expr(fused_expr, false)?,
-        }))
-    }
-
-    /// Try to produce a fused attribute `matches` (regex) expression.
-    ///
-    /// When the haystack is `attributes["key"]` and the pattern is a static regex,
-    /// produces: `col("key").eq(lit("key")).and(col("str") ~ lit("pattern"))`
-    fn try_plan_fused_attr_matches(
-        &self,
-        haystack: &PlannedOp,
-        pattern: &Expr,
-    ) -> Result<Option<ScopedExpr>> {
-        let (attrs_id, key) = match haystack.expr.eval_scope() {
-            Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
-            _ => return Ok(None),
-        };
-
-        let key_filter = if self.attr_key_case_sensitive {
-            col(consts::ATTRIBUTE_KEY).eq(lit(&key))
-        } else {
-            col(consts::ATTRIBUTE_KEY).ilike(lit(&key))
-        };
-
-        let value_regex = binary_expr(
-            col(consts::ATTRIBUTE_STR),
-            Operator::RegexMatch,
-            pattern.clone(),
-        );
-
-        let fused_expr = key_filter.and(value_regex);
-
-        Ok(Some(ScopedExpr::Eval {
-            scope: DataScope::AttributesAll(attrs_id),
-            eval: LeafEval::new_df_expr(fused_expr, false)?,
-        }))
-    }
-
     /// Build a binary operation as either a single `Eval` (same-scope) or `JoinAndEval`
     /// (cross-scope).
     fn build_binary_expr(
@@ -1442,9 +1437,6 @@ impl ExprPlanner {
         mut right: PlannedOp,
         dict_downcast: bool,
     ) -> Result<ScopedExpr> {
-        // In attribute-level mode, resolve the virtual "value" column to the actual
-        // typed attribute column (str, int, double, bool) based on the type of the
-        // other operand. This replaces the old AttrValueColumnSelectionOptimizer.
         if self.plan_for_attributes {
             resolve_attr_value_column_in_planned_ops(&mut left, &mut right);
         }
@@ -1454,11 +1446,11 @@ impl ExprPlanner {
             let left_expr = left
                 .expr
                 .into_df_eval_expr()
-                .unwrap_or(col(LEFT_COLUMN_NAME));
+                .unwrap_or(col(arg_column_name(0)));
             let right_expr = right
                 .expr
                 .into_df_eval_expr()
-                .unwrap_or(col(RIGHT_COLUMN_NAME));
+                .unwrap_or(col(arg_column_name(1)));
 
             Ok(ScopedExpr::Eval {
                 scope,
@@ -1477,9 +1469,9 @@ impl ExprPlanner {
                 children: vec![left.expr, right.expr],
                 eval: LeafEval::new_df_expr(
                     Expr::BinaryExpr(BinaryExpr::new(
-                        Box::new(col(LEFT_COLUMN_NAME)),
+                        Box::new(col(arg_column_name(0))),
                         operator,
-                        Box::new(col(RIGHT_COLUMN_NAME)),
+                        Box::new(col(arg_column_name(1))),
                     )),
                     dict_downcast,
                 )?,
@@ -1504,7 +1496,7 @@ impl ExprPlanner {
                     self.attr_key_case_sensitive,
                 )?,
             }),
-            FunctionArgScope::MultiJoin(children) => Ok(ScopedExpr::JoinAndEval {
+            FunctionArgScope::Join(children) => Ok(ScopedExpr::JoinAndEval {
                 children,
                 eval: LeafEval::new_df_expr(expr, dict_downcast)?,
             }),
@@ -1516,8 +1508,8 @@ impl ExprPlanner {
 enum FunctionArgScope {
     /// All args share a combinable scope.
     Combined(DataScope),
-    /// Args require a multi-join. Contains the child `ScopedExpr`s.
-    MultiJoin(Vec<ScopedExpr>),
+    /// Args require a joining data with different scopes.
+    Join(Vec<ScopedExpr>),
 }
 
 struct DataFusionFunctionDef {
@@ -1588,7 +1580,7 @@ impl ScopedExpr {
     }
 
     /// Consume an `Eval(DatafusionExpr)` node and return its DataFusion logical expression.
-    /// Returns `None` for non-`Eval` or `BatchPredicate` variants.
+    /// Returns `None` for non-`Eval` or `LeafEval::BatchPredicate` variants.
     pub(crate) fn into_df_eval_expr(self) -> Option<Expr> {
         match self {
             Self::Eval {
@@ -1631,8 +1623,6 @@ fn try_combine_scopes(left: &PlannedOp, right: &PlannedOp) -> Option<DataScope> 
 
 /// Extract mutable references to the DataFusion expr and type from two `PlannedOp`s
 /// for type coercion. Returns `None` for fields that aren't accessible (non-Eval nodes).
-/// TODO - rereview the call sights for this? I don't really understand it so need to better understand if this
-/// is the correct thing.
 fn extract_coercion_parts<'a>(
     left: &'a mut PlannedOp,
     right: &'a mut PlannedOp,
