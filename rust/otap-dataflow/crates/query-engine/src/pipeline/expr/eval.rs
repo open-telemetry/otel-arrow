@@ -564,29 +564,13 @@ fn materialize_id_mask_to_value(
                     BooleanArray::new(builder.finish(), None)
                 }
                 None => {
-                    // No explicit id column on root — use array index as implicit ID.
-                    // TODO - need to re-validate why this works?
-                    let mut builder = BooleanBufferBuilder::new(num_rows);
-                    let mut segment_val = false;
-                    let mut segment_len = 0usize;
-
-                    for idx in 0..num_rows {
-                        let row_val = mask.contains(idx as u32);
-
-                        if segment_val != row_val {
-                            if segment_len > 0 {
-                                builder.append_n(segment_len, segment_val);
-                            }
-                            segment_val = row_val;
-                            segment_len = 0;
-                        }
-                        segment_len += 1;
-                    }
-                    if segment_len > 0 {
-                        builder.append_n(segment_len, segment_val);
-                    }
-
-                    BooleanArray::new(builder.finish(), None)
+                    // This shouldn't happen, unless we somehow got an invalid batch. Basically it 
+                    // means we did some filtering on a child batch that was present, but there is
+                    // no ID column to join with it
+                    return Err(Error::InvalidPipelineError { 
+                        cause: "materialize_id_mask_to_value expected id column for materializing id bitmap".into(),
+                        query_location: None
+                    })
                 }
             }
         }

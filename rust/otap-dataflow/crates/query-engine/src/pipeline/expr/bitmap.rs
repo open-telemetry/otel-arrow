@@ -78,7 +78,6 @@ impl ScopedExpr {
 }
 
 /// Execute an `Eval` node as an IdMask.
-#[allow(dead_code)]
 fn execute_eval_as_id_mask(
     scope: &DataScope,
     eval: &mut LeafEval,
@@ -107,7 +106,6 @@ fn execute_eval_as_id_mask(
 }
 
 /// Execute a `JoinAndEval` node as an IdMask.
-#[allow(dead_code)]
 fn execute_join_and_eval_as_id_mask(
     children: &mut [ScopedExpr],
     eval: &mut LeafEval,
@@ -126,7 +124,6 @@ fn execute_join_and_eval_as_id_mask(
 }
 
 /// Convert a `ScopedValue` containing a boolean result into an `IdMask`.
-#[allow(dead_code)]
 fn scoped_value_to_id_mask(
     sv: ScopedValue,
     otap_batch: &OtapArrowRecords,
@@ -187,7 +184,6 @@ fn scoped_value_to_id_mask(
             // root-scoped: use the root batch's id column to build the IdMask
             let root_rb = otap_batch
                 .root_record_batch()
-                // TODO - need to test on empty batch
                 .ok_or_else(|| Error::ExecutionError {
                     cause: "root batch not present".into(),
                 })?;
@@ -227,19 +223,13 @@ fn scoped_value_to_id_mask(
                     } else if boolean_arr.false_count() == boolean_arr.len() {
                         Ok(IdMask::None)
                     } else {
-                        // TODO need to revisit why this actually works???
-                        let bool_values = boolean_arr.values();
-                        let mut bitmap = pool.acquire();
-                        for (start, end) in BitSliceIterator::new(
-                            bool_values.inner().as_slice(),
-                            0,
-                            boolean_arr.len(),
-                        ) {
-                            for idx in start..end {
-                                bitmap.insert(idx as u32);
-                            }
-                        }
-                        Ok(IdMask::Some(bitmap))
+                        // This shouldn't happen, unless we somehow got an invalid batch. Basically it 
+                        // means we did some filtering on a child batch that was present, but there is
+                        // no ID column to join with it
+                        Err(Error::InvalidPipelineError { 
+                            cause: "materialize_id_mask_to_value expected id column for materializing id bitmap".into(),
+                            query_location: None
+                        })
                     }
                 }
             }
