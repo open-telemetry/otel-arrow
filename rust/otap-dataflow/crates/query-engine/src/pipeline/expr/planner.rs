@@ -1046,7 +1046,7 @@ impl ExprPlanner {
         case_sensitive: bool,
     ) -> Result<Option<ScopedExpr>> {
         // Identify which side is the attribute access and which is the literal.
-        let (attrs_op, mut literal_op, attrs_on_left) =
+        let (attrs_op, literal_op, attrs_on_left) =
             match (left.expr.eval_scope(), right.expr.eval_scope()) {
                 (Some(DataScope::Attribute(_, _)), Some(DataScope::StaticScalar)) => {
                     (left, right, true)
@@ -1064,7 +1064,7 @@ impl ExprPlanner {
         }
 
         if operator == Operator::Eq && !case_sensitive {
-            escape_like_literals(&mut literal_op);
+            escape_like_literals(literal_op);
             operator = Operator::ILikeMatch;
         }
 
