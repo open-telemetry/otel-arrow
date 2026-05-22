@@ -134,16 +134,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Run the engine, obtaining an ObservedStateHandle for in-process health checks.
+    // Run the engine, obtaining an EngineObserverContext for in-process health
+    // checks and metrics access.
     let poll_status = args.poll_status;
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
-    let result = controller.run_forever_with_observer(engine_cfg, |handle| {
-        eprintln!("[observer] ObservedStateHandle obtained");
+    let result = controller.run_forever_with_observer(engine_cfg, |ctx| {
+        eprintln!("[observer] EngineObserverContext obtained");
         if poll_status {
+            let state_handle = ctx.state_handle().clone();
+            let _telemetry_handle = ctx.telemetry_handle().clone();
             std::thread::spawn(move || {
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(5));
-                    let snapshot = handle.snapshot();
+                    let snapshot = state_handle.snapshot();
                     for (key, status) in &snapshot {
                         eprintln!(
                             "[observer] pipeline {}:{} -> {:?}",
