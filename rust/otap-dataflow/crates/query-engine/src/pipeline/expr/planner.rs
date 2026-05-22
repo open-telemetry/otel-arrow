@@ -819,7 +819,9 @@ impl ExprPlanner {
 
             // one side is null, the other is a value expression
             let value_expr = if left_is_null { right_expr } else { left_expr };
-            return self.plan_null_comparison(value_expr, functions);
+            if let Some(null_compare) = self.plan_null_comparison(value_expr)? {
+                return Ok(null_compare);
+            }
         }
 
         let mut left = self.plan_scalar(left_expr, functions)?;
@@ -871,11 +873,7 @@ impl ExprPlanner {
     /// For struct columns: produces `col(struct).field(name).is_null()`
     /// For attributes: produces `BitmapNot` of a simple key-existence check e.g. if the
     /// attribute key doesn't exist, it "is null"
-    fn plan_null_comparison(
-        &self,
-        value_expr: &ScalarExpression,
-        functions: &[PipelineFunction],
-    ) -> Result<ScopedExpr> {
+    fn plan_null_comparison(&self, value_expr: &ScalarExpression) -> Result<Option<ScopedExpr>> {
         // try to resolve the expression as a column accessor
         if let ScalarExpression::Source(source_expr) = value_expr {
             let value_accessor = source_expr.get_value_accessor();
@@ -888,18 +886,20 @@ impl ExprPlanner {
                         } else {
                             col(col_name).is_null()
                         };
-                        Ok(ScopedExpr::Eval {
+                        Ok(Some(ScopedExpr::Eval {
                             scope: DataScope::Root,
                             eval: LeafEval::new_df_expr(is_null_expr, false)?,
-                        })
+                        }))
                     }
-                    ColumnAccessor::StructCol(struct_name, field_name) => Ok(ScopedExpr::Eval {
-                        scope: DataScope::Root,
-                        eval: LeafEval::new_df_expr(
-                            col(struct_name).field(field_name).is_null(),
-                            false,
-                        )?,
-                    }),
+                    ColumnAccessor::StructCol(struct_name, field_name) => {
+                        Ok(Some(ScopedExpr::Eval {
+                            scope: DataScope::Root,
+                            eval: LeafEval::new_df_expr(
+                                col(struct_name).field(field_name).is_null(),
+                                false,
+                            )?,
+                        }))
+                    }
                     ColumnAccessor::Attributes(attrs_id, key) => {
                         // attribute == null means the attribute key does not exist.
                         // This is expressed as NOT(key_exists), where key_exists is
@@ -913,39 +913,20 @@ impl ExprPlanner {
                         //
                         // We use a trivial "true" predicate in the attribute scope to
                         // check for key existence (key filtering is done at the scope level).
-                        Ok(ScopedExpr::BitmapNot(Box::new(ScopedExpr::Eval {
+                        Ok(Some(ScopedExpr::BitmapNot(Box::new(ScopedExpr::Eval {
                             scope: DataScope::Attribute(attrs_id, key),
                             eval: LeafEval::new_df_expr_with_key_case(
                                 lit(true),
                                 false,
                                 self.attr_key_case_sensitive,
                             )?,
-                        })))
+                        }))))
                     }
                 };
             }
         }
 
-        // fallback: plan normally and wrap in is_null
-        // TODO figure out why we can unwrap to these defaults?
-        let planned = self.plan_scalar(value_expr, functions)?;
-        let scope = planned
-            .expr
-            .eval_scope()
-            .cloned()
-            .unwrap_or(DataScope::Root);
-
-        let expr = planned
-            .expr
-            .into_df_eval_expr()
-            .ok_or_else(|| Error::InvalidPipelineError {
-                cause: "invalid input to is null".into(),
-                query_location: None,
-            })?;
-        Ok(ScopedExpr::Eval {
-            scope,
-            eval: LeafEval::new_df_expr(expr.is_null(), false)?,
-        })
+        Ok(None)
     }
 
     /// Try to produce a fused attribute comparison expression that avoids the  key-filter +
