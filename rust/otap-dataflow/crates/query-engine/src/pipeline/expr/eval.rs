@@ -411,7 +411,7 @@ fn evaluate_df_expr(
 
 /// Evaluate a DataFusion expression on a RecordBatch that has AnyValue struct columns,
 /// using the split-evaluate-stitch pattern where each value type is evaluated as a separate
-/// partition and the results are then stiched back together.
+/// partition and the results are then stitched back together.
 fn evaluate_with_anyval_partitions(
     logical_expr: &Expr,
     physical_expr: &mut Option<PhysicalExprRef>,

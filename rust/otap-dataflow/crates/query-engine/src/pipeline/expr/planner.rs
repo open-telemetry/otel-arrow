@@ -1230,7 +1230,7 @@ impl ExprPlanner {
         let key_filter = if self.attr_key_case_sensitive {
             col(consts::ATTRIBUTE_KEY).eq(lit(&key))
         } else {
-            col(consts::ATTRIBUTE_KEY).ilike(lit(&escape_like_pattern(&key)))
+            col(consts::ATTRIBUTE_KEY).ilike(lit(escape_like_pattern(&key)))
         };
 
         let value_contains = contains(col(consts::ATTRIBUTE_STR), needle_expr);
@@ -1328,7 +1328,7 @@ impl ExprPlanner {
         let key_filter = if self.attr_key_case_sensitive {
             col(consts::ATTRIBUTE_KEY).eq(lit(&key))
         } else {
-            col(consts::ATTRIBUTE_KEY).ilike(lit(&escape_like_pattern(&key)))
+            col(consts::ATTRIBUTE_KEY).ilike(lit(escape_like_pattern(&key)))
         };
 
         let value_regex = binary_expr(
