@@ -26,7 +26,7 @@ use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::MaybeDictArrayAccessor;
 use otap_df_pdata::otap::filter::{ChildBatchFilterIdHelper, IdBitmapPool, filter_otap_batch};
 
-// TODO - need to wire this back into the expression evaluation code
+// TODO - need to wire this back into the expression evaluation
 #[allow(dead_code)]
 pub(crate) mod compare;
 
@@ -150,18 +150,7 @@ pub(crate) fn scoped_value_to_boolean_array(
                 ),
             })?;
 
-            // strip null buffer: null predicate results are treated as false
-            if boolean_arr.null_count() > 0 {
-                let values_buf = boolean_arr.values();
-                let null_buf = boolean_arr
-                    .nulls()
-                    .expect("null_count > 0 implies null buffer present")
-                    .inner();
-                let combined = values_buf & null_buf;
-                Ok(BooleanArray::new(combined, None))
-            } else {
-                Ok(boolean_arr.clone())
-            }
+            Ok(boolean_arr.clone())
         }
     }
 }

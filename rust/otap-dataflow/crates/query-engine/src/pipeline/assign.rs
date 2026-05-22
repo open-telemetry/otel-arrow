@@ -1149,7 +1149,7 @@ impl PipelineStage for AssignPipelineStage {
 
             // remove dict encoding if necessary. This would be needed for certain expressions such
             // as arithmetic
-            if requires_dict_downcast(&self.sources[0]) {
+            if leaf_requires_dict_downcast(&self.sources[0]) {
                 Projection::try_downcast_dicts(&mut fields, &mut columns)?
             }
 
@@ -1536,7 +1536,7 @@ fn projection_references_column(expr: &ScopedExpr, col_name: &str) -> bool {
 
 /// Returns the `downcast_dicts` option from the inner `LeafEval::DatafusionExpr` projection
 /// options, if this is an `Eval(DatafusionExpr)` node. Returns `false` otherwise.
-fn requires_dict_downcast(expr: &ScopedExpr) -> bool {
+pub(crate) fn leaf_requires_dict_downcast(expr: &ScopedExpr) -> bool {
     match expr {
         ScopedExpr::Eval {
             eval: LeafEval::DatafusionExpr {

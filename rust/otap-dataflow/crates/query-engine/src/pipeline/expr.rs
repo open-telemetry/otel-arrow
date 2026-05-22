@@ -208,6 +208,7 @@ pub(crate) enum ScopedExpr {
     /// Negate a boolean-producing child via IdMask bitmap inversion (NOT).
     BitmapNot(Box<ScopedExpr>),
 }
+
 /// A column of values together with scope metadata describing where those values came from
 /// and how they relate to other batches.
 ///

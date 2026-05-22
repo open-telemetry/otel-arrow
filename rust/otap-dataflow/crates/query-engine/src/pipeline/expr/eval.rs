@@ -16,8 +16,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, BooleanBufferBuilder, RecordBatch, StringArray, StructArray,
-    UInt16Array,
+    Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, RecordBatch, StringArray,
+    StructArray, UInt16Array,
 };
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::filter_record_batch;
@@ -100,51 +100,8 @@ impl ScopedExpr {
                     },
                 ..
             } => evaluate_df_expr(logical_expr, physical_expr, session_ctx, record_batch),
-
-            // TODO - why do we plan this? This should not be necessary as we can defer to DF for this.
-            Self::BitmapAnd(left, right) => {
-                let left_cv = left.evaluate_on_batch(session_ctx, record_batch)?;
-                let left_bool = scoped_value_to_boolean(left_cv, record_batch.num_rows())?;
-
-                // short-circuit: if left is all-false, skip right
-                if left_bool.false_count() == left_bool.len() {
-                    return Ok(ColumnarValue::Array(Arc::new(left_bool)));
-                }
-
-                let right_cv = right.evaluate_on_batch(session_ctx, record_batch)?;
-                let right_bool = scoped_value_to_boolean(right_cv, record_batch.num_rows())?;
-                Ok(ColumnarValue::Array(Arc::new(arrow::compute::and(
-                    &left_bool,
-                    &right_bool,
-                )?)))
-            }
-            Self::BitmapOr(left, right) => {
-                let left_cv = left.evaluate_on_batch(session_ctx, record_batch)?;
-                let left_bool = scoped_value_to_boolean(left_cv, record_batch.num_rows())?;
-
-                // short-circuit: if left is all-true, skip right
-                if left_bool.true_count() == left_bool.len() {
-                    return Ok(ColumnarValue::Array(Arc::new(left_bool)));
-                }
-
-                let right_cv = right.evaluate_on_batch(session_ctx, record_batch)?;
-                let right_bool = scoped_value_to_boolean(right_cv, record_batch.num_rows())?;
-                Ok(ColumnarValue::Array(Arc::new(arrow::compute::or(
-                    &left_bool,
-                    &right_bool,
-                )?)))
-            }
-            Self::BitmapNot(child) => {
-                let child_cv = child.evaluate_on_batch(session_ctx, record_batch)?;
-                let child_bool = scoped_value_to_boolean(child_cv, record_batch.num_rows())?;
-                Ok(ColumnarValue::Array(Arc::new(arrow::compute::not(
-                    &child_bool,
-                )?)))
-            }
             _ => Err(Error::InvalidPipelineError {
-                cause:
-                    "only Eval(DatafusionExpr) and boolean combination nodes can be evaluated on a provided batch"
-                        .into(),
+                cause: "only Eval(DatafusionExpr) can be evaluated on a provided batch".into(),
                 query_location: None,
             }),
         }
@@ -244,7 +201,7 @@ pub(super) fn eval_datafusion_expr_value(
             };
 
             Ok(Some(ScopedValue::new(
-                result_vals,
+                coerce_nulls_for_predicate(result_vals, *missing_data_passes),
                 scope.clone(),
                 &source_rb,
             )))
@@ -304,7 +261,7 @@ pub(super) fn join_and_eval_value(
         projection_opts,
         eval_anyval_as_struct,
         attr_key_case_sensitive: _,
-        missing_data_passes: _,
+        missing_data_passes,
     } = eval
     else {
         // TODO - technically we could evaluate the batch predicate w/out joining. It would be
@@ -337,10 +294,37 @@ pub(super) fn join_and_eval_value(
     };
 
     Ok(Some(ScopedValue::new(
-        result_vals,
+        coerce_nulls_for_predicate(result_vals, *missing_data_passes),
         DataScope::clone(&result_scope),
         &joined_rb,
     )))
+}
+
+fn coerce_nulls_for_predicate(
+    result_vals: ColumnarValue,
+    missing_data_passes: bool,
+) -> ColumnarValue {
+    match &result_vals {
+        ColumnarValue::Array(arr) => {
+            if let Some(boolean_arr) = arr.as_boolean_opt() {
+                if let Some(nulls) = boolean_arr.nulls() {
+                    let combined = if missing_data_passes {
+                        boolean_arr.values().clone()
+                    } else {
+                        boolean_arr.values() & nulls.inner()
+                    };
+
+                    return ColumnarValue::Array(Arc::new(BooleanArray::new(combined, None)));
+                }
+            }
+        }
+        ColumnarValue::Scalar(ScalarValue::Boolean(None)) => {
+            return ColumnarValue::Scalar(ScalarValue::Boolean(Some(missing_data_passes)));
+        }
+        _ => {}
+    }
+
+    result_vals
 }
 
 /// Execute a `BitmapAnd` node as a value.
@@ -399,49 +383,6 @@ fn execute_bitmap_not_as_value(
     let child_mask = child.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
     let inverted = invert_id_mask(child_mask);
     materialize_id_mask_to_value(inverted, otap_batch)
-}
-
-/// try to convert a ColumnarValue to a BooleanArray
-fn scoped_value_to_boolean(values: ColumnarValue, num_rows: usize) -> Result<BooleanArray> {
-    match values {
-        ColumnarValue::Scalar(scalar) => match scalar {
-            ScalarValue::Boolean(Some(true)) => {
-                Ok(BooleanArray::new(BooleanBuffer::new_set(num_rows), None))
-            }
-            ScalarValue::Boolean(Some(false)) | ScalarValue::Boolean(None) | ScalarValue::Null => {
-                Ok(BooleanArray::new(BooleanBuffer::new_unset(num_rows), None))
-            }
-            other => Err(Error::ExecutionError {
-                cause: format!(
-                    "expected boolean scalar for bitmap operation, found {:?}",
-                    other.data_type()
-                ),
-            }),
-        },
-        ColumnarValue::Array(arr) => {
-            let boolean_arr = datafusion::common::cast::as_boolean_array(&arr).map_err(|_| {
-                Error::ExecutionError {
-                    cause: format!(
-                        "expected boolean array for bitmap operation, found {}",
-                        arr.data_type()
-                    ),
-                }
-            })?;
-
-            // strip null buffer: null predicate results are treated as false
-            if boolean_arr.null_count() > 0 {
-                let values_buf = boolean_arr.values();
-                let null_buf = boolean_arr
-                    .nulls()
-                    .expect("null_count > 0 implies null buffer present")
-                    .inner();
-                let combined = values_buf & null_buf;
-                Ok(BooleanArray::new(combined, None))
-            } else {
-                Ok(boolean_arr.clone())
-            }
-        }
-    }
 }
 
 /// Evaluate a DataFusion expression on a RecordBatch.
