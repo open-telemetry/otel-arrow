@@ -1,0 +1,11 @@
+name: DFE OTAP Logs compound (lowbatch + manyproc)
+slug: dfe_logs_otap_none_compound
+description: OTAP logs passthrough, no compression, small batch + 8 no-op processors
+  + large channels (max moves/copies)
+meta:
+  binary: dfe
+  protocols:
+  - otap
+  signals:
+  - logs
+  compression: none

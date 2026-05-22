@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "DFE OTAP Metrics (low batch)/400k - Dropped Metrics %",
+    "name": "dropped_metrics_percentage",
+    "unit": "%",
+    "value": -1.6945291757583618
+  },
+  {
+    "extra": "DFE OTAP Metrics (low batch)/400k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 65.92662510528022
+  },
+  {
+    "extra": "DFE OTAP Metrics (low batch)/400k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 66.3057329598506
+  },
+  {
+    "extra": "DFE OTAP Metrics (low batch)/400k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 55.06458333333333
+  },
+  {
+    "extra": "DFE OTAP Metrics (low batch)/400k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 55.53125
+  },
+  {
+    "extra": "DFE OTAP Metrics (low batch)/400k - Metric Throughput",
+    "name": "metrics_produced_rate",
+    "unit": "metrics/sec",
+    "value": 397067.2524040949
+  },
+  {
+    "extra": "DFE OTAP Metrics (low batch)/400k - Metric Throughput",
+    "name": "metrics_received_rate",
+    "unit": "metrics/sec",
+    "value": 402146.53841047664
+  },
+  {
+    "extra": "DFE OTAP Metrics (low batch)/400k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000692
+  },
+  {
+    "extra": "DFE OTAP Metrics (low batch)/400k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 81546287.62847374
+  },
+  {
+    "extra": "DFE OTAP Metrics (low batch)/400k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 81415245.75347957
+  }
+]

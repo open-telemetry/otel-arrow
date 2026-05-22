@@ -1,0 +1,11 @@
+name: DFE OTAP Metrics compound (lowbatch + manyproc)
+slug: dfe_metrics_otap_none_compound
+description: OTAP metrics passthrough, no compression, small batch + 8 no-op processors
+  + large channels (max moves/copies)
+meta:
+  binary: dfe
+  protocols:
+  - otap
+  signals:
+  - metrics
+  compression: none

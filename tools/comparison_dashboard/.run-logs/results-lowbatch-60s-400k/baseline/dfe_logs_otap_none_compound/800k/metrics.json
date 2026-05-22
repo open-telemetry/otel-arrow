@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 0.3730408251285553
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 10.71148000351428
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 11.1035397123202
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 74.9609375
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 75.984375
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 59590.66875008392
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 59361.84708118562
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 20.005626
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 13416124.48380496
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 13265147.211894486
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 226.00584623750902
+  }
+]

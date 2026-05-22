@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTAP Logs (low batch)/600k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -0.2801394760608673
+  },
+  {
+    "extra": "DFE OTAP Logs (low batch)/600k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 58.68347049585574
+  },
+  {
+    "extra": "DFE OTAP Logs (low batch)/600k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 59.5877
+  },
+  {
+    "extra": "DFE OTAP Logs (low batch)/600k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 52.9828125
+  },
+  {
+    "extra": "DFE OTAP Logs (low batch)/600k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 53.53515625
+  },
+  {
+    "extra": "DFE OTAP Logs (low batch)/600k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 601109.776855982
+  },
+  {
+    "extra": "DFE OTAP Logs (low batch)/600k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 600237.1952688462
+  },
+  {
+    "extra": "DFE OTAP Logs (low batch)/600k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 120.004513
+  },
+  {
+    "extra": "DFE OTAP Logs (low batch)/600k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 132339463.00954504
+  },
+  {
+    "extra": "DFE OTAP Logs (low batch)/600k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 132151846.85437728
+  },
+  {
+    "extra": "DFE OTAP Logs (low batch)/600k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 220.47861087693875
+  }
+]

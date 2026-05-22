@@ -1,0 +1,11 @@
+name: DFE OTAP Metrics (many processors)
+slug: dfe_metrics_otap_none_manyproc
+description: OTAP metrics passthrough, no compression, 8 no-op processors + large
+  channels (more channel copies, memory)
+meta:
+  binary: dfe
+  protocols:
+  - otap
+  signals:
+  - metrics
+  compression: none

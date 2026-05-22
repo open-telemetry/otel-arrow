@@ -71,6 +71,12 @@ suites:
   - suites/dfe/dfe-logs-otlphttp-gzip-baseline.yaml
   - suites/dfe/dfe-logs-otlphttp-zstd-baseline.yaml
   - suites/dfe/dfe-metrics-otap-none-baseline.yaml
+  - suites/dfe/dfe-metrics-otap-none-lowbatch.yaml
+  - suites/dfe/dfe-metrics-otap-none-manyproc.yaml
+  - suites/dfe/dfe-metrics-otap-none-compound.yaml
+  - suites/dfe/dfe-logs-otap-none-lowbatch.yaml
+  - suites/dfe/dfe-logs-otap-none-manyproc.yaml
+  - suites/dfe/dfe-logs-otap-none-compound.yaml
   - suites/dfe/dfe-metrics-otap-gzip-baseline.yaml
   - suites/dfe/dfe-metrics-otap-zstd-baseline.yaml
   - suites/dfe/dfe-metrics-otlp-none-baseline.yaml

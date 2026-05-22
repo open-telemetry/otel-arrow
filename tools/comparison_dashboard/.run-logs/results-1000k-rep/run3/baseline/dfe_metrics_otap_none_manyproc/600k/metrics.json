@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "DFE OTAP Metrics (many processors)/600k - Dropped Metrics %",
+    "name": "dropped_metrics_percentage",
+    "unit": "%",
+    "value": 0.0
+  },
+  {
+    "extra": "DFE OTAP Metrics (many processors)/600k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 16.551793170984634
+  },
+  {
+    "extra": "DFE OTAP Metrics (many processors)/600k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 16.722689912826898
+  },
+  {
+    "extra": "DFE OTAP Metrics (many processors)/600k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 58.161067708333334
+  },
+  {
+    "extra": "DFE OTAP Metrics (many processors)/600k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 59.9296875
+  },
+  {
+    "extra": "DFE OTAP Metrics (many processors)/600k - Metric Throughput",
+    "name": "metrics_produced_rate",
+    "unit": "metrics/sec",
+    "value": 601330.0713731631
+  },
+  {
+    "extra": "DFE OTAP Metrics (many processors)/600k - Metric Throughput",
+    "name": "metrics_received_rate",
+    "unit": "metrics/sec",
+    "value": 598759.8777245115
+  },
+  {
+    "extra": "DFE OTAP Metrics (many processors)/600k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 120.000577
+  },
+  {
+    "extra": "DFE OTAP Metrics (many processors)/600k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 52225655.29293892
+  },
+  {
+    "extra": "DFE OTAP Metrics (many processors)/600k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 52151794.0706159
+  }
+]

@@ -1,0 +1,11 @@
+name: DFE OTAP Logs (many processors)
+slug: dfe_logs_otap_none_manyproc
+description: OTAP logs passthrough, no compression, 8 no-op processors + large channels
+  (more channel copies, memory)
+meta:
+  binary: dfe
+  protocols:
+  - otap
+  signals:
+  - logs
+  compression: none

@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -0.37571847438812256
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 11.210759001293242
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 11.6023
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 91.863671875
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 94.8828125
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 59380.17416651288
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 59272.53554976864
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 20.000591
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 13462136.578378841
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 13310412.951333217
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/800k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 227.12267078696598
+  }
+]

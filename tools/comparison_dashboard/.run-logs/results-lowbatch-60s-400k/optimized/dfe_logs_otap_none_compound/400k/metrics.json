@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/400k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 1.6639292240142822
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/400k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 12.747834865890667
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/400k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 13.005821596244132
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/400k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 79.58723958333333
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/400k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 82.44921875
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/400k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 60275.69752911488
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/400k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 60199.74877493412
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/400k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000659
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/400k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 13553707.409997145
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/400k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 13403868.977800975
+  },
+  {
+    "extra": "DFE OTAP Logs compound (lowbatch + manyproc)/400k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 225.14558093373
+  }
+]
