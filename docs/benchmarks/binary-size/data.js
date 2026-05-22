@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779324379914,
+  "lastUpdate": 1779410391239,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -4332,6 +4332,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 97.97,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "877834fbfb606a2f477e58b81b8f7b2653539df5",
+          "message": "fix(security): Refactor Go tidy workflows to avoid usage of pull_request_target (#3056)\n\n# Change Summary\n\n### Problem\n\nThe `tidy.yml` workflow uses `pull_request_target` to run `make\ngenotelarrowcol` and push the result back to Renovate/Dependabot PR\nbranches.\n\n`pull_request_target` runs in the context of the base branch, which\nmeans it has access to secrets and write permissions. The current\nworkflow checks out the PR's head ref (`ref: ${{ github.head_ref }}`)\nand then executes code from it (`make genotelarrowcol`). If the\nactor/fork guards were ever bypassed — via a compromised bot account,\nmisconfigured Renovate, or a GitHub bug — an attacker's code would run\nwith full write access and secrets.\n\n### Solution\n\nSplit the workflow into two:\n\n1. **`tidy.yml`** — Triggered by `pull_request` (not\n`pull_request_target`). Runs `make genotelarrowcol` with **no write\npermissions and no secrets**. If changes are detected, uploads a `git\ndiff` patch as an artifact.\n\n2. **`tidy-commit.yml`** — Triggered by `workflow_run` on completion of\nthe first workflow. Downloads the patch, applies it, and pushes. This\nworkflow has write access but **never executes any code from the PR** —\nit only applies a static diff.\n\nThis ensures that code execution and write access never coexist in the\nsame workflow run.\n\n### Before\n\n```\npull_request_target\n  ✓ contents: write, secrets available\n  ✓ checks out + executes PR code\n  ✓ pushes to branch\n```\n\n### After\n\n```\npull_request (tidy.yml)          →  workflow_run (tidy-commit.yml)\n  ✗ no write, no secrets              ✓ contents: write\n  ✓ executes PR code                  ✗ never executes PR code\n  → uploads patch artifact             → applies patch, commits, pushes\n```\n\n## What issue does this PR close?\n\nN/A\n\n## How are these changes tested?\n\nUnfortunately, need to test it on the next set of Go Renovate PRs\n\n## Are there any user-facing changes?\n\nNo",
+          "timestamp": "2026-05-21T21:31:23Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/877834fbfb606a2f477e58b81b8f7b2653539df5"
+        },
+        "date": 1779410381895,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 110.42,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 98.03,
             "unit": "MB"
           }
         ]
