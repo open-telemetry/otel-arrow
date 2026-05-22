@@ -35,32 +35,46 @@ pub struct ExtensionLifecycleMetrics {
     /// `1` while the extension task is running, `0` after it terminates.
     #[metric(name = "active", unit = "{1}")]
     pub active: Gauge<u64>,
-    /// `1` once `Shutdown` has been successfully delivered, `0`
-    /// otherwise. Gates `shutdown.duration` interpretation.
-    #[metric(name = "shutdown.delivered", unit = "{1}")]
-    pub shutdown_delivered: Gauge<u64>,
-    /// Nanoseconds between successful `Shutdown` delivery and task
-    /// exit. Meaningful only when `shutdown.delivered == 1`.
+    /// `1` once `Shutdown` has been successfully enqueued into the
+    /// extension's control channel, `0` otherwise. **Not** a delivery
+    /// receipt: the extension may still not have polled `recv()`. It
+    /// only marks "we successfully handed the message to the
+    /// channel"; cooperative honoring is observed via `shutdown.duration`
+    /// (set on terminal exit) and `shutdown.timeout` (set if the
+    /// grace window expires before exit).
+    #[metric(name = "shutdown.sent", unit = "{1}")]
+    pub shutdown_sent: Gauge<u64>,
+    /// Nanoseconds between successful `Shutdown` enqueue and task
+    /// exit. Meaningful only when `shutdown.sent == 1`.
     #[metric(name = "shutdown.duration", unit = "ns")]
     pub shutdown_duration_ns: Gauge<u64>,
     /// Count of times the extension failed to exit within the
-    /// shutdown grace window after delivery. Not incremented when
-    /// delivery itself failed.
+    /// shutdown grace window after the `Shutdown` message was sent.
+    /// Not incremented when the send itself failed.
     #[metric(name = "shutdown.timeout", unit = "{1}")]
     pub shutdown_timeout: Counter<u64>,
     /// Count of `Shutdown` sends that failed because the extension's
     /// control channel was closed.
+    /// Count of `Shutdown` sends that failed to reach the
+    /// extension's control channel — either the channel was closed
+    /// (receiver dropped) or the send did not complete before the
+    /// shutdown grace deadline.
     #[metric(name = "shutdown.send_failed", unit = "{1}")]
     pub shutdown_send_failed: Counter<u64>,
-    /// Count of `Shutdown` sends that exceeded the per-extension
-    /// send timeout.
-    #[metric(name = "shutdown.send_timeout", unit = "{1}")]
-    pub shutdown_send_timeout: Counter<u64>,
     /// Count of task errors (an `Err(_)` return from `start()`,
     /// including caught panics). Not incremented for runtime
     /// cancellation.
     #[metric(name = "task.error", unit = "{1}")]
     pub task_error: Counter<u64>,
+    /// Count of extensions whose task resolved before
+    /// `broadcast_shutdown` was called. Extensions are expected to
+    /// run until they receive `Shutdown`; exiting earlier — even
+    /// cleanly via `Ok(())` — is a lifecycle-contract anomaly worth
+    /// surfacing. Orthogonal to `task.error`: a clean early exit
+    /// bumps only this; an early error bumps both. Cancellation by
+    /// the runtime is not the extension's choice and is not counted.
+    #[metric(name = "task.early_exit", unit = "{1}")]
+    pub task_early_exit: Counter<u64>,
 }
 
 /// Per-extension lifecycle state owned by
@@ -78,11 +92,11 @@ pub(crate) struct ExtensionMetricsEntry {
     /// double-counting across normal and timeout paths.
     finalized: bool,
     /// Anchor for `shutdown.duration`; `None` if `Shutdown` was
-    /// never successfully delivered.
-    shutdown_delivered_at: Option<Instant>,
+    /// never successfully sent into the channel.
+    shutdown_sent_at: Option<Instant>,
     /// Canonical gauge values, mirrored into `metrics` on every publish.
     active: u64,
-    shutdown_delivered: u64,
+    shutdown_sent: u64,
     shutdown_duration_ns: Option<u64>,
 }
 
@@ -93,9 +107,9 @@ impl ExtensionMetricsEntry {
         Self {
             metrics,
             finalized: false,
-            shutdown_delivered_at: None,
+            shutdown_sent_at: None,
             active: 1,
-            shutdown_delivered: 0,
+            shutdown_sent: 0,
             shutdown_duration_ns: None,
         }
     }
@@ -107,7 +121,7 @@ impl ExtensionMetricsEntry {
     /// next call, so the post-clear zero doesn't leak out.
     pub(crate) fn publish(&mut self, registry: &TelemetryRegistryHandle) {
         self.metrics.active.set(self.active);
-        self.metrics.shutdown_delivered.set(self.shutdown_delivered);
+        self.metrics.shutdown_sent.set(self.shutdown_sent);
         if let Some(d) = self.shutdown_duration_ns {
             self.metrics.shutdown_duration_ns.set(d);
         }
@@ -116,28 +130,51 @@ impl ExtensionMetricsEntry {
         self.metrics.clear_values();
     }
 
-    /// Stamp successful `Shutdown` delivery so a subsequent terminal
+    /// Returns `true` once a terminal recorder has run for this
+    /// entry. The lifecycle uses this to skip broadcast sends to
+    /// extensions that already exited (cleanly or via crash) before
+    /// shutdown — their receivers are dropped and sending would
+    /// attribute a spurious `shutdown.send_failed` on top of the
+    /// earlier `task.error` / cancellation.
+    pub(crate) fn is_finalized(&self) -> bool {
+        self.finalized
+    }
+
+    /// Stamp successful `Shutdown` enqueue so a subsequent terminal
     /// publish can compute `shutdown.duration`. `at` is the instant
     /// the send completed — capture it at the call site so it isn't
     /// skewed by post-send work. No-op if the entry has already been
     /// finalized: an earlier terminal publish is authoritative.
-    pub(crate) fn mark_shutdown_delivered(&mut self, at: Instant) {
+    ///
+    /// **Not a delivery receipt** — sets `shutdown.sent`, meaning
+    /// the message landed in the channel buffer. Whether the
+    /// extension actually consumed and honored it is observable only
+    /// via the terminal `shutdown.duration` / `shutdown.timeout`
+    /// signals.
+    pub(crate) fn mark_shutdown_sent(&mut self, at: Instant) {
         if self.finalized {
             return;
         }
-        self.shutdown_delivered_at = Some(at);
-        self.shutdown_delivered = 1;
+        self.shutdown_sent_at = Some(at);
+        self.shutdown_sent = 1;
     }
 
     /// Terminal: task completed (`Ok` or `Err`). Stamps
-    /// `shutdown.duration` (only when delivery succeeded), flips
-    /// `active` to 0, bumps `task.error` on failure, then publishes.
-    pub(crate) fn record_completion(&mut self, registry: &TelemetryRegistryHandle, is_error: bool) {
+    /// `shutdown.duration` (only when the send succeeded), flips
+    /// `active` to 0, bumps `task.error` on failure, bumps
+    /// `task.early_exit` when the task resolved before
+    /// `broadcast_shutdown` ran, then publishes.
+    pub(crate) fn record_completion(
+        &mut self,
+        registry: &TelemetryRegistryHandle,
+        is_error: bool,
+        pre_broadcast: bool,
+    ) {
         if self.finalized {
             return;
         }
         self.finalized = true;
-        if let Some(started) = self.shutdown_delivered_at {
+        if let Some(started) = self.shutdown_sent_at {
             let elapsed = started.elapsed().as_nanos() as u64;
             self.shutdown_duration_ns = Some(elapsed);
         }
@@ -145,19 +182,22 @@ impl ExtensionMetricsEntry {
         if is_error {
             self.metrics.task_error.inc();
         }
+        if pre_broadcast {
+            self.metrics.task_early_exit.inc();
+        }
         self.publish(registry);
     }
 
     /// Terminal: drain-deadline timeout. Only bumps
-    /// `shutdown.timeout` when `Shutdown` was actually delivered —
-    /// otherwise the failure is already attributed via
-    /// `shutdown.send_failed` / `shutdown.send_timeout`.
+    /// `shutdown.timeout` when `Shutdown` was actually sent into the
+    /// channel — otherwise the failure is already attributed via
+    /// `shutdown.send_failed`.
     pub(crate) fn record_timeout(&mut self, registry: &TelemetryRegistryHandle) {
         if self.finalized {
             return;
         }
         self.finalized = true;
-        if self.shutdown_delivered_at.is_some() {
+        if self.shutdown_sent_at.is_some() {
             self.metrics.shutdown_timeout.inc();
         }
         self.active = 0;
@@ -168,13 +208,6 @@ impl ExtensionMetricsEntry {
     /// task is still running; `active` stays at its current value.
     pub(crate) fn record_send_failed(&mut self, registry: &TelemetryRegistryHandle) {
         self.metrics.shutdown_send_failed.inc();
-        self.publish(registry);
-    }
-
-    /// Non-terminal: bump `shutdown.send_timeout` and publish. The
-    /// task is still running; `active` stays at its current value.
-    pub(crate) fn record_send_timeout(&mut self, registry: &TelemetryRegistryHandle) {
-        self.metrics.shutdown_send_timeout.inc();
         self.publish(registry);
     }
 
@@ -212,8 +245,8 @@ impl ExtensionMetricsEntry {
         self.active
     }
 
-    pub(crate) fn shutdown_delivered(&self) -> u64 {
-        self.shutdown_delivered
+    pub(crate) fn shutdown_sent(&self) -> u64 {
+        self.shutdown_sent
     }
 
     pub(crate) fn shutdown_duration_ns(&self) -> Option<u64> {

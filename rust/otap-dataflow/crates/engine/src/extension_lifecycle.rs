@@ -73,12 +73,12 @@ type ExtensionFuture =
 /// invariant.
 enum BroadcastSendResult {
     /// `Shutdown` was enqueued; carries the instant the send completed.
-    Delivered(Instant),
-    /// Channel send returned an error (closed receiver); carries the
-    /// formatted error for the warn log.
+    Sent(Instant),
+    /// Send did not reach the extension's control channel — either
+    /// the channel was closed (receiver dropped) or the send did
+    /// not complete before the shutdown grace deadline. Carries a
+    /// human-readable reason for the warn log.
     SendFailed(String),
-    /// Send did not complete within [`EXTENSION_SHUTDOWN_SEND_TIMEOUT`].
-    SendTimeout,
 }
 
 /// Holds the spawned extension tasks, control senders, and passive
@@ -279,33 +279,51 @@ impl ExtensionLifecycle {
         // each extension's `shutdown.duration` anchor reflects when
         // its OWN send completed — capturing after `join_all`
         // returned would let a slow send for A skew B's duration.
-        let sends = self.shutdown_senders.iter().map(|(variant, sender)| {
-            let msg = ExtensionControlMsg::Shutdown {
-                deadline,
-                reason: SHUTDOWN_REASON.to_string(),
-            };
-            let key: ExtensionKey = (sender.name.clone(), *variant);
-            async move {
-                let outcome =
-                    tokio::time::timeout(EXTENSION_SHUTDOWN_SEND_TIMEOUT, sender.sender.send(msg))
-                        .await;
-                let result = match outcome {
-                    Ok(Ok(())) => BroadcastSendResult::Delivered(Instant::now()),
-                    Ok(Err(e)) => BroadcastSendResult::SendFailed(format!("{e}")),
-                    Err(_elapsed) => BroadcastSendResult::SendTimeout,
+        let sends = self
+            .shutdown_senders
+            .iter()
+            .filter_map(|(variant, sender)| {
+                let key: ExtensionKey = (sender.name.clone(), *variant);
+                // Skip variants whose lifecycle entry already finalized
+                // (extension errored or panicked before broadcast).
+                // Their receiver was dropped when the task exited, so
+                // sending now would attribute a spurious
+                // `shutdown.send_failed` on top of the earlier
+                // `task.error` — confusing telemetry for an extension
+                // that never had a chance to handle `Shutdown`.
+                if self.ext_metrics.get(&key).is_some_and(|e| e.is_finalized()) {
+                    return None;
+                }
+                let msg = ExtensionControlMsg::Shutdown {
+                    deadline,
+                    reason: SHUTDOWN_REASON.to_string(),
                 };
-                (key, result)
-            }
-        });
+                Some(async move {
+                    let outcome = tokio::time::timeout(
+                        EXTENSION_SHUTDOWN_SEND_TIMEOUT,
+                        sender.sender.send(msg),
+                    )
+                    .await;
+                    let result = match outcome {
+                        Ok(Ok(())) => BroadcastSendResult::Sent(Instant::now()),
+                        Ok(Err(e)) => BroadcastSendResult::SendFailed(format!("{e}")),
+                        Err(_elapsed) => BroadcastSendResult::SendFailed(format!(
+                            "send did not complete within {}ms",
+                            EXTENSION_SHUTDOWN_SEND_TIMEOUT.as_millis(),
+                        )),
+                    };
+                    (key, result)
+                })
+            });
         let results: Vec<_> = futures::future::join_all(sends).await;
         for (key, result) in results {
             match result {
-                BroadcastSendResult::Delivered(at) => {
+                BroadcastSendResult::Sent(at) => {
                     // If the entry was already finalized (extension
-                    // completed before broadcast), `mark_shutdown_delivered`
+                    // completed before broadcast), `mark_shutdown_sent`
                     // is a no-op: that earlier finalize is authoritative.
                     if let Some(entry) = self.ext_metrics.get_mut(&key) {
-                        entry.mark_shutdown_delivered(at);
+                        entry.mark_shutdown_sent(at);
                     }
                 }
                 BroadcastSendResult::SendFailed(err) => {
@@ -315,14 +333,6 @@ impl ExtensionLifecycle {
                         error = err,
                     );
                     self.record_send_failed(&key);
-                }
-                BroadcastSendResult::SendTimeout => {
-                    otel_warn!(
-                        "extension.shutdown.send_timeout",
-                        extension = key.0.as_ref(),
-                        timeout_ms = EXTENSION_SHUTDOWN_SEND_TIMEOUT.as_millis() as u64,
-                    );
-                    self.record_send_timeout(&key);
                 }
             }
         }
@@ -396,19 +406,22 @@ impl ExtensionLifecycle {
         }
     }
 
-    /// Stamp `shutdown.duration` (only if delivery succeeded), flip
-    /// `active` to 0, bump `task_error` on failure, publish.
+    /// Stamp `shutdown.duration` (only if the send succeeded), flip
+    /// `active` to 0, bump `task.error` on failure, bump
+    /// `task.early_exit` when this completion lands before
+    /// `broadcast_shutdown` was called, then publish.
     fn record_completion(&mut self, key: &ExtensionKey, is_error: bool) {
         let _ = self.pending.remove(key);
+        let pre_broadcast = !self.shutdown_broadcast_fired;
         if let Some(entry) = self.ext_metrics.get_mut(key) {
-            entry.record_completion(&self.registry, is_error);
+            entry.record_completion(&self.registry, is_error, pre_broadcast);
         }
     }
 
     /// Record a drain-deadline timeout. Only increments
-    /// `shutdown.timeout` when `Shutdown` was actually delivered —
-    /// otherwise the failure is already attributed via
-    /// `shutdown.send_failed` / `shutdown.send_timeout`.
+    /// `shutdown.timeout` when `Shutdown` was actually sent into the
+    /// channel — otherwise the failure is already attributed via
+    /// `shutdown.send_failed`.
     fn record_timeout(&mut self, key: &ExtensionKey) {
         if let Some(entry) = self.ext_metrics.get_mut(key) {
             entry.record_timeout(&self.registry);
@@ -418,12 +431,6 @@ impl ExtensionLifecycle {
     fn record_send_failed(&mut self, key: &ExtensionKey) {
         if let Some(entry) = self.ext_metrics.get_mut(key) {
             entry.record_send_failed(&self.registry);
-        }
-    }
-
-    fn record_send_timeout(&mut self, key: &ExtensionKey) {
-        if let Some(entry) = self.ext_metrics.get_mut(key) {
-            entry.record_send_timeout(&self.registry);
         }
     }
 
@@ -520,7 +527,8 @@ mod tests {
     struct TestExt {
         id: &'static str,
         variant: ExtensionVariant,
-        /// `true` if `Shutdown` was successfully delivered.
+        /// `true` if `Shutdown` was successfully enqueued into the
+        /// extension's control channel. Not a delivery receipt.
         delivered: bool,
     }
 
@@ -571,7 +579,7 @@ mod tests {
                 registry.register_metric_set_for_entity::<ExtensionLifecycleMetrics>(entity_key),
             );
             if ext.delivered {
-                entry.mark_shutdown_delivered(Instant::now());
+                entry.mark_shutdown_sent(Instant::now());
             }
             let key = (ext_id, ext.variant);
             let _ = ext_metrics.insert(key.clone(), entry);
@@ -741,7 +749,7 @@ mod tests {
             let key: ExtensionKey = (Cow::Borrowed("clean"), ExtensionVariant::Local);
             // Backdate so elapsed > 0 deterministically.
             if let Some(entry) = lifecycle.ext_metrics.get_mut(&key) {
-                entry.mark_shutdown_delivered(Instant::now() - Duration::from_millis(1));
+                entry.mark_shutdown_sent(Instant::now() - Duration::from_millis(1));
             }
 
             let result = lifecycle.next_completion().await.expect("queued");
@@ -762,7 +770,7 @@ mod tests {
                 entry.shutdown_duration_ns().unwrap_or(0) > 0,
                 "shutdown_duration_ns should be stamped on completion",
             );
-            assert_eq!(entry.shutdown_delivered(), 1);
+            assert_eq!(entry.shutdown_sent(), 1);
             assert!(!lifecycle.pending.contains(&key));
         }));
     }
@@ -810,11 +818,208 @@ mod tests {
         }));
     }
 
+    /// A task that resolves before `broadcast_shutdown` was called
+    /// is a lifecycle-contract anomaly: extensions are supposed to
+    /// run until they receive `Shutdown`. The clean `Ok(())` case
+    /// must bump `task.early_exit` (and only that — no `task.error`).
+    #[test]
+    fn clean_exit_before_broadcast_bumps_early_exit() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let mut futures: FuturesUnordered<ExtensionFuture> = FuturesUnordered::new();
+            let mut abort_handles: Vec<AbortHandle> = Vec::new();
+            push_test_extension(
+                &mut futures,
+                &mut abort_handles,
+                Cow::Borrowed("early-clean"),
+                ExtensionVariant::Local,
+                async { (Cow::Borrowed("early-clean"), Ok(())) },
+            );
+
+            let mut lifecycle = make_test_lifecycle(
+                futures,
+                abort_handles,
+                &[TestExt::local("early-clean").undelivered()],
+            );
+            // The helper latches `shutdown_broadcast_fired=true` so
+            // `broadcast_shutdown` short-circuits in other tests.
+            // Here we need the opposite — simulate a completion that
+            // arrives BEFORE broadcast was called.
+            lifecycle.shutdown_broadcast_fired = false;
+
+            let result = lifecycle.next_completion().await.expect("queued");
+            assert!(matches!(result, Ok(Ok(()))));
+
+            assert_eq!(
+                registry_metric_for(
+                    &lifecycle.registry,
+                    "early-clean",
+                    ExtensionVariant::Local,
+                    "task.early_exit",
+                ),
+                1,
+                "clean exit before broadcast must bump task.early_exit",
+            );
+            assert_eq!(
+                registry_metric_for(
+                    &lifecycle.registry,
+                    "early-clean",
+                    ExtensionVariant::Local,
+                    "task.error",
+                ),
+                0,
+                "clean exit must not bump task.error",
+            );
+        }));
+    }
+
+    /// An error return before `broadcast_shutdown` ran bumps BOTH
+    /// `task.error` AND `task.early_exit`: the two counters are
+    /// orthogonal and describe different aspects of the same event
+    /// (it errored; it errored before being asked to stop).
+    #[test]
+    fn error_exit_before_broadcast_bumps_both_counters() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let mut futures: FuturesUnordered<ExtensionFuture> = FuturesUnordered::new();
+            let mut abort_handles: Vec<AbortHandle> = Vec::new();
+            push_test_extension(
+                &mut futures,
+                &mut abort_handles,
+                Cow::Borrowed("early-err"),
+                ExtensionVariant::Local,
+                async {
+                    (
+                        Cow::Borrowed("early-err"),
+                        Err(Error::InternalError {
+                            message: "early boom".to_string(),
+                        }),
+                    )
+                },
+            );
+
+            let mut lifecycle = make_test_lifecycle(
+                futures,
+                abort_handles,
+                &[TestExt::local("early-err").undelivered()],
+            );
+            lifecycle.shutdown_broadcast_fired = false;
+
+            let result = lifecycle.next_completion().await.expect("queued");
+            assert!(matches!(result, Ok(Err(_))));
+
+            assert_eq!(
+                registry_metric_for(
+                    &lifecycle.registry,
+                    "early-err",
+                    ExtensionVariant::Local,
+                    "task.early_exit",
+                ),
+                1,
+            );
+            assert_eq!(
+                registry_metric_for(
+                    &lifecycle.registry,
+                    "early-err",
+                    ExtensionVariant::Local,
+                    "task.error",
+                ),
+                1,
+            );
+        }));
+    }
+
+    /// A completion that arrives AFTER `broadcast_shutdown` has run
+    /// is the normal path; `task.early_exit` must stay at 0. This
+    /// is the inverse of the early-exit tests above.
+    #[test]
+    fn completion_after_broadcast_does_not_bump_early_exit() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let mut futures: FuturesUnordered<ExtensionFuture> = FuturesUnordered::new();
+            let mut abort_handles: Vec<AbortHandle> = Vec::new();
+            push_test_extension(
+                &mut futures,
+                &mut abort_handles,
+                Cow::Borrowed("normal"),
+                ExtensionVariant::Local,
+                async { (Cow::Borrowed("normal"), Ok(())) },
+            );
+
+            // `make_test_lifecycle` defaults `shutdown_broadcast_fired=true`,
+            // so a completion now models "Shutdown was already
+            // broadcast; extension is honoring it."
+            let mut lifecycle =
+                make_test_lifecycle(futures, abort_handles, &[TestExt::local("normal")]);
+            assert!(lifecycle.shutdown_broadcast_fired);
+
+            let _ = lifecycle.next_completion().await.expect("queued");
+
+            assert_eq!(
+                registry_metric_for(
+                    &lifecycle.registry,
+                    "normal",
+                    ExtensionVariant::Local,
+                    "task.early_exit",
+                ),
+                0,
+                "post-broadcast completion must not bump task.early_exit",
+            );
+        }));
+    }
+
+    /// Cancellation by the runtime is not the extension's choice;
+    /// it must NOT bump `task.early_exit` even if it lands before
+    /// broadcast. This guards the orthogonal-attribution
+    /// invariant: `record_cancellation` is a different code path
+    /// from `record_completion` and must remain so.
+    #[test]
+    fn cancellation_before_broadcast_does_not_bump_early_exit() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let mut futures: FuturesUnordered<ExtensionFuture> = FuturesUnordered::new();
+            let mut abort_handles: Vec<AbortHandle> = Vec::new();
+            push_test_extension(
+                &mut futures,
+                &mut abort_handles,
+                Cow::Borrowed("cancelled-early"),
+                ExtensionVariant::Local,
+                async {
+                    std::future::pending::<()>().await;
+                    (Cow::Borrowed("cancelled-early"), Ok(()))
+                },
+            );
+
+            let mut lifecycle = make_test_lifecycle(
+                futures,
+                abort_handles,
+                &[TestExt::local("cancelled-early").undelivered()],
+            );
+            lifecycle.shutdown_broadcast_fired = false;
+            for handle in &lifecycle.abort_handles {
+                handle.abort();
+            }
+
+            let _ = lifecycle.next_completion().await.expect("queued");
+
+            assert_eq!(
+                registry_metric_for(
+                    &lifecycle.registry,
+                    "cancelled-early",
+                    ExtensionVariant::Local,
+                    "task.early_exit",
+                ),
+                0,
+                "cancellation must not be attributed as early_exit",
+            );
+        }));
+    }
+
     /// Undelivered `Shutdown` must NOT record `shutdown.duration`
     /// or `shutdown.timeout` — those are reserved for extensions
     /// that actually received the request.
     #[test]
-    fn record_completion_skips_duration_when_shutdown_not_delivered() {
+    fn record_completion_skips_duration_when_shutdown_not_sent() {
         let (rt, local_tasks) = crate::testing::setup_test_runtime();
         rt.block_on(local_tasks.run_until(async {
             let mut futures: FuturesUnordered<ExtensionFuture> = FuturesUnordered::new();
@@ -841,7 +1046,7 @@ mod tests {
                 None,
                 "duration must not be stamped when Shutdown was never delivered",
             );
-            assert_eq!(entry.shutdown_delivered(), 0);
+            assert_eq!(entry.shutdown_sent(), 0);
             assert_eq!(entry.active(), 0);
         }));
     }
@@ -849,7 +1054,7 @@ mod tests {
     /// `record_timeout` must not bump `shutdown.timeout` if
     /// `Shutdown` was never delivered.
     #[test]
-    fn record_timeout_skips_increment_when_shutdown_not_delivered() {
+    fn record_timeout_skips_increment_when_shutdown_not_sent() {
         let (rt, local_tasks) = crate::testing::setup_test_runtime();
         rt.block_on(local_tasks.run_until(async {
             let mut futures: FuturesUnordered<ExtensionFuture> = FuturesUnordered::new();
@@ -1175,7 +1380,7 @@ mod tests {
             for id in ids {
                 let key: ExtensionKey = (Cow::Borrowed(id), ExtensionVariant::Local);
                 if let Some(entry) = lifecycle.ext_metrics.get_mut(&key) {
-                    entry.mark_shutdown_delivered(Instant::now() - Duration::from_millis(1));
+                    entry.mark_shutdown_sent(Instant::now() - Duration::from_millis(1));
                 }
             }
 
@@ -1408,12 +1613,12 @@ mod tests {
                 .ext_metrics
                 .get_mut(&slow_key)
                 .unwrap()
-                .mark_shutdown_delivered(Instant::now() - Duration::from_millis(50));
+                .mark_shutdown_sent(Instant::now() - Duration::from_millis(50));
             lifecycle
                 .ext_metrics
                 .get_mut(&fast_key)
                 .unwrap()
-                .mark_shutdown_delivered(Instant::now());
+                .mark_shutdown_sent(Instant::now());
 
             let _ = lifecycle.next_completion().await;
             let _ = lifecycle.next_completion().await;
@@ -1472,6 +1677,142 @@ mod tests {
         }));
     }
 
+    /// `broadcast_shutdown` must NOT send to a variant whose entry
+    /// was already finalized before the broadcast — e.g. an
+    /// extension that returned `Err(_)` or panicked, so its
+    /// `record_completion` ran from the select loop before
+    /// `broadcast_shutdown` was even called. Its receiver is gone
+    /// with the task; sending would surface a spurious
+    /// `shutdown.send_failed` on top of the genuine `task.error`,
+    /// double-attributing a single failure. Healthy sibling
+    /// variants on the same extension id must still receive
+    /// `Shutdown`.
+    #[test]
+    fn broadcast_shutdown_skips_already_finalized_entries() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let futures: FuturesUnordered<ExtensionFuture> = FuturesUnordered::new();
+            let abort_handles: Vec<AbortHandle> = Vec::new();
+            let mut lifecycle = make_test_lifecycle(
+                futures,
+                abort_handles,
+                &[
+                    TestExt::local("twin").undelivered(),
+                    TestExt::shared("twin").undelivered(),
+                ],
+            );
+
+            // Real channels for both variants. We keep both
+            // receivers alive so we can observe what each one
+            // actually got (or did not get).
+            let (local_tx, mut local_rx) = tokio::sync::mpsc::channel::<ExtensionControlMsg>(4);
+            let (shared_tx, mut shared_rx) = tokio::sync::mpsc::channel::<ExtensionControlMsg>(4);
+            lifecycle.shutdown_senders.push((
+                ExtensionVariant::Local,
+                ExtensionControlSender {
+                    name: Cow::Borrowed("twin"),
+                    sender: crate::message::Sender::Shared(
+                        crate::shared::message::SharedSender::mpsc(local_tx),
+                    ),
+                },
+            ));
+            lifecycle.shutdown_senders.push((
+                ExtensionVariant::Shared,
+                ExtensionControlSender {
+                    name: Cow::Borrowed("twin"),
+                    sender: crate::message::Sender::Shared(
+                        crate::shared::message::SharedSender::mpsc(shared_tx),
+                    ),
+                },
+            ));
+
+            // Finalize the Local variant first: simulates the
+            // extension erroring out before broadcast ran.
+            let local_key: ExtensionKey = (Cow::Borrowed("twin"), ExtensionVariant::Local);
+            lifecycle.record_completion(&local_key, true);
+
+            // Reset the latch (helper sets it to `true` so default
+            // broadcast calls are no-ops).
+            lifecycle.shutdown_broadcast_fired = false;
+            lifecycle.broadcast_shutdown().await;
+
+            // Shared variant must receive `Shutdown`.
+            assert!(
+                matches!(
+                    shared_rx.try_recv(),
+                    Ok(ExtensionControlMsg::Shutdown { .. })
+                ),
+                "live sibling variant must receive Shutdown",
+            );
+
+            // Local variant's channel must still be empty —
+            // broadcast skipped it.
+            assert!(
+                matches!(
+                    local_rx.try_recv(),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                ),
+                "finalized variant must NOT receive Shutdown",
+            );
+
+            // Telemetry for the finalized Local variant: only
+            // `task.error == 1` (from `record_completion`). No
+            // spurious `shutdown.send_failed` from a broadcast that
+            // should never have happened.
+            assert_eq!(
+                registry_metric_for(
+                    &lifecycle.registry,
+                    "twin",
+                    ExtensionVariant::Local,
+                    "task.error",
+                ),
+                1,
+            );
+            assert_eq!(
+                registry_metric_for(
+                    &lifecycle.registry,
+                    "twin",
+                    ExtensionVariant::Local,
+                    "shutdown.send_failed",
+                ),
+                0,
+                "must not attribute send_failed on a pre-finalized variant",
+            );
+            assert_eq!(
+                registry_metric_for(
+                    &lifecycle.registry,
+                    "twin",
+                    ExtensionVariant::Local,
+                    "shutdown.sent",
+                ),
+                0,
+                "finalized variant must not be credited with shutdown.sent",
+            );
+
+            // And the Shared sibling really did get a Shutdown
+            // attributed to it. `mark_shutdown_sent` updates
+            // the entry's in-memory state but does not publish on
+            // its own — a subsequent terminal recorder is what
+            // pushes the snapshot to the registry. Assert the
+            // local state here, which is what the next publish
+            // would write.
+            let shared_key: ExtensionKey = (Cow::Borrowed("twin"), ExtensionVariant::Shared);
+            let shared_entry = lifecycle
+                .ext_metrics
+                .get(&shared_key)
+                .expect("shared entry must exist");
+            assert_eq!(
+                shared_entry.shutdown_sent(),
+                1,
+                "live sibling variant must be marked shutdown-sent",
+            );
+            assert!(
+                !shared_entry.is_finalized(),
+                "shutdown delivery alone must not finalize the entry",
+            );
+        }));
+    }
+
     // ============================================================
     // Drop-time direct accumulation into the registry
     // ============================================================
@@ -1505,7 +1846,7 @@ mod tests {
                     Some(0),
                     "Drop must publish active=0 directly into registry",
                 );
-                assert_eq!(s.get("shutdown.delivered").copied(), Some(1));
+                assert_eq!(s.get("shutdown.sent").copied(), Some(1));
             }
         }));
     }
@@ -1667,7 +2008,6 @@ mod tests {
             lifecycle.record_completion(&key, true);
             lifecycle.record_timeout(&key);
             lifecycle.record_send_failed(&key);
-            lifecycle.record_send_timeout(&key);
             lifecycle.record_cancellation(&key);
         }));
     }
@@ -1692,7 +2032,7 @@ mod tests {
                 .ext_metrics
                 .get_mut(&key)
                 .unwrap()
-                .mark_shutdown_delivered(Instant::now() - Duration::from_millis(3));
+                .mark_shutdown_sent(Instant::now() - Duration::from_millis(3));
             lifecycle.record_completion(&key, false);
 
             let registry = lifecycle.registry.clone();
@@ -1701,7 +2041,7 @@ mod tests {
             let snapshots = collect_registry_metrics(&registry);
             assert_eq!(snapshots.len(), 1);
             assert_eq!(snapshots[0].get("active").copied(), Some(0));
-            assert_eq!(snapshots[0].get("shutdown.delivered").copied(), Some(1));
+            assert_eq!(snapshots[0].get("shutdown.sent").copied(), Some(1));
             assert!(
                 snapshots[0].get("shutdown.duration").copied().unwrap_or(0) > 0,
                 "shutdown.duration must be > 0 with a backdated anchor",
