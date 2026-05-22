@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Static hardcoded signal generators for lightweight load testing.
+//! Synthetic hardcoded signal generators for lightweight load testing.
 //!
 //! These generators produce minimal OTLP signals without requiring the
 //! semantic conventions registry, making them ideal for high-throughput
@@ -550,7 +550,7 @@ fn build_log_attributes(count: usize, record_index: usize) -> Vec<KeyValue> {
 /// Default number of log attributes when `num_log_attributes` is not configured.
 const DEFAULT_LOG_ATTRIBUTE_COUNT: usize = 2;
 
-/// Generates TracesData with static hardcoded spans
+/// Generates TracesData with Synthetic hardcoded spans
 #[must_use]
 pub fn static_otlp_traces(
     signal_count: usize,
@@ -576,7 +576,7 @@ pub fn static_otlp_traces(
     TracesData::new(resources)
 }
 
-/// Generates LogsData with static hardcoded log records
+/// Generates LogsData with Synthetic hardcoded log records
 #[must_use]
 pub fn static_otlp_logs(
     signal_count: usize,
@@ -626,7 +626,7 @@ pub fn static_otlp_logs_with_config(
     LogsData::new(resources)
 }
 
-/// Generates MetricsData with static hardcoded metrics
+/// Generates MetricsData with Synthetic hardcoded metrics
 #[must_use]
 pub fn static_otlp_metrics(
     signal_count: usize,
