@@ -928,12 +928,13 @@ impl ExprPlanner {
         // Try fused attribute comparison optimization: when one side is an attribute
         // access and the other is a typed literal, skip the expensive key-filter +
         // value-projection materialization step.
-        // Skip for case-insensitive value comparisons (=~) since those need ILIKE on
-        // the value column with proper escaping, which is more complex.
-        // TODO after arrow-rs release w/ fix from apache/arrow-rs/pull/9871, we can correct
-        // the logic here not to skip but instead to use eq_ascii_ignore_case.
-        if !self.plan_for_attributes && case_sensitive {
-            if let Some(fused) = self.try_plan_fused_attr_comparison(&left, operator, &right)? {
+        if !self.plan_for_attributes {
+            if let Some(fused) = self.try_plan_fused_attr_comparison(
+                &mut left,
+                operator,
+                &mut right,
+                case_sensitive,
+            )? {
                 return Ok(fused);
             }
         }
@@ -1039,12 +1040,13 @@ impl ExprPlanner {
     /// Returns `None` when the pattern doesn't match (falls back to the normal path).
     fn try_plan_fused_attr_comparison(
         &self,
-        left: &PlannedOp,
-        operator: Operator,
-        right: &PlannedOp,
+        left: &mut PlannedOp,
+        mut operator: Operator,
+        right: &mut PlannedOp,
+        case_sensitive: bool,
     ) -> Result<Option<ScopedExpr>> {
         // Identify which side is the attribute access and which is the literal.
-        let (attrs_op, literal_op, attrs_on_left) =
+        let (attrs_op, mut literal_op, attrs_on_left) =
             match (left.expr.eval_scope(), right.expr.eval_scope()) {
                 (Some(DataScope::Attribute(_, _)), Some(DataScope::StaticScalar)) => {
                     (left, right, true)
@@ -1059,6 +1061,11 @@ impl ExprPlanner {
         // not when the attribute value is used in arithmetic, function calls, etc.
         if !is_simple_attr_value_column(attrs_op) {
             return Ok(None);
+        }
+
+        if operator == Operator::Eq && !case_sensitive {
+            escape_like_literals(&mut literal_op);
+            operator = Operator::ILikeMatch;
         }
 
         // Extract the attribute key and attrs_id
@@ -2229,7 +2236,6 @@ mod test {
     }
 
     #[test]
-    #[ignore = "need to fix now that we have correct handling for and"]
     fn test_plan_and_two_root_predicates() {
         let planner = ExprPlanner::new();
 
@@ -2251,8 +2257,8 @@ mod test {
 
         let op = planner.plan_logical(&logical, &[]).unwrap();
 
-        // should be a BitmapAnd
-        assert!(matches!(op, ScopedExpr::BitmapAnd(_, _)));
+        // should be a Eval because they're a combinable source
+        assert!(matches!(op, ScopedExpr::Eval { .. }));
 
         // execute and verify: all 3 rows have severity_number > 10 AND severity_text="WARN"
         // -> rows 0 and 2 pass (row 1 has severity_text="ERROR")
@@ -2340,7 +2346,6 @@ mod test {
     }
 
     #[test]
-    #[ignore = "need to fix now that we combine in not"]
     fn test_plan_not() {
         let planner = ExprPlanner::new();
 
@@ -2354,7 +2359,8 @@ mod test {
         let logical = LogicalExpression::Not(not_expr);
 
         let op = planner.plan_logical(&logical, &[]).unwrap();
-        assert!(matches!(op, ScopedExpr::BitmapNot(_)));
+        // should be eval b/c it's a combinable source
+        assert!(matches!(op, ScopedExpr::Eval { .. }));
 
         // execute: NOT(WARN) should match row 1 (ERROR)
         let otap = test_otap();
@@ -2365,12 +2371,12 @@ mod test {
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
-        // NotSome({0, 2}) = matches everything except 0 and 2 = matches 1
+        // not(Some({0, 2})) = matches everything except 0 and 2 = matches 1
         match &mask {
-            IdMask::NotSome(bitmap) => {
-                assert!(bitmap.contains(0), "0 in negated set");
-                assert!(!bitmap.contains(1), "1 not in negated set");
-                assert!(bitmap.contains(2), "2 in negated set");
+            IdMask::Some(bitmap) => {
+                assert!(!bitmap.contains(0), "0 in negated set");
+                assert!(bitmap.contains(1), "1 not in negated set");
+                assert!(!bitmap.contains(2), "2 in negated set");
             }
             other => panic!("expected NotSome, got {other:?}"),
         }

@@ -3721,16 +3721,7 @@ mod test {
         test_filter_by_attributes_case_insensitive_equals::<KqlParser>().await
     }
 
-    // TODO: This test fails after the Phase 2B migration to ScopedExpr. The ILIKE pattern
-    // escaping (using `\` to escape `%` and `_`) does not work correctly when the
-    // comparison is evaluated through AnyValue struct column partitioning. The old
-    // FilterPlan path evaluated ILIKE directly on the raw `str` column in the attributes
-    // batch, bypassing AnyValue handling. The fix requires either evaluating ILIKE on
-    // attribute values with eval_anyval_as_struct=true, or using a different approach
-    // for case-insensitive equality on attribute values (e.g., lowercasing both sides
-    // instead of using ILIKE).
     #[tokio::test]
-    #[ignore]
     async fn test_filter_by_attributes_case_insensitive_equals_escapes_special_chars() {
         let log_records = vec![
             LogRecord::build()
