@@ -878,7 +878,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_contains_args_from_expr() {
+    async fn test_filter_contains_args_from_func_call_expr() {
         let log_records = vec![
             LogRecord::build()
                 .event_name("error happen")
@@ -905,6 +905,17 @@ mod test {
 
         let result = exec_logs_pipeline::<OplParser>(
             "logs | where contains(concat(attributes[\"username\"], attributes[\"email\"]), \"e\")",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone(), log_records[2].clone()]
+        );
+
+        // test w/ scalar on the left too
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where contains(\"t\", substring(concat(attributes[\"username\"], attributes[\"email\"]), 0, 1))",
             to_logs_data(log_records.clone()),
         )
         .await;

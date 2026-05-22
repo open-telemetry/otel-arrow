@@ -154,7 +154,7 @@ pub(super) fn eval_datafusion_expr_value(
                     if *missing_data_passes {
                         return Ok(Some(ScopedValue {
                             values: ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))),
-                            scope: scope.clone(), // TODO scope clone here clones key string - should be Rc?
+                            scope: scope.clone(), 
                             ids: None,
                             parent_ids: None,
                         }));
@@ -211,7 +211,6 @@ pub(super) fn eval_datafusion_expr_value(
             let result = predicate.evaluate(otap_batch);
             Ok(Some(ScopedValue {
                 values: ColumnarValue::Scalar(ScalarValue::Boolean(Some(result))),
-                // TODO - should this be scalar scope?
                 scope: DataScope::Root,
                 ids: None,
                 parent_ids: None,
@@ -246,7 +245,7 @@ pub(super) fn join_and_eval_value(
         .collect::<Result<Vec<_>>>()?;
 
     // perform the join
-    // TODO - is there any reason not to always use multi_join here? It could simplify the call
+    // TODO in the future we should consolidate join strategy so multi-join is the only option.
     let (joined_rb, result_scope) = if eval_results.len() == 2 {
         join(&eval_results[0], &eval_results[1], otap_batch)?
     } else {
@@ -265,8 +264,8 @@ pub(super) fn join_and_eval_value(
     } = eval
     else {
         // TODO - technically we could evaluate the batch predicate w/out joining. It would be
-        // correct, although it would also be a weird planner error if we ended up here w/out this
-        // variant of LeafEval
+        // correct, although the planner doesn't produce plans that join before a batch predicate
+        // so it's fine to just treat this as an error for now.
         return Err(Error::ExecutionError {
             cause: "JoinAndEval requires a DatafusionExpr leaf evaluation".into(),
         });

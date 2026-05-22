@@ -215,20 +215,19 @@ fn scoped_value_to_id_mask(
                     Ok(IdMask::Some(bitmap))
                 }
                 None => {
-                    // No explicit id column on root batch — use array index as implicit ID.
-                    // This happens for simple batches without attributes or when the ID
-                    // column has been omitted.
                     if boolean_arr.true_count() == boolean_arr.len() {
                         Ok(IdMask::All)
                     } else if boolean_arr.false_count() == boolean_arr.len() {
                         Ok(IdMask::None)
                     } else {
-                        // This shouldn't happen, unless we somehow got an invalid batch. Basically it 
+                        // This shouldn't happen, unless we somehow got an invalid batch. Basically it
                         // means we did some filtering on a child batch that was present, but there is
                         // no ID column to join with it
-                        Err(Error::InvalidPipelineError { 
-                            cause: "materialize_id_mask_to_value expected id column for materializing id bitmap".into(),
-                            query_location: None
+                        Err(Error::InvalidPipelineError {
+                            cause: "materialize_id_mask_to_value expected id column for 
+                                materializing id bitmap"
+                                .into(),
+                            query_location: None,
                         })
                     }
                 }

@@ -144,6 +144,13 @@ pub fn join<'a>(
             let join_result = join_exec.join(left, right, otap_batch)?;
             Ok((join_result, left.data_scope.clone()))
         }
+        (DataScope::StaticScalar, _) => {
+            let join_exec = ScalarJoin {
+                left_is_scalar: true,
+            };
+            let join_result = join_exec.join(left, right, otap_batch)?;
+            Ok((join_result, right.data_scope.clone()))
+        }
         (DataScope::Attribute(left_attrs_id, _), DataScope::Attribute(right_attrs_id, _)) => {
             if left_attrs_id == right_attrs_id {
                 let join_exec = AttributeToSameAttributeJoin::new();
