@@ -797,7 +797,6 @@ impl JoinExec for ScalarJoin {
         };
 
         if self.left_is_scalar {
-            // TODO - need tests for this
             // join left to right, then switch the field names
             let (schema, columns, _) =
                 to_join_result(right, scalar_col.to_array(rows)?)?.into_parts();
