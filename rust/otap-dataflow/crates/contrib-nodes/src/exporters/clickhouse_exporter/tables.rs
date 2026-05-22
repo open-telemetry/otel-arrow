@@ -22,13 +22,13 @@ use std::collections::HashMap;
 use clickhouse_arrow::{ArrowClient, Qid};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
-use crate::clickhouse_exporter::config::{
+use crate::exporters::clickhouse_exporter::config::{
     AttributeRepresentation, Config, DefaultTableConfig, MetricsTableConfig, TableConfig,
     TableEngine, TablesConfig,
 };
-use crate::clickhouse_exporter::consts as ch_consts;
-use crate::clickhouse_exporter::error::ClickhouseExporterError;
-use crate::clickhouse_exporter::schema;
+use crate::exporters::clickhouse_exporter::consts as ch_consts;
+use crate::exporters::clickhouse_exporter::error::ClickhouseExporterError;
+use crate::exporters::clickhouse_exporter::schema;
 
 #[derive(Debug, Default, Clone)]
 pub struct CHTableBuilder {
@@ -528,7 +528,7 @@ impl TablesConfig {
 
 #[cfg(test)]
 mod tests {
-    use crate::clickhouse_exporter::config::ConfigPatch;
+    use crate::exporters::clickhouse_exporter::config::ConfigPatch;
 
     use super::*;
 

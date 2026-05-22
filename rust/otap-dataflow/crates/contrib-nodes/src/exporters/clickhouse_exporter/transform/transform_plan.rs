@@ -61,8 +61,8 @@ use std::collections::HashMap;
 
 use arrow::datatypes::DataType;
 
-use crate::clickhouse_exporter::config::{AttributeRepresentation, Config};
-use crate::clickhouse_exporter::consts as ch_consts;
+use crate::exporters::clickhouse_exporter::config::{AttributeRepresentation, Config};
+use crate::exporters::clickhouse_exporter::consts as ch_consts;
 use otap_df_pdata::{proto::opentelemetry::arrow::v1::ArrowPayloadType, schema::consts};
 
 const OTAP_SPAN_FLAGS: &str = "span_flags";
@@ -692,7 +692,7 @@ impl ColumnOperations {
 
 #[cfg(test)]
 mod tests {
-    use crate::clickhouse_exporter::config::ConfigPatch;
+    use crate::exporters::clickhouse_exporter::config::ConfigPatch;
 
     use super::*;
 

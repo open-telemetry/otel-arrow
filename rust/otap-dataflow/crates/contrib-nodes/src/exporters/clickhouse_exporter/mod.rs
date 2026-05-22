@@ -26,9 +26,6 @@
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap::OTAP_EXPORTER_FACTORIES;
-use otap::metrics::ExporterPDataMetrics;
-use otap::pdata::OtapPdata;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::validation::validate_typed_config;
 use otap_df_engine::ExporterFactory;
@@ -41,6 +38,9 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_telemetry::metrics::MetricSet;
@@ -48,10 +48,10 @@ use otap_df_telemetry::metrics::MetricSetHandler;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::clickhouse_exporter::config::{Config, ConfigPatch};
-use crate::clickhouse_exporter::metrics::ClickhouseExporterMetrics;
-use crate::clickhouse_exporter::transform::transform_batch::BatchTransformer;
-use crate::clickhouse_exporter::writer::ClickHouseWriter;
+use crate::exporters::clickhouse_exporter::config::{Config, ConfigPatch};
+use crate::exporters::clickhouse_exporter::metrics::ClickhouseExporterMetrics;
+use crate::exporters::clickhouse_exporter::transform::transform_batch::BatchTransformer;
+use crate::exporters::clickhouse_exporter::writer::ClickHouseWriter;
 
 mod arrays;
 mod config;

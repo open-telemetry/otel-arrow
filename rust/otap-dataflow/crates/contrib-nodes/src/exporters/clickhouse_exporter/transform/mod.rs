@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use crate::clickhouse_exporter::SUPPORTED_ARROW_PAYLOAD_TYPES;
-use crate::clickhouse_exporter::config::Config;
-use crate::clickhouse_exporter::transform::transform_plan::TransformationPlan;
+use crate::exporters::clickhouse_exporter::SUPPORTED_ARROW_PAYLOAD_TYPES;
+use crate::exporters::clickhouse_exporter::config::Config;
+use crate::exporters::clickhouse_exporter::transform::transform_plan::TransformationPlan;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 mod transform_attributes;

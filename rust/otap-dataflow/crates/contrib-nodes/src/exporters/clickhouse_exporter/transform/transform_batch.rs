@@ -44,8 +44,8 @@ use std::{
 };
 
 use arrow::array::{
-    make_builder, Array, ArrayBuilder, ListBuilder, MapBuilder, PrimitiveArray, StringBuilder,
-    TimestampNanosecondBuilder, UInt32Builder,
+    Array, ArrayBuilder, ListBuilder, MapBuilder, PrimitiveArray, StringBuilder,
+    TimestampNanosecondBuilder, UInt32Builder, make_builder,
 };
 use arrow::datatypes::UInt16Type;
 use arrow::{
@@ -55,19 +55,21 @@ use arrow::{
 use arrow_array::builder::FixedSizeBinaryBuilder;
 use arrow_array::{MapArray, StringArray, TimestampNanosecondArray, UInt32Array};
 use arrow_schema::{DataType, TimeUnit};
+use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
-use otap_df_pdata::OtapArrowRecords;
 
-use crate::clickhouse_exporter::arrays::get_u16_array_opt;
-use crate::clickhouse_exporter::config::Config;
-use crate::clickhouse_exporter::error::ClickhouseExporterError;
-use crate::clickhouse_exporter::transform::build_payload_transform_map;
-use crate::clickhouse_exporter::transform::transform_attributes::{
+use crate::exporters::clickhouse_exporter::arrays::get_u16_array_opt;
+use crate::exporters::clickhouse_exporter::config::Config;
+use crate::exporters::clickhouse_exporter::error::ClickhouseExporterError;
+use crate::exporters::clickhouse_exporter::transform::build_payload_transform_map;
+use crate::exporters::clickhouse_exporter::transform::transform_attributes::{
     group_attributes_to_json_ser, group_attributes_to_map_str, group_rows_by_id,
 };
-use crate::clickhouse_exporter::transform::transform_column::{apply_one_op, ColumnOpCtx};
-use crate::clickhouse_exporter::transform::transform_plan::{
+use crate::exporters::clickhouse_exporter::transform::transform_column::{
+    ColumnOpCtx, apply_one_op,
+};
+use crate::exporters::clickhouse_exporter::transform::transform_plan::{
     ColumnOperations, ColumnTransformOp, MultiColumnTransformOp, TransformationPlan,
 };
 
@@ -737,7 +739,7 @@ mod runner_sequence_tests {
 #[cfg(test)]
 mod apply_column_ops_tests {
     #![allow(unused_results)]
-    use crate::clickhouse_exporter::consts as ch_consts;
+    use crate::exporters::clickhouse_exporter::consts as ch_consts;
     use arrow::array::StringBuilder;
     use arrow_array::{MapArray, UInt16Array, UInt32Array};
 
@@ -844,7 +846,7 @@ mod apply_column_ops_tests {
             ch_consts::RESOURCE_ID.into(),
             vec![ColumnTransformOp::InlineAttribute(
                 ArrowPayloadType::ResourceAttrs,
-                crate::clickhouse_exporter::config::AttributeRepresentation::StringMap,
+                crate::exporters::clickhouse_exporter::config::AttributeRepresentation::StringMap,
             )],
         )]);
 
@@ -852,11 +854,12 @@ mod apply_column_ops_tests {
             .unwrap()
             .expect("batch should be produced");
 
-        assert!(out
-            .schema()
-            .fields()
-            .iter()
-            .any(|field| field.name() == ch_consts::CH_RESOURCE_ATTRIBUTES));
+        assert!(
+            out.schema()
+                .fields()
+                .iter()
+                .any(|field| field.name() == ch_consts::CH_RESOURCE_ATTRIBUTES)
+        );
 
         let attrs = out
             .column(
@@ -933,14 +936,14 @@ mod apply_column_ops_tests {
                 ch_consts::RESOURCE_ID.into(),
                 vec![ColumnTransformOp::InlineAttribute(
                     ArrowPayloadType::ResourceAttrs,
-                    crate::clickhouse_exporter::config::AttributeRepresentation::StringMap,
+                    crate::exporters::clickhouse_exporter::config::AttributeRepresentation::StringMap,
                 )],
             ),
             (
                 ch_consts::SCOPE_ID.into(),
                 vec![ColumnTransformOp::InlineAttribute(
                     ArrowPayloadType::ScopeAttrs,
-                    crate::clickhouse_exporter::config::AttributeRepresentation::StringMap,
+                    crate::exporters::clickhouse_exporter::config::AttributeRepresentation::StringMap,
                 )],
             ),
         ]);
@@ -949,23 +952,25 @@ mod apply_column_ops_tests {
             .unwrap()
             .expect("batch should be produced");
 
-        assert!(out
-            .schema()
-            .fields()
-            .iter()
-            .any(|field| field.name() == ch_consts::CH_RESOURCE_ATTRIBUTES));
-        assert!(out
-            .schema()
-            .fields()
-            .iter()
-            .any(|field| field.name() == ch_consts::CH_SCOPE_ATTRIBUTES));
+        assert!(
+            out.schema()
+                .fields()
+                .iter()
+                .any(|field| field.name() == ch_consts::CH_RESOURCE_ATTRIBUTES)
+        );
+        assert!(
+            out.schema()
+                .fields()
+                .iter()
+                .any(|field| field.name() == ch_consts::CH_SCOPE_ATTRIBUTES)
+        );
     }
 }
 
 #[cfg(test)]
 mod multi_plus_single_tests {
     #![allow(unused_results)]
-    use crate::clickhouse_exporter::transform::transform_plan::ExtractGroupedFieldSpec;
+    use crate::exporters::clickhouse_exporter::transform::transform_plan::ExtractGroupedFieldSpec;
 
     use super::*;
     use std::collections::HashMap;
@@ -1113,9 +1118,9 @@ mod realistic_otap_tests {
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::proto::opentelemetry::trace::v1::{
+        ResourceSpans, ScopeSpans, Span, Status,
         span::{Event, Link, SpanKind},
         status::StatusCode,
-        ResourceSpans, ScopeSpans, Span, Status,
     };
     use otap_df_pdata::schema::consts;
     use otap_df_pdata::testing::fixtures;
@@ -1123,12 +1128,12 @@ mod realistic_otap_tests {
     use prost::Message;
 
     use super::BatchTransformer;
-    use crate::clickhouse_exporter::config::{Config, ConfigPatch};
-    use crate::clickhouse_exporter::consts as ch_consts;
-    use crate::clickhouse_exporter::transform::transform_batch::{
-        apply_column_ops, run_multi_column_stage, MultiColumnOpResult,
+    use crate::exporters::clickhouse_exporter::config::{Config, ConfigPatch};
+    use crate::exporters::clickhouse_exporter::consts as ch_consts;
+    use crate::exporters::clickhouse_exporter::transform::transform_batch::{
+        MultiColumnOpResult, apply_column_ops, run_multi_column_stage,
     };
-    use crate::clickhouse_exporter::transform::transform_plan::{
+    use crate::exporters::clickhouse_exporter::transform::transform_plan::{
         MultiColumnTransformOp, TransformationPlan,
     };
 

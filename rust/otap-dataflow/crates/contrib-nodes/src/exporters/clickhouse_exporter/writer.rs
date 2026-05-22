@@ -28,7 +28,7 @@ use futures_util::StreamExt;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_telemetry::metrics::MetricSet;
 
-use crate::clickhouse_exporter::{
+use crate::exporters::clickhouse_exporter::{
     config::{AttributeRepresentation, Config},
     error::ClickhouseExporterError,
     metrics::ClickhouseExporterMetrics,
