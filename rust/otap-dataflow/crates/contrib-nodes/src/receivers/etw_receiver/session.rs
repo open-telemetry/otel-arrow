@@ -50,16 +50,16 @@ use std::sync::Mutex;
 use one_collect::Guid;
 use one_collect::etw::{self, EtwSession};
 use otap_df_engine::error::Error;
-use otap_df_telemetry::{otel_error, otel_warn};
+use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use tokio::sync::mpsc;
 
 use super::{Config, ProviderConfig, TraceLevel};
 
 /// Channel capacity for ETW events sent from the blocking session thread to
 /// each per-core async receiver loop.  A bounded channel provides implicit
-/// backpressure: when a core's channel is full the round-robin callback skips
-/// that core for the current event (the event is dropped entirely from the
-/// pipeline).
+/// backpressure: when the target core's channel is full the event is dropped
+/// from the pipeline entirely.  The round-robin index still advances, so the
+/// next event continues to the following core (no retry on another core).
 const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
 // ── Event data transferred across the channel ────────────────────────────────
@@ -257,6 +257,7 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
             // multiple providers would otherwise all start at index 0.
             let next: Rc<Cell<usize>> = Rc::new(Cell::new(0));
             let dropped: Rc<Cell<u64>> = Rc::new(Cell::new(0));
+            let closed_logged: Rc<Cell<bool>> = Rc::new(Cell::new(false));
             let txs: Rc<Vec<mpsc::Sender<EtwEventData>>> = Rc::new(txs);
 
             // Register a provider-wide event for each configured provider.
@@ -274,6 +275,7 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                 let ancillary = ancillary.clone();
                 let next = Rc::clone(&next);
                 let dropped = Rc::clone(&dropped);
+                let closed_logged = Rc::clone(&closed_logged);
                 let txs = Rc::clone(&txs);
 
                 wide_event.add_callback(move |_event_data| {
@@ -308,16 +310,36 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                     // Best-effort send; if this core's channel is full the
                     // event is dropped from the pipeline entirely (each event
                     // is assigned to exactly one core via round-robin).
-                    if txs[i % txs.len()].try_send(data).is_err() {
-                        let count = dropped.get() + 1;
-                        dropped.set(count);
-                        // Rate-limited log: first drop, then every 10,000th.
-                        if count == 1 || count.is_multiple_of(10_000) {
-                            otel_warn!(
-                                "etw.event.dropped",
-                                total_dropped = count,
-                                core = i % txs.len(),
-                            );
+                    match txs[i % txs.len()].try_send(data) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            let count = dropped.get() + 1;
+                            dropped.set(count);
+                            // TODO: Report dropped events as a metric counter
+                            // instead of a log line.  MetricSet is not directly
+                            // usable here because this callback runs on the
+                            // blocking ProcessTrace OS thread (!Send context).
+                            // Consider an AtomicU64 that the async receiver
+                            // side periodically reads and reports via MetricSet.
+                            //
+                            // Rate-limited log: first drop, then every 10,000th.
+                            if count == 1 || count.is_multiple_of(10_000) {
+                                otel_warn!(
+                                    "etw.event.dropped",
+                                    total_dropped = count,
+                                    core = i % txs.len(),
+                                );
+                            }
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            // The receiver for this core has been dropped
+                            // (shutdown).  This is not a backpressure drop —
+                            // log once and then suppress to avoid log spam
+                            // during process teardown.
+                            if !closed_logged.get() {
+                                closed_logged.set(true);
+                                otel_info!("etw.event.channel_closed", core = i % txs.len(),);
+                            }
                         }
                     }
 
