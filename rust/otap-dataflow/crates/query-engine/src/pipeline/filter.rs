@@ -33,14 +33,14 @@ pub(crate) mod compare;
 /// This stage evaluates a `ScopedExpr` tree to produce a root-aligned boolean selection
 /// vector, then filters the OTAP batch using that vector.
 pub struct FilterPipelineStage {
-    scoped_op: ScopedExpr,
+    predicate: ScopedExpr,
     id_bitmap_pool: IdBitmapPool,
 }
 
 impl FilterPipelineStage {
     pub fn new(scoped_op: ScopedExpr) -> Self {
         Self {
-            scoped_op,
+            predicate: scoped_op,
             id_bitmap_pool: IdBitmapPool::new(),
         }
     }
@@ -65,7 +65,7 @@ impl PipelineStage for FilterPipelineStage {
 
         // Evaluate the ScopedExpr tree to produce a boolean result, then align to root.
         let result = self
-            .scoped_op
+            .predicate
             .execute_as_value(&otap_batch, session_context)?;
 
         // Convert the result to a root-aligned BooleanArray selection vector.
@@ -102,7 +102,7 @@ impl PipelineStage for FilterPipelineStage {
         _exec_options: &mut ExecutionState,
     ) -> Result<RecordBatch> {
         let result = self
-            .scoped_op
+            .predicate
             .evaluate_on_batch(session_context, &attrs_record_batch)?;
 
         let selection_vec = scoped_value_to_boolean_array(result, attrs_record_batch.num_rows())?;
