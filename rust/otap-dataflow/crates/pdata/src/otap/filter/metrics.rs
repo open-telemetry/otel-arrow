@@ -61,10 +61,12 @@ impl MetricFilter {
         metrics_payload: OtapArrowRecords,
         pool: &mut IdBitmapPool,
     ) -> Result<(OtapArrowRecords, u64, u64)> {
-        let payload_type = metrics_payload.root_payload_type();
-        let metrics = metrics_payload
-            .root_record_batch()
-            .ok_or_else(|| Error::RecordBatchNotFound { payload_type })?;
+        // Empty OTLP -> OTAP encodes to no root UnivariateMetrics batch.
+        // Treat as a 0-row passthrough rather than an error so default/no-op
+        // filters and configured filters both work on empty payloads.
+        let Some(metrics) = metrics_payload.root_record_batch() else {
+            return Ok((metrics_payload, 0, 0));
+        };
         let num_rows = metrics.num_rows() as u64;
 
         let metric_filter = if let Some(include_config) = &self.include
@@ -147,8 +149,10 @@ impl MetricMatchProperties {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::otap::Metrics;
     use crate::otap::filter::MatchType;
     use crate::proto::OtlpProtoMessage;
+    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::proto::opentelemetry::common::v1::InstrumentationScope;
     use crate::proto::opentelemetry::metrics::v1::{
         AggregationTemporality, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
@@ -263,5 +267,102 @@ mod test {
         ])));
 
         assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
+    }
+
+    /// An empty OTLP metrics request encodes to `Metrics::default()` with no root
+    /// `UnivariateMetrics` batch. The filter must treat that as a 0-row passthrough
+    /// regardless of whether include/exclude rules are configured -- there is no row
+    /// for any rule to act on.
+    #[test]
+    fn test_filter_empty_payload_passthrough() {
+        let mut pool = IdBitmapPool::new();
+
+        let cases = [
+            ("no-op", MetricFilter::new(None, None)),
+            (
+                "include-only",
+                MetricFilter::new(
+                    Some(MetricMatchProperties::new(
+                        MatchType::Strict,
+                        vec!["test.counter".into()],
+                    )),
+                    None,
+                ),
+            ),
+            (
+                "exclude-only",
+                MetricFilter::new(
+                    None,
+                    Some(MetricMatchProperties::new(
+                        MatchType::Strict,
+                        vec!["test.counter".into()],
+                    )),
+                ),
+            ),
+            (
+                "include-and-exclude",
+                MetricFilter::new(
+                    Some(MetricMatchProperties::new(
+                        MatchType::Strict,
+                        vec!["a".into()],
+                    )),
+                    Some(MetricMatchProperties::new(
+                        MatchType::Strict,
+                        vec!["b".into()],
+                    )),
+                ),
+            ),
+        ];
+
+        for (label, filter) in cases {
+            let empty = OtapArrowRecords::Metrics(Metrics::default());
+            let (result, consumed, filtered) = filter
+                .filter(empty, &mut pool)
+                .unwrap_or_else(|e| panic!("{label}: unexpected error {e:?}"));
+            assert_eq!(consumed, 0, "{label}: consumed");
+            assert_eq!(filtered, 0, "{label}: filtered");
+            assert!(
+                result.root_record_batch().is_none(),
+                "{label}: payload should remain empty"
+            );
+        }
+    }
+
+    /// Direct OTAP cascade check: when a parent metric row is dropped, the child
+    /// `NumberDataPoints` batch must shrink in lockstep. The other round-trip tests
+    /// re-encode to OTLP, which silently skips orphan child rows whose `parent_id`
+    /// no longer resolves -- so a broken cascade can pass them. This test inspects
+    /// the OTAP record batches directly, before any OTLP conversion.
+    #[test]
+    fn test_filter_prunes_child_batches() {
+        fn rows(batch: &OtapArrowRecords, kind: ArrowPayloadType) -> usize {
+            batch.get(kind).map(|rb| rb.num_rows()).unwrap_or(0)
+        }
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Metrics(build_metrics(&[
+            "test.counter1",
+            "test.counter2",
+            "test.counter3",
+        ])));
+
+        // Each metric carries exactly one NumberDataPoint, so child rows == parent rows.
+        assert_eq!(rows(&input, ArrowPayloadType::UnivariateMetrics), 3);
+        assert_eq!(rows(&input, ArrowPayloadType::NumberDataPoints), 3);
+
+        let filter = MetricFilter::new(
+            Some(MetricMatchProperties::new(
+                MatchType::Strict,
+                vec!["test.counter1".into(), "test.counter3".into()],
+            )),
+            None,
+        );
+        let mut pool = IdBitmapPool::new();
+        let (result, consumed, filtered) = filter.filter(input, &mut pool).unwrap();
+        assert_eq!(consumed, 3);
+        assert_eq!(filtered, 1);
+
+        // Parent dropped 1 row -> child must drop the matching row too.
+        assert_eq!(rows(&result, ArrowPayloadType::UnivariateMetrics), 2);
+        assert_eq!(rows(&result, ArrowPayloadType::NumberDataPoints), 2);
     }
 }
