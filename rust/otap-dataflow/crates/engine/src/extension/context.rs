@@ -20,8 +20,10 @@
 
 use crate::attributes::{ExtensionAttributeSet, PipelineAttributeSet};
 use crate::context::PipelineContext;
+use crate::extension::ExtensionVariant;
 use otap_df_config::ExtensionId;
 use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
+use std::borrow::Cow;
 
 /// Context handed to extension-hosting code (the extension lifecycle
 /// today; potentially more in the future).
@@ -77,16 +79,21 @@ impl ExtensionContext {
         self.registry.clone()
     }
 
-    /// Registers a per-extension metrics entity under whatever parent
-    /// hierarchy this context represents, and returns its key.
-    /// Callers should then use the returned [`EntityKey`] to register
-    /// any metric sets they own for this extension.
+    /// Register a per-lifecycle metrics entity (one per
+    /// `(extension_id, variant)`) under this context's parent
+    /// hierarchy. Local and shared variants of the same id are
+    /// distinct entities.
     #[must_use]
-    pub fn register_extension_entity(&self, extension_id: &ExtensionId) -> EntityKey {
+    pub fn register_extension_entity(
+        &self,
+        extension_id: &ExtensionId,
+        variant: ExtensionVariant,
+    ) -> EntityKey {
         match &self.attribute_set {
             AttributeSet::Pipeline(pipeline_attrs) => {
                 self.registry.register_entity(ExtensionAttributeSet {
                     extension_id: extension_id.clone(),
+                    extension_variant: Cow::Borrowed(variant.as_str()),
                     pipeline_attrs: pipeline_attrs.clone(),
                 })
             }

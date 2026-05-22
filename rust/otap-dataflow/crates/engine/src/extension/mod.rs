@@ -31,5 +31,5 @@ pub use builder::{
 pub use context::ExtensionContext;
 pub use wrapper::{
     ControlChannel, ControlReceiver, EffectHandler, ExtensionBundle, ExtensionLifecycle,
-    ExtensionWrapper,
+    ExtensionVariant, ExtensionWrapper,
 };

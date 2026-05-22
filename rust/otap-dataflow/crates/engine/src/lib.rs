@@ -58,6 +58,7 @@ pub mod error;
 pub mod exporter;
 pub mod extension;
 mod extension_lifecycle;
+mod extension_lifecycle_metrics;
 pub mod message;
 pub mod processor;
 pub mod receiver;

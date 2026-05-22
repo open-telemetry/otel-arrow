@@ -99,16 +99,21 @@ pub struct PipelineAttributeSet {
 
 /// Extension attributes.
 ///
-/// Scopes per-extension metric sets (e.g. `extension.lifecycle`) under the
-/// pipeline hierarchy. Extensions are pipeline-scoped today; if an
-/// engine-scoped (cross-pipeline) extension lifecycle is added later,
-/// introduce a sibling attribute set composing the engine-level hierarchy.
+/// Scopes per-extension metric sets (e.g. `extension.lifecycle`)
+/// under the pipeline hierarchy. The `(extension_id,
+/// extension_variant)` pair uniquely identifies a single running
+/// extension lifecycle — local and shared variants of the same id
+/// are tracked as distinct entities so scrapers can attribute
+/// metrics to each independently.
 #[attribute_set(name = "extension.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct ExtensionAttributeSet {
     /// Extension identifier (`extension.id`).
     #[attribute(key = "extension.id")]
     pub extension_id: Cow<'static, str>,
+    /// Extension variant — `"local"` or `"shared"`.
+    #[attribute(key = "extension.variant")]
+    pub extension_variant: Cow<'static, str>,
     /// Pipeline attributes (engine + pipeline).
     #[compose]
     pub pipeline_attrs: PipelineAttributeSet,

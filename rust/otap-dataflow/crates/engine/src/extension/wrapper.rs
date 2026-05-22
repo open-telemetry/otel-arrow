@@ -171,6 +171,39 @@ pub enum ExtensionLifecycle<E, R> {
 
 // ── ExtensionWrapper ────────────────────────────────────────────────────────
 
+/// Discriminant identifying which variant (local vs shared) of an
+/// extension a particular [`ExtensionWrapper`] represents.
+///
+/// A single extension id can be realized by *both* a [`Local`] and a
+/// [`Shared`] wrapper in the same pipeline (`ExtensionBundle` carries
+/// both, and `lib.rs` flattens consumed variants into a single
+/// `Vec<ExtensionWrapper>`). Anything keyed off the extension id alone
+/// — like the per-extension lifecycle metric map — must combine this
+/// variant with [`ExtensionWrapper::name`] to avoid collapsing the two
+/// tasks into one entry.
+///
+/// [`Local`]: ExtensionVariant::Local
+/// [`Shared`]: ExtensionVariant::Shared
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExtensionVariant {
+    /// Local (`!Send`) extension variant.
+    Local,
+    /// Shared (`Send`) extension variant.
+    Shared,
+}
+
+impl ExtensionVariant {
+    /// Stable, lowercase string label suitable for use as a
+    /// telemetry attribute value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Shared => "shared",
+        }
+    }
+}
+
 /// Wrapper for a single extension variant in the pipeline engine.
 ///
 /// Extensions are NOT generic over PData — they operate exclusively on
@@ -251,6 +284,17 @@ impl ExtensionWrapper {
         match self {
             ExtensionWrapper::Local { user_config, .. }
             | ExtensionWrapper::Shared { user_config, .. } => user_config.clone(),
+        }
+    }
+
+    /// Returns whether this wrapper is the local or shared variant of
+    /// its extension. Pairs with [`Self::name`] for keying per-variant
+    /// state (e.g. the lifecycle metrics map).
+    #[must_use]
+    pub fn variant(&self) -> ExtensionVariant {
+        match self {
+            ExtensionWrapper::Local { .. } => ExtensionVariant::Local,
+            ExtensionWrapper::Shared { .. } => ExtensionVariant::Shared,
         }
     }
 
