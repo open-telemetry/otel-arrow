@@ -641,8 +641,7 @@ impl PipelinePlanner {
                     DataScope::Attribute(_, key) => referenced.contains(key),
                     DataScope::AttributesAll(_) => {
                         // Fused attribute expressions embed key and value comparisons
-                        // directly in the DataFusion expression, so we can't easily
-                        // determine which keys they reference. Conservatively assume
+                        // directly in the DataFusion expression. Conservatively assume
                         // they may reference any reassigned attribute.
                         // TODO: extract key literals from the fused expression for
                         // more precise dependency tracking.
