@@ -926,6 +926,26 @@ mod tests {
                 ),
                 1,
             );
+            assert_eq!(
+                registry_metric_for(
+                    &lifecycle.registry,
+                    "early-err",
+                    ExtensionVariant::Local,
+                    "shutdown.send_failed",
+                ),
+                0,
+                "early err exit must not be misattributed as send_failed",
+            );
+            assert_eq!(
+                registry_metric_for(
+                    &lifecycle.registry,
+                    "early-err",
+                    ExtensionVariant::Local,
+                    "shutdown.sent",
+                ),
+                0,
+                "broadcast never ran — shutdown.sent must remain 0",
+            );
         }));
     }
 
@@ -1346,6 +1366,21 @@ mod tests {
             );
             assert_eq!(local_entry.active(), 0);
             assert_eq!(shared_entry.active(), 0);
+            assert_eq!(
+                shared_entry.shutdown_duration_ns(),
+                None,
+                "timed-out variant must not record a misleading shutdown.duration",
+            );
+            assert_eq!(
+                registry_metric_for(
+                    &lifecycle.registry,
+                    "dual-mix",
+                    ExtensionVariant::Shared,
+                    "shutdown.duration"
+                ),
+                0,
+                "registry must not surface a duration for a timed-out variant",
+            );
         }));
     }
 
