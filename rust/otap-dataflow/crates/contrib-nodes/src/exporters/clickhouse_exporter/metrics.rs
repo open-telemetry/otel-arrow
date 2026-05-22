@@ -31,3 +31,64 @@ impl ClickhouseExporterMetrics {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_logs_increments_log_rows_counter() {
+        let mut m = ClickhouseExporterMetrics::default();
+        m.add(100, ArrowPayloadType::Logs);
+        assert_eq!(m.log_rows_written.get(), 100);
+        assert_eq!(m.trace_rows_written.get(), 0);
+    }
+
+    #[test]
+    fn add_spans_increments_trace_rows_counter() {
+        let mut m = ClickhouseExporterMetrics::default();
+        m.add(7, ArrowPayloadType::Spans);
+        assert_eq!(m.trace_rows_written.get(), 7);
+        assert_eq!(m.log_rows_written.get(), 0);
+    }
+
+    #[test]
+    fn add_unknown_payload_type_is_noop() {
+        let mut m = ClickhouseExporterMetrics::default();
+        m.add(99, ArrowPayloadType::UnivariateMetrics);
+        assert_eq!(m.log_rows_written.get(), 0);
+        assert_eq!(m.trace_rows_written.get(), 0);
+    }
+
+    #[test]
+    fn add_zero_rows_does_not_change_counter() {
+        let mut m = ClickhouseExporterMetrics::default();
+        m.add(0, ArrowPayloadType::Logs);
+        assert_eq!(m.log_rows_written.get(), 0);
+    }
+
+    #[test]
+    fn add_accumulates_across_multiple_calls() {
+        let mut m = ClickhouseExporterMetrics::default();
+        m.add(10, ArrowPayloadType::Logs);
+        m.add(20, ArrowPayloadType::Logs);
+        m.add(30, ArrowPayloadType::Logs);
+        assert_eq!(m.log_rows_written.get(), 60);
+    }
+
+    #[test]
+    fn counters_are_independent() {
+        let mut m = ClickhouseExporterMetrics::default();
+        m.add(1, ArrowPayloadType::Logs);
+        m.add(2, ArrowPayloadType::Spans);
+        assert_eq!(m.log_rows_written.get(), 1);
+        assert_eq!(m.trace_rows_written.get(), 2);
+    }
+
+    #[test]
+    fn default_counters_are_zero() {
+        let m = ClickhouseExporterMetrics::default();
+        assert_eq!(m.log_rows_written.get(), 0);
+        assert_eq!(m.trace_rows_written.get(), 0);
+    }
+}

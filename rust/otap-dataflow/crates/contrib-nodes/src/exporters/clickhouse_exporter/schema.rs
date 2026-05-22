@@ -16,7 +16,7 @@
 //!
 //! These definitions are consumed by the table/view initialization logic to ensure consistent,
 //! ClickStack-compatible schemas and compression settings across all created tables.
-use crate::clickhouse_exporter::consts as ch_consts;
+use crate::exporters::clickhouse_exporter::consts as ch_consts;
 
 #[derive(Debug, Clone)]
 pub struct Column {
