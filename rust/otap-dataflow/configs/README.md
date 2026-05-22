@@ -79,7 +79,7 @@ Generates fake data with performance metrics:
 
 Generates mixed-tenant traffic using weighted resource attribute rotation:
 
-- Uses `data_source: static` with two resource attribute sets (`tenant.id:
+- Uses `data_source: synthetic` with two resource attribute sets (`tenant.id:
   prod` and `tenant.id: ppe`) weighted 3:1, producing a 75% / 25% batch split
   per  pipeline.
 - Generates fake data -> performance exporter
@@ -92,7 +92,7 @@ The `resource_attributes` field accepts three forms:
 - List of weighted entries (`attrs` + `weight`): each entry receives batches
   proportional to its weight.
 
-> **Note:** `resource_attributes` only applies to `data_source: static`.
+> **Note:** `resource_attributes` only applies to `data_source: synthetic`.
 > With `generation_strategy: pre_generated`, only the first attribute set is used.
 
 ### `otap-otap.yaml`
