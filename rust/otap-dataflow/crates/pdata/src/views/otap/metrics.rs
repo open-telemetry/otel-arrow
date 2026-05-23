@@ -11,6 +11,7 @@ use arrow::array::Array;
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use crate::error::Error;
 use crate::otap::OtapArrowRecords;
+use crate::otap::transform::transport_optimize::{RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH};
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays};
 use crate::otlp::common::{ResourceArrays, ScopeArrays};
 use crate::otlp::metrics::data_points::exp_histogram::{
@@ -22,10 +23,11 @@ use crate::otlp::metrics::data_points::summary::{QuantileArrays, SummaryDpArrays
 use crate::otlp::metrics::exemplar::ExemplarArrays;
 use crate::otlp::metrics::{MetricType, MetricsArrays};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::schema::{SpanId, TraceId};
+use crate::schema::{SpanId, TraceId, consts};
 use crate::views::otap::common::{
     Otap32AttributeIter, OtapAttributeIter, OtapAttributeView, RowGroup, RowGroupIter,
-    build_attribute_index, group_by_resource_id, group_by_scope_id,
+    build_attribute_index, ensure_plain_encoded_columns, ensure_record_plain_encoded_columns,
+    group_by_resource_id, group_by_scope_id,
 };
 use otap_df_pdata_views::views::common::{InstrumentationScopeView, Str};
 use otap_df_pdata_views::views::metrics::{
@@ -35,6 +37,10 @@ use otap_df_pdata_views::views::metrics::{
     ScopeMetricsView, SumView, SummaryDataPointView, SummaryView, Value, ValueAtQuantileView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
+
+const ROOT_ID_COLUMNS: &[&str] = &[consts::ID, RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH];
+const PARENT_ID_COLUMNS: &[&str] = &[consts::PARENT_ID];
+const ID_AND_PARENT_ID_COLUMNS: &[&str] = &[consts::ID, consts::PARENT_ID];
 
 // ===== Index Helpers =====
 
@@ -133,9 +139,24 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for OtapMetricsView<'a> {
 
     fn try_from(records: &'a OtapArrowRecords) -> Result<Self, Self::Error> {
         // A missing root metrics payload is semantically equivalent to 0 rows.
-        let metrics_batch = records
-            .get(ArrowPayloadType::UnivariateMetrics)
-            .or_else(|| records.get(ArrowPayloadType::MultivariateMetrics));
+        let metrics_batch =
+            if let Some(batch) = records.get(ArrowPayloadType::UnivariateMetrics) {
+                ensure_metrics_transport_ids_decoded(
+                    records,
+                    ArrowPayloadType::UnivariateMetrics,
+                    batch,
+                )?;
+                Some(batch)
+            } else if let Some(batch) = records.get(ArrowPayloadType::MultivariateMetrics) {
+                ensure_metrics_transport_ids_decoded(
+                    records,
+                    ArrowPayloadType::MultivariateMetrics,
+                    batch,
+                )?;
+                Some(batch)
+            } else {
+                None
+            };
 
         // Cache root columns for O(1) access.
         let metrics_arrays = metrics_batch.map(MetricsArrays::try_from).transpose()?;
@@ -343,6 +364,47 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for OtapMetricsView<'a> {
         })
     }
 }
+
+fn ensure_metrics_transport_ids_decoded(
+    records: &OtapArrowRecords,
+    metrics_payload_type: ArrowPayloadType,
+    metrics_batch: &arrow::array::RecordBatch,
+) -> Result<(), Error> {
+    ensure_plain_encoded_columns(metrics_payload_type, metrics_batch, ROOT_ID_COLUMNS)?;
+
+    for payload_type in [
+        ArrowPayloadType::ResourceAttrs,
+        ArrowPayloadType::ScopeAttrs,
+        ArrowPayloadType::MetricAttrs,
+        ArrowPayloadType::NumberDpAttrs,
+        ArrowPayloadType::SummaryDpAttrs,
+        ArrowPayloadType::HistogramDpAttrs,
+        ArrowPayloadType::ExpHistogramDpAttrs,
+        ArrowPayloadType::NumberDpExemplarAttrs,
+        ArrowPayloadType::HistogramDpExemplarAttrs,
+        ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+    ] {
+        ensure_record_plain_encoded_columns(records, payload_type, PARENT_ID_COLUMNS)?;
+    }
+
+    for payload_type in [
+        ArrowPayloadType::NumberDataPoints,
+        ArrowPayloadType::SummaryDataPoints,
+        ArrowPayloadType::HistogramDataPoints,
+        ArrowPayloadType::ExpHistogramDataPoints,
+        ArrowPayloadType::NumberDpExemplars,
+        ArrowPayloadType::HistogramDpExemplars,
+        ArrowPayloadType::ExpHistogramDpExemplars,
+    ] {
+        ensure_record_plain_encoded_columns(records, payload_type, ID_AND_PARENT_ID_COLUMNS)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "metrics/transport_guard_tests.rs"]
+mod transport_guard_tests;
 
 // ===== MetricsView impl =====
 

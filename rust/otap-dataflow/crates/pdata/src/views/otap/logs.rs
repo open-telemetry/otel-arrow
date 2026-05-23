@@ -16,13 +16,14 @@ use arrow::array::{TimestampNanosecondArray, UInt32Array};
 use crate::arrays::NullableArrayAccessor;
 use crate::error::Error;
 use crate::otap::OtapArrowRecords;
+use crate::otap::transform::transport_optimize::{RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH};
 use crate::otlp::attributes::{Attribute16Arrays, AttributeValueType};
 use crate::otlp::logs::{LogBodyArrays, LogsArrays};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::schema::{SpanId, TraceId};
+use crate::schema::{SpanId, TraceId, consts};
 use crate::views::otap::common::{
     OtapAnyValueView, OtapAttributeIter, OtapAttributeView, RowGroup, RowGroupIter,
-    build_attribute_index, group_by_resource_id, group_by_scope_id,
+    build_attribute_index, ensure_plain_encoded_columns, group_by_resource_id, group_by_scope_id,
 };
 use otap_df_pdata_views::views::common::{InstrumentationScopeView, Str};
 use otap_df_pdata_views::views::logs::{
@@ -92,6 +93,31 @@ impl<'a> OtapLogsView<'a> {
         scope_attrs: Option<&'a RecordBatch>,
         log_attrs: Option<&'a RecordBatch>,
     ) -> Result<Self, Error> {
+        if let Some(batch) = logs_batch {
+            ensure_plain_encoded_columns(
+                ArrowPayloadType::Logs,
+                batch,
+                &[consts::ID, RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH],
+            )?;
+        }
+        if let Some(batch) = resource_attrs {
+            ensure_plain_encoded_columns(
+                ArrowPayloadType::ResourceAttrs,
+                batch,
+                &[consts::PARENT_ID],
+            )?;
+        }
+        if let Some(batch) = scope_attrs {
+            ensure_plain_encoded_columns(
+                ArrowPayloadType::ScopeAttrs,
+                batch,
+                &[consts::PARENT_ID],
+            )?;
+        }
+        if let Some(batch) = log_attrs {
+            ensure_plain_encoded_columns(ArrowPayloadType::LogAttrs, batch, &[consts::PARENT_ID])?;
+        }
+
         // 1. Cache root columns for O(1) access.
         let columns = logs_batch.map(LogsArrays::try_from).transpose()?;
 
@@ -682,7 +708,16 @@ fn get_log_id(id_array: Option<&UInt16Array>, row_idx: usize) -> Option<u16> {
 }
 
 #[cfg(test)]
+#[path = "logs/test_util.rs"]
+mod test_util;
+
+#[cfg(test)]
+#[path = "logs/transport_guard_tests.rs"]
+mod transport_guard_tests;
+
+#[cfg(test)]
 mod tests {
+    use super::test_util::{plain_field, plain_id_field, plain_parent_id_field};
     use super::*;
     use arrow::array::{
         ArrayRef, Int32Array, Int64Array, StringArray, StructArray, UInt8Array, UInt16Array,
@@ -696,20 +731,20 @@ mod tests {
         // Define schema matching OTAP logs structure
         let resource_field = Field::new(
             "resource",
-            DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
+            DataType::Struct(vec![plain_id_field(false)].into()),
             false,
         );
 
         let scope_field = Field::new(
             "scope",
-            DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
+            DataType::Struct(vec![plain_id_field(false)].into()),
             false,
         );
 
         // Build schema conditionally
         let mut fields = Vec::new();
         if include_id {
-            fields.push(Field::new("id", DataType::UInt16, false));
+            fields.push(plain_id_field(false));
         }
         fields.extend([
             resource_field,
@@ -749,14 +784,14 @@ mod tests {
         // Resource structs (all from resource_id=1)
         let resource_id_array = UInt16Array::from(vec![1, 1, 1]);
         let resource_struct = StructArray::from(vec![(
-            Arc::new(Field::new("id", DataType::UInt16, false)),
+            Arc::new(plain_id_field(false)),
             Arc::new(resource_id_array) as ArrayRef,
         )]);
 
         // Scope structs (logs 1-2 from scope_id=10, log 3 from scope_id=11)
         let scope_id_array = UInt16Array::from(vec![10, 10, 11]);
         let scope_struct = StructArray::from(vec![(
-            Arc::new(Field::new("id", DataType::UInt16, false)),
+            Arc::new(plain_id_field(false)),
             Arc::new(scope_id_array) as ArrayRef,
         )]);
 
@@ -826,7 +861,7 @@ mod tests {
     /// Helper to create resource attributes batch
     fn create_test_resource_attrs() -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("parent_id", DataType::UInt16, false),
+            plain_parent_id_field(false),
             Field::new("key", DataType::Utf8, false),
             Field::new("type", DataType::UInt8, false),
             Field::new("str", DataType::Utf8, true),
@@ -853,7 +888,7 @@ mod tests {
     /// Helper to create log attributes batch
     fn create_test_log_attrs() -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("parent_id", DataType::UInt16, false),
+            plain_parent_id_field(false),
             Field::new("key", DataType::Utf8, false),
             Field::new("type", DataType::UInt8, false),
             Field::new("str", DataType::Utf8, true),
@@ -1087,15 +1122,15 @@ mod tests {
         // Test that scattered (non-contiguous) data is correctly detected and stored as Scattered
         // Pattern: Resource A, Resource B, Resource A creates non-contiguous grouping for Resource A
         let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::UInt16, false),
+            plain_id_field(false),
             Field::new(
                 "resource",
-                DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
+                DataType::Struct(vec![plain_id_field(false)].into()),
                 false,
             ),
             Field::new(
                 "scope",
-                DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
+                DataType::Struct(vec![plain_id_field(false)].into()),
                 false,
             ),
         ]));
@@ -1103,13 +1138,13 @@ mod tests {
         let id_array = UInt16Array::from(vec![1, 2, 3]);
         let resource_id_array = UInt16Array::from(vec![1, 2, 1]); // A, B, A pattern
         let resource_struct = StructArray::from(vec![(
-            Arc::new(Field::new("id", DataType::UInt16, false)),
+            Arc::new(plain_id_field(false)),
             Arc::new(resource_id_array) as ArrayRef,
         )]);
 
         let scope_id_array = UInt16Array::from(vec![10, 10, 10]);
         let scope_struct = StructArray::from(vec![(
-            Arc::new(Field::new("id", DataType::UInt16, false)),
+            Arc::new(plain_id_field(false)),
             Arc::new(scope_id_array) as ArrayRef,
         )]);
 
@@ -1176,10 +1211,10 @@ mod tests {
     fn test_contiguous_optimization() {
         // Test that contiguous data is correctly detected as Contiguous
         let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::UInt16, false),
+            plain_id_field(false),
             Field::new(
                 "resource",
-                DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
+                DataType::Struct(vec![plain_id_field(false)].into()),
                 false,
             ),
         ]));
@@ -1188,7 +1223,7 @@ mod tests {
         let id_array = UInt16Array::from_iter_values(0..100);
         let resource_id_array = UInt16Array::from_iter_values(std::iter::repeat_n(1, 100));
         let resource_struct = StructArray::from(vec![(
-            Arc::new(Field::new("id", DataType::UInt16, false)),
+            Arc::new(plain_id_field(false)),
             Arc::new(resource_id_array) as ArrayRef,
         )]);
 
@@ -1221,15 +1256,15 @@ mod tests {
 
         // Create a simple logs batch with one log record (id=0)
         let logs_schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::UInt16, true),
+            plain_id_field(true),
             Field::new(
                 "resource",
-                DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
+                DataType::Struct(vec![plain_id_field(false)].into()),
                 false,
             ),
             Field::new(
                 "scope",
-                DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
+                DataType::Struct(vec![plain_id_field(false)].into()),
                 false,
             ),
             Field::new(
@@ -1247,12 +1282,12 @@ mod tests {
         let id_array = UInt16Array::from(vec![0]);
         let resource_id_array = UInt16Array::from(vec![0]);
         let resource_struct = StructArray::from(vec![(
-            Arc::new(Field::new("id", DataType::UInt16, false)),
+            Arc::new(plain_id_field(false)),
             Arc::new(resource_id_array) as ArrayRef,
         )]);
         let scope_id_array = UInt16Array::from(vec![0]);
         let scope_struct = StructArray::from(vec![(
-            Arc::new(Field::new("id", DataType::UInt16, false)),
+            Arc::new(plain_id_field(false)),
             Arc::new(scope_id_array) as ArrayRef,
         )]);
         let time_array = TimestampNanosecondArray::from(vec![1_000_000_000]);
@@ -1273,7 +1308,7 @@ mod tests {
         // Create log attributes batch with dictionary-encoded keys and values
         // This mimics the OTAP syslog data structure
         let log_attrs_schema = Arc::new(Schema::new(vec![
-            Field::new("parent_id", DataType::UInt16, false),
+            plain_parent_id_field(false),
             Field::new(
                 "key",
                 DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -1450,8 +1485,8 @@ mod tests {
                 .unwrap();
 
         let resource_struct = StructArray::from(vec![(
-            Arc::new(Field::new(
-                "id",
+            Arc::new(plain_field(
+                consts::ID,
                 DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16)),
                 false,
             )),
@@ -1466,8 +1501,8 @@ mod tests {
                 .unwrap();
 
         let scope_struct = StructArray::from(vec![(
-            Arc::new(Field::new(
-                "id",
+            Arc::new(plain_field(
+                consts::ID,
                 DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16)),
                 false,
             )),
@@ -1494,8 +1529,8 @@ mod tests {
             Field::new(
                 "resource",
                 DataType::Struct(
-                    vec![Field::new(
-                        "id",
+                    vec![plain_field(
+                        consts::ID,
                         DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16)),
                         false,
                     )]
@@ -1506,8 +1541,8 @@ mod tests {
             Field::new(
                 "scope",
                 DataType::Struct(
-                    vec![Field::new(
-                        "id",
+                    vec![plain_field(
+                        consts::ID,
                         DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16)),
                         false,
                     )]

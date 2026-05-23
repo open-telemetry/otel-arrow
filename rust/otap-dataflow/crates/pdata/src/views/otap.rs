@@ -12,6 +12,8 @@ pub mod common;
 pub(crate) mod logs;
 pub(crate) mod metrics;
 pub(crate) mod traces;
+#[cfg(test)]
+pub(crate) mod transport_guard_test_util;
 
 pub use logs::OtapLogsView;
 pub use metrics::OtapMetricsView;
