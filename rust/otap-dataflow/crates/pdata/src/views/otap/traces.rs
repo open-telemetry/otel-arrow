@@ -25,13 +25,14 @@ use arrow::array::{Array, RecordBatch};
 use crate::arrays::NullableArrayAccessor;
 use crate::error::Error;
 use crate::otap::OtapArrowRecords;
+use crate::otap::transform::transport_optimize::{RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH};
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays};
 use crate::otlp::common::{ResourceArrays, ScopeArrays};
 use crate::otlp::traces::{
     span_event::SpanEventArrays, span_link::SpanLinkArrays, spans_arrays::SpansArrays,
 };
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::schema::{SpanId, TraceId};
+use crate::schema::{SpanId, TraceId, consts};
 use otap_df_pdata_views::views::common::{InstrumentationScopeView, Str};
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_pdata_views::views::trace::{
@@ -40,8 +41,13 @@ use otap_df_pdata_views::views::trace::{
 
 use crate::views::otap::common::{
     Otap32AttributeIter, OtapAttributeIter, OtapAttributeView, RowGroup, RowGroupIter,
-    build_attribute_index, build_attribute_index_u32, group_by_resource_id, group_by_scope_id,
+    build_attribute_index, build_attribute_index_u32, ensure_plain_encoded_columns,
+    group_by_resource_id, group_by_scope_id,
 };
+
+const ROOT_ID_COLUMNS: &[&str] = &[consts::ID, RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH];
+const PARENT_ID_COLUMNS: &[&str] = &[consts::PARENT_ID];
+const ID_AND_PARENT_ID_COLUMNS: &[&str] = &[consts::ID, consts::PARENT_ID];
 
 // ===== Main View =====
 
@@ -102,6 +108,17 @@ impl<'a> OtapTracesView<'a> {
         links_batch: Option<&'a RecordBatch>,
         link_attrs: Option<&'a RecordBatch>,
     ) -> Result<Self, Error> {
+        ensure_traces_transport_ids_decoded(
+            spans_batch,
+            resource_attrs,
+            scope_attrs,
+            span_attrs,
+            events_batch,
+            event_attrs,
+            links_batch,
+            link_attrs,
+        )?;
+
         // 1. Cache columns for O(1) access
         let columns = SpansArrays::try_from(spans_batch)?;
         let resource_columns = ResourceArrays::try_from(spans_batch)?;
@@ -166,6 +183,43 @@ impl<'a> OtapTracesView<'a> {
             links_map,
         })
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ensure_traces_transport_ids_decoded(
+    spans_batch: &RecordBatch,
+    resource_attrs: Option<&RecordBatch>,
+    scope_attrs: Option<&RecordBatch>,
+    span_attrs: Option<&RecordBatch>,
+    events_batch: Option<&RecordBatch>,
+    event_attrs: Option<&RecordBatch>,
+    links_batch: Option<&RecordBatch>,
+    link_attrs: Option<&RecordBatch>,
+) -> Result<(), Error> {
+    ensure_plain_encoded_columns(ArrowPayloadType::Spans, spans_batch, ROOT_ID_COLUMNS)?;
+
+    for (payload_type, batch) in [
+        (ArrowPayloadType::ResourceAttrs, resource_attrs),
+        (ArrowPayloadType::ScopeAttrs, scope_attrs),
+        (ArrowPayloadType::SpanAttrs, span_attrs),
+        (ArrowPayloadType::SpanEventAttrs, event_attrs),
+        (ArrowPayloadType::SpanLinkAttrs, link_attrs),
+    ] {
+        if let Some(batch) = batch {
+            ensure_plain_encoded_columns(payload_type, batch, PARENT_ID_COLUMNS)?;
+        }
+    }
+
+    for (payload_type, batch) in [
+        (ArrowPayloadType::SpanEvents, events_batch),
+        (ArrowPayloadType::SpanLinks, links_batch),
+    ] {
+        if let Some(batch) = batch {
+            ensure_plain_encoded_columns(payload_type, batch, ID_AND_PARENT_ID_COLUMNS)?;
+        }
+    }
+
+    Ok(())
 }
 
 impl<'a> TryFrom<&'a OtapArrowRecords> for OtapTracesView<'a> {
@@ -1128,6 +1182,10 @@ impl<'a> OtapTraceInstrumentationScopeView<'a> {
 }
 
 #[cfg(test)]
+#[path = "traces/transport_guard_tests.rs"]
+mod transport_guard_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use arrow::array::{
@@ -1136,6 +1194,8 @@ mod tests {
     };
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use std::sync::Arc;
+
+    use crate::otap::testing::mark_id_columns_plain;
 
     /// Helper to create a minimal spans batch for testing
     fn create_test_spans_batch() -> RecordBatch {
@@ -1214,7 +1274,7 @@ mod tests {
         let dropped_events = UInt32Array::from(vec![0, 0, 0]);
         let dropped_links = UInt32Array::from(vec![0, 0, 0]);
 
-        RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             schema,
             vec![
                 Arc::new(id_array) as ArrayRef,
@@ -1231,7 +1291,8 @@ mod tests {
                 Arc::new(dropped_links) as ArrayRef,
             ],
         )
-        .unwrap()
+        .unwrap();
+        mark_id_columns_plain(batch)
     }
 
     #[test]
@@ -1366,6 +1427,7 @@ mod tests {
             ],
         )
         .unwrap();
+        let batch = mark_id_columns_plain(batch);
 
         let view = OtapTracesView::new(&batch, None, None, None, None, None, None, None).unwrap();
 
@@ -1424,6 +1486,7 @@ mod tests {
             ],
         )
         .unwrap();
+        let batch = mark_id_columns_plain(batch);
 
         let view = OtapTracesView::new(&batch, None, None, None, None, None, None, None).unwrap();
 
@@ -1477,6 +1540,7 @@ mod tests {
             ],
         )
         .unwrap();
+        let events_batch = mark_id_columns_plain(events_batch);
 
         let view = OtapTracesView::new(
             &spans_batch,
@@ -1531,6 +1595,7 @@ mod tests {
             ],
         )
         .unwrap();
+        let events_batch = mark_id_columns_plain(events_batch);
 
         let links_schema = Arc::new(Schema::new(vec![
             Field::new("parent_id", DataType::UInt16, false),
@@ -1559,6 +1624,7 @@ mod tests {
             ],
         )
         .unwrap();
+        let links_batch = mark_id_columns_plain(links_batch);
 
         let view = OtapTracesView::new(
             &spans_batch,

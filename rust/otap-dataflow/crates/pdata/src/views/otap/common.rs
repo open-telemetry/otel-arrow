@@ -10,10 +10,14 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use arrow::array::{Array, RecordBatch, StructArray, UInt16Array};
+use arrow::datatypes::{Field, Schema};
 
 use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor};
+use crate::error::{Error, Result};
+use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, AttributeValueType};
 use crate::otlp::common::AnyValueArrays;
+use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, Str, ValueType};
 
@@ -71,6 +75,67 @@ impl Iterator for RowGroupIter<'_> {
             RowGroupIter::Scattered(iter) => iter.next().copied(),
         }
     }
+}
+
+// ===== Transport Encoding Guards =====
+
+/// Ensure ID-like columns are plain before a view builds grouping/index state.
+///
+/// Missing columns are ignored because several payload shapes legitimately omit
+/// optional IDs or child batches. Present columns must explicitly declare plain
+/// encoding; absent encoding metadata is treated as transport-optimized, matching
+/// the OTAP transport optimizer's compatibility behavior for Go-produced batches.
+pub(crate) fn ensure_plain_encoded_columns(
+    payload_type: ArrowPayloadType,
+    batch: &RecordBatch,
+    columns: &[&str],
+) -> Result<()> {
+    let schema = batch.schema_ref();
+    for column in columns {
+        if let Some(field) = field_for_column_path(schema.as_ref(), column)
+            && !is_plain_encoded(field)
+        {
+            return Err(Error::TransportOptimizedIdsNotDecoded {
+                payload_type,
+                column: (*column).to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_record_plain_encoded_columns(
+    records: &OtapArrowRecords,
+    payload_type: ArrowPayloadType,
+    columns: &[&str],
+) -> Result<()> {
+    if let Some(batch) = records.get(payload_type) {
+        ensure_plain_encoded_columns(payload_type, batch, columns)?;
+    }
+    Ok(())
+}
+
+fn field_for_column_path<'a>(schema: &'a Schema, column: &str) -> Option<&'a Field> {
+    if let Some((parent, child)) = column.split_once('.') {
+        let parent = schema.field_with_name(parent).ok()?;
+        if let arrow::datatypes::DataType::Struct(fields) = parent.data_type() {
+            let (_, field) = fields.find(child)?;
+            return Some(field.as_ref());
+        }
+        return None;
+    }
+
+    schema.field_with_name(column).ok()
+}
+
+fn is_plain_encoded(field: &Field) -> bool {
+    matches!(
+        field
+            .metadata()
+            .get(consts::metadata::COLUMN_ENCODING)
+            .map(String::as_str),
+        Some(consts::metadata::encodings::PLAIN)
+    )
 }
 
 // ===== AnyValue and Attribute Views =====
