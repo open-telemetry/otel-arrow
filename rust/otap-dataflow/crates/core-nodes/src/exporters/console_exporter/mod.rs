@@ -139,14 +139,20 @@ impl ConsoleExporter {
                     otel_error!("console.logs_view.otlp_create_failed", error = ?e, message = "Failed to create OTLP logs view");
                 }
             },
-            OtapPayload::OtapArrowRecords(records) => match OtapLogsView::try_from(records) {
-                Ok(logs_view) => {
-                    self.formatter.print_logs_data(&logs_view).await;
+            OtapPayload::OtapArrowRecords(records) => {
+                let mut records = records.clone();
+                match records
+                    .decode_transport_optimized_ids()
+                    .and_then(|()| OtapLogsView::try_from(&records))
+                {
+                    Ok(logs_view) => {
+                        self.formatter.print_logs_data(&logs_view).await;
+                    }
+                    Err(e) => {
+                        otel_error!("console.logs_view.otap_create_failed", error = ?e, message = "Failed to create OTAP logs view");
+                    }
                 }
-                Err(e) => {
-                    otel_error!("console.logs_view.otap_create_failed", error = ?e, message = "Failed to create OTAP logs view");
-                }
-            },
+            }
         }
     }
 
