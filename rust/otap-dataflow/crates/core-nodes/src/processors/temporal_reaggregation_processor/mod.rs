@@ -610,19 +610,25 @@ impl TemporalReaggregationProcessor {
         pdata: OtapPdata,
     ) -> Result<(), Error> {
         let result = match pdata.payload_ref() {
-            OtapPayload::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
-                Ok(view) => self.process_view(effect_handler, &view).await,
-                Err(e) => {
-                    otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
-                    self.metrics.batches_rejected.inc();
-                    let msg = format!("Failed to create view: {:#}", e);
-                    effect_handler
-                        .notify_nack(NackMsg::new_permanent(msg, pdata))
-                        .await?;
+            OtapPayload::OtapArrowRecords(records) => {
+                let mut records = records.clone();
+                match records
+                    .decode_transport_optimized_ids()
+                    .and_then(|()| OtapMetricsView::try_from(&records))
+                {
+                    Ok(view) => self.process_view(effect_handler, &view).await,
+                    Err(e) => {
+                        otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
+                        self.metrics.batches_rejected.inc();
+                        let msg = format!("Failed to create view: {:#}", e);
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(msg, pdata))
+                            .await?;
 
-                    return Ok(());
+                        return Ok(());
+                    }
                 }
-            },
+            }
             OtapPayload::OtlpBytes(otlp) => {
                 let view = RawMetricsData::new(otlp.as_bytes());
                 self.process_view(effect_handler, &view).await

@@ -399,7 +399,14 @@ impl AzureMonitorExporter {
                 let log_entries = match &payload {
                     OtapPayload::OtapArrowRecords(otap_records) => match otap_records {
                         OtapArrowRecords::Logs(_) => {
-                            let logs_view = OtapLogsView::try_from(otap_records).map_err(|e| {
+                            let mut otap_records = otap_records.clone();
+                            otap_records.decode_transport_optimized_ids().map_err(|e| {
+                                let error = Error::LogsViewCreationFailed { source: e };
+                                EngineError::InternalError {
+                                    message: error.to_string(),
+                                }
+                            })?;
+                            let logs_view = OtapLogsView::try_from(&otap_records).map_err(|e| {
                                 let error = Error::LogsViewCreationFailed { source: e };
                                 EngineError::InternalError {
                                     message: error.to_string(),

@@ -456,7 +456,11 @@ impl ContentRouter {
         &self,
         arrow_records: &otap_df_pdata::OtapArrowRecords,
     ) -> RouteResolution {
-        let logs_view = match OtapLogsView::try_from(arrow_records) {
+        let mut arrow_records = arrow_records.clone();
+        let logs_view = match arrow_records
+            .decode_transport_optimized_ids()
+            .and_then(|()| OtapLogsView::try_from(&arrow_records))
+        {
             Ok(view) => view,
             Err(_) => return RouteResolution::ConversionError,
         };
