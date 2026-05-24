@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTAP Attr Rename (Logs)/100k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -1.6949152946472168
+  },
+  {
+    "extra": "DFE OTAP Attr Rename (Logs)/100k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 2.9542924052261554
+  },
+  {
+    "extra": "DFE OTAP Attr Rename (Logs)/100k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 3.0408470881345373
+  },
+  {
+    "extra": "DFE OTAP Attr Rename (Logs)/100k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 53.58216145833333
+  },
+  {
+    "extra": "DFE OTAP Attr Rename (Logs)/100k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 54.1015625
+  },
+  {
+    "extra": "DFE OTAP Attr Rename (Logs)/100k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 98846.05440728087
+  },
+  {
+    "extra": "DFE OTAP Attr Rename (Logs)/100k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 100521.41126164155
+  },
+  {
+    "extra": "DFE OTAP Attr Rename (Logs)/100k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000574
+  },
+  {
+    "extra": "DFE OTAP Attr Rename (Logs)/100k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 11115904.89643355
+  },
+  {
+    "extra": "DFE OTAP Attr Rename (Logs)/100k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 11045375.846400071
+  },
+  {
+    "extra": "DFE OTAP Attr Rename (Logs)/100k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 110.58245956675424
+  }
+]
