@@ -8,9 +8,9 @@ use std::ops::{AddAssign, Deref, Range};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BooleanArray, DictionaryArray,
-    MutableArrayData, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, StructArray,
-    UInt16Array, UInt32Array, make_array,
+    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder,
+    DictionaryArray, MutableArrayData, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray,
+    StringBuilder, StructArray, UInt16Array, UInt32Array, make_array,
 };
 use arrow::buffer::{BooleanBuffer, Buffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::{eq, gt_eq, lt};
@@ -23,6 +23,7 @@ use arrow::row::{RowConverter, SortField};
 use arrow::util::bit_iterator::{BitIndexIterator, BitSliceIterator};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
+use sha2::{Digest, Sha256};
 
 use crate::OtapArrowRecords;
 use crate::arrays::{NullableArrayAccessor, StringArrayAccessor, get_required_array, get_u8_array};
@@ -768,6 +769,41 @@ impl UpdateTransform {
     }
 }
 
+pub struct HashSpec {
+    pub(super) salt: Vec<u8>,
+}
+
+impl HashSpec {
+    /// Create a SHA-256 hash spec.
+    ///
+    /// The hash input is `salt || value`, where scalar values are encoded as UTF-8 for strings,
+    /// raw bytes for byte arrays, a single `0` or `1` byte for booleans, and little-endian bytes
+    /// for `i64` and `f64` values.
+    #[must_use]
+    pub fn sha256(salt: String) -> Self {
+        Self {
+            salt: salt.into_bytes(),
+        }
+    }
+}
+
+/// A hash transform updates existing scalar attribute values with lowercase hex SHA-256 hashes.
+pub struct HashTransform {
+    pub(super) entries: BTreeMap<String, HashSpec>,
+}
+
+impl HashTransform {
+    #[must_use]
+    pub fn new(entries: BTreeMap<String, HashSpec>) -> Self {
+        Self { entries }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 pub struct RenameTransform {
     pub(super) map: BTreeMap<String, String>,
     pub(super) target_bytes: Vec<Vec<u8>>,
@@ -827,6 +863,8 @@ pub struct AttributesTransform {
 
     // rows that will be updated only when the key already exists
     pub update: Option<UpdateTransform>,
+    // rows that will be hashed if the key already exists and the value is scalar
+    pub hash: Option<HashTransform>,
 }
 
 impl AttributesTransform {
@@ -862,6 +900,13 @@ impl AttributesTransform {
     #[must_use]
     pub fn with_update(mut self, update: UpdateTransform) -> Self {
         self.update = Some(update);
+        self
+    }
+
+    /// Set the hash transform
+    #[must_use]
+    pub fn with_hash(mut self, hash: HashTransform) -> Self {
+        self.hash = Some(hash);
         self
     }
 
@@ -948,6 +993,16 @@ impl AttributesTransform {
             }
         }
 
+        if let Some(hash) = &self.hash {
+            for key in hash.entries.keys() {
+                if !all_keys.insert(key) {
+                    return Err(Error::InvalidAttributeTransform {
+                        reason: format!("Duplicate key in hash: {key}"),
+                    });
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -978,6 +1033,8 @@ pub struct TransformStats {
     pub upserted_entries: u64,
     /// Exact number of attribute entries updated by update rules
     pub updated_entries: u64,
+    /// Exact number of attribute entries updated by hash rules
+    pub hashed_entries: u64,
 }
 
 /// Applies the supplied transformation to the OTAP batch, transforming the attributes specified by
@@ -1301,6 +1358,13 @@ pub fn transform_attributes_impl(
     let has_insert = transform.insert.as_ref().is_some_and(|i| !i.is_empty());
     let has_upsert = transform.upsert.as_ref().is_some_and(|u| !u.is_empty());
     let has_update = transform.update.as_ref().is_some_and(|u| !u.is_empty());
+    // Hashing rewrites scalar value columns. Two rows of different scalar types whose hash inputs
+    // collide (e.g. Bool(true) and Bytes([1]) both feed [1] into the hasher) become identical
+    // (type, key, value) tuples after hashing. If the parent_id column is still delta-encoded
+    // from the original (pre-hash) layout, downstream materialization will treat the second row
+    // as a delta neighbour and decode a wrong parent id. Force eager materialization so the
+    // parent_id column is plain-encoded before we mutate the values.
+    let has_hash = transform.hash.as_ref().is_some_and(|h| !h.is_empty());
 
     let schema = attrs_record_batch.schema();
     let key_column = get_required_array(attrs_record_batch, consts::ATTRIBUTE_KEY)?;
@@ -1320,15 +1384,15 @@ pub fn transform_attributes_impl(
     }
 
     // Check whether to eagerly materialize the parent_id column, which is needed if insert,
-    // upsert, or update is present. Insert/upsert need the full list of parents before any
-    // deletes, and update can change value equality in a way that invalidates
+    // upsert, update, or hash is present. Insert/upsert need the full list of parents before any
+    // deletes, and update/hash can change value equality in a way that invalidates
     // transport-optimized parent_id encoding.
     //
     // At the same time, set flag to check if the batch already has the transport optimized
     // encoding. This is used later to determine if we need to lazily materialize the parent_id
     // column because the transformation would break some sequences of encoded IDs.
     let has_renames = transform.rename.as_ref().is_some_and(|r| !r.map.is_empty());
-    let early_materialize_needed = (has_insert || has_upsert || has_update)
+    let early_materialize_needed = (has_insert || has_upsert || has_update || has_hash)
         && schema.column_with_name(consts::PARENT_ID).is_some();
     let (attrs_record_batch_cow, is_transport_optimized) = if early_materialize_needed {
         let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
@@ -1417,6 +1481,7 @@ pub fn transform_attributes_impl(
                 inserted_entries: 0,
                 upserted_entries: 0,
                 updated_entries: 0,
+                hashed_entries: 0,
             };
             let new_keys = Arc::new(keys_transform_result.new_keys);
 
@@ -1493,6 +1558,7 @@ pub fn transform_attributes_impl(
                             inserted_entries: 0,
                             upserted_entries: 0,
                             updated_entries: 0,
+                            hashed_entries: 0,
                         },
                     )
                 }
@@ -1519,6 +1585,7 @@ pub fn transform_attributes_impl(
                             inserted_entries: 0,
                             upserted_entries: 0,
                             updated_entries: 0,
+                            hashed_entries: 0,
                         },
                     )
                 }
@@ -1606,13 +1673,17 @@ pub fn transform_attributes_impl(
     let update_transform = transform.update.as_ref();
     let needs_update = update_transform.map(|u| !u.is_empty()).unwrap_or_default();
 
-    if needs_insert || needs_upsert || needs_update {
+    let hash_transform = transform.hash.as_ref();
+    let needs_hash = hash_transform.map(|h| !h.is_empty()).unwrap_or_default();
+
+    if needs_insert || needs_upsert || needs_update || needs_hash {
         let parent_ids_col = get_required_array(attrs_record_batch, consts::PARENT_ID)?;
         rb = if parent_ids_col.data_type() == &DataType::UInt16 {
             apply_inserts_upserts_and_updates::<UInt16Type>(
                 insert_transform,
                 upsert_transform,
                 update_transform,
+                hash_transform,
                 id_column,
                 rb,
                 &mut stats,
@@ -1622,6 +1693,7 @@ pub fn transform_attributes_impl(
                 insert_transform,
                 upsert_transform,
                 update_transform,
+                hash_transform,
                 id_column,
                 rb,
                 &mut stats,
@@ -3546,6 +3618,7 @@ fn apply_inserts_upserts_and_updates<T: ArrowPrimitiveType>(
     insert_transform: Option<&InsertTransform>,
     upsert_transform: Option<&UpsertTransform>,
     update_transform: Option<&UpdateTransform>,
+    hash_transform: Option<&HashTransform>,
     id_column: &ArrayRef,
     attrs_record_batch: RecordBatch,
     stats: &mut TransformStats,
@@ -3562,7 +3635,12 @@ fn apply_inserts_upserts_and_updates<T: ArrowPrimitiveType>(
         .as_ref()
         .map(|u| u.entries.len())
         .unwrap_or(0);
-    let mut attr_upsert_args = Vec::with_capacity(num_inserts + num_upserts + num_updates);
+    let num_hashes = hash_transform
+        .as_ref()
+        .map(|h| h.entries.len())
+        .unwrap_or(0);
+    let mut attr_upsert_args =
+        Vec::with_capacity(num_inserts + num_upserts + num_updates + num_hashes);
 
     let mut parent_id_set = IdBitmap::new();
     populate_parent_id_set(&mut parent_id_set, id_column)?;
@@ -3670,7 +3748,219 @@ fn apply_inserts_upserts_and_updates<T: ArrowPrimitiveType>(
         }
     }
 
+    if let Some(hashes) = hash_transform {
+        let any_value_arrays = AnyValueArrays::try_from(&attrs_record_batch)?;
+        for (attrs_key, hash_spec) in &hashes.entries {
+            let existing_key_mask =
+                eq(&key_column, &StringArray::new_scalar(attrs_key)).map_err(|_| {
+                    Error::UnsupportedStringColumnType {
+                        data_type: key_column.data_type().clone(),
+                    }
+                })?;
+            let hashable_key_mask = hashable_scalar_key_mask(&existing_key_mask, &any_value_arrays);
+            let existing_parent_ids = filter(&parent_ids_col, &hashable_key_mask)
+                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
+            // TODO: avoid materializing parent IDs for update-only transforms once
+            // upsert_attributes can derive update counts without this scratch Vec.
+            let mut parent_ids = Vec::with_capacity(existing_parent_ids.len());
+            populate_parent_id_vec::<T>(&mut parent_ids, &existing_parent_ids)?;
+            if parent_ids.is_empty() {
+                continue;
+            }
+
+            let mut salted_hasher = Sha256::new();
+            salted_hasher.update(&hash_spec.salt);
+            let mut hashed_values =
+                StringBuilder::with_capacity(parent_ids.len(), parent_ids.len() * 64);
+            for row in BitIndexIterator::new(
+                hashable_key_mask.values().inner().as_slice(),
+                hashable_key_mask.offset(),
+                hashable_key_mask.len(),
+            ) {
+                append_hashed_scalar_value(
+                    &mut hashed_values,
+                    &any_value_arrays,
+                    row,
+                    &salted_hasher,
+                )?;
+            }
+
+            let hashed_values = Arc::new(hashed_values.finish()) as ArrayRef;
+            stats.hashed_entries += parent_ids.len() as u64;
+
+            attr_upsert_args.push(AttributeUpsert {
+                attrs_key,
+                existing_key_mask: hashable_key_mask,
+                new_values: ColumnarValue::Array(hashed_values),
+                upsert_parent_ids: PrimitiveArray::<T>::from_iter_values(parent_ids),
+            })
+        }
+    }
+
     upsert_attributes::upsert_attributes::<T>(&attrs_record_batch, &attr_upsert_args)
+}
+
+fn hashable_scalar_key_mask(
+    existing_key_mask: &BooleanArray,
+    attr_arrays: &AnyValueArrays<'_>,
+) -> BooleanArray {
+    let mut mask = BooleanBufferBuilder::new(existing_key_mask.len());
+    let mut next_row = 0;
+
+    for row in BitIndexIterator::new(
+        existing_key_mask.values().inner().as_slice(),
+        existing_key_mask.offset(),
+        existing_key_mask.len(),
+    ) {
+        mask.append_n(row - next_row, false);
+        mask.append(existing_key_mask.is_valid(row) && is_hashable_scalar_value(attr_arrays, row));
+        next_row = row + 1;
+    }
+    mask.append_n(existing_key_mask.len() - next_row, false);
+
+    BooleanArray::new(mask.finish(), None)
+}
+
+fn is_hashable_scalar_value(attr_arrays: &AnyValueArrays<'_>, row: usize) -> bool {
+    let Some(value_type) = attr_arrays.attr_type.value_at(row) else {
+        return false;
+    };
+    let Ok(value_type) = AttributeValueType::try_from(value_type) else {
+        return false;
+    };
+
+    match value_type {
+        AttributeValueType::Str => attr_arrays
+            .attr_str
+            .as_ref()
+            .and_then(|col| col.str_at(row))
+            .is_some(),
+        AttributeValueType::Bool => attr_arrays
+            .attr_bool
+            .as_ref()
+            .and_then(|col| col.value_at(row))
+            .is_some(),
+        AttributeValueType::Int => attr_arrays
+            .attr_int
+            .as_ref()
+            .and_then(|col| col.value_at(row))
+            .is_some(),
+        AttributeValueType::Double => attr_arrays
+            .attr_double
+            .as_ref()
+            .and_then(|col| col.value_at(row))
+            .is_some(),
+        AttributeValueType::Bytes => attr_arrays
+            .attr_bytes
+            .as_ref()
+            .and_then(|col| col.slice_at(row))
+            .is_some(),
+        AttributeValueType::Empty | AttributeValueType::Map | AttributeValueType::Slice => false,
+    }
+}
+
+fn append_hashed_scalar_value(
+    builder: &mut StringBuilder,
+    attr_arrays: &AnyValueArrays<'_>,
+    row: usize,
+    salted_hasher: &Sha256,
+) -> Result<()> {
+    let Some(value_type) = attr_arrays.attr_type.value_at(row) else {
+        builder.append_null();
+        return Ok(());
+    };
+    let Ok(value_type) = AttributeValueType::try_from(value_type) else {
+        builder.append_null();
+        return Ok(());
+    };
+
+    let mut hasher = salted_hasher.clone();
+    match value_type {
+        AttributeValueType::Str => {
+            if let Some(value) = attr_arrays
+                .attr_str
+                .as_ref()
+                .and_then(|col| col.str_at(row))
+            {
+                hasher.update(value.as_bytes());
+            } else {
+                builder.append_null();
+                return Ok(());
+            }
+        }
+        AttributeValueType::Bool => {
+            if let Some(value) = attr_arrays
+                .attr_bool
+                .as_ref()
+                .and_then(|col| col.value_at(row))
+            {
+                hasher.update([u8::from(value)]);
+            } else {
+                builder.append_null();
+                return Ok(());
+            }
+        }
+        AttributeValueType::Int => {
+            if let Some(value) = attr_arrays
+                .attr_int
+                .as_ref()
+                .and_then(|col| col.value_at(row))
+            {
+                hasher.update(value.to_le_bytes());
+            } else {
+                builder.append_null();
+                return Ok(());
+            }
+        }
+        AttributeValueType::Double => {
+            if let Some(value) = attr_arrays
+                .attr_double
+                .as_ref()
+                .and_then(|col| col.value_at(row))
+            {
+                hasher.update(value.to_le_bytes());
+            } else {
+                builder.append_null();
+                return Ok(());
+            }
+        }
+        AttributeValueType::Bytes => {
+            if let Some(value) = attr_arrays
+                .attr_bytes
+                .as_ref()
+                .and_then(|col| col.slice_at(row))
+            {
+                hasher.update(value);
+            } else {
+                builder.append_null();
+                return Ok(());
+            }
+        }
+        AttributeValueType::Empty | AttributeValueType::Map | AttributeValueType::Slice => {
+            builder.append_null();
+            return Ok(());
+        }
+    }
+
+    let digest = hasher.finalize();
+    append_sha256_hex_lower(builder, digest.as_ref());
+    Ok(())
+}
+
+fn append_sha256_hex_lower(builder: &mut StringBuilder, bytes: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    debug_assert_eq!(bytes.len(), 32);
+
+    let mut out = [0_u8; 64];
+    for (index, byte) in bytes.iter().enumerate() {
+        let output_index = index * 2;
+        out[output_index] = HEX[(byte >> 4) as usize];
+        out[output_index + 1] = HEX[(byte & 0x0f) as usize];
+    }
+
+    // Hex digits are always valid UTF-8.
+    let hex = std::str::from_utf8(&out).expect("hex digest is valid utf-8");
+    builder.append_value(hex);
 }
 
 /// push the values from the array into the vec. Returns an error if the passed array
@@ -4698,6 +4988,7 @@ mod test {
                     ]))),
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
                 (vec!["a", "b", "c", "d", "e"], vec!["1", "1", "3", "4", "5"]),
                 (vec!["a", "B", "c", "e"], vec!["1", "1", "3", "5"]),
@@ -4713,6 +5004,7 @@ mod test {
                     delete: None,
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
                 (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
                 (vec!["A", "b", "A", "d", "A"], vec!["1", "1", "3", "4", "5"]),
@@ -4728,6 +5020,7 @@ mod test {
                     delete: None,
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
                 (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
                 (
@@ -4746,6 +5039,7 @@ mod test {
                     delete: None,
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
                 (
                     vec!["aaa", "b", "aaa", "d", "aaa"],
@@ -4764,6 +5058,7 @@ mod test {
                     delete: None,
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
                 (
                     vec!["a", "b", "a", "a", "b", "a", "a"],
@@ -4785,6 +5080,7 @@ mod test {
                     delete: None,
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
                 (
                     vec!["a", "a", "b", "c", "dd", "dd", "e"],
@@ -4806,6 +5102,7 @@ mod test {
                     delete: None,
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
                 (
                     vec!["a", "a", "b", "dd", "e", "a", "dd"],
@@ -4824,6 +5121,7 @@ mod test {
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
                 (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
                 (vec!["b", "d"], vec!["1", "4"]),
@@ -4836,6 +5134,7 @@ mod test {
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
                 (
                     vec!["a", "a", "a", "b", "a", "a", "b", "b", "a", "a"],
@@ -4854,6 +5153,7 @@ mod test {
                     ]))),
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
                 (
                     vec!["a", "a", "a", "b", "a", "a", "b", "c", "a", "a"],
@@ -4872,6 +5172,7 @@ mod test {
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
                 (vec!["_", "a", "a", "b", "c"], vec!["1", "2", "3", "4", "5"]),
                 (vec!["_", "AAA", "AAA", "c"], vec!["1", "2", "3", "5"]),
@@ -4884,6 +5185,7 @@ mod test {
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
                 (vec!["a", "a", "b", "c"], vec!["1", "2", "3", "4"]),
                 (vec!["a", "a", "c"], vec!["1", "2", "4"]),
@@ -4899,6 +5201,7 @@ mod test {
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![]))),
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
                 (vec!["a", "a", "b", "c"], vec!["1", "2", "3", "4"]),
                 (vec!["AAAA", "AAAA", "b", "c"], vec!["1", "2", "3", "4"]),
@@ -5113,6 +5416,7 @@ mod test {
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["k3".into()]))),
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
             )
             .unwrap();
@@ -5237,6 +5541,349 @@ mod test {
     }
 
     #[test]
+    fn test_transform_attrs_hashes_scalar_values_only() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+            Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+            Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+            Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+            Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+        ]));
+
+        let keys = [
+            "str_attr",
+            "bytes_attr",
+            "int_attr",
+            "double_attr",
+            "bool_attr",
+            "map_attr",
+            "array_attr",
+            "null_str_attr",
+        ];
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(0..keys.len() as u16)),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Bool as u8,
+                    AttributeValueType::Map as u8,
+                    AttributeValueType::Slice as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(keys)),
+                Arc::new(StringArray::from_iter([
+                    Some("alice@example.com"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ])),
+                Arc::new(Int64Array::from_iter([
+                    None,
+                    None,
+                    Some(514),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ])),
+                Arc::new(Float64Array::from_iter([
+                    None,
+                    None,
+                    None,
+                    Some(3.5),
+                    None,
+                    None,
+                    None,
+                    None,
+                ])),
+                Arc::new(BooleanArray::from_iter([
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(true),
+                    None,
+                    None,
+                    None,
+                ])),
+                Arc::new(BinaryArray::from_iter([
+                    None,
+                    Some(b"abc".as_slice()),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ])),
+                Arc::new(BinaryArray::from_iter([
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(b"map".as_slice()),
+                    Some(b"slice".as_slice()),
+                    None,
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let transform = AttributesTransform::default().with_hash(HashTransform::new(
+            keys.into_iter()
+                .map(|key| (key.into(), HashSpec::sha256("pepper".into())))
+                .collect(),
+        ));
+
+        let (result, stats) = transform_attributes_with_stats(
+            &input,
+            &(Arc::new(UInt16Array::new_null(1)) as ArrayRef),
+            &transform,
+        )
+        .unwrap();
+
+        assert_eq!(stats.hashed_entries, 5);
+
+        let result_parent_ids = get_u16_array(&result, consts::PARENT_ID).unwrap();
+        assert_eq!(
+            result_parent_ids,
+            &UInt16Array::from_iter_values(0..keys.len() as u16)
+        );
+
+        let result_types = get_u8_array(&result, consts::ATTRIBUTE_TYPE).unwrap();
+        assert_eq!(
+            result_types,
+            &UInt8Array::from_iter_values([
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8,
+                AttributeValueType::Map as u8,
+                AttributeValueType::Slice as u8,
+                AttributeValueType::Str as u8,
+            ])
+        );
+
+        let result_keys = result
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(result_keys, &StringArray::from_iter_values(keys));
+
+        let result_values =
+            StringArrayAccessor::try_new(result.column_by_name(consts::ATTRIBUTE_STR).unwrap())
+                .unwrap();
+        for (row, expected) in [
+            (
+                0,
+                Some("8b8d9adc4875c0dca816e3e17b7ac87b45e40945b731fa02e3b42bf101589e21"),
+            ),
+            (
+                1,
+                Some("fadf7b97406e1eaa259a82e26e6839e564c37c256876e060e17838c86b7275ef"),
+            ),
+            (
+                2,
+                Some("13ddda943275484b13d00c410ab1ee38dafb4b468904979f561aa7a5c8d11699"),
+            ),
+            (
+                3,
+                Some("3b25069b0582c48a0c401bb1f4fb6250de982cad1335473df46ca790ce41535e"),
+            ),
+            (
+                4,
+                Some("1c57981a8c749477991aa9772cd04531bb532f5c4965a69c498f044453a2d57a"),
+            ),
+            (5, None),
+            (6, None),
+            (7, None),
+        ] {
+            assert_eq!(result_values.str_at(row), expected);
+        }
+
+        assert!(result.column_by_name(consts::ATTRIBUTE_INT).is_none());
+        assert!(result.column_by_name(consts::ATTRIBUTE_DOUBLE).is_none());
+        assert!(result.column_by_name(consts::ATTRIBUTE_BOOL).is_none());
+        assert!(result.column_by_name(consts::ATTRIBUTE_BYTES).is_none());
+
+        let result_ser = result
+            .column_by_name(consts::ATTRIBUTE_SER)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap();
+        assert!(result_ser.is_null(0));
+        assert!(result_ser.is_null(4));
+        assert_eq!(result_ser.value(5), b"map");
+        assert_eq!(result_ser.value(6), b"slice");
+        assert!(result_ser.is_null(7));
+    }
+
+    /// Regression for the cross-type hash collision case: two rows that share the same key but
+    /// have different scalar types whose hash inputs are byte-for-byte identical (e.g.
+    /// `Bool(true)` encodes to `[1]` and `Bytes([1])` is also `[1]`) become identical
+    /// `(type, key, value)` tuples after hashing. If the parent_id column is still delta-encoded
+    /// from the original (pre-hash) layout, downstream materialization would treat the second
+    /// row as a delta neighbour and decode a wrong parent id, silently mis-attributing the
+    /// hashed attribute to the wrong log record.
+    ///
+    /// This test exercises the full OTAP transport-optimized round-trip. The middle log does
+    /// not have a `secret` attribute, so the two colliding `secret` rows have parent IDs 0 and
+    /// 2. Without eager materialization the second row would be wrongly delta-decoded to parent
+    /// ID 1 and assigned to the middle log.
+    #[test]
+    fn test_hash_materializes_transport_optimized_parent_ids_on_cross_type_collision() {
+        let input = vec![
+            LogRecord::build()
+                .event_name("event 1")
+                .attributes(vec![KeyValue::new("secret", AnyValue::new_bool(true))])
+                .finish(),
+            LogRecord::build()
+                .event_name("event 2")
+                .attributes(vec![KeyValue::new("other", AnyValue::new_string("keep"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("event 3")
+                .attributes(vec![KeyValue::new("secret", AnyValue::new_bytes([1u8]))])
+                .finish(),
+        ];
+        let mut otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(input)));
+        otap_batch.encode_transport_optimized().unwrap();
+
+        let _ = apply_attribute_transform(
+            &mut otap_batch,
+            ArrowPayloadType::LogAttrs,
+            &AttributesTransform::default().with_hash(HashTransform::new(
+                [("secret".into(), HashSpec::sha256("pepper".into()))].into(),
+            )),
+            false,
+        )
+        .unwrap();
+
+        let as_otlp = otap_to_otlp(&otap_batch);
+        let OtlpProtoMessage::Logs(logs_data) = as_otlp else {
+            panic!("invalid decode result {:?}", as_otlp)
+        };
+
+        let logs = &logs_data.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(logs.len(), 3);
+
+        // sha256("pepper" || [0x01]): identical for Bool(true) and Bytes([1]) under the
+        // current byte-encoding contract.
+        let expected_hash = "1c57981a8c749477991aa9772cd04531bb532f5c4965a69c498f044453a2d57a";
+        assert_eq!(
+            logs[0].attributes,
+            vec![KeyValue::new("secret", AnyValue::new_string(expected_hash))]
+        );
+        assert_eq!(
+            logs[1].attributes,
+            vec![KeyValue::new("other", AnyValue::new_string("keep"))]
+        );
+        assert_eq!(
+            logs[2].attributes,
+            vec![KeyValue::new("secret", AnyValue::new_string(expected_hash))]
+        );
+    }
+
+    #[test]
+    fn test_rename_hash_collisions_use_materialized_parent_ids() {
+        let input_schema = Arc::new(Schema::new(vec![
+            // Absence of encoding metadata means parent_id is transport optimized.
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+        let expected_schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(
+                consts::ATTRIBUTE_STR,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                true,
+            ),
+        ]));
+
+        let input = RecordBatch::try_new(
+            input_schema,
+            vec![
+                // Actual parent IDs after materialization are [1, 1, 2, 3]. Row 2 is
+                // delta-encoded because it has the same type/key/value as row 1.
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 3])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    4,
+                ))),
+                Arc::new(StringArray::from_iter_values(vec!["a", "b", "b", "secret"])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "x",
+                    "y",
+                    "y",
+                    "top-secret",
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let expected_hash = "96469852e535505423bdbb05c1b6cb6813daf6933cef6b23ba05de570a0f7879";
+        let expected = RecordBatch::try_new(
+            expected_schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    3,
+                ))),
+                Arc::new(StringArray::from_iter_values(vec!["b", "b", "secret"])),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter_values([0, 1, 2]),
+                    Arc::new(StringArray::from_iter_values(["x", "y", expected_hash])),
+                )),
+            ],
+        )
+        .unwrap();
+
+        let result = transform_attributes(
+            &input,
+            &(Arc::new(UInt16Array::from_iter_values([1, 2, 3])) as ArrayRef),
+            &AttributesTransform {
+                insert: None,
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "a".into(),
+                    "b".into(),
+                )]))),
+                delete: None,
+                upsert: None,
+                hash: Some(HashTransform::new(BTreeMap::from_iter([(
+                    "secret".into(),
+                    HashSpec::sha256("pepper".into()),
+                )]))),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
     fn test_transform_attrs_keys_dict_encoded() {
         let test_cases: Vec<(
             AttributesTransform,
@@ -5259,6 +5906,7 @@ mod test {
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
                 (
                     // keys column - dict keys
@@ -5303,6 +5951,7 @@ mod test {
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                     upsert: None,
                     update: None,
+                    hash: None,
                 },
                 (
                     // keys column - dict keys
@@ -5453,6 +6102,7 @@ mod test {
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 upsert: None,
                 update: None,
+                hash: None,
             },
         )
         .unwrap();
@@ -5508,6 +6158,7 @@ mod test {
                 delete: Some(DeleteTransform::new(["a".into()].into_iter().collect())),
                 upsert: None,
                 update: None,
+                hash: None,
             },
         )
         .unwrap();
@@ -5552,6 +6203,7 @@ mod test {
                 delete: Some(DeleteTransform::new(["a".into()].into_iter().collect())),
                 upsert: None,
                 update: None,
+                hash: None,
             },
         )
         .unwrap();
@@ -5639,6 +6291,7 @@ mod test {
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 upsert: None,
                 update: None,
+                hash: None,
             },
         )
         .unwrap();
@@ -5721,6 +6374,7 @@ mod test {
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 upsert: None,
                 update: None,
+                hash: None,
             },
         )
         .unwrap();
@@ -5785,6 +6439,7 @@ mod test {
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 upsert: None,
                 update: None,
+                hash: None,
             },
         )
         .unwrap();
@@ -5854,6 +6509,7 @@ mod test {
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 upsert: None,
                 update: None,
+                hash: None,
             },
         )
         .unwrap();
@@ -5928,6 +6584,7 @@ mod test {
                 ]))),
                 upsert: None,
                 update: None,
+                hash: None,
             },
         )
         .unwrap();
@@ -6013,6 +6670,7 @@ mod test {
                 ]))),
                 upsert: None,
                 update: None,
+                hash: None,
             },
         )
         .unwrap();
@@ -6647,6 +7305,7 @@ mod test {
                 delete: None,
                 upsert: None,
                 update: None,
+                hash: None,
             },
             AttributesTransform {
                 insert: None,
@@ -6657,6 +7316,7 @@ mod test {
                 delete: None,
                 upsert: None,
                 update: None,
+                hash: None,
             },
             AttributesTransform {
                 insert: None,
@@ -6667,6 +7327,7 @@ mod test {
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
                 upsert: None,
                 update: None,
+                hash: None,
             },
             AttributesTransform {
                 insert: None,
@@ -6677,6 +7338,7 @@ mod test {
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
                 upsert: None,
                 update: None,
+                hash: None,
             },
         ];
 
@@ -6733,6 +7395,7 @@ mod test {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let (with_stats, stats) = transform_attributes_with_stats(
@@ -6795,6 +7458,7 @@ mod test {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let (with_stats, stats) = transform_attributes_with_stats(
@@ -7991,6 +8655,7 @@ mod insert_tests {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -8067,6 +8732,7 @@ mod insert_tests {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -8132,6 +8798,7 @@ mod insert_tests {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter([Some(0), None, Some(1), None]));
@@ -8210,6 +8877,7 @@ mod insert_tests {
                 )]))),
                 upsert: None,
                 update: None,
+                hash: None,
             };
 
             let ids: ArrayRef = Arc::new(UInt32Array::from_iter_values([0, 1]));
@@ -8282,6 +8950,7 @@ mod insert_tests {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8336,6 +9005,7 @@ mod insert_tests {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8402,6 +9072,7 @@ mod insert_tests {
             ]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -8455,6 +9126,7 @@ mod insert_tests {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8514,6 +9186,7 @@ mod insert_tests {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8570,6 +9243,7 @@ mod insert_tests {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8628,6 +9302,7 @@ mod insert_tests {
             ]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8680,6 +9355,7 @@ mod insert_tests {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8732,6 +9408,7 @@ mod insert_tests {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8788,6 +9465,7 @@ mod insert_tests {
             ]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8819,6 +9497,7 @@ mod insert_tests {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([]));
@@ -8850,6 +9529,7 @@ mod insert_tests {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -8925,6 +9605,7 @@ mod insert_tests {
             ]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1, 2]));
@@ -8971,6 +9652,7 @@ mod insert_tests {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt32Array::from_iter_values([0, 1]));
@@ -9018,6 +9700,7 @@ mod insert_tests {
             )]))),
             upsert: None,
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt32Array::from_iter_values([0]));
@@ -9080,6 +9763,7 @@ mod upsert_tests {
                 LiteralValue::Str("new_val".into()),
             )]))),
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -9135,6 +9819,7 @@ mod upsert_tests {
                 LiteralValue::Str("updated_value".into()),
             )]))),
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -9201,6 +9886,7 @@ mod upsert_tests {
                 ("c".into(), LiteralValue::Str("new_c".into())),
             ]))),
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -9264,6 +9950,7 @@ mod upsert_tests {
                 LiteralValue::Str("prod".into()),
             )]))),
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -9329,6 +10016,7 @@ mod upsert_tests {
                 LiteralValue::Str("prod".into()),
             )]))),
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter([Some(0), None, Some(1), None]));
@@ -9407,6 +10095,7 @@ mod upsert_tests {
                     LiteralValue::Str("prod".into()),
                 )]))),
                 update: None,
+                hash: None,
             };
 
             let ids: ArrayRef = Arc::new(UInt32Array::from_iter_values([0, 1]));
@@ -9480,6 +10169,7 @@ mod upsert_tests {
                 LiteralValue::Int(100),
             )]))),
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -9532,6 +10222,7 @@ mod upsert_tests {
                 LiteralValue::Double(2.5),
             )]))),
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -9582,6 +10273,7 @@ mod upsert_tests {
                 LiteralValue::Bool(true),
             )]))),
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -9637,6 +10329,7 @@ mod upsert_tests {
                 LiteralValue::Str("updated".into()),
             )]))),
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -9707,6 +10400,7 @@ mod upsert_tests {
                 LiteralValue::Str("nval".into()),
             )]))),
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -9765,6 +10459,7 @@ mod upsert_tests {
                 LiteralValue::Str("updated".into()),
             )]))),
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -9807,6 +10502,7 @@ mod upsert_tests {
                 LiteralValue::Str("val".into()),
             )]))),
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([]));
@@ -9838,6 +10534,7 @@ mod upsert_tests {
                 LiteralValue::Str("val".into()),
             )]))),
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -9912,6 +10609,7 @@ mod upsert_tests {
                 LiteralValue::Str("updated".into()),
             )]))),
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -9987,6 +10685,7 @@ mod upsert_tests {
                 LiteralValue::Str("2".into()),
             )]))),
             update: None,
+            hash: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1, 2]));
@@ -10108,6 +10807,7 @@ mod upsert_tests {
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["c".into()]))),
                 upsert: None,
                 update: None,
+                hash: None,
             },
         )
         .unwrap();
@@ -10164,6 +10864,7 @@ mod upsert_tests {
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["c".into()]))),
                 upsert: None,
                 update: None,
+                hash: None,
             },
         )
         .unwrap();
@@ -10260,6 +10961,7 @@ mod upsert_tests {
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["c".into()]))),
                 upsert: None,
                 update: None,
+                hash: None,
             },
         )
         .unwrap();
