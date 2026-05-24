@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779589172848,
+  "lastUpdate": 1779644046663,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -684,6 +684,82 @@ window.BENCHMARK_DATA = {
             "value": 39.89,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=40.2 MiB, error=0.9%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "32abb25dd613ea36a97504ba79da5e427a3bef72",
+          "message": "Add AaronRM as Triager (#3063)\n\n# Change Summary\n\nUpdate docs\n\n## What issue does this PR close?\n\n* Closes #3062",
+          "timestamp": "2026-05-22T15:56:41Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/32abb25dd613ea36a97504ba79da5e427a3bef72"
+        },
+        "date": 1779644045849,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 15.06,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.77,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9992,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 16.32,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=15.8 MiB, error=3.0%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 16.49,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=16.6 MiB, error=0.8%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 17.87,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.2 MiB, error=1.6%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 21.21,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=21.3 MiB, error=0.3%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 27.35,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=27.5 MiB, error=0.4%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 39.95,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=39.9 MiB, error=0.2%"
           }
         ]
       }
