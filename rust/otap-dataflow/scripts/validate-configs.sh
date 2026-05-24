@@ -50,11 +50,37 @@ fi
 TOTAL=0
 PASSED=0
 FAILED=0
+SKIPPED=0
 FAILED_FILES=""
+
+host_os="$(uname -s)"
 
 for config in $CONFIG_FILES; do
     TOTAL=$((TOTAL + 1))
     REL_PATH="${config#"$REPO_ROOT/"}"
+
+    # Check for a "# platform:" marker at the top of the file.
+    required_platform=$(sed -n 's/^# platform: //p' "$config" | head -1)
+
+    case "$required_platform" in
+        "")
+            ;;  # platform-agnostic — always validate
+        windows-only)
+            case "$host_os" in
+                MINGW*|MSYS*|CYGWIN*) ;;
+                *) echo "  ⏭  $REL_PATH (skipped: requires Windows)"; SKIPPED=$((SKIPPED+1)); continue ;;
+            esac ;;
+        linux-only)
+            if [ "$host_os" != "Linux" ]; then
+                echo "  ⏭  $REL_PATH (skipped: requires Linux)"; SKIPPED=$((SKIPPED+1)); continue
+            fi ;;
+        macos-only)
+            if [ "$host_os" != "Darwin" ]; then
+                echo "  ⏭  $REL_PATH (skipped: requires macOS)"; SKIPPED=$((SKIPPED+1)); continue
+            fi ;;
+        *)
+            echo "  ❌ $REL_PATH (invalid platform marker: $required_platform)"; FAILED=$((FAILED+1)); FAILED_FILES="$FAILED_FILES\n  - $REL_PATH (invalid platform marker)"; continue ;;
+    esac
 
     if "$BINARY" --config "$config" --validate-and-exit > /dev/null 2>&1; then
         echo "  ✅ $REL_PATH"
@@ -69,7 +95,7 @@ for config in $CONFIG_FILES; do
 done
 
 echo ""
-echo "Config validation: $PASSED/$TOTAL passed, $FAILED failed."
+echo "Config validation: $PASSED/$TOTAL passed, $FAILED failed, $SKIPPED skipped."
 
 if [ "$FAILED" -gt 0 ]; then
     echo -e "\nFailed configs:$FAILED_FILES"
