@@ -1,270 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779589139333,
+  "lastUpdate": 1779644017272,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Jake Dern",
-            "username": "JakeDern",
-            "email": "33842784+JakeDern@users.noreply.github.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "d389678b03da242781069e748a409d90ffddf610",
-          "message": "fix: Temporarily disable the nightly otap-filter-otap Go collector scenario (#2396)\n\n# Change Summary\n\nThis scenario has been blocking all the nightly benchmarks for a few\nweeks now and we can't fix it until this is released and we take a\nversion bump:\nhttps://github.com/open-telemetry/opentelemetry-collector-contrib/pull/46879\n\nIt looks like it will be another couple of weeks for the next otel\ncollector contrib release as the last one was just a few days ago. I'm\nproposing to disable the scenario for now to unblock everything else.",
-          "timestamp": "2026-03-21T01:34:17Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/d389678b03da242781069e748a409d90ffddf610"
-        },
-        "date": 1774114715854,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0.000057880417443811893,
-            "unit": "%",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 54.996147472958214,
-            "unit": "%",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 55.72863762743281,
-            "unit": "%",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 25.252604166666668,
-            "unit": "MiB",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 26.41015625,
-            "unit": "MiB",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 28793.379892491383,
-            "unit": "logs/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 28793.363226762438,
-            "unit": "logs/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003376,
-            "unit": "seconds",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 337691.18262358446,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 8765282.493146967,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 57.0295138040778,
-            "unit": "%",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 57.93321614684608,
-            "unit": "%",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 25.19609375,
-            "unit": "MiB",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 26.51171875,
-            "unit": "MiB",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 28764.4014700509,
-            "unit": "logs/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 28764.4014700509,
-            "unit": "logs/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.004725,
-            "unit": "seconds",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 170615.80151942925,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 8717508.211817091,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 58.327099095553045,
-            "unit": "%",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 60.796712840466924,
-            "unit": "%",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 25.645963541666667,
-            "unit": "MiB",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 27.53515625,
-            "unit": "MiB",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 28990.32731354478,
-            "unit": "logs/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 28990.32731354478,
-            "unit": "logs/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002772,
-            "unit": "seconds",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 551404.2015145168,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 8711386.74492643,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0.0025996535550802946,
-            "unit": "%",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 59.06218972835675,
-            "unit": "%",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 61.705944262805545,
-            "unit": "%",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 25.068359375,
-            "unit": "MiB",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 26.46875,
-            "unit": "MiB",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 28848.854700468393,
-            "unit": "logs/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 28848.104730242212,
-            "unit": "logs/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002382,
-            "unit": "seconds",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 204635.96566503154,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 8626781.888038749,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -26560,6 +26298,292 @@ window.BENCHMARK_DATA = {
             "value": 21.70155110032876,
             "unit": "bytes/log",
             "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "32abb25dd613ea36a97504ba79da5e427a3bef72",
+          "message": "Add AaronRM as Triager (#3063)\n\n# Change Summary\n\nUpdate docs\n\n## What issue does this PR close?\n\n* Closes #3062",
+          "timestamp": "2026-05-22T15:56:41Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/32abb25dd613ea36a97504ba79da5e427a3bef72"
+        },
+        "date": 1779644007150,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 2.870370388031006,
+            "unit": "%",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 56.78166691069848,
+            "unit": "%",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 58.117675612602106,
+            "unit": "%",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 30.673828125,
+            "unit": "MiB",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 31.75390625,
+            "unit": "MiB",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 25199.1201307221,
+            "unit": "logs/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 24475.81205289582,
+            "unit": "logs/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002095,
+            "unit": "seconds",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 541122.0373778794,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 8237759.505136294,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 22.10844061918907,
+            "unit": "bytes/log",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.8239947557449341,
+            "unit": "%",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 56.65912806633504,
+            "unit": "%",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 57.74062692071297,
+            "unit": "%",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 31.558072916666667,
+            "unit": "MiB",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 33.0390625,
+            "unit": "MiB",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 25282.40251954724,
+            "unit": "logs/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 25074.076856070416,
+            "unit": "logs/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002209,
+            "unit": "seconds",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 236644.07414262855,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 8399178.504405765,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 9.437798069336985,
+            "unit": "bytes/log",
+            "extra": "Nightly - Syslog/SYSLOG-3164-CEF-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 3.0046069622039795,
+            "unit": "%",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 54.54721960752924,
+            "unit": "%",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 55.44014842300557,
+            "unit": "%",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 31.388541666666665,
+            "unit": "MiB",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 33.14453125,
+            "unit": "MiB",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 24960.788878924424,
+            "unit": "logs/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 24210.815252996934,
+            "unit": "logs/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.00211,
+            "unit": "seconds",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 200135.8447666699,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 8235688.293323693,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 8.266381890708786,
+            "unit": "bytes/log",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 1.0305112600326538,
+            "unit": "%",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 54.03647295164016,
+            "unit": "%",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 54.79646150245729,
+            "unit": "%",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 29.970052083333332,
+            "unit": "MiB",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 31.11328125,
+            "unit": "MiB",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 24744.097665238474,
+            "unit": "logs/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 24489.106963899383,
+            "unit": "logs/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002188,
+            "unit": "seconds",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 336428.93161908933,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 8197974.042143601,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 13.73790118663927,
+            "unit": "bytes/log",
+            "extra": "Nightly - Syslog/SYSLOG-3164-ATTR-OTLP - Egress Bytes Per Log"
           }
         ]
       }
