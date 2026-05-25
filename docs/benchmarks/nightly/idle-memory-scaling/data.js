@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779675704195,
+  "lastUpdate": 1779733618367,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -836,6 +836,82 @@ window.BENCHMARK_DATA = {
             "value": 39.55,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=40.1 MiB, error=1.4%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Jake Dern",
+            "username": "JakeDern",
+            "email": "33842784+JakeDern@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "dae17d6eedbb715a81942cb8616a761ec45eeae3",
+          "message": "perf: Box inner raw_batch_store record batch slices (#3077)\n\n# Change Summary\n\nBoxes raw_batch_store record batch slices. Attached issue explains the\nrationale, but basically, we have very a very large enum variant for\notap metrics (almost 1k) which is penalizing a lot of data structures.\n\nThis penalty is more visible when queues are larger and/or saturated,\nwhen batches are smaller in size, or when there are many processing\nstages.\n\n## What issue does this PR close?\n\n* Closes #3076\n\n## How are these changes tested?\n\nAd-hoc perf testing and also the manual pipelineperf run for the\nstandard continuous bench set.\n\n## Are there any user-facing changes?\n\nNo.",
+          "timestamp": "2026-05-24T17:52:44Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/dae17d6eedbb715a81942cb8616a761ec45eeae3"
+        },
+        "date": 1779733617816,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 15.11,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.77,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9973,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 16.04,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=15.9 MiB, error=1.0%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 16.37,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=16.7 MiB, error=1.8%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 17.68,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.2 MiB, error=2.9%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 21.56,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=21.3 MiB, error=1.3%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 28.21,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=27.5 MiB, error=2.6%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 39.46,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=39.8 MiB, error=0.9%"
           }
         ]
       }
