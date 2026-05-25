@@ -762,7 +762,7 @@ mod tests {
                         .and_then(|kv| kv.value.as_ref()),
                     Some(&AnyValue::new_string("[MASKED]"))
                 );
-                assert!(!log_attrs.iter().any(|kv| kv.key == "missing"));
+                assert!(!log_attrs.iter().any(|kv| kv.key == "must_not_insert"));
                 assert!(
                     log_attrs.iter().any(|kv| kv.key == "keep"
                         && kv.value == Some(AnyValue::new_string("unchanged")))
