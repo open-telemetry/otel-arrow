@@ -751,6 +751,23 @@ impl UpsertTransform {
     }
 }
 
+/// An update transform updates existing attribute values without inserting missing keys.
+pub struct UpdateTransform {
+    pub(super) entries: BTreeMap<String, LiteralValue>,
+}
+
+impl UpdateTransform {
+    #[must_use]
+    pub fn new(entries: BTreeMap<String, LiteralValue>) -> Self {
+        Self { entries }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 pub struct RenameTransform {
     pub(super) map: BTreeMap<String, String>,
     pub(super) target_bytes: Vec<Vec<u8>>,
@@ -807,6 +824,9 @@ pub struct AttributesTransform {
 
     // rows that will be upserted (inserted if key doesn't exist, updated if it does)
     pub upsert: Option<UpsertTransform>,
+
+    // rows that will be updated only when the key already exists
+    pub update: Option<UpdateTransform>,
 }
 
 impl AttributesTransform {
@@ -835,6 +855,13 @@ impl AttributesTransform {
     #[must_use]
     pub fn with_upsert(mut self, upsert: UpsertTransform) -> Self {
         self.upsert = Some(upsert);
+        self
+    }
+
+    /// Set the update transform
+    #[must_use]
+    pub fn with_update(mut self, update: UpdateTransform) -> Self {
+        self.update = Some(update);
         self
     }
 
@@ -911,6 +938,16 @@ impl AttributesTransform {
             }
         }
 
+        if let Some(update) = &self.update {
+            for key in update.entries.keys() {
+                if !all_keys.insert(key) {
+                    return Err(Error::InvalidAttributeTransform {
+                        reason: format!("Duplicate key in update: {key}"),
+                    });
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -939,6 +976,8 @@ pub struct TransformStats {
     pub inserted_entries: u64,
     /// Exact number of attribute entries updated by upsert rules
     pub upserted_entries: u64,
+    /// Exact number of attribute entries updated by update rules
+    pub updated_entries: u64,
 }
 
 /// Applies the supplied transformation to the OTAP batch, transforming the attributes specified by
@@ -1259,7 +1298,9 @@ pub fn transform_attributes_impl(
 ) -> Result<(RecordBatch, TransformStats)> {
     transform.validate()?;
 
-    let has_upsert = transform.upsert.is_some();
+    let has_insert = transform.insert.as_ref().is_some_and(|i| !i.is_empty());
+    let has_upsert = transform.upsert.as_ref().is_some_and(|u| !u.is_empty());
+    let has_update = transform.update.as_ref().is_some_and(|u| !u.is_empty());
 
     let schema = attrs_record_batch.schema();
     let key_column = get_required_array(attrs_record_batch, consts::ATTRIBUTE_KEY)?;
@@ -1278,14 +1319,16 @@ pub fn transform_attributes_impl(
         });
     }
 
-    // Check whether to eagerly materialize the parent_id column, which is needed if insert or
-    // upsert is present. This allows us to get the full list of parents before any deletes.
+    // Check whether to eagerly materialize the parent_id column, which is needed if insert,
+    // upsert, or update is present. Insert/upsert need the full list of parents before any
+    // deletes, and update can change value equality in a way that invalidates
+    // transport-optimized parent_id encoding.
     //
     // At the same time, set flag to check if the batch already has the transport optimized
-    // encoding. This is used later to determine if we need to lazily materialize the because ID
+    // encoding. This is used later to determine if we need to lazily materialize the parent_id
     // column because the transformation would break some sequences of encoded IDs.
     let has_renames = transform.rename.as_ref().is_some_and(|r| !r.map.is_empty());
-    let early_materialize_needed = (transform.insert.is_some() || has_upsert)
+    let early_materialize_needed = (has_insert || has_upsert || has_update)
         && schema.column_with_name(consts::PARENT_ID).is_some();
     let (attrs_record_batch_cow, is_transport_optimized) = if early_materialize_needed {
         let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
@@ -1318,11 +1361,12 @@ pub fn transform_attributes_impl(
             .as_ref()
             .expect("has_renames guard ensures this is Some");
 
-        let key_col = get_required_array(attrs_record_batch, consts::ATTRIBUTE_KEY)?;
+        let collision_batch = attrs_record_batch_cow.as_ref();
+        let key_col = get_required_array(collision_batch, consts::ATTRIBUTE_KEY)?;
 
         // parent_id is required by the OTAP spec for attributes batches.
         // See: https://github.com/open-telemetry/otel-arrow/blob/main/docs/otap-spec.md#542-u16-attributes
-        let parent_id_col = get_required_array(attrs_record_batch, consts::PARENT_ID)?;
+        let parent_id_col = get_required_array(collision_batch, consts::PARENT_ID)?;
 
         // If transport-optimized, check if any new_key exists before materializing.
         // This avoids the expensive materialization when no collision is possible.
@@ -1334,7 +1378,7 @@ pub fn transform_attributes_impl(
 
         if needs_materialization {
             // Materialize the delta-encoded parent_ids so we get actual values
-            let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
+            let rb = materialize_parent_id_for_attributes_auto(collision_batch)?;
             let parent_id_col = get_required_array(&rb, consts::PARENT_ID)?;
             let key_col = get_required_array(&rb, consts::ATTRIBUTE_KEY)?;
             let ranges =
@@ -1342,7 +1386,7 @@ pub fn transform_attributes_impl(
             (Cow::Owned(rb), false, ranges)
         } else if !is_transport_optimized {
             let ranges = dispatch_find_rename_collisions(
-                attrs_record_batch.num_rows(),
+                collision_batch.num_rows(),
                 key_col,
                 parent_id_col,
                 rename,
@@ -1372,6 +1416,7 @@ pub fn transform_attributes_impl(
                 deleted_entries: keys_transform_result.deleted_rows as u64,
                 inserted_entries: 0,
                 upserted_entries: 0,
+                updated_entries: 0,
             };
             let new_keys = Arc::new(keys_transform_result.new_keys);
 
@@ -1447,6 +1492,7 @@ pub fn transform_attributes_impl(
                             renamed_entries: dict_imm_result.renamed_rows as u64,
                             inserted_entries: 0,
                             upserted_entries: 0,
+                            updated_entries: 0,
                         },
                     )
                 }
@@ -1472,6 +1518,7 @@ pub fn transform_attributes_impl(
                             renamed_entries: dict_imm_result.renamed_rows as u64,
                             inserted_entries: 0,
                             upserted_entries: 0,
+                            updated_entries: 0,
                         },
                     )
                 }
@@ -1556,21 +1603,25 @@ pub fn transform_attributes_impl(
     let needs_insert = insert_transform.map(|i| !i.is_empty()).unwrap_or_default();
     let upsert_transform = transform.upsert.as_ref();
     let needs_upsert = upsert_transform.map(|u| !u.is_empty()).unwrap_or_default();
+    let update_transform = transform.update.as_ref();
+    let needs_update = update_transform.map(|u| !u.is_empty()).unwrap_or_default();
 
-    if needs_insert || needs_upsert {
+    if needs_insert || needs_upsert || needs_update {
         let parent_ids_col = get_required_array(attrs_record_batch, consts::PARENT_ID)?;
         rb = if parent_ids_col.data_type() == &DataType::UInt16 {
-            apply_inserts_and_upserts::<UInt16Type>(
+            apply_inserts_upserts_and_updates::<UInt16Type>(
                 insert_transform,
                 upsert_transform,
+                update_transform,
                 id_column,
                 rb,
                 &mut stats,
             )?
         } else {
-            apply_inserts_and_upserts::<UInt32Type>(
+            apply_inserts_upserts_and_updates::<UInt32Type>(
                 insert_transform,
                 upsert_transform,
+                update_transform,
                 id_column,
                 rb,
                 &mut stats,
@@ -1591,6 +1642,7 @@ pub fn transform_attributes_impl(
 /// - delete which removes all rows from the record batch for a given key
 /// - insert which adds new attributes to the record batch (only if key doesn't exist)
 /// - upsert which inserts or updates attributes (inserts if key doesn't exist, updates if it does)
+/// - update which updates existing attributes (only if key exists)
 ///
 /// Note that to avoid any ambiguity in how the transformation is applied, this method will
 /// validate the transform. The caller must ensure the supplied transform is valid. See
@@ -3490,9 +3542,10 @@ pub(crate) fn sort_to_indices(sort_columns: &[SortColumn]) -> arrow::error::Resu
     }
 }
 
-fn apply_inserts_and_upserts<T: ArrowPrimitiveType>(
+fn apply_inserts_upserts_and_updates<T: ArrowPrimitiveType>(
     insert_transform: Option<&InsertTransform>,
     upsert_transform: Option<&UpsertTransform>,
+    update_transform: Option<&UpdateTransform>,
     id_column: &ArrayRef,
     attrs_record_batch: RecordBatch,
     stats: &mut TransformStats,
@@ -3505,7 +3558,11 @@ fn apply_inserts_and_upserts<T: ArrowPrimitiveType>(
         .as_ref()
         .map(|u| u.entries.len())
         .unwrap_or(0);
-    let mut attr_upsert_args = Vec::with_capacity(num_inserts + num_upserts);
+    let num_updates = update_transform
+        .as_ref()
+        .map(|u| u.entries.len())
+        .unwrap_or(0);
+    let mut attr_upsert_args = Vec::with_capacity(num_inserts + num_upserts + num_updates);
 
     let mut parent_id_set = IdBitmap::new();
     populate_parent_id_set(&mut parent_id_set, id_column)?;
@@ -3522,11 +3579,8 @@ fn apply_inserts_and_upserts<T: ArrowPrimitiveType>(
                         data_type: key_column.data_type().clone(),
                     }
                 })?;
-            // safety: filter will not return an error here because the existing_key_mask will be
-            // the same length is the parent_id column because it was created by calling eq on a
-            // different column, which would have the same length
-            let existing_parent_ids =
-                filter(&parent_ids_col, &existing_key_mask).expect("can filter");
+            let existing_parent_ids = filter(&parent_ids_col, &existing_key_mask)
+                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
             populate_parent_id_set(&mut existing_id_set, &existing_parent_ids)?;
 
             let mut parent_ids =
@@ -3564,11 +3618,8 @@ fn apply_inserts_and_upserts<T: ArrowPrimitiveType>(
                         data_type: key_column.data_type().clone(),
                     }
                 })?;
-            // safety: filter will not return an error here because the existing_key_mask will be
-            // the same length is the parent_id column because it was created by calling eq on a
-            // different column, which would have the same length
-            let existing_parent_ids =
-                filter(&parent_ids_col, &existing_key_mask).expect("can filter");
+            let existing_parent_ids = filter(&parent_ids_col, &existing_key_mask)
+                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
             populate_parent_id_set(&mut existing_id_set, &existing_parent_ids)?;
 
             let mut parent_ids = Vec::with_capacity(parent_id_set.len() as usize);
@@ -3591,6 +3642,30 @@ fn apply_inserts_and_upserts<T: ArrowPrimitiveType>(
                 existing_key_mask,
                 new_values: ColumnarValue::Scalar(upsert_literal.into()),
                 upsert_parent_ids: PrimitiveArray::<T>::from_iter_values(parent_ids),
+            })
+        }
+    }
+
+    if let Some(updates) = update_transform {
+        for (attrs_key, update_literal) in &updates.entries {
+            let existing_key_mask =
+                eq(&key_column, &StringArray::new_scalar(attrs_key)).map_err(|_| {
+                    Error::UnsupportedStringColumnType {
+                        data_type: key_column.data_type().clone(),
+                    }
+                })?;
+            let num_updates = existing_key_mask.true_count();
+            if num_updates == 0 {
+                continue;
+            }
+
+            stats.updated_entries += num_updates as u64;
+
+            attr_upsert_args.push(AttributeUpsert {
+                attrs_key,
+                existing_key_mask,
+                new_values: ColumnarValue::Scalar(update_literal.into()),
+                upsert_parent_ids: PrimitiveArray::<T>::new_null(num_updates),
             })
         }
     }
@@ -4446,7 +4521,7 @@ mod test {
         let mut otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(input)));
         otap_batch.encode_transport_optimized().unwrap();
 
-        _ = apply_attribute_transform(
+        let _ = apply_attribute_transform(
             &mut otap_batch,
             ArrowPayloadType::LogAttrs,
             &AttributesTransform::default().with_insert(InsertTransform::new(
@@ -4489,6 +4564,125 @@ mod test {
     }
 
     #[test]
+    fn test_update_materializes_transport_optimized_parent_ids() {
+        let input = vec![
+            LogRecord::build()
+                .event_name("event 1")
+                .attributes(vec![KeyValue::new("secret", AnyValue::new_string("a"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("event 2")
+                .attributes(vec![KeyValue::new("secret", AnyValue::new_string("b"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("event 3")
+                .attributes(vec![KeyValue::new("secret", AnyValue::new_string("c"))])
+                .finish(),
+        ];
+        let mut otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(input)));
+        otap_batch.encode_transport_optimized().unwrap();
+
+        _ = apply_attribute_transform(
+            &mut otap_batch,
+            ArrowPayloadType::LogAttrs,
+            &AttributesTransform::default().with_update(UpdateTransform::new(
+                [("secret".into(), LiteralValue::Str("[MASKED]".into()))].into(),
+            )),
+            false,
+        )
+        .unwrap();
+
+        let as_otlp = otap_to_otlp(&otap_batch);
+        let OtlpProtoMessage::Logs(logs_data) = as_otlp else {
+            panic!("invalid decode result {:?}", as_otlp)
+        };
+
+        let logs = &logs_data.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(logs.len(), 3);
+        for log in logs {
+            assert_eq!(
+                log.attributes,
+                vec![KeyValue::new("secret", AnyValue::new_string("[MASKED]"))]
+            );
+        }
+    }
+
+    #[test]
+    fn test_rename_update_collisions_use_materialized_parent_ids() {
+        let input_schema = Arc::new(Schema::new(vec![
+            // Absence of encoding metadata means parent_id is transport optimized.
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+        let expected_schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(
+                consts::ATTRIBUTE_STR,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                true,
+            ),
+        ]));
+
+        let input = RecordBatch::try_new(
+            input_schema,
+            vec![
+                // Actual parent IDs after materialization are [1, 1, 2, 3]. Row 2 is
+                // delta-encoded because it has the same type/key/value as row 1.
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 3])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    4,
+                ))),
+                Arc::new(StringArray::from_iter_values(vec!["a", "b", "b", "other"])),
+                Arc::new(StringArray::from_iter_values(vec!["x", "y", "y", "z"])),
+            ],
+        )
+        .unwrap();
+
+        let expected = RecordBatch::try_new(
+            expected_schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 3])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    3,
+                ))),
+                Arc::new(StringArray::from_iter_values(vec!["b", "b", "other"])),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter_values([0, 1, 2]),
+                    Arc::new(StringArray::from_iter_values(["x", "y", "updated"])),
+                )),
+            ],
+        )
+        .unwrap();
+
+        let result = transform_attributes(
+            &input,
+            &(Arc::new(UInt16Array::from_iter_values([1, 2, 3])) as ArrayRef),
+            &AttributesTransform {
+                insert: None,
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "a".into(),
+                    "b".into(),
+                )]))),
+                delete: None,
+                upsert: None,
+                update: Some(UpdateTransform::new(BTreeMap::from_iter([(
+                    "other".into(),
+                    LiteralValue::Str("updated".into()),
+                )]))),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
     fn transform_attributes_basic() {
         let test_cases = vec![
             (
@@ -4503,6 +4697,7 @@ mod test {
                         ("d".into()),
                     ]))),
                     upsert: None,
+                    update: None,
                 },
                 (vec!["a", "b", "c", "d", "e"], vec!["1", "1", "3", "4", "5"]),
                 (vec!["a", "B", "c", "e"], vec!["1", "1", "3", "5"]),
@@ -4517,6 +4712,7 @@ mod test {
                     )]))),
                     delete: None,
                     upsert: None,
+                    update: None,
                 },
                 (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
                 (vec!["A", "b", "A", "d", "A"], vec!["1", "1", "3", "4", "5"]),
@@ -4531,6 +4727,7 @@ mod test {
                     )]))),
                     delete: None,
                     upsert: None,
+                    update: None,
                 },
                 (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
                 (
@@ -4548,6 +4745,7 @@ mod test {
                     )]))),
                     delete: None,
                     upsert: None,
+                    update: None,
                 },
                 (
                     vec!["aaa", "b", "aaa", "d", "aaa"],
@@ -4565,6 +4763,7 @@ mod test {
                     )]))),
                     delete: None,
                     upsert: None,
+                    update: None,
                 },
                 (
                     vec!["a", "b", "a", "a", "b", "a", "a"],
@@ -4585,6 +4784,7 @@ mod test {
                     ]))),
                     delete: None,
                     upsert: None,
+                    update: None,
                 },
                 (
                     vec!["a", "a", "b", "c", "dd", "dd", "e"],
@@ -4605,6 +4805,7 @@ mod test {
                     ]))),
                     delete: None,
                     upsert: None,
+                    update: None,
                 },
                 (
                     vec!["a", "a", "b", "dd", "e", "a", "dd"],
@@ -4622,6 +4823,7 @@ mod test {
                     rename: None,
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
                     upsert: None,
+                    update: None,
                 },
                 (vec!["a", "b", "a", "d", "a"], vec!["1", "1", "3", "4", "5"]),
                 (vec!["b", "d"], vec!["1", "4"]),
@@ -4633,6 +4835,7 @@ mod test {
                     rename: None,
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
                     upsert: None,
+                    update: None,
                 },
                 (
                     vec!["a", "a", "a", "b", "a", "a", "b", "b", "a", "a"],
@@ -4650,6 +4853,7 @@ mod test {
                         "b".into(),
                     ]))),
                     upsert: None,
+                    update: None,
                 },
                 (
                     vec!["a", "a", "a", "b", "a", "a", "b", "c", "a", "a"],
@@ -4667,6 +4871,7 @@ mod test {
                     )]))),
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
                     upsert: None,
+                    update: None,
                 },
                 (vec!["_", "a", "a", "b", "c"], vec!["1", "2", "3", "4", "5"]),
                 (vec!["_", "AAA", "AAA", "c"], vec!["1", "2", "3", "5"]),
@@ -4678,6 +4883,7 @@ mod test {
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![]))),
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
                     upsert: None,
+                    update: None,
                 },
                 (vec!["a", "a", "b", "c"], vec!["1", "2", "3", "4"]),
                 (vec!["a", "a", "c"], vec!["1", "2", "4"]),
@@ -4692,6 +4898,7 @@ mod test {
                     )]))),
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![]))),
                     upsert: None,
+                    update: None,
                 },
                 (vec!["a", "a", "b", "c"], vec!["1", "2", "3", "4"]),
                 (vec!["AAAA", "AAAA", "b", "c"], vec!["1", "2", "3", "4"]),
@@ -4905,6 +5112,7 @@ mod test {
                     )]))),
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["k3".into()]))),
                     upsert: None,
+                    update: None,
                 },
             )
             .unwrap();
@@ -5050,6 +5258,7 @@ mod test {
                     )]))),
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                     upsert: None,
+                    update: None,
                 },
                 (
                     // keys column - dict keys
@@ -5093,6 +5302,7 @@ mod test {
                     rename: None,
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                     upsert: None,
+                    update: None,
                 },
                 (
                     // keys column - dict keys
@@ -5242,6 +5452,7 @@ mod test {
                 )]))),
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 upsert: None,
+                update: None,
             },
         )
         .unwrap();
@@ -5296,6 +5507,7 @@ mod test {
                 rename: None,
                 delete: Some(DeleteTransform::new(["a".into()].into_iter().collect())),
                 upsert: None,
+                update: None,
             },
         )
         .unwrap();
@@ -5339,6 +5551,7 @@ mod test {
                 rename: None,
                 delete: Some(DeleteTransform::new(["a".into()].into_iter().collect())),
                 upsert: None,
+                update: None,
             },
         )
         .unwrap();
@@ -5425,6 +5638,7 @@ mod test {
                 rename: None,
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 upsert: None,
+                update: None,
             },
         )
         .unwrap();
@@ -5506,6 +5720,7 @@ mod test {
                 rename: None,
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 upsert: None,
+                update: None,
             },
         )
         .unwrap();
@@ -5569,6 +5784,7 @@ mod test {
                 rename: None,
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 upsert: None,
+                update: None,
             },
         )
         .unwrap();
@@ -5637,6 +5853,7 @@ mod test {
                 rename: None,
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
                 upsert: None,
+                update: None,
             },
         )
         .unwrap();
@@ -5710,6 +5927,7 @@ mod test {
                     "does_not_exist".into(),
                 ]))),
                 upsert: None,
+                update: None,
             },
         )
         .unwrap();
@@ -5794,6 +6012,7 @@ mod test {
                     "does_not_exist".into(),
                 ]))),
                 upsert: None,
+                update: None,
             },
         )
         .unwrap();
@@ -6427,6 +6646,7 @@ mod test {
                 )]))),
                 delete: None,
                 upsert: None,
+                update: None,
             },
             AttributesTransform {
                 insert: None,
@@ -6436,6 +6656,7 @@ mod test {
                 ]))),
                 delete: None,
                 upsert: None,
+                update: None,
             },
             AttributesTransform {
                 insert: None,
@@ -6445,6 +6666,7 @@ mod test {
                 )]))),
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
                 upsert: None,
+                update: None,
             },
             AttributesTransform {
                 insert: None,
@@ -6454,6 +6676,7 @@ mod test {
                 )]))),
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
                 upsert: None,
+                update: None,
             },
         ];
 
@@ -6509,6 +6732,7 @@ mod test {
                 "d",
             )]))),
             upsert: None,
+            update: None,
         };
 
         let (with_stats, stats) = transform_attributes_with_stats(
@@ -6570,6 +6794,7 @@ mod test {
                 "d",
             )]))),
             upsert: None,
+            update: None,
         };
 
         let (with_stats, stats) = transform_attributes_with_stats(
@@ -7765,6 +7990,7 @@ mod insert_tests {
                 LiteralValue::Str("prod".into()),
             )]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -7840,6 +8066,7 @@ mod insert_tests {
                 LiteralValue::Str("prod".into()),
             )]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -7904,6 +8131,7 @@ mod insert_tests {
                 LiteralValue::Str("prod".into()),
             )]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter([Some(0), None, Some(1), None]));
@@ -7981,6 +8209,7 @@ mod insert_tests {
                     LiteralValue::Str("prod".into()),
                 )]))),
                 upsert: None,
+                update: None,
             };
 
             let ids: ArrayRef = Arc::new(UInt32Array::from_iter_values([0, 1]));
@@ -8052,6 +8281,7 @@ mod insert_tests {
                 LiteralValue::Str("val".into()),
             )]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8105,6 +8335,7 @@ mod insert_tests {
                 LiteralValue::Str("new_value".into()),
             )]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8170,6 +8401,7 @@ mod insert_tests {
                 ("c".into(), LiteralValue::Str("cv".into())),
             ]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -8222,6 +8454,7 @@ mod insert_tests {
                 LiteralValue::Int(42),
             )]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8280,6 +8513,7 @@ mod insert_tests {
                 LiteralValue::Double(1.2345),
             )]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8335,6 +8569,7 @@ mod insert_tests {
                 LiteralValue::Bool(true),
             )]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8392,6 +8627,7 @@ mod insert_tests {
                 ("bool_key".into(), LiteralValue::Bool(false)),
             ]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8443,6 +8679,7 @@ mod insert_tests {
                 LiteralValue::Str("new_value".into()),
             )]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8494,6 +8731,7 @@ mod insert_tests {
                 LiteralValue::Str("new_value".into()),
             )]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8549,6 +8787,7 @@ mod insert_tests {
                 ("new_key".into(), LiteralValue::Str("new_value".into())),
             ]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8579,6 +8818,7 @@ mod insert_tests {
                 LiteralValue::Str("value".into()),
             )]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([]));
@@ -8609,6 +8849,7 @@ mod insert_tests {
                 LiteralValue::Str("val".into()),
             )]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -8683,6 +8924,7 @@ mod insert_tests {
                 ("new_key".into(), LiteralValue::Str("new_val".into())),
             ]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1, 2]));
@@ -8728,6 +8970,7 @@ mod insert_tests {
                 LiteralValue::Str("prod".into()),
             )]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt32Array::from_iter_values([0, 1]));
@@ -8774,6 +9017,7 @@ mod insert_tests {
                 LiteralValue::Str("should_not_overwrite".into()),
             )]))),
             upsert: None,
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt32Array::from_iter_values([0]));
@@ -8835,6 +9079,7 @@ mod upsert_tests {
                 "new_key".into(),
                 LiteralValue::Str("new_val".into()),
             )]))),
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8889,6 +9134,7 @@ mod upsert_tests {
                 "target_key".into(),
                 LiteralValue::Str("updated_value".into()),
             )]))),
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -8954,6 +9200,7 @@ mod upsert_tests {
                 ("a".into(), LiteralValue::Str("new_a".into())),
                 ("c".into(), LiteralValue::Str("new_c".into())),
             ]))),
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -9016,6 +9263,7 @@ mod upsert_tests {
                 "env".into(),
                 LiteralValue::Str("prod".into()),
             )]))),
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -9080,6 +9328,7 @@ mod upsert_tests {
                 "env".into(),
                 LiteralValue::Str("prod".into()),
             )]))),
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter([Some(0), None, Some(1), None]));
@@ -9157,6 +9406,7 @@ mod upsert_tests {
                     "env".into(),
                     LiteralValue::Str("prod".into()),
                 )]))),
+                update: None,
             };
 
             let ids: ArrayRef = Arc::new(UInt32Array::from_iter_values([0, 1]));
@@ -9229,6 +9479,7 @@ mod upsert_tests {
                 "count".into(),
                 LiteralValue::Int(100),
             )]))),
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -9280,6 +9531,7 @@ mod upsert_tests {
                 "ratio".into(),
                 LiteralValue::Double(2.5),
             )]))),
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -9329,6 +9581,7 @@ mod upsert_tests {
                 "enabled".into(),
                 LiteralValue::Bool(true),
             )]))),
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -9383,6 +9636,7 @@ mod upsert_tests {
                 "existing".into(),
                 LiteralValue::Str("updated".into()),
             )]))),
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -9452,6 +9706,7 @@ mod upsert_tests {
                 "new".into(),
                 LiteralValue::Str("nval".into()),
             )]))),
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -9509,6 +9764,7 @@ mod upsert_tests {
                 "x".into(),
                 LiteralValue::Str("updated".into()),
             )]))),
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -9550,6 +9806,7 @@ mod upsert_tests {
                 "new_key".into(),
                 LiteralValue::Str("val".into()),
             )]))),
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([]));
@@ -9580,6 +9837,7 @@ mod upsert_tests {
                 "new_key".into(),
                 LiteralValue::Str("val".into()),
             )]))),
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1]));
@@ -9653,6 +9911,7 @@ mod upsert_tests {
                 "target".into(),
                 LiteralValue::Str("updated".into()),
             )]))),
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0]));
@@ -9727,6 +9986,7 @@ mod upsert_tests {
                 "a".into(),
                 LiteralValue::Str("2".into()),
             )]))),
+            update: None,
         };
 
         let ids: ArrayRef = Arc::new(UInt16Array::from_iter_values([0, 1, 2]));
@@ -9847,6 +10107,7 @@ mod upsert_tests {
                 )]))),
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["c".into()]))),
                 upsert: None,
+                update: None,
             },
         )
         .unwrap();
@@ -9902,6 +10163,7 @@ mod upsert_tests {
                 )]))),
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["c".into()]))),
                 upsert: None,
+                update: None,
             },
         )
         .unwrap();
@@ -9997,6 +10259,7 @@ mod upsert_tests {
                 )]))),
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["c".into()]))),
                 upsert: None,
+                update: None,
             },
         )
         .unwrap();

@@ -112,6 +112,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
             "attr_24".into(),
         )]))),
         delete: None,
+        update: None,
         upsert: None,
     };
 
@@ -122,6 +123,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
             "attr_24".into(),
         )]))),
         delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr15".into()]))),
+        update: None,
         upsert: None,
     };
 
@@ -129,6 +131,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
         insert: None,
         rename: None,
         delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr15".into()]))),
+        update: None,
         upsert: None,
     };
 
@@ -139,6 +142,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
             "attr_3".into(),
         )]))),
         delete: None,
+        update: None,
         upsert: None,
     };
 
@@ -146,6 +150,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
         insert: None,
         rename: None,
         delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr9".into()]))),
+        update: None,
         upsert: None,
     };
 
@@ -156,6 +161,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
             "attr_3".into(),
         )]))),
         delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr9".into()]))),
+        update: None,
         upsert: None,
     };
 
