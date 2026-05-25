@@ -1325,7 +1325,7 @@ pub fn transform_attributes_impl(
     // transport-optimized parent_id encoding.
     //
     // At the same time, set flag to check if the batch already has the transport optimized
-    // encoding. This is used later to determine if we need to lazily materialize the because ID
+    // encoding. This is used later to determine if we need to lazily materialize the parent_id
     // column because the transformation would break some sequences of encoded IDs.
     let has_renames = transform.rename.as_ref().is_some_and(|r| !r.map.is_empty());
     let early_materialize_needed = (has_insert || has_upsert || has_update)
