@@ -24,6 +24,11 @@ use crate::pipeline::id_mask::IdMask;
 use super::eval::{eval_datafusion_expr_value, invert_id_mask, join_and_eval_value};
 use super::{LeafEval, ScopedExpr, ScopedValue};
 
+pub struct ScopedIdMask {
+    pub scope: Option<DataScope>,
+    pub mask: IdMask,
+}
+
 impl ScopedExpr {
     /// Produce an `IdMask` (bitmap of IDs that matched).
     ///
@@ -35,46 +40,80 @@ impl ScopedExpr {
         otap_batch: &OtapArrowRecords,
         session_ctx: &SessionContext,
         pool: &mut IdBitmapPool,
-    ) -> Result<IdMask> {
+    ) -> Result<ScopedIdMask> {
         match self {
             Self::Eval { scope, eval } => {
                 execute_eval_as_id_mask(scope, eval, otap_batch, session_ctx, pool)
             }
-            Self::JoinAndEval { children, eval } => execute_join_and_eval_as_id_mask(
+            Self::JoinAndEval {
+                children,
+                eval,
+                default_null_children,
+            } => execute_join_and_eval_as_id_mask(
                 children.as_mut_slice(),
                 eval,
+                *default_null_children,
                 otap_batch,
                 session_ctx,
                 pool,
             ),
             Self::BitmapAnd(left, right) => {
-                let left_mask = left.execute_as_id_mask(otap_batch, session_ctx, pool)?;
+                let left_result = left.execute_as_id_mask(otap_batch, session_ctx, pool)?;
 
                 // short-circuit: if left is None, the AND result is None regardless of right
-                if left_mask == IdMask::None {
-                    return Ok(IdMask::None);
+                if left_result.mask == IdMask::None {
+                    return Ok(ScopedIdMask {
+                        mask: IdMask::None,
+                        scope: None,
+                    });
                 }
 
-                let right_mask = right.execute_as_id_mask(otap_batch, session_ctx, pool)?;
-                Ok(left_mask.combine_and(right_mask, pool))
+                let right_result = right.execute_as_id_mask(otap_batch, session_ctx, pool)?;
+                let scope = combine_scope(left_result.scope, right_result.scope);
+                Ok(ScopedIdMask {
+                    scope,
+                    mask: left_result.mask.combine_and(right_result.mask, pool),
+                })
             }
             Self::BitmapOr(left, right) => {
-                let left_mask = left.execute_as_id_mask(otap_batch, session_ctx, pool)?;
+                let left_result = left.execute_as_id_mask(otap_batch, session_ctx, pool)?;
 
                 // short-circuit: if left is All, the OR result is All regardless of right
-                if left_mask == IdMask::All {
-                    return Ok(IdMask::All);
+                if left_result.mask == IdMask::All {
+                    return Ok(ScopedIdMask {
+                        mask: IdMask::All,
+                        scope: None,
+                    });
                 }
 
-                let right_mask = right.execute_as_id_mask(otap_batch, session_ctx, pool)?;
-                Ok(left_mask.combine_or(right_mask, pool))
+                let right_result = right.execute_as_id_mask(otap_batch, session_ctx, pool)?;
+                let scope = combine_scope(left_result.scope, right_result.scope);
+                Ok(ScopedIdMask {
+                    scope,
+                    mask: left_result.mask.combine_or(right_result.mask, pool),
+                })
             }
             Self::BitmapNot(child) => {
-                let child_mask = child.execute_as_id_mask(otap_batch, session_ctx, pool)?;
-                Ok(invert_id_mask(child_mask))
+                let child_result = child.execute_as_id_mask(otap_batch, session_ctx, pool)?;
+                Ok(ScopedIdMask {
+                    mask: invert_id_mask(child_result.mask),
+                    scope: child_result.scope,
+                })
             }
         }
     }
+}
+
+pub fn combine_scope(left: Option<DataScope>, right: Option<DataScope>) -> Option<DataScope> {
+    if left.is_none() {
+        return right;
+    }
+
+    if right.is_none() {
+        return left;
+    }
+
+    left
 }
 
 /// Execute an `Eval` node as an IdMask.
@@ -84,43 +123,66 @@ fn execute_eval_as_id_mask(
     otap_batch: &OtapArrowRecords,
     session_ctx: &SessionContext,
     pool: &mut IdBitmapPool,
-) -> Result<IdMask> {
-    match eval {
+) -> Result<ScopedIdMask> {
+    let (mask, scope) = match eval {
         LeafEval::BatchPredicate(predicate) => {
-            if predicate.evaluate(otap_batch) {
-                Ok(IdMask::All)
+            let mask = if predicate.evaluate(otap_batch) {
+                IdMask::All
             } else {
-                Ok(IdMask::None)
-            }
+                IdMask::None
+            };
+            (mask, None)
         }
         LeafEval::DatafusionExpr { .. } => {
             // evaluate as value first, then convert to IdMask
             let value_result = eval_datafusion_expr_value(scope, eval, otap_batch, session_ctx)?;
 
             match value_result {
-                None => Ok(IdMask::None), // missing data, nothing matches
-                Some(sv) => scoped_value_to_id_mask(sv, otap_batch, pool),
+                None => (
+                    IdMask::None, // missing data, nothing matches
+                    None,
+                ),
+                Some(sv) => {
+                    let scope = sv.scope.clone();
+                    let mask = scoped_value_to_id_mask(sv, otap_batch, pool)?;
+                    (mask, Some(scope))
+                }
             }
         }
-    }
+    };
+
+    Ok(ScopedIdMask { scope, mask })
 }
 
 /// Execute a `JoinAndEval` node as an IdMask.
 fn execute_join_and_eval_as_id_mask(
     children: &mut [ScopedExpr],
     eval: &mut LeafEval,
+    default_null_children: bool,
     otap_batch: &OtapArrowRecords,
     session_ctx: &SessionContext,
     pool: &mut IdBitmapPool,
-) -> Result<IdMask> {
+) -> Result<ScopedIdMask> {
     // JoinAndEval always materializes values (the join requires actual arrays),
     // then converts the boolean result to an IdMask.
-    let value_result = join_and_eval_value(children, eval, otap_batch, session_ctx)?;
+    let value_result = join_and_eval_value(
+        children,
+        eval,
+        default_null_children,
+        otap_batch,
+        session_ctx,
+    )?;
 
-    match value_result {
-        None => Ok(IdMask::None),
-        Some(sv) => scoped_value_to_id_mask(sv, otap_batch, pool),
-    }
+    let (mask, scope) = match value_result {
+        None => (IdMask::None, None),
+        Some(sv) => {
+            let scope = sv.scope.clone();
+            let mask = scoped_value_to_id_mask(sv, otap_batch, pool)?;
+            (mask, Some(scope))
+        }
+    };
+
+    Ok(ScopedIdMask { scope, mask })
 }
 
 /// Convert a `ScopedValue` containing a boolean result into an `IdMask`.

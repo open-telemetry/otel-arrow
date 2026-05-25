@@ -16,8 +16,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, RecordBatch, StringArray,
-    StructArray, UInt16Array,
+    Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, NullArray, RecordBatch,
+    StringArray, StructArray, UInt16Array,
 };
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::filter_record_batch;
@@ -36,9 +36,11 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
+use crate::pipeline::expr::bitmap::combine_scope;
 use crate::pipeline::expr::join::{JoinInput, join, multi_join};
 use crate::pipeline::expr::{
     DataScope, LeafEval, SCALAR_RECORD_BATCH_INPUT, ScopedExpr, ScopedValue, VALUE_COLUMN_NAME,
+    arg_column_name,
 };
 use crate::pipeline::id_mask::IdMask;
 use crate::pipeline::planner::AttributesIdentifier;
@@ -61,13 +63,22 @@ impl ScopedExpr {
         otap_batch: &OtapArrowRecords,
         session_ctx: &SessionContext,
     ) -> Result<Option<ScopedValue>> {
+        println!("executing {self:?}");
         match self {
             Self::Eval { scope, eval } => {
                 eval_datafusion_expr_value(scope, eval, otap_batch, session_ctx)
             }
-            Self::JoinAndEval { children, eval } => {
-                join_and_eval_value(children.as_mut_slice(), eval, otap_batch, session_ctx)
-            }
+            Self::JoinAndEval {
+                children,
+                eval,
+                default_null_children,
+            } => join_and_eval_value(
+                children.as_mut_slice(),
+                eval,
+                *default_null_children,
+                otap_batch,
+                session_ctx,
+            ),
             Self::BitmapAnd(left, right) => {
                 execute_bitmap_and_as_value(left, right, otap_batch, session_ctx)
             }
@@ -124,6 +135,7 @@ pub(super) fn eval_datafusion_expr_value(
             eval_anyval_as_struct,
             attr_key_case_sensitive,
             missing_data_passes,
+            align_to_root,
         } => {
             // resolve the source RecordBatch for this scope
             let source_rb = match scope {
@@ -184,6 +196,12 @@ pub(super) fn eval_datafusion_expr_value(
                 source_rb.as_ref().clone()
             };
 
+            println!("In eval - source RB:");
+            arrow::util::pretty::print_batches(&[source_rb.as_ref().clone()]).unwrap();
+
+            println!("In eval - projected RB:");
+            arrow::util::pretty::print_batches(&[projected_rb.clone()]).unwrap();
+
             // check for AnyValue struct columns that need resolution
             let any_value_indices = find_any_value_columns(projected_rb.schema_ref());
 
@@ -200,11 +218,19 @@ pub(super) fn eval_datafusion_expr_value(
                 )?
             };
 
-            Ok(Some(ScopedValue::new(
+            let mut result = ScopedValue::new(
                 coerce_nulls_for_predicate(result_vals, *missing_data_passes),
                 scope.clone(),
                 &source_rb,
-            )))
+            );
+
+            if *align_to_root {
+                result = align_value_to_root(result, otap_batch)?;
+            }
+
+            // println!("result of eval = {:#?}", result);
+
+            Ok(Some(result))
         }
 
         LeafEval::BatchPredicate(predicate) => {
@@ -226,30 +252,40 @@ pub(super) fn eval_datafusion_expr_value(
 pub(super) fn join_and_eval_value(
     children: &mut [ScopedExpr],
     eval: &mut LeafEval,
+    default_null_children: bool,
     otap_batch: &OtapArrowRecords,
     session_ctx: &SessionContext,
 ) -> Result<Option<ScopedValue>> {
     // evaluate all children
     let mut child_results = Vec::with_capacity(children.len());
     for child in children.iter_mut() {
-        match child.execute_as_value(otap_batch, session_ctx)? {
-            Some(result) => child_results.push(result),
-            None => return Ok(None), // if any child is absent, the whole expression is null
-        }
+        let result = match child.execute_as_value(otap_batch, session_ctx)? {
+            Some(result) => result,
+            None => {
+                if default_null_children {
+                    ScopedValue::new_scalar(ScalarValue::Null)
+                } else {
+                    return Ok(None); // if any child is absent, the whole expression is null
+                }
+            }
+        };
+        child_results.push(result)
     }
 
     // convert ScopedValues to JoinInputs for the join boundary
-    let eval_results: Vec<JoinInput> = child_results
+    let join_inputs: Vec<JoinInput> = child_results
         .into_iter()
         .map(|sv| scoped_value_to_join_input(sv, otap_batch))
         .collect::<Result<Vec<_>>>()?;
 
+    println!("join inputs = {join_inputs:?}");
+
     // perform the join
     // TODO in the future we should consolidate join strategy so multi-join is the only option.
-    let (joined_rb, result_scope) = if eval_results.len() == 2 {
-        join(&eval_results[0], &eval_results[1], otap_batch)?
+    let (joined_rb, result_scope) = if join_inputs.len() == 2 {
+        join(&join_inputs[0], &join_inputs[1], otap_batch)?
     } else {
-        multi_join(&eval_results, otap_batch)?
+        multi_join(&join_inputs, otap_batch)?
     };
 
     // evaluate the expression on the joined RecordBatch
@@ -261,6 +297,7 @@ pub(super) fn join_and_eval_value(
         eval_anyval_as_struct,
         attr_key_case_sensitive: _,
         missing_data_passes,
+        align_to_root,
     } = eval
     else {
         // TODO - technically we could evaluate the batch predicate w/out joining. It would be
@@ -277,6 +314,12 @@ pub(super) fn join_and_eval_value(
         None => return Ok(None),
     };
 
+    println!("In join - joined RB:");
+    arrow::util::pretty::print_batches(&[joined_rb.clone()]).unwrap();
+
+    println!("In join - projected RB:");
+    arrow::util::pretty::print_batches(&[projected_rb.clone()]).unwrap();
+
     // handle AnyValue columns
     let any_value_indices = find_any_value_columns(projected_rb.schema_ref());
     let result_vals = if any_value_indices.is_empty() || *eval_anyval_as_struct {
@@ -292,11 +335,22 @@ pub(super) fn join_and_eval_value(
         )?
     };
 
-    Ok(Some(ScopedValue::new(
+    let mut result = ScopedValue::new(
         coerce_nulls_for_predicate(result_vals, *missing_data_passes),
         DataScope::clone(&result_scope),
         &joined_rb,
-    )))
+    );
+
+    // println!("result before join = {:#?}", result);
+
+    if *align_to_root {
+        // println!("doing realignment");
+        result = align_value_to_root(result, otap_batch)?;
+    }
+
+    // println!("result of join = {:#?}", result);
+
+    Ok(Some(result))
 }
 
 fn coerce_nulls_for_predicate(
@@ -338,16 +392,17 @@ fn execute_bitmap_and_as_value(
     session_ctx: &SessionContext,
 ) -> Result<Option<ScopedValue>> {
     let mut pool = IdBitmapPool::new();
-    let left_mask = left.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
+    let left_result = left.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
 
     // short-circuit: if left is all-false, skip right
-    if left_mask == IdMask::None {
-        return materialize_id_mask_to_value(IdMask::None, otap_batch);
+    if left_result.mask == IdMask::None {
+        return materialize_id_mask_to_value(IdMask::None, None, otap_batch);
     }
 
-    let right_mask = right.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
-    let combined = left_mask.combine_and(right_mask, &mut pool);
-    materialize_id_mask_to_value(combined, otap_batch)
+    let right_result = right.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
+    let combined_scope = combine_scope(left_result.scope, right_result.scope);
+    let combined = left_result.mask.combine_and(right_result.mask, &mut pool);
+    materialize_id_mask_to_value(combined, combined_scope, otap_batch)
 }
 
 /// Execute a `BitmapOr` node as a value.
@@ -360,16 +415,17 @@ fn execute_bitmap_or_as_value(
     session_ctx: &SessionContext,
 ) -> Result<Option<ScopedValue>> {
     let mut pool = IdBitmapPool::new();
-    let left_mask = left.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
+    let left_result = left.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
 
     // short-circuit: if left is all-true, skip right
-    if left_mask == IdMask::All {
-        return materialize_id_mask_to_value(IdMask::All, otap_batch);
+    if left_result.mask == IdMask::All {
+        return materialize_id_mask_to_value(IdMask::All, None, otap_batch);
     }
 
-    let right_mask = right.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
-    let combined = left_mask.combine_or(right_mask, &mut pool);
-    materialize_id_mask_to_value(combined, otap_batch)
+    let right_result = right.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
+    let combined_scope = combine_scope(left_result.scope, right_result.scope);
+    let combined = left_result.mask.combine_or(right_result.mask, &mut pool);
+    materialize_id_mask_to_value(combined, combined_scope, otap_batch)
 }
 
 /// Execute a `BitmapNot` node as a value.
@@ -379,9 +435,9 @@ fn execute_bitmap_not_as_value(
     session_ctx: &SessionContext,
 ) -> Result<Option<ScopedValue>> {
     let mut pool = IdBitmapPool::new();
-    let child_mask = child.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
-    let inverted = invert_id_mask(child_mask);
-    materialize_id_mask_to_value(inverted, otap_batch)
+    let child_result = child.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
+    let inverted = invert_id_mask(child_result.mask);
+    materialize_id_mask_to_value(inverted, child_result.scope, otap_batch)
 }
 
 /// Evaluate a DataFusion expression on a RecordBatch.
@@ -410,7 +466,7 @@ fn evaluate_df_expr(
 
 /// Evaluate a DataFusion expression on a RecordBatch that has AnyValue struct columns,
 /// using the split-evaluate-stitch pattern where each value type is evaluated as a separate
-/// partition and the results are then stiched back together.
+/// partition and the results are then stitched back together.
 fn evaluate_with_anyval_partitions(
     logical_expr: &Expr,
     physical_expr: &mut Option<PhysicalExprRef>,
@@ -512,6 +568,8 @@ pub(super) fn invert_id_mask(mask: IdMask) -> IdMask {
 /// Materialize an `IdMask` to a root-aligned `BooleanArray` wrapped in a `ScopedValue`.
 fn materialize_id_mask_to_value(
     mask: IdMask,
+    // TODO could comment on the argument?
+    mask_scope: Option<DataScope>,
     otap_batch: &OtapArrowRecords,
 ) -> Result<Option<ScopedValue>> {
     let root_rb = match otap_batch.root_record_batch() {
@@ -525,9 +583,32 @@ fn materialize_id_mask_to_value(
         IdMask::All => BooleanArray::new(BooleanBuffer::new_set(num_rows), None),
         IdMask::None => BooleanArray::new(BooleanBuffer::new_unset(num_rows), None),
         IdMask::Some(_) | IdMask::NotSome(_) => {
-            let id_col = root_rb
-                .column_by_name(consts::ID)
-                .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
+            let id_col = match mask_scope {
+                Some(
+                    DataScope::Attribute(AttributesIdentifier::NonRoot(payload_type), _)
+                    | DataScope::AttributesAll(AttributesIdentifier::NonRoot(payload_type)),
+                ) => match payload_type {
+                    ArrowPayloadType::ResourceAttrs => {
+                        get_optional_array_from_struct_array_from_record_batch(
+                            root_rb,
+                            consts::RESOURCE,
+                            consts::ID,
+                        )?
+                    }
+                    ArrowPayloadType::ScopeAttrs => {
+                        get_optional_array_from_struct_array_from_record_batch(
+                            root_rb,
+                            consts::SCOPE,
+                            consts::ID,
+                        )?
+                    }
+                    _ => {
+                        todo!()
+                    }
+                },
+                _ => root_rb.column_by_name(consts::ID),
+            }
+            .and_then(|arr| arr.as_any().downcast_ref::<UInt16Array>());
 
             match id_col {
                 Some(id_col) => {
@@ -765,4 +846,36 @@ fn maybe_downcast_dicts(batch: RecordBatch, opts: &ProjectionOptions) -> Result<
         Arc::new(Schema::new(fields)),
         columns,
     )?)
+}
+
+fn align_value_to_root(value: ScopedValue, otap_batch: &OtapArrowRecords) -> Result<ScopedValue> {
+    println!("in alignment value = {value:?}");
+    let root_batch = match otap_batch.root_record_batch() {
+        Some(rb) => rb,
+        None => return Ok(value),
+    };
+
+    let left_input = JoinInput::new(
+        ColumnarValue::Array(Arc::new(NullArray::new(root_batch.num_rows()))),
+        Rc::new(DataScope::Root),
+        &root_batch,
+    );
+
+    let right_input = scoped_value_to_join_input(value, otap_batch)?;
+
+    // arg_column_name(0)
+
+    // TODO is this GUARANTEED to always be root?
+    // TODO using the join machinery is a hack here
+    let (result_rb, result_scope) = join(&left_input, &right_input, otap_batch)?;
+    let col = result_rb
+        .column_by_name(&arg_column_name(1))
+        .unwrap() // TODO uwnrap?
+        .clone();
+
+    Ok(ScopedValue::new(
+        ColumnarValue::Array(col),
+        result_scope.as_ref().clone(),
+        root_batch,
+    ))
 }

@@ -44,11 +44,13 @@ use crate::consts::{
 };
 use crate::error::{Error, Result};
 use crate::pipeline::assign::leaf_requires_dict_downcast;
+use crate::pipeline::expr::join::is_one_to_many;
 use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
 use crate::pipeline::expr::{DataScope, VALUE_COLUMN_NAME, arg_column_name};
 use crate::pipeline::expr::{LeafEval, RootParentStruct, ScopedExpr, SignalTypePredicate};
+use crate::pipeline::functions::compare::CompareFunc;
 use crate::pipeline::functions::expr_fn::contains;
 use crate::pipeline::functions::is_type::IsTypeFunc;
 #[cfg(feature = "sha1-hash")]
@@ -56,7 +58,8 @@ use crate::pipeline::functions::sha1_hash;
 use crate::pipeline::functions::{
     arity_range, fnv_hash, murmur3_hash, regexp_substr, substring, uuidv7, xxh3_hash, xxh128_hash,
 };
-use crate::pipeline::planner::ColumnAccessor;
+use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
+use crate::pipeline::project::{Projection, ProjectionOptions};
 
 /// Planner that converts AST expressions into `ScopedExpr` execution trees.
 pub(crate) struct ExprPlanner {
@@ -353,8 +356,8 @@ impl ExprPlanner {
                     requires_dict_downcast: false,
                 };
                 let combined_scope = try_combine_scopes(&left_planned, &right_planned);
-                let left = left_planned.expr;
-                let right = right_planned.expr;
+                let mut left = left_planned.expr;
+                let mut right = right_planned.expr;
                 if let Some(combined_scope) = combined_scope
                     && !matches!(combined_scope, DataScope::AttributesAll(_))
                 {
@@ -378,7 +381,36 @@ impl ExprPlanner {
                         eval: LeafEval::new_df_expr(left_expr.and(right_expr), downcast_dicts)?,
                     })
                 } else {
-                    Ok(ScopedExpr::BitmapAnd(Box::new(left), Box::new(right)))
+                    match (
+                        left.effective_value_scope().as_ref(),
+                        right.effective_value_scope().as_ref(),
+                    ) {
+                        (
+                            DataScope::AttributesAll(left_attrs_id),
+                            DataScope::AttributesAll(right_attrs_id),
+                        ) if left_attrs_id == right_attrs_id => {
+                            return Ok(ScopedExpr::BitmapAnd(Box::new(left), Box::new(right)));
+                        }
+                        (
+                            DataScope::AttributesAll(left_attrs_id),
+                            DataScope::AttributesAll(right_attrs_id),
+                        ) if left_attrs_id != right_attrs_id => {
+                            // TODO should we comment why we're doing this?
+                            // TODO would a custom join impl be faster?
+                            left.set_eval_align_to_root();
+                            right.set_eval_align_to_root();
+                        }
+                        _ => {}
+                    }
+
+                    Ok(ScopedExpr::JoinAndEval {
+                        children: vec![left, right],
+                        eval: LeafEval::new_df_expr(
+                            col(arg_column_name(0)).and(col(arg_column_name(1))),
+                            false,
+                        )?,
+                        default_null_children: false,
+                    })
                 }
             }
 
@@ -396,8 +428,9 @@ impl ExprPlanner {
                     requires_dict_downcast: false,
                 };
                 let combined_scope = try_combine_scopes(&left_planned, &right_planned);
-                let left = left_planned.expr;
-                let right = right_planned.expr;
+                let mut left = left_planned.expr;
+                let mut right = right_planned.expr;
+
                 if let Some(combined_scope) = combined_scope
                     && !matches!(combined_scope, DataScope::AttributesAll(_))
                 {
@@ -421,12 +454,88 @@ impl ExprPlanner {
                         eval: LeafEval::new_df_expr(left_expr.or(right_expr), downcast_dicts)?,
                     })
                 } else {
-                    Ok(ScopedExpr::BitmapOr(Box::new(left), Box::new(right)))
+                    match (
+                        left.effective_value_scope().as_ref(),
+                        right.effective_value_scope().as_ref(),
+                    ) {
+                        (
+                            DataScope::AttributesAll(left_attrs_id),
+                            DataScope::AttributesAll(right_attrs_id),
+                        ) if left_attrs_id == right_attrs_id => {
+                            return Ok(ScopedExpr::BitmapOr(Box::new(left), Box::new(right)));
+                        }
+                        (
+                            DataScope::AttributesAll(left_attrs_id),
+                            DataScope::AttributesAll(right_attrs_id),
+                        ) if left_attrs_id != right_attrs_id => {
+                            // TODO should we comment why we're doing this?
+                            // TODO would a custom join impl be faster?
+                            left.set_eval_align_to_root();
+                            right.set_eval_align_to_root();
+                        }
+                        _ => {}
+                    }
+
+                    Ok(ScopedExpr::JoinAndEval {
+                        children: vec![left, right],
+                        eval: LeafEval::new_df_expr(
+                            col(arg_column_name(0)).or(col(arg_column_name(1))),
+                            false,
+                        )?,
+                        default_null_children: false,
+                    })
+
+                    // let left_is_root_scope =
+                    //     matches!(left.effective_value_scope().as_ref(), DataScope::Root);
+                    // let right_is_root_scope =
+                    //     matches!(right.effective_value_scope().as_ref(), DataScope::Root);
+                    // let should_join = (left_is_root_scope && !left.is_bitmap_exec())
+                    //     || (right_is_root_scope && !right.is_bitmap_exec());
+                    // if should_join {
+                    //     Ok(ScopedExpr::JoinAndEval {
+                    //         children: vec![left, right],
+                    //         eval: LeafEval::new_df_expr(
+                    //             col(arg_column_name(0)).or(col(arg_column_name(1))),
+                    //             false,
+                    //         )?,
+                    //         default_null_children: false,
+                    //     })
+                    // } else {
+                    //     Ok(ScopedExpr::BitmapOr(Box::new(left), Box::new(right)))
+                    // }
                 }
             }
 
             LogicalExpression::Not(not_expr) => {
-                let inner = self.plan_logical(not_expr.get_inner_expression(), functions)?;
+                let inner_expr = not_expr.get_inner_expression();
+                // TODO comments
+                match inner_expr {
+                    LogicalExpression::GreaterThan(gt_expr) => {
+                        return self.plan_comparison(
+                            gt_expr.get_left(),
+                            Operator::LtEq,
+                            gt_expr.get_right(),
+                            true,
+                            functions,
+                        );
+                    }
+                    LogicalExpression::GreaterThanOrEqualTo(gte_expr) => {
+                        return self.plan_comparison(
+                            gte_expr.get_left(),
+                            Operator::Lt,
+                            gte_expr.get_right(),
+                            false,
+                            functions,
+                        );
+                    }
+                    _ => {}
+                }
+
+                let inner = self.plan_logical(inner_expr, functions)?;
+                let is_attrs_all_scope = matches!(
+                    inner.effective_value_scope().as_ref(),
+                    DataScope::AttributesAll(_)
+                );
                 Ok(match inner {
                     ScopedExpr::Eval { scope, eval } => match eval {
                         LeafEval::DatafusionExpr {
@@ -437,7 +546,8 @@ impl ExprPlanner {
                             eval_anyval_as_struct,
                             attr_key_case_sensitive,
                             missing_data_passes,
-                        } if scope == DataScope::Root => ScopedExpr::Eval {
+                            align_to_root,
+                        } if !is_attrs_all_scope => ScopedExpr::Eval {
                             scope,
                             eval: LeafEval::DatafusionExpr {
                                 logical_expr: not(logical_expr),
@@ -447,9 +557,44 @@ impl ExprPlanner {
                                 eval_anyval_as_struct,
                                 attr_key_case_sensitive,
                                 missing_data_passes: !missing_data_passes,
+                                align_to_root,
                             },
                         },
                         _ => ScopedExpr::BitmapNot(Box::new(ScopedExpr::Eval { scope, eval })),
+                    },
+                    ScopedExpr::JoinAndEval {
+                        children,
+                        eval,
+                        default_null_children,
+                    } if !is_attrs_all_scope => match eval {
+                        LeafEval::DatafusionExpr {
+                            logical_expr,
+                            physical_expr: _,
+                            projection,
+                            projection_opts,
+                            eval_anyval_as_struct,
+                            attr_key_case_sensitive,
+                            missing_data_passes,
+                            align_to_root,
+                        } => ScopedExpr::JoinAndEval {
+                            children,
+                            default_null_children,
+                            eval: LeafEval::DatafusionExpr {
+                                logical_expr: not(logical_expr),
+                                physical_expr: None,
+                                projection,
+                                projection_opts,
+                                eval_anyval_as_struct,
+                                attr_key_case_sensitive,
+                                missing_data_passes: !missing_data_passes,
+                                align_to_root,
+                            },
+                        },
+                        _ => ScopedExpr::BitmapNot(Box::new(ScopedExpr::JoinAndEval {
+                            children,
+                            eval,
+                            default_null_children,
+                        })),
                     },
                     _ => ScopedExpr::BitmapNot(Box::new(inner)),
                 })
@@ -894,8 +1039,7 @@ impl ExprPlanner {
         let left_is_null = is_null_literal(left_expr);
         let right_is_null = is_null_literal(right_expr);
 
-        // handle null comparisons specially — Arrow does not support binary comparisons
-        // with null values directly
+        // handle null comparisons specially
         if left_is_null || right_is_null {
             if operator != Operator::Eq {
                 // TODO in the future we may want to relax this and return static false here
@@ -924,6 +1068,7 @@ impl ExprPlanner {
 
         let mut left = self.plan_scalar(left_expr, functions)?;
         let mut right = self.plan_scalar(right_expr, functions)?;
+        let either_side_literal = is_literal_eval(&left) || is_literal_eval(&right);
 
         // Try fused attribute comparison optimization: when one side is an attribute
         // access and the other is a typed literal, skip the expensive key-filter +
@@ -963,7 +1108,108 @@ impl ExprPlanner {
         }
 
         let requires_dict_downcast = left.requires_dict_downcast || right.requires_dict_downcast;
-        self.build_binary_expr(left, operator, right, requires_dict_downcast)
+
+        // println!("left = {:?}", left.expr);
+        // println!("right = {:?}", right.expr);
+        let mut expr = self.build_binary_expr(left, operator, right, requires_dict_downcast)?;
+
+        if !either_side_literal {
+            // if we're here, it means both sides of the comparison are non-null literals. For
+            // these cases, we want to use a special comparison evaluation which handles:
+            // - when each side resolves to a different type (the normal DF binary expr evaluation
+            //   produces an error for this case)
+            // - when both sides are null we treat want to treat this as equal whereas datafusion
+            //   will produce a `null` which may get coerced into false by ScopedExpr.
+
+            expr = self.compare_using_udf(operator, expr);
+        }
+
+        Ok(expr)
+    }
+
+    /// Switches from using datafusion's BinaryExpr for comparison to a custom scalar UDF wrapping
+    /// [`compare`](crate::pipeline::filter::compare::compare)
+    // TODO shouldn't have to pass op
+    fn compare_using_udf(&self, op: Operator, expr: ScopedExpr) -> ScopedExpr {
+        fn transform_leaf(eval: LeafEval) -> LeafEval {
+            match eval {
+                LeafEval::DatafusionExpr {
+                    logical_expr: Expr::BinaryExpr(binary_expr),
+                    physical_expr,
+                    projection,
+                    projection_opts,
+                    eval_anyval_as_struct,
+                    attr_key_case_sensitive,
+                    missing_data_passes,
+                    align_to_root,
+                } => LeafEval::DatafusionExpr {
+                    logical_expr: CompareFunc::new_expr(
+                        *binary_expr.left,
+                        binary_expr.op,
+                        *binary_expr.right,
+                    ),
+                    physical_expr,
+                    projection,
+                    projection_opts: ProjectionOptions {
+                        // the comparison function here handles all null columns
+                        default_null_columns: true,
+                        ..projection_opts
+                    },
+                    eval_anyval_as_struct,
+                    attr_key_case_sensitive,
+                    missing_data_passes,
+                    align_to_root,
+                },
+                other => other,
+            }
+        }
+
+        // TODO - is this all kind of messy?
+        // TODO - we only need to do the pre-align if the op is Eq I'm pretty sure
+
+        fn set_align_to_root(eval: &mut LeafEval) {
+            match eval {
+                LeafEval::DatafusionExpr { align_to_root, .. } => *align_to_root = true,
+                _ => {}
+            }
+        }
+
+        match expr {
+            ScopedExpr::Eval { scope, eval } => {
+                let mut new_eval = transform_leaf(eval);
+                if op == Operator::Eq {
+                    set_align_to_root(&mut new_eval);
+                }
+                ScopedExpr::Eval {
+                    scope,
+                    eval: new_eval,
+                }
+            }
+            ScopedExpr::JoinAndEval {
+                mut children, eval, ..
+            } => {
+                if op == Operator::Eq {
+                    for child in &mut children {
+                        // TODO I'm not sure both these branches are covered by tests?
+                        match child {
+                            ScopedExpr::Eval { eval, .. } => {
+                                set_align_to_root(eval);
+                            }
+                            ScopedExpr::JoinAndEval { eval, .. } => {
+                                set_align_to_root(eval);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                ScopedExpr::JoinAndEval {
+                    children,
+                    default_null_children: true,
+                    eval: transform_leaf(eval),
+                }
+            }
+            other => other,
+        }
     }
 
     /// Plan a null comparison: `<value_expr> == null`.
@@ -1198,6 +1444,7 @@ impl ExprPlanner {
         } else {
             Ok(ScopedExpr::JoinAndEval {
                 children: vec![haystack.expr, needle.expr],
+                default_null_children: false,
                 eval: LeafEval::new_df_expr(
                     contains(col(arg_column_name(0)), col(arg_column_name(1))),
                     true,
@@ -1562,6 +1809,7 @@ impl ExprPlanner {
         } else {
             Ok(ScopedExpr::JoinAndEval {
                 children: vec![left.expr, right.expr],
+                default_null_children: false,
                 eval: LeafEval::new_df_expr(
                     Expr::BinaryExpr(BinaryExpr::new(
                         Box::new(col(arg_column_name(0))),
@@ -1593,6 +1841,7 @@ impl ExprPlanner {
             }),
             FunctionArgScope::Join(children) => Ok(ScopedExpr::JoinAndEval {
                 children,
+                default_null_children: false,
                 eval: LeafEval::new_df_expr(expr, dict_downcast)?,
             }),
         }
@@ -1674,6 +1923,87 @@ impl ScopedExpr {
         }
     }
 
+    pub(crate) fn set_eval_align_to_root(&mut self) {
+        match self {
+            Self::Eval {
+                eval: LeafEval::DatafusionExpr { align_to_root, .. },
+                ..
+            } => *align_to_root = true,
+            _ => {}
+        }
+    }
+
+    /// returns the scope of the data that would be produced if this Expr was evaluated to
+    /// produce a scoped value
+    pub(crate) fn effective_value_scope(&self) -> Cow<'_, DataScope> {
+        match self {
+            Self::Eval { scope, eval } => match eval {
+                LeafEval::DatafusionExpr {
+                    align_to_root: true,
+                    ..
+                } => Cow::Owned(DataScope::Root),
+                _ => Cow::Borrowed(scope),
+            },
+            Self::JoinAndEval { children, .. } => {
+                // TODO comment on what's going on here ...
+                if children.is_empty() {
+                    // weird
+                    todo!()
+                }
+                let mut curr_scope = children[0].effective_value_scope();
+
+                for child in children.iter().skip(1) {
+                    let next_scope = child.effective_value_scope();
+                    curr_scope = match (curr_scope.as_ref(), next_scope.as_ref()) {
+                        (_, DataScope::StaticScalar | DataScope::AttributesAll(_)) => curr_scope,
+                        (DataScope::StaticScalar | DataScope::AttributesAll(_), _) => next_scope,
+                        (
+                            DataScope::Attribute(left_attrs_id, _),
+                            DataScope::Attribute(right_attrs_id, _),
+                        ) => {
+                            if left_attrs_id == right_attrs_id {
+                                curr_scope
+                            } else if is_one_to_many(&left_attrs_id, &right_attrs_id) {
+                                next_scope
+                            } else {
+                                curr_scope
+                            }
+                        }
+                        (
+                            DataScope::Root | DataScope::RootParent(_),
+                            DataScope::Attribute(_, _),
+                        ) => curr_scope,
+                        (
+                            DataScope::Attribute(attr_id, _),
+                            DataScope::Root | DataScope::RootParent(_),
+                        ) => match attr_id {
+                            AttributesIdentifier::Root => curr_scope,
+                            AttributesIdentifier::NonRoot(_) => next_scope,
+                        },
+
+                        // rest always have root alignment
+                        (DataScope::Root, DataScope::Root) => curr_scope,
+                        (DataScope::RootParent(_), DataScope::Root) => curr_scope,
+                        (DataScope::Root, DataScope::RootParent(_)) => curr_scope,
+                        (DataScope::RootParent(_), DataScope::RootParent(_)) => curr_scope,
+                    }
+                }
+
+                curr_scope
+            }
+            Self::BitmapAnd(_, _) | Self::BitmapOr(_, _) | Self::BitmapNot(_) => {
+                Cow::Owned(DataScope::Root)
+            }
+        }
+    }
+
+    fn is_bitmap_exec(&self) -> bool {
+        matches!(
+            self,
+            Self::BitmapAnd(_, _) | Self::BitmapOr(_, _) | Self::BitmapNot(_)
+        )
+    }
+
     /// Consume an `Eval(DatafusionExpr)` node and return its DataFusion logical expression.
     /// Returns `None` for non-`Eval` or `LeafEval::BatchPredicate` variants.
     pub(crate) fn into_df_eval_expr(self) -> Option<Expr> {
@@ -1696,6 +2026,20 @@ impl ScopedExpr {
             } => Some(logical_expr),
             _ => None,
         }
+    }
+}
+
+fn is_literal_eval(plan: &PlannedOp) -> bool {
+    match plan.expr {
+        ScopedExpr::Eval {
+            eval:
+                LeafEval::DatafusionExpr {
+                    logical_expr: Expr::Literal(_, _),
+                    ..
+                },
+            ..
+        } => true,
+        _ => false,
     }
 }
 
@@ -1868,7 +2212,7 @@ fn rewrite_attr_value_column(planned: &mut PlannedOp, field_name: &str) {
         let new_expr = col(field_name);
         *logical_expr = new_expr.clone();
         *physical_expr = None; // reset lazy physical expr
-        if let Ok(new_proj) = crate::pipeline::project::Projection::try_new(&new_expr) {
+        if let Ok(new_proj) = Projection::try_new(&new_expr) {
             *projection = new_proj;
         }
 
@@ -1965,7 +2309,7 @@ fn rewrite_body_expr(planned: &mut PlannedOp, field_name: &str) {
         *logical_expr = new_expr.clone();
         *physical_expr = None; // reset lazy physical expr
         *eval_anyval_as_struct = false;
-        if let Ok(new_proj) = crate::pipeline::project::Projection::try_new(&new_expr) {
+        if let Ok(new_proj) = Projection::try_new(&new_expr) {
             *projection = new_proj;
         }
 
@@ -2274,11 +2618,11 @@ mod test {
         let session_ctx = Pipeline::create_session_context();
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
-        match &mask {
+        match &result.mask {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(0), "row 0 should pass");
                 assert!(!bitmap.contains(1), "row 1 (ERROR) should not pass");
@@ -2314,10 +2658,10 @@ mod test {
         let session_ctx = Pipeline::create_session_context();
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
-        assert_eq!(mask, IdMask::All);
+        assert_eq!(result.mask, IdMask::All);
     }
 
     #[test]
@@ -2375,12 +2719,12 @@ mod test {
         let session_ctx = Pipeline::create_session_context();
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
         // not(Some({0, 2})) = matches everything except 0 and 2 = matches 1
-        match &mask {
+        match &result.mask {
             IdMask::Some(bitmap) => {
                 assert!(!bitmap.contains(0), "0 in negated set");
                 assert!(bitmap.contains(1), "1 not in negated set");
@@ -2416,11 +2760,11 @@ mod test {
         let session_ctx = Pipeline::create_session_context();
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
-        match &mask {
+        match &result.mask {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(0), "row 0 (x=a) should pass");
                 assert!(!bitmap.contains(1), "row 1 (x=b) should not pass");
@@ -2456,11 +2800,11 @@ mod test {
         let session_ctx = Pipeline::create_session_context();
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
-        match &mask {
+        match &result.mask {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(0), "row 0 should pass");
                 assert!(!bitmap.contains(1), "row 1 should not pass");
@@ -2513,11 +2857,11 @@ mod test {
         let session_ctx = Pipeline::create_session_context();
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
-        match &mask {
+        match &result.mask {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(0), "row 0 (count=10 > 7) should pass");
                 assert!(!bitmap.contains(1), "row 1 (count=5 < 7) should not pass");
@@ -2559,11 +2903,11 @@ mod test {
         let session_ctx = Pipeline::create_session_context();
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
-        match &mask {
+        match &result.mask {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(0), "row 0 should pass");
                 assert!(!bitmap.contains(1), "row 1 should not pass");
@@ -2622,12 +2966,12 @@ mod test {
         let session_ctx = Pipeline::create_session_context();
         let mut pool = IdBitmapPool::new();
         let mut op = op;
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
         // 10 + 2 = 12 > 5 -> should pass
-        match &mask {
+        match &result.mask {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(0), "row 0 should pass");
             }

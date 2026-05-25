@@ -32,20 +32,25 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, Int32Array, RecordBatch, StructArray, UInt16Array};
-use arrow::compute::take;
-use arrow::datatypes::{DataType, Field, Fields, Schema};
+use arrow::array::{
+    Array, ArrayRef, AsArray, BooleanArray, Int32Array, RecordBatch, StructArray, UInt16Array,
+};
+use arrow::buffer::{BooleanBuffer, MutableBuffer};
+use arrow::compute::{filter, take};
+use arrow::datatypes::{DataType, Field, Fields, Schema, UInt16Type};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::{
     get_optional_array_from_struct_array_from_record_batch, get_required_struct_array,
 };
+use otap_df_pdata::otap::filter::IdBitmap;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::expr::{DataScope, arg_column_name};
+use crate::pipeline::id_mask::IdMask;
 use crate::pipeline::planner::AttributesIdentifier;
 
 /// Input to the join module, representing an evaluated expression result with its scope
@@ -137,6 +142,13 @@ pub fn join<'a>(
 
     // determine the join strategy from the source of the data
     match (left.data_scope.as_ref(), right.data_scope.as_ref()) {
+        (
+            DataScope::Root | DataScope::RootParent(_),
+            DataScope::Root | DataScope::RootParent(_),
+        ) => {
+            let join_result = EqualScopeJoin::default().join(left, right, otap_batch)?;
+            return Ok((join_result, left.data_scope.clone()));
+        }
         (_, DataScope::StaticScalar) => {
             let join_exec = ScalarJoin {
                 left_is_scalar: false,
@@ -151,6 +163,7 @@ pub fn join<'a>(
             let join_result = join_exec.join(left, right, otap_batch)?;
             Ok((join_result, right.data_scope.clone()))
         }
+
         (DataScope::Attribute(left_attrs_id, _), DataScope::Attribute(right_attrs_id, _)) => {
             if left_attrs_id == right_attrs_id {
                 let join_exec = AttributeToSameAttributeJoin::new();
@@ -186,6 +199,16 @@ pub fn join<'a>(
                     Ok((join_result, right.data_scope.clone()))
                 }
             }
+        }
+        (DataScope::Root | DataScope::RootParent(_), DataScope::AttributesAll(_)) => {
+            let join_exec = AttributesAllSelectionVecJoin::new(false);
+            let join_result = join_exec.join(left, right, otap_batch)?;
+            Ok((join_result, left.data_scope.clone()))
+        }
+        (DataScope::AttributesAll(_), DataScope::Root | DataScope::RootParent(_)) => {
+            let join_exec = AttributesAllSelectionVecJoin::new(true);
+            let join_result = join_exec.join(left, right, otap_batch)?;
+            Ok((join_result, right.data_scope.clone()))
         }
         (left, right) => {
             // Note: with expression trees created by our logical expression planner, we shouldn't
@@ -764,6 +787,28 @@ impl JoinExec for EqualScopeJoin {
     }
 }
 
+fn flip_left_right(record_batch: RecordBatch) -> RecordBatch {
+    // join left to right, then switch the field names
+    let (schema, columns, _) = record_batch.into_parts();
+    let fields = schema.fields.clone();
+    let (left_field_idx, left_field) = fields
+        .find(&arg_column_name(0))
+        // TOOD unsure we can "expect" here since we've refactored this into a helper
+        .expect("left column present");
+    let (right_field_idx, right_field) = fields
+        .find(&arg_column_name(1))
+        .expect("right_column present");
+
+    let left_field_name_fixed = left_field.as_ref().clone().with_name(arg_column_name(1));
+    let right_field_name_fixed = right_field.as_ref().clone().with_name(arg_column_name(0));
+
+    let mut fields = fields.to_vec();
+    fields[left_field_idx] = Arc::new(left_field_name_fixed);
+    fields[right_field_idx] = Arc::new(right_field_name_fixed);
+
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("valid schema")
+}
+
 /// Broadcasts the scalar
 struct ScalarJoin {
     left_is_scalar: bool,
@@ -801,24 +846,8 @@ impl JoinExec for ScalarJoin {
         };
 
         if self.left_is_scalar {
-            // join left to right, then switch the field names
-            let (schema, columns, _) =
-                to_join_result(right, scalar_col.to_array(rows)?)?.into_parts();
-            let fields = schema.fields.clone();
-            let (left_field_idx, left_field) = fields
-                .find(&arg_column_name(0))
-                .expect("left column present");
-            let (right_field_idx, right_field) = fields
-                .find(&arg_column_name(1))
-                .expect("right_column present");
-
-            let left_field_name_fixed = left_field.as_ref().clone().with_name(arg_column_name(1));
-            let right_field_name_fixed = right_field.as_ref().clone().with_name(arg_column_name(0));
-
-            let mut fields = fields.to_vec();
-            fields[left_field_idx] = Arc::new(left_field_name_fixed);
-            fields[right_field_idx] = Arc::new(right_field_name_fixed);
-            Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("valid schema"))
+            let rb = to_join_result(right, scalar_col.to_array(rows)?)?;
+            Ok(flip_left_right(rb))
         } else {
             to_join_result(left, scalar_col.to_array(rows)?)
         }
@@ -1278,6 +1307,133 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
             Arc::new(Schema::new(fields)),
             columns,
         )?)
+    }
+}
+
+/// TODO comments
+/// TODO - add comments about how this only works when the non-attrs side is root
+/// TODO - need to implement this for when the attrs side is not root attrs (and test)
+struct AttributesAllSelectionVecJoin {
+    all_attrs_left: bool,
+}
+
+impl AttributesAllSelectionVecJoin {
+    fn new(all_attrs_left: bool) -> Self {
+        Self { all_attrs_left }
+    }
+
+    fn extract_probe_ids(
+        input: &JoinInput,
+        attrs_id: AttributesIdentifier,
+    ) -> Result<&UInt16Array> {
+        if matches!(
+            input.data_scope.as_ref(),
+            DataScope::Root | DataScope::RootParent(_)
+        ) {
+            let ids = match attrs_id {
+                AttributesIdentifier::Root => input.ids.as_ref(),
+                AttributesIdentifier::NonRoot(payload) => match payload {
+                    ArrowPayloadType::ResourceAttrs => input.resource_ids.as_ref(),
+                    ArrowPayloadType::ScopeAttrs => input.scope_ids.as_ref(),
+                    _ => {
+                        // invalid
+                        todo!()
+                    }
+                },
+            };
+            extract_u16_array(ids, consts::ID)
+        } else {
+            // not yet supported
+            todo!()
+        }
+    }
+}
+
+impl JoinExec for AttributesAllSelectionVecJoin {
+    fn rows_to_take(
+        &self,
+        left: &JoinInput,
+        right: &JoinInput,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<Int32Array> {
+        // Not implemented - should not need to compute rows to take. instead, just determine
+        // alignment based on the ordering of the other side's matching IDs
+        Err(Error::ExecutionError {
+            cause: "rows_to_take not implemented for ScalarJoin".into(),
+        })
+    }
+
+    fn join(
+        &self,
+        left: &JoinInput,
+        right: &JoinInput,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        let vals = if self.all_attrs_left {
+            &left.values
+        } else {
+            &right.values
+        };
+
+        if vals.data_type() != DataType::Boolean {
+            // TODO - need to return an error here
+            todo!()
+        }
+
+        let selection_vec = match vals {
+            ColumnarValue::Array(arr) => arr.as_boolean(),
+            ColumnarValue::Scalar(_) => {
+                // TODO - refactor to return a bitmap here
+                todo!()
+            }
+        };
+
+        let parent_ids = extract_u16_array(
+            if self.all_attrs_left {
+                left.parent_ids.as_ref()
+            } else {
+                right.parent_ids.as_ref()
+            },
+            consts::PARENT_ID,
+        )?;
+
+        let selected_parent_ids = filter(parent_ids, selection_vec)?;
+        let mut selected_lookup = IdBitmap::new();
+        selected_lookup.populate(
+            selected_parent_ids
+                .as_primitive::<UInt16Type>()
+                .values()
+                .iter()
+                .map(|i| *i as u32),
+        );
+
+        let attrs_side_scope = if self.all_attrs_left { left } else { right }
+            .data_scope
+            .as_ref();
+        let attrs_side_id = match attrs_side_scope {
+            DataScope::AttributesAll(attrs_id) => attrs_id,
+            _ => {
+                todo!();
+            }
+        };
+
+        let id_col = Self::extract_probe_ids(
+            if self.all_attrs_left { right } else { left },
+            *attrs_side_id,
+        )?;
+        let bool_buf = MutableBuffer::collect_bool(id_col.len(), |index| {
+            let parent_id = id_col.values()[index];
+            selected_lookup.contains(parent_id as u32)
+        });
+        let aligned_selection_vec =
+            BooleanArray::new(BooleanBuffer::new(bool_buf.into(), 0, id_col.len()), None);
+
+        if self.all_attrs_left {
+            let rb = to_join_result(right, Arc::new(aligned_selection_vec))?;
+            Ok(flip_left_right(rb))
+        } else {
+            to_join_result(left, Arc::new(aligned_selection_vec))
+        }
     }
 }
 

@@ -181,6 +181,7 @@ impl From<&ColumnAccessor> for DataScope {
 ///
 /// The dual-mode design allows chains of boolean operations to stay in ID bitmap space without
 /// materializing intermediate arrays.
+#[derive(Debug)]
 pub(crate) enum ScopedExpr {
     /// Leaf: evaluate an expression on a specific data scope (RecordBatch).
     ///
@@ -197,6 +198,12 @@ pub(crate) enum ScopedExpr {
     JoinAndEval {
         children: Vec<ScopedExpr>,
         eval: LeafEval,
+
+        /// Whether to default a child that evaluates to null to a null array when evaluating the
+        /// leaf expression. Normally, if some child evaluates to null, we propagate the null by
+        /// having this expr node evaluate to null as well. However, some expressions may have
+        /// special null handling semantics where they expect the null value to be passed.
+        default_null_children: bool,
     },
 
     /// Combine two boolean-producing children via IdMask bitmap intersection (AND).
@@ -291,6 +298,11 @@ pub(crate) enum LeafEval {
         /// treated as "passes" rather than "fails". This is set to true for `is_null()`
         /// expressions, where a missing field means the field IS null — which is a match.
         missing_data_passes: bool,
+
+        /// Whether to align the result of the expression to the root record batch. This adds
+        /// extra overhead, but sometimes it is necessary in cases where we can
+        /// TODO comment comment blah blah
+        align_to_root: bool,
     },
 
     /// A batch-level predicate that evaluates a property of the entire `OtapArrowRecords`
@@ -323,10 +335,12 @@ impl LeafEval {
             projection,
             projection_opts: ProjectionOptions {
                 downcast_dicts: requires_dict_downcast,
+                ..Default::default()
             },
             eval_anyval_as_struct: true,
             attr_key_case_sensitive: true,
             missing_data_passes: false,
+            align_to_root: false,
         })
     }
 
@@ -346,10 +360,12 @@ impl LeafEval {
             projection,
             projection_opts: ProjectionOptions {
                 downcast_dicts: requires_dict_downcast,
+                ..Default::default()
             },
             eval_anyval_as_struct,
             attr_key_case_sensitive,
             missing_data_passes,
+            align_to_root: false,
         })
     }
 }
@@ -526,12 +542,12 @@ mod test {
         // severity_number > 14
         let mut op = root_eval(col(consts::SEVERITY_NUMBER).gt(lit(14i32)));
 
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
         // exactly one row (index 1) passes
-        match &mask {
+        match &result.mask {
             IdMask::Some(bitmap) => {
                 // the root batch should have id values [0, 1, 2]
                 // only id=1 (severity_number=17) passes
@@ -583,10 +599,10 @@ mod test {
         }
 
         // execute_as_id_mask: should return IdMask::All
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
-        assert_eq!(mask, IdMask::All);
+        assert_eq!(result.mask, IdMask::All);
     }
 
     #[test]
@@ -604,10 +620,10 @@ mod test {
             other => panic!("expected false scalar, got {other:?}"),
         }
 
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
-        assert_eq!(mask, IdMask::None);
+        assert_eq!(result.mask, IdMask::None);
     }
 
     #[test]
@@ -650,6 +666,7 @@ mod test {
 
         let mut op = ScopedExpr::JoinAndEval {
             children: vec![left_child, right_child],
+            default_null_children: false,
             eval: LeafEval::new_df_expr(
                 Expr::BinaryExpr(datafusion::logical_expr::BinaryExpr::new(
                     Box::new(col(arg_column_name(0))),
@@ -695,11 +712,11 @@ mod test {
         let mut op = ScopedExpr::BitmapAnd(Box::new(left), Box::new(right));
 
         // test execute_as_id_mask
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
-        match &mask {
+        match &result.mask {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(0));
                 assert!(!bitmap.contains(1));
@@ -748,11 +765,11 @@ mod test {
 
         let mut op = ScopedExpr::BitmapOr(Box::new(left), Box::new(right));
 
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
-        match &mask {
+        match &result.mask {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(0));
                 assert!(!bitmap.contains(1));
@@ -776,11 +793,11 @@ mod test {
         let inner = root_eval(col(consts::SEVERITY_TEXT).eq(lit("WARN")));
         let mut op = ScopedExpr::BitmapNot(Box::new(inner));
 
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
-        match &mask {
+        match &result.mask {
             IdMask::NotSome(bitmap) => {
                 // NotSome means "everything except what's in the bitmap"
                 // The inner produced Some({0, 2}), so NOT is NotSome({0, 2})
@@ -836,11 +853,11 @@ mod test {
         let inner_and = ScopedExpr::BitmapAnd(Box::new(attr_namespace), Box::new(attr_line));
         let mut op = ScopedExpr::BitmapAnd(Box::new(inner_and), Box::new(severity));
 
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
-        match &mask {
+        match &result.mask {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(0), "row 0 should match");
                 assert!(!bitmap.contains(1), "row 1 should not match");
