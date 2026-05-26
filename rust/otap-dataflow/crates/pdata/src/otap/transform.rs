@@ -26,7 +26,9 @@ use datafusion::scalar::ScalarValue;
 use sha2::{Digest, Sha256};
 
 use crate::OtapArrowRecords;
-use crate::arrays::{NullableArrayAccessor, StringArrayAccessor, get_required_array, get_u8_array};
+use crate::arrays::{
+    ByteArrayAccessor, NullableArrayAccessor, StringArrayAccessor, get_required_array, get_u8_array,
+};
 use crate::error::{Error, Result};
 use crate::otap::filter::IdBitmap;
 use crate::otap::transform::transport_optimize::remove_transport_optimized_encodings;
@@ -3833,28 +3835,31 @@ fn is_hashable_scalar_value(attr_arrays: &AnyValueArrays<'_>, row: usize) -> boo
         AttributeValueType::Str => attr_arrays
             .attr_str
             .as_ref()
-            .and_then(|col| col.str_at(row))
-            .is_some(),
+            .map(|col| col.is_valid(row))
+            .unwrap_or_default(),
         AttributeValueType::Bool => attr_arrays
             .attr_bool
             .as_ref()
-            .and_then(|col| col.value_at(row))
-            .is_some(),
+            .map(|col| col.is_valid(row))
+            .unwrap_or_default(),
         AttributeValueType::Int => attr_arrays
             .attr_int
             .as_ref()
-            .and_then(|col| col.value_at(row))
-            .is_some(),
+            .map(|col| col.is_valid(row))
+            .unwrap_or_default(),
         AttributeValueType::Double => attr_arrays
             .attr_double
             .as_ref()
-            .and_then(|col| col.value_at(row))
-            .is_some(),
+            .map(|col| col.is_valid(row))
+            .unwrap_or_default(),
         AttributeValueType::Bytes => attr_arrays
             .attr_bytes
             .as_ref()
-            .and_then(|col| col.slice_at(row))
-            .is_some(),
+            .map(|col| match col {
+                ByteArrayAccessor::Binary(col) => col.is_valid(row),
+                ByteArrayAccessor::FixedSizeBinary(col) => col.is_valid(row),
+            })
+            .unwrap_or_default(),
         AttributeValueType::Empty | AttributeValueType::Map | AttributeValueType::Slice => false,
     }
 }
