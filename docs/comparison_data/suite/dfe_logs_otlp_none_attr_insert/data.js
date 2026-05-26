@@ -1,0 +1,18 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["dfe_logs_otlp_none_attr_insert"] = {
+  "name": "DFE OTLP Attr Insert (Logs)",
+  "slug": "dfe_logs_otlp_none_attr_insert",
+  "description": "Dataflow Engine OTLP logs, attributes processor inserting processing.engine=benchmark",
+  "meta": {
+    "binary": "dfe",
+    "protocols": [
+      "otlp"
+    ],
+    "signals": [
+      "logs"
+    ],
+    "compression": "none"
+  },
+  "env": null,
+  "tests": []
+};

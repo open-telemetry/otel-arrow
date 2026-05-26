@@ -1,0 +1,11 @@
+name: OTC OTLP Attr Rename (Logs)
+slug: otc_logs_otlp_none_attr_rename
+description: OpenTelemetry Collector OTLP logs, attributes processor renaming exception.type
+  to exception.kind (from_attribute + delete)
+meta:
+  binary: otc
+  protocols:
+  - otlp
+  signals:
+  - logs
+  compression: none

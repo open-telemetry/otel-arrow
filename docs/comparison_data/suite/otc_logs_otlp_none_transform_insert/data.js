@@ -1,0 +1,18 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["otc_logs_otlp_none_transform_insert"] = {
+  "name": "OTC OTLP Transform Insert (Logs)",
+  "slug": "otc_logs_otlp_none_transform_insert",
+  "description": "OpenTelemetry Collector OTLP logs, transform processor (OTTL) inserting processing.engine=benchmark",
+  "meta": {
+    "binary": "otc",
+    "protocols": [
+      "otlp"
+    ],
+    "signals": [
+      "logs"
+    ],
+    "compression": "none"
+  },
+  "env": null,
+  "tests": []
+};

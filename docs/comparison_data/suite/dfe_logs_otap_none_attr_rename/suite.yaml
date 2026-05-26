@@ -1,0 +1,11 @@
+name: DFE OTAP Attr Rename (Logs)
+slug: dfe_logs_otap_none_attr_rename
+description: Dataflow Engine OTAP logs, attributes processor renaming exception.type
+  to exception.kind
+meta:
+  binary: dfe
+  protocols:
+  - otap
+  signals:
+  - logs
+  compression: none

@@ -1,0 +1,18 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["dfe_logs_otlp_none_transform_rename"] = {
+  "name": "DFE OTLP Transform Rename (Logs)",
+  "slug": "dfe_logs_otlp_none_transform_rename",
+  "description": "Dataflow Engine OTLP logs, transform processor (OPL) renaming exception.type to exception.kind",
+  "meta": {
+    "binary": "dfe",
+    "protocols": [
+      "otlp"
+    ],
+    "signals": [
+      "logs"
+    ],
+    "compression": "none"
+  },
+  "env": null,
+  "tests": []
+};
