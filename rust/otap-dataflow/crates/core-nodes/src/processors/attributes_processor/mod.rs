@@ -49,7 +49,7 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, opaque_string::OpaqueString, pdata::OtapPdata};
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::transform::apply_attribute_transform;
 use otap_df_pdata::otap::{
@@ -127,58 +127,17 @@ pub enum Action {
         algorithm: HashAlgorithm,
         /// Salt prepended to the attribute bytes before hashing.
         ///
-        /// Stored as a [`RedactedString`] so that derived `Debug` output does not leak the salt
+        /// Stored as an [`OpaqueString`] so that derived `Debug` output does not leak the salt
         /// into logs, panics, or diagnostic dumps. The salt is still round-trippable via
         /// `Serialize`/`Deserialize`, so configuration reload and persistence are unaffected.
         #[serde(default)]
-        salt: RedactedString,
+        salt: OpaqueString,
     },
 
     /// Other actions are accepted for forward-compatibility but ignored.
     /// These variants allow deserialization of Go-style configs without effect.
     #[serde(other)]
     Unsupported,
-}
-
-/// A wrapper around `String` whose `Debug` representation redacts the inner value.
-///
-/// Use this for configuration fields that hold secrets (salts, tokens, ...). `Serialize` and
-/// `Deserialize` are transparent: the value round-trips through JSON/YAML as a plain string,
-/// but any code that formats the wrapper with `{:?}` will see `RedactedString(<redacted>)` rather
-/// than the secret. `Display` is intentionally not implemented so accidental `{}` formatting is
-/// rejected at compile time.
-#[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct RedactedString(String);
-
-impl RedactedString {
-    /// Wraps a `String` so it is redacted in `Debug` output.
-    #[must_use]
-    pub fn new(value: String) -> Self {
-        Self(value)
-    }
-
-    /// Returns the underlying string, consuming the wrapper.
-    #[must_use]
-    pub fn into_inner(self) -> String {
-        self.0
-    }
-
-    /// Returns a borrowed reference to the underlying string.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for RedactedString {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.0.is_empty() {
-            f.write_str("RedactedString(\"\")")
-        } else {
-            f.write_str("RedactedString(<redacted>)")
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -415,7 +374,7 @@ impl AttributesProcessor {
         &self,
         records: &mut OtapArrowRecords,
         signal: SignalType,
-    ) -> Result<(u64, u64, u64, u64, u64), EngineError> {
+    ) -> Result<(u64, u64, u64, u64, u64, u64), EngineError> {
         let mut deleted_total: u64 = 0;
         let mut renamed_total: u64 = 0;
         let mut inserted_total: u64 = 0;
@@ -898,7 +857,7 @@ mod tests {
 
         let debug = format!("{action:?}");
         assert!(!debug.contains("pepper"));
-        assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("***"));
     }
 
     #[test]
