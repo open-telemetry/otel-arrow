@@ -12,10 +12,10 @@ exporters:
       insecure: true
     sending_queue:
       enabled: {{ sending_queue_enabled | default(true) }}
-      wait_for_result: {{ wait_for_result | default(false) }}
-      block_on_overflow: {{ block_on_overflow | default(false) }}
+      wait_for_result: {{ wait_for_result | default(true) }}
+      block_on_overflow: {{ block_on_overflow | default(true) }}
       sizer: {{ sending_queue_sizer | default("requests") }}
-      queue_size: {{ sending_queue_size | default(1000) }}
+      queue_size: {{ sending_queue_size | default(100) }}
 
 service:
   telemetry:
