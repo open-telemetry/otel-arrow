@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTLP Attr Insert (Logs)/100k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -1.6949152946472168
+  },
+  {
+    "extra": "DFE OTLP Attr Insert (Logs)/100k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 15.64473711630365
+  },
+  {
+    "extra": "DFE OTLP Attr Insert (Logs)/100k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 15.935420181193377
+  },
+  {
+    "extra": "DFE OTLP Attr Insert (Logs)/100k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 51.56458333333333
+  },
+  {
+    "extra": "DFE OTLP Attr Insert (Logs)/100k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 52.78125
+  },
+  {
+    "extra": "DFE OTLP Attr Insert (Logs)/100k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 99229.94701944942
+  },
+  {
+    "extra": "DFE OTLP Attr Insert (Logs)/100k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 100740.86680363283
+  },
+  {
+    "extra": "DFE OTLP Attr Insert (Logs)/100k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000619
+  },
+  {
+    "extra": "DFE OTLP Attr Insert (Logs)/100k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 42839357.600995645
+  },
+  {
+    "extra": "DFE OTLP Attr Insert (Logs)/100k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 36083849.76216888
+  },
+  {
+    "extra": "DFE OTLP Attr Insert (Logs)/100k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 425.24309111315694
+  }
+]
