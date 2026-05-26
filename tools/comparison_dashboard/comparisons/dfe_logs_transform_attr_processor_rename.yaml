@@ -1,10 +1,9 @@
-slug: processing_logs_rename
+slug: dfe_logs_transform_attr_processor_rename
 name: DFE Logs Attribute Rename (Processor Comparison)
 description: >
   Renaming the semantic-convention attribute exception.type to exception.kind on
   logs in the Dataflow Engine, comparing the attributes processor vs the transform
-  processor (OPL) across the OTAP and OTLP protocols. No-processing baselines
-  included for overhead reference.
+  processor (OPL) across the OTAP and OTLP protocols.
 
 chart:
   axes:

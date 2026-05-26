@@ -131,4 +131,5 @@ comparisons:
   - comparisons/dfe_logs_baselines.yaml
   - comparisons/dfe_metrics_baselines.yaml
   - comparisons/dfe_traces_baselines.yaml
-  - comparisons/processing_logs_rename.yaml
+  - comparisons/dfe_logs_transform_attr_processor_rename.yaml
+  - comparisons/dfe_logs_transform_attr_processor_insert.yaml
