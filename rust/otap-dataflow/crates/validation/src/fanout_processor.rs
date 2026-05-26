@@ -25,7 +25,7 @@ use std::sync::Arc;
 /// URN that identifies the temporary fanout processor used in validation pipelines.
 pub const FANOUT_PROCESSOR_URN: &str = "urn:otel:processor:fanout_temp";
 
-#[metric_set(name = "fanout.processor")]
+#[metric_set(name = "processor.fanout")]
 #[derive(Debug, Default, Clone)]
 struct FanoutMetrics {
     /// Number of messages forwarded.
@@ -44,7 +44,8 @@ pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFact
     create: |pipeline_ctx: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             processor_config: &ProcessorConfig| {
+             processor_config: &ProcessorConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         let metrics = pipeline_ctx.register_metrics::<FanoutMetrics>();
         Ok(ProcessorWrapper::local(
             FanoutProcessor { metrics },

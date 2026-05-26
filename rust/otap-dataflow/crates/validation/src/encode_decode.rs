@@ -77,6 +77,7 @@ mod test {
     const ITERATIONS: usize = 10;
 
     fn get_registry() -> ResolvedRegistry {
+        let mut semconv_errors = Vec::new();
         let registry_repo = RegistryRepo::try_new(
             None,
             &VirtualDirectoryPath::GitRepo {
@@ -84,7 +85,7 @@ mod test {
                 sub_folder: Some("model".to_owned()),
                 refspec: None,
             },
-            &mut vec![],
+            &mut semconv_errors,
         )
         .expect("all registries are definied under the model folder in semantic convention repo");
 

@@ -407,7 +407,6 @@ mod test {
     };
     use arrow::array::UInt16Array;
     use data_engine_parser_abstractions::Parser;
-    use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
         proto::opentelemetry::{
             metrics::v1::Metric,
@@ -427,6 +426,7 @@ mod test {
         },
         testing::round_trip::{otlp_to_otap, to_metrics_data, to_traces_data},
     };
+    use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use super::*;
 

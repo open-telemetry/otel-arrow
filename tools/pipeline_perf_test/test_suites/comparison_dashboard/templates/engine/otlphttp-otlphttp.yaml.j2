@@ -29,7 +29,8 @@ groups:
           exporter:
             type: urn:otel:exporter:otlp_http
             config:
-              http: {}
+              http:
+                compression: {% if compression_method == "none" %}null{% else %}{{compression_method}}{% endif %}
               endpoint: http://{{backend_hostname}}:1235
               client_pool_size: {{ client_pool_size | default(1) }}
         connections:

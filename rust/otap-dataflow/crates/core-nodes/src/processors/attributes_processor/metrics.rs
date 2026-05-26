@@ -7,7 +7,7 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
 /// Metrics for the AttributesProcessor node.
-#[metric_set(name = "attributes.processor")]
+#[metric_set(name = "processor.attributes")]
 #[derive(Debug, Default, Clone)]
 pub struct AttributesProcessorMetrics {
     /// Number of failed transform attempts.
@@ -29,6 +29,13 @@ pub struct AttributesProcessorMetrics {
     /// Total number of attribute entries actually upserted.
     #[metric(unit = "{attr}")]
     pub upserted_entries: Counter<u64>,
+
+    /// Total number of attribute entries actually updated.
+    #[metric(unit = "{attr}")]
+    pub updated_entries: Counter<u64>,
+    /// Total number of attribute entries actually hashed.
+    #[metric(unit = "{attr}")]
+    pub hashed_entries: Counter<u64>,
 
     /// Number of times transforms were applied to signal-level payloads.
     #[metric(unit = "{apply}")]

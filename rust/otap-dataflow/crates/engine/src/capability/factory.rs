@@ -94,6 +94,14 @@ impl Clone for SharedInstanceFactory {
 /// Produces instances of a local (!Send) extension's concrete type for
 /// capability consumers. See [`SharedInstanceFactory`] for background.
 ///
+/// The instance policy chosen at the builder (`.cloned(...)` vs
+/// `.constructed(...)`) is baked into the stored closure. Both policies
+/// mint a fresh `Box<E>` per call, mirroring the shared-side contract:
+/// - **Cloned** — the closure captures a prototype `E: Clone`
+///   and returns `Box::new(e.clone())` on each call.
+/// - **Constructed** — the closure captures the user-supplied
+///   `Fn() -> E` and boxes its output on each call.
+///
 /// `LocalInstanceFactory` is [`Clone`] for the same reason as its
 /// shared counterpart.
 pub struct LocalInstanceFactory {
@@ -102,13 +110,13 @@ pub struct LocalInstanceFactory {
 
 /// Object-safe `Fn + Clone` helper for [`LocalInstanceFactory`].
 #[doc(hidden)]
-pub trait LocalFnClone: Fn() -> std::rc::Rc<dyn Any> {
+pub trait LocalFnClone: Fn() -> Box<dyn Any> {
     fn clone_box(&self) -> Box<dyn LocalFnClone>;
 }
 
 impl<F> LocalFnClone for F
 where
-    F: Fn() -> std::rc::Rc<dyn Any> + Clone + 'static,
+    F: Fn() -> Box<dyn Any> + Clone + 'static,
 {
     fn clone_box(&self) -> Box<dyn LocalFnClone> {
         Box::new(self.clone())
@@ -120,16 +128,16 @@ impl LocalInstanceFactory {
     #[must_use]
     pub fn new<F>(produce: F) -> Self
     where
-        F: Fn() -> std::rc::Rc<dyn Any> + Clone + 'static,
+        F: Fn() -> Box<dyn Any> + Clone + 'static,
     {
         LocalInstanceFactory {
             produce: Box::new(produce),
         }
     }
 
-    /// Produce an instance as `Rc<dyn Any>`.
+    /// Produce a fresh instance as `Box<dyn Any>`.
     #[must_use]
-    pub fn produce(&self) -> std::rc::Rc<dyn Any> {
+    pub fn produce(&self) -> Box<dyn Any> {
         (self.produce)()
     }
 }

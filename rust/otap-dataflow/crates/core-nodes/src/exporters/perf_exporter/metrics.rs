@@ -7,7 +7,7 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
 /// Pdata-oriented metrics for the OTAP PerfExporter.
-#[metric_set(name = "perf.exporter.pdata")]
+#[metric_set(name = "exporter.perf.pdata")]
 #[derive(Debug, Default, Clone)]
 pub struct PerfExporterPdataMetrics {
     /// Number of invalid pdata batches received.

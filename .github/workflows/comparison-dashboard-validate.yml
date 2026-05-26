@@ -1,0 +1,40 @@
+# Validates the comparison dashboard manifest, suite definitions, and
+# comparison configs on PRs that touch tools/comparison_dashboard. Runs
+# `python dashboard.py validate`, which exits non-zero on any config error.
+name: Comparison Dashboard - Validate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tools/comparison_dashboard/**'
+      - '!tools/comparison_dashboard/**/*.md'
+  merge_group:
+
+permissions: read-all
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40
+        with:
+          egress-policy: audit
+
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tools/comparison_dashboard/requirements.txt
+
+      - name: Install dashboard dependencies
+        run: pip install -r tools/comparison_dashboard/requirements.txt
+
+      - name: Validate dashboard manifest
+        working-directory: tools/comparison_dashboard
+        run: python dashboard.py validate

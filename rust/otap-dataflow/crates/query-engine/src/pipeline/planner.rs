@@ -669,7 +669,7 @@ impl PipelinePlanner {
                     DataScope::StaticScalar => false,
 
                     // visit the expression applied to the root and search for any column exprs
-                    DataScope::Root => {
+                    DataScope::Root | DataScope::RootParent(_) => {
                         let mut source_contains_refed_column = false;
                         _ = source_expr.logical_expr.apply(|expr| {
                             if let Expr::Column(column) = expr {
@@ -1110,8 +1110,8 @@ pub fn try_attrs_value_filter_from_literal(
 #[cfg(test)]
 mod test {
     use data_engine_kql_parser::Parser;
-    use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{OtapArrowRecords, otap::Logs};
+    use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::{Pipeline, planner::PipelinePlanner};
 

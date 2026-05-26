@@ -405,6 +405,13 @@ pub fn create_exporter_from_factory<PData: Clone + Debug + 'static>(
     let mut node_config = NodeUserConfig::new_exporter_config(factory.name);
     node_config.config = config;
     let exporter_config = ExporterConfig::new("test_exporter");
+    let capabilities = crate::capability::registry::Capabilities::empty();
 
-    (factory.create)(pipeline_ctx, node, Arc::new(node_config), &exporter_config)
+    (factory.create)(
+        pipeline_ctx,
+        node,
+        Arc::new(node_config),
+        &exporter_config,
+        &capabilities,
+    )
 }

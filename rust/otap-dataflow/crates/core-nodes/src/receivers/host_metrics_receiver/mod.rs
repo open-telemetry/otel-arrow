@@ -79,7 +79,7 @@ use config::{RuntimeFamily, effective_root_path, normalized_root_path};
 pub const HOST_METRICS_RECEIVER_URN: &str = "urn:otel:receiver:host_metrics";
 
 /// Telemetry metrics for the host metrics receiver.
-#[metric_set(name = "host_metrics.receiver")]
+#[metric_set(name = "receiver.host_metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct HostMetricsReceiverMetrics {
     /// Number of scrape ticks started.
@@ -128,7 +128,13 @@ pub struct HostMetricsReceiver {
 /// Declares the host metrics receiver as a local receiver factory.
 pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: HOST_METRICS_RECEIVER_URN,
-    create: create_host_metrics_receiver,
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             receiver_config: &ReceiverConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+        create_host_metrics_receiver(pipeline, node, node_config, receiver_config)
+    },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: validate_host_metrics_config,
 };
@@ -481,10 +487,6 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
         })?;
         let mut scheduler = FamilyScheduler::new(&config, Instant::now());
 
-        let _ = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         loop {
             tokio::select! {
                 biased;
@@ -556,7 +558,10 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                         metrics.send_failures.add(1);
                                         metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
                                     }
-                                    otel_warn!("host metrics dropped due to downstream backpressure");
+                                    otel_warn!(
+                                        "host_metrics.dropped_backpressure",
+                                        message = "host metrics dropped due to downstream backpressure"
+                                    );
                                 }
                                 Err(other) => {
                                     if let Some(metrics) = metrics.as_mut() {
@@ -580,7 +585,8 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                 metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
                             }
                             otel_warn!(
-                                "host metrics scrape failed; receiver will retry",
+                                "host_metrics.scrape_failed",
+                                message = "host metrics scrape failed; receiver will retry",
                                 error = err.to_string()
                             );
                         }

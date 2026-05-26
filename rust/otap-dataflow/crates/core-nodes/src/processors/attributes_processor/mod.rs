@@ -12,9 +12,11 @@
 //! - `delete`: Removes an attribute by key.
 //! - `insert`: Inserts a new attribute (only if the key doesn't already exist).
 //! - `upsert`: Inserts a new attribute, or updates the value if the key already exists.
+//! - `update`: Updates an existing attribute only if the key already exists.
+//! - `hash`: Replaces existing scalar attribute values with lowercase hex SHA-256 hashes.
 //!
 //! Unsupported actions are ignored if present in the config:
-//! `update` (value update), `hash`, `extract`, `convert`.
+//! `extract`, `convert`.
 //! We may add support for them later.
 //!
 //! Example configuration (YAML):
@@ -47,14 +49,14 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, opaque_string::OpaqueString, pdata::OtapPdata};
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::transform::apply_attribute_transform;
 use otap_df_pdata::otap::{
     OtapArrowRecords,
     transform::{
-        AttributesTransform, DeleteTransform, InsertTransform, LiteralValue, RenameTransform,
-        UpsertTransform,
+        AttributesTransform, DeleteTransform, HashSpec, HashTransform, InsertTransform,
+        LiteralValue, RenameTransform, UpdateTransform, UpsertTransform,
     },
 };
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -104,17 +106,58 @@ pub enum Action {
         value: LiteralValue,
     },
 
+    /// Update an existing attribute without inserting missing keys.
+    Update {
+        /// The attribute key to update.
+        key: String,
+        /// The value to use for existing attributes.
+        value: LiteralValue,
+    },
+
+    /// Hash an existing scalar attribute value using SHA-256.
+    ///
+    /// The replacement value is a lowercase hex string. The hash input is `salt || value`, where
+    /// scalar values are encoded as UTF-8 for strings, raw bytes for byte arrays, a single `0` or
+    /// `1` byte for booleans, and little-endian bytes for `i64` and `f64` values.
+    Hash {
+        /// The attribute key to hash.
+        key: String,
+        /// The hashing algorithm to use. Defaults to `sha256`.
+        #[serde(default = "default_hash_algorithm")]
+        algorithm: HashAlgorithm,
+        /// Salt prepended to the attribute bytes before hashing.
+        ///
+        /// Stored as an [`OpaqueString`] so that derived `Debug` output does not leak the salt
+        /// into logs, panics, or diagnostic dumps. The salt is still round-trippable via
+        /// `Serialize`/`Deserialize`, so configuration reload and persistence are unaffected.
+        #[serde(default)]
+        salt: OpaqueString,
+    },
+
     /// Other actions are accepted for forward-compatibility but ignored.
     /// These variants allow deserialization of Go-style configs without effect.
     #[serde(other)]
     Unsupported,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+/// Supported hash algorithms for the `hash` action.
+pub enum HashAlgorithm {
+    /// SHA-256.
+    Sha256,
+}
+
+const fn default_hash_algorithm() -> HashAlgorithm {
+    HashAlgorithm::Sha256
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 /// Configuration for the AttributesProcessor.
 ///
 /// Accepts configuration in the same format as the OpenTelemetry Collector's attributes processor.
-/// Supported actions: rename (deviation), delete, insert, upsert. Others are ignored.
+/// Supported actions: rename (deviation), delete, insert, upsert, update, hash.
+/// Others are ignored.
 ///
 /// You can control which attribute domains are transformed via `apply_to`.
 /// Valid values: "signal" (default), "resource", "scope".
@@ -131,9 +174,8 @@ pub struct Config {
 /// Processor that applies attribute transformations to OTAP attribute batches.
 ///
 /// Implements the OpenTelemetry Collector's attributes processor functionality using
-/// efficient Arrow operations. Supports `update` (rename) and `delete` operations
-/// across all attribute types (resource, scope, and signal-specific attributes)
-/// for logs, metrics, and traces telemetry.
+/// efficient Arrow operations across all attribute types (resource, scope, and
+/// signal-specific attributes) for logs, metrics, and traces telemetry.
 pub struct AttributesProcessor {
     // Pre-computed transform to avoid rebuilding per message
     transform: AttributesTransform,
@@ -173,6 +215,8 @@ impl AttributesProcessor {
         let mut deletes = BTreeSet::new();
         let mut inserts = BTreeMap::new();
         let mut upserts = BTreeMap::new();
+        let mut updates = BTreeMap::new();
+        let mut hashes = BTreeMap::new();
 
         for action in config.actions {
             match action {
@@ -191,6 +235,18 @@ impl AttributesProcessor {
                 Action::Upsert { key, value } => {
                     let _ = upserts.insert(key, value);
                 }
+                Action::Update { key, value } => {
+                    let _ = updates.insert(key, value);
+                }
+                Action::Hash {
+                    key,
+                    algorithm,
+                    salt,
+                } => match algorithm {
+                    HashAlgorithm::Sha256 => {
+                        let _ = hashes.insert(key, HashSpec::sha256(salt.into_inner()));
+                    }
+                },
                 // Unsupported actions are ignored for now
                 Action::Unsupported => {}
             }
@@ -231,6 +287,16 @@ impl AttributesProcessor {
             } else {
                 Some(UpsertTransform::new(upserts))
             },
+            update: if updates.is_empty() {
+                None
+            } else {
+                Some(UpdateTransform::new(updates))
+            },
+            hash: if hashes.is_empty() {
+                None
+            } else {
+                Some(HashTransform::new(hashes))
+            },
         };
 
         transform
@@ -255,6 +321,8 @@ impl AttributesProcessor {
             && self.transform.delete.is_none()
             && self.transform.insert.is_none()
             && self.transform.upsert.is_none()
+            && self.transform.update.is_none()
+            && self.transform.hash.is_none()
     }
 
     #[inline]
@@ -306,11 +374,13 @@ impl AttributesProcessor {
         &self,
         records: &mut OtapArrowRecords,
         signal: SignalType,
-    ) -> Result<(u64, u64, u64, u64), EngineError> {
+    ) -> Result<(u64, u64, u64, u64, u64, u64), EngineError> {
         let mut deleted_total: u64 = 0;
         let mut renamed_total: u64 = 0;
         let mut inserted_total: u64 = 0;
         let mut upserted_total: u64 = 0;
+        let mut updated_total: u64 = 0;
+        let mut hashed_total: u64 = 0;
 
         if !self.is_noop() {
             let payloads = self.attrs_payloads(signal);
@@ -322,10 +392,19 @@ impl AttributesProcessor {
                 renamed_total += stats.renamed_entries;
                 inserted_total += stats.inserted_entries;
                 upserted_total += stats.upserted_entries;
+                updated_total += stats.updated_entries;
+                hashed_total += stats.hashed_entries;
             }
         }
 
-        Ok((deleted_total, renamed_total, inserted_total, upserted_total))
+        Ok((
+            deleted_total,
+            renamed_total,
+            inserted_total,
+            upserted_total,
+            updated_total,
+            hashed_total,
+        ))
     }
 }
 
@@ -377,7 +456,14 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     self.apply_transform_with_stats(&mut records, signal)
                 });
                 match result {
-                    Ok((deleted_total, renamed_total, inserted_total, upserted_total)) => {
+                    Ok((
+                        deleted_total,
+                        renamed_total,
+                        inserted_total,
+                        upserted_total,
+                        updated_total,
+                        hashed_total,
+                    )) => {
                         if deleted_total > 0 {
                             self.metrics.deleted_entries.add(deleted_total);
                         }
@@ -389,6 +475,12 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         }
                         if upserted_total > 0 {
                             self.metrics.upserted_entries.add(upserted_total);
+                        }
+                        if updated_total > 0 {
+                            self.metrics.updated_entries.add(updated_total);
+                        }
+                        if hashed_total > 0 {
+                            self.metrics.hashed_entries.add(hashed_total);
                         }
                     }
                     Err(e) => {
@@ -469,12 +561,14 @@ pub fn create_attributes_processor(
 pub static ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
         name: ATTRIBUTES_PROCESSOR_URN,
-        create: |pipeline_ctx: PipelineContext,
-                 node: NodeId,
-                 node_config: Arc<NodeUserConfig>,
-                 proc_cfg: &ProcessorConfig| {
-            create_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
-        },
+        create:
+            |pipeline_ctx: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             proc_cfg: &ProcessorConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+                create_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
+            },
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: otap_df_config::validation::validate_typed_config::<Config>,
     };
@@ -618,7 +712,9 @@ mod tests {
         let cfg = json!({
             "actions": [
                 {"action": "rename", "source_key": "a", "destination_key": "b"},
-                {"action": "delete", "key": "x"}
+                {"action": "delete", "key": "x"},
+                {"action": "update", "key": "secret", "value": "[REDACTED]"},
+                {"action": "hash", "key": "account.id", "algorithm": "sha256", "salt": "pepper"}
             ]
         });
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
@@ -628,11 +724,276 @@ mod tests {
         let parsed = AttributesProcessor::from_config(pipeline_ctx, &cfg).expect("config parse");
         assert!(parsed.transform.rename.is_some());
         assert!(parsed.transform.delete.is_some());
+        assert!(parsed.transform.update.is_some());
+        assert!(parsed.transform.hash.is_some());
         // default apply_to should include Signal
         assert!(parsed.has_signal_domain);
         // and not necessarily Resource/Scope unless specified
         assert!(!parsed.has_resource_domain);
         assert!(!parsed.has_scope_domain);
+    }
+
+    #[test]
+    fn test_update_updates_existing_signal_attribute_only() {
+        let input = build_logs_with_attrs(
+            vec![KeyValue::new("secret", AnyValue::new_string("rv"))],
+            vec![KeyValue::new("secret", AnyValue::new_string("sv"))],
+            vec![
+                KeyValue::new("secret", AnyValue::new_string("lv")),
+                KeyValue::new("keep", AnyValue::new_string("unchanged")),
+            ],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "update", "key": "secret", "value": "[MASKED]"},
+                {"action": "update", "key": "missing", "value": "must_not_insert"}
+            ]
+        });
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-update-test");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let res_attrs = &decoded.resource_logs[0]
+                    .resource
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert_eq!(
+                    res_attrs
+                        .iter()
+                        .find(|kv| kv.key == "secret")
+                        .and_then(|kv| kv.value.as_ref()),
+                    Some(&AnyValue::new_string("rv"))
+                );
+
+                let scope_attrs = &decoded.resource_logs[0].scope_logs[0]
+                    .scope
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert_eq!(
+                    scope_attrs
+                        .iter()
+                        .find(|kv| kv.key == "secret")
+                        .and_then(|kv| kv.value.as_ref()),
+                    Some(&AnyValue::new_string("sv"))
+                );
+
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                assert_eq!(
+                    log_attrs
+                        .iter()
+                        .find(|kv| kv.key == "secret")
+                        .and_then(|kv| kv.value.as_ref()),
+                    Some(&AnyValue::new_string("[MASKED]"))
+                );
+                assert!(!log_attrs.iter().any(|kv| kv.key == "must_not_insert"));
+                assert!(
+                    log_attrs.iter().any(|kv| kv.key == "keep"
+                        && kv.value == Some(AnyValue::new_string("unchanged")))
+                );
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_config_rejects_unsupported_hash_algorithm() {
+        let cfg = json!({
+            "actions": [
+                {"action": "hash", "key": "secret", "algorithm": "sha512"}
+            ]
+        });
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        assert!(AttributesProcessor::from_config(pipeline_ctx, &cfg).is_err());
+    }
+
+    #[test]
+    fn test_hash_action_debug_redacts_salt() {
+        let action: Action = serde_json::from_value(json!({
+            "action": "hash",
+            "key": "secret",
+            "algorithm": "sha256",
+            "salt": "pepper"
+        }))
+        .expect("parse action");
+
+        let debug = format!("{action:?}");
+        assert!(!debug.contains("pepper"));
+        assert!(debug.contains("***"));
+    }
+
+    #[test]
+    fn test_hash_updates_existing_scalar_signal_attributes_only() {
+        let input = build_logs_with_attrs(
+            vec![KeyValue::new(
+                "str_attr",
+                AnyValue::new_string("resource-value"),
+            )],
+            vec![],
+            vec![
+                KeyValue::new("str_attr", AnyValue::new_string("alice@example.com")),
+                KeyValue::new("bytes_attr", AnyValue::new_bytes(b"abc")),
+                KeyValue::new("int_attr", AnyValue::new_int(514)),
+                KeyValue::new("double_attr", AnyValue::new_double(3.5)),
+                KeyValue::new("bool_attr", AnyValue::new_bool(true)),
+                KeyValue::new(
+                    "map_attr",
+                    AnyValue::new_kvlist(vec![KeyValue::new("nested", AnyValue::new_bool(true))]),
+                ),
+                KeyValue::new(
+                    "array_attr",
+                    AnyValue::new_array(vec![AnyValue::new_string("one")]),
+                ),
+                KeyValue::new("keep", AnyValue::new_string("unchanged")),
+            ],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "hash", "key": "str_attr", "algorithm": "sha256", "salt": "pepper"},
+                {"action": "hash", "key": "bytes_attr", "algorithm": "sha256", "salt": "pepper"},
+                {"action": "hash", "key": "int_attr", "algorithm": "sha256", "salt": "pepper"},
+                {"action": "hash", "key": "double_attr", "algorithm": "sha256", "salt": "pepper"},
+                {"action": "hash", "key": "bool_attr", "algorithm": "sha256", "salt": "pepper"},
+                {"action": "hash", "key": "map_attr", "algorithm": "sha256", "salt": "pepper"},
+                {"action": "hash", "key": "array_attr", "algorithm": "sha256", "salt": "pepper"},
+                {"action": "hash", "key": "missing", "algorithm": "sha256", "salt": "pepper"}
+            ]
+        });
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-hash-test");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let res_attrs = &decoded.resource_logs[0]
+                    .resource
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert_eq!(
+                    res_attrs
+                        .iter()
+                        .find(|kv| kv.key == "str_attr")
+                        .and_then(|kv| kv.value.as_ref()),
+                    Some(&AnyValue::new_string("resource-value"))
+                );
+
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                for (key, expected) in [
+                    (
+                        "str_attr",
+                        "8b8d9adc4875c0dca816e3e17b7ac87b45e40945b731fa02e3b42bf101589e21",
+                    ),
+                    (
+                        "bytes_attr",
+                        "fadf7b97406e1eaa259a82e26e6839e564c37c256876e060e17838c86b7275ef",
+                    ),
+                    (
+                        "int_attr",
+                        "13ddda943275484b13d00c410ab1ee38dafb4b468904979f561aa7a5c8d11699",
+                    ),
+                    (
+                        "double_attr",
+                        "3b25069b0582c48a0c401bb1f4fb6250de982cad1335473df46ca790ce41535e",
+                    ),
+                    (
+                        "bool_attr",
+                        "1c57981a8c749477991aa9772cd04531bb532f5c4965a69c498f044453a2d57a",
+                    ),
+                ] {
+                    assert_eq!(
+                        log_attrs
+                            .iter()
+                            .find(|kv| kv.key == key)
+                            .and_then(|kv| kv.value.as_ref()),
+                        Some(&AnyValue::new_string(expected))
+                    );
+                }
+                assert!(!log_attrs.iter().any(|kv| kv.key == "missing"));
+                assert!(
+                    log_attrs.iter().any(|kv| kv.key == "keep"
+                        && kv.value == Some(AnyValue::new_string("unchanged")))
+                );
+                assert!(log_attrs.iter().any(|kv| kv.key == "map_attr"
+                    && kv.value
+                        == Some(AnyValue::new_kvlist(vec![KeyValue::new(
+                            "nested",
+                            AnyValue::new_bool(true)
+                        )]))));
+                assert!(log_attrs.iter().any(|kv| kv.key == "array_attr"
+                    && kv.value == Some(AnyValue::new_array(vec![AnyValue::new_string("one")]))));
+            })
+            .validate(|_| async move {});
     }
 
     #[test]
@@ -2317,7 +2678,7 @@ mod telemetry_tests {
                 let mut found_domain_signal = false;
 
                 telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
-                    if desc.name == "attributes.processor" {
+                    if desc.name == "processor.attributes" {
                         for (field, v) in iter {
                             match (field.name, v.to_u64_lossy()) {
                                 ("renamed.entries", x) if x >= 1 => found_renamed_entries = true,

@@ -36,13 +36,12 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// URN for the topic exporter.
 pub const TOPIC_EXPORTER_URN: &str = "urn:otel:exporter:topic";
 
 /// Telemetry metrics for the topic exporter.
-#[metric_set(name = "topic.exporter")]
+#[metric_set(name = "exporter.topic")]
 #[derive(Debug, Default, Clone)]
 pub struct TopicExporterMetrics {
     /// Number of messages published to the topic.
@@ -113,52 +112,54 @@ enum BlockedPublishCompletion {
 /// Declares the topic exporter as a local exporter factory.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
-pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> =
-    ExporterFactory {
-        name: TOPIC_EXPORTER_URN,
-        create: |pipeline: PipelineContext,
-                 node: NodeId,
-                 node_config: Arc<NodeUserConfig>,
-                 exporter_config: &ExporterConfig| {
-            let config = TopicExporter::parse_config(&node_config.config)?;
-            let topic_set = pipeline.topic_set::<OtapPdata>().ok_or_else(|| {
-                ConfigError::InvalidUserConfig {
+pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
+    name: TOPIC_EXPORTER_URN,
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             exporter_config: &ExporterConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+        let config = TopicExporter::parse_config(&node_config.config)?;
+        let topic_set =
+            pipeline
+                .topic_set::<OtapPdata>()
+                .ok_or_else(|| ConfigError::InvalidUserConfig {
                     error: "Topic set is not available in pipeline context".to_owned(),
-                }
-            })?;
-            let topic_binding = topic_set.get_required(&config.topic).map_err(|_| {
-                ConfigError::InvalidUserConfig {
+                })?;
+        let topic_binding =
+            topic_set
+                .get_required(&config.topic)
+                .map_err(|_| ConfigError::InvalidUserConfig {
                     error: format!(
                         "Unknown topic `{}` for topic exporter (pipeline `{}`/`{}`)",
                         config.topic,
                         pipeline.pipeline_group_id(),
                         pipeline.pipeline_id(),
                     ),
-                }
-            })?;
-            let queue_on_full = config
-                .queue_on_full
-                .clone()
-                .unwrap_or_else(|| topic_binding.default_queue_on_full());
-            let ack_propagation_mode = topic_binding.default_ack_propagation_mode();
-            let metrics = pipeline
-                .register_metrics_with_topic::<TopicExporterMetrics>(topic_binding.name().into());
-            let topic = topic_binding.into_handle();
-            Ok(ExporterWrapper::local(
-                TopicExporter {
-                    topic,
-                    queue_on_full,
-                    ack_propagation_mode,
-                    metrics,
-                },
-                node,
-                node_config,
-                exporter_config,
-            ))
-        },
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: |config| TopicExporter::parse_config(config).map(|_| ()),
-    };
+                })?;
+        let queue_on_full = config
+            .queue_on_full
+            .clone()
+            .unwrap_or_else(|| topic_binding.default_queue_on_full());
+        let ack_propagation_mode = topic_binding.default_ack_propagation_mode();
+        let metrics = pipeline
+            .register_metrics_with_topic::<TopicExporterMetrics>(topic_binding.name().into());
+        let topic = topic_binding.into_handle();
+        Ok(ExporterWrapper::local(
+            TopicExporter {
+                topic,
+                queue_on_full,
+                ack_propagation_mode,
+                metrics,
+            },
+            node,
+            node_config,
+            exporter_config,
+        ))
+    },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: |config| TopicExporter::parse_config(config).map(|_| ()),
+};
 
 impl TopicExporter {
     /// Parses and validates topic exporter configuration.
@@ -404,9 +405,6 @@ impl Exporter<OtapPdata> for TopicExporter {
             ack_propagation = format!("{ack_propagation_mode:?}"),
             message = "Topic exporter started"
         );
-        let telemetry_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
 
         let run_result: Result<(), Error> = async {
             loop {
@@ -583,7 +581,6 @@ impl Exporter<OtapPdata> for TopicExporter {
         }
         .await;
 
-        _ = telemetry_cancel_handle.cancel().await;
         run_result?;
         Ok(TerminalState::default())
     }
@@ -689,6 +686,7 @@ mod tests {
                 exporter_node.clone(),
                 Arc::new(exporter_user_cfg),
                 &ExporterConfig::new("topic_exporter"),
+                &otap_df_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic exporter should be created");
 
@@ -830,6 +828,7 @@ mod tests {
                 exporter_node.clone(),
                 Arc::new(exporter_user_cfg),
                 &ExporterConfig::new("topic_exporter"),
+                &otap_df_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic exporter should be created");
 
@@ -995,6 +994,7 @@ mod tests {
                 exporter_node.clone(),
                 Arc::new(exporter_user_cfg),
                 &ExporterConfig::new("topic_exporter"),
+                &otap_df_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic exporter should be created");
 
@@ -1173,6 +1173,7 @@ mod tests {
                 exporter_node.clone(),
                 Arc::new(exporter_user_cfg),
                 &ExporterConfig::new("topic_exporter"),
+                &otap_df_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic exporter should be created");
 

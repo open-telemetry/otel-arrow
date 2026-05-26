@@ -362,7 +362,7 @@ struct Inflight {
     next_send_queue: DestinationIndexQueue,
 }
 
-#[metric_set(name = "fanout.processor")]
+#[metric_set(name = "processor.fanout")]
 #[derive(Debug, Default, Clone)]
 struct FanoutMetrics {
     /// Requests dispatched. Note: This is a convenience metric that overlaps with
@@ -1186,7 +1186,8 @@ pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFact
     create: |pipeline_ctx: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             proc_cfg: &ProcessorConfig| {
+             proc_cfg: &ProcessorConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         create_fanout_processor(pipeline_ctx, node, node_config, proc_cfg)
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract {
