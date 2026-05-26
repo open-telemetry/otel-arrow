@@ -29,6 +29,8 @@ version: otel_dataflow/v1
 # self-signed pair there before launching df_engine.
 
 engine:
+  http_admin:
+    bind_address: "127.0.0.1:14319"
   telemetry:
     logs:
       # Make sure the WARN-level `tls.handshake.failed` event from

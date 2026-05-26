@@ -123,17 +123,12 @@ jobs:
           echo "df_engine pid: $ENGINE_PID"
           echo "::endgroup::"
 
-          # Wait for the engine's TLS listener to come up; fail fast otherwise.
-          TLS_UP=0
-          for i in $(seq 1 30); do
-            if (echo > /dev/tcp/127.0.0.1/14317) >/dev/null 2>&1; then
-              TLS_UP=1
-              break
-            fi
-            sleep 1
-          done
-          if [ "$TLS_UP" -ne 1 ]; then
-            echo "::error::df_engine TLS listener (127.0.0.1:14317) did not come up within 30s"
+          # Wait for the engine to report ready via its admin endpoint.
+          # `/api/v1/readyz` signals all pipelines (including the TLS-enabled
+          # OTLP receiver below) are up and serving.
+          if ! curl --retry 30 --retry-delay 1 --retry-all-errors --max-time 2 -fsS \
+              http://127.0.0.1:14319/api/v1/readyz > /dev/null; then
+            echo "::error::df_engine admin /readyz did not become healthy within 30s"
             tail -n 200 live-check-report/df_engine.log || true
             kill -KILL "$ENGINE_PID" 2>/dev/null || true
             kill -KILL "$WEAVER_PID" 2>/dev/null || true
