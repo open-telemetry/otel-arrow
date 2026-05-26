@@ -37,7 +37,6 @@ pub mod testing;
 
 /// The OtapBatch enum is used to represent a batch of OTAP data.
 #[derive(Clone, Debug, PartialEq)]
-#[allow(clippy::large_enum_variant)]
 pub enum OtapArrowRecords {
     /// Represents a batch of logs data.
     Logs(Logs),
