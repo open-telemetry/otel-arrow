@@ -70,6 +70,10 @@ jobs:
       - name: Build df_engine
         run: cargo build --release --bin df_engine
         working-directory: ./rust/otap-dataflow
+      # NOTE: The manual start/wait/stop dance for the weaver listener below
+      # can be replaced with the `weaver-live-check-{start,stop}` composite
+      # actions once https://github.com/open-telemetry/weaver/pull/1448
+      # is released, which should cut this job roughly in half.
       - name: Run df_engine against weaver live-check
         timeout-minutes: 5
         working-directory: ${{ github.workspace }}
