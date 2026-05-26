@@ -4970,6 +4970,7 @@ mod test {
                     "other".into(),
                     LiteralValue::Str("updated".into()),
                 )]))),
+                hash: None,
             },
         )
         .unwrap();
@@ -5877,6 +5878,7 @@ mod test {
                 )]))),
                 delete: None,
                 upsert: None,
+                update: None,
                 hash: Some(HashTransform::new(BTreeMap::from_iter([(
                     "secret".into(),
                     HashSpec::sha256("pepper".into()),
