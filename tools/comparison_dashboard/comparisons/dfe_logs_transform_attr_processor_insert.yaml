@@ -32,21 +32,21 @@ suites:
   # DFE OTAP
   - name: DFE OTAP Attr Insert (Logs)
     slug: dfe_logs_otap_none_attr_insert
-    short: DFE/OTAP/Attr
+    short: OTAP/Attr
   - name: DFE OTAP Transform Insert (Logs)
     slug: dfe_logs_otap_none_transform_insert
-    short: DFE/OTAP/Transform
+    short: OTAP/Transform
   - name: DFE OTAP Baseline (Logs)
     slug: dfe_logs_otap_none_baseline
-    short: DFE/OTAP/Baseline
+    short: OTAP/Baseline
 
   # DFE OTLP
   - name: DFE OTLP Attr Insert (Logs)
     slug: dfe_logs_otlp_none_attr_insert
-    short: DFE/OTLP/Attr
+    short: OTLP/Attr
   - name: DFE OTLP Transform Insert (Logs)
     slug: dfe_logs_otlp_none_transform_insert
-    short: DFE/OTLP/Transform
+    short: OTLP/Transform
   - name: DFE OTLP Baseline (Logs)
     slug: dfe_logs_otlp_none_baseline
-    short: DFE/OTLP/Baseline
+    short: OTLP/Baseline
