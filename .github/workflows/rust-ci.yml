@@ -1005,7 +1005,7 @@ jobs:
         timeout-minutes: 5
         working-directory: ${{ github.workspace }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
           mkdir -p live-check-report
 
           echo "Weaver version:       ${WEAVER_VERSION}"
@@ -1025,13 +1025,21 @@ jobs:
           echo "weaver pid: $WEAVER_PID"
           echo "::endgroup::"
 
-          # Wait for the OTLP listener to come up.
+          # Wait for the OTLP listener to come up; fail fast if it never does.
+          OTLP_UP=0
           for i in $(seq 1 30); do
             if (echo > /dev/tcp/127.0.0.1/4317) >/dev/null 2>&1; then
+              OTLP_UP=1
               break
             fi
             sleep 1
           done
+          if [ "$OTLP_UP" -ne 1 ]; then
+            echo "::error::weaver OTLP listener (127.0.0.1:4317) did not come up within 30s"
+            tail -n 200 live-check-report/weaver.log || true
+            kill -KILL "$WEAVER_PID" 2>/dev/null || true
+            exit 1
+          fi
 
           echo "::group::Start df_engine"
           ./rust/otap-dataflow/target/release/df_engine \
@@ -1042,13 +1050,22 @@ jobs:
           echo "df_engine pid: $ENGINE_PID"
           echo "::endgroup::"
 
-          # Wait for the engine's TLS listener to come up.
+          # Wait for the engine's TLS listener to come up; fail fast otherwise.
+          TLS_UP=0
           for i in $(seq 1 30); do
             if (echo > /dev/tcp/127.0.0.1/14317) >/dev/null 2>&1; then
+              TLS_UP=1
               break
             fi
             sleep 1
           done
+          if [ "$TLS_UP" -ne 1 ]; then
+            echo "::error::df_engine TLS listener (127.0.0.1:14317) did not come up within 30s"
+            tail -n 200 live-check-report/df_engine.log || true
+            kill -KILL "$ENGINE_PID" 2>/dev/null || true
+            kill -KILL "$WEAVER_PID" 2>/dev/null || true
+            exit 1
+          fi
 
           echo "::group::Trigger declared events"
           # Per-event triggers go here. Adding a new event to the registry
