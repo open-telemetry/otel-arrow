@@ -1,27 +1,8 @@
 groups:
-  # Emitted by `otap-df-otap`'s `create_tls_stream` helper
-  # (crates/otap/src/tls_utils.rs) every time the rustls acceptor
-  # returns an error during a TLS handshake -- i.e. a TCP peer
-  # connected but failed to negotiate a usable TLS session (bad ALPN,
-  # wrong protocol, certificate verification failure, ...).
-  #
-  # The corresponding emission site is:
-  #   otel_warn!("tls.handshake.failed",
-  #              error = ?e,
-  #              message = "TLS handshake failed");
-  #
-  # This is the first event we wire end-to-end through
-  # `weaver registry live-check` (issue #1613). Additional events will
-  # be added under this directory in follow-up PRs.
   - id: event.otap_dataflow.tls.handshake.failed
     type: event
     name: tls.handshake.failed
     stability: development
     brief: >
       A TLS handshake failed before a usable session could be established
-      between the df_engine's TLS-enabled listener (e.g. the OTLP or OTAP
-      receiver) and a remote peer.
-    note: >
-      df_engine logs this at WARN level. It is recorded once per failed
-      handshake, so volume scales with the rate of malformed or
-      mismatched-TLS clients hitting the listener.
+      between a df_engine TLS-enabled listener and a remote peer.
