@@ -114,6 +114,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
         delete: None,
         update: None,
         upsert: None,
+        hash: None,
     };
 
     let single_replace_single_delete = AttributesTransform {
@@ -125,6 +126,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
         delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr15".into()]))),
         update: None,
         upsert: None,
+        hash: None,
     };
 
     let no_replace_single_delete = AttributesTransform {
@@ -133,6 +135,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
         delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr15".into()]))),
         update: None,
         upsert: None,
+        hash: None,
     };
 
     let attr3_replace_no_delete = AttributesTransform {
@@ -144,6 +147,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
         delete: None,
         update: None,
         upsert: None,
+        hash: None,
     };
 
     let no_replace_attr9_delete = AttributesTransform {
@@ -152,6 +156,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
         delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr9".into()]))),
         update: None,
         upsert: None,
+        hash: None,
     };
 
     let attr3_replace_attr9_delete = AttributesTransform {
@@ -163,6 +168,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
         delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr9".into()]))),
         update: None,
         upsert: None,
+        hash: None,
     };
 
     // IDs aren't used during delete/rename, so we just pass empty IDs

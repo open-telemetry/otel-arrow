@@ -33,6 +33,9 @@ pub struct AttributesProcessorMetrics {
     /// Total number of attribute entries actually updated.
     #[metric(unit = "{attr}")]
     pub updated_entries: Counter<u64>,
+    /// Total number of attribute entries actually hashed.
+    #[metric(unit = "{attr}")]
+    pub hashed_entries: Counter<u64>,
 
     /// Number of times transforms were applied to signal-level payloads.
     #[metric(unit = "{apply}")]
