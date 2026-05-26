@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTAP Attr Insert (Logs)/200k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -1.6949152946472168
+  },
+  {
+    "extra": "DFE OTAP Attr Insert (Logs)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 13.608753575753498
+  },
+  {
+    "extra": "DFE OTAP Attr Insert (Logs)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 13.776742447835566
+  },
+  {
+    "extra": "DFE OTAP Attr Insert (Logs)/200k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 55.61666666666667
+  },
+  {
+    "extra": "DFE OTAP Attr Insert (Logs)/200k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 55.99609375
+  },
+  {
+    "extra": "DFE OTAP Attr Insert (Logs)/200k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 199045.18027024364
+  },
+  {
+    "extra": "DFE OTAP Attr Insert (Logs)/200k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 201733.36027594435
+  },
+  {
+    "extra": "DFE OTAP Attr Insert (Logs)/200k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000628
+  },
+  {
+    "extra": "DFE OTAP Attr Insert (Logs)/200k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 26020349.69347817
+  },
+  {
+    "extra": "DFE OTAP Attr Insert (Logs)/200k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 22140012.122737683
+  },
+  {
+    "extra": "DFE OTAP Attr Insert (Logs)/200k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 128.98387087730953
+  }
+]

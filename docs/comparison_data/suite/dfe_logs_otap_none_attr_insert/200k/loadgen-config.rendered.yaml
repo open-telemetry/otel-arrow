@@ -1,0 +1,45 @@
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+    control:
+      pipeline: 100
+      node: 100
+    pdata: 100
+  resources:
+    core_allocation:
+      type: core_set
+      set:
+        - start: 2
+          end: 3
+
+engine: {}
+
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:otel:receiver:traffic_generator"
+            config:
+              data_source: semantic_conventions
+              generation_strategy: pre_generated
+              traffic_config:
+                production_mode: smooth
+                max_batch_size: 1000
+                signals_per_second: 100000
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 100
+
+          exporter:
+            type: "urn:otel:exporter:otap"
+            config:
+              grpc_endpoint: "http://df-engine:4317"
+              compression_method: none
+              arrow:
+                payload_compression: none
+
+        connections:
+          - from: receiver
+            to: exporter
