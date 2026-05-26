@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779733618367,
+  "lastUpdate": 1779761832356,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -912,6 +912,82 @@ window.BENCHMARK_DATA = {
             "value": 39.46,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=39.8 MiB, error=0.9%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb",
+            "email": "lalit_fin@yahoo.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b163b4888f8faef824a428dae32f4c82c041048b",
+          "message": "[Attributes Processor] Add attribute update action (#3084)\n\n# Change Summary\n\nAdds support for the attributes processor `update` action.\n\n`update` replaces existing attribute values for matching keys without\ninserting missing attributes. This provides the generic primitive needed\nfor redaction-style replacements while preserving existing-only\nsemantics.\n\nThe implementation reuses the existing attribute mutation path and\nhandles transport-optimized attribute batches by materializing\n`parent_id` before value changes that can alter equality runs.\n\n\n## What issue does this PR close?\n\n* Closes #3054 \n\n## How are these changes tested?\n\n - `cargo +1.95 fmt --all`\n  - `cargo +1.95 check -p otap-df-pdata`\n\n## Are there any user-facing changes?\n\nYes. Users can configure a new attributes processor `update` action to\nreplace existing attribute values for matching keys without inserting\nmissing attributes.\n\n```yaml\nprocessors:\n  attributes/update:\n    actions:\n      - action: update\n         key: secret\n         value: \"[MASKED]\"\n```\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-05-25T20:20:10Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/b163b4888f8faef824a428dae32f4c82c041048b"
+        },
+        "date": 1779761831813,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 15.12,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.8,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9971,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 15.45,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=15.9 MiB, error=3.0%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 17.31,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=16.7 MiB, error=3.4%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 18.79,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.3 MiB, error=2.5%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 20.78,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=21.5 MiB, error=3.5%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 27.9,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=27.9 MiB, error=0.1%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 40.74,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=40.6 MiB, error=0.2%"
           }
         ]
       }
