@@ -1,6 +1,6 @@
 version: otel_dataflow/v1
-# df_engine config that fires a single internal event so the
-# `df-engine-events-weaver-live-check-mvp` CI job can validate it
+# df_engine config that exercises internal events so the
+# `df-engine-events-weaver-live-check` CI job can validate them
 # end-to-end against the in-tree semantic-conventions registry under
 # `rust/otap-dataflow/semconv/`.
 #
@@ -9,12 +9,12 @@ version: otel_dataflow/v1
 # Wiring:
 #
 #   groups.default.pipelines.main
-#     urn:otel:receiver:otlp                            <-- plaintext HTTP
-#       :: gRPC on 127.0.0.1:14317                          from CI triggers
-#       :: TLS enabled                                      a TLS handshake
-#           |                                               failure, which
-#           v                                               emits the event
-#     urn:otel:exporter:noop                                `tls.handshake.failed`.
+#     urn:otel:receiver:otlp                            <-- the CI job
+#       :: gRPC on 127.0.0.1:14317                          drives traffic
+#       :: TLS enabled                                      at this listener
+#           |                                               to fire the
+#           v                                               internal events
+#     urn:otel:exporter:noop                                being validated.
 #
 #   engine.observability.pipeline
 #     urn:otel:receiver:internal_telemetry              <-- captures internal
