@@ -1,5 +1,5 @@
 slug: dfe_logs_transform_attr_processor_insert
-name: DFE Logs Attribute Rename (Processor Comparison)
+name: Dataflow Engine Attribute Insert
 description: >
   Renaming the semantic-convention attribute exception.type to exception.kind on
   logs in the Dataflow Engine, comparing the attributes processor vs the transform
