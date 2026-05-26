@@ -61,7 +61,7 @@ There are internal macros defined in `otap_df_telemetry` with names
 `otel_info!`, `otel_warn!`, `otel_error!`, and `otel_debug!`. These
 macros all require a constant event-name string as the first argument;
 the event name must follow
-[OpenTelemetry Event naming conventions](../../../docs/telemetry/events-guide.md#event-naming)
+[OpenTelemetry Event naming conventions](../../docs/telemetry/events-guide.md#event-naming)
 (lowercase, dot-separated, stable, low-cardinality). The `target`
 (equivalent to OpenTelemetry `InstrumentationScope.name`) is
 automatically set to the crate name by these macros. Otherwise, they
