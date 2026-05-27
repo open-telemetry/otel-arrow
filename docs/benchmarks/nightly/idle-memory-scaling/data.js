@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779848541357,
+  "lastUpdate": 1779906869410,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -1140,6 +1140,82 @@ window.BENCHMARK_DATA = {
             "value": 40.01,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=40.0 MiB, error=0.1%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cijo Thomas",
+            "username": "cijothomas",
+            "email": "cijo.thomas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f80c48c28097c749fdc0f0b40a58dce4e2bf1034",
+          "message": "docs: improve logging macro guidance and event naming references (#3086)\n\nImprove the otel_* logging macro documentation to be accurate and\nconsistent across docs.\n\n- **telemetry README**: Document that event names must follow OTel Event\nnaming conventions (with link to events guide). Note that target maps to\nInstrumentationScope.name and is auto-set to crate name. Replace the\noutdated example with a real call from the codebase.\n- **events-guide**: Add that target becomes InstrumentationScope.name in\nOTLP export. Link the event naming section anchor to the semantic\nconventions guide.",
+          "timestamp": "2026-05-27T16:38:49Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f80c48c28097c749fdc0f0b40a58dce4e2bf1034"
+        },
+        "date": 1779906868794,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 14.93,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.82,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.999,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 15.72,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=15.7 MiB, error=0.2%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 16.68,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=16.6 MiB, error=0.7%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 18.43,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.2 MiB, error=1.2%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 21.56,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=21.5 MiB, error=0.2%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 27.52,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=28.1 MiB, error=2.2%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 41.54,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=41.3 MiB, error=0.6%"
           }
         ]
       }
