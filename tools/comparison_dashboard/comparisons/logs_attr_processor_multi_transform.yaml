@@ -1,0 +1,49 @@
+slug: logs_attr_processor_multi_transform
+name: Attribute Processor Multi Transform (Logs)
+description: >
+  Cost of running 1, 2, 3, or 4 attribute insert or rename actions on logs
+  across the Dataflow Engine (OTAP and OTLP) and the OpenTelemetry Collector
+  (OTLP) at a fixed 400k logs/sec generated load.
+
+chart:
+  axes:
+    x:
+      title: Number of Attribute Actions
+      description: Number of insert or rename actions configured on the attribute processor. All tests run at a fixed 400k logs/sec generated load.
+
+tests:
+  - name: transform-1
+    label: "1"
+    loadgen_rate: 400000
+  - name: transform-2
+    label: "2"
+    loadgen_rate: 400000
+  - name: transform-3
+    label: "3"
+    loadgen_rate: 400000
+  - name: transform-4
+    label: "4"
+    loadgen_rate: 400000
+
+suites:
+  # DFE
+  - name: DFE OTAP Attr Insert Multi Transform (Logs)
+    slug: dfe_logs_otap_none_attr_insert_multi_transform
+    short: DFE/OTAP/Insert
+  - name: DFE OTAP Attr Rename Multi Transform (Logs)
+    slug: dfe_logs_otap_none_attr_rename_multi_transform
+    short: DFE/OTAP/Rename
+  - name: DFE OTLP Attr Insert Multi Transform (Logs)
+    slug: dfe_logs_otlp_none_attr_insert_multi_transform
+    short: DFE/OTLP/Insert
+  - name: DFE OTLP Attr Rename Multi Transform (Logs)
+    slug: dfe_logs_otlp_none_attr_rename_multi_transform
+    short: DFE/OTLP/Rename
+
+  # OTC
+  - name: OTC OTLP Attr Insert Multi Transform (Logs)
+    slug: otc_logs_otlp_none_attr_insert_multi_transform
+    short: OTC/OTLP/Insert
+  - name: OTC OTLP Attr Rename Multi Transform (Logs)
+    slug: otc_logs_otlp_none_attr_rename_multi_transform
+    short: OTC/OTLP/Rename

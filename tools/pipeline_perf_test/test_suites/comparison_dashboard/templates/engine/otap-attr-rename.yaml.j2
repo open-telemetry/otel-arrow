@@ -32,9 +32,18 @@ groups:
             type: urn:otel:processor:attribute
             config:
               actions:
+{%- set rename_pairs = [
+    ["exception.type", "exception.kind"],
+    ["http.request.method", "http.method"],
+    ["http.route", "http.path_template"],
+    ["user.id", "end_user.id"],
+] %}
+{%- set n = transform_count | default(1) | int %}
+{%- for pair in rename_pairs[:n] %}
                 - action: "rename"
-                  source_key: "exception.type"
-                  destination_key: "exception.kind"
+                  source_key: "{{pair[0]}}"
+                  destination_key: "{{pair[1]}}"
+{%- endfor %}
           exporter:
             type: urn:otel:exporter:otap
             config:

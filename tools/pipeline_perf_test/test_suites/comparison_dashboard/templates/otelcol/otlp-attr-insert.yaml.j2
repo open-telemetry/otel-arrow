@@ -7,9 +7,13 @@ receivers:
 processors:
   attributes:
     actions:
-      - key: processing.engine
+{%- set insert_keys = ["processing.engine", "processing.stage", "processing.batch.id", "processing.cluster"] %}
+{%- set n = transform_count | default(1) | int %}
+{%- for key in insert_keys[:n] %}
+      - key: {{key}}
         value: benchmark
         action: insert
+{%- endfor %}
 
 exporters:
   otlp:

@@ -7,11 +7,20 @@ receivers:
 processors:
   attributes:
     actions:
-      - key: exception.kind
-        from_attribute: exception.type
+{%- set rename_pairs = [
+    ["exception.type", "exception.kind"],
+    ["http.request.method", "http.method"],
+    ["http.route", "http.path_template"],
+    ["user.id", "end_user.id"],
+] %}
+{%- set n = transform_count | default(1) | int %}
+{%- for pair in rename_pairs[:n] %}
+      - key: {{pair[1]}}
+        from_attribute: {{pair[0]}}
         action: insert
-      - key: exception.type
+      - key: {{pair[0]}}
         action: delete
+{%- endfor %}
 
 exporters:
   otlp:

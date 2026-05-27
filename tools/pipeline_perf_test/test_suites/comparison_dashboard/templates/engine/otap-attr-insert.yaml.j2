@@ -32,9 +32,13 @@ groups:
             type: urn:otel:processor:attribute
             config:
               actions:
+{%- set insert_keys = ["processing.engine", "processing.stage", "processing.batch.id", "processing.cluster"] %}
+{%- set n = transform_count | default(1) | int %}
+{%- for key in insert_keys[:n] %}
                 - action: "insert"
-                  key: "processing.engine"
+                  key: "{{key}}"
                   value: "benchmark"
+{%- endfor %}
           exporter:
             type: urn:otel:exporter:otap
             config:
