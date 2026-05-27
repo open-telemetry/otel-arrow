@@ -1,16 +1,13 @@
 slug: logs_attr_processor_multi_batch
 name: Attribute Processor Multi Batch Size (Logs)
 description: >
-  Attribute processor insert and rename workloads on logs across the Dataflow
-  Engine (OTAP and OTLP) and the OpenTelemetry Collector (OTLP), swept across
-  loadgen batch sizes (256, 512, 1024, 2048, 4096) at a fixed 400k logs/sec
-  generated load.
+  Attribute processor insert and rename workloads varying loadgen batch sizes.
 
 chart:
   axes:
     x:
       title: Loadgen Batch Size (logs/batch)
-      description: Maximum batch size emitted by the load generator. All tests run at a fixed 400k logs/sec generated load.
+      description: Batch size emitted by the load generator. All tests run at a fixed 400k logs/sec generated load.
 
 tests:
   - name: batch-256
