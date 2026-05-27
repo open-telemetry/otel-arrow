@@ -1,7 +1,8 @@
 slug: logs_attr_processor_multi_batch
-name: Attribute Processor Multi Batch Size (Logs)
+name: Attribute Processor Multi Batch Size
 description: >
-  Attribute processor insert and rename workloads varying loadgen batch sizes.
+  Attribute processor insert and rename workloads on logs with varying loadgen 
+  batch sizes.
 
 chart:
   axes:
