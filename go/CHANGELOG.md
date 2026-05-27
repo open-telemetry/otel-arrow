@@ -4,14 +4,12 @@ All notable changes to the Go components of this project (under `go/` and
 `collector/`) are documented in this file.
 
 Entries are generated from per-PR YAML fragments in `go/.chloggen/` using
-[chloggen](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/.chloggen).
+[chloggen](https://github.com/open-telemetry/opentelemetry-go-build-tools/tree/main/chloggen).
 
 This project is pre-1.0; minor-version releases may include breaking
 changes. See [`RELEASING.md`](../RELEASING.md) for the versioning policy.
 
-## Unreleased
-
-<!-- previous-version -->
+<!-- next version -->
 
 ## [0.47.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.47.0) - 2026-04-02
 
@@ -438,7 +436,7 @@ changes. See [`RELEASING.md`](../RELEASING.md) for the versioning policy.
 - Memory leak fixes, new instrumentation.  See #47, #52, #53, #54, #55, #56, and
   #57.
 
-## [0.4.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.4.0) - 2023-09-96
+## [0.4.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.4.0) - 2023-09-06
 
 - No code changes from v0.3.0, working on go module relationship issues.
 

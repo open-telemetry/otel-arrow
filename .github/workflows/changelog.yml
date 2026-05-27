@@ -1,7 +1,9 @@
 # This workflow requires that any PR targeting the main branch adds a
-# yaml file to the ./.chloggen/ directory. If a CHANGELOG entry is not
-# required (e.g. internal refactors, dep bumps), include "chore" in
-# the PR title or apply the "chore" label.
+# yaml file to the appropriate `.chloggen/` directory
+# (`go/.chloggen/` for Go changes, `rust/otap-dataflow/.chloggen/` for
+# Rust changes). If a CHANGELOG entry is not required (e.g. internal
+# refactors, dev-dependency bumps), include "chore" in the PR title or
+# apply the "chore" label.
 #
 # Modeled on opentelemetry-collector-contrib/.github/workflows/changelog.yml.
 

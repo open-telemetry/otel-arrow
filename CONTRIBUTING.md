@@ -113,12 +113,16 @@ for the full guide and the allowed `component:` values (defined in the
 `config.yaml` of each directory).
 
 **Skipping a changelog entry.** Use any of the following when the change is
-not user-facing (build chores, internal refactors, doc-only edits, dep bumps):
+not user-facing (build chores, internal refactors, doc-only edits, dev-only
+dependency bumps):
 
 - Include `chore` in the PR title.
 - Apply the `chore` label.
 - For dependency-update PRs: Renovate auto-applies the `dependencies` label
   and bot-authored PRs are exempt.
+
+Note: runtime dependency bumps that ship in a released binary or library
+should still get a changelog entry, since downstream consumers may care.
 
 The [`changelog` workflow](./.github/workflows/changelog.yml) enforces this on
 pull requests targeting `main`.

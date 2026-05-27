@@ -3,8 +3,8 @@
 # One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
 change_type: enhancement
 
-# The name of the component, or a single word describing the area of concern, (e.g. pkg/otel/arrow).
-# Must be one of the components listed in go/.chloggen/config.yaml.
+# The name of the component, or a single word describing the area of concern, (e.g. otap).
+# Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
 component: all
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).

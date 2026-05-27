@@ -6,7 +6,8 @@ This repository maintains two language-scoped changelogs:
 - Rust components (`rust/otap-dataflow/`):
   [`rust/otap-dataflow/CHANGELOG.md`](./rust/otap-dataflow/CHANGELOG.md)
 
-Changelog entries are added per pull request as YAML files under
-[`.chloggen/`](./.chloggen/) and collapsed into the appropriate file at
-release time. See [`.chloggen/README.md`](./.chloggen/README.md) for the
-contributor workflow.
+Changelog entries are added per pull request as YAML files under each
+tree's `.chloggen/` directory ([`go/.chloggen/`](./go/.chloggen/),
+[`rust/otap-dataflow/.chloggen/`](./rust/otap-dataflow/.chloggen/)) and
+collapsed into the appropriate file at release time. See the README in
+each directory for the contributor workflow.
