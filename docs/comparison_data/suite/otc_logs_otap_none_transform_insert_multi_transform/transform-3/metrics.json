@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "OTC OTAP Transform Insert Multi Transform (Logs)/transform-3 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 2.9629628658294678
+  },
+  {
+    "extra": "OTC OTAP Transform Insert Multi Transform (Logs)/transform-3 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.12722363071387
+  },
+  {
+    "extra": "OTC OTAP Transform Insert Multi Transform (Logs)/transform-3 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.47133250311333
+  },
+  {
+    "extra": "OTC OTAP Transform Insert Multi Transform (Logs)/transform-3 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 867.15546875
+  },
+  {
+    "extra": "OTC OTAP Transform Insert Multi Transform (Logs)/transform-3 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 887.54296875
+  },
+  {
+    "extra": "OTC OTAP Transform Insert Multi Transform (Logs)/transform-3 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 61971.91891685939
+  },
+  {
+    "extra": "OTC OTAP Transform Insert Multi Transform (Logs)/transform-3 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 61718.03214017562
+  },
+  {
+    "extra": "OTC OTAP Transform Insert Multi Transform (Logs)/transform-3 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 20.000579
+  },
+  {
+    "extra": "OTC OTAP Transform Insert Multi Transform (Logs)/transform-3 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 9784610.424010815
+  },
+  {
+    "extra": "OTC OTAP Transform Insert Multi Transform (Logs)/transform-3 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 8820575.968135668
+  },
+  {
+    "extra": "OTC OTAP Transform Insert Multi Transform (Logs)/transform-3 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 158.53730400521763
+  }
+]
