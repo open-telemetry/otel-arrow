@@ -103,7 +103,7 @@ tests:
         test_dir: {{data_dir}}/tests/transform-1
         report_name: "DF Engine transform-1 - {{suite_name}}"
         observation_interval: {{observation_interval}}
-        signals_per_second: 100000
+        signals_per_second: 60000
         log_weight: {{log_weight}}
         metric_weight: {{metric_weight}}
         trace_weight: {{trace_weight}}
@@ -122,7 +122,7 @@ tests:
         test_dir: {{data_dir}}/tests/transform-2
         report_name: "DF Engine transform-2 - {{suite_name}}"
         observation_interval: {{observation_interval}}
-        signals_per_second: 100000
+        signals_per_second: 60000
         log_weight: {{log_weight}}
         metric_weight: {{metric_weight}}
         trace_weight: {{trace_weight}}
@@ -141,7 +141,7 @@ tests:
         test_dir: {{data_dir}}/tests/transform-3
         report_name: "DF Engine transform-3 - {{suite_name}}"
         observation_interval: {{observation_interval}}
-        signals_per_second: 100000
+        signals_per_second: 60000
         log_weight: {{log_weight}}
         metric_weight: {{metric_weight}}
         trace_weight: {{trace_weight}}
@@ -160,7 +160,7 @@ tests:
         test_dir: {{data_dir}}/tests/transform-4
         report_name: "DF Engine transform-4 - {{suite_name}}"
         observation_interval: {{observation_interval}}
-        signals_per_second: 100000
+        signals_per_second: 60000
         log_weight: {{log_weight}}
         metric_weight: {{metric_weight}}
         trace_weight: {{trace_weight}}
