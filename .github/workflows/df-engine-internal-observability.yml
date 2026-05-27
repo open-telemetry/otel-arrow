@@ -216,7 +216,8 @@ jobs:
 
           mapfile -t expected < <(
             yq eval-all '.groups[] | select(.type == "event") | .name' \
-              rust/otap-dataflow/semconv/groups/*.yaml | sort -u
+              rust/otap-dataflow/semconv/groups/*.yaml \
+              | grep -Ev '^(---|null)$' | sort -u
           )
           if [ "${#expected[@]}" -eq 0 ]; then
             echo "::error::No events discovered under semconv/groups/"
