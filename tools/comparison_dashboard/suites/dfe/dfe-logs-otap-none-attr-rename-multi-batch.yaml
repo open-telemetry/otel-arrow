@@ -1,0 +1,20 @@
+name: DFE OTAP Attr Rename Multi Batch (Logs)
+slug: dfe_logs_otap_none_attr_rename_multi_batch
+description: Dataflow Engine OTAP logs, attributes processor renaming exception.type to exception.kind, swept across loadgen batch sizes at 400k signals/sec
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/dfe-single-core-multi-batch-size.yaml
+
+meta:
+  binary: dfe
+  protocols: [otap]
+  signals: [logs]
+  compression: none
+
+variables:
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_logs.yaml
+  engine_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/engine/otap-attr-rename.yaml.j2
+  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otap.yaml.j2
+  backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/backend/otap.yaml.j2
+  protocol: otap
+  signal: logs
+  compression_method: none
+  wait_for_result: true
