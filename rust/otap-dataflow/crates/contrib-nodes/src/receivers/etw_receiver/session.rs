@@ -3,13 +3,13 @@
 
 //! ETW session management using the `one_collect` library.
 //!
-//! ## Singleton session with round-robin fan-out
+//! ## One session per `session_name` with round-robin fan-out
 //!
 //! Windows allows only **one** real-time ETW trace session per session name.
 //! The OTAP engine, however, may create multiple receiver replicas (one per
-//! allocated core).  To reconcile these two models this module maintains a
-//! **process-global singleton session** and pre-creates N consumer channels
-//! (one per core).  Each factory call pops one receiver from the pool.
+//! allocated core).  To reconcile these two models this module maintains one
+//! session per `session_name` and pre-creates N consumer channels (one per
+//! core).  Each factory call pops one receiver from the pool.
 //!
 //! ```text
 //! ProcessTrace OS thread  (lazily spawned on first factory call)
@@ -42,20 +42,24 @@
 //! (i.e. no receivers remain) the callback becomes a no-op.
 
 use std::cell::Cell;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::rc::Rc;
 use std::sync::Mutex;
 
 use one_collect::Guid;
 use one_collect::etw::{self, EtwSession};
 use otap_df_engine::error::Error;
+use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use tokio::sync::mpsc;
 
 use super::{Config, ProviderConfig, TraceLevel};
 
 /// Channel capacity for ETW events sent from the blocking session thread to
 /// each per-core async receiver loop.  A bounded channel provides implicit
-/// backpressure: when a core's channel is full the round-robin callback skips
-/// that core for the current event (the event is dropped for that core only).
+/// backpressure: when the target core's channel is full the event is dropped
+/// from the pipeline entirely.  The round-robin index still advances, so the
+/// next event continues to the following core (no retry on another core).
 const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
 // ── Event data transferred across the channel ────────────────────────────────
@@ -180,15 +184,32 @@ fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
     unreachable!("validated upstream: provider must specify either 'name' or 'guid'")
 }
 
-// ── Singleton session state ──────────────────────────────────────────────────
+// ── Per-session state ────────────────────────────────────────────────────────
 
-/// Process-global session state.  Initialized on the first call to
-/// [`subscribe`]; subsequent calls pop one receiver from the pool.
+/// State for a single ETW session keyed by `session_name`.
+struct SessionEntry {
+    /// The config used to create this session.  Subsequent `subscribe()`
+    /// calls for the same `session_name` must present an identical config;
+    /// a mismatch indicates a misconfigured pipeline (two different
+    /// `receiver:etw` nodes accidentally sharing a `session_name`).
+    config: Config,
+    /// Pre-allocated consumer channels, one per core.  Popped one at a time
+    /// as each per-core receiver factory call arrives.
+    pool: Vec<mpsc::Receiver<EtwEventData>>,
+}
+
+/// Process-global session registry.  Keyed by `session_name` so that:
 ///
-/// We use `Mutex<Option<Vec<…>>>` rather than `OnceLock` / `LazyLock` because:
+/// - Two `receiver:etw` nodes with **different** `session_name`s each get
+///   their own independent kernel session.
+/// - Two nodes with the **same** `session_name` produce a clear
+///   `InvalidUserConfig` error instead of silently sharing or failing with
+///   a misleading "pool exhausted" message.
+///
+/// We use `Mutex<HashMap<…>>` rather than `OnceLock` / `LazyLock` because:
 /// - Initialization is fallible (GUID parsing, thread spawn).
 /// - We need post-init mutation (`Vec::pop`).
-static SESSION: Mutex<Option<Vec<mpsc::Receiver<EtwEventData>>>> = Mutex::new(None);
+static SESSIONS: Mutex<Option<HashMap<String, SessionEntry>>> = Mutex::new(None);
 
 /// Spawn the ETW session and block on `parse_until`.
 ///
@@ -234,12 +255,15 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
             // timestamp, provider GUID, etc.) before dispatching each event.
             let ancillary = session.ancillary_data();
 
-            // Shared round-robin counter and sender list.  All provider
-            // callbacks run on the single `ProcessTrace` thread, so `Cell`
-            // is safe — no atomics or locking needed.  Sharing the counter
-            // ensures uniform core distribution even at startup when
+            // Shared round-robin counter, drop counter, and sender list.
+            // All provider callbacks run on the single `ProcessTrace` thread,
+            // so `Cell` is safe — no atomics or locking needed.  Sharing the
+            // counter ensures uniform core distribution even at startup when
             // multiple providers would otherwise all start at index 0.
             let next: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+            let dropped: Rc<Cell<u64>> = Rc::new(Cell::new(0));
+            let closed_logged: Rc<Vec<Cell<bool>>> =
+                Rc::new((0..txs.len()).map(|_| Cell::new(false)).collect());
             let txs: Rc<Vec<mpsc::Sender<EtwEventData>>> = Rc::new(txs);
 
             // Register a provider-wide event for each configured provider.
@@ -256,6 +280,8 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
 
                 let ancillary = ancillary.clone();
                 let next = Rc::clone(&next);
+                let dropped = Rc::clone(&dropped);
+                let closed_logged = Rc::clone(&closed_logged);
                 let txs = Rc::clone(&txs);
 
                 wide_event.add_callback(move |_event_data| {
@@ -287,9 +313,42 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                     let i = next.get();
                     next.set(i.wrapping_add(1));
 
-                    // Best-effort send; if this core's channel is full,
-                    // drop the event for that core only.
-                    let _ = txs[i % txs.len()].try_send(data);
+                    // Best-effort send; if this core's channel is full the
+                    // event is dropped from the pipeline entirely (each event
+                    // is assigned to exactly one core via round-robin).
+                    match txs[i % txs.len()].try_send(data) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            let count = dropped.get() + 1;
+                            dropped.set(count);
+                            // TODO: Report dropped events as a metric counter
+                            // instead of a log line.  MetricSet is not directly
+                            // usable here because this callback runs on the
+                            // blocking ProcessTrace OS thread (!Send context).
+                            // Consider an AtomicU64 that the async receiver
+                            // side periodically reads and reports via MetricSet.
+                            //
+                            // Rate-limited log: first drop, then every 10,000th.
+                            if count == 1 || count.is_multiple_of(10_000) {
+                                otel_warn!(
+                                    "etw.event.dropped",
+                                    total_dropped = count,
+                                    core = i % txs.len(),
+                                );
+                            }
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            // The receiver for this core has been dropped
+                            // (shutdown).  Log once per core so we can
+                            // distinguish an early single-core failure from
+                            // a normal full-shutdown sequence.
+                            let core = i % txs.len();
+                            if !closed_logged[core].get() {
+                                closed_logged[core].set(true);
+                                otel_info!("etw.event.channel_closed", core = core);
+                            }
+                        }
+                    }
 
                     Ok(())
                 });
@@ -299,7 +358,16 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
 
             // `parse_until` blocks on `ProcessTrace`.  We never signal stop,
             // so the session runs until the process exits.
-            let _result = session.parse_until(&session_name, || false);
+            // TODO: Surface startup failures via a oneshot readiness channel
+            // once the one-collect API stabilizes (TDH decoding work).
+            let result = session.parse_until(&session_name, || false);
+            if let Err(ref e) = result {
+                otel_error!(
+                    "etw.parse_until.failed",
+                    session_name = session_name.as_str(),
+                    error = %e,
+                );
+            }
 
             // The session thread exits only on unrecoverable ETW errors or
             // process shutdown.  When it exits, all senders are dropped,
@@ -314,54 +382,250 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/// Acquire one consumer channel from the process-global ETW session.
+/// Acquire one consumer channel from the ETW session for the given
+/// `session_name`.
 ///
-/// On the **first** call, this function:
+/// On the **first** call for a given `session_name`, this function:
 /// 1. Creates `num_cores` bounded MPSC channels.
 /// 2. Spawns the ETW session thread with round-robin fan-out across all
 ///    senders.
-/// 3. Stores the receivers in a process-global pool.
+/// 3. Stores the receivers in the session registry.
 ///
 /// On each call (including the first) it pops one receiver from the pool and
 /// returns it.  The engine calls the receiver factory once per allocated core,
-/// so exactly `num_cores` calls are expected.
+/// so exactly `num_cores` calls are expected per `session_name`.
 ///
 /// # Errors
 ///
 /// Returns an error if:
-/// - Provider GUID parsing fails (first call only).
+/// - Provider GUID parsing fails (first call for this `session_name` only).
 /// - The ETW session thread cannot be spawned (first call only).
-/// - All consumers have already been handed out (more calls than `num_cores`).
+/// - The `session_name` is already in use by another `receiver:etw` node
+///   with a **different** provider configuration (config mismatch).
+/// - The `session_name` pool is exhausted (all consumers for that session
+///   have already been handed out).
 /// - The session lock is poisoned (indicates a prior panic).
 pub(super) fn subscribe(
     config: &Config,
     num_cores: usize,
 ) -> Result<mpsc::Receiver<EtwEventData>, Error> {
-    let mut guard = SESSION.lock().map_err(|e| Error::InternalError {
-        message: format!("ETW session lock poisoned: {e}"),
+    let mut guard = SESSIONS.lock().map_err(|e| Error::InternalError {
+        message: format!("ETW sessions lock poisoned: {e}"),
     })?;
 
-    if guard.is_none() {
-        // First call — initialize the session.
-        let (txs, rxs): (Vec<_>, Vec<_>) = (0..num_cores)
-            .map(|_| mpsc::channel(EVENT_CHANNEL_CAPACITY))
-            .unzip();
+    let sessions = guard.get_or_insert_with(HashMap::new);
 
-        spawn_etw_session(config, txs)?;
+    let entry = match sessions.entry(config.session_name.clone()) {
+        Entry::Vacant(v) => {
+            // First call for this session_name — initialize the session.
+            let (txs, rxs): (Vec<_>, Vec<_>) = (0..num_cores)
+                .map(|_| mpsc::channel(EVENT_CHANNEL_CAPACITY))
+                .unzip();
 
-        *guard = Some(rxs);
-    }
+            spawn_etw_session(config, txs)?;
 
-    let pool = guard.as_mut().expect("session initialized above");
-    pool.pop().ok_or_else(|| Error::InternalError {
-        message: "ETW consumer pool exhausted; engine requested more receivers than num_cores"
-            .to_string(),
+            v.insert(SessionEntry {
+                config: config.clone(),
+                pool: rxs,
+            })
+        }
+        Entry::Occupied(o) => {
+            let existing = o.into_mut();
+            // Guard against two different receiver:etw nodes accidentally
+            // sharing the same session_name with different provider configs.
+            // Without this check, node B would silently consume channels
+            // from node A's session and receive the wrong events.
+            if existing.config != *config {
+                return Err(Error::ConfigError(Box::new(
+                    otap_df_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "ETW session_name '{}' is already in use with a different \
+                             provider configuration; each receiver:etw node must use a \
+                             distinct session_name or an identical config",
+                            config.session_name,
+                        ),
+                    },
+                )));
+            }
+            existing
+        }
+    };
+
+    entry.pool.pop().ok_or_else(|| {
+        Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+            error: format!(
+                "ETW session_name '{}' is already in use; \
+                     each receiver:etw node must specify a distinct session_name",
+                config.session_name,
+            ),
+        }))
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Helper: insert a pre-built `SessionEntry` into the global registry
+    /// for testing.  Returns a guard-like struct that removes the entry on
+    /// drop to avoid leaking test state between tests.
+    struct TestSession {
+        name: String,
+    }
+
+    impl TestSession {
+        fn insert(name: &str, pool: Vec<mpsc::Receiver<EtwEventData>>) -> Self {
+            Self::insert_with_config(name, pool, test_config(name))
+        }
+
+        fn insert_with_config(
+            name: &str,
+            pool: Vec<mpsc::Receiver<EtwEventData>>,
+            config: Config,
+        ) -> Self {
+            let mut guard = SESSIONS.lock().expect("lock not poisoned");
+            let sessions = guard.get_or_insert_with(HashMap::new);
+            let _ = sessions.insert(name.to_string(), SessionEntry { config, pool });
+            Self {
+                name: name.to_string(),
+            }
+        }
+    }
+
+    impl Drop for TestSession {
+        fn drop(&mut self) {
+            if let Ok(mut guard) = SESSIONS.lock() {
+                if let Some(sessions) = guard.as_mut() {
+                    let _ = sessions.remove(&self.name);
+                }
+            }
+        }
+    }
+
+    fn test_config(session_name: &str) -> Config {
+        Config {
+            session_name: session_name.to_string(),
+            providers: vec![ProviderConfig {
+                name: None,
+                guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+                level: TraceLevel::default(),
+                keywords: None,
+            }],
+        }
+    }
+
+    // ── Session registry ─────────────────────────────
+
+    #[test]
+    fn subscribe_rejects_exhausted_session_name() {
+        // Pre-populate the registry with an empty pool to simulate
+        // a session whose channels have all been handed out.
+        let _guard = TestSession::insert("test-exhausted", vec![]);
+
+        let config = test_config("test-exhausted");
+        let err = subscribe(&config, 1).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("already in use"),
+            "expected 'already in use' error, got: {msg}"
+        );
+        assert!(
+            msg.contains("test-exhausted"),
+            "error should mention the session name, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn subscribe_pops_from_existing_pool() {
+        // Pre-populate with a pool of 2 receivers.
+        let (_tx1, rx1) = mpsc::channel::<EtwEventData>(1);
+        let (_tx2, rx2) = mpsc::channel::<EtwEventData>(1);
+        let _guard = TestSession::insert("test-pool-pop", vec![rx1, rx2]);
+
+        let config = test_config("test-pool-pop");
+
+        // First pop should succeed.
+        let result1 = subscribe(&config, 2);
+        assert!(result1.is_ok(), "first subscribe should succeed");
+
+        // Second pop should succeed.
+        let result2 = subscribe(&config, 2);
+        assert!(result2.is_ok(), "second subscribe should succeed");
+
+        // Third pop — pool exhausted — should return InvalidUserConfig.
+        let err = subscribe(&config, 2).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("already in use"),
+            "expected 'already in use' error on exhausted pool, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn subscribe_different_session_names_are_independent() {
+        // Pre-populate two different session names, each with their own pool.
+        let (_tx_a, rx_a) = mpsc::channel::<EtwEventData>(1);
+        let (_tx_b, rx_b) = mpsc::channel::<EtwEventData>(1);
+        let _guard_a = TestSession::insert("test-session-a", vec![rx_a]);
+        let _guard_b = TestSession::insert("test-session-b", vec![rx_b]);
+
+        let config_a = test_config("test-session-a");
+        let config_b = test_config("test-session-b");
+
+        // Both should succeed independently.
+        let result_a = subscribe(&config_a, 1);
+        assert!(result_a.is_ok(), "session-a subscribe should succeed");
+
+        let result_b = subscribe(&config_b, 1);
+        assert!(result_b.is_ok(), "session-b subscribe should succeed");
+
+        // Exhausting one doesn't affect the other (both are now empty,
+        // so both should fail independently with their own session name).
+        let err_a = subscribe(&config_a, 1).unwrap_err();
+        assert!(
+            err_a.to_string().contains("test-session-a"),
+            "error should mention session-a"
+        );
+
+        let err_b = subscribe(&config_b, 1).unwrap_err();
+        assert!(
+            err_b.to_string().contains("test-session-b"),
+            "error should mention session-b"
+        );
+    }
+
+    #[test]
+    fn subscribe_rejects_config_mismatch() {
+        // Pre-populate with a session that has one provider config.
+        let (_tx, rx) = mpsc::channel::<EtwEventData>(1);
+        let original_config = test_config("test-mismatch");
+        let _guard = TestSession::insert_with_config("test-mismatch", vec![rx], original_config);
+
+        // Attempt to subscribe with a different provider config but the
+        // same session_name — this should be rejected.
+        let different_config = Config {
+            session_name: "test-mismatch".to_string(),
+            providers: vec![ProviderConfig {
+                name: None,
+                guid: Some("a0c1853b-5c40-4b15-8766-3cf1c58f985a".to_string()),
+                level: TraceLevel::Verbose,
+                keywords: None,
+            }],
+        };
+
+        let err = subscribe(&different_config, 1).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("different provider configuration"),
+            "expected config mismatch error, got: {msg}"
+        );
+        assert!(
+            msg.contains("test-mismatch"),
+            "error should mention the session name, got: {msg}"
+        );
+    }
+
+    // ── GUID parsing ─────────────────────────────────
 
     #[test]
     fn parse_guid_standard_format() {
@@ -392,6 +656,8 @@ mod tests {
         let result = parse_guid("22fb2cd6-0e7b");
         assert!(result.is_err());
     }
+
+    // ── Trace level mapping ──────────────────────────
 
     #[test]
     fn trace_level_mapping() {
