@@ -59,14 +59,14 @@ pub struct FlowSignalsOutgoingMetrics {
 #[attribute_set(name = "flow.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct FlowAttributeSet {
-    /// User-given flow name.
-    #[attribute(key = "flow.name")]
-    pub flow_name: Cow<'static, str>,
+    /// User-given flow identifier.
+    #[attribute(key = "flow.id")]
+    pub flow_id: Cow<'static, str>,
     /// Name of the processor node where the measurement begins.
-    #[attribute(key = "flow.start_node")]
+    #[attribute(key = "flow.node.start")]
     pub start_node: Cow<'static, str>,
     /// Name of the processor node where the measurement ends.
-    #[attribute(key = "flow.end_node")]
+    #[attribute(key = "flow.node.end")]
     pub end_node: Cow<'static, str>,
     /// Pipeline attributes.
     #[compose]
@@ -249,14 +249,14 @@ pub(crate) fn build_flow_metric_state(
         let (Some(start_idx), Some(end_idx)) = (start_idx, end_idx) else {
             return Err(invalid_flow_metric_config(format!(
                 "flow metric `{}` references unknown node(s): start=`{}`, end=`{}`",
-                flow_config.name, flow_config.bounds.start_node, flow_config.bounds.end_node
+                flow_config.id, flow_config.bounds.start_node, flow_config.bounds.end_node
             )));
         };
 
         if !processor_indices.contains(&start_idx) || !processor_indices.contains(&end_idx) {
             return Err(invalid_flow_metric_config(format!(
                 "flow metric `{}` start/end nodes must be processors: start=`{}`, end=`{}`",
-                flow_config.name, flow_config.bounds.start_node, flow_config.bounds.end_node
+                flow_config.id, flow_config.bounds.start_node, flow_config.bounds.end_node
             )));
         }
 
@@ -267,12 +267,12 @@ pub(crate) fn build_flow_metric_state(
         {
             return Err(invalid_flow_metric_config(format!(
                 "flow metric `{}` overlaps with another flow metric (non-overlapping ranges only): start=`{}`, end=`{}`",
-                flow_config.name, flow_config.bounds.start_node, flow_config.bounds.end_node
+                flow_config.id, flow_config.bounds.start_node, flow_config.bounds.end_node
             )));
         }
 
         let attrs = FlowAttributeSet {
-            flow_name: Cow::Owned(flow_config.name.clone()),
+            flow_id: Cow::Owned(flow_config.id.clone()),
             start_node: Cow::Owned(flow_config.bounds.start_node.clone()),
             end_node: Cow::Owned(flow_config.bounds.end_node.clone()),
             pipeline_attrs: pipeline_attrs.clone(),
@@ -301,7 +301,7 @@ pub(crate) fn build_flow_metric_state(
         signals_outgoing_metrics.push(signals_outgoing_metric);
         let _ = end_nodes.insert(end_idx, id);
         let _ = start_nodes.insert(start_idx, id);
-        resolved_ranges.push((start_idx, end_idx, flow_config.name.clone()));
+        resolved_ranges.push((start_idx, end_idx, flow_config.id.clone()));
     }
 
     // Validate that flow_metric ranges don't interleave with each other.
@@ -559,7 +559,7 @@ mod tests {
 
     fn sw(name: &str, start: &str, stop: &str) -> FlowMetricConfig {
         FlowMetricConfig {
-            name: name.to_string(),
+            id: name.to_string(),
             bounds: FlowBounds {
                 start_node: start.to_string(),
                 end_node: stop.to_string(),
