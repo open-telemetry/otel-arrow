@@ -26,8 +26,7 @@ If this PR has user-facing changes, add a `.chloggen/*.yaml` entry via
 `make chlog-new-rust FILENAME=<short-name>` (Rust changes). See
 go/.chloggen/README.md or rust/otap-dataflow/.chloggen/README.md.
 
-If a changelog entry is not required, include `[chore]` in the PR title
-or apply the `chore` label.
+If a changelog entry is not required, include `chore` in the PR title.
 -->
 
-* [ ] Added a `.chloggen/*.yaml` entry, OR this PR is `[chore]`/labeled `chore`.
+* [ ] Added a `.chloggen/*.yaml` entry, OR this PR is a `chore` (indicated in title).

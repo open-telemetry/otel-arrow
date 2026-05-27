@@ -41,7 +41,7 @@ make chlog-preview             # renders entries without modifying CHANGELOGs
 Skip the entry when the change is not user-facing. The PR-validation
 workflow honors any of:
 
-- `[chore]` (case-insensitive) in the PR title.
+- `chore` (case-insensitive) anywhere in the PR title.
 - The `chore` label.
 - The `dependencies` label (auto-applied by Renovate).
 - Bot authors (`dependabot[bot]`, `renovate[bot]`, `otelbot`).

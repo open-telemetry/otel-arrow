@@ -1,6 +1,6 @@
 # This workflow requires that any PR targeting the main branch adds a
 # yaml file to the ./.chloggen/ directory. If a CHANGELOG entry is not
-# required (e.g. internal refactors, dep bumps), include "[chore]" in
+# required (e.g. internal refactors, dep bumps), include "chore" in
 # the PR title or apply the "chore" label.
 #
 # Modeled on opentelemetry-collector-contrib/.github/workflows/changelog.yml.
@@ -9,7 +9,7 @@ name: changelog
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited]
     branches:
       - main
 
@@ -27,7 +27,7 @@ jobs:
     env:
       PR_HEAD: ${{ github.event.pull_request.head.sha }}
       # Reusable expression: true when any bypass condition is set
-      SKIP: ${{ contains(github.event.pull_request.labels.*.name, 'dependencies') || contains(github.event.pull_request.labels.*.name, 'chore') || contains(github.event.pull_request.title, '[chore]') }}
+      SKIP: ${{ contains(github.event.pull_request.labels.*.name, 'dependencies') || contains(github.event.pull_request.labels.*.name, 'chore') || contains(github.event.pull_request.title, 'chore') }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
