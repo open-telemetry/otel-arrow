@@ -401,7 +401,7 @@ impl FamilyScheduler {
             })
             .map(|entry| entry.interval)
             .min()
-            .unwrap_or(Duration::ZERO)
+            .expect("due families should match scheduler entries")
     }
 
     #[cfg(test)]
