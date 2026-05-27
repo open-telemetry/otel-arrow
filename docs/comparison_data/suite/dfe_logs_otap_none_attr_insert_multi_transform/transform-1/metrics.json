@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-1 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 0.0
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-1 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 38.42264536980282
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-1 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 38.67113054341037
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-1 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 52.10546875
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-1 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 52.640625
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-1 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 388179.64381861716
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-1 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 409311.5799308501
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-1 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 20.002886
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-1 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 69024843.84208626
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-1 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 55247246.6796117
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Transform (Logs)/transform-1 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 168.63643059829252
+  }
+]

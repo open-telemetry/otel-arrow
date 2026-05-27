@@ -1,7 +1,7 @@
 name: OTC OTLP Attr Rename Multi Transform (Logs)
 slug: otc_logs_otlp_none_attr_rename_multi_transform
 description: OpenTelemetry Collector OTLP logs, attributes processor rename sweep
-  over 1-4 rename actions at 200k signals/sec
+  over 1-4 rename actions at 400k signals/sec
 meta:
   binary: otc
   protocols:

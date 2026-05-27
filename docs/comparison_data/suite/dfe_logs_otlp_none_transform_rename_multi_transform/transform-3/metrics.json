@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTLP Transform Rename Multi Transform (Logs)/transform-3 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -0.013157893903553486
+  },
+  {
+    "extra": "DFE OTLP Transform Rename Multi Transform (Logs)/transform-3 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 97.8559741560759
+  },
+  {
+    "extra": "DFE OTLP Transform Rename Multi Transform (Logs)/transform-3 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 98.34799501867994
+  },
+  {
+    "extra": "DFE OTLP Transform Rename Multi Transform (Logs)/transform-3 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 67.612890625
+  },
+  {
+    "extra": "DFE OTLP Transform Rename Multi Transform (Logs)/transform-3 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 71.2890625
+  },
+  {
+    "extra": "DFE OTLP Transform Rename Multi Transform (Logs)/transform-3 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 390124.3110584329
+  },
+  {
+    "extra": "DFE OTLP Transform Rename Multi Transform (Logs)/transform-3 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 396285.5825455413
+  },
+  {
+    "extra": "DFE OTLP Transform Rename Multi Transform (Logs)/transform-3 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 20.000598
+  },
+  {
+    "extra": "DFE OTLP Transform Rename Multi Transform (Logs)/transform-3 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 371226709.2265954
+  },
+  {
+    "extra": "DFE OTLP Transform Rename Multi Transform (Logs)/transform-3 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 343368140.5070235
+  },
+  {
+    "extra": "DFE OTLP Transform Rename Multi Transform (Logs)/transform-3 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 936.7656194858764
+  }
+]

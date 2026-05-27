@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTLP Attr Rename Multi Transform (Logs)/transform-3 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 0.0
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Transform (Logs)/transform-3 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 97.21896778574181
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Transform (Logs)/transform-3 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 97.75795319812792
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Transform (Logs)/transform-3 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 58.999609375
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Transform (Logs)/transform-3 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 60.40625
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Transform (Logs)/transform-3 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 391499.35392303986
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Transform (Logs)/transform-3 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 397789.3589148181
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Transform (Logs)/transform-3 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 20.000575
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Transform (Logs)/transform-3 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 370731608.36232454
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Transform (Logs)/transform-3 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 342943543.6402109
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Transform (Logs)/transform-3 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 931.9797024578336
+  }
+]

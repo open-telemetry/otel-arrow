@@ -1,0 +1,63 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  attributes:
+    actions:
+      - key: exception.kind
+        from_attribute: exception.type
+        action: insert
+      - key: exception.type
+        action: delete
+      - key: exception.msg
+        from_attribute: exception.message
+        action: insert
+      - key: exception.message
+        action: delete
+      - key: exception.trace
+        from_attribute: exception.stacktrace
+        action: insert
+      - key: exception.stacktrace
+        action: delete
+      - key: end_user.id
+        from_attribute: user.id
+        action: insert
+      - key: user.id
+        action: delete
+
+exporters:
+  otlp:
+    endpoint: 'backend-service:1235'
+    compression: none
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: True
+      wait_for_result: True
+      block_on_overflow: True
+      sizer: requests
+      queue_size: 100
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: '0.0.0.0'
+                port: 8086
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [attributes]
+      exporters: [otlp]
+    metrics:
+      receivers: [otlp]
+      exporters: [otlp]
+    traces:
+      receivers: [otlp]
+      exporters: [otlp]
