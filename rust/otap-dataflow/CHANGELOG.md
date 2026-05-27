@@ -3,10 +3,12 @@
 All notable changes to the Rust components of this project (under
 `rust/otap-dataflow/`) are documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+Entries are generated from per-PR YAML fragments in
+`rust/otap-dataflow/.chloggen/` using
+[chloggen](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/.chloggen).
 
-This project adheres to [Semantic
-Versioning](https://semver.org/spec/v2.0.0.html).
+This project is pre-1.0; minor-version releases may include breaking
+changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 ## Unreleased
 
