@@ -59,15 +59,24 @@ See the [telemetry-macros crate](../telemetry-macros) for details.
 
 There are internal macros defined in `otap_df_telemetry` with names
 `otel_info!`, `otel_warn!`, `otel_error!`, and `otel_debug!`. These
-macros all require a constant event-name string as the first argument,
-otherwise, they follow Tokio `tracing` syntax for key-value expressions.
+macros all require a constant event-name string as the first argument;
+the event name must follow
+[OpenTelemetry Event naming conventions](../../docs/telemetry/events-guide.md#event-naming)
+(lowercase, dot-separated, stable, low-cardinality). The `target`
+(equivalent to OpenTelemetry `InstrumentationScope.name`) is
+automatically set to the crate name by these macros. Otherwise, they
+follow Tokio `tracing` syntax for key-value expressions.
 
 For example:
 
 ```rust
-use otap_df_telemetry::otel_error;
+use otap_df_telemetry::otel_info;
 
-otel_error!("bad configuration", error = ?err);
+otel_info!(
+    "syslog_cef_receiver.start",
+    protocol = "TCP",
+    listening_addr = tcp_config.listening_addr.to_string()
+);
 ```
 
 ## Internal telemetry collection
