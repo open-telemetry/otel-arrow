@@ -38,12 +38,6 @@ groups:
                 - action: "insert"
                   key: "processing.stage"
                   value: "benchmark"
-                - action: "insert"
-                  key: "processing.batch.id"
-                  value: "benchmark"
-                - action: "insert"
-                  key: "processing.cluster"
-                  value: "benchmark"
           exporter:
             type: urn:otel:exporter:otap
             config:

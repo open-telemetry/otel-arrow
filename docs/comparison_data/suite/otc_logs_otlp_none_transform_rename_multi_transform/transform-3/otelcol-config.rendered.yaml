@@ -16,8 +16,6 @@ processors:
           - delete_key(attributes, "exception.message")
           - set(attributes["exception.trace"], attributes["exception.stacktrace"])
           - delete_key(attributes, "exception.stacktrace")
-          - set(attributes["end_user.id"], attributes["user.id"])
-          - delete_key(attributes, "user.id")
 
 exporters:
   otlp:

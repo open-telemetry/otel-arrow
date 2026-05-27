@@ -22,11 +22,6 @@ processors:
         action: insert
       - key: exception.stacktrace
         action: delete
-      - key: end_user.id
-        from_attribute: user.id
-        action: insert
-      - key: user.id
-        action: delete
 
 exporters:
   otlp:

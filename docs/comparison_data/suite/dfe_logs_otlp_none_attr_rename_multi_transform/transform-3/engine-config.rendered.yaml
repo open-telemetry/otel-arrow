@@ -40,9 +40,6 @@ groups:
                 - action: "rename"
                   source_key: "exception.stacktrace"
                   destination_key: "exception.trace"
-                - action: "rename"
-                  source_key: "user.id"
-                  destination_key: "end_user.id"
           exporter:
             type: urn:otel:exporter:otlp_grpc
             config:

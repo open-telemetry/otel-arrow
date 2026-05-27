@@ -12,21 +12,6 @@ processors:
         action: insert
       - key: exception.type
         action: delete
-      - key: exception.msg
-        from_attribute: exception.message
-        action: insert
-      - key: exception.message
-        action: delete
-      - key: exception.trace
-        from_attribute: exception.stacktrace
-        action: insert
-      - key: exception.stacktrace
-        action: delete
-      - key: end_user.id
-        from_attribute: user.id
-        action: insert
-      - key: user.id
-        action: delete
 
 exporters:
   otlp:

@@ -12,8 +12,6 @@ processors:
         statements:
           - set(attributes["processing.engine"], "benchmark")
           - set(attributes["processing.stage"], "benchmark")
-          - set(attributes["processing.batch.id"], "benchmark")
-          - set(attributes["processing.cluster"], "benchmark")
 
 exporters:
   otlp:

@@ -16,9 +16,6 @@ processors:
       - key: processing.batch.id
         value: benchmark
         action: insert
-      - key: processing.cluster
-        value: benchmark
-        action: insert
 
 exporters:
   otlp:

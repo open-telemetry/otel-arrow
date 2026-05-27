@@ -31,7 +31,7 @@ groups:
           processor:
             type: urn:otel:processor:transform
             config:
-              opl_query: 'logs | set attributes["processing.engine"] = "benchmark" | set attributes["processing.stage"] = "benchmark" | set attributes["processing.batch.id"] = "benchmark" | set attributes["processing.cluster"] = "benchmark"'
+              opl_query: 'logs | set attributes["processing.engine"] = "benchmark"'
           exporter:
             type: urn:otel:exporter:otap
             config:

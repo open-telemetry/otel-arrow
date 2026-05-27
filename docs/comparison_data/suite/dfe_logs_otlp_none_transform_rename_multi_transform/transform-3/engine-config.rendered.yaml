@@ -30,7 +30,7 @@ groups:
           processor:
             type: urn:otel:processor:transform
             config:
-              opl_query: 'logs | rename attributes["exception.kind"] = attributes["exception.type"] | rename attributes["exception.msg"] = attributes["exception.message"] | rename attributes["exception.trace"] = attributes["exception.stacktrace"] | rename attributes["end_user.id"] = attributes["user.id"]'
+              opl_query: 'logs | rename attributes["exception.kind"] = attributes["exception.type"] | rename attributes["exception.msg"] = attributes["exception.message"] | rename attributes["exception.trace"] = attributes["exception.stacktrace"]'
           exporter:
             type: urn:otel:exporter:otlp_grpc
             config:
