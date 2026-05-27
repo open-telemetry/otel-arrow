@@ -72,13 +72,24 @@ components:
 
 {# Spread every suite-defined variable as a flat key (so step/leaf templates can
 reference them by bare name) and forward the whole `variables` dict so any
-downstream template can also use namespaced access (`variables.X`). Per-test
-overrides below the spread win on key collision. #}
-{% macro forward_variables() -%}
-{%- for k, v in variables.items() %}
+downstream template can also use namespaced access (`variables.X`). The `n`
+argument is the action-list slice length: `rename_pairs` and `insert_actions`
+are emitted at length n in BOTH the flat spread and the nested `variables`
+dict so the step template (which re-spreads the nested dict) sees the slice
+too. #}
+{% macro forward_variables(n) -%}
+{%- set ns = namespace(merged={}) -%}
+{%- for k, v in variables.items() -%}
+{%-   if k in ("rename_pairs", "insert_actions") -%}
+{%-     set sliced = (v | default([]))[:n] -%}
+{%-     set _ = ns.merged.update({k: sliced}) %}
+        {{ k }}: {{ sliced | tojson }}
+{%-   else -%}
+{%-     set _ = ns.merged.update({k: v}) %}
         {{ k }}: {{ v | tojson }}
+{%-   endif -%}
 {%- endfor %}
-        variables: {{ variables | tojson }}
+        variables: {{ ns.merged | tojson }}
 {%- endmacro -%}
 
 {# All tests run at a fixed 400k signals/sec rate with 4 loadgen cores; only
@@ -90,14 +101,12 @@ tests:
   - name: transform-1
     from_template:
       path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/otelcol.yaml
-      variables:{{ forward_variables() }}
+      variables:{{ forward_variables(1) }}
         data_dir: {{data_dir}}
         test_dir: {{data_dir}}/tests/transform-1
         report_name: "OTel Collector transform-1 - {{suite_name}}"
         observation_interval: {{observation_interval}}
         signals_per_second: 100000
-        rename_pairs: {{ (variables.rename_pairs | default([]))[:1] | tojson }}
-        insert_actions: {{ (variables.insert_actions | default([]))[:1] | tojson }}
         log_weight: {{log_weight}}
         metric_weight: {{metric_weight}}
         trace_weight: {{trace_weight}}
@@ -109,14 +118,12 @@ tests:
   - name: transform-2
     from_template:
       path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/otelcol.yaml
-      variables:{{ forward_variables() }}
+      variables:{{ forward_variables(2) }}
         data_dir: {{data_dir}}
         test_dir: {{data_dir}}/tests/transform-2
         report_name: "OTel Collector transform-2 - {{suite_name}}"
         observation_interval: {{observation_interval}}
         signals_per_second: 100000
-        rename_pairs: {{ (variables.rename_pairs | default([]))[:2] | tojson }}
-        insert_actions: {{ (variables.insert_actions | default([]))[:2] | tojson }}
         log_weight: {{log_weight}}
         metric_weight: {{metric_weight}}
         trace_weight: {{trace_weight}}
@@ -128,14 +135,12 @@ tests:
   - name: transform-3
     from_template:
       path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/otelcol.yaml
-      variables:{{ forward_variables() }}
+      variables:{{ forward_variables(3) }}
         data_dir: {{data_dir}}
         test_dir: {{data_dir}}/tests/transform-3
         report_name: "OTel Collector transform-3 - {{suite_name}}"
         observation_interval: {{observation_interval}}
         signals_per_second: 100000
-        rename_pairs: {{ (variables.rename_pairs | default([]))[:3] | tojson }}
-        insert_actions: {{ (variables.insert_actions | default([]))[:3] | tojson }}
         log_weight: {{log_weight}}
         metric_weight: {{metric_weight}}
         trace_weight: {{trace_weight}}
@@ -147,14 +152,12 @@ tests:
   - name: transform-4
     from_template:
       path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/otelcol.yaml
-      variables:{{ forward_variables() }}
+      variables:{{ forward_variables(4) }}
         data_dir: {{data_dir}}
         test_dir: {{data_dir}}/tests/transform-4
         report_name: "OTel Collector transform-4 - {{suite_name}}"
         observation_interval: {{observation_interval}}
         signals_per_second: 100000
-        rename_pairs: {{ (variables.rename_pairs | default([]))[:4] | tojson }}
-        insert_actions: {{ (variables.insert_actions | default([]))[:4] | tojson }}
         log_weight: {{log_weight}}
         metric_weight: {{metric_weight}}
         trace_weight: {{trace_weight}}
