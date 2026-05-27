@@ -17,5 +17,7 @@ variables:
   protocol: otlp
   signal: logs
   loadgen_max_batch_size: 1000
+  data_source: synthetic
+  num_log_attributes: 12
   compression_method: none
   wait_for_result: true

@@ -7,10 +7,17 @@ receivers:
 processors:
   attributes:
     actions:
+{# Source keys must match attributes that the loadgen actually emits.
+Suites that need all N renames to fire on every record should use
+data_source=synthetic with num_log_attributes >= 12 (then ATTR_NAMES
+indices 8..11 below are guaranteed on every log record). Suites using
+data_source=semantic_conventions will only see the first pair fire on
+records from Event groups that include exception.type (e.g. event.exception,
+http.client.request.exception). #}
 {%- set rename_pairs = [
     ["exception.type", "exception.kind"],
-    ["http.request.method", "http.method"],
-    ["http.route", "http.path_template"],
+    ["exception.message", "exception.msg"],
+    ["exception.stacktrace", "exception.trace"],
     ["user.id", "end_user.id"],
 ] %}
 {%- set n = transform_count | default(1) | int %}
