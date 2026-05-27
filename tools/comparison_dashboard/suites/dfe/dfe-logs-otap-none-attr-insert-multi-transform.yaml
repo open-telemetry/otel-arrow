@@ -21,3 +21,8 @@ variables:
   num_log_attributes: 12
   compression_method: none
   wait_for_result: true
+  insert_actions:
+    - {key: "processing.engine",   value: "benchmark"}
+    - {key: "processing.stage",    value: "benchmark"}
+    - {key: "processing.batch.id", value: "benchmark"}
+    - {key: "processing.cluster",  value: "benchmark"}

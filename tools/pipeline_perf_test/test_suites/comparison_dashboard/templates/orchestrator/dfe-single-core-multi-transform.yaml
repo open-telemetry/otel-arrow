@@ -79,8 +79,10 @@ overrides below the spread win on key collision. #}
 {%- endmacro -%}
 
 {# All tests run at a fixed 400k signals/sec rate with 4 loadgen cores; only
-transform_count varies between them, controlling how many insert/rename
-actions the attribute processor is configured with. #}
+the size of the action list varies between them, controlling how many
+insert/rename actions the processor is configured with. The suite supplies
+the full `rename_pairs` / `insert_actions` list and each test below slices
+it to length N. #}
 tests:
   - name: transform-1
     from_template:
@@ -91,7 +93,8 @@ tests:
         report_name: "DF Engine transform-1 - {{suite_name}}"
         observation_interval: {{observation_interval}}
         signals_per_second: 100000
-        transform_count: 1
+        rename_pairs: {{ (variables.rename_pairs | default([]))[:1] | tojson }}
+        insert_actions: {{ (variables.insert_actions | default([]))[:1] | tojson }}
         log_weight: {{log_weight}}
         metric_weight: {{metric_weight}}
         trace_weight: {{trace_weight}}
@@ -111,7 +114,8 @@ tests:
         report_name: "DF Engine transform-2 - {{suite_name}}"
         observation_interval: {{observation_interval}}
         signals_per_second: 100000
-        transform_count: 2
+        rename_pairs: {{ (variables.rename_pairs | default([]))[:2] | tojson }}
+        insert_actions: {{ (variables.insert_actions | default([]))[:2] | tojson }}
         log_weight: {{log_weight}}
         metric_weight: {{metric_weight}}
         trace_weight: {{trace_weight}}
@@ -131,7 +135,8 @@ tests:
         report_name: "DF Engine transform-3 - {{suite_name}}"
         observation_interval: {{observation_interval}}
         signals_per_second: 100000
-        transform_count: 3
+        rename_pairs: {{ (variables.rename_pairs | default([]))[:3] | tojson }}
+        insert_actions: {{ (variables.insert_actions | default([]))[:3] | tojson }}
         log_weight: {{log_weight}}
         metric_weight: {{metric_weight}}
         trace_weight: {{trace_weight}}
@@ -151,7 +156,8 @@ tests:
         report_name: "DF Engine transform-4 - {{suite_name}}"
         observation_interval: {{observation_interval}}
         signals_per_second: 100000
-        transform_count: 4
+        rename_pairs: {{ (variables.rename_pairs | default([]))[:4] | tojson }}
+        insert_actions: {{ (variables.insert_actions | default([]))[:4] | tojson }}
         log_weight: {{log_weight}}
         metric_weight: {{metric_weight}}
         trace_weight: {{trace_weight}}
