@@ -1,0 +1,51 @@
+slug: logs_attr_processor_multi_batch
+name: Attribute Processor Different Batch Sizes
+description: >
+  Attribute processor insert and rename workloads on logs with varying loadgen
+  batch sizes.
+
+chart:
+  axes:
+    x:
+      title: Loadgen Batch Size (logs/batch)
+      description: Batch size emitted by the load generator. All tests run at a fixed 400k logs/sec generated load.
+
+tests:
+  - name: batch-256
+    label: "256"
+    loadgen_rate: 400000
+  - name: batch-512
+    label: "512"
+    loadgen_rate: 400000
+  - name: batch-1024
+    label: "1024"
+    loadgen_rate: 400000
+  - name: batch-2048
+    label: "2048"
+    loadgen_rate: 400000
+  - name: batch-4096
+    label: "4096"
+    loadgen_rate: 400000
+
+suites:
+  # DFE
+  - name: DFE OTAP Attr Insert Multi Batch (Logs)
+    slug: dfe_logs_otap_none_attr_insert_multi_batch
+    short: DFE/OTAP/Insert
+  - name: DFE OTAP Attr Rename Multi Batch (Logs)
+    slug: dfe_logs_otap_none_attr_rename_multi_batch
+    short: DFE/OTAP/Rename
+  - name: DFE OTLP Attr Insert Multi Batch (Logs)
+    slug: dfe_logs_otlp_none_attr_insert_multi_batch
+    short: DFE/OTLP/Insert
+  - name: DFE OTLP Attr Rename Multi Batch (Logs)
+    slug: dfe_logs_otlp_none_attr_rename_multi_batch
+    short: DFE/OTLP/Rename
+
+  # OTC
+  - name: OTC OTLP Attr Insert Multi Batch (Logs)
+    slug: otc_logs_otlp_none_attr_insert_multi_batch
+    short: OTC/OTLP/Insert
+  - name: OTC OTLP Attr Rename Multi Batch (Logs)
+    slug: otc_logs_otlp_none_attr_rename_multi_batch
+    short: OTC/OTLP/Rename
