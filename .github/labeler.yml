@@ -137,7 +137,7 @@ area:query-engine:
           - "rust/otap-dataflow/crates/query-engine-languages/**"
           - "rust/experimental/query_engine/**"
 
-area:query-engine/columnar:
+area:query-engine/otap:
   - changed-files:
       - any-glob-to-any-file:
           - "rust/otap-dataflow/crates/query-engine/**"
