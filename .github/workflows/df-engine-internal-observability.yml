@@ -135,16 +135,15 @@ jobs:
             exit 1
           fi
 
+          # Run every trigger script in the registry. Convention:
+          # `semconv/groups/event.<name>.yaml` is paired with
+          # `semconv/triggers/<name>.sh`. Adding a new event means
+          # adding both files; no edits to this workflow are needed.
           echo "::group::Trigger declared events"
-          # Per-event triggers go here. Adding a new event to the registry
-          # also requires a snippet below that exercises it -- the assert
-          # step fails if any declared event receives zero samples.
-
-          # tls.handshake.failed: raw HTTP bytes to the TLS port are
-          # rejected by `crates/otap/src/tls_utils.rs::create_tls_stream`.
-          for i in 1 2 3 4 5; do
-            curl --max-time 2 -sS http://127.0.0.1:14317/ 2>&1 | head -1 || true
-            sleep 0.3
+          shopt -s nullglob
+          for trigger in rust/otap-dataflow/semconv/triggers/*.sh; do
+            echo "--- $(basename "$trigger") ---"
+            bash "$trigger"
           done
           echo "::endgroup::"
 

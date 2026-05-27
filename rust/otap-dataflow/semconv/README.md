@@ -18,6 +18,8 @@ semconv/
   manifest.yaml      # registry root + upstream semconv dependency
   groups/
     event.<name>.yaml
+  triggers/
+    <name>.sh        # exercises the matching event in live-check CI
 ```
 
 Each event is a Weaver `group` with `type: event`; the group's `name:`
@@ -35,9 +37,9 @@ argument to `otel_info!` / `otel_warn!` / `otel_debug!` /
    attributes under the `otap.*` namespace otherwise.
 3. Emit the event with the matching name from the appropriate
    `otel_*!` macro.
-4. Add a trigger in the live-check CI job so the new event is
-   exercised; the job fails if any declared event receives zero
-   samples.
+4. Add `triggers/<name>.sh` that drives df_engine to emit the event;
+   the live-check job iterates this directory and fails if any
+   declared event receives zero samples.
 
 [weaver]: https://github.com/open-telemetry/weaver
 [events]: ../crates/telemetry/src/internal_events.rs
