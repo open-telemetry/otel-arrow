@@ -19,7 +19,7 @@ lang:rust:
 
 # --- Repo infrastructure ------------------------------------------------
 
-ci:
+ci-repo:
   - changed-files:
       - any-glob-to-any-file:
           - ".github/**/*"
