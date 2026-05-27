@@ -122,6 +122,12 @@ suites:
   - suites/otc/otc-logs-otlp-none-attr-rename.yaml
   - suites/otc/otc-logs-otlp-none-transform-rename.yaml
   - suites/otc/otc-logs-otlp-none-transform-rename-replace.yaml
+  - suites/dfe/dfe-logs-otap-none-attr-insert-multi-batch.yaml
+  - suites/dfe/dfe-logs-otap-none-attr-rename-multi-batch.yaml
+  - suites/dfe/dfe-logs-otlp-none-attr-insert-multi-batch.yaml
+  - suites/dfe/dfe-logs-otlp-none-attr-rename-multi-batch.yaml
+  - suites/otc/otc-logs-otlp-none-attr-insert-multi-batch.yaml
+  - suites/otc/otc-logs-otlp-none-attr-rename-multi-batch.yaml
 
 # Comparison definitions, listed by path. Each entry must point at an
 # existing YAML file with `slug` and `suites` (a list of suite refs).
@@ -131,3 +137,4 @@ comparisons:
   - comparisons/dfe_traces_baselines.yaml
   - comparisons/dfe_logs_transform_attr_processor_rename.yaml
   - comparisons/dfe_logs_transform_attr_processor_insert.yaml
+  - comparisons/logs_attr_processor_multi_batch.yaml
