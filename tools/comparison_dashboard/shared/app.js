@@ -257,9 +257,8 @@ function hasBackpressure(metricsArray, loadgenRate) {
   return false;
 }
 
-// Single source of truth for whether any test in a comparison currently
-// shows backpressure. Drives both the landing-page legend and the
-// per-comparison chart legend so they cannot disagree.
+// Determines whether any test in a comparison currently shows backpressure. 
+// Drives both the landing-page legend.
 function anyComparisonBackpressure(suiteData, comparison) {
   const tests = comparison.tests || [];
   return (comparison.suites || []).some((r) => {
