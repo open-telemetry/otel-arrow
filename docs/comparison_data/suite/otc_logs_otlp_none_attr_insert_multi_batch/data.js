@@ -1,0 +1,18 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["otc_logs_otlp_none_attr_insert_multi_batch"] = {
+  "name": "OTC OTLP Attr Insert Multi Batch (Logs)",
+  "slug": "otc_logs_otlp_none_attr_insert_multi_batch",
+  "description": "OpenTelemetry Collector OTLP logs, attributes processor inserting processing.engine=benchmark, swept across loadgen batch sizes at 400k signals/sec",
+  "meta": {
+    "binary": "otc",
+    "protocols": [
+      "otlp"
+    ],
+    "signals": [
+      "logs"
+    ],
+    "compression": "none"
+  },
+  "env": null,
+  "tests": []
+};
