@@ -257,6 +257,20 @@ function hasBackpressure(metricsArray, loadgenRate) {
   return false;
 }
 
+// Single source of truth for whether any test in a comparison currently
+// shows backpressure. Drives both the landing-page legend and the
+// per-comparison chart legend so they cannot disagree.
+function anyComparisonBackpressure(suiteData, comparison) {
+  const tests = comparison.tests || [];
+  return (comparison.suites || []).some((r) => {
+    const suiteTests = getSuiteTests(suiteData, r.slug);
+    return tests.some((ct) => {
+      const t = suiteTests.find((x) => x.name === ct.name);
+      return t && hasBackpressure(t.metrics, ct.loadgen_rate);
+    });
+  });
+}
+
 function buildComparisonChartData(suiteData, comparison, tests, selectedMetric) {
   const refs = comparison.suites || [];
   const origIdx = comparison._originalIndices || null;
@@ -732,7 +746,7 @@ function renderComparisonSection(suiteData, comparison) {
   const optsHtml = metrics.map((n) => `<option value="${escapeHtml(n)}" ${n === sel ? "selected" : ""}>${escapeHtml(metricTitle(n, suiteData, filtered))}</option>`).join("");
   const hasFilters = Object.keys(categories).length > 0;
   const filterHtml = hasFilters ? buildFilterHtml(categories, filterState) : "";
-  const anyBP = (filtered.suites || []).some((r) => getSuiteTests(suiteData, r.slug).some((t) => { const rm = t.name.match(/^(\d+)k$/); return hasBackpressure(t.metrics, rm ? parseInt(rm[1])*1000 : null); }));
+  const anyBP = anyComparisonBackpressure(suiteData, filtered);
   const bpHtml = anyBP ? '<div class="chart-backpressure-legend">\u26A0 Backpressure detected</div>' : "";
   const link = `${encodeURIComponent(slug)}/`;
   return `
@@ -765,16 +779,7 @@ function wireComparisonSection(suiteData, comparison) {
       activeCharts.set(slug, createBarChart(canvas, suiteData, filtered, tests, sel));
     }
     const bpEl = section.querySelector(".chart-backpressure-legend");
-    if (bpEl) {
-      const anyBP = (filtered.suites || []).some((r) => {
-        const suiteTests = getSuiteTests(suiteData, r.slug);
-        return tests.some((ct) => {
-          const t = suiteTests.find((x) => x.name === ct.name);
-          return t && hasBackpressure(t.metrics, ct.loadgen_rate);
-        });
-      });
-      bpEl.style.display = anyBP ? "" : "none";
-    }
+    if (bpEl) bpEl.style.display = anyComparisonBackpressure(suiteData, filtered) ? "" : "none";
   }
 
   const fc = section.querySelector(".chart-filters");
@@ -851,13 +856,7 @@ function renderComparisonChart(suiteData, comparison, tests, onBarClick) {
     if (ref && ct) onBarClick(datasetIndex, ct.name);
   } : null;
 
-  const anyBP = (comparison.suites || []).some((r) => {
-    const suiteTests = getSuiteTests(suiteData, r.slug);
-    return tests.some((ct) => {
-      const t = suiteTests.find((x) => x.name === ct.name);
-      return t && hasBackpressure(t.metrics, ct.loadgen_rate);
-    });
-  });
+  const anyBP = anyComparisonBackpressure(suiteData, comparison);
   const bpHtml = anyBP ? '<div class="chart-backpressure-legend">\u26A0 Backpressure detected</div>' : "";
 
   if (comparison.suites.length === 0) {
