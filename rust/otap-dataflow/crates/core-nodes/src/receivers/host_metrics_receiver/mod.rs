@@ -266,9 +266,6 @@ fn due_family_count(due: ProcfsFamilies) -> u64 {
 }
 
 #[cfg(target_os = "linux")]
-const SCRAPE_WORKER_TIMEOUT: Duration = Duration::from_secs(5);
-
-#[cfg(target_os = "linux")]
 type PendingScrapeFuture =
     Pin<Box<Timeout<oneshot::Receiver<std::io::Result<procfs::HostScrape>>>>>;
 
@@ -387,6 +384,24 @@ impl FamilyScheduler {
             }
         }
         due
+    }
+
+    fn timeout_for(&self, due: ProcfsFamilies) -> Duration {
+        self.entries
+            .iter()
+            .filter(|entry| match entry.kind {
+                ScheduledFamilyKind::Cpu => due.cpu,
+                ScheduledFamilyKind::Memory => due.memory,
+                ScheduledFamilyKind::Paging => due.paging,
+                ScheduledFamilyKind::System => due.system,
+                ScheduledFamilyKind::Disk => due.disk,
+                ScheduledFamilyKind::Filesystem => due.filesystem,
+                ScheduledFamilyKind::Network => due.network,
+                ScheduledFamilyKind::Processes => due.processes,
+            })
+            .map(|entry| entry.interval)
+            .min()
+            .unwrap_or(Duration::ZERO)
     }
 
     #[cfg(test)]
@@ -560,13 +575,14 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                     }
                     match scrape_worker.try_start_scrape(due) {
                         Ok(scrape) => {
+                            let scrape_timeout = scheduler.timeout_for(due);
                             scheduler.advance_due(now);
                             if let Some(metrics) = metrics.as_mut() {
                                 metrics.scrapes_started.add(1);
                                 metrics.families_scraped.add(due_family_count(due));
                             }
                             in_flight = Some(InFlightScrape {
-                                result: Box::pin(timeout(SCRAPE_WORKER_TIMEOUT, scrape)),
+                                result: Box::pin(timeout(scrape_timeout, scrape)),
                                 started: scrape_start,
                             });
                         }
@@ -1057,6 +1073,51 @@ mod tests {
         let marked_due = scheduler.mark_due(now);
         assert_eq!(marked_due, due);
         assert!(scheduler.next_due(now) > now);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn scheduler_timeout_uses_due_family_interval() {
+        let config = Config {
+            collection_interval: Duration::from_secs(10),
+            families: FamiliesConfig {
+                cpu: CpuFamilyConfig {
+                    interval: Some(Duration::from_secs(2)),
+                    ..CpuFamilyConfig::default()
+                },
+                filesystem: FilesystemFamilyConfig {
+                    interval: Some(Duration::from_secs(30)),
+                    ..FilesystemFamilyConfig::default()
+                },
+                ..FamiliesConfig::default()
+            },
+            ..Config::default()
+        };
+        let config = RuntimeConfig::try_from(config).expect("valid config");
+        let now = Instant::now();
+        let mut scheduler = FamilyScheduler::new(&config, now);
+
+        let first_due = scheduler.mark_due(now);
+        assert!(first_due.cpu);
+        assert!(first_due.filesystem);
+        assert_eq!(
+            scheduler.timeout_for(first_due),
+            Duration::from_secs(2),
+            "the timeout uses the shortest interval among the due families"
+        );
+
+        let cpu_due = scheduler.mark_due(now + Duration::from_secs(2));
+        assert!(cpu_due.cpu);
+        assert!(!cpu_due.filesystem);
+        assert_eq!(scheduler.timeout_for(cpu_due), Duration::from_secs(2));
+
+        assert_eq!(
+            scheduler.timeout_for(ProcfsFamilies {
+                filesystem: true,
+                ..ProcfsFamilies::default()
+            }),
+            Duration::from_secs(30)
+        );
     }
 
     #[test]
