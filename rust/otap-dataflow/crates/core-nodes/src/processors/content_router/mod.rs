@@ -87,7 +87,7 @@ use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
 use otap_df_pdata::TryFromWithOptions;
 use otap_df_pdata::otlp::OtlpProtoBytes;
-use otap_df_pdata::views::otap::OtapLogsView;
+use otap_df_pdata::views::otap::DecodedOtapArrowRecords;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
@@ -456,11 +456,11 @@ impl ContentRouter {
         &self,
         arrow_records: &otap_df_pdata::OtapArrowRecords,
     ) -> RouteResolution {
-        let mut arrow_records = arrow_records.clone();
-        let logs_view = match arrow_records
-            .decode_transport_optimized_ids()
-            .and_then(|()| OtapLogsView::try_from(&arrow_records))
-        {
+        let decoded_records = match DecodedOtapArrowRecords::clone_and_decode(arrow_records) {
+            Ok(decoded_records) => decoded_records,
+            Err(_) => return RouteResolution::ConversionError,
+        };
+        let logs_view = match decoded_records.logs_view() {
             Ok(view) => view,
             Err(_) => return RouteResolution::ConversionError,
         };

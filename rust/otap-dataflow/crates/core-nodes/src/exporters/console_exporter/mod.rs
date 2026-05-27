@@ -21,7 +21,7 @@ use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
-use otap_df_pdata::views::otap::OtapLogsView;
+use otap_df_pdata::views::otap::DecodedOtapArrowRecords;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata_views::views::common::InstrumentationScopeView;
 use otap_df_pdata_views::views::logs::{
@@ -140,18 +140,21 @@ impl ConsoleExporter {
                 }
             },
             OtapPayload::OtapArrowRecords(records) => {
-                let mut records = records.clone();
-                match records
-                    .decode_transport_optimized_ids()
-                    .and_then(|()| OtapLogsView::try_from(&records))
-                {
-                    Ok(logs_view) => {
-                        self.formatter.print_logs_data(&logs_view).await;
-                    }
+                let decoded_records = match DecodedOtapArrowRecords::clone_and_decode(records) {
+                    Ok(decoded_records) => decoded_records,
                     Err(e) => {
                         otel_error!("console.logs_view.otap_create_failed", error = ?e, message = "Failed to create OTAP logs view");
+                        return;
                     }
-                }
+                };
+                let logs_view = match decoded_records.logs_view() {
+                    Ok(logs_view) => logs_view,
+                    Err(e) => {
+                        otel_error!("console.logs_view.otap_create_failed", error = ?e, message = "Failed to create OTAP logs view");
+                        return;
+                    }
+                };
+                self.formatter.print_logs_data(&logs_view).await;
             }
         }
     }
