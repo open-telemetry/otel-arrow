@@ -79,6 +79,24 @@ groups:
               protocol:
                 tcp:
                   listening_addr: "127.0.0.1:14514"
+          # Drives `otlp.exporter.http.export_error` by feeding synthetic
+          # traffic into an OTLP exporter pointed at an unbound port.
+          gen:
+            type: "urn:otel:receiver:traffic_generator"
+            config:
+              data_source: synthetic
+              generation_strategy: fresh
+              traffic_config:
+                signals_per_second: 5
+                max_batch_size: 1
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+                log_body_size_bytes: 64
+          dead_exporter:
+            type: "urn:otel:exporter:otlp_grpc"
+            config:
+              grpc_endpoint: "http://127.0.0.1:14999"
           sink:
             type: "urn:otel:exporter:noop"
             config: {}
@@ -87,3 +105,5 @@ groups:
             to: sink
           - from: syslog_in
             to: sink
+          - from: gen
+            to: dead_exporter
