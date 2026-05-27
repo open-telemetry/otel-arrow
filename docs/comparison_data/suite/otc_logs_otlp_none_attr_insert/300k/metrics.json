@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "OTC OTLP Attr Insert (Logs)/300k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -0.5681818127632141
+  },
+  {
+    "extra": "OTC OTLP Attr Insert (Logs)/300k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 43.284953799364885
+  },
+  {
+    "extra": "OTC OTLP Attr Insert (Logs)/300k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 43.96243826195686
+  },
+  {
+    "extra": "OTC OTLP Attr Insert (Logs)/300k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 58.16354166666667
+  },
+  {
+    "extra": "OTC OTLP Attr Insert (Logs)/300k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 61.04296875
+  },
+  {
+    "extra": "OTC OTLP Attr Insert (Logs)/300k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 298454.9597211291
+  },
+  {
+    "extra": "OTC OTLP Attr Insert (Logs)/300k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 297610.0850877322
+  },
+  {
+    "extra": "OTC OTLP Attr Insert (Logs)/300k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000687
+  },
+  {
+    "extra": "OTC OTLP Attr Insert (Logs)/300k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 119183877.4341976
+  },
+  {
+    "extra": "OTC OTLP Attr Insert (Logs)/300k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 107888917.09223536
+  },
+  {
+    "extra": "OTC OTLP Attr Insert (Logs)/300k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 400.4698879712477
+  }
+]

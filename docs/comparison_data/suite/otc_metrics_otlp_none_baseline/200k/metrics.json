@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "OTC OTLP Baseline (Metrics)/200k - Dropped Metrics %",
+    "name": "dropped_metrics_percentage",
+    "unit": "%",
+    "value": 0.00847385823726654
+  },
+  {
+    "extra": "OTC OTLP Baseline (Metrics)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 27.4725237546598
+  },
+  {
+    "extra": "OTC OTLP Baseline (Metrics)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 28.036554307116106
+  },
+  {
+    "extra": "OTC OTLP Baseline (Metrics)/200k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 52.4328125
+  },
+  {
+    "extra": "OTC OTLP Baseline (Metrics)/200k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 54.31640625
+  },
+  {
+    "extra": "OTC OTLP Baseline (Metrics)/200k - Metric Throughput",
+    "name": "metrics_produced_rate",
+    "unit": "metrics/sec",
+    "value": 200471.0568701275
+  },
+  {
+    "extra": "OTC OTLP Baseline (Metrics)/200k - Metric Throughput",
+    "name": "metrics_received_rate",
+    "unit": "metrics/sec",
+    "value": 200109.7890486696
+  },
+  {
+    "extra": "OTC OTLP Baseline (Metrics)/200k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.00065
+  },
+  {
+    "extra": "OTC OTLP Baseline (Metrics)/200k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 39482380.06596866
+  },
+  {
+    "extra": "OTC OTLP Baseline (Metrics)/200k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 39541359.874727175
+  }
+]

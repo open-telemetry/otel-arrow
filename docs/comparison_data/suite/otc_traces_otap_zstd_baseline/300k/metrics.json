@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "OTC OTAP Baseline w/ Zstd (Traces)/300k - Dropped Spans %",
+    "name": "dropped_spans_percentage",
+    "unit": "%",
+    "value": -1.7112048864364624
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Zstd (Traces)/300k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.05261066950433
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Zstd (Traces)/300k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.38818607555417
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Zstd (Traces)/300k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 382.83098958333335
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Zstd (Traces)/300k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 433.76953125
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Zstd (Traces)/300k - Span Throughput",
+    "name": "spans_produced_rate",
+    "unit": "spans/sec",
+    "value": 71756.70661543851
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Zstd (Traces)/300k - Span Throughput",
+    "name": "spans_received_rate",
+    "unit": "spans/sec",
+    "value": 72737.82229464377
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Zstd (Traces)/300k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000638
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Zstd (Traces)/300k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 2722937.815463684
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Zstd (Traces)/300k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 3068358.0713223503
+  }
+]

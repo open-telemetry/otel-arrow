@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "OTC OTLP Baseline w/ Zstd (Logs)/1000k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 1.290419101715088
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Zstd (Logs)/1000k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.0764017068501
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Zstd (Logs)/1000k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.53911847452328
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Zstd (Logs)/1000k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 6879.086328125
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Zstd (Logs)/1000k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 7433.80859375
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Zstd (Logs)/1000k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 564784.0728185913
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Zstd (Logs)/1000k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 556489.5741714569
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Zstd (Logs)/1000k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000619
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Zstd (Logs)/1000k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 7436996.6752688605
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Zstd (Logs)/1000k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 9822864.86772105
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Zstd (Logs)/1000k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 13.364125799376593
+  }
+]

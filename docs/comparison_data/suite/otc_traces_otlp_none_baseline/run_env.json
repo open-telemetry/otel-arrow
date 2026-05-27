@@ -1,0 +1,26 @@
+{
+  "started_at": "2026-05-27T06:05:16Z",
+  "ended_at": "2026-05-27T06:17:33Z",
+  "cpu": {
+    "model": "INTEL(R) XEON(R) PLATINUM 8581C CPU @ 2.30GHz",
+    "architecture": "x86_64",
+    "physical_cores": 16,
+    "logical_cores": 32,
+    "max_freq_mhz": null
+  },
+  "os": {
+    "system": "Linux",
+    "release": "6.1.0-45-cloud-amd64",
+    "version": "#1 SMP PREEMPT_DYNAMIC Debian 6.1.170-1 (2026-04-30)",
+    "distro": {
+      "NAME": "Debian GNU/Linux",
+      "VERSION": "12 (bookworm)",
+      "VERSION_ID": "12",
+      "ID": "debian"
+    }
+  },
+  "memory": {
+    "total_bytes": 126619074560,
+    "total_gib_rounded": 118
+  }
+}

@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Logs)/600k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 0.9898599982261658
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Logs)/600k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.18719005682131
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Logs)/600k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.43311465167135
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Logs)/600k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 3280.9748697916666
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Logs)/600k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 3318.08203125
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Logs)/600k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 280999.24266904977
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Logs)/600k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 277740.6371445391
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Logs)/600k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000542
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Logs)/600k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 5527584.38221918
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Logs)/600k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 99905284.06433257
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Logs)/600k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 19.90196479365952
+  }
+]

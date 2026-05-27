@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "OTC OTLP Baseline (Traces)/800k - Dropped Spans %",
+    "name": "dropped_spans_percentage",
+    "unit": "%",
+    "value": 2.9160895347595215
+  },
+  {
+    "extra": "OTC OTLP Baseline (Traces)/800k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.04188072454777
+  },
+  {
+    "extra": "OTC OTLP Baseline (Traces)/800k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.4575
+  },
+  {
+    "extra": "OTC OTLP Baseline (Traces)/800k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 10566.545833333334
+  },
+  {
+    "extra": "OTC OTLP Baseline (Traces)/800k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 13522.95703125
+  },
+  {
+    "extra": "OTC OTLP Baseline (Traces)/800k - Span Throughput",
+    "name": "spans_produced_rate",
+    "unit": "spans/sec",
+    "value": 230777.73864465684
+  },
+  {
+    "extra": "OTC OTLP Baseline (Traces)/800k - Span Throughput",
+    "name": "spans_received_rate",
+    "unit": "spans/sec",
+    "value": 223275.72567000028
+  },
+  {
+    "extra": "OTC OTLP Baseline (Traces)/800k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000713
+  },
+  {
+    "extra": "OTC OTLP Baseline (Traces)/800k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 178298319.1239886
+  },
+  {
+    "extra": "OTC OTLP Baseline (Traces)/800k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 196513306.5963516
+  }
+]

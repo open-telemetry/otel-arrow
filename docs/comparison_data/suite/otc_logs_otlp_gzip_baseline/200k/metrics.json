@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "OTC OTLP Baseline w/ Gzip (Logs)/200k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -1.6949152946472168
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Gzip (Logs)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 66.64629334698641
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Gzip (Logs)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 68.11966386554622
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Gzip (Logs)/200k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 64.78216145833333
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Gzip (Logs)/200k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 66.28125
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Gzip (Logs)/200k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 199495.99534613037
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Gzip (Logs)/200k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 201846.36608502
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Gzip (Logs)/200k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000569
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Gzip (Logs)/200k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 3803711.803035175
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Gzip (Logs)/200k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 5085231.468549209
+  },
+  {
+    "extra": "OTC OTLP Baseline w/ Gzip (Logs)/200k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 18.84458896541644
+  }
+]
