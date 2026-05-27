@@ -21,6 +21,11 @@ env:
   FLAKY_ISSUE_LABEL: "flaky-test"
   # How many recent Rust-CI workflow runs to scan.
   LOOKBACK_RUNS: 20
+  # The canonical tracking issue to update. Hard-coded to avoid duplicate
+  # issues being created when GitHub's search/label indexes are stale and
+  # fail to return the existing issue (see run 26497083152, which created
+  # #3101 even though #2720 was open with the flaky-test label).
+  FLAKY_ISSUE_NUMBER: "2720"
 
 jobs:
   detect-flaky-tests:
@@ -89,33 +94,34 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 .github/workflows/scripts/parse_flaky.py
 
-      - name: Create or update tracking issue
+      - name: Update tracking issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
           BODY=$(cat flaky-report.md)
-          TITLE="Flaky Test Report (automated)"
+          FLAKY_COUNT="${{ steps.parse.outputs.flaky_count }}"
 
-          # Find existing open issue with the flaky-test label and our title
-          EXISTING_ISSUE=$(gh issue list \
-            --label "$FLAKY_ISSUE_LABEL" \
-            --state open \
-            --search "$TITLE" \
-            --json number,title \
-            --jq '.[] | select(.title == "'"$TITLE"'") | .number' \
-            | head -1)
+          echo "Updating tracking issue #$FLAKY_ISSUE_NUMBER (flaky_count: $FLAKY_COUNT)"
+          gh issue edit "$FLAKY_ISSUE_NUMBER" \
+            --body "$BODY" \
+            --add-label "$FLAKY_ISSUE_LABEL"
 
-          if [[ -n "$EXISTING_ISSUE" ]]; then
-            echo "Updating existing issue #$EXISTING_ISSUE"
-            gh issue edit "$EXISTING_ISSUE" --body "$BODY"
+          STATE=$(gh issue view "$FLAKY_ISSUE_NUMBER" --json state --jq '.state')
+
+          if [[ "$FLAKY_COUNT" -gt 0 ]]; then
+            if [[ "$STATE" == "CLOSED" ]]; then
+              echo "Issue #$FLAKY_ISSUE_NUMBER was closed; reopening because flaky tests detected."
+              gh issue reopen "$FLAKY_ISSUE_NUMBER" \
+                --comment "Reopened automatically because flaky tests are still being detected. See the updated report above."
+            fi
           else
-            echo "Creating new tracking issue"
-            gh issue create \
-              --title "$TITLE" \
-              --body "$BODY" \
-              --label "$FLAKY_ISSUE_LABEL"
+            if [[ "$STATE" == "OPEN" ]]; then
+              echo "Issue #$FLAKY_ISSUE_NUMBER is open but no flaky tests detected; closing."
+              gh issue close "$FLAKY_ISSUE_NUMBER" \
+                --comment "Closed automatically because no flaky tests are currently detected."
+            fi
           fi
 
       - name: Post summary
