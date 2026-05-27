@@ -1,6 +1,6 @@
 slug: trace_baselines_multi_rate
-name: Trace Baselines (DFE vs OTC)
-description: Baseline trace runs for the Dataflow Engine and the OpenTelemetry Collector across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
+name: Trace Baselines
+description: Baseline trace runs across engines over OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
 
 chart:
   axes:

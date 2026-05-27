@@ -1,10 +1,9 @@
 slug: log_transform_attr_processor_rename
-name: Attribute Rename (DFE vs OTC)
+name: Attribute Rename
 description: >
   Renaming the semantic-convention attribute exception.type to exception.kind
   on logs. Comparing the attributes processor vs the transform processor (OPL)
-  on the Dataflow Engine (OTAP and OTLP) and on the OpenTelemetry Collector
-  (OTLP).
+  across engines and transports.
 
 chart:
   axes:

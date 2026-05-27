@@ -1,6 +1,6 @@
 slug: metric_baselines_multi_rate
-name: Metric Baselines (DFE vs OTC)
-description: Baseline metric runs for the Dataflow Engine and the OpenTelemetry Collector across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
+name: Metric Baselines
+description: Baseline metric runs across engines over OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
 
 chart:
   axes:

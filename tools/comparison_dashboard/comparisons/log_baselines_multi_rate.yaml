@@ -1,6 +1,6 @@
 slug: log_baselines_multi_rate
-name: Log Baselines (DFE vs OTC)
-description: Baseline log runs for the Dataflow Engine and the OpenTelemetry Collector across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
+name: Log Baselines
+description: Baseline log runs across engines over OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
 
 chart:
   axes:
