@@ -256,7 +256,6 @@ pub struct ExtensionFactory {
     pub capabilities: Option<capability::ExtensionCapabilities>,
     /// A function that creates a new extension instance.
     pub create: fn(
-        pipeline: PipelineContext,
         name: otap_df_config::ExtensionId,
         ext_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
         extension_config: &ExtensionConfig,
@@ -829,7 +828,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 channel_capacity_policy.control.node,
             );
             let bundle = (factory.create)(
-                pipeline_ctx.clone(),
                 ext_id.clone(),
                 ext_user_config.clone(),
                 &runtime_config,
@@ -2627,7 +2625,6 @@ mod test {
     #[test]
     fn test_extension_factory_named_factory() {
         fn dummy_create(
-            _: PipelineContext,
             _: otap_df_config::ExtensionId,
             _: Arc<otap_df_config::extension::ExtensionUserConfig>,
             _: &ExtensionConfig,
@@ -2667,7 +2664,6 @@ mod test {
     #[test]
     fn test_extension_factory_validate_config() {
         fn dummy_create(
-            _: PipelineContext,
             _: otap_df_config::ExtensionId,
             _: Arc<otap_df_config::extension::ExtensionUserConfig>,
             _: &ExtensionConfig,

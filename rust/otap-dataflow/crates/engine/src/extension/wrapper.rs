@@ -3,7 +3,7 @@
 
 //! Extension wrapper, control channel, and bundle types.
 //!
-//! Extensions are PData-free — they never process pipeline data, only control
+//! Extensions are PData-free — they never process PData, only control
 //! messages. This module defines [`EffectHandler`], [`ExtensionWrapper`], and
 //! [`ExtensionBundle`]. The typestate builder that constructs bundles lives
 //! in [`super::builder`].
@@ -171,7 +171,7 @@ pub enum ExtensionLifecycle<E, R> {
 
 // ── ExtensionWrapper ────────────────────────────────────────────────────────
 
-/// Wrapper for a single extension variant in the pipeline engine.
+/// Wrapper for a single extension variant in the engine.
 ///
 /// Extensions are NOT generic over PData — they operate exclusively on
 /// [`ExtensionControlMsg`], keeping the extension system entirely decoupled
@@ -190,7 +190,7 @@ pub enum ExtensionWrapper {
         user_config: Arc<ExtensionUserConfig>,
         /// Engine runtime configuration for this extension.
         runtime_config: ExtensionConfig,
-        /// Node telemetry guard, set during pipeline wiring.
+        /// Node telemetry guard, set during wiring.
         telemetry: Option<NodeTelemetryGuard>,
         /// The lifecycle state (active with channels, or passive).
         lifecycle: ExtensionLifecycle<
@@ -211,7 +211,7 @@ pub enum ExtensionWrapper {
         user_config: Arc<ExtensionUserConfig>,
         /// Engine runtime configuration for this extension.
         runtime_config: ExtensionConfig,
-        /// Node telemetry guard, set during pipeline wiring.
+        /// Node telemetry guard, set during wiring.
         telemetry: Option<NodeTelemetryGuard>,
         /// The lifecycle state (active with channels, or passive).
         lifecycle:

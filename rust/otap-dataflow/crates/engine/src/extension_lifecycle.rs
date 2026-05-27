@@ -1,13 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Extension lifecycle holder for the runtime pipeline.
+//! Extension lifecycle holder for an extension-hosting runtime.
 //!
 //! Owns the spawned active+background extension tasks, the control
 //! senders used to broadcast `Shutdown` to them, and the passive
 //! extension wrappers that must outlive the run for capability
 //! handles to remain valid. Encapsulates the "extensions start
-//! first, shut down last" invariant so the runtime pipeline doesn't
+//! first, shut down last" invariant so the host runtime doesn't
 //! interleave that policy with task-driving code.
 //!
 //! ## Shutdown timing
@@ -17,11 +17,12 @@
 //! sequential — not simultaneous with the data path — the
 //! extension shutdown deadline is computed locally as
 //! `now() + EXTENSION_SHUTDOWN_GRACE` rather than reusing the
-//! pipeline-wide deadline that drove the data-path drain. This
-//! gives extensions a fresh cleanup budget starting from the
-//! moment the data path is fully drained.
+//! host's data-path drain deadline. This gives extensions a fresh
+//! cleanup budget starting from the moment the data path is fully
+//! drained.
 //!
-//! See `runtime_pipeline.rs::run_forever` for how this is wired in.
+//! See `runtime_pipeline.rs::run_forever` for how this is wired in
+//! at pipeline scope today.
 
 use crate::control::{ExtensionControlMsg, ExtensionControlSender};
 use crate::error::Error;
@@ -54,10 +55,14 @@ pub(crate) const EXTENSION_SHUTDOWN_DRAIN_SLACK: Duration = Duration::from_milli
 /// stalling delivery to the others.
 pub(crate) const EXTENSION_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_millis(500);
 
-const SHUTDOWN_REASON: &str = "pipeline data-path drained";
+/// Default reason recorded in the `Shutdown` broadcast when the caller
+/// does not supply one. Hosts should pass a scope-appropriate reason
+/// (e.g., `"pipeline data-path drained"`) via [`ExtensionLifecycle::broadcast_shutdown`]
+/// where possible.
+const DEFAULT_SHUTDOWN_REASON: &str = "host data-path drained";
 
 /// Holds the spawned extension tasks, control senders, and passive
-/// wrappers for the duration of a pipeline run.
+/// wrappers for the duration of an extension-hosting run.
 pub(crate) struct ExtensionLifecycle {
     /// Active+background extension `JoinHandle`s, awaited concurrently
     /// with the data path.
@@ -76,7 +81,7 @@ pub(crate) struct ExtensionLifecycle {
     /// Deadline established when [`Self::broadcast_shutdown`] fires.
     /// Used by [`Self::drain_until_deadline`] to bound how long the
     /// runtime will wait for extensions to honour `Shutdown` so a
-    /// misbehaving extension can't hang the pipeline indefinitely.
+    /// misbehaving extension can't hang the host runtime indefinitely.
     shutdown_deadline: Option<Instant>,
 }
 
@@ -152,8 +157,12 @@ impl ExtensionLifecycle {
     /// Idempotent. Sends fan out concurrently, each bounded by
     /// [`EXTENSION_SHUTDOWN_SEND_TIMEOUT`]; the deadline carried in
     /// the message is `now() + EXTENSION_SHUTDOWN_GRACE` (a fresh
-    /// cleanup window, not a continuation of the pipeline deadline).
-    pub async fn broadcast_shutdown(&mut self) {
+    /// cleanup window, not a continuation of the host-scope deadline).
+    ///
+    /// `reason` is propagated verbatim in the `Shutdown` message so
+    /// the host can describe what triggered the shutdown in scope-
+    /// appropriate terms; `None` falls back to [`DEFAULT_SHUTDOWN_REASON`].
+    pub async fn broadcast_shutdown(&mut self, reason: Option<&str>) {
         if self.shutdown_broadcast_fired || self.shutdown_senders.is_empty() {
             return;
         }
@@ -162,10 +171,11 @@ impl ExtensionLifecycle {
         let deadline = Instant::now() + EXTENSION_SHUTDOWN_GRACE;
         self.shutdown_deadline = Some(deadline);
 
+        let reason = reason.unwrap_or(DEFAULT_SHUTDOWN_REASON).to_string();
         let sends = self.shutdown_senders.iter().map(|sender| {
             let msg = ExtensionControlMsg::Shutdown {
                 deadline,
-                reason: SHUTDOWN_REASON.to_string(),
+                reason: reason.clone(),
             };
             async move {
                 match tokio::time::timeout(EXTENSION_SHUTDOWN_SEND_TIMEOUT, sender.sender.send(msg))
@@ -197,8 +207,8 @@ impl ExtensionLifecycle {
     ///
     /// `Shutdown` is cooperative — extensions may ignore it or take
     /// longer than the grace window to exit. Without this bound, an
-    /// extension that never returns from `start()` would hang the
-    /// pipeline forever. After the deadline elapses, any still-running
+    /// extension that never returns from `start()` would hang the host
+    /// runtime forever. After the deadline elapses, any still-running
     /// futures are dropped with a warning; the runtime's natural drop
     /// semantics take over once the lifecycle holder itself is dropped.
     ///

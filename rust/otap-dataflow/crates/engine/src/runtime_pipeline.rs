@@ -633,7 +633,9 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                             // staying in this `select!` would let a
                             // misbehaving extension hang the pipeline.
                             if futures.is_empty() {
-                                extension_lifecycle.broadcast_shutdown().await;
+                                extension_lifecycle
+                                    .broadcast_shutdown(Some("pipeline data-path drained"))
+                                    .await;
                                 break;
                             }
                         }
@@ -652,7 +654,9 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     // cleanly. `drain_until_deadline` then bounds the
                     // wait so a misbehaving extension can't hang the
                     // runtime.
-                    extension_lifecycle.broadcast_shutdown().await;
+                    extension_lifecycle
+                        .broadcast_shutdown(Some("pipeline data-path drained"))
+                        .await;
                     extension_lifecycle.drain_until_deadline().await;
 
                     let task_results = loop_result?;

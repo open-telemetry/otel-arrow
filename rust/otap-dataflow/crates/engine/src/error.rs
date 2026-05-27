@@ -332,7 +332,7 @@ pub enum Error {
         plugin_urn: NodeUrn,
     },
 
-    /// The specified extension already exists in the pipeline.
+    /// The specified extension already exists in its host scope.
     #[error("The extension `{extension}` already exists")]
     ExtensionAlreadyExists {
         /// The name of the extension that already exists.

@@ -560,7 +560,6 @@ impl LocalNoOpStateless for NoOpStatelessImplLocal {
 // ─────────────────────────────────────────────────────────────────────
 
 fn passive_extension_create(
-    _pipeline_ctx: PipelineContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -593,7 +592,6 @@ const PASSIVE_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
 // ─────────────────────────────────────────────────────────────────────
 
 fn dual_extension_create(
-    _pipeline_ctx: PipelineContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -701,7 +699,6 @@ fn lookup_active_ext_probe(key: &str) -> ActiveExtProbe {
 }
 
 fn active_extension_create(
-    _pipeline_ctx: PipelineContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -797,7 +794,6 @@ const ACTIVE_SHARED_COUNTER_EXTENSION_URN: &str =
     "urn:test:extension:active_shared_counter_extension";
 
 fn active_shared_counter_extension_create(
-    _pipeline_ctx: PipelineContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -873,7 +869,6 @@ impl otap_df_engine::shared::extension::Extension for FailingExtImpl {
 }
 
 fn failing_extension_create(
-    _pipeline_ctx: PipelineContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -975,7 +970,6 @@ fn lookup_shutdown_recording_probe(key: &str) -> ShutdownRecordingProbe {
 }
 
 fn shutdown_recording_extension_create(
-    _pipeline_ctx: PipelineContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1067,7 +1061,6 @@ impl otap_df_engine::local::extension::Extension for ActiveLocalExtImpl {
 const DUAL_ACTIVE_EXTENSION_URN: &str = "urn:test:extension:dual_active_extension";
 
 fn dual_active_extension_create(
-    _pipeline_ctx: PipelineContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1181,7 +1174,6 @@ fn lookup_background_probe(key: &str) -> BackgroundProbe {
 }
 
 fn background_extension_create(
-    _pipeline_ctx: PipelineContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1301,7 +1293,6 @@ fn lookup_shared_counter_probe(key: &str) -> SharedCounterProbe {
 }
 
 fn shared_counter_extension_create(
-    _pipeline_ctx: PipelineContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1350,7 +1341,6 @@ const SHARED_COUNTER_SHARED_EXTENSION_URN: &str =
     "urn:test:extension:shared_counter_shared_extension";
 
 fn shared_counter_shared_extension_create(
-    _pipeline_ctx: PipelineContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1444,7 +1434,6 @@ fn lookup_constructed_probe(key: &str) -> ConstructedProbe {
 }
 
 fn constructed_extension_create(
-    _pipeline_ctx: PipelineContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1521,7 +1510,6 @@ impl LocalNoOpStateful for RcCounterImpl {
 const RC_COUNTER_EXTENSION_URN: &str = "urn:test:extension:rc_counter_extension";
 
 fn rc_counter_extension_create(
-    _pipeline_ctx: PipelineContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1791,9 +1779,9 @@ static TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
 // Pipeline-build / run helpers shared across tests
 // ─────────────────────────────────────────────────────────────────────
 
-fn fresh_pipeline_context() -> (
-    InternalTelemetrySystem,
+fn fresh_pipeline_env() -> (
     PipelineContext,
+    InternalTelemetrySystem,
     otap_df_telemetry::registry::EntityKey,
 ) {
     let telemetry_system = InternalTelemetrySystem::default();
@@ -1807,7 +1795,7 @@ fn fresh_pipeline_context() -> (
         0,
     );
     let entity_key = ctx.register_pipeline_entity();
-    (telemetry_system, ctx, entity_key)
+    (ctx, telemetry_system, entity_key)
 }
 
 fn run_pipeline_with_shutdown_after(
@@ -1875,7 +1863,7 @@ fn build_test_runtime_pipeline(
 ) {
     let config = PipelineConfig::from_yaml("test-group".into(), "test-pipeline".into(), yaml)
         .expect("yaml config parses + validates");
-    let (telemetry_system, pipeline_ctx, entity_key) = fresh_pipeline_context();
+    let (pipeline_ctx, telemetry_system, entity_key) = fresh_pipeline_env();
     let runtime_pipeline = TEST_PIPELINE_FACTORY
         .build(
             pipeline_ctx.clone(),
