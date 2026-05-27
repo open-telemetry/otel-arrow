@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-2048 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 0.0
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-2048 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 19.69705086401573
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-2048 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 20.182614133833646
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-2048 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 57.729557291666666
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-2048 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 58.0625
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-2048 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 400102.14132970694
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-2048 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 398043.414224132
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-2048 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000621
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-2048 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 50455224.06355524
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-2048 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 42707982.38371171
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-2048 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 126.75809286256572
+  }
+]

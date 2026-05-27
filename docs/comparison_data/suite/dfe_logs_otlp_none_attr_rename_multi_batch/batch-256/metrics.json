@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-256 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -1.2659389972686768
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-256 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 63.697539310119055
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-256 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 64.07485963817841
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-256 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 50.737369791666666
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-256 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 51.4921875
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-256 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 397150.0509831632
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-256 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 401498.2328125942
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-256 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.0006
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-256 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 153822246.27611226
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-256 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 143281396.2490594
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-256 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 383.1206060324337
+  }
+]

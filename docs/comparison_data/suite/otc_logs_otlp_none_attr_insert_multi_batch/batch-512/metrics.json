@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-512 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 0.0
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-512 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 68.3737927277327
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-512 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 69.63462686567165
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-512 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 81.5125
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-512 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 86.52734375
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-512 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 402719.6463154978
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-512 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 402719.6463154978
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-512 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000628
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-512 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 159965860.00505847
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-512 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 145207512.92600733
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-512 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 397.2139463981808
+  }
+]

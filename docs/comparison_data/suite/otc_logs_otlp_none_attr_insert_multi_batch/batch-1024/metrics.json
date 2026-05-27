@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-1024 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 0.0
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-1024 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 62.441521919525634
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-1024 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 65.52594628357276
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-1024 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 77.19973958333334
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-1024 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 84.23828125
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-1024 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 403369.7983552697
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-1024 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 403369.7983552697
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-1024 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000614
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-1024 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 159250596.50709227
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-1024 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 144464980.74213395
+  },
+  {
+    "extra": "OTC OTLP Attr Insert Multi Batch (Logs)/batch-1024 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 394.80049611158944
+  }
+]

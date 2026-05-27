@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-256 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -0.003200106555595994
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-256 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 69.52162752130351
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-256 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 71.02068188927119
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-256 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 81.03932291666666
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-256 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 85.44921875
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-256 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 403717.2767197874
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-256 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 403046.2274486938
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-256 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000562
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-256 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 143909504.39887103
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-256 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 142883338.4601245
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-256 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 357.054587285996
+  }
+]
