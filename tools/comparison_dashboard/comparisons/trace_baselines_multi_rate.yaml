@@ -1,0 +1,87 @@
+slug: trace_baselines_multi_rate
+name: Trace Baselines (DFE vs OTC)
+description: Baseline trace runs for the Dataflow Engine and the OpenTelemetry Collector across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
+
+chart:
+  axes:
+    x:
+      title: Generated Load (spans/sec)
+      description: Rate at which the load generator is configured to submit spans e.g. "100k" == "100,000 spans/sec".
+
+tests:
+  - name: 100k
+    loadgen_rate: 100000
+  - name: 200k
+    loadgen_rate: 200000
+  - name: 300k
+    loadgen_rate: 300000
+  - name: 400k
+    loadgen_rate: 400000
+  - name: 600k
+    loadgen_rate: 600000
+  - name: 800k
+    loadgen_rate: 800000
+  - name: 1000k
+    loadgen_rate: 1000000
+    label: 1M
+
+suites:
+  # DFE OTAP
+  - name: DFE Traces OTAP Baseline (None)
+    slug: dfe_traces_otap_none_baseline
+    short: DFE OTAP/None
+  - name: DFE Traces OTAP Baseline (Gzip)
+    slug: dfe_traces_otap_gzip_baseline
+    short: DFE OTAP/Gzip
+  - name: DFE Traces OTAP Baseline (Zstd)
+    slug: dfe_traces_otap_zstd_baseline
+    short: DFE OTAP/Zstd
+
+  # DFE OTLP
+  - name: DFE Traces OTLP Baseline (None)
+    slug: dfe_traces_otlp_none_baseline
+    short: DFE OTLP/None
+  - name: DFE Traces OTLP Baseline (Gzip)
+    slug: dfe_traces_otlp_gzip_baseline
+    short: DFE OTLP/Gzip
+  - name: DFE Traces OTLP Baseline (Zstd)
+    slug: dfe_traces_otlp_zstd_baseline
+    short: DFE OTLP/Zstd
+
+  # DFE OTLP/HTTP
+  - name: DFE Traces OTLP/HTTP Baseline (None)
+    slug: dfe_traces_otlphttp_none_baseline
+    short: DFE OTLP-HTTP/None
+  - name: DFE Traces OTLP/HTTP Baseline (Gzip)
+    slug: dfe_traces_otlphttp_gzip_baseline
+    short: DFE OTLP-HTTP/Gzip
+  - name: DFE Traces OTLP/HTTP Baseline (Zstd)
+    slug: dfe_traces_otlphttp_zstd_baseline
+    short: DFE OTLP-HTTP/Zstd
+
+  # OTC OTAP
+  - name: OTC Traces OTAP Baseline (None)
+    slug: otc_traces_otap_none_baseline
+    short: OTC OTAP/None
+  - name: OTC Traces OTAP Baseline (Gzip)
+    slug: otc_traces_otap_gzip_baseline
+    short: OTC OTAP/Gzip
+  - name: OTC Traces OTAP Baseline (Zstd)
+    slug: otc_traces_otap_zstd_baseline
+    short: OTC OTAP/Zstd
+
+  # OTC OTLP
+  - name: OTC Traces OTLP Baseline (None)
+    slug: otc_traces_otlp_none_baseline
+    short: OTC OTLP/None
+  - name: OTC Traces OTLP Baseline (Gzip)
+    slug: otc_traces_otlp_gzip_baseline
+    short: OTC OTLP/Gzip
+  - name: OTC Traces OTLP Baseline (Zstd)
+    slug: otc_traces_otlp_zstd_baseline
+    short: OTC OTLP/Zstd
+
+  # OTC OTLP/HTTP
+  - name: OTC Traces OTLP/HTTP Baseline (None)
+    slug: otc_traces_otlphttp_none_baseline
+    short: OTC OTLP-HTTP/None

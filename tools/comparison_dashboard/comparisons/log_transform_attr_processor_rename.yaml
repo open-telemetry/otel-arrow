@@ -1,9 +1,10 @@
-slug: dfe_logs_transform_attr_processor_rename
-name: Dataflow Engine Attribute Rename
+slug: log_transform_attr_processor_rename
+name: Attribute Rename (DFE vs OTC)
 description: >
-  Renaming the semantic-convention attribute exception.type to exception.kind on
-  logs in the Dataflow Engine, comparing the attributes processor vs the transform
-  processor (OPL) across the OTAP and OTLP protocols.
+  Renaming the semantic-convention attribute exception.type to exception.kind
+  on logs. Comparing the attributes processor vs the transform processor (OPL)
+  on the Dataflow Engine (OTAP and OTLP) and on the OpenTelemetry Collector
+  (OTLP).
 
 chart:
   axes:
@@ -32,21 +33,32 @@ suites:
   # DFE OTAP
   - name: DFE OTAP Attr Rename (Logs)
     slug: dfe_logs_otap_none_attr_rename
-    short: OTAP/Attr
+    short: DFE OTAP/Attr
   - name: DFE OTAP Transform Rename (Logs)
     slug: dfe_logs_otap_none_transform_rename
-    short: OTAP/Transform
+    short: DFE OTAP/Transform
   - name: DFE OTAP Baseline (Logs)
     slug: dfe_logs_otap_none_baseline
-    short: OTAP/Baseline
+    short: DFE OTAP/Baseline
 
   # DFE OTLP
   - name: DFE OTLP Attr Rename (Logs)
     slug: dfe_logs_otlp_none_attr_rename
-    short: OTLP/Attr
+    short: DFE OTLP/Attr
   - name: DFE OTLP Transform Rename (Logs)
     slug: dfe_logs_otlp_none_transform_rename
-    short: OTLP/Transform
+    short: DFE OTLP/Transform
   - name: DFE OTLP Baseline (Logs)
     slug: dfe_logs_otlp_none_baseline
-    short: OTLP/Baseline
+    short: DFE OTLP/Baseline
+
+  # OTC OTLP
+  - name: OTC OTLP Attr Rename (Logs)
+    slug: otc_logs_otlp_none_attr_rename
+    short: OTC OTLP/Attr
+  - name: OTC OTLP Transform Rename (Logs)
+    slug: otc_logs_otlp_none_transform_rename
+    short: OTC OTLP/Transform
+  - name: OTC OTLP Baseline (Logs)
+    slug: otc_logs_otlp_none_baseline
+    short: OTC OTLP/Baseline

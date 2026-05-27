@@ -1,0 +1,87 @@
+slug: metric_baselines_multi_rate
+name: Metric Baselines (DFE vs OTC)
+description: Baseline metric runs for the Dataflow Engine and the OpenTelemetry Collector across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.
+
+chart:
+  axes:
+    x:
+      title: Generated Load (datapoints/sec)
+      description: Rate at which the load generator is configured to submit metric datapoints e.g. "100k" == "100,000 datapoints/sec".
+
+tests:
+  - name: 100k
+    loadgen_rate: 100000
+  - name: 200k
+    loadgen_rate: 200000
+  - name: 300k
+    loadgen_rate: 300000
+  - name: 400k
+    loadgen_rate: 400000
+  - name: 600k
+    loadgen_rate: 600000
+  - name: 800k
+    loadgen_rate: 800000
+  - name: 1000k
+    loadgen_rate: 1000000
+    label: 1M
+
+suites:
+  # DFE OTAP
+  - name: DFE Metrics OTAP Baseline (None)
+    slug: dfe_metrics_otap_none_baseline
+    short: DFE OTAP/None
+  - name: DFE Metrics OTAP Baseline (Gzip)
+    slug: dfe_metrics_otap_gzip_baseline
+    short: DFE OTAP/Gzip
+  - name: DFE Metrics OTAP Baseline (Zstd)
+    slug: dfe_metrics_otap_zstd_baseline
+    short: DFE OTAP/Zstd
+
+  # DFE OTLP
+  - name: DFE Metrics OTLP Baseline (None)
+    slug: dfe_metrics_otlp_none_baseline
+    short: DFE OTLP/None
+  - name: DFE Metrics OTLP Baseline (Gzip)
+    slug: dfe_metrics_otlp_gzip_baseline
+    short: DFE OTLP/Gzip
+  - name: DFE Metrics OTLP Baseline (Zstd)
+    slug: dfe_metrics_otlp_zstd_baseline
+    short: DFE OTLP/Zstd
+
+  # DFE OTLP/HTTP
+  - name: DFE Metrics OTLP/HTTP Baseline (None)
+    slug: dfe_metrics_otlphttp_none_baseline
+    short: DFE OTLP-HTTP/None
+  - name: DFE Metrics OTLP/HTTP Baseline (Gzip)
+    slug: dfe_metrics_otlphttp_gzip_baseline
+    short: DFE OTLP-HTTP/Gzip
+  - name: DFE Metrics OTLP/HTTP Baseline (Zstd)
+    slug: dfe_metrics_otlphttp_zstd_baseline
+    short: DFE OTLP-HTTP/Zstd
+
+  # OTC OTAP
+  - name: OTC Metrics OTAP Baseline (None)
+    slug: otc_metrics_otap_none_baseline
+    short: OTC OTAP/None
+  - name: OTC Metrics OTAP Baseline (Gzip)
+    slug: otc_metrics_otap_gzip_baseline
+    short: OTC OTAP/Gzip
+  - name: OTC Metrics OTAP Baseline (Zstd)
+    slug: otc_metrics_otap_zstd_baseline
+    short: OTC OTAP/Zstd
+
+  # OTC OTLP
+  - name: OTC Metrics OTLP Baseline (None)
+    slug: otc_metrics_otlp_none_baseline
+    short: OTC OTLP/None
+  - name: OTC Metrics OTLP Baseline (Gzip)
+    slug: otc_metrics_otlp_gzip_baseline
+    short: OTC OTLP/Gzip
+  - name: OTC Metrics OTLP Baseline (Zstd)
+    slug: otc_metrics_otlp_zstd_baseline
+    short: OTC OTLP/Zstd
+
+  # OTC OTLP/HTTP
+  - name: OTC Metrics OTLP/HTTP Baseline (None)
+    slug: otc_metrics_otlphttp_none_baseline
+    short: OTC OTLP-HTTP/None
