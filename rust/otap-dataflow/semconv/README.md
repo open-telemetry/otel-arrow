@@ -19,7 +19,9 @@ semconv/
   groups/
     event.<name>.yaml
   triggers/
-    <name>.sh        # exercises the matching event in live-check CI
+    *.sh             # optional: scripts to run before validation
+                     # (only needed for events that can't be exercised
+                     # purely by the engine config)
 ```
 
 Each event is a Weaver `group` with `type: event`; the group's `name:`
@@ -37,9 +39,14 @@ argument to `otel_info!` / `otel_warn!` / `otel_debug!` /
    attributes under the `otap.*` namespace otherwise.
 3. Emit the event with the matching name from the appropriate
    `otel_*!` macro.
-4. Add `triggers/<name>.sh` that drives df_engine to emit the event;
-   the live-check job iterates this directory and fails if any
-   declared event receives zero samples.
+4. Exercise the event in CI. Many events fire from the engine
+   config alone (e.g. startup events fire when a receiver is
+   configured; failure events fire when traffic is routed at an
+   unreachable endpoint). Adjust `configs/internal-events-otlp.yaml`
+   as needed. For events that need active network traffic or other
+   runtime stimulus, drop a script in `triggers/`; everything in
+   that directory is run before validation. The live-check job
+   fails if any declared event receives zero samples.
 
 [weaver]: https://github.com/open-telemetry/weaver
 [events]: ../crates/telemetry/src/internal_events.rs
