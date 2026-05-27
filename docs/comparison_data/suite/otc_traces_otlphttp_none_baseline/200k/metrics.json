@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Traces)/200k - Dropped Spans %",
+    "name": "dropped_spans_percentage",
+    "unit": "%",
+    "value": 0.6439551115036011
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Traces)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.14633058072444
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Traces)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.49025832555245
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Traces)/200k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 2768.7850260416667
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Traces)/200k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 2805.34765625
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Traces)/200k - Span Throughput",
+    "name": "spans_produced_rate",
+    "unit": "spans/sec",
+    "value": 81806.54129454518
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Traces)/200k - Span Throughput",
+    "name": "spans_received_rate",
+    "unit": "spans/sec",
+    "value": 81140.53841522706
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Traces)/200k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000566
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Traces)/200k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 10758270.338530898
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Traces)/200k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 64981025.73348109
+  }
+]

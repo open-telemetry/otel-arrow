@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "OTC OTAP Baseline (Logs)/100k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 0.0
+  },
+  {
+    "extra": "OTC OTAP Baseline (Logs)/100k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 55.46417247637125
+  },
+  {
+    "extra": "OTC OTAP Baseline (Logs)/100k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 57.82279113331252
+  },
+  {
+    "extra": "OTC OTAP Baseline (Logs)/100k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 118.18216145833334
+  },
+  {
+    "extra": "OTC OTAP Baseline (Logs)/100k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 123.078125
+  },
+  {
+    "extra": "OTC OTAP Baseline (Logs)/100k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 100610.09795717735
+  },
+  {
+    "extra": "OTC OTAP Baseline (Logs)/100k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 100948.93683103453
+  },
+  {
+    "extra": "OTC OTAP Baseline (Logs)/100k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000592
+  },
+  {
+    "extra": "OTC OTAP Baseline (Logs)/100k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 10376286.023307271
+  },
+  {
+    "extra": "OTC OTAP Baseline (Logs)/100k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 11018939.346924508
+  },
+  {
+    "extra": "OTC OTAP Baseline (Logs)/100k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 102.7874720530718
+  }
+]

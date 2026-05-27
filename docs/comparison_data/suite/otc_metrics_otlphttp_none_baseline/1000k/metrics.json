@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Metrics)/1000k - Dropped Metrics %",
+    "name": "dropped_metrics_percentage",
+    "unit": "%",
+    "value": -1.7752714157104492
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Metrics)/1000k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.09469007006322
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Metrics)/1000k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.43251483911277
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Metrics)/1000k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 4119.652213541666
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Metrics)/1000k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 4329.328125
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Metrics)/1000k - Metric Throughput",
+    "name": "metrics_produced_rate",
+    "unit": "metrics/sec",
+    "value": 163145.30518888278
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Metrics)/1000k - Metric Throughput",
+    "name": "metrics_received_rate",
+    "unit": "metrics/sec",
+    "value": 163211.55595424175
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Metrics)/1000k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000631
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Metrics)/1000k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 7308385.924200256
+  },
+  {
+    "extra": "OTC OTLP/HTTP Baseline (Metrics)/1000k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 32433158.650732733
+  }
+]

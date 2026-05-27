@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "OTC OTLP Transform Rename (Logs)/200k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -2.5641026496887207
+  },
+  {
+    "extra": "OTC OTLP Transform Rename (Logs)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 36.993694113665704
+  },
+  {
+    "extra": "OTC OTLP Transform Rename (Logs)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 38.02287141073658
+  },
+  {
+    "extra": "OTC OTLP Transform Rename (Logs)/200k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 56.92213541666667
+  },
+  {
+    "extra": "OTC OTLP Transform Rename (Logs)/200k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 58.30078125
+  },
+  {
+    "extra": "OTC OTLP Transform Rename (Logs)/200k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 198540.25399407416
+  },
+  {
+    "extra": "OTC OTLP Transform Rename (Logs)/200k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 201569.7208415583
+  },
+  {
+    "extra": "OTC OTLP Transform Rename (Logs)/200k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000575
+  },
+  {
+    "extra": "OTC OTLP Transform Rename (Logs)/200k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 72694857.4287292
+  },
+  {
+    "extra": "OTC OTLP Transform Rename (Logs)/200k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 71973318.35653083
+  },
+  {
+    "extra": "OTC OTLP Transform Rename (Logs)/200k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 360.64373719041964
+  }
+]

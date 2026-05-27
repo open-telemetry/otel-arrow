@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "OTC OTLP Transform Insert (Logs)/1000k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 3.7121386528015137
+  },
+  {
+    "extra": "OTC OTLP Transform Insert (Logs)/1000k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.05710599409441
+  },
+  {
+    "extra": "OTC OTLP Transform Insert (Logs)/1000k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.5553644859813
+  },
+  {
+    "extra": "OTC OTLP Transform Insert (Logs)/1000k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 6782.510677083334
+  },
+  {
+    "extra": "OTC OTLP Transform Insert (Logs)/1000k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 7758.7109375
+  },
+  {
+    "extra": "OTC OTLP Transform Insert (Logs)/1000k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 514761.1533034647
+  },
+  {
+    "extra": "OTC OTLP Transform Insert (Logs)/1000k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 503389.16843803664
+  },
+  {
+    "extra": "OTC OTLP Transform Insert (Logs)/1000k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000831
+  },
+  {
+    "extra": "OTC OTLP Transform Insert (Logs)/1000k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 198497880.64627197
+  },
+  {
+    "extra": "OTC OTLP Transform Insert (Logs)/1000k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 188603375.3914875
+  },
+  {
+    "extra": "OTC OTLP Transform Insert (Logs)/1000k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 394.32290778562026
+  }
+]

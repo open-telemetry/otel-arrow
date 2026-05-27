@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/200k - Dropped Metrics %",
+    "name": "dropped_metrics_percentage",
+    "unit": "%",
+    "value": 0.9057639241218567
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.05734037954292
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.33930776426567
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/200k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 173.18216145833333
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/200k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 190.10546875
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/200k - Metric Throughput",
+    "name": "metrics_produced_rate",
+    "unit": "metrics/sec",
+    "value": 184317.27137318542
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/200k - Metric Throughput",
+    "name": "metrics_received_rate",
+    "unit": "metrics/sec",
+    "value": 182647.79197099464
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/200k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000628
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/200k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 1653241.2633788271
+  },
+  {
+    "extra": "OTC OTAP Baseline w/ Gzip (Metrics)/200k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 2401802.5794784627
+  }
+]

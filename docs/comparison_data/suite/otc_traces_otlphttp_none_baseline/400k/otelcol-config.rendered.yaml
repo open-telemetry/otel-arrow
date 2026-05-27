@@ -1,0 +1,37 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  otlphttp:
+    endpoint: 'http://backend-service:1235'
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: True
+      wait_for_result: True
+      block_on_overflow: True
+      sizer: requests
+      queue_size: 100
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: '0.0.0.0'
+                port: 8086
+  pipelines:
+    logs:
+      receivers: [otlp]
+      exporters: [otlphttp]
+    metrics:
+      receivers: [otlp]
+      exporters: [otlphttp]
+    traces:
+      receivers: [otlp]
+      exporters: [otlphttp]
