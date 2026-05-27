@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779756219296,
+  "lastUpdate": 1779842750113,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -4492,6 +4492,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 98.03,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Jake Dern",
+            "username": "JakeDern",
+            "email": "33842784+JakeDern@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7aa2b45ef3cab3f6c482b46b19bfecb63ee4121d",
+          "message": "task(comparison_dashboard): Update OTC sending queue default settings (#3089)\n\n# Change Summary\n\nUpdates sending queue settings for OTC to make for a fairer comparison.\n\n## What issue does this PR close?\n\n* Closes #3088\n\n## How are these changes tested?\n\nInitial results show a possible slight improvement which is interesting.\n\n| Suite | Rate | Mode | Produced | Received | Drop % | CPU avg % | RAM\nmax (MiB) |\n\n|----------|------|-----------|---------:|---------:|--------:|----------:|--------------:|\n| otlp | 200k | queue-cfg | 202,290 | 197,103 | 2.56 | 26.9 | 54 |\n| otlp | 200k | baseline | 201,901 | 198,794 | 2.56 | 26.9 | 60 |\n| otap | 200k | queue-cfg | 197,579 | 198,706 | -0.05 | 95.8 | 148 |\n| otap | 200k | baseline | 187,793 | 177,178 | 7.11 | 100.2 | 137 |\n| otlphttp | 200k | queue-cfg | 203,055 | 198,945 | 2.56 | 64.0 | 68 |\n| otlphttp | 200k | baseline | 207,940 | 196,510 | 5.00 | 76.1 | 80 |\n\n## Are there any user-facing changes?\n\nNo.",
+          "timestamp": "2026-05-26T22:30:45Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/7aa2b45ef3cab3f6c482b46b19bfecb63ee4121d"
+        },
+        "date": 1779842740044,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 110.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 98.16,
             "unit": "MB"
           }
         ]
