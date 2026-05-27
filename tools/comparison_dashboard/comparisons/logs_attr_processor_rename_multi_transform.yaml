@@ -3,8 +3,8 @@ name: Attribute Rename Multi Transform (Logs)
 description: >
   Cost of running 1, 2, 3, or 4 rename actions on logs, comparing the
   attributes processor vs the transform processor (OPL/OTTL) across the
-  Dataflow Engine (OTAP and OTLP) and the OpenTelemetry Collector (OTLP)
-  at a fixed 240k logs/sec generated load.
+  Dataflow Engine (OTAP and OTLP) and the OpenTelemetry Collector (OTAP
+  and OTLP) at a fixed 240k logs/sec generated load.
 
 chart:
   axes:
@@ -42,6 +42,14 @@ suites:
   - name: DFE OTLP Transform Rename Multi Transform (Logs)
     slug: dfe_logs_otlp_none_transform_rename_multi_transform
     short: DFE/OTLP/Transform
+
+  # OTC OTAP
+  - name: OTC OTAP Attr Rename Multi Transform (Logs)
+    slug: otc_logs_otap_none_attr_rename_multi_transform
+    short: OTC/OTAP/Attr
+  - name: OTC OTAP Transform Rename Multi Transform (Logs)
+    slug: otc_logs_otap_none_transform_rename_multi_transform
+    short: OTC/OTAP/Transform
 
   # OTC OTLP
   - name: OTC OTLP Attr Rename Multi Transform (Logs)
