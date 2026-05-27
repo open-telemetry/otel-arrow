@@ -83,6 +83,46 @@ Examples of `<type>`: `feat` (new feature), `fix` (bug fix), `docs`
 - Include a brief description of what and why, avoiding overly technical jargon.
 - Use present-tense verbs, e.g., "Add" instead of "Added."
 
+### Changelog entries
+
+This repository maintains two changelogs - [`go/CHANGELOG.md`](./go/CHANGELOG.md)
+for the Go tree and
+[`rust/otap-dataflow/CHANGELOG.md`](./rust/otap-dataflow/CHANGELOG.md) for the
+Rust tree. Both are managed with
+[`chloggen`](https://github.com/open-telemetry/opentelemetry-go-build-tools/tree/main/chloggen).
+Entries live alongside the code they describe:
+
+- Go changes: [`go/.chloggen/`](./go/.chloggen/)
+- Rust changes: [`rust/otap-dataflow/.chloggen/`](./rust/otap-dataflow/.chloggen/)
+
+Every PR with a user-facing change must add at least one YAML entry in the
+appropriate directory:
+
+```bash
+make chlog-install                       # one-time install
+make chlog-new-go   FILENAME=my-change   # for Go changes
+make chlog-new-rust FILENAME=my-change   # for Rust changes
+# edit the generated file - set change_type, component, note, issues
+make chlog-validate
+make chlog-preview                       # optional: render without writing
+```
+
+See [`go/.chloggen/README.md`](./go/.chloggen/README.md) and
+[`rust/otap-dataflow/.chloggen/README.md`](./rust/otap-dataflow/.chloggen/README.md)
+for the full guide and the allowed `component:` values (defined in the
+`config.yaml` of each directory).
+
+**Skipping a changelog entry.** Use any of the following when the change is
+not user-facing (build chores, internal refactors, doc-only edits, dep bumps):
+
+- Include `chore` in the PR title.
+- Apply the `chore` label.
+- For dependency-update PRs: Renovate auto-applies the `dependencies` label
+  and bot-authored PRs are exempt.
+
+The [`changelog` workflow](./.github/workflows/changelog.yml) enforces this on
+pull requests targeting `main`.
+
 ### Including Tests for New Features or Bug Fixes
 
 Testing is crucial to ensure code reliability. When contributing:

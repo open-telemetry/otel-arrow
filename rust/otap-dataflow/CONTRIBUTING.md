@@ -28,6 +28,22 @@ the full check path, likely because many of the longest tests are concentrated
 in a few large integration-style binaries, so the extra runner orchestration did
 not offset the limited parallelism gains.
 
+## Changelog entries
+
+User-facing Rust changes are recorded in
+[`CHANGELOG.md`](./CHANGELOG.md). Changelog entries are added per PR as YAML
+files under [`.chloggen/`](./.chloggen/) in this directory and collapsed into
+the CHANGELOG at release time.
+
+From the repo root:
+
+```bash
+make chlog-new-rust FILENAME=my-short-description
+```
+
+See [`.chloggen/README.md`](./.chloggen/README.md) and the project-level
+[CONTRIBUTING][] "Changelog entries" section for the full workflow.
+
 ## Telemetry and logging
 
 All internal logging MUST use the `otel_*` macros from `otap_df_telemetry`

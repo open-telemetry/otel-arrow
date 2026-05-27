@@ -1,0 +1,84 @@
+# This workflow requires that any PR targeting the main branch adds a
+# yaml file to the ./.chloggen/ directory. If a CHANGELOG entry is not
+# required (e.g. internal refactors, dep bumps), include "[chore]" in
+# the PR title or apply the "chore" label.
+#
+# Modeled on opentelemetry-collector-contrib/.github/workflows/changelog.yml.
+
+name: changelog
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    if: ${{ github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]' && github.actor != 'otelbot' }}
+    env:
+      PR_HEAD: ${{ github.event.pull_request.head.sha }}
+      # Reusable expression: true when any bypass condition is set
+      SKIP: ${{ contains(github.event.pull_request.labels.*.name, 'dependencies') || contains(github.event.pull_request.labels.*.name, 'chore') || contains(github.event.pull_request.title, '[chore]') }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: ${{ env.SKIP == 'true' && '1' || '0' }}
+
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        if: ${{ env.SKIP != 'true' }}
+        with:
+          go-version: stable
+          cache-dependency-path: "**/*.sum"
+
+      - name: Ensure no direct edits to CHANGELOG files
+        if: ${{ env.SKIP != 'true' }}
+        run: |
+          changed=$(git diff --name-only "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD" \
+            -- go/CHANGELOG.md rust/otap-dataflow/CHANGELOG.md)
+          if [ -n "$changed" ]; then
+            echo "Error: the following CHANGELOG files were modified directly:"
+            echo "$changed"
+            echo
+            echo "Please add a .yaml entry to go/.chloggen/ or"
+            echo "rust/otap-dataflow/.chloggen/ instead (see the README in each)."
+            echo "If this PR does not require a changelog entry, add 'chore' to the"
+            echo "PR title or apply the 'chore' label."
+            exit 1
+          fi
+
+      - name: Ensure a .chloggen/*.yaml entry was added or edited
+        if: ${{ env.SKIP != 'true' }}
+        run: |
+          touched=$(git diff --diff-filter=AM --name-only "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD" \
+            -- 'go/.chloggen/' 'rust/otap-dataflow/.chloggen/' \
+            | grep -E '\.chloggen/.+\.yaml$' \
+            | grep -v -E '\.chloggen/(TEMPLATE|config)\.yaml$' \
+            || true)
+          if [ -z "$touched" ]; then
+            echo "Error: no .chloggen/*.yaml entry was added or modified in this PR."
+            echo
+            echo "Run 'make chlog-new-go FILENAME=<short-description>' for Go changes"
+            echo "or 'make chlog-new-rust FILENAME=<short-description>' for Rust changes,"
+            echo "then commit the generated file."
+            echo "If this PR does not require a changelog entry, add 'chore' to the"
+            echo "PR title or apply the 'chore' label."
+            exit 1
+          fi
+          echo "Touched chloggen entries:"
+          echo "$touched"
+
+      - name: Validate .chloggen/*.yaml entries
+        if: ${{ env.SKIP != 'true' }}
+        run: |
+          make chlog-install
+          make chlog-validate
