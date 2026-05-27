@@ -1,5 +1,5 @@
 slug: log_transform_attr_processor_rename
-name: Attribute Rename
+name: Log Attribute Rename (Multi Rate)
 description: >
   Renaming the semantic-convention attribute exception.type to exception.kind
   on logs. Comparing the attributes processor vs the transform processor across
@@ -30,34 +30,34 @@ tests:
 
 suites:
   # DFE OTAP
-  - name: DFE OTAP Attr Rename (Logs)
+  - name: DFE OTAP Attr Rename
     slug: dfe_logs_otap_none_attr_rename
     short: DFE OTAP/Attr
-  - name: DFE OTAP Transform Rename (Logs)
+  - name: DFE OTAP Transform Rename
     slug: dfe_logs_otap_none_transform_rename
     short: DFE OTAP/Transform
-  - name: DFE OTAP Baseline (Logs)
+  - name: DFE OTAP Baseline
     slug: dfe_logs_otap_none_baseline
     short: DFE OTAP/Baseline
 
   # DFE OTLP
-  - name: DFE OTLP Attr Rename (Logs)
+  - name: DFE OTLP Attr Rename
     slug: dfe_logs_otlp_none_attr_rename
     short: DFE OTLP/Attr
-  - name: DFE OTLP Transform Rename (Logs)
+  - name: DFE OTLP Transform Rename
     slug: dfe_logs_otlp_none_transform_rename
     short: DFE OTLP/Transform
-  - name: DFE OTLP Baseline (Logs)
+  - name: DFE OTLP Baseline
     slug: dfe_logs_otlp_none_baseline
     short: DFE OTLP/Baseline
 
   # OTC OTLP
-  - name: OTC OTLP Attr Rename (Logs)
+  - name: OTC OTLP Attr Rename
     slug: otc_logs_otlp_none_attr_rename
     short: OTC OTLP/Attr
-  - name: OTC OTLP Transform Rename (Logs)
+  - name: OTC OTLP Transform Rename
     slug: otc_logs_otlp_none_transform_rename
     short: OTC OTLP/Transform
-  - name: OTC OTLP Baseline (Logs)
+  - name: OTC OTLP Baseline
     slug: otc_logs_otlp_none_baseline
     short: OTC OTLP/Baseline
