@@ -1,12 +1,22 @@
 receivers:
   otlp:
     protocols:
-      http:
-        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  attributes:
+    actions:
+      - key: exception.kind
+        from_attribute: exception.type
+        action: insert
+      - key: exception.type
+        action: delete
 
 exporters:
-  otlphttp:
-    endpoint: 'http://{{backend_hostname}}:1235'
+  otlp:
+    endpoint: '{{backend_hostname}}:1235'
+    compression: {{ compression_method | default("none") }}
     tls:
       insecure: true
     sending_queue:
@@ -28,10 +38,11 @@ service:
   pipelines:
     logs:
       receivers: [otlp]
-      exporters: [otlphttp]
+      processors: [attributes]
+      exporters: [otlp]
     metrics:
       receivers: [otlp]
-      exporters: [otlphttp]
+      exporters: [otlp]
     traces:
       receivers: [otlp]
-      exporters: [otlphttp]
+      exporters: [otlp]

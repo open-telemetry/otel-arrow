@@ -1,0 +1,52 @@
+slug: dfe_logs_transform_attr_processor_insert
+name: Dataflow Engine Attribute Insert
+description: >
+  Inserting an attribute "processing.engine" with a static value "benchmark" on
+  logs in the Dataflow Engine. Comparing the attributes processor vs the transform
+  processor (OPL) across the OTAP and OTLP protocols.
+
+chart:
+  axes:
+    x:
+      title: Generated Load (logs/sec)
+      description: Rate at which the load generator is configured to produce logs e.g. "100k" == "100,000 logs/sec".
+
+tests:
+  - name: 100k
+    loadgen_rate: 100000
+  - name: 200k
+    loadgen_rate: 200000
+  - name: 300k
+    loadgen_rate: 300000
+  - name: 400k
+    loadgen_rate: 400000
+  - name: 600k
+    loadgen_rate: 600000
+  - name: 800k
+    loadgen_rate: 800000
+  - name: 1000k
+    loadgen_rate: 1000000
+    label: 1M
+
+suites:
+  # DFE OTAP
+  - name: DFE OTAP Attr Insert (Logs)
+    slug: dfe_logs_otap_none_attr_insert
+    short: OTAP/Attr
+  - name: DFE OTAP Transform Insert (Logs)
+    slug: dfe_logs_otap_none_transform_insert
+    short: OTAP/Transform
+  - name: DFE OTAP Baseline (Logs)
+    slug: dfe_logs_otap_none_baseline
+    short: OTAP/Baseline
+
+  # DFE OTLP
+  - name: DFE OTLP Attr Insert (Logs)
+    slug: dfe_logs_otlp_none_attr_insert
+    short: OTLP/Attr
+  - name: DFE OTLP Transform Insert (Logs)
+    slug: dfe_logs_otlp_none_transform_insert
+    short: OTLP/Transform
+  - name: DFE OTLP Baseline (Logs)
+    slug: dfe_logs_otlp_none_baseline
+    short: OTLP/Baseline

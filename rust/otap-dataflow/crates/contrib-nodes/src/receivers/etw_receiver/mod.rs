@@ -291,7 +291,7 @@ impl EtwReceiver {
                             event_count += 1;
 
                             // Log first 100 events individually, then every 1000th.
-                            if event_count <= 100 || event_count % 1000 == 0 {
+                            if event_count <= 100 || event_count.is_multiple_of(1000) {
                                 otel_info!(
                                     "etw_receiver.event",
                                     total = event_count,
