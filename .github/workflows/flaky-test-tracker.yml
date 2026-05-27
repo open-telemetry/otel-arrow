@@ -91,6 +91,7 @@ jobs:
         env:
           GITHUB_REPO_URL: ${{ github.server_url }}/${{ github.repository }}
           FLAKY_ISSUE_LABEL: ${{ env.FLAKY_ISSUE_LABEL }}
+          FLAKY_ISSUE_NUMBER: ${{ env.FLAKY_ISSUE_NUMBER }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 .github/workflows/scripts/parse_flaky.py
 
