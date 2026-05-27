@@ -150,4 +150,5 @@ comparisons:
   - comparisons/log_transform_attr_processor_rename.yaml
   - comparisons/log_transform_attr_processor_insert.yaml
   - comparisons/logs_attr_processor_multi_batch.yaml
-  - comparisons/logs_attr_processor_multi_transform.yaml
+  - comparisons/logs_attr_processor_insert_multi_transform.yaml
+  - comparisons/logs_attr_processor_rename_multi_transform.yaml
