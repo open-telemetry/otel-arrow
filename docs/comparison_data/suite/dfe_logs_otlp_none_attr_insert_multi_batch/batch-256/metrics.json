@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-256 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -1.2658227682113647
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-256 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 82.484861006434
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-256 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 83.05837871674491
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-256 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 49.723958333333336
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-256 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 50.41796875
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-256 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 398191.0432922879
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-256 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 401872.13473540265
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-256 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000575
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-256 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 169952801.4482735
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-256 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 143491881.40020403
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Batch (Logs)/batch-256 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 422.90267664408344
+  }
+]

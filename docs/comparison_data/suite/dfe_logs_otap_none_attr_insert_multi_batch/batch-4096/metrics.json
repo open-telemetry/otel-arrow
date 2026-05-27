@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-4096 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -1.2658227682113647
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-4096 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 17.240580038395883
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-4096 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 17.570084138360862
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-4096 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 57.98880208333333
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-4096 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 59.76171875
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-4096 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 399128.3239495233
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-4096 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 401394.2898952851
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-4096 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000615
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-4096 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 49669493.92936531
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-4096 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 41991102.5457971
+  },
+  {
+    "extra": "DFE OTAP Attr Insert Multi Batch (Logs)/batch-4096 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 123.7424028685684
+  }
+]

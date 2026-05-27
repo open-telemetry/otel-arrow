@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-4096 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -1.482440710067749
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-4096 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 57.504727479780534
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-4096 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 61.84700093428839
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-4096 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 89.6578125
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-4096 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 95.48046875
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-4096 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 401783.1681794541
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-4096 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 400876.698340245
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-4096 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000603
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-4096 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 144696328.23854503
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-4096 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 143227913.42458117
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Batch (Logs)/batch-4096 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 360.9497105659499
+  }
+]

@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-2048 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -1.6949152946472168
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-2048 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 44.93048310160311
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-2048 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 45.23364485981308
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-2048 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 55.77747395833333
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-2048 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 57.6875
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-2048 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 396969.6147009555
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-2048 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 401635.97041040706
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-2048 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000595
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-2048 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 155456487.7717056
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-2048 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 144658616.02478704
+  },
+  {
+    "extra": "DFE OTLP Attr Rename Multi Batch (Logs)/batch-2048 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 387.0581801048701
+  }
+]
