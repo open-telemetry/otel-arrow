@@ -2,8 +2,8 @@ slug: log_transform_attr_processor_insert
 name: Attribute Insert
 description: >
   Inserting an attribute "processing.engine" with a static value "benchmark" on
-  logs. Comparing the attributes processor vs the transform processor (OPL)
-  across engines and transports.
+  logs. Comparing the attributes processor vs the transform processor across
+  engines and transports.
 
 chart:
   axes:
