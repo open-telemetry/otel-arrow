@@ -1,0 +1,8 @@
+groups:
+  - id: event.otap.syslog_cef_receiver.start
+    type: event
+    name: syslog_cef_receiver.start
+    stability: development
+    brief: >
+      Emitted by the syslog/CEF receiver when it begins listening on its
+      configured socket.

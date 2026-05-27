@@ -73,9 +73,17 @@ groups:
                   tls:
                     cert_file: "/tmp/df-engine-tls/cert.pem"
                     key_file: "/tmp/df-engine-tls/key.pem"
+          syslog_in:
+            type: "urn:otel:receiver:syslog_cef"
+            config:
+              protocol:
+                tcp:
+                  listening_addr: "127.0.0.1:14514"
           sink:
             type: "urn:otel:exporter:noop"
             config: {}
         connections:
           - from: otlp_in
+            to: sink
+          - from: syslog_in
             to: sink
