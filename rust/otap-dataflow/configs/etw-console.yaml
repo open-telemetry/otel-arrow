@@ -27,9 +27,15 @@ groups:
             config:
               session_name: "OtelArrowETW"
               providers:
-                # Microsoft-Windows-Kernel-Process
-                - guid: "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716"
-                  level: information
+                # Microsoft-Windows-Kernel-Process (manifest-based)
+                #- guid: "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716"
+                #  level: information
+                # Microsoft.Windows.Kernel.Power (TraceLogging — will produce decoded fields)
+                #- guid: "331c3b3a-2005-44c2-ac5e-77220c37d6b4"
+                #  level: verbose
+                # Rustic Provider
+                - guid: "d2387720-2907-5677-8625-c1bdc4155197"
+                  level: verbose
           console:
             type: exporter:console
             config: {}

@@ -34,6 +34,15 @@
 //! TID, timestamp, etc.) is read from the session's [`AncillaryData`] which
 //! `one_collect` populates before each dispatch.
 //!
+//! ## TDH Decoding
+//!
+//! For TraceLogging and TraceLoggingDynamic events the callback uses
+//! [`one_collect::etw::tdh::TdhDecoder`] to discover the event schema at
+//! runtime via the Windows TDH APIs.  The decoder maintains a schema cache
+//! so that repeated events with the same layout avoid kernel transitions.
+//! Decoded field data is copied into [`DecodedField`] structs and sent
+//! across the channel alongside the event header metadata.
+//!
 //! ## Lifecycle
 //!
 //! The session lives until the process exits.  Dropping individual receivers
@@ -42,12 +51,14 @@
 //! (i.e. no receivers remain) the callback becomes a no-op.
 
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
 use std::sync::Mutex;
 
 use one_collect::Guid;
+use one_collect::etw::tdh::{TdhDecodeError, TdhDecoder};
 use one_collect::etw::{self, EtwSession};
 use otap_df_engine::error::Error;
 use otap_df_telemetry::{otel_error, otel_info, otel_warn};
@@ -63,6 +74,23 @@ use super::{Config, ProviderConfig, TraceLevel};
 const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
 // ── Event data transferred across the channel ────────────────────────────────
+
+/// A single decoded field from a TDH-decoded TraceLogging event.
+///
+/// During the `ProcessTrace` callback the raw `EVENT_RECORD` is still valid,
+/// so we copy each field's bytes into an owned `Vec<u8>` before sending the
+/// event across the channel.
+#[derive(Debug, Clone)]
+pub struct DecodedField {
+    /// Field name (e.g. `"ProcessId"`, or `"Parent.ChildField"` for nested structs).
+    pub name: String,
+    /// Type name matching one_collect conventions (e.g. `"u32"`, `"string"`, `"wstring"`).
+    pub type_name: String,
+    /// Raw field data bytes copied from the event payload.
+    /// Empty for unsupported or zero-length fields.
+    #[expect(dead_code, reason = "populated for future Arrow conversion")]
+    pub data: Vec<u8>,
+}
 
 /// Lightweight snapshot of an ETW event captured in the `ProcessTrace` callback.
 ///
@@ -91,6 +119,17 @@ pub struct EtwEventData {
     pub level: u8,
     /// Keywords from the event descriptor.
     pub keywords: u64,
+    /// TDH-decoded event payload fields.
+    ///
+    /// Populated for TraceLogging / TraceLoggingDynamic events whose schema
+    /// can be discovered via TDH.  Empty for manifest-based events (which
+    /// will be supported in a future extension) or when decoding fails.
+    pub decoded_fields: Vec<DecodedField>,
+    /// Raw copy of the event's `UserData` payload.
+    ///
+    /// Provided for consumers that need access to the full uninterpreted
+    /// event bytes (e.g. for binary-level forwarding or custom decoding).
+    pub user_data: Vec<u8>,
 }
 
 // ── GUID parsing ─────────────────────────────────────────────────────────────
@@ -184,6 +223,50 @@ fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
     unreachable!("validated upstream: provider must specify either 'name' or 'guid'")
 }
 
+// ── TDH field extraction ─────────────────────────────────────────────────────
+
+/// Extract decoded fields from a TDH-decoded event.
+///
+/// For each field in the event format, this function uses the format's
+/// `try_get_field_data_closure` to correctly resolve dynamic offsets
+/// (e.g. for null-terminated strings that shift subsequent field positions)
+/// and copies the field data into an owned [`DecodedField`].
+///
+/// # Safety
+///
+/// This function is called during the `ProcessTrace` callback while
+/// the `EVENT_RECORD` (and its `UserData`) is still valid.
+fn extract_decoded_fields(
+    format: &one_collect::event::EventFormat,
+    event_data: &[u8],
+) -> Vec<DecodedField> {
+    let mut fields = Vec::with_capacity(format.fields().len());
+
+    for field in format.fields() {
+        // `try_get_field_data_closure` may panic with `todo!()` for
+        // unsupported LocationType variants (e.g. DynAbsolute).
+        // Since we're called from an `extern "system"` ETW callback
+        // that cannot unwind, we must catch any panic here to prevent
+        // the process from aborting.
+        let data = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(mut data_fn) = format.try_get_field_data_closure(&field.name) {
+                data_fn(event_data).to_vec()
+            } else {
+                Vec::new()
+            }
+        }))
+        .unwrap_or_default();
+
+        fields.push(DecodedField {
+            name: field.name.clone(),
+            type_name: field.type_name.clone(),
+            data,
+        });
+    }
+
+    fields
+}
+
 // ── Per-session state ────────────────────────────────────────────────────────
 
 /// State for a single ETW session keyed by `session_name`.
@@ -219,7 +302,10 @@ static SESSIONS: Mutex<Option<HashMap<String, SessionEntry>>> = Mutex::new(None)
 /// 3. Registers a **provider-wide event** (catch-all) per provider that uses
 ///    `AncillaryData` to extract header fields and round-robins the resulting
 ///    `EtwEventData` across the N senders.
-/// 4. Calls `parse_until` which blocks until the process exits.
+/// 4. Creates a shared [`TdhDecoder`] for runtime schema discovery of
+///    TraceLogging events.
+/// 5. Calls `parse_until` which blocks until the process exits.
+#[allow(unsafe_code)]
 fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> Result<(), Error> {
     // Resolve all provider GUIDs up-front so configuration errors are
     // reported synchronously (before the session thread is spawned).
@@ -265,11 +351,19 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
             let closed_logged: Rc<Cell<bool>> = Rc::new(Cell::new(false));
             let txs: Rc<Vec<mpsc::Sender<EtwEventData>>> = Rc::new(txs);
 
+            // TDH decoder shared across all provider callbacks.
+            // All callbacks run on the single ProcessTrace thread, so
+            // Rc<RefCell<>> is safe (no cross-thread access).
+            let decoder: Rc<RefCell<TdhDecoder>> = Rc::new(RefCell::new(TdhDecoder::new()));
+
             // Register a provider-wide event for each configured provider.
             // A "wide event" fires for ALL event IDs from the provider,
             // unlike `add_event` which only fires for a specific event ID.
             for (guid, level, keywords) in &resolved_providers {
                 let mut wide_event = one_collect::event::Event::new(0, "otap_wide".to_string());
+                // Mark as a wildcard event so the callback fires for ALL
+                // event IDs from this provider, not just event ID 0.
+                wide_event.set_id_wild_card_flag();
                 {
                     let ext = wide_event.extension_mut();
                     *ext.provider_mut() = *guid;
@@ -282,28 +376,91 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                 let dropped = Rc::clone(&dropped);
                 let closed_logged = Rc::clone(&closed_logged);
                 let txs = Rc::clone(&txs);
+                let decoder = Rc::clone(&decoder);
 
                 wide_event.add_callback(move |_event_data| {
                     // Read header metadata from AncillaryData (populated
                     // by one_collect before each dispatch).
                     let anc = ancillary.borrow();
 
-                    // Build EtwEventData from AncillaryData.
-                    // PID, TID, timestamp, provider, and opcode are
-                    // available directly; event_id/version/level/keywords
-                    // come from the full_data bytes passed via EventData.
+                    // Extract event descriptor fields from the raw EVENT_RECORD.
+                    // AncillaryData exposes id/opcode/version directly; for
+                    // level and keywords we read from the EVENT_RECORD pointer.
+                    let event_id = anc.id();
+                    let opcode = anc.op_code();
+                    let version = anc.version();
+
+                    let (level, keywords, record_ptr) = match anc.raw_event_record() {
+                        Some(ptr) => {
+                            // SAFETY: The EVENT_RECORD pointer is valid for the
+                            // duration of the ProcessTrace callback.  one_collect
+                            // sets this pointer before dispatching and it points
+                            // to a kernel-owned buffer that is stable until the
+                            // callback returns.
+                            let record = unsafe { &*ptr };
+                            (
+                                record.EventHeader.EventDescriptor.Level,
+                                record.EventHeader.EventDescriptor.Keyword,
+                                Some(ptr),
+                            )
+                        }
+                        None => (0, 0, None),
+                    };
+
+                    // TDH decode: attempt to decode TraceLogging event schema.
+                    // For manifest-based events (NotFound) we proceed with
+                    // empty decoded_fields — future work will add manifest
+                    // decoding with a (Provider, Id, Version) cache key.
+                    let (decoded_fields, user_data) = if let Some(ptr) = record_ptr {
+                        // SAFETY: same invariant as above — EVENT_RECORD is valid
+                        // for the duration of this callback.
+                        let record = unsafe { &*ptr };
+                        let ud = if record.UserData.is_null() || record.UserDataLength == 0 {
+                            Vec::new()
+                        } else {
+                            unsafe {
+                                std::slice::from_raw_parts(
+                                    record.UserData as *const u8,
+                                    record.UserDataLength as usize,
+                                )
+                            }
+                            .to_vec()
+                        };
+
+                        let fields = match decoder.borrow_mut().decode(record) {
+                            Ok(decoded) => {
+                                extract_decoded_fields(decoded.format(), decoded.event_data())
+                            }
+                            Err(TdhDecodeError::NotFound) => {
+                                // Manifest-based event — no TL schema available.
+                                // This is expected and not an error.
+                                Vec::new()
+                            }
+                            Err(_e) => {
+                                // TDH decoding failed — log but continue.
+                                // The event still carries header metadata and
+                                // raw user_data for downstream consumers.
+                                Vec::new()
+                            }
+                        };
+                        (fields, ud)
+                    } else {
+                        (Vec::new(), Vec::new())
+                    };
+
+                    // Build EtwEventData with all available metadata.
                     let data = EtwEventData {
                         provider_id: anc.provider().to_bytes(),
                         timestamp: anc.time(),
                         process_id: anc.pid(),
                         thread_id: anc.tid(),
-                        // TODO: populate event_id/opcode/level/keywords/version
-                        // once WindowsEventExtension exposes EVENT_DESCRIPTOR.
-                        event_id: 0,
-                        opcode: 0,
-                        version: 0,
-                        level: 0,
-                        keywords: 0,
+                        event_id,
+                        opcode,
+                        version,
+                        level,
+                        keywords,
+                        decoded_fields,
+                        user_data,
                     };
 
                     // Drop the borrow before sending.

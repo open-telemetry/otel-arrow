@@ -43,7 +43,7 @@
 
 mod session;
 
-use session::EtwEventData;
+use session::{DecodedField, EtwEventData};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -292,6 +292,7 @@ impl EtwReceiver {
 
                             // Log first 100 events individually, then every 1000th.
                             if event_count <= 100 || event_count.is_multiple_of(1000) {
+                                let field_summary = summarize_decoded_fields(&event.decoded_fields);
                                 otel_info!(
                                     "etw_receiver.event",
                                     total = event_count,
@@ -302,6 +303,9 @@ impl EtwReceiver {
                                     tid = event.thread_id,
                                     timestamp = event.timestamp,
                                     keywords = event.keywords,
+                                    decoded_field_count = event.decoded_fields.len(),
+                                    user_data_len = event.user_data.len(),
+                                    fields = field_summary.as_str(),
                                 );
                             }
 
@@ -373,6 +377,37 @@ impl local::Receiver<OtapPdata> for EtwReceiver {
         self.run_event_loop(&mut ctrl_chan, &effect_handler, telemetry_timer_handle)
             .await
     }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Build a compact summary string of decoded fields for diagnostic logging.
+///
+/// Produces a comma-separated list of `name:type_name` pairs, e.g.
+/// `"ProcessId:u32, ImageFileName:string"`.  Truncated to at most 5 fields
+/// with a `"… +N more"` suffix to keep log lines readable.
+fn summarize_decoded_fields(fields: &[DecodedField]) -> String {
+    if fields.is_empty() {
+        return String::new();
+    }
+
+    const MAX_FIELDS: usize = 5;
+    let mut summary = String::new();
+
+    for (i, field) in fields.iter().take(MAX_FIELDS).enumerate() {
+        if i > 0 {
+            summary.push_str(", ");
+        }
+        summary.push_str(&field.name);
+        summary.push(':');
+        summary.push_str(&field.type_name);
+    }
+
+    if fields.len() > MAX_FIELDS {
+        summary.push_str(&format!(", ... +{} more", fields.len() - MAX_FIELDS));
+    }
+
+    summary
 }
 
 // ── Telemetry ────────────────────────────────────────────────────────────────
