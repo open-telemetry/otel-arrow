@@ -13,7 +13,7 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_pdata::otlp::OtlpProtoBytes;
-use otap_df_pdata::views::otap::OtapLogsView;
+use otap_df_pdata::views::otap::DecodedOtapArrowRecords;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 
@@ -399,14 +399,16 @@ impl AzureMonitorExporter {
                 let log_entries = match &payload {
                     OtapPayload::OtapArrowRecords(otap_records) => match otap_records {
                         OtapArrowRecords::Logs(_) => {
-                            let mut otap_records = otap_records.clone();
-                            otap_records.decode_transport_optimized_ids().map_err(|e| {
+                            let decoded_records = DecodedOtapArrowRecords::clone_and_decode(
+                                otap_records,
+                            )
+                            .map_err(|e| {
                                 let error = Error::LogsViewCreationFailed { source: e };
                                 EngineError::InternalError {
                                     message: error.to_string(),
                                 }
                             })?;
-                            let logs_view = OtapLogsView::try_from(&otap_records).map_err(|e| {
+                            let logs_view = decoded_records.logs_view().map_err(|e| {
                                 let error = Error::LogsViewCreationFailed { source: e };
                                 EngineError::InternalError {
                                     message: error.to_string(),

@@ -15,6 +15,37 @@ pub(crate) mod traces;
 #[cfg(test)]
 pub(crate) mod transport_guard_test_util;
 
+use crate::error::Result;
+use crate::otap::OtapArrowRecords;
+
 pub use logs::OtapLogsView;
 pub use metrics::OtapMetricsView;
 pub use traces::OtapTracesView;
+
+/// Owns OTAP Arrow records after transport-optimized IDs have been decoded.
+///
+/// OTAP views borrow from decoded records, so callers that only have a borrowed
+/// payload can use this wrapper to preserve the original payload while keeping
+/// the cloned, decoded records alive for view construction.
+pub struct DecodedOtapArrowRecords {
+    records: OtapArrowRecords,
+}
+
+impl DecodedOtapArrowRecords {
+    /// Clone borrowed OTAP Arrow records and decode transport-optimized IDs.
+    pub fn clone_and_decode(records: &OtapArrowRecords) -> Result<Self> {
+        let mut records = records.clone();
+        records.decode_transport_optimized_ids()?;
+        Ok(Self { records })
+    }
+
+    /// Create a logs view over the decoded records.
+    pub fn logs_view(&self) -> Result<OtapLogsView<'_>> {
+        OtapLogsView::try_from(&self.records)
+    }
+
+    /// Create a metrics view over the decoded records.
+    pub fn metrics_view(&self) -> Result<OtapMetricsView<'_>> {
+        OtapMetricsView::try_from(&self.records)
+    }
+}

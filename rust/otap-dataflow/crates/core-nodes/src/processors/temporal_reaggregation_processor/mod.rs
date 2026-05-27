@@ -34,7 +34,7 @@ use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
 use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::views::otap::OtapMetricsView;
+use otap_df_pdata::views::otap::DecodedOtapArrowRecords;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
 use otap_df_pdata_views::views::common::InstrumentationScopeView;
@@ -611,12 +611,8 @@ impl TemporalReaggregationProcessor {
     ) -> Result<(), Error> {
         let result = match pdata.payload_ref() {
             OtapPayload::OtapArrowRecords(records) => {
-                let mut records = records.clone();
-                match records
-                    .decode_transport_optimized_ids()
-                    .and_then(|()| OtapMetricsView::try_from(&records))
-                {
-                    Ok(view) => self.process_view(effect_handler, &view).await,
+                let decoded_records = match DecodedOtapArrowRecords::clone_and_decode(records) {
+                    Ok(decoded_records) => decoded_records,
                     Err(e) => {
                         otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
                         self.metrics.batches_rejected.inc();
@@ -627,7 +623,21 @@ impl TemporalReaggregationProcessor {
 
                         return Ok(());
                     }
-                }
+                };
+                let view = match decoded_records.metrics_view() {
+                    Ok(view) => view,
+                    Err(e) => {
+                        otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
+                        self.metrics.batches_rejected.inc();
+                        let msg = format!("Failed to create view: {:#}", e);
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(msg, pdata))
+                            .await?;
+
+                        return Ok(());
+                    }
+                };
+                self.process_view(effect_handler, &view).await
             }
             OtapPayload::OtlpBytes(otlp) => {
                 let view = RawMetricsData::new(otlp.as_bytes());

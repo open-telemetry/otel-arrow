@@ -65,7 +65,7 @@ use otap_df_pdata::TryFromWithOptions;
 #[cfg(test)]
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otlp::OtlpProtoBytes;
-use otap_df_pdata::views::otap::OtapLogsView;
+use otap_df_pdata::views::otap::DecodedOtapArrowRecords;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
@@ -383,14 +383,15 @@ impl ResourceValidatorProcessor {
         arrow_records: &OtapArrowRecords,
         allowed_values: &HashSet<String>,
     ) -> Result<(), (ValidationFailure, String)> {
-        let mut arrow_records = arrow_records.clone();
-        let logs_view = arrow_records
-            .decode_transport_optimized_ids()
-            .and_then(|()| OtapLogsView::try_from(&arrow_records))
-            .map_err(|_| {
+        let decoded_records =
+            DecodedOtapArrowRecords::clone_and_decode(arrow_records).map_err(|_| {
                 let failure = ValidationFailure::ConversionError;
                 (failure, self.format_error_message(failure))
             })?;
+        let logs_view = decoded_records.logs_view().map_err(|_| {
+            let failure = ValidationFailure::ConversionError;
+            (failure, self.format_error_message(failure))
+        })?;
 
         for resource_logs in logs_view.resources() {
             if let Some(resource) = resource_logs.resource() {
@@ -569,6 +570,7 @@ mod tests {
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
     };
+    use otap_df_pdata::views::otap::OtapLogsView;
     use prost::Message as ProstMessage;
 
     // TODO: Refactor tests to use the actual `ResourceValidatorProcessor` instead of `TestValidator`.
