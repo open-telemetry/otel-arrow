@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Dataflow Engine Logs - Benchmark Dashboard</title>
+  <title>Log Baselines - Benchmark Dashboard</title>
   <link rel="stylesheet" href="../shared/styles.css">
 </head>
 <body>
@@ -29,7 +29,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>
   <script>window.DATA_PATH = "../../comparison_data/suite";</script>
   <script>window.METRICS_META = {"cpu_percentage_normalized_avg": {"label": "CPU Average"}, "cpu_percentage_normalized_max": {"label": "CPU Max"}, "ram_mib_avg": {"label": "Memory Average"}, "ram_mib_max": {"label": "Memory Max"}, "network_tx_bytes_rate_avg": {"label": "Network TX Rate"}, "network_rx_bytes_rate_avg": {"label": "Network RX Rate"}, "dropped_logs_percentage": {"label": "Dropped Logs"}, "logs_delivery_deviation_percentage": {"label": "Logs Delivery Deviation"}, "logs_produced_rate": {"label": "Offered Load Rate"}, "loadgen_logs_sent_rate": {"label": "Loadgen Sent Rate"}, "logs_received_rate": {"label": "Collector Received Rate"}, "collector_logs_sent_rate": {"label": "Collector Sent Rate"}, "backend_logs_received_rate": {"label": "Backend Received Rate"}, "test_duration": {"label": "Test Duration"}};</script>
-  <script>window.COMPARISON_SLUG = "dfe_logs_baselines";</script>
+  <script>window.COMPARISON_SLUG = "log_baselines_multi_rate";</script>
   <script src="../../comparison_data/suite/dfe_logs_otap_none_baseline/data.js"></script>
   <script src="../../comparison_data/suite/dfe_logs_otap_gzip_baseline/data.js"></script>
   <script src="../../comparison_data/suite/dfe_logs_otap_zstd_baseline/data.js"></script>
@@ -39,10 +39,17 @@
   <script src="../../comparison_data/suite/dfe_logs_otlphttp_none_baseline/data.js"></script>
   <script src="../../comparison_data/suite/dfe_logs_otlphttp_gzip_baseline/data.js"></script>
   <script src="../../comparison_data/suite/dfe_logs_otlphttp_zstd_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/otc_logs_otap_none_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/otc_logs_otap_gzip_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/otc_logs_otap_zstd_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/otc_logs_otlp_none_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/otc_logs_otlp_gzip_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/otc_logs_otlp_zstd_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/otc_logs_otlphttp_none_baseline/data.js"></script>
   <script>window.COMPARISON = {
-  "slug": "dfe_logs_baselines",
-  "name": "Dataflow Engine Logs",
-  "description": "Baseline DFE logs runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.",
+  "slug": "log_baselines_multi_rate",
+  "name": "Log Baselines",
+  "description": "Baseline log runs across engines over OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.",
   "chart": {
     "axes": {
       "x": {
@@ -92,47 +99,82 @@
     {
       "name": "DFE Logs OTAP Baseline (None)",
       "slug": "dfe_logs_otap_none_baseline",
-      "short": "OTAP/None"
+      "short": "DFE OTAP/None"
     },
     {
       "name": "DFE Logs OTAP Baseline (Gzip)",
       "slug": "dfe_logs_otap_gzip_baseline",
-      "short": "OTAP/Gzip"
+      "short": "DFE OTAP/Gzip"
     },
     {
       "name": "DFE Logs OTAP Baseline (Zstd)",
       "slug": "dfe_logs_otap_zstd_baseline",
-      "short": "OTAP/Zstd"
+      "short": "DFE OTAP/Zstd"
     },
     {
       "name": "DFE Logs OTLP Baseline (None)",
       "slug": "dfe_logs_otlp_none_baseline",
-      "short": "OTLP/None"
+      "short": "DFE OTLP/None"
     },
     {
       "name": "DFE Logs OTLP Baseline (Gzip)",
       "slug": "dfe_logs_otlp_gzip_baseline",
-      "short": "OTLP/Gzip"
+      "short": "DFE OTLP/Gzip"
     },
     {
       "name": "DFE Logs OTLP Baseline (Zstd)",
       "slug": "dfe_logs_otlp_zstd_baseline",
-      "short": "OTLP/Zstd"
+      "short": "DFE OTLP/Zstd"
     },
     {
       "name": "DFE Logs OTLP/HTTP Baseline (None)",
       "slug": "dfe_logs_otlphttp_none_baseline",
-      "short": "OTLP-HTTP/None"
+      "short": "DFE OTLP-HTTP/None"
     },
     {
       "name": "DFE Logs OTLP/HTTP Baseline (Gzip)",
       "slug": "dfe_logs_otlphttp_gzip_baseline",
-      "short": "OTLP-HTTP/Gzip"
+      "short": "DFE OTLP-HTTP/Gzip"
     },
     {
       "name": "DFE Logs OTLP/HTTP Baseline (Zstd)",
       "slug": "dfe_logs_otlphttp_zstd_baseline",
-      "short": "OTLP-HTTP/Zstd"
+      "short": "DFE OTLP-HTTP/Zstd"
+    },
+    {
+      "name": "OTC Logs OTAP Baseline (None)",
+      "slug": "otc_logs_otap_none_baseline",
+      "short": "OTC OTAP/None"
+    },
+    {
+      "name": "OTC Logs OTAP Baseline (Gzip)",
+      "slug": "otc_logs_otap_gzip_baseline",
+      "short": "OTC OTAP/Gzip"
+    },
+    {
+      "name": "OTC Logs OTAP Baseline (Zstd)",
+      "slug": "otc_logs_otap_zstd_baseline",
+      "short": "OTC OTAP/Zstd"
+    },
+    {
+      "name": "OTC Logs OTLP Baseline (None)",
+      "slug": "otc_logs_otlp_none_baseline",
+      "short": "OTC OTLP/None"
+    },
+    {
+      "name": "OTC Logs OTLP Baseline (Gzip)",
+      "slug": "otc_logs_otlp_gzip_baseline",
+      "short": "OTC OTLP/Gzip"
+    },
+    {
+      "name": "OTC Logs OTLP Baseline (Zstd)",
+      "slug": "otc_logs_otlp_zstd_baseline",
+      "short": "OTC OTLP/Zstd"
+    },
+    {
+      "name": "OTC Logs OTLP/HTTP Baseline (None)",
+      "slug": "otc_logs_otlphttp_none_baseline",
+      "short": "OTC OTLP-HTTP/None"
     }
   ]
 };</script>

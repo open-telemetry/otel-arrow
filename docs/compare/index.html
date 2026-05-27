@@ -69,15 +69,40 @@
   <script src="../comparison_data/suite/dfe_traces_otlphttp_gzip_baseline/data.js"></script>
   <script src="../comparison_data/suite/dfe_traces_otlphttp_none_baseline/data.js"></script>
   <script src="../comparison_data/suite/dfe_traces_otlphttp_zstd_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otap_gzip_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otap_none_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otap_zstd_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otlp_gzip_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otlp_none_attr_insert/data.js"></script>
   <script src="../comparison_data/suite/otc_logs_otlp_none_attr_insert_multi_batch/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otlp_none_attr_rename/data.js"></script>
   <script src="../comparison_data/suite/otc_logs_otlp_none_attr_rename_multi_batch/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otlp_none_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otlp_none_transform_insert/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otlp_none_transform_rename/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otlp_zstd_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otlphttp_none_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_metrics_otap_gzip_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_metrics_otap_none_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_metrics_otap_zstd_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_metrics_otlp_gzip_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_metrics_otlp_none_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_metrics_otlp_zstd_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_metrics_otlphttp_none_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_traces_otap_gzip_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_traces_otap_none_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_traces_otap_zstd_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_traces_otlp_gzip_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_traces_otlp_none_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_traces_otlp_zstd_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_traces_otlphttp_none_baseline/data.js"></script>
   <script>window.DATA_PATH = "../comparison_data/suite";</script>
   <script>window.METRICS_META = {"cpu_percentage_normalized_avg": {"label": "CPU Average"}, "cpu_percentage_normalized_max": {"label": "CPU Max"}, "ram_mib_avg": {"label": "Memory Average"}, "ram_mib_max": {"label": "Memory Max"}, "network_tx_bytes_rate_avg": {"label": "Network TX Rate"}, "network_rx_bytes_rate_avg": {"label": "Network RX Rate"}, "dropped_logs_percentage": {"label": "Dropped Logs"}, "logs_delivery_deviation_percentage": {"label": "Logs Delivery Deviation"}, "logs_produced_rate": {"label": "Offered Load Rate"}, "loadgen_logs_sent_rate": {"label": "Loadgen Sent Rate"}, "logs_received_rate": {"label": "Collector Received Rate"}, "collector_logs_sent_rate": {"label": "Collector Sent Rate"}, "backend_logs_received_rate": {"label": "Backend Received Rate"}, "test_duration": {"label": "Test Duration"}};</script>
   <script>window.COMPARISONS = [
   {
-    "slug": "dfe_logs_baselines",
-    "name": "Dataflow Engine Logs",
-    "description": "Baseline DFE logs runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.",
+    "slug": "log_baselines_multi_rate",
+    "name": "Log Baselines",
+    "description": "Baseline log runs across engines over OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.",
     "chart": {
       "axes": {
         "x": {
@@ -127,54 +152,89 @@
       {
         "name": "DFE Logs OTAP Baseline (None)",
         "slug": "dfe_logs_otap_none_baseline",
-        "short": "OTAP/None"
+        "short": "DFE OTAP/None"
       },
       {
         "name": "DFE Logs OTAP Baseline (Gzip)",
         "slug": "dfe_logs_otap_gzip_baseline",
-        "short": "OTAP/Gzip"
+        "short": "DFE OTAP/Gzip"
       },
       {
         "name": "DFE Logs OTAP Baseline (Zstd)",
         "slug": "dfe_logs_otap_zstd_baseline",
-        "short": "OTAP/Zstd"
+        "short": "DFE OTAP/Zstd"
       },
       {
         "name": "DFE Logs OTLP Baseline (None)",
         "slug": "dfe_logs_otlp_none_baseline",
-        "short": "OTLP/None"
+        "short": "DFE OTLP/None"
       },
       {
         "name": "DFE Logs OTLP Baseline (Gzip)",
         "slug": "dfe_logs_otlp_gzip_baseline",
-        "short": "OTLP/Gzip"
+        "short": "DFE OTLP/Gzip"
       },
       {
         "name": "DFE Logs OTLP Baseline (Zstd)",
         "slug": "dfe_logs_otlp_zstd_baseline",
-        "short": "OTLP/Zstd"
+        "short": "DFE OTLP/Zstd"
       },
       {
         "name": "DFE Logs OTLP/HTTP Baseline (None)",
         "slug": "dfe_logs_otlphttp_none_baseline",
-        "short": "OTLP-HTTP/None"
+        "short": "DFE OTLP-HTTP/None"
       },
       {
         "name": "DFE Logs OTLP/HTTP Baseline (Gzip)",
         "slug": "dfe_logs_otlphttp_gzip_baseline",
-        "short": "OTLP-HTTP/Gzip"
+        "short": "DFE OTLP-HTTP/Gzip"
       },
       {
         "name": "DFE Logs OTLP/HTTP Baseline (Zstd)",
         "slug": "dfe_logs_otlphttp_zstd_baseline",
-        "short": "OTLP-HTTP/Zstd"
+        "short": "DFE OTLP-HTTP/Zstd"
+      },
+      {
+        "name": "OTC Logs OTAP Baseline (None)",
+        "slug": "otc_logs_otap_none_baseline",
+        "short": "OTC OTAP/None"
+      },
+      {
+        "name": "OTC Logs OTAP Baseline (Gzip)",
+        "slug": "otc_logs_otap_gzip_baseline",
+        "short": "OTC OTAP/Gzip"
+      },
+      {
+        "name": "OTC Logs OTAP Baseline (Zstd)",
+        "slug": "otc_logs_otap_zstd_baseline",
+        "short": "OTC OTAP/Zstd"
+      },
+      {
+        "name": "OTC Logs OTLP Baseline (None)",
+        "slug": "otc_logs_otlp_none_baseline",
+        "short": "OTC OTLP/None"
+      },
+      {
+        "name": "OTC Logs OTLP Baseline (Gzip)",
+        "slug": "otc_logs_otlp_gzip_baseline",
+        "short": "OTC OTLP/Gzip"
+      },
+      {
+        "name": "OTC Logs OTLP Baseline (Zstd)",
+        "slug": "otc_logs_otlp_zstd_baseline",
+        "short": "OTC OTLP/Zstd"
+      },
+      {
+        "name": "OTC Logs OTLP/HTTP Baseline (None)",
+        "slug": "otc_logs_otlphttp_none_baseline",
+        "short": "OTC OTLP-HTTP/None"
       }
     ]
   },
   {
-    "slug": "dfe_metrics_baselines",
-    "name": "Dataflow Engine Metrics",
-    "description": "Baseline DFE metrics runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.",
+    "slug": "metric_baselines_multi_rate",
+    "name": "Metric Baselines",
+    "description": "Baseline metric runs across engines over OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.",
     "chart": {
       "axes": {
         "x": {
@@ -224,54 +284,89 @@
       {
         "name": "DFE Metrics OTAP Baseline (None)",
         "slug": "dfe_metrics_otap_none_baseline",
-        "short": "OTAP/None"
+        "short": "DFE OTAP/None"
       },
       {
         "name": "DFE Metrics OTAP Baseline (Gzip)",
         "slug": "dfe_metrics_otap_gzip_baseline",
-        "short": "OTAP/Gzip"
+        "short": "DFE OTAP/Gzip"
       },
       {
         "name": "DFE Metrics OTAP Baseline (Zstd)",
         "slug": "dfe_metrics_otap_zstd_baseline",
-        "short": "OTAP/Zstd"
+        "short": "DFE OTAP/Zstd"
       },
       {
         "name": "DFE Metrics OTLP Baseline (None)",
         "slug": "dfe_metrics_otlp_none_baseline",
-        "short": "OTLP/None"
+        "short": "DFE OTLP/None"
       },
       {
         "name": "DFE Metrics OTLP Baseline (Gzip)",
         "slug": "dfe_metrics_otlp_gzip_baseline",
-        "short": "OTLP/Gzip"
+        "short": "DFE OTLP/Gzip"
       },
       {
         "name": "DFE Metrics OTLP Baseline (Zstd)",
         "slug": "dfe_metrics_otlp_zstd_baseline",
-        "short": "OTLP/Zstd"
+        "short": "DFE OTLP/Zstd"
       },
       {
         "name": "DFE Metrics OTLP/HTTP Baseline (None)",
         "slug": "dfe_metrics_otlphttp_none_baseline",
-        "short": "OTLP-HTTP/None"
+        "short": "DFE OTLP-HTTP/None"
       },
       {
         "name": "DFE Metrics OTLP/HTTP Baseline (Gzip)",
         "slug": "dfe_metrics_otlphttp_gzip_baseline",
-        "short": "OTLP-HTTP/Gzip"
+        "short": "DFE OTLP-HTTP/Gzip"
       },
       {
         "name": "DFE Metrics OTLP/HTTP Baseline (Zstd)",
         "slug": "dfe_metrics_otlphttp_zstd_baseline",
-        "short": "OTLP-HTTP/Zstd"
+        "short": "DFE OTLP-HTTP/Zstd"
+      },
+      {
+        "name": "OTC Metrics OTAP Baseline (None)",
+        "slug": "otc_metrics_otap_none_baseline",
+        "short": "OTC OTAP/None"
+      },
+      {
+        "name": "OTC Metrics OTAP Baseline (Gzip)",
+        "slug": "otc_metrics_otap_gzip_baseline",
+        "short": "OTC OTAP/Gzip"
+      },
+      {
+        "name": "OTC Metrics OTAP Baseline (Zstd)",
+        "slug": "otc_metrics_otap_zstd_baseline",
+        "short": "OTC OTAP/Zstd"
+      },
+      {
+        "name": "OTC Metrics OTLP Baseline (None)",
+        "slug": "otc_metrics_otlp_none_baseline",
+        "short": "OTC OTLP/None"
+      },
+      {
+        "name": "OTC Metrics OTLP Baseline (Gzip)",
+        "slug": "otc_metrics_otlp_gzip_baseline",
+        "short": "OTC OTLP/Gzip"
+      },
+      {
+        "name": "OTC Metrics OTLP Baseline (Zstd)",
+        "slug": "otc_metrics_otlp_zstd_baseline",
+        "short": "OTC OTLP/Zstd"
+      },
+      {
+        "name": "OTC Metrics OTLP/HTTP Baseline (None)",
+        "slug": "otc_metrics_otlphttp_none_baseline",
+        "short": "OTC OTLP-HTTP/None"
       }
     ]
   },
   {
-    "slug": "dfe_traces_baselines",
-    "name": "Dataflow Engine Traces",
-    "description": "Baseline DFE traces runs across OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.",
+    "slug": "trace_baselines_multi_rate",
+    "name": "Trace Baselines",
+    "description": "Baseline trace runs across engines over OTAP, OTLP, and OTLP/HTTP with none, gzip, and zstd compression.",
     "chart": {
       "axes": {
         "x": {
@@ -321,54 +416,89 @@
       {
         "name": "DFE Traces OTAP Baseline (None)",
         "slug": "dfe_traces_otap_none_baseline",
-        "short": "OTAP/None"
+        "short": "DFE OTAP/None"
       },
       {
         "name": "DFE Traces OTAP Baseline (Gzip)",
         "slug": "dfe_traces_otap_gzip_baseline",
-        "short": "OTAP/Gzip"
+        "short": "DFE OTAP/Gzip"
       },
       {
         "name": "DFE Traces OTAP Baseline (Zstd)",
         "slug": "dfe_traces_otap_zstd_baseline",
-        "short": "OTAP/Zstd"
+        "short": "DFE OTAP/Zstd"
       },
       {
         "name": "DFE Traces OTLP Baseline (None)",
         "slug": "dfe_traces_otlp_none_baseline",
-        "short": "OTLP/None"
+        "short": "DFE OTLP/None"
       },
       {
         "name": "DFE Traces OTLP Baseline (Gzip)",
         "slug": "dfe_traces_otlp_gzip_baseline",
-        "short": "OTLP/Gzip"
+        "short": "DFE OTLP/Gzip"
       },
       {
         "name": "DFE Traces OTLP Baseline (Zstd)",
         "slug": "dfe_traces_otlp_zstd_baseline",
-        "short": "OTLP/Zstd"
+        "short": "DFE OTLP/Zstd"
       },
       {
         "name": "DFE Traces OTLP/HTTP Baseline (None)",
         "slug": "dfe_traces_otlphttp_none_baseline",
-        "short": "OTLP-HTTP/None"
+        "short": "DFE OTLP-HTTP/None"
       },
       {
         "name": "DFE Traces OTLP/HTTP Baseline (Gzip)",
         "slug": "dfe_traces_otlphttp_gzip_baseline",
-        "short": "OTLP-HTTP/Gzip"
+        "short": "DFE OTLP-HTTP/Gzip"
       },
       {
         "name": "DFE Traces OTLP/HTTP Baseline (Zstd)",
         "slug": "dfe_traces_otlphttp_zstd_baseline",
-        "short": "OTLP-HTTP/Zstd"
+        "short": "DFE OTLP-HTTP/Zstd"
+      },
+      {
+        "name": "OTC Traces OTAP Baseline (None)",
+        "slug": "otc_traces_otap_none_baseline",
+        "short": "OTC OTAP/None"
+      },
+      {
+        "name": "OTC Traces OTAP Baseline (Gzip)",
+        "slug": "otc_traces_otap_gzip_baseline",
+        "short": "OTC OTAP/Gzip"
+      },
+      {
+        "name": "OTC Traces OTAP Baseline (Zstd)",
+        "slug": "otc_traces_otap_zstd_baseline",
+        "short": "OTC OTAP/Zstd"
+      },
+      {
+        "name": "OTC Traces OTLP Baseline (None)",
+        "slug": "otc_traces_otlp_none_baseline",
+        "short": "OTC OTLP/None"
+      },
+      {
+        "name": "OTC Traces OTLP Baseline (Gzip)",
+        "slug": "otc_traces_otlp_gzip_baseline",
+        "short": "OTC OTLP/Gzip"
+      },
+      {
+        "name": "OTC Traces OTLP Baseline (Zstd)",
+        "slug": "otc_traces_otlp_zstd_baseline",
+        "short": "OTC OTLP/Zstd"
+      },
+      {
+        "name": "OTC Traces OTLP/HTTP Baseline (None)",
+        "slug": "otc_traces_otlphttp_none_baseline",
+        "short": "OTC OTLP-HTTP/None"
       }
     ]
   },
   {
-    "slug": "dfe_logs_transform_attr_processor_rename",
-    "name": "Dataflow Engine Attribute Rename",
-    "description": "Renaming the semantic-convention attribute exception.type to exception.kind on logs in the Dataflow Engine, comparing the attributes processor vs the transform processor (OPL) across the OTAP and OTLP protocols.\n",
+    "slug": "log_transform_attr_processor_rename",
+    "name": "Log Attribute Rename (Multi Rate)",
+    "description": "Renaming the semantic-convention attribute exception.type to exception.kind on logs. Comparing the attributes processor vs the transform processor across engines and transports.\n",
     "chart": {
       "axes": {
         "x": {
@@ -416,41 +546,56 @@
     ],
     "suites": [
       {
-        "name": "DFE OTAP Attr Rename (Logs)",
+        "name": "DFE OTAP Attr Rename",
         "slug": "dfe_logs_otap_none_attr_rename",
-        "short": "OTAP/Attr"
+        "short": "DFE OTAP/Attr"
       },
       {
-        "name": "DFE OTAP Transform Rename (Logs)",
+        "name": "DFE OTAP Transform Rename",
         "slug": "dfe_logs_otap_none_transform_rename",
-        "short": "OTAP/Transform"
+        "short": "DFE OTAP/Transform"
       },
       {
-        "name": "DFE OTAP Baseline (Logs)",
+        "name": "DFE OTAP Baseline",
         "slug": "dfe_logs_otap_none_baseline",
-        "short": "OTAP/Baseline"
+        "short": "DFE OTAP/Baseline"
       },
       {
-        "name": "DFE OTLP Attr Rename (Logs)",
+        "name": "DFE OTLP Attr Rename",
         "slug": "dfe_logs_otlp_none_attr_rename",
-        "short": "OTLP/Attr"
+        "short": "DFE OTLP/Attr"
       },
       {
-        "name": "DFE OTLP Transform Rename (Logs)",
+        "name": "DFE OTLP Transform Rename",
         "slug": "dfe_logs_otlp_none_transform_rename",
-        "short": "OTLP/Transform"
+        "short": "DFE OTLP/Transform"
       },
       {
-        "name": "DFE OTLP Baseline (Logs)",
+        "name": "DFE OTLP Baseline",
         "slug": "dfe_logs_otlp_none_baseline",
-        "short": "OTLP/Baseline"
+        "short": "DFE OTLP/Baseline"
+      },
+      {
+        "name": "OTC OTLP Attr Rename",
+        "slug": "otc_logs_otlp_none_attr_rename",
+        "short": "OTC OTLP/Attr"
+      },
+      {
+        "name": "OTC OTLP Transform Rename",
+        "slug": "otc_logs_otlp_none_transform_rename",
+        "short": "OTC OTLP/Transform"
+      },
+      {
+        "name": "OTC OTLP Baseline",
+        "slug": "otc_logs_otlp_none_baseline",
+        "short": "OTC OTLP/Baseline"
       }
     ]
   },
   {
-    "slug": "dfe_logs_transform_attr_processor_insert",
-    "name": "Dataflow Engine Attribute Insert",
-    "description": "Inserting an attribute \"processing.engine\" with a static value \"benchmark\" on logs in the Dataflow Engine. Comparing the attributes processor vs the transform processor (OPL) across the OTAP and OTLP protocols.\n",
+    "slug": "log_transform_attr_processor_insert",
+    "name": "Log Attribute Insert (Multi Rate)",
+    "description": "Inserting an attribute \"processing.engine\" with a static value \"benchmark\" on logs. Comparing the attributes processor vs the transform processor across engines and transports.\n",
     "chart": {
       "axes": {
         "x": {
@@ -498,34 +643,49 @@
     ],
     "suites": [
       {
-        "name": "DFE OTAP Attr Insert (Logs)",
+        "name": "DFE OTAP Attr Insert",
         "slug": "dfe_logs_otap_none_attr_insert",
-        "short": "OTAP/Attr"
+        "short": "DFE OTAP/Attr"
       },
       {
-        "name": "DFE OTAP Transform Insert (Logs)",
+        "name": "DFE OTAP Transform Insert",
         "slug": "dfe_logs_otap_none_transform_insert",
-        "short": "OTAP/Transform"
+        "short": "DFE OTAP/Transform"
       },
       {
-        "name": "DFE OTAP Baseline (Logs)",
+        "name": "DFE OTAP Baseline",
         "slug": "dfe_logs_otap_none_baseline",
-        "short": "OTAP/Baseline"
+        "short": "DFE OTAP/Baseline"
       },
       {
-        "name": "DFE OTLP Attr Insert (Logs)",
+        "name": "DFE OTLP Attr Insert",
         "slug": "dfe_logs_otlp_none_attr_insert",
-        "short": "OTLP/Attr"
+        "short": "DFE OTLP/Attr"
       },
       {
-        "name": "DFE OTLP Transform Insert (Logs)",
+        "name": "DFE OTLP Transform Insert",
         "slug": "dfe_logs_otlp_none_transform_insert",
-        "short": "OTLP/Transform"
+        "short": "DFE OTLP/Transform"
       },
       {
-        "name": "DFE OTLP Baseline (Logs)",
+        "name": "DFE OTLP Baseline",
         "slug": "dfe_logs_otlp_none_baseline",
-        "short": "OTLP/Baseline"
+        "short": "DFE OTLP/Baseline"
+      },
+      {
+        "name": "OTC OTLP Attr Insert",
+        "slug": "otc_logs_otlp_none_attr_insert",
+        "short": "OTC OTLP/Attr"
+      },
+      {
+        "name": "OTC OTLP Transform Insert",
+        "slug": "otc_logs_otlp_none_transform_insert",
+        "short": "OTC OTLP/Transform"
+      },
+      {
+        "name": "OTC OTLP Baseline",
+        "slug": "otc_logs_otlp_none_baseline",
+        "short": "OTC OTLP/Baseline"
       }
     ]
   },
