@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779819761126,
+  "lastUpdate": 1779848541357,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -1064,6 +1064,82 @@ window.BENCHMARK_DATA = {
             "value": 40.42,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=40.4 MiB, error=0.1%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "0012b9b79d793aa9412b20f86f79094f99a9590d",
+          "message": "fix(security): Revert tidy workflow changes and try different approach (#3098)\n\n# Change Summary\n\nReverts #3056\n\nWhile the intention was correct, the change above made CodeQL and\nOpenSSF very unhappy and flagged the `checkout` in `tidy-commit` as a\nDangerous workflow.\n\nInstead, trying to copy what the opentelemetry-collector maintainers did\nin https://github.com/open-telemetry/opentelemetry-collector/pull/15357.\n\nThis is safe because under the `pull_request` trigger ([GitHub\ndocs](https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#pull_request)):\n\n- **Fork PRs cannot access secrets**, and the `GITHUB_TOKEN` is\nread-only — regardless of what `permissions:` the workflow requests. See\n[Workflows in forked\nrepositories](https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#workflows-in-forked-repositories).\n- **Same-repo PRs** get write access, but the job is gated to\n`renovate[bot]` / `dependabot[bot]` actors and explicitly requires\n`github.event.pull_request.head.repo.fork == false`.",
+          "timestamp": "2026-05-27T01:05:04Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/0012b9b79d793aa9412b20f86f79094f99a9590d"
+        },
+        "date": 1779848540762,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 15.39,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.77,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9972,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 16.32,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=16.2 MiB, error=1.0%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 16.73,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=16.9 MiB, error=1.2%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 17.9,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.5 MiB, error=3.2%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 22.4,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=21.6 MiB, error=3.8%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 27.51,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=27.7 MiB, error=0.8%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 40.01,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=40.0 MiB, error=0.1%"
           }
         ]
       }
