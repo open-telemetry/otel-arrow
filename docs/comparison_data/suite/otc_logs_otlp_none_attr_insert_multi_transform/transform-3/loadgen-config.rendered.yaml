@@ -27,7 +27,7 @@ groups:
               traffic_config:
                 production_mode: smooth
                 max_batch_size: 1000
-                signals_per_second: 100000
+                signals_per_second: 60000
                 metric_weight: 0
                 trace_weight: 0
                 log_weight: 100

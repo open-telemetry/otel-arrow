@@ -1,7 +1,7 @@
 name: DFE OTAP Attr Rename Multi Transform (Logs)
 slug: dfe_logs_otap_none_attr_rename_multi_transform
 description: Dataflow Engine OTAP logs, attributes processor rename sweep over 1-4
-  rename actions at 400k signals/sec
+  rename actions at 240k signals/sec
 meta:
   binary: dfe
   protocols:
