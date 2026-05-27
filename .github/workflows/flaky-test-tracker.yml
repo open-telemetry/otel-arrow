@@ -21,11 +21,11 @@ env:
   FLAKY_ISSUE_LABEL: "flaky-test"
   # How many recent Rust-CI workflow runs to scan.
   LOOKBACK_RUNS: 20
-  # The canonical tracking issue to update. Hard-coded to avoid duplicate
-  # issues being created when GitHub's search/label indexes are stale and
-  # fail to return the existing issue (see run 26497083152, which created
-  # #3101 even though #2720 was open with the flaky-test label).
-  FLAKY_ISSUE_NUMBER: "2720"
+  # The canonical tracking issue to update. Keep a stable default to avoid
+  # duplicate issues when GitHub's search/label indexes are stale, but allow
+  # overriding it via a repository variable if the canonical issue changes
+  # (for example after repo migration or switching to a new tracker issue).
+  FLAKY_ISSUE_NUMBER: ${{ vars.FLAKY_ISSUE_NUMBER || '2720' }}
 
 jobs:
   detect-flaky-tests:
@@ -102,6 +102,7 @@ jobs:
 
           BODY=$(cat flaky-report.md)
           FLAKY_COUNT="${{ steps.parse.outputs.flaky_count }}"
+          FLAKY_COUNT="${FLAKY_COUNT:-0}"
 
           echo "Updating tracking issue #$FLAKY_ISSUE_NUMBER (flaky_count: $FLAKY_COUNT)"
           gh issue edit "$FLAKY_ISSUE_NUMBER" \
