@@ -1405,7 +1405,7 @@ impl JoinExec for AttributesAllSelectionVecJoin {
         // Not implemented - should not need to compute rows to take. instead, just determine
         // alignment based on the ordering of the other side's matching IDs
         Err(Error::ExecutionError {
-            cause: "rows_to_take not implemented for ScalarJoin".into(),
+            cause: "rows_to_take not implemented for AttributesAllSelectionVecJoin".into(),
         })
     }
 
