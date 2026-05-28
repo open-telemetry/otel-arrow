@@ -244,9 +244,13 @@ becomes hard to manage.
 This repository uses GitHub's built-in **Priority** field
 (`Urgent`/`High`/`Medium`/`Low`) rather than a `priority:*` label.
 Triagers set the field when an issue is release-impacting or clearly
-urgent; otherwise it is left unset. Anything `Urgent` should also be
-flagged for the next SIG meeting and tagged
-`@open-telemetry/arrow-approvers`.
+urgent; otherwise it is left unset. Anything `Urgent` should also be:
+
+- posted in the `#otel-arrow-dev` channel on the
+  [CNCF Slack](https://cloud-native.slack.com/), with a link to the
+  issue, so approvers see it promptly,
+- tagged `@open-telemetry/arrow-approvers` on the issue, and
+- added to the next SIG meeting agenda.
 
 ### Contributor-facing labels
 
@@ -255,14 +259,12 @@ flagged for the next SIG meeting and tagged
   without further clarification.
 - `help wanted` - accepted, scoped, and not currently assigned; community
   contributions are explicitly welcome.
-- `sponsor needed` - work that requires a maintainer to commit to reviewing
-  before it should be started.
 
 ### Lifecycle labels
 
 - `stale` - applied automatically by the stale workflow (see
   [Stale Policy](#stale-policy)).
-- `pinned` / `keep-open` - exempt from the stale workflow. Use sparingly.
+- `keep-open` - exempt from the stale workflow. Use sparingly.
 - `security` - applied to issues filed via the security process. Exempt from
   stale.
 
@@ -297,7 +299,8 @@ issue is still in another `triage:*` state. Cases:
   assignees themselves; see [GitHub Permissions](#github-permissions)).
 - A maintainer has asked a specific person to drive it and that person has
   agreed.
-- It is an `Urgent` priority and an approver has accepted the page.
+- It is an `Urgent` priority and the assigned Contributor has agreed to
+  own the issue resolution with urgency.
 
 If no one is working on it, leave it unassigned and rely on the
 `triage:*`, component, and `help wanted` labels to attract a
@@ -306,11 +309,14 @@ progress and is discouraged.
 
 ### Finding work as a contributor
 
-Useful filters:
+Useful filters (links open the search in GitHub):
 
-- All triaged, unassigned work: `is:issue is:open label:triage:accepted no:assignee`
-- In-flight work: `is:issue is:open label:triage:accepted assignee:*`
-- Beginner-friendly: `is:issue is:open label:"good first issue" no:assignee`
+- All triaged, unassigned work:
+  [`is:issue is:open label:triage:accepted no:assignee`](https://github.com/open-telemetry/otel-arrow/issues?q=is%3Aissue+is%3Aopen+label%3Atriage%3Aaccepted+no%3Aassignee)
+- In-flight work:
+  [`is:issue is:open label:triage:accepted assignee:*`](https://github.com/open-telemetry/otel-arrow/issues?q=is%3Aissue+is%3Aopen+label%3Atriage%3Aaccepted+assignee%3A*)
+- Beginner-friendly:
+  [`is:issue is:open label:"good first issue" no:assignee`](https://github.com/open-telemetry/otel-arrow/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22+no%3Aassignee)
 - Work in your area: combine the above with the relevant component
   label, e.g. `label:rust` or `label:query-engine`.
 
@@ -386,9 +392,9 @@ Proposed target policy for issues (tracked in
 - Tighten the issue cycle to 60 days to stale + 14 days to close.
 - Add a shorter 14 + 14 cycle for `triage:needs-info` so the queue does
   not accumulate questions the author never returned to.
-- Expand the exempt-label list to: `pinned`, `keep-open`, `security`,
-  `triage:accepted`, `help wanted`, `good first issue`, and the existing
-  `do-not-stale`.
+- Expand the exempt-label list to: `keep-open`, `security`,
+  `triage:accepted`, `help wanted`, `good first issue`, and the
+  existing `do-not-stale`.
 
 Anyone may reopen a closed-stale issue with new information; reopening
 resets the stale timer.
