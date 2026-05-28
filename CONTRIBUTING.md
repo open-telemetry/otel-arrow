@@ -137,7 +137,7 @@ Before filing, please:
     or the CNCF Slack channel
     [#otel-arrow](https://cloud-native.slack.com/archives/C07S4Q67LTF)
     over filing an issue.
-  - Security vulnerability: **do not file a public issue.** Follow
+  - Security vulnerability: **DO NOT file a public issue.** Follow
     [SECURITY.md](./SECURITY.md) to report privately.
 
 ### Bug reports
