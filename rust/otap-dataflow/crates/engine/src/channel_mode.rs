@@ -20,11 +20,13 @@ use crate::channel_metrics::{
     ChannelSenderMetrics, control_channel_id,
 };
 use crate::context::PipelineContext;
-use crate::entity_context::current_node_telemetry_handle;
+use crate::entity_context::{EntityTelemetryHandle, current_node_telemetry_handle};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::mpsc;
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::registry::EntityKey;
+use std::borrow::Cow;
 
 pub(crate) trait ChannelMode {
     const CHANNEL_MODE: &'static str;
@@ -170,13 +172,11 @@ impl ChannelMode for SharedMode {
     }
 }
 
-/// Generic helper used by receiver, processor, and exporter wrappers.
-/// It keeps local and shared wiring identical while still emitting mode-specific code.
+/// Wraps a node-hosted control channel with metrics if enabled.
 ///
-/// The logic first attempts to unwrap the inner MPSC channel so metrics can be attached.
-/// If the channel is already wrapped, it preserves the existing wrapper to avoid double
-/// instrumentation.
-pub(crate) fn wrap_control_channel_metrics<M, Msg>(
+/// Registers the channel as a node-scoped entity and tracks it on the
+/// ambient node telemetry handle so it is cleaned up with the node.
+pub(crate) fn wrap_node_control_channel_metrics<M, Msg>(
     name: &str,
     pipeline_ctx: &PipelineContext,
     channel_metrics: &mut ChannelMetricsRegistry,
@@ -188,11 +188,15 @@ pub(crate) fn wrap_control_channel_metrics<M, Msg>(
 where
     M: ChannelMode,
 {
-    let control_sender = M::try_into_inner_sender(control_sender);
-    let control_receiver = M::try_into_inner_receiver(control_receiver);
-    match (control_sender, control_receiver) {
-        (Ok(sender), Ok(receiver)) => {
-            let channel_entity_key = pipeline_ctx.register_channel_entity(
+    wrap_control_channel_metrics_inner::<M, Msg>(
+        pipeline_ctx,
+        channel_metrics,
+        channel_metrics_enabled,
+        capacity,
+        control_sender,
+        control_receiver,
+        |ctx| {
+            let key = ctx.register_node_channel_entity(
                 control_channel_id(name),
                 "input".into(),
                 CHANNEL_KIND_CONTROL,
@@ -201,13 +205,99 @@ where
                 M::CHANNEL_IMPL,
             );
             if let Some(telemetry) = current_node_telemetry_handle() {
-                telemetry.set_control_channel_key(channel_entity_key);
+                telemetry.set_control_channel_key(key);
             }
+            key
+        },
+        // Node version: tracking is handled inside
+        // `PipelineContext::register_metric_set_for_entity` via ambient
+        // `current_node_telemetry_handle()`.
+        |ctx, channel_entity_key| {
+            (
+                ctx.register_metric_set_for_entity::<ChannelSenderMetrics>(channel_entity_key),
+                ctx.register_metric_set_for_entity::<ChannelReceiverMetrics>(channel_entity_key),
+            )
+        },
+    )
+}
+
+/// Wraps an extension-hosted control channel with metrics if enabled.
+///
+/// Registers the channel as an extension-scoped entity and tracks both the
+/// entity and the attached metric sets on the provided extension entity handle
+/// so everything is cleaned up with the extension.
+pub(crate) fn wrap_extension_control_channel_metrics<M, Msg>(
+    extension_id: Cow<'static, str>,
+    entity_handle: &EntityTelemetryHandle,
+    pipeline_ctx: &PipelineContext,
+    channel_metrics: &mut ChannelMetricsRegistry,
+    channel_metrics_enabled: bool,
+    capacity: u64,
+    control_sender: M::ControlSender<Msg>,
+    control_receiver: M::ControlReceiver<Msg>,
+) -> (M::ControlSender<Msg>, M::ControlReceiver<Msg>)
+where
+    M: ChannelMode,
+{
+    wrap_control_channel_metrics_inner::<M, Msg>(
+        pipeline_ctx,
+        channel_metrics,
+        channel_metrics_enabled,
+        capacity,
+        control_sender,
+        control_receiver,
+        |ctx| {
+            let key = ctx.register_extension_channel_entity(
+                extension_id.clone(),
+                control_channel_id(extension_id.as_ref()),
+                M::CHANNEL_MODE,
+                M::CHANNEL_IMPL,
+            );
+            entity_handle.track_entity(key);
+            key
+        },
+        |_ctx, channel_entity_key| {
+            (
+                entity_handle
+                    .register_metric_set_for_entity::<ChannelSenderMetrics>(channel_entity_key),
+                entity_handle
+                    .register_metric_set_for_entity::<ChannelReceiverMetrics>(channel_entity_key),
+            )
+        },
+    )
+}
+
+/// Shared wiring: attempts to unwrap inner MPSC channels, registers the channel
+/// entity via `register_channel`, and attaches metrics produced by
+/// `register_metrics`. If the channel is already wrapped, preserves the existing
+/// wrapper to avoid double instrumentation.
+fn wrap_control_channel_metrics_inner<M, Msg>(
+    pipeline_ctx: &PipelineContext,
+    channel_metrics: &mut ChannelMetricsRegistry,
+    channel_metrics_enabled: bool,
+    capacity: u64,
+    control_sender: M::ControlSender<Msg>,
+    control_receiver: M::ControlReceiver<Msg>,
+    register_channel: impl FnOnce(&PipelineContext) -> EntityKey,
+    register_metrics: impl FnOnce(
+        &PipelineContext,
+        EntityKey,
+    ) -> (
+        MetricSet<ChannelSenderMetrics>,
+        MetricSet<ChannelReceiverMetrics>,
+    ),
+) -> (M::ControlSender<Msg>, M::ControlReceiver<Msg>)
+where
+    M: ChannelMode,
+{
+    let control_sender = M::try_into_inner_sender(control_sender);
+    let control_receiver = M::try_into_inner_receiver(control_receiver);
+    match (control_sender, control_receiver) {
+        (Ok(sender), Ok(receiver)) => {
+            let channel_entity_key = register_channel(pipeline_ctx);
             if channel_metrics_enabled {
-                let sender_metrics = pipeline_ctx
-                    .register_metric_set_for_entity::<ChannelSenderMetrics>(channel_entity_key);
-                let receiver_metrics = pipeline_ctx
-                    .register_metric_set_for_entity::<ChannelReceiverMetrics>(channel_entity_key);
+                let (sender_metrics, receiver_metrics) =
+                    register_metrics(pipeline_ctx, channel_entity_key);
                 (
                     M::attach_sender_metrics(sender, channel_metrics, sender_metrics),
                     M::attach_receiver_metrics(

@@ -97,6 +97,15 @@ pub struct PipelineAttributeSet {
     pub deployment_generation: u64,
 }
 
+/// Extension attributes.
+#[attribute_set(name = "extension.attrs")]
+#[derive(Debug, Clone, Default, Hash)]
+pub struct ExtensionAttributeSet {
+    /// Extension unique identifier within its host scope.
+    #[attribute]
+    pub extension_id: Cow<'static, str>,
+}
+
 /// Node attributes.
 #[attribute_set(name = "node.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
@@ -212,11 +221,11 @@ impl AttributeSetHandler for CustomAttributeSet {
     }
 }
 
-/// Channel endpoint attributes (sender or receiver).
-#[attribute_set(name = "channel.attrs")]
+/// Channel endpoint attributes for a node-hosted channel.
+#[attribute_set(name = "node.channel.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
-pub struct ChannelAttributeSet {
-    /// Unique channel identifier (in scope of the pipeline).
+pub struct NodeChannelAttributeSet {
+    /// Unique channel identifier within the host scope.
     #[attribute(key = "channel.id")]
     pub channel_id: Cow<'static, str>,
 
@@ -241,6 +250,29 @@ pub struct ChannelAttributeSet {
     #[attribute(key = "channel.type")]
     pub channel_type: Cow<'static, str>,
     /// Channel implementation ("tokio", "flume", "internal").
+    #[attribute(key = "channel.impl")]
+    pub channel_impl: Cow<'static, str>,
+}
+
+/// Channel endpoint attributes for an extension-hosted channel.
+///
+/// Extensions only have a single control-channel kind (MPSC), so `channel.kind`
+/// and `channel.type` are intentionally omitted as invariants.
+#[attribute_set(name = "extension.channel.attrs")]
+#[derive(Debug, Clone, Default, Hash)]
+pub struct ExtensionChannelAttributeSet {
+    /// Unique channel identifier within the host scope.
+    #[attribute(key = "channel.id")]
+    pub channel_id: Cow<'static, str>,
+
+    /// Extension attributes.
+    #[compose]
+    pub extension_attrs: ExtensionAttributeSet,
+
+    /// Concurrency mode of the channel ("local" or "shared").
+    #[attribute(key = "channel.mode")]
+    pub channel_mode: Cow<'static, str>,
+    /// Channel implementation ("tokio", "internal").
     #[attribute(key = "channel.impl")]
     pub channel_impl: Cow<'static, str>,
 }

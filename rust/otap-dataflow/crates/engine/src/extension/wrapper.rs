@@ -14,11 +14,11 @@
 
 use crate::capability::factory::{LocalInstanceFactory, SharedInstanceFactory};
 use crate::channel_metrics::ChannelMetricsRegistry;
-use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
+use crate::channel_mode::{LocalMode, SharedMode, wrap_extension_control_channel_metrics};
 use crate::config::ExtensionConfig;
 use crate::context::PipelineContext;
 use crate::control::ExtensionControlMsg;
-use crate::entity_context::NodeTelemetryGuard;
+use crate::entity_context::{EntityTelemetryGuard, EntityTelemetryHandle};
 use crate::error::Error;
 use crate::local::extension as local_ext;
 use crate::local::message::LocalReceiver;
@@ -190,8 +190,8 @@ pub enum ExtensionWrapper {
         user_config: Arc<ExtensionUserConfig>,
         /// Engine runtime configuration for this extension.
         runtime_config: ExtensionConfig,
-        /// Node telemetry guard, set during wiring.
-        telemetry: Option<NodeTelemetryGuard>,
+        /// Telemetry guard for this extension entity, set during wiring.
+        telemetry: Option<EntityTelemetryGuard>,
         /// The lifecycle state (active with channels, or passive).
         lifecycle: ExtensionLifecycle<
             std::rc::Rc<dyn local_ext::Extension>,
@@ -211,8 +211,8 @@ pub enum ExtensionWrapper {
         user_config: Arc<ExtensionUserConfig>,
         /// Engine runtime configuration for this extension.
         runtime_config: ExtensionConfig,
-        /// Node telemetry guard, set during wiring.
-        telemetry: Option<NodeTelemetryGuard>,
+        /// Telemetry guard for this extension entity, set during wiring.
+        telemetry: Option<EntityTelemetryGuard>,
         /// The lifecycle state (active with channels, or passive).
         lifecycle:
             ExtensionLifecycle<Box<dyn shared_ext::Extension>, SharedReceiver<ExtensionControlMsg>>,
@@ -289,7 +289,7 @@ impl ExtensionWrapper {
         }
     }
 
-    pub(crate) fn with_node_telemetry_guard(mut self, guard: NodeTelemetryGuard) -> Self {
+    pub(crate) fn with_entity_telemetry_guard(mut self, guard: EntityTelemetryGuard) -> Self {
         match &mut self {
             ExtensionWrapper::Local { telemetry, .. }
             | ExtensionWrapper::Shared { telemetry, .. } => *telemetry = Some(guard),
@@ -299,6 +299,7 @@ impl ExtensionWrapper {
 
     pub(crate) fn with_control_channel_metrics(
         self,
+        entity_handle: &EntityTelemetryHandle,
         pipeline_ctx: &PipelineContext,
         channel_metrics: &mut ChannelMetricsRegistry,
         channel_metrics_enabled: bool,
@@ -324,8 +325,12 @@ impl ExtensionWrapper {
                             Sender::Local(s) => (s, control_receiver),
                             _ => unreachable!("Local variant always has local sender"),
                         };
-                        let (s, r) = wrap_control_channel_metrics::<LocalMode, ExtensionControlMsg>(
-                            name.as_ref(),
+                        let (s, r) = wrap_extension_control_channel_metrics::<
+                            LocalMode,
+                            ExtensionControlMsg,
+                        >(
+                            name.clone(),
+                            entity_handle,
                             pipeline_ctx,
                             channel_metrics,
                             channel_metrics_enabled,
@@ -369,8 +374,12 @@ impl ExtensionWrapper {
                             Sender::Shared(s) => s,
                             _ => unreachable!("Shared variant always has shared sender"),
                         };
-                        let (s, r) = wrap_control_channel_metrics::<SharedMode, ExtensionControlMsg>(
-                            name.as_ref(),
+                        let (s, r) = wrap_extension_control_channel_metrics::<
+                            SharedMode,
+                            ExtensionControlMsg,
+                        >(
+                            name.clone(),
+                            entity_handle,
                             pipeline_ctx,
                             channel_metrics,
                             channel_metrics_enabled,
@@ -602,23 +611,37 @@ impl ExtensionBundle {
         }
         Ok(())
     }
-}
 
-impl crate::TelemetryWrapped for ExtensionWrapper {
-    fn with_control_channel_metrics(
-        self,
+    /// Wire entity telemetry and control-channel metrics onto each variant
+    /// present in this bundle.
+    ///
+    /// Both variants of a dual-registered extension share the same entity;
+    /// the underlying handle's cleanup is idempotent.
+    pub(crate) fn wire_telemetry(
+        &mut self,
+        handle: EntityTelemetryHandle,
         pipeline_ctx: &PipelineContext,
         channel_metrics: &mut ChannelMetricsRegistry,
         channel_metrics_enabled: bool,
-    ) -> Self {
-        ExtensionWrapper::with_control_channel_metrics(
-            self,
-            pipeline_ctx,
-            channel_metrics,
-            channel_metrics_enabled,
-        )
-    }
-    fn with_node_telemetry_guard(self, guard: NodeTelemetryGuard) -> Self {
-        ExtensionWrapper::with_node_telemetry_guard(self, guard)
+    ) {
+        if let Some(w) = self.local.take() {
+            let w = w.with_control_channel_metrics(
+                &handle,
+                pipeline_ctx,
+                channel_metrics,
+                channel_metrics_enabled,
+            );
+            self.local =
+                Some(w.with_entity_telemetry_guard(EntityTelemetryGuard::new(handle.clone())));
+        }
+        if let Some(w) = self.shared.take() {
+            let w = w.with_control_channel_metrics(
+                &handle,
+                pipeline_ctx,
+                channel_metrics,
+                channel_metrics_enabled,
+            );
+            self.shared = Some(w.with_entity_telemetry_guard(EntityTelemetryGuard::new(handle)));
+        }
     }
 }

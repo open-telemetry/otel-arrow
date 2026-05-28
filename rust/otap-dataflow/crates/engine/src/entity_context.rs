@@ -162,61 +162,67 @@ pub(crate) fn with_node_telemetry_handle<T>(
     })
 }
 
-/// Handle for per-node telemetry state, including entity keys, metric sets,
-/// channel associations, and custom log record attributes.
+/// Scope-agnostic per-entity telemetry bookkeeping: the registered
+/// `EntityKey`, metric sets tied to it, and extra entities whose lifetime is
+/// bound to it. Usable for any registered entity (pipeline, node, extension,
+/// channel, …) — the kind is determined by which attribute set was used to
+/// mint the `EntityKey`.
 #[derive(Clone)]
-pub(crate) struct NodeTelemetryHandle {
+pub(crate) struct EntityTelemetryHandle {
     registry: TelemetryRegistryHandle,
-    state: Rc<RefCell<NodeTelemetryState>>,
+    state: Rc<RefCell<EntityTelemetryState>>,
 }
 
-impl Debug for NodeTelemetryHandle {
+impl Debug for EntityTelemetryHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let entity_key = self.state.borrow().entity_key;
-        f.debug_struct("NodeTelemetryHandle")
-            .field("entity_key", &entity_key)
+        f.debug_struct("EntityTelemetryHandle")
+            .field("entity_key", &self.state.borrow().entity_key)
             .finish()
     }
 }
 
-// Per-node mutable lifecycle state used for metric/entity tracking and cleanup.
-struct NodeTelemetryState {
+struct EntityTelemetryState {
     entity_key: EntityKey,
     metric_keys: Vec<MetricSetKey>,
     extra_entity_keys: Vec<EntityKey>,
-    input_channel_key: Option<EntityKey>,
-    output_channel_keys: Vec<(PortName, EntityKey)>,
-    control_channel_key: Option<EntityKey>,
     cleaned: bool,
 }
 
-impl NodeTelemetryHandle {
-    /// Create a handle that owns registry access and per-node cleanup state.
+impl EntityTelemetryHandle {
     pub(crate) fn new(registry: TelemetryRegistryHandle, entity_key: EntityKey) -> Self {
         Self {
             registry,
-            state: Rc::new(RefCell::new(NodeTelemetryState {
+            state: Rc::new(RefCell::new(EntityTelemetryState {
                 entity_key,
                 metric_keys: Vec::new(),
                 extra_entity_keys: Vec::new(),
-                input_channel_key: None,
-                output_channel_keys: Vec::new(),
-                control_channel_key: None,
                 cleaned: false,
             })),
         }
     }
 
-    /// Return the node entity key for associating metrics/entities.
     pub(crate) fn entity_key(&self) -> EntityKey {
         self.state.borrow().entity_key
     }
 
-    /// Register a metric set tied to this node entity and track it for cleanup.
     pub(crate) fn register_metric_set<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
     ) -> MetricSet<T> {
         let entity_key = self.state.borrow().entity_key;
+        self.register_metric_set_for_entity::<T>(entity_key)
+    }
+
+    /// Registers a metric set for an arbitrary entity key and tracks the resulting
+    /// metric-set key on this handle so it is unregistered as part of cleanup.
+    ///
+    /// Used when an extension or other host attaches metrics to a child entity
+    /// (e.g. a control channel) whose lifecycle is tied to this handle.
+    pub(crate) fn register_metric_set_for_entity<
+        T: MetricSetHandler + Default + Debug + Send + Sync,
+    >(
+        &self,
+        entity_key: EntityKey,
+    ) -> MetricSet<T> {
         let metrics = self
             .registry
             .register_metric_set_for_entity::<T>(entity_key);
@@ -224,19 +230,112 @@ impl NodeTelemetryHandle {
         metrics
     }
 
-    /// Record an externally-created metric set so it can be unregistered on cleanup.
     pub(crate) fn track_metric_set(&self, metrics_key: MetricSetKey) {
         self.state.borrow_mut().metric_keys.push(metrics_key);
     }
 
-    /// Track an additional entity key so it is cleaned up with the node telemetry lifecycle.
     pub(crate) fn track_entity(&self, entity_key: EntityKey) {
         self.state.borrow_mut().extra_entity_keys.push(entity_key);
     }
 
-    /// Associate the inbound channel entity key with this node for task-local scoping.
-    pub(crate) fn set_input_channel_key(&self, key: EntityKey) {
+    /// Unregister tracked metric sets, extra entities, and the entity itself.
+    /// Idempotent.
+    pub(crate) fn cleanup(&self) {
         let mut state = self.state.borrow_mut();
+        if state.cleaned {
+            return;
+        }
+        state.cleaned = true;
+        let metric_keys = std::mem::take(&mut state.metric_keys);
+        let extra_entity_keys = std::mem::take(&mut state.extra_entity_keys);
+        let entity_key = state.entity_key;
+        drop(state);
+
+        for key in metric_keys {
+            let _ = self.registry.unregister_metric_set(key);
+        }
+        for key in extra_entity_keys {
+            let _ = self.registry.unregister_entity(key);
+        }
+        let _ = self.registry.unregister_entity(entity_key);
+    }
+}
+
+/// RAII guard that cleans up an `EntityTelemetryHandle` on drop. Scope-agnostic.
+#[doc(hidden)]
+pub struct EntityTelemetryGuard {
+    handle: EntityTelemetryHandle,
+}
+
+impl EntityTelemetryGuard {
+    pub(crate) const fn new(handle: EntityTelemetryHandle) -> Self {
+        Self { handle }
+    }
+}
+
+impl Drop for EntityTelemetryGuard {
+    fn drop(&mut self) {
+        self.handle.cleanup();
+    }
+}
+
+// Per-node channel-port wiring. Node-only add-on layered on top of EntityTelemetryHandle.
+#[derive(Default)]
+struct NodeChannelState {
+    input_channel_key: Option<EntityKey>,
+    output_channel_keys: Vec<(PortName, EntityKey)>,
+    control_channel_key: Option<EntityKey>,
+}
+
+/// Handle for per-node telemetry state: entity + metrics (via the embedded
+/// `EntityTelemetryHandle`) plus node-only channel-port wiring.
+#[derive(Clone)]
+pub(crate) struct NodeTelemetryHandle {
+    entity: EntityTelemetryHandle,
+    channels: Rc<RefCell<NodeChannelState>>,
+}
+
+impl Debug for NodeTelemetryHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeTelemetryHandle")
+            .field("entity_key", &self.entity.entity_key())
+            .finish()
+    }
+}
+
+impl NodeTelemetryHandle {
+    pub(crate) fn new(registry: TelemetryRegistryHandle, entity_key: EntityKey) -> Self {
+        Self {
+            entity: EntityTelemetryHandle::new(registry, entity_key),
+            channels: Rc::new(RefCell::new(NodeChannelState::default())),
+        }
+    }
+
+    pub(crate) fn entity_key(&self) -> EntityKey {
+        self.entity.entity_key()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn entity_handle(&self) -> EntityTelemetryHandle {
+        self.entity.clone()
+    }
+
+    pub(crate) fn register_metric_set<T: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+    ) -> MetricSet<T> {
+        self.entity.register_metric_set::<T>()
+    }
+
+    pub(crate) fn track_metric_set(&self, metrics_key: MetricSetKey) {
+        self.entity.track_metric_set(metrics_key);
+    }
+
+    pub(crate) fn track_entity(&self, entity_key: EntityKey) {
+        self.entity.track_entity(entity_key);
+    }
+
+    pub(crate) fn set_input_channel_key(&self, key: EntityKey) {
+        let mut state = self.channels.borrow_mut();
         debug_assert!(
             state.input_channel_key.is_none(),
             "input channel key already set"
@@ -244,9 +343,8 @@ impl NodeTelemetryHandle {
         state.input_channel_key = Some(key);
     }
 
-    /// Associate an output channel entity key keyed by port name.
     pub(crate) fn add_output_channel_key(&self, port: PortName, key: EntityKey) {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.channels.borrow_mut();
         if let Some((_, existing_key)) = state
             .output_channel_keys
             .iter_mut()
@@ -258,9 +356,8 @@ impl NodeTelemetryHandle {
         state.output_channel_keys.push((port, key));
     }
 
-    /// Associate the control channel entity key with this node.
     pub(crate) fn set_control_channel_key(&self, key: EntityKey) {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.channels.borrow_mut();
         debug_assert!(
             state.control_channel_key.is_none(),
             "control channel key already set"
@@ -268,47 +365,35 @@ impl NodeTelemetryHandle {
         state.control_channel_key = Some(key);
     }
 
-    /// Read the input channel entity key for task-local scoping.
     pub(crate) fn input_channel_key(&self) -> Option<EntityKey> {
-        self.state.borrow().input_channel_key
+        self.channels.borrow().input_channel_key
     }
 
-    /// Read output channel entity keys for task-local scoping.
     pub(crate) fn output_channel_keys(&self) -> Vec<(PortName, EntityKey)> {
-        self.state.borrow().output_channel_keys.clone()
+        self.channels.borrow().output_channel_keys.clone()
     }
 
-    /// Unregister tracked metric sets and entities; safe to call once.
+    /// Unregister channel entities, then delegate to the entity handle for
+    /// metric-set + entity cleanup. Idempotent.
     pub(crate) fn cleanup(&self) {
-        let mut state = self.state.borrow_mut();
-        if state.cleaned {
-            return;
+        let (input, control, outputs) = {
+            let mut state = self.channels.borrow_mut();
+            (
+                state.input_channel_key.take(),
+                state.control_channel_key.take(),
+                std::mem::take(&mut state.output_channel_keys),
+            )
+        };
+        if let Some(key) = input {
+            let _ = self.entity.registry.unregister_entity(key);
         }
-        state.cleaned = true;
-        let keys = std::mem::take(&mut state.metric_keys);
-        let extra_entity_keys = std::mem::take(&mut state.extra_entity_keys);
-        let entity_key = state.entity_key;
-        let input_channel_key = state.input_channel_key.take();
-        let output_channel_keys = std::mem::take(&mut state.output_channel_keys);
-        let control_channel_key = state.control_channel_key.take();
-        drop(state);
-
-        for key in keys {
-            let _ = self.registry.unregister_metric_set(key);
+        if let Some(key) = control {
+            let _ = self.entity.registry.unregister_entity(key);
         }
-        if let Some(key) = input_channel_key {
-            let _ = self.registry.unregister_entity(key);
+        for (_, key) in outputs {
+            let _ = self.entity.registry.unregister_entity(key);
         }
-        if let Some(key) = control_channel_key {
-            let _ = self.registry.unregister_entity(key);
-        }
-        for (_, key) in output_channel_keys {
-            let _ = self.registry.unregister_entity(key);
-        }
-        for key in extra_entity_keys {
-            let _ = self.registry.unregister_entity(key);
-        }
-        let _ = self.registry.unregister_entity(entity_key);
+        self.entity.cleanup();
     }
 }
 
@@ -385,7 +470,7 @@ mod tests {
         let dest_guard = NodeTelemetryGuard::new(dest_handle.clone());
 
         let channel_id: Cow<'static, str> = "chan:pdata".into();
-        let out_key = source_ctx.register_channel_entity(
+        let out_key = source_ctx.register_node_channel_entity(
             channel_id.clone(),
             "out".into(),
             CHANNEL_KIND_PDATA,
@@ -394,7 +479,7 @@ mod tests {
             CHANNEL_IMPL_INTERNAL,
         );
         source_handle.add_output_channel_key("out".into(), out_key);
-        let in_key = dest_ctx.register_channel_entity(
+        let in_key = dest_ctx.register_node_channel_entity(
             channel_id,
             "input".into(),
             CHANNEL_KIND_PDATA,
@@ -403,7 +488,7 @@ mod tests {
             CHANNEL_IMPL_INTERNAL,
         );
         dest_handle.set_input_channel_key(in_key);
-        let ctrl_key = source_ctx.register_channel_entity(
+        let ctrl_key = source_ctx.register_node_channel_entity(
             "chan:ctrl".into(),
             "input".into(),
             CHANNEL_KIND_CONTROL,

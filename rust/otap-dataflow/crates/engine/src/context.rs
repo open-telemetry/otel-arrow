@@ -4,9 +4,10 @@
 //! Context providing general information on the current controller and the current pipeline.
 
 use crate::attributes::{
-    ChannelAttributeSet, CustomAttributeSet, EngineAttributeSet, NodeAttributeSet,
-    NodeWithCustomAttributeSet, NodeWithCustomTopicAttributeSet, NodeWithTopicAttributeSet,
-    PipelineAttributeSet, config_map_to_telemetry,
+    CustomAttributeSet, EngineAttributeSet, ExtensionAttributeSet, ExtensionChannelAttributeSet,
+    NodeAttributeSet, NodeChannelAttributeSet, NodeWithCustomAttributeSet,
+    NodeWithCustomTopicAttributeSet, NodeWithTopicAttributeSet, PipelineAttributeSet,
+    config_map_to_telemetry,
 };
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::memory_limiter::MemoryPressureState;
@@ -452,6 +453,20 @@ impl PipelineContext {
             .register_entity(self.pipeline_attribute_set())
     }
 
+    /// Returns the attribute set for an extension hosted in this pipeline.
+    #[must_use]
+    pub fn extension_attribute_set(&self, extension_id: Cow<'static, str>) -> ExtensionAttributeSet {
+        ExtensionAttributeSet { extension_id }
+    }
+
+    /// Registers an extension entity for this pipeline context.
+    #[must_use]
+    pub fn register_extension_entity(&self, extension_id: Cow<'static, str>) -> EntityKey {
+        self.controller_context
+            .telemetry_registry_handle
+            .register_entity(self.extension_attribute_set(extension_id))
+    }
+
     /// Registers the node entity for this context.
     ///
     /// If the node has custom telemetry attributes configured, they are included
@@ -521,7 +536,7 @@ impl PipelineContext {
 
     /// Returns a channel attribute set tied to this node context.
     #[must_use]
-    pub fn channel_attribute_set(
+    pub fn node_channel_attribute_set(
         &self,
         channel_id: Cow<'static, str>,
         node_port: Cow<'static, str>,
@@ -529,8 +544,8 @@ impl PipelineContext {
         channel_mode: &'static str,
         channel_type: &'static str,
         channel_impl: &'static str,
-    ) -> ChannelAttributeSet {
-        ChannelAttributeSet {
+    ) -> NodeChannelAttributeSet {
+        NodeChannelAttributeSet {
             node_attrs: self.node_attribute_set(),
             node_port,
             channel_id,
@@ -541,9 +556,9 @@ impl PipelineContext {
         }
     }
 
-    /// Registers a channel entity for the given channel attributes.
+    /// Registers a node-scoped channel entity for the given channel attributes.
     #[must_use]
-    pub fn register_channel_entity(
+    pub fn register_node_channel_entity(
         &self,
         channel_id: Cow<'static, str>,
         node_port: Cow<'static, str>,
@@ -552,12 +567,49 @@ impl PipelineContext {
         channel_type: &'static str,
         channel_impl: &'static str,
     ) -> EntityKey {
-        let attrs = self.channel_attribute_set(
+        let attrs = self.node_channel_attribute_set(
             channel_id,
             node_port,
             channel_kind,
             channel_mode,
             channel_type,
+            channel_impl,
+        );
+        self.controller_context
+            .telemetry_registry_handle
+            .register_entity(attrs)
+    }
+
+    /// Returns a channel attribute set tied to the given extension.
+    #[must_use]
+    pub fn extension_channel_attribute_set(
+        &self,
+        extension_id: Cow<'static, str>,
+        channel_id: Cow<'static, str>,
+        channel_mode: &'static str,
+        channel_impl: &'static str,
+    ) -> ExtensionChannelAttributeSet {
+        ExtensionChannelAttributeSet {
+            extension_attrs: self.extension_attribute_set(extension_id),
+            channel_id,
+            channel_mode: Cow::Borrowed(channel_mode),
+            channel_impl: Cow::Borrowed(channel_impl),
+        }
+    }
+
+    /// Registers an extension-scoped channel entity for the given channel attributes.
+    #[must_use]
+    pub fn register_extension_channel_entity(
+        &self,
+        extension_id: Cow<'static, str>,
+        channel_id: Cow<'static, str>,
+        channel_mode: &'static str,
+        channel_impl: &'static str,
+    ) -> EntityKey {
+        let attrs = self.extension_channel_attribute_set(
+            extension_id,
+            channel_id,
+            channel_mode,
             channel_impl,
         );
         self.controller_context

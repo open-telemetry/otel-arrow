@@ -12,7 +12,9 @@ use crate::{
     config::{ExporterConfig, ExtensionConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
     effect_handler::SourceTagging,
-    entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
+    entity_context::{
+        EntityTelemetryHandle, NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle,
+    },
     error::{Error, TypedError},
     exporter::ExporterWrapper,
     extension::ExtensionBundle,
@@ -833,6 +835,16 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 &runtime_config,
             )
             .map_err(|e| Error::ConfigError(Box::new(e)))?;
+            let mut bundle = bundle;
+            let extension_entity_key = pipeline_ctx.register_extension_entity(ext_id.clone());
+            let extension_telemetry =
+                EntityTelemetryHandle::new(pipeline_ctx.metrics_registry(), extension_entity_key);
+            bundle.wire_telemetry(
+                extension_telemetry,
+                &pipeline_ctx,
+                &mut build_state.channel_metrics,
+                channel_metrics_enabled,
+            );
             bundle
                 .register_into(factory.capabilities.as_ref(), &mut capability_registry)
                 .map_err(|e| Error::CapabilityRegistrationFailed {
@@ -1312,7 +1324,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1337,7 +1349,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .iter()
                         .zip(dest_telemetries.iter())
                         .map(|(ctx, telemetry)| {
-                            let receiver_entity_key = ctx.register_channel_entity(
+                            let receiver_entity_key = ctx.register_node_channel_entity(
                                 channel_id.clone(),
                                 "input".into(),
                                 channel_kind,
@@ -1374,7 +1386,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1397,7 +1409,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     }
                     let ctx = dest_contexts.first().expect("dest_contexts is empty");
                     let telemetry = dest_telemetries.first().expect("dest_telemetries is empty");
-                    let receiver_entity_key = ctx.register_channel_entity(
+                    let receiver_entity_key = ctx.register_node_channel_entity(
                         channel_id.clone(),
                         "input".into(),
                         channel_kind,
@@ -1432,7 +1444,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1457,7 +1469,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .iter()
                         .zip(dest_telemetries.iter())
                         .map(|(ctx, telemetry)| {
-                            let receiver_entity_key = ctx.register_channel_entity(
+                            let receiver_entity_key = ctx.register_node_channel_entity(
                                 channel_id.clone(),
                                 "input".into(),
                                 channel_kind,
@@ -1495,7 +1507,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1518,7 +1530,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     }
                     let ctx = dest_contexts.first().expect("dest_contexts is empty");
                     let telemetry = dest_telemetries.first().expect("dest_telemetries is empty");
-                    let receiver_entity_key = ctx.register_channel_entity(
+                    let receiver_entity_key = ctx.register_node_channel_entity(
                         channel_id.clone(),
                         "input".into(),
                         channel_kind,
@@ -1554,7 +1566,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1570,7 +1582,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .iter()
                         .zip(dest_telemetries.iter())
                         .map(|(ctx, telemetry)| {
-                            let receiver_entity_key = ctx.register_channel_entity(
+                            let receiver_entity_key = ctx.register_node_channel_entity(
                                 channel_id.clone(),
                                 "input".into(),
                                 channel_kind,
@@ -1596,7 +1608,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1610,7 +1622,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     }
                     let ctx = dest_contexts.first().expect("dest_contexts is empty");
                     let telemetry = dest_telemetries.first().expect("dest_telemetries is empty");
-                    let receiver_entity_key = ctx.register_channel_entity(
+                    let receiver_entity_key = ctx.register_node_channel_entity(
                         channel_id.clone(),
                         "input".into(),
                         channel_kind,
@@ -1637,7 +1649,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1653,7 +1665,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .iter()
                         .zip(dest_telemetries.iter())
                         .map(|(ctx, telemetry)| {
-                            let receiver_entity_key = ctx.register_channel_entity(
+                            let receiver_entity_key = ctx.register_node_channel_entity(
                                 channel_id.clone(),
                                 "input".into(),
                                 channel_kind,
@@ -1680,7 +1692,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1694,7 +1706,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     }
                     let ctx = dest_contexts.first().expect("dest_contexts is empty");
                     let telemetry = dest_telemetries.first().expect("dest_telemetries is empty");
-                    let receiver_entity_key = ctx.register_channel_entity(
+                    let receiver_entity_key = ctx.register_node_channel_entity(
                         channel_id.clone(),
                         "input".into(),
                         channel_kind,
