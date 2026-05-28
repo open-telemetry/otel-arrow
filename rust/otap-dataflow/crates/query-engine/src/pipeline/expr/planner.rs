@@ -502,7 +502,7 @@ impl ExprPlanner {
                             gt_expr.get_left(),
                             Operator::LtEq,
                             gt_expr.get_right(),
-                            true,
+                            false,
                             functions,
                         );
                     }
