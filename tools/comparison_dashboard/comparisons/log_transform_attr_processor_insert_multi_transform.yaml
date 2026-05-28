@@ -1,10 +1,8 @@
 slug: log_transform_attr_processor_insert_multi_transform
 name: Log Attribute Insert (Multi Transform)
 description: >
-  Inserting 1-4 attributes with static values on logs. Comparing the
-  attributes processor vs the transform processor across engines and
-  transports at a fixed 200k logs/sec generated load. OTC OTAP runs only
-  the attribute processor (transform processor not measured).
+  Inserting 1-4 attributes on logs across engines and transports at a fixed
+  200k logs/sec generated load.
 
 chart:
   axes:

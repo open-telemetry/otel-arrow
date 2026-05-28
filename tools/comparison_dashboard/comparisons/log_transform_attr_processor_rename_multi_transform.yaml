@@ -1,10 +1,8 @@
 slug: log_transform_attr_processor_rename_multi_transform
 name: Log Attribute Rename (Multi Transform)
 description: >
-  Renaming 1-4 attributes on logs (semantic-convention exception.* keys plus
-  user.id). Comparing the attributes processor vs the transform processor
-  across engines and transports at a fixed 200k logs/sec generated load. OTC
-  OTAP runs only the attribute processor (transform processor not measured).
+  Renaming 1-4 attributes on logs across engines and transports at a fixed
+  200k logs/sec generated load.
 
 chart:
   axes:
