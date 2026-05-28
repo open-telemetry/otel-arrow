@@ -69,9 +69,16 @@ jobs:
           if [ -z "$touched" ]; then
             echo "Error: no .chloggen/*.yaml entry was added or modified in this PR."
             echo
-            echo "Run 'make chlog-new-go FILENAME=<short-description>' for Go changes"
-            echo "or 'make chlog-new-rust FILENAME=<short-description>' for Rust changes,"
-            echo "then commit the generated file."
+            echo "Copy 'go/.chloggen/TEMPLATE.yaml' (for Go changes) or"
+            echo "'rust/otap-dataflow/.chloggen/TEMPLATE.yaml' (for Rust changes)"
+            echo "to a new .yaml file in the same directory, fill in the fields,"
+            echo "and commit it."
+            echo
+            echo "See the documentation for details:"
+            echo "  - https://github.com/open-telemetry/otel-arrow/blob/main/CONTRIBUTING.md#changelog-entries"
+            echo "  - https://github.com/open-telemetry/otel-arrow/blob/main/go/.chloggen/README.md"
+            echo "  - https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/.chloggen/README.md"
+            echo
             echo "If this PR does not require a changelog entry, add 'chore' to the"
             echo "PR title or apply the 'chore' label."
             exit 1

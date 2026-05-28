@@ -12,16 +12,8 @@ that touches both trees adds one entry in each.
 
 ## Adding an entry
 
-From the repo root:
-
-```bash
-make chlog-new-rust FILENAME=otlp-exporter-fix-data-loss
-```
-
-Or simply copy `TEMPLATE.yaml` in this directory to a new `.yaml` file
-(e.g. `otlp-exporter-fix-data-loss.yaml`) and fill in the fields.
-
-Edit the generated file:
+Copy `TEMPLATE.yaml` in this directory to a new `.yaml` file
+(e.g. `otlp-exporter-fix-data-loss.yaml`) and fill in the fields:
 
 ```yaml
 change_type: enhancement       # breaking | deprecation | new_component | enhancement | bug_fix

@@ -96,19 +96,18 @@ Entries live alongside the code they describe:
 - Rust changes: [`rust/otap-dataflow/.chloggen/`](./rust/otap-dataflow/.chloggen/)
 
 Every PR with a user-facing change must add at least one YAML entry in the
-appropriate directory:
+appropriate directory. Copy the `TEMPLATE.yaml` in the appropriate
+`.chloggen/` directory to a new `.yaml` file (e.g.
+`arrow-encoder-fix-null-handling.yaml`) and fill in the fields
+(`change_type`, `component`, `note`, `issues`).
+
+You can validate or preview entries locally:
 
 ```bash
 make chlog-install                       # one-time install
-make chlog-new-go   FILENAME=arrow-encoder-fix-null-handling   # for Go changes
-make chlog-new-rust FILENAME=otlp-exporter-fix-data-loss       # for Rust changes
-# edit the generated file - set change_type, component, note, issues
 make chlog-validate
 make chlog-preview                       # optional: render without writing
 ```
-
-Or simply copy the `TEMPLATE.yaml` in the appropriate `.chloggen/` directory
-to a new `.yaml` file and fill in the fields.
 
 See [`go/.chloggen/README.md`](./go/.chloggen/README.md) and
 [`rust/otap-dataflow/.chloggen/README.md`](./rust/otap-dataflow/.chloggen/README.md)

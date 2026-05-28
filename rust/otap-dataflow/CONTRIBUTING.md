@@ -35,14 +35,8 @@ User-facing Rust changes are recorded in
 files under [`.chloggen/`](./.chloggen/) in this directory and collapsed into
 the CHANGELOG at release time.
 
-From the repo root:
-
-```bash
-make chlog-new-rust FILENAME=otlp-exporter-fix-data-loss
-```
-
-Or simply copy `TEMPLATE.yaml` in the `.chloggen/` directory to a new `.yaml`
-file and fill in the fields.
+Copy `TEMPLATE.yaml` in the `.chloggen/` directory to a new `.yaml`
+file (e.g. `otlp-exporter-fix-data-loss.yaml`) and fill in the fields.
 
 See [`.chloggen/README.md`](./.chloggen/README.md) for the full guide,
 including allowed `component:` values and skip conditions.
