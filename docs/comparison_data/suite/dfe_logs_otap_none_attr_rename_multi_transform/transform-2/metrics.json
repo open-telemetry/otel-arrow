@@ -9,60 +9,60 @@
     "extra": "DFE OTAP Attr Rename Multi Transform (Logs)/transform-2 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 6.5918681715939424
+    "value": 6.5750211442970175
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Transform (Logs)/transform-2 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 6.894845360824742
+    "value": 6.816909147674055
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Transform (Logs)/transform-2 - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 47.6375
+    "value": 55.47044270833333
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Transform (Logs)/transform-2 - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 47.99609375
+    "value": 55.90625
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Transform (Logs)/transform-2 - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 206569.637465122
+    "value": 202997.26133011453
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Transform (Logs)/transform-2 - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 206569.637465122
+    "value": 201599.9814528017
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Transform (Logs)/transform-2 - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 20.000564
+    "value": 60.000563
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Transform (Logs)/transform-2 - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 27696476.93563839
+    "value": 27736871.50869668
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Transform (Logs)/transform-2 - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 27620729.439092677
+    "value": 27664909.08296026
   },
   {
     "extra": "DFE OTAP Attr Rename Multi Transform (Logs)/transform-2 - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 134.07816015707908
+    "value": 137.58370069686933
   }
 ]
