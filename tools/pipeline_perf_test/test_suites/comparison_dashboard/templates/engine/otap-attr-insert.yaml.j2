@@ -32,9 +32,11 @@ groups:
             type: urn:otel:processor:attribute
             config:
               actions:
+{%- for a in insert_actions %}
                 - action: "insert"
-                  key: "processing.engine"
-                  value: "benchmark"
+                  key: "{{ a.key }}"
+                  value: "{{ a.value }}"
+{%- endfor %}
           exporter:
             type: urn:otel:exporter:otap
             config:
