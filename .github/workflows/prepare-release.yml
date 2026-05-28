@@ -23,11 +23,30 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Checkout (dry run)
+        if: inputs.dry_run
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ github.ref }}
+
+      - name: Create GitHub App token
+        if: '!inputs.dry_run'
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        id: app-token
+        with:
+          app-id: ${{ vars.OTELBOT_APP_ID }}
+          private-key: ${{ secrets.OTELBOT_PRIVATE_KEY }}
+
+      - name: Checkout (release preparation)
+        if: '!inputs.dry_run'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.ref }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Validate inputs
         run: ./.github/workflows/scripts/validate-version.sh "${{ inputs.version }}"
@@ -107,18 +126,6 @@ jobs:
           ---
           **Note**: This is a dry run. To execute the actual release preparation, set `dry_run` to `false`.
           EOF
-
-      - name: Create GitHub App token
-        if: '!inputs.dry_run'
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
-        id: app-token
-        with:
-          app-id: ${{ vars.OTELBOT_APP_ID }}
-          private-key: ${{ secrets.OTELBOT_PRIVATE_KEY }}
-
-      - name: Configure git remote with app token
-        if: '!inputs.dry_run'
-        run: git remote set-url origin "https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ github.repository }}.git"
 
       - name: Create release branch and commit changes
         if: '!inputs.dry_run'
