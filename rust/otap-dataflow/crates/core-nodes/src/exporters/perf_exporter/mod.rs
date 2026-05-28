@@ -41,8 +41,6 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataMetrics;
 use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::otel_info;
 use serde_json::Value;
@@ -168,24 +166,24 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     let payload = pdata.take_payload();
                     let _ = effect_handler.notify_ack(AckMsg::new(pdata)).await?;
 
-                    let batch: OtapArrowRecords = match payload.try_into_with_default() {
-                        Ok(batch) => batch,
-                        Err(_) => {
-                            self.pdata_metrics.inc_failed(signal_type);
-                            continue;
-                        }
-                    };
+                    // Count items directly from the payload. For OTLP-bytes payloads this
+                    // scans the protobuf via lazy field views (cheap) rather than
+                    // materializing the full OTAP Arrow batch. The previous
+                    // `try_into_with_default()` conversion dominated this exporter's CPU
+                    // (~50%) and made the discard-only backend more expensive per item than
+                    // a passthrough engine, capping single-core OTLP throughput.
+                    let num_items = payload.num_items() as u64;
 
                     // Increment counters per type of OTLP signals
                     match signal_type {
                         SignalType::Metrics => {
-                            self.metrics.metrics.add(batch.num_items() as u64);
+                            self.metrics.metrics.add(num_items);
                         }
                         SignalType::Logs => {
-                            self.metrics.logs.add(batch.num_items() as u64);
+                            self.metrics.logs.add(num_items);
                         }
                         SignalType::Traces => {
-                            self.metrics.spans.add(batch.num_items() as u64);
+                            self.metrics.spans.add(num_items);
                         }
                     }
 
