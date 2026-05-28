@@ -49,8 +49,8 @@ the primary owners of the triage process and are expected to:
   [SIG Meeting Triage](#sig-meeting-triage)).
 
 Triagers do not need merge rights. New triagers are nominated by a maintainer
-after roughly one month of consistent triage participation, per the community
-guide.
+after roughly one month of consistent triage participation, [per the community
+guide](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#becoming-a-triager).
 
 ### Approvers and Maintainers
 
