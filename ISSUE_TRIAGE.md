@@ -157,6 +157,10 @@ stateDiagram-v2
     closed --> deciding            : reopened (auto)
     closed --> [*]
 
+    deciding as "triage:deciding"
+    needs_info as "triage:needs-info"
+    needs_discussion as "triage:needs-discussion"
+
     note right of accepted
         Assignee set / unset is the
         in-progress signal; no extra label.
