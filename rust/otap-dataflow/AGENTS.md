@@ -26,6 +26,47 @@ python3 tools/sanitycheck.py
 
 Fix any errors before committing.
 
+## Component naming conventions
+
+When adding a new component, keep public names consistent across the module,
+URN, and telemetry metric set. Use snake_case component names.
+
+Component URNs should use:
+
+```rust
+urn:otel:<component_kind>:<component_name>
+```
+
+Examples:
+
+```rust
+urn:otel:receiver:journald
+urn:otel:processor:transform
+urn:otel:exporter:topic
+```
+
+Metric set names should use:
+
+```rust
+<component_kind>.<component_name>
+```
+
+Examples:
+
+```rust
+receiver.journald
+receiver.host_metrics
+processor.transform
+processor.filter.pdata
+exporter.topic
+exporter.azure_monitor
+```
+
+Use established component-specific suffixes only when they already exist for
+that component family, such as `.pdata` for pdata-specific
+processor/exporter metrics. Do not use reversed or redundant names such as
+`journald.receiver.metrics`.
+
 ## After every Rust code change
 
 After modifying any Rust file, run a quick compile check on the affected crate:
