@@ -142,8 +142,6 @@ suites:
   - suites/otc/otc-logs-otlp-none-transform-rename-multi-transform.yaml
   - suites/otc/otc-logs-otap-none-attr-insert-multi-transform.yaml
   - suites/otc/otc-logs-otap-none-attr-rename-multi-transform.yaml
-  - suites/otc/otc-logs-otap-none-transform-insert-multi-transform.yaml
-  - suites/otc/otc-logs-otap-none-transform-rename-multi-transform.yaml
 
 # Comparison definitions, listed by path. Each entry must point at an
 # existing YAML file with `slug` and `suites` (a list of suite refs).

@@ -1,6 +1,6 @@
 name: DFE OTLP Attr Rename Multi Transform (Logs)
 slug: dfe_logs_otlp_none_attr_rename_multi_transform
-description: Dataflow Engine OTLP logs, attributes processor rename sweep over 1-4 rename actions at 240k signals/sec
+description: Dataflow Engine OTLP logs, attributes processor rename sweep over 1-4 rename actions at 200k signals/sec
 orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/dfe-single-core-multi-transform.yaml
 
 meta:
