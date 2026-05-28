@@ -124,21 +124,16 @@ Join the OpenTelemetry
 
 We track bugs, feature requests, and project tasks in
 [GitHub Issues](https://github.com/open-telemetry/otel-arrow/issues).
-Before filing, please:
 
-- **Search first.** Look through open and closed issues for an existing
-  report. If you find one, add a thumbs-up reaction (or a comment with
-  new information) rather than opening a duplicate.
-- **Pick the right channel:**
-  - Bug, feature, or task: file an issue using the appropriate
-    [template](https://github.com/open-telemetry/otel-arrow/issues/new/choose).
-  - Usage question or open-ended discussion: prefer
-    [GitHub Discussions](https://github.com/open-telemetry/otel-arrow/discussions)
-    or the CNCF Slack channel
-    [#otel-arrow](https://cloud-native.slack.com/archives/C07S4Q67LTF)
-    over filing an issue.
-  - Security vulnerability: **DO NOT file a public issue.** Follow
-    [SECURITY.md](./SECURITY.md) to report privately.
+ **Please pick the right channel:**
+
+- Bug, feature, or task: file an issue using the appropriate
+  [template](https://github.com/open-telemetry/otel-arrow/issues/new/choose).
+- Usage question or open-ended discussion: prefer the CNCF Slack channel
+  [#otel-arrow](https://cloud-native.slack.com/archives/C07S4Q67LTF)
+  over filing an issue.
+- Security vulnerability: **DO NOT file a public issue.** Follow
+  [SECURITY.md](./SECURITY.md) to report privately.
 
 ### Bug reports
 
