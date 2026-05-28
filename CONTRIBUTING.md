@@ -275,6 +275,7 @@ to upgrade this repository is:
 
 - [Albert Lockett](https://github.com/albertlockett), F5
 - [Drew Relmas](https://github.com/drewrelmas), Microsoft
+- [Jake Dern](https://github.com/JakeDern), F5
 - [Joshua MacDonald](https://github.com/jmacd), Microsoft
 - [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
 
@@ -284,7 +285,6 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 ### Approvers
 
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
-- [Jake Dern](https://github.com/JakeDern), F5
 - [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
 - [Lei Huang](https://github.com/v0y4g3r), Greptime
 - [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
@@ -299,6 +299,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 ### Triagers
 
+- [Aaron Marten](https://github.com/AaronRM), Microsoft
 - [Tom Tan](https://github.com/ThomsonTan), Microsoft
 
 For more information about the triager role, see the [community
