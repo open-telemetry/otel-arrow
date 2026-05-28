@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779906869410,
+  "lastUpdate": 1779936398682,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -1216,6 +1216,82 @@ window.BENCHMARK_DATA = {
             "value": 41.54,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=41.3 MiB, error=0.6%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Jake Dern",
+            "username": "JakeDern",
+            "email": "33842784+JakeDern@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7e9b8f342c6717d08f85d0fc9ab3275f595bdac1",
+          "message": "fix(comparison_dashboard): Fix landing page backpressure detection for a comparison (#3116)\n\n# Change Summary\n\nPull out backpressure detection for a comparison to a helper - There was\nalready a helper for backpressure detection for a test, but not for an\nentire comparison which determines when the warning sign is displayed in\nthe legend.\n\n## What issue does this PR close?\n\n* Closes #3109\n\n## How are these changes tested?\n\n<img width=\"2333\" height=\"712\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/03a1335d-3d13-4275-b08a-0f299ee703d5\"\n/>\n\n## Are there any user-facing changes?\n\nNo",
+          "timestamp": "2026-05-27T21:18:42Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/7e9b8f342c6717d08f85d0fc9ab3275f595bdac1"
+        },
+        "date": 1779936397629,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 15.06,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.77,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9971,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 16.04,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=15.8 MiB, error=1.3%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 15.74,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=16.6 MiB, error=5.5%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 18.23,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.1 MiB, error=0.5%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 21.62,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=21.2 MiB, error=1.9%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 27.81,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=27.4 MiB, error=1.6%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 39.4,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=39.7 MiB, error=0.7%"
           }
         ]
       }
