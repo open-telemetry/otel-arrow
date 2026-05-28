@@ -100,12 +100,15 @@ appropriate directory:
 
 ```bash
 make chlog-install                       # one-time install
-make chlog-new-go   FILENAME=my-change   # for Go changes
-make chlog-new-rust FILENAME=my-change   # for Rust changes
+make chlog-new-go   FILENAME=arrow-encoder-fix-null-handling   # for Go changes
+make chlog-new-rust FILENAME=otlp-exporter-fix-data-loss       # for Rust changes
 # edit the generated file - set change_type, component, note, issues
 make chlog-validate
 make chlog-preview                       # optional: render without writing
 ```
+
+Or simply copy the `TEMPLATE.yaml` in the appropriate `.chloggen/` directory
+to a new `.yaml` file and fill in the fields.
 
 See [`go/.chloggen/README.md`](./go/.chloggen/README.md) and
 [`rust/otap-dataflow/.chloggen/README.md`](./rust/otap-dataflow/.chloggen/README.md)

@@ -38,11 +38,14 @@ the CHANGELOG at release time.
 From the repo root:
 
 ```bash
-make chlog-new-rust FILENAME=my-short-description
+make chlog-new-rust FILENAME=otlp-exporter-fix-data-loss
 ```
 
-See [`.chloggen/README.md`](./.chloggen/README.md) and the project-level
-[CONTRIBUTING][] "Changelog entries" section for the full workflow.
+Or simply copy `TEMPLATE.yaml` in the `.chloggen/` directory to a new `.yaml`
+file and fill in the fields.
+
+See [`.chloggen/README.md`](./.chloggen/README.md) for the full guide,
+including allowed `component:` values and skip conditions.
 
 ## Telemetry and logging
 
