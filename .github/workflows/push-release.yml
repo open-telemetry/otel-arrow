@@ -128,7 +128,7 @@ jobs:
             /tmp/rust_release_content.txt
 
           {
-            echo "## What's Changed (Go 🐹)"
+            echo "## What's Changed (Go :hamster:)"
             echo ""
             if [ -s /tmp/go_release_content.txt ]; then
               cat /tmp/go_release_content.txt
@@ -143,7 +143,7 @@ jobs:
             echo "- github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}"
             echo "- github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}"
             echo ""
-            echo "## What's Changed (Rust 🦀)"
+            echo "## What's Changed (Rust :crab:)"
             echo ""
             if [ -s /tmp/rust_release_content.txt ]; then
               cat /tmp/rust_release_content.txt

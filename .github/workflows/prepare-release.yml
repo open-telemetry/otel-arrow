@@ -127,7 +127,7 @@ jobs:
             /tmp/rust_release_content.txt
 
           {
-            echo "## What's Changed (Go 🐹)"
+            echo "## What's Changed (Go :hamster:)"
             echo ""
             if [ -s /tmp/go_release_content.txt ]; then
               cat /tmp/go_release_content.txt
@@ -135,7 +135,7 @@ jobs:
               echo "_No Go changes in this release._"
             fi
             echo ""
-            echo "## What's Changed (Rust 🦀)"
+            echo "## What's Changed (Rust :crab:)"
             echo ""
             if [ -s /tmp/rust_release_content.txt ]; then
               cat /tmp/rust_release_content.txt
