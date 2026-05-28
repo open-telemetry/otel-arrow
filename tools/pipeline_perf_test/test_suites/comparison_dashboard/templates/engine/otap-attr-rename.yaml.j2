@@ -32,9 +32,11 @@ groups:
             type: urn:otel:processor:attribute
             config:
               actions:
+{%- for p in rename_pairs %}
                 - action: "rename"
-                  source_key: "exception.type"
-                  destination_key: "exception.kind"
+                  source_key: "{{ p.source }}"
+                  destination_key: "{{ p.destination }}"
+{%- endfor %}
           exporter:
             type: urn:otel:exporter:otap
             config:

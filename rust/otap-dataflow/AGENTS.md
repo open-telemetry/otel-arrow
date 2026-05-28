@@ -105,6 +105,22 @@ cd rust/otap-dataflow && cargo xtask check --diagnostics
 Interpretation guidance for this output is documented in
 [`docs/xtask-diagnostics.md`](docs/xtask-diagnostics.md).
 
+## Changelog entries
+
+If your Rust change is user-facing, add a changelog entry by **copying
+[`.chloggen/TEMPLATE.yaml`](.chloggen/TEMPLATE.yaml)** to a new `.yaml` file
+in [`.chloggen/`](.chloggen/) (e.g. `otlp-exporter-fix-data-loss.yaml`) and
+filling in the fields.
+
+Required fields: `change_type` (one of `breaking`, `deprecation`,
+`new_component`, `enhancement`, `bug_fix`), `component` (must be listed in
+[`.chloggen/config.yaml`](.chloggen/config.yaml)), `note`, and `issues`.
+
+Skip the entry only when the change is not user-facing. In that case include
+`chore` in the PR title.
+
+See [`.chloggen/README.md`](.chloggen/README.md) for full details.
+
 ## Before finalizing changes
 
 When all changes are ready, run the full check suite:

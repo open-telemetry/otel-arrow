@@ -252,8 +252,6 @@ jobs:
     needs: [pipeline-perf-test]
     if: ${{ !cancelled() }}
     permissions:
-      # deployments permission to deploy GitHub pages website
-      deployments: write
       # contents permission to update benchmark contents in gh-pages branch
       contents: write
     steps:

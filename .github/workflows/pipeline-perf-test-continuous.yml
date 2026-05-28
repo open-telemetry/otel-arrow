@@ -83,8 +83,6 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [pipeline-perf-test]
     permissions:
-      # deployments permission to deploy GitHub pages website
-      deployments: write
       # contents permission to update benchmark contents in gh-pages branch
       contents: write
     steps:
