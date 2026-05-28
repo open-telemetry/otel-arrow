@@ -29,31 +29,33 @@ Fix any errors before committing.
 ## Component naming conventions
 
 When adding a new component, keep public names consistent across the module,
-URN, and telemetry metric set. Use snake_case component names.
+URN, and primary telemetry metric set. Prefer snake_case component names for
+consistency. Component IDs in URNs may use lowercase letters, digits,
+underscores (`_`), hyphens (`-`), and dots (`.`).
 
 Component URNs should use:
 
-```rust
+```text
 urn:otel:<component_kind>:<component_name>
 ```
 
 Examples:
 
-```rust
+```text
 urn:otel:receiver:journald
 urn:otel:processor:transform
 urn:otel:exporter:topic
 ```
 
-Metric set names should use:
+Primary metric set names for new components should generally use:
 
-```rust
+```text
 <component_kind>.<component_name>
 ```
 
 Examples:
 
-```rust
+```text
 receiver.journald
 receiver.host_metrics
 processor.transform
@@ -62,10 +64,10 @@ exporter.topic
 exporter.azure_monitor
 ```
 
-Use established component-specific suffixes only when they already exist for
-that component family, such as `.pdata` for pdata-specific
-processor/exporter metrics. Do not use reversed or redundant names such as
-`journald.receiver.metrics`.
+Use established component-specific prefixes or suffixes only when they already
+exist for that component family, such as `.pdata` for pdata-specific metrics or
+existing `otap.*` component families. Do not introduce reversed or redundant
+names such as `journald.receiver.metrics`.
 
 ## After every Rust code change
 
