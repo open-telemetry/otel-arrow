@@ -10,8 +10,10 @@ processors:
     log_statements:
       - context: log
         statements:
-          - set(attributes["exception.kind"], attributes["exception.type"])
-          - delete_key(attributes, "exception.type")
+{%- for p in rename_pairs %}
+          - set(attributes["{{ p.destination }}"], attributes["{{ p.source }}"])
+          - delete_key(attributes, "{{ p.source }}")
+{%- endfor %}
 
 exporters:
   otlp:

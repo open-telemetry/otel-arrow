@@ -18,3 +18,5 @@ variables:
   signal: logs
   compression_method: none
   otelcol_gomaxprocs: 1
+  rename_pairs:
+    - {source: "exception.type", destination: "exception.kind"}

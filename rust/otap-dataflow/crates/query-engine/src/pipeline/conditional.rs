@@ -21,10 +21,11 @@ use otap_df_pdata::otap::transform::concatenate::concatenate;
 use otap_df_pdata::otap::{Logs, Metrics, OtapBatchStore, Traces};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
-use otap_df_pdata::otap::filter::IdBitmapPool;
+use otap_df_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 
 use crate::error::{Error, Result};
-use crate::pipeline::filter::{Composite, FilterExec, filter_otap_batch};
+use crate::pipeline::expr::{DataScope, ScopedExpr};
+use crate::pipeline::filter::{align_selection_to_root, scoped_value_to_boolean_array};
 use crate::pipeline::state::ExecutionState;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
@@ -133,7 +134,7 @@ pub struct ConditionalPipelineStageBranch {
     /// This condition will be evaluated to determine for which rows to execute the pipeline
     /// stages. The semantics are such that rows will be selected that pass this condition and
     /// did not pass the condition for previous branches.
-    condition: Composite<FilterExec>,
+    condition: ScopedExpr,
 
     /// These pipeline stages will be executed for rows selected for this branch, producing a new
     /// OTAP Batch for the branch which will be concatenated with batches from the other branches
@@ -142,7 +143,7 @@ pub struct ConditionalPipelineStageBranch {
 }
 
 impl ConditionalPipelineStageBranch {
-    pub fn new(predicate: Composite<FilterExec>, pipeline_stages: Vec<BoxedPipelineStage>) -> Self {
+    pub fn new(predicate: ScopedExpr, pipeline_stages: Vec<BoxedPipelineStage>) -> Self {
         Self {
             condition: predicate,
             pipeline_stages,
@@ -205,10 +206,24 @@ impl PipelineStage for ConditionalPipelineStage {
             // batch specifically containing the rows that have not already been selected and
             // feeding that into next iterations. This is extra overhead, but the resulting batch
             // would have less rows which could make filter faster.
-            let predicate_selection_vec =
-                branch
-                    .condition
-                    .execute(&otap_batch, session_ctx, &mut self.id_bitmap_pool)?;
+            let predicate_result = branch
+                .condition
+                .execute_as_value(&otap_batch, session_ctx)?;
+
+            let predicate_selection_vec = match predicate_result {
+                None => BooleanArray::new(BooleanBuffer::new_unset(root_batch.num_rows()), None),
+                Some(scoped_value) => {
+                    if scoped_value.scope != DataScope::Root
+                        && !(matches!(scoped_value.scope, DataScope::RootParent(_)))
+                        && scoped_value.scope != DataScope::StaticScalar
+                    {
+                        align_selection_to_root(Some(scoped_value), &otap_batch)?
+                    } else {
+                        // extract the BooleanArray from the ScopedValue
+                        scoped_value_to_boolean_array(scoped_value.values, root_batch.num_rows())?
+                    }
+                }
+            };
 
             let branch_selection_vec = and(&predicate_selection_vec, &not(&already_selected_vec)?)?;
 
@@ -317,26 +332,12 @@ impl PipelineStage for ConditionalPipelineStage {
                 break;
             }
 
-            // extract the base filter predicate from the branch condition
-            let filter_exec = match &mut branch.condition {
-                Composite::Base(filter) => filter,
-                _ => {
-                    return Err(Error::InvalidPipelineError {
-                        cause: "invalid filter plan variant. This pipeline stage was not optimized for attribute filtering".into(),
-                        query_location: None,
-                    });
-                }
-            };
-
-            // determine which rows are selected by this branch's predicate
-            let predicate = filter_exec.predicate
-                .as_mut()
-                .ok_or_else(||Error::InvalidPipelineError {
-                    cause: "invalid filter plan variant. This pipeline stage was not optimized for attribute filtering".into(),
-                    query_location: None,
-                })?;
+            // evaluate the branch condition directly on the attributes record batch
+            let predicate = branch
+                .condition
+                .evaluate_on_batch(session_ctx, &attrs_record_batch)?;
             let predicate_selection_vec =
-                predicate.evaluate_filter(&attrs_record_batch, session_ctx)?;
+                scoped_value_to_boolean_array(predicate, attrs_record_batch.num_rows())?;
 
             // select only the rows that match this branch AND were not already selected
             // by a previous branch

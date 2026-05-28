@@ -128,13 +128,30 @@ suites:
   - suites/dfe/dfe-logs-otlp-none-attr-rename-multi-batch.yaml
   - suites/otc/otc-logs-otlp-none-attr-insert-multi-batch.yaml
   - suites/otc/otc-logs-otlp-none-attr-rename-multi-batch.yaml
+  - suites/dfe/dfe-logs-otap-none-attr-insert-multi-transform.yaml
+  - suites/dfe/dfe-logs-otap-none-attr-rename-multi-transform.yaml
+  - suites/dfe/dfe-logs-otlp-none-attr-insert-multi-transform.yaml
+  - suites/dfe/dfe-logs-otlp-none-attr-rename-multi-transform.yaml
+  - suites/otc/otc-logs-otlp-none-attr-insert-multi-transform.yaml
+  - suites/otc/otc-logs-otlp-none-attr-rename-multi-transform.yaml
+  - suites/dfe/dfe-logs-otap-none-transform-insert-multi-transform.yaml
+  - suites/dfe/dfe-logs-otap-none-transform-rename-multi-transform.yaml
+  - suites/dfe/dfe-logs-otlp-none-transform-insert-multi-transform.yaml
+  - suites/dfe/dfe-logs-otlp-none-transform-rename-multi-transform.yaml
+  - suites/otc/otc-logs-otlp-none-transform-insert-multi-transform.yaml
+  - suites/otc/otc-logs-otlp-none-transform-rename-multi-transform.yaml
+  - suites/otc/otc-logs-otap-none-attr-insert-multi-transform.yaml
+  - suites/otc/otc-logs-otap-none-attr-rename-multi-transform.yaml
 
 # Comparison definitions, listed by path. Each entry must point at an
 # existing YAML file with `slug` and `suites` (a list of suite refs).
 comparisons:
-  - comparisons/dfe_logs_baselines.yaml
-  - comparisons/dfe_metrics_baselines.yaml
-  - comparisons/dfe_traces_baselines.yaml
-  - comparisons/dfe_logs_transform_attr_processor_rename.yaml
-  - comparisons/dfe_logs_transform_attr_processor_insert.yaml
-  - comparisons/logs_attr_processor_multi_batch.yaml
+  - comparisons/log_baselines_multi_rate.yaml
+  - comparisons/metric_baselines_multi_rate.yaml
+  - comparisons/trace_baselines_multi_rate.yaml
+  - comparisons/log_transform_attr_processor_rename.yaml
+  - comparisons/log_transform_attr_processor_insert.yaml
+  - comparisons/log_attr_processor_insert_multi_batch.yaml
+  - comparisons/log_attr_processor_rename_multi_batch.yaml
+  - comparisons/log_transform_attr_processor_insert_multi_transform.yaml
+  - comparisons/log_transform_attr_processor_rename_multi_transform.yaml
