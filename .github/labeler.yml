@@ -157,7 +157,7 @@ area:query-engine/ottl:
       - any-glob-to-any-file:
           - "rust/otap-dataflow/crates/query-engine-languages/src/ottl/**"
 
-area:opl-parser:
+area:query-engine/opl:
   - changed-files:
       - any-glob-to-any-file:
           - "rust/otap-dataflow/crates/query-engine-languages/src/opl/**"
