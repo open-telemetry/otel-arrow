@@ -68,6 +68,12 @@ pub struct FlowAttributeSet {
     /// Name of the processor node where the measurement ends.
     #[attribute(key = "flow.node.end")]
     pub end_node: Cow<'static, str>,
+    /// Optional per-flow purpose differentiator (e.g. `filter`, `transform`).
+    /// Empty when the flow declares no purpose. Lets OTel View selectors target
+    /// distinct flavors of processor work while all flows share the single
+    /// `flow` scope.
+    #[attribute(key = "flow.purpose")]
+    pub purpose: Cow<'static, str>,
     /// Pipeline attributes.
     #[compose]
     pub pipeline_attrs: PipelineAttributeSet,
@@ -275,6 +281,10 @@ pub(crate) fn build_flow_metric_state(
             flow_id: Cow::Owned(flow_config.id.clone()),
             start_node: Cow::Owned(flow_config.bounds.start_node.clone()),
             end_node: Cow::Owned(flow_config.bounds.end_node.clone()),
+            purpose: flow_config
+                .purpose
+                .clone()
+                .map_or(Cow::Borrowed(""), Cow::Owned),
             pipeline_attrs: pipeline_attrs.clone(),
         };
 
@@ -565,6 +575,7 @@ mod tests {
                 end_node: stop.to_string(),
             },
             metrics: None,
+            purpose: None,
         }
     }
 
