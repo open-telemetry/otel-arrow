@@ -166,12 +166,6 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     let payload = pdata.take_payload();
                     let _ = effect_handler.notify_ack(AckMsg::new(pdata)).await?;
 
-                    // Count items directly from the payload. For OTLP-bytes payloads this
-                    // scans the protobuf via lazy field views (cheap) rather than
-                    // materializing the full OTAP Arrow batch. The previous
-                    // `try_into_with_default()` conversion dominated this exporter's CPU
-                    // (~50%) and made the discard-only backend more expensive per item than
-                    // a passthrough engine, capping single-core OTLP throughput.
                     let num_items = payload.num_items() as u64;
 
                     // Increment counters per type of OTLP signals
