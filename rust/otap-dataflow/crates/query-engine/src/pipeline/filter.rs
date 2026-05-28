@@ -3580,8 +3580,6 @@ mod test {
                 .finish(),
         ];
 
-        // TODO - we should validate that OTAP representation is missing the columns we expect are missing
-
         // compare col containing null w/ other column also containing nulls
         let result = exec_logs_pipeline::<OplParser>(
             "logs | where severity_text == event_name",
@@ -3603,7 +3601,6 @@ mod test {
         assert_eq!(result_log_records, expected);
 
         // compare col containing nulls w/ all null struct column
-        // TODO - we should have a different version of this test where the scope column isn't null
         let result = exec_logs_pipeline::<OplParser>(
             "logs | where severity_text == instrumentation_scope.version",
             to_logs_data(log_records.clone()),
