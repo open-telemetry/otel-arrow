@@ -454,6 +454,7 @@ impl PipelineFlowMetricState {
 mod tests {
     use super::*;
     use crate::testing::test_pipeline_ctx;
+    use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 
     fn one_flow_metric_state() -> PipelineFlowMetricState {
         let (ctx, _) = test_pipeline_ctx();
@@ -920,5 +921,45 @@ mod tests {
         assert!(range.contains(&0));
         assert!(range.contains(&1));
         assert!(!range.contains(&5));
+    }
+
+    #[test]
+    fn flow_attribute_set_exposes_purpose_scope_attribute() {
+        // Descriptor must declare the `flow.purpose` key so View selectors can
+        // match on it as a scope attribute.
+        let descriptor = FlowAttributeSet::default().descriptor();
+        assert!(
+            descriptor.fields.iter().any(|f| f.key == "flow.purpose"),
+            "flow.purpose missing from FlowAttributeSet descriptor"
+        );
+
+        // When set, the value is emitted under the `flow.purpose` key.
+        let attrs = FlowAttributeSet {
+            flow_id: "sampling".into(),
+            start_node: "log_sampler".into(),
+            end_node: "log_sampler".into(),
+            purpose: "filter".into(),
+            ..FlowAttributeSet::default()
+        };
+        let set: Vec<(&str, AttributeValue)> = attrs
+            .iter_attributes()
+            .map(|(key, value)| (key, value.clone()))
+            .collect();
+        assert!(
+            set.contains(&("flow.purpose", AttributeValue::String("filter".to_string()))),
+            "expected flow.purpose=filter in {set:?}"
+        );
+
+        // When unset, the key is still present but carries an empty value
+        // (preserving the single `flow` scope behavior).
+        let unset = FlowAttributeSet::default();
+        let unset_set: Vec<(&str, AttributeValue)> = unset
+            .iter_attributes()
+            .map(|(key, value)| (key, value.clone()))
+            .collect();
+        assert!(
+            unset_set.contains(&("flow.purpose", AttributeValue::String(String::new()))),
+            "expected empty flow.purpose in {unset_set:?}"
+        );
     }
 }
