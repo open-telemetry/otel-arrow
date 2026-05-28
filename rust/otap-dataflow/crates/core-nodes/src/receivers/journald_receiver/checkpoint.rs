@@ -78,6 +78,7 @@ pub(crate) fn write_cursor(path: &Path, cursor: &str) -> Result<(), String> {
             parent.display()
         )
     })?;
+    // Keep the temporary file beside the final checkpoint so rename is atomic.
     let tmp = path.with_extension("cursor.tmp");
     std::fs::write(&tmp, bytes)
         .map_err(|err| format!("failed to write checkpoint {}: {err}", tmp.display()))?;

@@ -10,25 +10,42 @@
 
 ## Overview
 
-Linux-only receiver for local `systemd-journald` entries. It targets structured
-journal records, uses journald source selection such as units, identifiers, and
-priorities, and is designed around journald cursors for checkpointed progress.
+Linux-only receiver for local `systemd-journald` entries backed by the
+`sd-journal` API. It reads structured journal records through runtime-loaded
+`libsystemd.so.0`, uses journald source selection such as units, identifiers,
+and priorities, and emits OTAP log records for downstream processing.
 
-The current implementation is the first receiver slice: it registers the
-factory, validates configuration, enforces a process-local source lease, and
-handles lifecycle, drain, shutdown, and telemetry control messages. The blocking
-`sd-journal` worker, batch handoff, ACK/NACK tracking, and checkpoint
-persistence are follow-up work.
+The receiver does not exec `journalctl` and does not read `.journal` files
+directly. It uses journald cursors for progress tracking and advances the
+durable checkpoint only after downstream Ack.
 
 ## Getting Started
 
 Start at the end of the default system journal:
 
 ```yaml
-type: receiver:journald
-config:
-  source_id: system
-  start_at: end
+groups:
+  host:
+    pipelines:
+      collect:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          journald:
+            type: receiver:journald
+            config:
+              source_id: system
+              start_at: end
+          publish:
+            type: exporter:topic
+            config:
+              topic: journald_logs
+        connections:
+          - from: journald
+            to: publish
 ```
 
 ## Configuration
@@ -62,6 +79,16 @@ config:
     max_records: 1024
     # Maximum time to hold a partial batch before flushing (default: 200ms).
     max_flush_period: 200ms
+
+  extraction:
+    # Maximum copied bytes per journal entry (default: 1MiB).
+    max_entry_bytes: 1MiB
+    # Maximum copied bytes per field value (default: 256KiB).
+    max_field_bytes: 256KiB
+    # Maximum copied fields per journal entry (default: 256).
+    max_fields_per_entry: 256
+    # Behavior for oversized fields: "drop_and_count" (default).
+    large_field_policy: drop_and_count
 
   checkpoint:
     # Root directory for cursor checkpoint files (default:
@@ -125,6 +152,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ## Limits
 
 - Linux only.
+- Requires `libsystemd.so.0` and permission to read the selected journal.
 - Must run in a one-core source pipeline. Use `receiver:journald` followed by a
   topic exporter to fan out to multicore downstream processing.
 - Named journal namespaces are not supported in v1.
@@ -133,9 +161,10 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 - `wait_timeout` must be no more than `5s`, and `drain_timeout` must be greater
   than `wait_timeout`.
 - Only one receiver in a process can target the same concrete journal source.
-- The current implementation does not yet emit journal records; the blocking
-  `sd-journal` worker, batch handoff, ACK/NACK tracking, and checkpoint
-  persistence are follow-up work.
+- Duplicate journald fields are emitted as repeated same-key attributes in the
+  first implementation. Array coalescing is planned as a follow-up.
+- Cross-process duplicate readers are not prevented in v1.
+- NUMA pinning and placement are future work.
 
 ## Related Docs
 

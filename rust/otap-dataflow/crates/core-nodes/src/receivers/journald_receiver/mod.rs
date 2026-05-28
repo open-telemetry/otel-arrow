@@ -47,7 +47,7 @@ use otap_df_telemetry::metrics::MetricSetSnapshot;
 use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde_json::Value;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 #[cfg(target_os = "linux")]
@@ -65,7 +65,8 @@ mod journal;
 use config::RuntimeConfig;
 pub use config::{
     BatchConfig, CheckpointConfig, Config, DEFAULT_JOURNAL_ROOT_PATH, DEFAULT_SOURCE_ID,
-    JournalConfig, MaxPriority, OnNack, StartAt, severity_number_from_priority,
+    ExtractionConfig, JournalConfig, LargeFieldPolicy, MaxPriority, OnNack, StartAt,
+    severity_number_from_priority,
 };
 
 /// URN for the journald receiver.
@@ -108,6 +109,9 @@ pub struct JournaldReceiverMetrics {
     /// Number of source read failures reported by the worker.
     #[metric(unit = "{failure}")]
     pub source_failures: Counter<u64>,
+    /// Number of journald fields dropped by extraction safety limits.
+    #[metric(unit = "{field}")]
+    pub source_dropped_fields: Counter<u64>,
     /// Number of times the worker was asked to rewind after a Nack.
     #[metric(unit = "{rewind}")]
     pub rewinds: Counter<u64>,
@@ -234,12 +238,14 @@ fn terminal_state(
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Clone)]
 struct WorkerBatch {
     id: u64,
     first_cursor: String,
     last_cursor: String,
     records: otap_df_pdata::otap::OtapArrowRecords,
     record_count: usize,
+    dropped_fields: u64,
 }
 
 #[cfg(target_os = "linux")]
@@ -254,26 +260,44 @@ enum WorkerEvent {
     Stopped,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Eq, PartialEq)]
 enum WorkerCommand {
     Commit { batch_id: u64, cursor: String },
     Rewind,
+    Drain,
     Shutdown,
 }
 
 #[cfg(target_os = "linux")]
-#[derive(Clone)]
+enum BatchHandoff {
+    Sent { drain_requested: bool },
+    Shutdown,
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Clone, Debug)]
 struct PendingBatch {
     last_cursor: String,
     decision: PendingDecision,
 }
 
-#[cfg(target_os = "linux")]
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[cfg(any(target_os = "linux", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PendingDecision {
     Pending,
     CommitSent,
     RewindSent,
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Eq, PartialEq)]
+struct PendingControlEffect {
+    command: Option<WorkerCommand>,
+    fail_nack: bool,
+    record_ack: bool,
+    record_nack: bool,
+    record_rewind: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -294,6 +318,66 @@ const WORKER_COMMAND_RETRY_DELAY: std::time::Duration = std::time::Duration::fro
 #[cfg(target_os = "linux")]
 fn batch_id_from_call_data(call_data: &CallData) -> Option<u64> {
     call_data.first().copied().map(u64::from)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn apply_pending_ack(
+    pending: &mut BTreeMap<u64, PendingBatch>,
+    batch_id: u64,
+) -> Option<PendingControlEffect> {
+    let pending_batch = pending.get_mut(&batch_id)?;
+    if pending_batch.decision != PendingDecision::Pending {
+        return None;
+    }
+    pending_batch.decision = PendingDecision::CommitSent;
+    Some(PendingControlEffect {
+        command: Some(WorkerCommand::Commit {
+            batch_id,
+            cursor: pending_batch.last_cursor.clone(),
+        }),
+        fail_nack: false,
+        record_ack: true,
+        record_nack: false,
+        record_rewind: false,
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn apply_pending_nack(
+    pending: &mut BTreeMap<u64, PendingBatch>,
+    batch_id: u64,
+    on_nack: OnNack,
+) -> Option<PendingControlEffect> {
+    let pending_batch = pending.get_mut(&batch_id)?;
+    if pending_batch.decision != PendingDecision::Pending {
+        return None;
+    }
+
+    match on_nack {
+        OnNack::Rewind => {
+            pending_batch.decision = PendingDecision::RewindSent;
+            pending.clear();
+            Some(PendingControlEffect {
+                command: Some(WorkerCommand::Rewind),
+                fail_nack: false,
+                record_ack: false,
+                record_nack: true,
+                record_rewind: true,
+            })
+        }
+        OnNack::Fail => Some(PendingControlEffect {
+            command: None,
+            fail_nack: true,
+            record_ack: false,
+            record_nack: true,
+            record_rewind: false,
+        }),
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn should_complete_drain_after_nack(effect: &PendingControlEffect, draining: bool) -> bool {
+    draining && matches!(effect.command, Some(WorkerCommand::Rewind))
 }
 
 #[cfg(target_os = "linux")]
@@ -348,6 +432,9 @@ fn spawn_worker(
     checkpoint_path: PathBuf,
     event_tx: tokio::sync::mpsc::Sender<WorkerEvent>,
 ) -> Result<WorkerHandle, String> {
+    // Keep blocking libsystemd reads and checkpoint fsyncs off the dfengine
+    // async runtime thread. As with host_metrics, a dedicated source worker
+    // caps the blocking surface at one OS thread for this receiver.
     let (cmd_tx, cmd_rx) = std::sync::mpsc::sync_channel(WORKER_COMMAND_CHANNEL_CAPACITY);
     let join = std::thread::Builder::new()
         .name(format!("otap-journald-{}", config.source_id))
@@ -401,36 +488,50 @@ fn worker_loop_inner(
     let mut builder = arrow_records_encoder::JournaldArrowRecordsBuilder::new();
     let mut first_cursor = String::new();
     let mut last_cursor = String::new();
+    let mut dropped_fields = 0u64;
     let mut first_record_at = StdInstant::now();
-    let mut in_flight = false;
+    let mut in_flight = None;
+    let mut draining = false;
 
     loop {
-        if in_flight {
+        if in_flight.is_some() {
             match cmd_rx.recv() {
                 Ok(WorkerCommand::Commit { batch_id, cursor }) => {
                     let result = checkpoint::write_cursor(&checkpoint_path, &cursor);
                     if result.is_ok() {
                         committed_cursor = Some(cursor.clone());
-                        in_flight = false;
+                        in_flight = None;
                     }
                     let _ = event_tx.blocking_send(WorkerEvent::CommitResult {
                         batch_id,
                         cursor,
                         result,
                     });
+                    if draining && in_flight.is_none() {
+                        return Ok(());
+                    }
                 }
                 Ok(WorkerCommand::Rewind) => {
-                    if committed_cursor.is_none() {
-                        return Err(
-                            "journald cannot rewind before the first checkpoint is committed"
-                                .to_owned(),
-                        );
+                    if let Some(cursor) = committed_cursor.as_deref() {
+                        builder = arrow_records_encoder::JournaldArrowRecordsBuilder::new();
+                        first_cursor.clear();
+                        last_cursor.clear();
+                        dropped_fields = 0;
+                        reader = journal::SdJournalReader::open(&config, Some(cursor))?;
+                        in_flight = None;
+                    } else if let Some(batch) = in_flight.clone() {
+                        // No cursor has been committed yet. Re-opening from start_at=end
+                        // would skip the uncheckpointed batch, so retry the retained batch.
+                        match send_batch_or_observe_shutdown(event_tx, cmd_rx, batch)? {
+                            BatchHandoff::Sent { drain_requested } => {
+                                draining |= drain_requested;
+                            }
+                            BatchHandoff::Shutdown => return Ok(()),
+                        }
                     }
-                    builder = arrow_records_encoder::JournaldArrowRecordsBuilder::new();
-                    first_cursor.clear();
-                    last_cursor.clear();
-                    reader = journal::SdJournalReader::open(&config, committed_cursor.as_deref())?;
-                    in_flight = false;
+                }
+                Ok(WorkerCommand::Drain) => {
+                    draining = true;
                 }
                 Ok(WorkerCommand::Shutdown) | Err(_) => return Ok(()),
             }
@@ -449,33 +550,61 @@ fn worker_loop_inner(
                         cursor,
                         result,
                     });
+                    if draining {
+                        return Ok(());
+                    }
                 }
                 WorkerCommand::Rewind => {
-                    if committed_cursor.is_none() {
+                    let Some(cursor) = committed_cursor.as_deref() else {
                         return Err(
                             "journald cannot rewind before the first checkpoint is committed"
                                 .to_owned(),
                         );
-                    }
+                    };
                     builder = arrow_records_encoder::JournaldArrowRecordsBuilder::new();
                     first_cursor.clear();
                     last_cursor.clear();
-                    reader = journal::SdJournalReader::open(&config, committed_cursor.as_deref())?;
+                    dropped_fields = 0;
+                    reader = journal::SdJournalReader::open(&config, Some(cursor))?;
+                }
+                WorkerCommand::Drain => {
+                    draining = true;
                 }
                 WorkerCommand::Shutdown => return Ok(()),
             }
         }
 
-        if let Some(entry) = reader.next_entry()? {
-            if builder.len() == 0 {
-                first_cursor = entry.cursor.clone();
-                first_record_at = StdInstant::now();
+        if draining && builder.len() == 0 {
+            return Ok(());
+        }
+
+        if !draining {
+            let read_timeout = if builder.len() == 0 {
+                Some(config.wait_timeout)
+            } else {
+                let elapsed = first_record_at.elapsed();
+                config
+                    .batch
+                    .max_flush_period
+                    .checked_sub(elapsed)
+                    .filter(|remaining| !remaining.is_zero())
+                    .map(|remaining| remaining.min(config.wait_timeout))
+            };
+            if let Some(timeout) = read_timeout {
+                if let Some(entry) = reader.next_entry_with_wait_timeout(timeout)? {
+                    if builder.len() == 0 {
+                        first_cursor = entry.cursor.clone();
+                        first_record_at = StdInstant::now();
+                    }
+                    last_cursor = entry.cursor.clone();
+                    dropped_fields = dropped_fields.saturating_add(entry.dropped_fields);
+                    builder.append(&entry);
+                }
             }
-            last_cursor = entry.cursor.clone();
-            builder.append(&entry);
         }
 
         let should_flush = builder.len() as usize >= config.batch.max_records
+            || (draining && builder.len() > 0)
             || (builder.len() > 0 && first_record_at.elapsed() >= config.batch.max_flush_period);
         if should_flush {
             let record_count = usize::from(builder.len());
@@ -491,12 +620,19 @@ fn worker_loop_inner(
                 last_cursor: std::mem::take(&mut last_cursor),
                 records,
                 record_count,
+                dropped_fields: std::mem::take(&mut dropped_fields),
             };
+            let retained_batch = batch.clone();
             next_batch_id = next_batch_id.saturating_add(1);
-            if !send_batch_or_observe_shutdown(event_tx, cmd_rx, batch)? {
-                return Ok(());
+            match send_batch_or_observe_shutdown(event_tx, cmd_rx, batch)? {
+                BatchHandoff::Sent { drain_requested } => {
+                    draining |= drain_requested;
+                }
+                BatchHandoff::Shutdown => {
+                    return Ok(());
+                }
             }
-            in_flight = true;
+            in_flight = Some(retained_batch);
         }
     }
 }
@@ -506,20 +642,24 @@ fn send_batch_or_observe_shutdown(
     event_tx: &tokio::sync::mpsc::Sender<WorkerEvent>,
     cmd_rx: &std::sync::mpsc::Receiver<WorkerCommand>,
     batch: WorkerBatch,
-) -> Result<bool, String> {
+) -> Result<BatchHandoff, String> {
     let mut event = WorkerEvent::Batch(batch);
+    let mut drain_requested = false;
     loop {
         match event_tx.try_send(event) {
-            Ok(()) => return Ok(true),
+            Ok(()) => return Ok(BatchHandoff::Sent { drain_requested }),
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 return Err("journald receiver event channel closed".to_owned());
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(returned)) => {
                 event = returned;
                 match cmd_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                    Ok(WorkerCommand::Drain) => {
+                        drain_requested = true;
+                    }
                     Ok(WorkerCommand::Shutdown)
                     | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                        return Ok(false);
+                        return Ok(BatchHandoff::Shutdown);
                     }
                     Ok(WorkerCommand::Commit { .. } | WorkerCommand::Rewind) => {
                         return Err(
@@ -608,51 +748,54 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                             let Some(batch_id) = batch_id_from_call_data(&ack.unwind.route.calldata) else {
                                 continue;
                             };
-                            if let Some(pending_batch) = pending.get_mut(&batch_id) {
-                                if pending_batch.decision != PendingDecision::Pending {
-                                    continue;
-                                }
-                                pending_batch.decision = PendingDecision::CommitSent;
+                            if let Some(effect) = apply_pending_ack(&mut pending, batch_id) {
                                 if let Some(metrics) = metrics.as_mut() {
-                                    metrics.acks.add(1);
+                                    if effect.record_ack {
+                                        metrics.acks.add(1);
+                                    }
                                 }
-                                let cursor = pending_batch.last_cursor.clone();
-                                send_worker_command(
-                                    &worker.cmd_tx,
-                                    WorkerCommand::Commit {
-                                        batch_id,
-                                        cursor,
-                                    },
-                                    &effect_handler,
-                                )
-                                .await?;
+                                if let Some(command) = effect.command {
+                                    send_worker_command(&worker.cmd_tx, command, &effect_handler).await?;
+                                }
                             }
                         }
                         Ok(NodeControlMsg::Nack(nack)) => {
                             let Some(batch_id) = batch_id_from_call_data(&nack.unwind.route.calldata) else {
                                 continue;
                             };
-                            if let Some(pending_batch) = pending.get_mut(&batch_id) {
-                                if pending_batch.decision != PendingDecision::Pending {
-                                    continue;
-                                }
+                            if let Some(effect) =
+                                apply_pending_nack(&mut pending, batch_id, config.checkpoint.on_nack)
+                            {
+                                let complete_drain = should_complete_drain_after_nack(
+                                    &effect,
+                                    drain_deadline.is_some(),
+                                );
                                 if let Some(metrics) = metrics.as_mut() {
-                                    metrics.nacks.add(1);
-                                    metrics.rewinds.add(1);
+                                    if effect.record_nack {
+                                        metrics.nacks.add(1);
+                                    }
+                                    if effect.record_rewind && !complete_drain {
+                                        metrics.rewinds.add(1);
+                                    }
                                 }
-                                match config.checkpoint.on_nack {
-                                    OnNack::Rewind => {
-                                        pending_batch.decision = PendingDecision::RewindSent;
-                                        pending.clear();
-                                        send_worker_command(&worker.cmd_tx, WorkerCommand::Rewind, &effect_handler).await?;
-                                    }
-                                    OnNack::Fail => {
-                                        let _ =
-                                            send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
-                                        drop(event_rx);
-                                        join_worker(worker, &effect_handler).await?;
-                                        return Err(terminal_error(&effect_handler, "journald batch was Nacked"));
-                                    }
+                                if complete_drain {
+                                    let deadline =
+                                        drain_deadline.expect("drain deadline must be set");
+                                    let _ =
+                                        send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
+                                    drop(event_rx);
+                                    join_worker(worker, &effect_handler).await?;
+                                    effect_handler.notify_receiver_drained().await?;
+                                    return Ok(terminal_state(deadline, &metrics));
+                                } else if let Some(command) = effect.command {
+                                    send_worker_command(&worker.cmd_tx, command, &effect_handler).await?;
+                                }
+                                if effect.fail_nack {
+                                    let _ =
+                                        send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
+                                    drop(event_rx);
+                                    join_worker(worker, &effect_handler).await?;
+                                    return Err(terminal_error(&effect_handler, "journald batch was Nacked"));
                                 }
                             }
                         }
@@ -668,15 +811,8 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                 .checked_add(config.drain_timeout)
                                 .unwrap_or(deadline);
                             let deadline = deadline.min(local_deadline);
-                            if pending.is_empty() {
-                                let _ =
-                                    send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
-                                drop(event_rx);
-                                join_worker(worker, &effect_handler).await?;
-                                effect_handler.notify_receiver_drained().await?;
-                                return Ok(terminal_state(deadline, &metrics));
-                            }
                             drain_deadline = Some(deadline);
+                            send_worker_command(&worker.cmd_tx, WorkerCommand::Drain, &effect_handler).await?;
                         }
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             if let Some(metrics) = metrics.as_mut() {
@@ -722,15 +858,37 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                 &mut pdata,
                             );
                             let record_count = batch.record_count;
+                            let dropped_fields = batch.dropped_fields;
                             let batch_id = batch.id;
                             let last_cursor = batch.last_cursor.clone();
+                            debug_assert_eq!(max_in_flight, 1);
+                            debug_assert!(pending.is_empty());
                             let send_result = match effect_handler.try_send_message_with_source_node(pdata) {
                                 Ok(()) => Ok(()),
                                 Err(TypedError::ChannelSendError(SendError::Full(pdata))) => {
                                     let mut send = Box::pin(effect_handler.send_message_with_source_node(pdata));
                                     loop {
+                                        // While the downstream send is blocked, this batch is not
+                                        // in `pending` yet. With v1's max_in_flight=1 invariant,
+                                        // no Ack/Nack can require receiver state changes here.
                                         let result = tokio::select! {
                                             biased;
+
+                                            _ = async {
+                                                if let Some(deadline) = drain_deadline {
+                                                    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                                                } else {
+                                                    std::future::pending::<()>().await;
+                                                }
+                                            }, if drain_deadline.is_some() => {
+                                                let deadline = drain_deadline.expect("drain deadline must be set");
+                                                let _ =
+                                                    send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
+                                                drop(event_rx);
+                                                join_worker(worker, &effect_handler).await?;
+                                                effect_handler.notify_receiver_drained().await?;
+                                                return Ok(terminal_state(deadline, &metrics));
+                                            }
 
                                             msg = ctrl_msg_recv.recv() => {
                                                 match msg {
@@ -748,12 +906,8 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                                             .checked_add(config.drain_timeout)
                                                             .unwrap_or(deadline);
                                                         let deadline = deadline.min(local_deadline);
-                                                        let _ =
-                                                            send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
-                                                        drop(event_rx);
-                                                        join_worker(worker, &effect_handler).await?;
-                                                        effect_handler.notify_receiver_drained().await?;
-                                                        return Ok(terminal_state(deadline, &metrics));
+                                                        drain_deadline = Some(deadline);
+                                                        continue;
                                                     }
                                                     Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                                                         if let Some(metrics) = metrics.as_mut() {
@@ -791,6 +945,15 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                     if let Some(metrics) = metrics.as_mut() {
                                         metrics.batches_sent.add(1);
                                         metrics.records_sent.add(record_count as u64);
+                                        metrics.source_dropped_fields.add(dropped_fields);
+                                    }
+                                    if drain_deadline.is_some() {
+                                        send_worker_command(
+                                            &worker.cmd_tx,
+                                            WorkerCommand::Drain,
+                                            &effect_handler,
+                                        )
+                                        .await?;
                                     }
                                     otel_info!(
                                         "journald_receiver.batch_sent",
@@ -829,13 +992,10 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                         batch_id = batch_id,
                                         cursor = cursor.as_str()
                                     );
-                                    if let Some(deadline) = drain_deadline && pending.is_empty() {
-                                        let _ =
-                                            send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
-                                        drop(event_rx);
-                                        join_worker(worker, &effect_handler).await?;
-                                        effect_handler.notify_receiver_drained().await?;
-                                        return Ok(terminal_state(deadline, &metrics));
+                                    if let Some(deadline) = drain_deadline {
+                                        if pending.is_empty() {
+                                            continue;
+                                        }
                                     }
                                 }
                                 Err(err) => {
@@ -859,6 +1019,15 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                             format!("journald checkpoint failed {checkpoint_failures} consecutive times: {err}"),
                                         ));
                                     }
+                                    send_worker_command(
+                                        &worker.cmd_tx,
+                                        WorkerCommand::Commit {
+                                            batch_id,
+                                            cursor,
+                                        },
+                                        &effect_handler,
+                                    )
+                                    .await?;
                                 }
                             }
                         }
@@ -873,6 +1042,12 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                         Some(WorkerEvent::Stopped) | None => {
                             drop(event_rx);
                             join_worker(worker, &effect_handler).await?;
+                            if let Some(deadline) = drain_deadline {
+                                if pending.is_empty() {
+                                    effect_handler.notify_receiver_drained().await?;
+                                    return Ok(terminal_state(deadline, &metrics));
+                                }
+                            }
                             return Err(terminal_error(&effect_handler, "journald worker stopped unexpectedly"));
                         }
                     }
@@ -925,6 +1100,14 @@ impl Drop for SourceLease {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    fn pending_batch(cursor: &str) -> PendingBatch {
+        PendingBatch {
+            last_cursor: cursor.to_owned(),
+            decision: PendingDecision::Pending,
+        }
+    }
 
     #[test]
     fn rejects_unknown_config_field() {
@@ -960,5 +1143,84 @@ mod tests {
         let b = SourceLease::acquire("journald:/test-lease-b:<default>").expect("b");
         drop(a);
         drop(b);
+    }
+
+    #[test]
+    fn ack_marks_pending_batch_for_commit() {
+        let mut pending = BTreeMap::from([(7, pending_batch("cursor-7"))]);
+
+        let effect = apply_pending_ack(&mut pending, 7).expect("ack should apply");
+
+        assert_eq!(
+            effect,
+            PendingControlEffect {
+                command: Some(WorkerCommand::Commit {
+                    batch_id: 7,
+                    cursor: "cursor-7".to_owned(),
+                }),
+                fail_nack: false,
+                record_ack: true,
+                record_nack: false,
+                record_rewind: false,
+            }
+        );
+        assert_eq!(
+            pending.get(&7).map(|batch| batch.decision),
+            Some(PendingDecision::CommitSent)
+        );
+        assert!(apply_pending_ack(&mut pending, 7).is_none());
+    }
+
+    #[test]
+    fn nack_with_rewind_clears_pending_and_requests_rewind() {
+        let mut pending = BTreeMap::from([(7, pending_batch("cursor-7"))]);
+
+        let effect =
+            apply_pending_nack(&mut pending, 7, OnNack::Rewind).expect("nack should apply");
+
+        assert_eq!(
+            effect,
+            PendingControlEffect {
+                command: Some(WorkerCommand::Rewind),
+                fail_nack: false,
+                record_ack: false,
+                record_nack: true,
+                record_rewind: true,
+            }
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn nack_with_rewind_completes_active_drain_instead_of_rewinding() {
+        let mut pending = BTreeMap::from([(7, pending_batch("cursor-7"))]);
+
+        let effect =
+            apply_pending_nack(&mut pending, 7, OnNack::Rewind).expect("nack should apply");
+
+        assert!(should_complete_drain_after_nack(&effect, true));
+        assert!(!should_complete_drain_after_nack(&effect, false));
+    }
+
+    #[test]
+    fn nack_with_fail_requests_terminal_failure_without_rewind() {
+        let mut pending = BTreeMap::from([(7, pending_batch("cursor-7"))]);
+
+        let effect = apply_pending_nack(&mut pending, 7, OnNack::Fail).expect("nack should apply");
+
+        assert_eq!(
+            effect,
+            PendingControlEffect {
+                command: None,
+                fail_nack: true,
+                record_ack: false,
+                record_nack: true,
+                record_rewind: false,
+            }
+        );
+        assert_eq!(
+            pending.get(&7).map(|batch| batch.decision),
+            Some(PendingDecision::Pending)
+        );
     }
 }

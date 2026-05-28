@@ -8,7 +8,9 @@ mod imp {
     #![allow(unsafe_code)]
 
     use crate::receivers::journald_receiver::arrow_records_encoder::{JournalEntry, JournalField};
-    use crate::receivers::journald_receiver::config::{RuntimeConfig, StartAt};
+    use crate::receivers::journald_receiver::config::{
+        ExtractionConfig, LargeFieldPolicy, RuntimeConfig, StartAt,
+    };
 
     use libc::{RTLD_NOW, c_char, c_int, c_void, size_t};
     use std::ffi::{CStr, CString};
@@ -25,10 +27,9 @@ mod imp {
     type NextFn = unsafe extern "C" fn(*mut SdJournal) -> c_int;
     type WaitFn = unsafe extern "C" fn(*mut SdJournal, u64) -> c_int;
     type SeekHeadFn = unsafe extern "C" fn(*mut SdJournal) -> c_int;
-    type SeekTailFn = unsafe extern "C" fn(*mut SdJournal) -> c_int;
+    type SeekRealtimeUsecFn = unsafe extern "C" fn(*mut SdJournal, u64) -> c_int;
     type SeekCursorFn = unsafe extern "C" fn(*mut SdJournal, *const c_char) -> c_int;
     type TestCursorFn = unsafe extern "C" fn(*mut SdJournal, *const c_char) -> c_int;
-    type PreviousFn = unsafe extern "C" fn(*mut SdJournal) -> c_int;
     type GetCursorFn = unsafe extern "C" fn(*mut SdJournal, *mut *mut c_char) -> c_int;
     type GetRealtimeUsecFn = unsafe extern "C" fn(*mut SdJournal, *mut u64) -> c_int;
     type RestartDataFn = unsafe extern "C" fn(*mut SdJournal);
@@ -46,10 +47,9 @@ mod imp {
         next: NextFn,
         wait: WaitFn,
         seek_head: SeekHeadFn,
-        seek_tail: SeekTailFn,
+        seek_realtime_usec: SeekRealtimeUsecFn,
         seek_cursor: SeekCursorFn,
         test_cursor: TestCursorFn,
-        previous: PreviousFn,
         get_cursor: GetCursorFn,
         get_realtime_usec: GetRealtimeUsecFn,
         restart_data: RestartDataFn,
@@ -97,10 +97,9 @@ mod imp {
                 next: sym!("sd_journal_next", NextFn),
                 wait: sym!("sd_journal_wait", WaitFn),
                 seek_head: sym!("sd_journal_seek_head", SeekHeadFn),
-                seek_tail: sym!("sd_journal_seek_tail", SeekTailFn),
+                seek_realtime_usec: sym!("sd_journal_seek_realtime_usec", SeekRealtimeUsecFn),
                 seek_cursor: sym!("sd_journal_seek_cursor", SeekCursorFn),
                 test_cursor: sym!("sd_journal_test_cursor", TestCursorFn),
-                previous: sym!("sd_journal_previous", PreviousFn),
                 get_cursor: sym!("sd_journal_get_cursor", GetCursorFn),
                 get_realtime_usec: sym!("sd_journal_get_realtime_usec", GetRealtimeUsecFn),
                 restart_data: sym!("sd_journal_restart_data", RestartDataFn),
@@ -116,6 +115,7 @@ mod imp {
         lib: &'static LibSystemd,
         journal: NonNull<SdJournal>,
         wait_timeout: Duration,
+        extraction: ExtractionConfig,
     }
 
     impl SdJournalReader {
@@ -150,9 +150,9 @@ mod imp {
                 lib,
                 journal,
                 wait_timeout: config.wait_timeout,
+                extraction: config.extraction.clone(),
             };
             if let Err(err) = reader.configure(config, checkpoint) {
-                unsafe { (reader.lib.close)(reader.journal.as_ptr()) };
                 return Err(err);
             }
             Ok(reader)
@@ -214,16 +214,15 @@ mod imp {
                     "sd_journal_seek_head",
                 ),
                 StartAt::End => {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|_| "system clock is before Unix epoch".to_owned())?
+                        .as_micros()
+                        .min(u64::MAX as u128) as u64;
                     check(
-                        unsafe { (self.lib.seek_tail)(self.journal.as_ptr()) },
-                        "sd_journal_seek_tail",
-                    )?;
-                    let previous = unsafe { (self.lib.previous)(self.journal.as_ptr()) };
-                    if previous < 0 {
-                        Err(format!("sd_journal_previous failed with {previous}"))
-                    } else {
-                        Ok(())
-                    }
+                        unsafe { (self.lib.seek_realtime_usec)(self.journal.as_ptr(), now) },
+                        "sd_journal_seek_realtime_usec",
+                    )
                 }
             }
         }
@@ -269,6 +268,13 @@ mod imp {
         }
 
         pub(crate) fn next_entry(&mut self) -> Result<Option<JournalEntry>, String> {
+            self.next_entry_with_wait_timeout(self.wait_timeout)
+        }
+
+        pub(crate) fn next_entry_with_wait_timeout(
+            &mut self,
+            wait_timeout: Duration,
+        ) -> Result<Option<JournalEntry>, String> {
             loop {
                 let next = unsafe { (self.lib.next)(self.journal.as_ptr()) };
                 if next < 0 {
@@ -277,7 +283,7 @@ mod imp {
                 if next > 0 {
                     return self.current_entry().map(Some);
                 }
-                let timeout = self.wait_timeout.as_micros().min(u64::MAX as u128) as u64;
+                let timeout = duration_to_usec(wait_timeout);
                 let waited = unsafe { (self.lib.wait)(self.journal.as_ptr(), timeout) };
                 if waited < 0 {
                     return Err(format!("sd_journal_wait failed with {waited}"));
@@ -307,6 +313,9 @@ mod imp {
 
             unsafe { (self.lib.restart_data)(self.journal.as_ptr()) };
             let mut fields = Vec::new();
+            let mut copied_entry_bytes = 0u64;
+            let mut copied_field_count = 0usize;
+            let mut dropped_fields = 0u64;
             loop {
                 let mut data: *const c_void = std::ptr::null();
                 let mut len: size_t = 0;
@@ -321,9 +330,26 @@ mod imp {
                 }
                 let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
                 if let Some(eq) = bytes.iter().position(|b| *b == b'=') {
+                    let value_len = bytes.len().saturating_sub(eq + 1) as u64;
+                    let field_len = bytes.len() as u64;
+                    let would_exceed_entry = copied_entry_bytes.saturating_add(field_len)
+                        > self.extraction.max_entry_bytes;
+                    let should_drop = value_len > self.extraction.max_field_bytes
+                        || copied_field_count >= self.extraction.max_fields_per_entry
+                        || would_exceed_entry;
+                    if should_drop {
+                        match self.extraction.large_field_policy {
+                            LargeFieldPolicy::DropAndCount => {
+                                dropped_fields = dropped_fields.saturating_add(1);
+                                continue;
+                            }
+                        }
+                    }
                     let name = String::from_utf8_lossy(&bytes[..eq]).into_owned();
                     let value = bytes[eq + 1..].to_vec();
                     fields.push(JournalField { name, value });
+                    copied_entry_bytes = copied_entry_bytes.saturating_add(field_len);
+                    copied_field_count = copied_field_count.saturating_add(1);
                 }
             }
 
@@ -331,8 +357,17 @@ mod imp {
                 cursor,
                 realtime_unix_nano: realtime_usec.saturating_mul(1000),
                 fields,
+                dropped_fields,
             })
         }
+    }
+
+    fn duration_to_usec(duration: Duration) -> u64 {
+        if duration.is_zero() {
+            return 0;
+        }
+        let usec = duration.as_micros().min(u64::MAX as u128) as u64;
+        usec.max(1)
     }
 
     impl Drop for SdJournalReader {

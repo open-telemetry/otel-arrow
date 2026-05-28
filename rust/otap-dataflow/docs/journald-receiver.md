@@ -257,6 +257,11 @@ downstream backpressure, the async task races the blocked send against lifecycle
 control messages and the worker polls its command channel while holding a full
 handoff batch.
 
+During drain, a batch that has already been read from journald but is queued or
+currently being sent downstream is not abandoned. Drain first stops additional
+worker reads, then lets the current batch reach a terminal Ack/Commit,
+Nack/Rewind, or configured fail outcome before the receiver reports drained.
+
 ## Ack and Checkpoint Model
 
 The receiver advances its durable cursor only after a downstream Ack and never
@@ -283,7 +288,7 @@ seek_after_committed_cursor(cursor):
   seek_cursor(cursor)
   state = next()
   if state == no_entry:
-    wait_or_return_empty()
+    return invalid_or_stale_cursor
   if test_cursor(cursor):
     return next()
   return invalid_or_stale_cursor
@@ -473,7 +478,7 @@ processors.
 | `body` | `MESSAGE`, unset when missing |
 | `time_unix_nano` | `sd_journal_get_realtime_usec() * 1000` |
 | `severity_number` | derived from `PRIORITY` |
-| `attributes` | native journal fields, key names preserved, with duplicate and binary rules below |
+| `attributes` | native journal fields, key names preserved |
 | internal completion state | cursor from `sd_journal_get_cursor()`, plus range and batch id; not emitted as attributes |
 
 The receiver uses `sd_journal_get_data` and field enumeration for journal
@@ -485,13 +490,26 @@ the receiver must copy the required field names and values before calling
 Attribute projection rules:
 
 - a single occurrence of a field becomes a scalar attribute
-- repeated occurrences of the same field become an array attribute in journal
-  enumeration order
 - the first `MESSAGE` value becomes the OTAP body; all `MESSAGE` values are
-  also preserved in a native journal attribute using the duplicate-field rules
+  also preserved in a native journal attribute
 - binary values are preserved as OTAP bytes when supported; otherwise they are
   base64 encoded with an explicit encoding marker
 - field values must not be lossy-decoded
+
+In the first implementation, duplicate field names are emitted as repeated
+same-key attributes. A follow-up PR will coalesce repeated fields into array
+attributes while preserving journald enumeration order. For example:
+
+```text
+CUSTOM=value1
+CUSTOM=value2
+```
+
+will become:
+
+```text
+CUSTOM=["value1", "value2"]
+```
 
 Extraction has hard resource limits. `sd_journal_set_data_threshold` may be
 used as an optimization hint, but it is not treated as a safety boundary. The
@@ -501,7 +519,7 @@ v1 `large_field_policy: drop_and_count`, any field value that exceeds the
 per-field limit, any field that would exceed the per-entry copied-byte budget,
 and any field beyond the per-entry field-count limit is omitted and counted.
 If the first `MESSAGE` value is dropped, the body is unset; preserved
-`MESSAGE` values still follow the duplicate-field rules above.
+`MESSAGE` values are still preserved as native journal attributes.
 
 Initial severity mapping:
 
@@ -556,6 +574,28 @@ the v1 signal set includes:
 | last observed entry timestamp | gauge |
 | worker restarts | counter |
 | downstream backpressure duration | histogram or counter duration |
+
+## Phased Implementation Notes
+
+The first implementation intentionally focuses on the core receiver path:
+Linux `sd-journal` ingestion, bounded worker isolation, Ack-driven checkpoint
+advancement, durable cursor persistence, basic filtering, extraction limits,
+and raw journald field projection.
+
+Some design goals are deferred to follow-up PRs once the core receiver has
+landed and the worker/checkpoint behavior is validated in production-like
+environments.
+
+Deferred follow-ups include:
+
+- coalescing duplicate journald fields into array attributes
+- introducing a `JournalSource` trait and `FakeJournalSource` test boundary
+- expanding receiver self-telemetry for stale cursors, permission warnings,
+  worker restarts, last-entry timestamp, and backpressure duration
+- named systemd journal namespace support
+- arbitrary journald match expressions
+- NUMA-aware placement
+- cross-process source locking
 
 ## NUMA and Placement
 

@@ -28,6 +28,7 @@ pub(crate) struct JournalEntry {
     pub(crate) cursor: String,
     pub(crate) realtime_unix_nano: u64,
     pub(crate) fields: Vec<JournalField>,
+    pub(crate) dropped_fields: u64,
 }
 
 impl JournalEntry {
@@ -87,7 +88,7 @@ impl JournaldArrowRecordsBuilder {
         }
 
         for field in &entry.fields {
-            if field.name == "MESSAGE" || field.name == "__CURSOR" {
+            if field.name == "__CURSOR" {
                 continue;
             }
             self.log_attrs.append_parent_id(&self.curr_log_id);
@@ -181,6 +182,7 @@ mod tests {
                     value: b"sshd.service".to_vec(),
                 },
             ],
+            dropped_fields: 0,
         };
 
         let mut builder = JournaldArrowRecordsBuilder::new();
@@ -197,7 +199,15 @@ mod tests {
             log.body.as_ref().and_then(|v| v.value.as_ref()),
             Some(Value::StringValue(v)) if v == "hello"
         ));
-        assert_eq!(log.attributes.len(), 2);
+        assert_eq!(log.attributes.len(), 3);
+        assert!(matches!(
+            log.attributes
+                .iter()
+                .find(|kv| kv.key == "MESSAGE")
+                .and_then(|kv| kv.value.as_ref())
+                .and_then(|v| v.value.as_ref()),
+            Some(Value::StringValue(v)) if v == "hello"
+        ));
         assert!(matches!(
             log.attributes
                 .iter()
