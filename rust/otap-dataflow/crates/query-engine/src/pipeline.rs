@@ -31,6 +31,7 @@ mod conditional;
 mod expr;
 mod filter;
 mod functions;
+pub(crate) mod id_mask;
 mod planner;
 mod project;
 

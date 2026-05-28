@@ -1253,7 +1253,7 @@ mod tests {
     async fn flow_metric_auto_measures_process_without_timed() {
         let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
         let attrs = FlowAttributeSet {
-            flow_name: "auto_measure".into(),
+            flow_id: "auto_measure".into(),
             start_node: "auto_measure_processor".into(),
             end_node: "auto_measure_processor".into(),
             pipeline_attrs: pipeline_ctx.pipeline_attribute_set(),
