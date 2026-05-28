@@ -56,6 +56,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use one_collect::Guid;
 use one_collect::etw::tdh::{TdhDecodeError, TdhDecoder};
@@ -65,6 +66,69 @@ use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use tokio::sync::mpsc;
 
 use super::{Config, ProviderConfig, TraceLevel};
+
+// ── QPC → Unix epoch conversion ──────────────────────────────────────────────
+
+/// Reference point captured once at session start to convert QPC ticks to
+/// Unix epoch nanoseconds.  All three values are sampled on the session
+/// thread before `parse_until` enters the `ProcessTrace` loop.
+#[derive(Debug, Clone, Copy)]
+struct QpcReference {
+    /// QPC tick value at reference time.
+    qpc_at_ref: u64,
+    /// QPC frequency (ticks per second).
+    qpc_frequency: u64,
+    /// Unix epoch nanoseconds at reference time.
+    unix_ns_at_ref: i64,
+}
+
+impl QpcReference {
+    /// Capture a QPC reference point using Win32 APIs.
+    ///
+    /// # Safety
+    ///
+    /// Calls `QueryPerformanceCounter` and `QueryPerformanceFrequency`,
+    /// which are always safe to call on Windows.
+    #[allow(unsafe_code)]
+    fn capture() -> Self {
+        // Use windows-sys types for QPC
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn QueryPerformanceCounter(lp: *mut i64) -> i32;
+            fn QueryPerformanceFrequency(lp: *mut i64) -> i32;
+        }
+
+        let mut qpc: i64 = 0;
+        let mut freq: i64 = 0;
+
+        // SAFETY: These Win32 APIs are always safe to call; they write to
+        // valid stack-allocated i64 pointers.
+        unsafe {
+            let _ = QueryPerformanceCounter(&mut qpc);
+            let _ = QueryPerformanceFrequency(&mut freq);
+        }
+
+        let unix_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as i64;
+
+        Self {
+            qpc_at_ref: qpc as u64,
+            qpc_frequency: freq.max(1) as u64,
+            unix_ns_at_ref: unix_ns,
+        }
+    }
+
+    /// Convert a QPC tick value to Unix epoch nanoseconds.
+    fn qpc_to_unix_ns(self, qpc_ticks: u64) -> i64 {
+        // delta_ticks can be negative if the event was captured slightly
+        // before our reference point (race between QPC and wall clock).
+        let delta_ticks = qpc_ticks as i128 - self.qpc_at_ref as i128;
+        let delta_ns = delta_ticks * 1_000_000_000 / self.qpc_frequency as i128;
+        self.unix_ns_at_ref.saturating_add(delta_ns as i64)
+    }
+}
 
 /// Channel capacity for ETW events sent from the blocking session thread to
 /// each per-core async receiver loop.  A bounded channel provides implicit
@@ -88,7 +152,6 @@ pub struct DecodedField {
     pub type_name: String,
     /// Raw field data bytes copied from the event payload.
     /// Empty for unsupported or zero-length fields.
-    #[expect(dead_code, reason = "populated for future Arrow conversion")]
     pub data: Vec<u8>,
 }
 
@@ -102,7 +165,11 @@ pub struct EtwEventData {
     /// Provider GUID that produced the event.
     #[expect(dead_code, reason = "captured for future use")]
     pub provider_id: [u8; 16],
-    /// ETW event timestamp (QPC ticks from `EVENT_HEADER.TimeStamp`).
+    /// ETW event timestamp converted to Unix epoch nanoseconds.
+    ///
+    /// Derived from `EVENT_HEADER.TimeStamp` (QPC ticks) using a reference
+    /// point captured at session start via `QueryPerformanceCounter` and
+    /// `SystemTime::now()`.
     pub timestamp: u64,
     /// Process ID from the event header.
     pub process_id: u32,
@@ -129,6 +196,10 @@ pub struct EtwEventData {
     ///
     /// Provided for consumers that need access to the full uninterpreted
     /// event bytes (e.g. for binary-level forwarding or custom decoding).
+    #[expect(
+        dead_code,
+        reason = "retained for future binary-level forwarding or manifest decoding"
+    )]
     pub user_data: Vec<u8>,
 }
 
@@ -356,6 +427,11 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
             // Rc<RefCell<>> is safe (no cross-thread access).
             let decoder: Rc<RefCell<TdhDecoder>> = Rc::new(RefCell::new(TdhDecoder::new()));
 
+            // Capture QPC reference point for timestamp conversion.
+            // This is done on the session thread just before parse_until
+            // enters the ProcessTrace loop.
+            let qpc_ref = QpcReference::capture();
+
             // Register a provider-wide event for each configured provider.
             // A "wide event" fires for ALL event IDs from the provider,
             // unlike `add_event` which only fires for a specific event ID.
@@ -449,9 +525,12 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                     };
 
                     // Build EtwEventData with all available metadata.
+                    // Convert QPC ticks to Unix epoch nanoseconds.
+                    let qpc_ticks = anc.time();
+                    let unix_ns = qpc_ref.qpc_to_unix_ns(qpc_ticks);
                     let data = EtwEventData {
                         provider_id: anc.provider().to_bytes(),
-                        timestamp: anc.time(),
+                        timestamp: unix_ns as u64,
                         process_id: anc.pid(),
                         thread_id: anc.tid(),
                         event_id,
@@ -666,6 +745,7 @@ mod tests {
                 level: TraceLevel::default(),
                 keywords: None,
             }],
+            batching: None,
         }
     }
 
@@ -766,6 +846,7 @@ mod tests {
                 level: TraceLevel::Verbose,
                 keywords: None,
             }],
+            batching: None,
         };
 
         let err = subscribe(&different_config, 1).unwrap_err();

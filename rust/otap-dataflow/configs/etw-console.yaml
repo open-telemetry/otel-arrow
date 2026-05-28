@@ -6,8 +6,9 @@
 # Usage (run as Administrator for ETW access):
 #   cargo run --features etw-receiver -- -c configs/etw-console.yaml
 #
-# The receiver captures raw ETW events from the configured providers
-# and emits summary as an internal log/event. Full Arrow encoding is a TODO.
+# The receiver captures ETW events from the configured providers,
+# converts them to OTAP Arrow log record batches, and forwards them
+# through the pipeline to the console exporter.
 
 
 version: otel_dataflow/v1
@@ -26,14 +27,11 @@ groups:
             type: receiver:etw
             config:
               session_name: "OtelArrowETW"
+              batching:
+                max_size: 100
+                max_duration: "50ms"
               providers:
-                # Microsoft-Windows-Kernel-Process (manifest-based)
-                #- guid: "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716"
-                #  level: information
-                # Microsoft.Windows.Kernel.Power (TraceLogging — will produce decoded fields)
-                #- guid: "331c3b3a-2005-44c2-ac5e-77220c37d6b4"
-                #  level: verbose
-                # Rustic Provider
+                # Rustic Provider (Custom)
                 - guid: "d2387720-2907-5677-8625-c1bdc4155197"
                   level: verbose
           console:

@@ -1,0 +1,404 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Arrow encoding for Windows ETW logs.
+//!
+//! Converts [`EtwEventData`] into OTAP Arrow log record batches, following
+//! the same builder pattern used by the Linux `user_events_receiver`.
+
+use std::borrow::Cow;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use otap_df_pdata::encode::Result;
+use otap_df_pdata::encode::record::{
+    attributes::StrKeysAttributesRecordBatchBuilder, logs::LogsRecordBatchBuilder,
+};
+use otap_df_pdata::otap::{Logs, OtapArrowRecords};
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+
+use super::session::{DecodedField, EtwEventData};
+
+// ── ETW level → OTel severity number mapping ─────────────────────────────────
+
+/// Map an ETW event level to the closest OpenTelemetry severity number.
+///
+/// ETW levels:
+/// - 1 = Critical  → OTEL FATAL  (21)
+/// - 2 = Error     → OTEL ERROR  (17)
+/// - 3 = Warning   → OTEL WARN   (13)
+/// - 4 = Info      → OTEL INFO   (9)
+/// - 5 = Verbose   → OTEL DEBUG  (5)
+///
+/// Unknown levels map to OTEL UNSPECIFIED (0).
+const fn etw_level_to_otel_severity(level: u8) -> i32 {
+    match level {
+        1 => 21, // FATAL
+        2 => 17, // ERROR
+        3 => 13, // WARN
+        4 => 9,  // INFO
+        5 => 5,  // DEBUG
+        _ => 0,  // UNSPECIFIED
+    }
+}
+
+/// Map an ETW level to the conventional OTel severity text.
+const fn etw_level_to_severity_text(level: u8) -> Option<&'static str> {
+    match level {
+        1 => Some("FATAL"),
+        2 => Some("ERROR"),
+        3 => Some("WARN"),
+        4 => Some("INFO"),
+        5 => Some("DEBUG"),
+        _ => None,
+    }
+}
+
+// ── Decoded field → attribute value conversion ───────────────────────────────
+
+/// Typed attribute value for Arrow encoding.
+enum AttrValue<'a> {
+    Str(Cow<'a, str>),
+    Int(i64),
+    Double(f64),
+    Bytes(&'a [u8]),
+}
+
+/// Interpret a TDH-decoded field as a typed attribute value.
+///
+/// The `type_name` strings come from `one_collect`'s TDH decoder and follow
+/// the same naming conventions as the user_events tracefs decoder.
+fn decode_field_value(field: &DecodedField) -> AttrValue<'_> {
+    let data = field.data.as_slice();
+    match (field.type_name.as_str(), data.len()) {
+        // Signed integers
+        ("s8", 1) => AttrValue::Int(i64::from(data[0] as i8)),
+        ("s16" | "short", 2) => AttrValue::Int(i64::from(i16::from_ne_bytes(
+            data.try_into().expect("matched len==2"),
+        ))),
+        ("s32" | "int", 4) => AttrValue::Int(i64::from(i32::from_ne_bytes(
+            data.try_into().expect("matched len==4"),
+        ))),
+        ("s64" | "long", 8) => {
+            AttrValue::Int(i64::from_ne_bytes(data.try_into().expect("matched len==8")))
+        }
+
+        // Unsigned integers
+        ("u8", 1) => AttrValue::Int(i64::from(data[0])),
+        ("u16" | "unsigned short", 2) => AttrValue::Int(i64::from(u16::from_ne_bytes(
+            data.try_into().expect("matched len==2"),
+        ))),
+        ("u32" | "unsigned int", 4) => AttrValue::Int(i64::from(u32::from_ne_bytes(
+            data.try_into().expect("matched len==4"),
+        ))),
+        ("u64" | "unsigned long", 8) => {
+            // u64 may overflow i64; saturate to i64::MAX for observability.
+            let v = u64::from_ne_bytes(data.try_into().expect("matched len==8"));
+            AttrValue::Int(v.min(i64::MAX as u64) as i64)
+        }
+
+        // Floating point
+        ("float", 4) => AttrValue::Double(f64::from(f32::from_ne_bytes(
+            data.try_into().expect("matched len==4"),
+        ))),
+        ("double", 8) => AttrValue::Double(f64::from_ne_bytes(
+            data.try_into().expect("matched len==8"),
+        )),
+
+        // Strings (null-terminated or not)
+        ("string", _) => {
+            let s = String::from_utf8_lossy(data);
+            let trimmed = s.trim_end_matches('\0');
+            AttrValue::Str(Cow::Owned(trimmed.to_owned()))
+        }
+        ("wstring", _) if data.len() >= 2 => {
+            // UTF-16LE decoding, trim null terminator
+            let u16_iter = data
+                .chunks_exact(2)
+                .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+                .take_while(|&c| c != 0);
+            let decoded: String = char::decode_utf16(u16_iter)
+                .map(|r| r.unwrap_or('\u{FFFD}'))
+                .collect();
+            AttrValue::Str(Cow::Owned(decoded))
+        }
+
+        // For unrecognized types, emit the raw bytes as a hex string
+        _ if data.is_empty() => AttrValue::Str(Cow::Borrowed("")),
+        _ => AttrValue::Bytes(data),
+    }
+}
+
+// ── Arrow records builder ────────────────────────────────────────────────────
+
+/// Builder for creating Arrow record batches from ETW events.
+pub(super) struct EtwArrowRecordsBuilder {
+    curr_log_id: u16,
+    logs: LogsRecordBatchBuilder,
+    log_attrs: StrKeysAttributesRecordBatchBuilder<u16>,
+}
+
+impl Default for EtwArrowRecordsBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EtwArrowRecordsBuilder {
+    /// Creates a new builder.
+    #[must_use]
+    pub(super) fn new() -> Self {
+        Self {
+            curr_log_id: 0,
+            logs: LogsRecordBatchBuilder::new(),
+            log_attrs: StrKeysAttributesRecordBatchBuilder::<u16>::new(),
+        }
+    }
+
+    /// Returns the number of buffered log records.
+    #[must_use]
+    pub(super) const fn len(&self) -> u16 {
+        self.curr_log_id
+    }
+
+    /// Returns true when the builder is empty.
+    #[must_use]
+    pub(super) const fn is_empty(&self) -> bool {
+        self.curr_log_id == 0
+    }
+
+    /// Appends an ETW event as an OTAP log record.
+    ///
+    /// The ETW event timestamp has already been converted from QPC ticks to
+    /// Unix epoch nanoseconds by the session callback thread using a
+    /// reference point captured at session start.
+    pub(super) fn append(&mut self, event: &EtwEventData) {
+        let timestamp = event.timestamp as i64;
+
+        self.logs.append_time_unix_nano(timestamp);
+
+        // Body: for ETW events we leave body empty (no single "message"
+        // field in the general case).  Decoded fields go into attributes.
+        self.logs.body.append_null();
+
+        // Severity from ETW level
+        let severity = etw_level_to_otel_severity(event.level);
+        if severity > 0 {
+            self.logs.append_severity_number(Some(severity));
+            self.logs
+                .append_severity_text(etw_level_to_severity_text(event.level).map(str::as_bytes));
+        } else {
+            self.logs.append_severity_number(None);
+            self.logs.append_severity_text(None);
+        }
+
+        self.logs.append_id(Some(self.curr_log_id));
+        self.logs.append_flags(None);
+
+        // Event name: use "etw.<event_id>" as the event name
+        let event_name = format!("etw.{}", event.event_id);
+        self.logs.append_event_name(Some(event_name.as_bytes()));
+
+        // No trace/span context from ETW
+        _ = self.logs.append_trace_id(None::<&[u8; 16]>);
+        _ = self.logs.append_span_id(None::<&[u8; 8]>);
+
+        // Attributes: ETW header metadata
+        self.append_attr("etw.event_id", AttrValue::Int(i64::from(event.event_id)));
+        self.append_attr("etw.opcode", AttrValue::Int(i64::from(event.opcode)));
+        self.append_attr(
+            "etw.keywords",
+            AttrValue::Int(event.keywords.min(i64::MAX as u64) as i64),
+        );
+        self.append_attr(
+            "etw.process_id",
+            AttrValue::Int(i64::from(event.process_id)),
+        );
+        self.append_attr("etw.thread_id", AttrValue::Int(i64::from(event.thread_id)));
+
+        // Attributes: TDH-decoded fields
+        for field in &event.decoded_fields {
+            if field.name.is_empty() {
+                continue;
+            }
+            let value = decode_field_value(field);
+            self.append_attr(&field.name, value);
+        }
+
+        self.curr_log_id += 1;
+    }
+
+    /// Append a single attribute key-value pair.
+    fn append_attr(&mut self, key: &str, value: AttrValue<'_>) {
+        self.log_attrs.append_key(key);
+        match value {
+            AttrValue::Str(s) => self.log_attrs.any_values_builder.append_str(s.as_bytes()),
+            AttrValue::Int(i) => self.log_attrs.any_values_builder.append_int(i),
+            AttrValue::Double(d) => self.log_attrs.any_values_builder.append_double(d),
+            AttrValue::Bytes(b) => {
+                // Encode raw bytes as hex string for observability
+                let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
+                self.log_attrs.any_values_builder.append_str(hex.as_bytes());
+            }
+        }
+        self.log_attrs.append_parent_id(&self.curr_log_id);
+    }
+
+    /// Builds the Arrow record batch from buffered ETW events.
+    pub(super) fn build(mut self) -> Result<OtapArrowRecords> {
+        let log_record_count = self.curr_log_id.into();
+
+        // Set observed_time to the current wall-clock time at build (flush)
+        // time, matching the syslog receiver pattern.  This represents when
+        // the collector processed the batch, not when the events occurred.
+        let observed_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as i64;
+        self.logs
+            .append_observed_time_unix_nano_n(observed_time, log_record_count);
+
+        // All logs belong to the same resource and scope.  Fill in the
+        // required row-aligned placeholder arrays.
+        self.logs.resource.append_id_n(0, log_record_count);
+        self.logs
+            .resource
+            .append_schema_url_n(None, log_record_count);
+        self.logs
+            .resource
+            .append_dropped_attributes_count_n(0, log_record_count);
+
+        self.logs.scope.append_id_n(0, log_record_count);
+        self.logs.scope.append_name_n(None, log_record_count);
+        self.logs.scope.append_version_n(None, log_record_count);
+        self.logs
+            .scope
+            .append_dropped_attributes_count_n(0, log_record_count);
+
+        self.logs.append_schema_url_n(None, log_record_count);
+        self.logs
+            .append_dropped_attributes_count_n(0, log_record_count);
+
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        otap_batch.set(ArrowPayloadType::Logs, self.logs.finish()?)?;
+
+        let log_attrs_rb = self.log_attrs.finish()?;
+        if log_attrs_rb.num_rows() > 0 {
+            otap_batch.set(ArrowPayloadType::LogAttrs, log_attrs_rb)?;
+        }
+
+        Ok(otap_batch)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::receivers::etw_receiver::session::{DecodedField, EtwEventData};
+
+    fn test_event() -> EtwEventData {
+        EtwEventData {
+            provider_id: [0u8; 16],
+            timestamp: 123456789,
+            process_id: 1234,
+            thread_id: 5678,
+            event_id: 42,
+            opcode: 0,
+            version: 1,
+            level: 4, // Information
+            keywords: 0xFF,
+            decoded_fields: vec![
+                DecodedField {
+                    name: "ProcessId".to_string(),
+                    type_name: "u32".to_string(),
+                    data: 1234u32.to_ne_bytes().to_vec(),
+                },
+                DecodedField {
+                    name: "FileName".to_string(),
+                    type_name: "string".to_string(),
+                    data: b"test.exe\0".to_vec(),
+                },
+            ],
+            user_data: vec![0u8; 16],
+        }
+    }
+
+    #[test]
+    fn build_creates_logs_and_attributes_batches() {
+        let mut builder = EtwArrowRecordsBuilder::new();
+        builder.append(&test_event());
+
+        let batch = builder.build().expect("build succeeds");
+        let logs_rb = batch
+            .get(ArrowPayloadType::Logs)
+            .expect("logs batch present");
+        let attrs_rb = batch
+            .get(ArrowPayloadType::LogAttrs)
+            .expect("attrs batch present");
+
+        assert_eq!(logs_rb.num_rows(), 1);
+        // 5 header attrs + 2 decoded fields = 7 attribute rows
+        assert_eq!(attrs_rb.num_rows(), 7);
+    }
+
+    #[test]
+    fn severity_mapping() {
+        assert_eq!(etw_level_to_otel_severity(1), 21); // FATAL
+        assert_eq!(etw_level_to_otel_severity(2), 17); // ERROR
+        assert_eq!(etw_level_to_otel_severity(3), 13); // WARN
+        assert_eq!(etw_level_to_otel_severity(4), 9); // INFO
+        assert_eq!(etw_level_to_otel_severity(5), 5); // DEBUG
+        assert_eq!(etw_level_to_otel_severity(0), 0); // UNSPECIFIED
+        assert_eq!(etw_level_to_otel_severity(255), 0); // Unknown
+    }
+
+    #[test]
+    fn empty_builder_is_empty() {
+        let builder = EtwArrowRecordsBuilder::new();
+        assert!(builder.is_empty());
+        assert_eq!(builder.len(), 0);
+    }
+
+    #[test]
+    fn len_increments_on_append() {
+        let mut builder = EtwArrowRecordsBuilder::new();
+        builder.append(&test_event());
+        assert_eq!(builder.len(), 1);
+        assert!(!builder.is_empty());
+        builder.append(&test_event());
+        assert_eq!(builder.len(), 2);
+    }
+
+    #[test]
+    fn empty_decoded_fields_still_has_header_attrs() {
+        let mut builder = EtwArrowRecordsBuilder::new();
+        let mut event = test_event();
+        event.decoded_fields.clear();
+        builder.append(&event);
+
+        let batch = builder.build().expect("build succeeds");
+        let attrs_rb = batch
+            .get(ArrowPayloadType::LogAttrs)
+            .expect("attrs batch present");
+        // Only 5 header attributes (event_id, opcode, keywords, process_id, thread_id)
+        assert_eq!(attrs_rb.num_rows(), 5);
+    }
+
+    #[test]
+    fn skip_empty_field_names() {
+        let mut builder = EtwArrowRecordsBuilder::new();
+        let mut event = test_event();
+        event.decoded_fields = vec![DecodedField {
+            name: String::new(),
+            type_name: "u32".to_string(),
+            data: 42u32.to_ne_bytes().to_vec(),
+        }];
+        builder.append(&event);
+
+        let batch = builder.build().expect("build succeeds");
+        let attrs_rb = batch
+            .get(ArrowPayloadType::LogAttrs)
+            .expect("attrs batch present");
+        // Only 5 header attributes; the empty-named field is skipped
+        assert_eq!(attrs_rb.num_rows(), 5);
+    }
+}
