@@ -839,7 +839,7 @@ fn align_value_to_root(value: ScopedValue, otap_batch: &OtapArrowRecords) -> Res
     let left_input = JoinInput::new(
         ColumnarValue::Array(Arc::new(NullArray::new(root_batch.num_rows()))),
         Rc::new(DataScope::Root),
-        &root_batch,
+        root_batch,
     );
 
     let right_input = scoped_value_to_join_input(value, otap_batch)?;

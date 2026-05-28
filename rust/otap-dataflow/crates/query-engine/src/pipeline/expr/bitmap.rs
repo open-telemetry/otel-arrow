@@ -121,14 +121,12 @@ pub fn combine_scope(left: Option<DataScope>, right: Option<DataScope>) -> Optio
     // which point to different ID columns on the root record batch).
     #[cfg(debug_assertions)]
     {
-        match (&left, &right) {
-            (
-                Some(DataScope::Attribute(l_attr_id, _) | DataScope::AttributesAll(l_attr_id)),
-                Some(DataScope::Attribute(r_attr_id, _) | DataScope::AttributesAll(r_attr_id)),
-            ) => {
-                debug_assert!(l_attr_id == r_attr_id);
-            }
-            _ => {}
+        if let (
+            Some(DataScope::Attribute(l_attr_id, _) | DataScope::AttributesAll(l_attr_id)),
+            Some(DataScope::Attribute(r_attr_id, _) | DataScope::AttributesAll(r_attr_id)),
+        ) = (&left, &right)
+        {
+            debug_assert!(l_attr_id == r_attr_id);
         }
     }
 

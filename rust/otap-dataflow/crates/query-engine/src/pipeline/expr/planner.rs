@@ -356,8 +356,8 @@ impl ExprPlanner {
                     requires_dict_downcast: false,
                 };
                 let combined_scope = try_combine_scopes(&left_planned, &right_planned);
-                let mut left = left_planned.expr;
-                let mut right = right_planned.expr;
+                let left = left_planned.expr;
+                let right = right_planned.expr;
                 if let Some(combined_scope) = combined_scope
                     && !matches!(combined_scope, DataScope::AttributesAll(_))
                 {
@@ -386,8 +386,8 @@ impl ExprPlanner {
                         DataScope::AttributesAll(left_attrs_id),
                         DataScope::AttributesAll(right_attrs_id),
                     ) = (
-                        left.effective_value_scope().as_ref(),
-                        right.effective_value_scope().as_ref(),
+                        left.effective_value_scope()?.as_ref(),
+                        right.effective_value_scope()?.as_ref(),
                     ) {
                         if left_attrs_id == right_attrs_id {
                             // most performant way to "and" the results of the children exprs
@@ -461,8 +461,8 @@ impl ExprPlanner {
                         DataScope::AttributesAll(left_attrs_id),
                         DataScope::AttributesAll(right_attrs_id),
                     ) = (
-                        left.effective_value_scope().as_ref(),
-                        right.effective_value_scope().as_ref(),
+                        left.effective_value_scope()?.as_ref(),
+                        right.effective_value_scope()?.as_ref(),
                     ) {
                         if left_attrs_id == right_attrs_id {
                             // most performant way to "and" the results of the children exprs
@@ -493,7 +493,9 @@ impl ExprPlanner {
 
             LogicalExpression::Not(not_expr) => {
                 let inner_expr = not_expr.get_inner_expression();
-                // TODO comments
+
+                // The parser will plan Lt/LtEq as Not(GtEq)/Not(Gt) - we look for this pattern and
+                // simply plan comparison with the correct operator when its encountered
                 match inner_expr {
                     LogicalExpression::GreaterThan(gt_expr) => {
                         return self.plan_comparison(
@@ -518,7 +520,7 @@ impl ExprPlanner {
 
                 let inner = self.plan_logical(inner_expr, functions)?;
                 let is_attrs_all_scope = matches!(
-                    inner.effective_value_scope().as_ref(),
+                    inner.effective_value_scope()?.as_ref(),
                     DataScope::AttributesAll(_)
                 );
                 Ok(match inner {
@@ -1873,30 +1875,32 @@ impl ScopedExpr {
 
     /// returns the scope of the data that would be produced if this Expr was evaluated to
     /// produce a scoped value
-    pub(crate) fn effective_value_scope(&self) -> Cow<'_, DataScope> {
+    pub(crate) fn effective_value_scope(&self) -> Result<Cow<'_, DataScope>> {
         match self {
-            Self::Eval { scope, eval } => match eval {
-                _ => Cow::Borrowed(scope),
-            },
+            Self::Eval { scope, .. } => Ok(Cow::Borrowed(scope)),
             Self::JoinAndEval {
                 children,
                 align_children_to_root,
                 ..
             } => {
-                // TODO comment on what's going on here ...
                 if children.is_empty() {
-                    // weird
-                    todo!()
+                    return Err(Error::InvalidPipelineError {
+                        cause:
+                            "Error computing expr scope. invalid join eval passed with no children"
+                                .into(),
+                        query_location: None,
+                    });
                 }
 
                 if *align_children_to_root {
-                    return Cow::Owned(DataScope::Root);
+                    return Ok(Cow::Owned(DataScope::Root));
                 }
 
-                let mut curr_scope = children[0].effective_value_scope();
+                let mut curr_scope = children[0].effective_value_scope()?;
 
+                // compute the data scope of what will be produced when the children are join:
                 for child in children.iter().skip(1) {
-                    let next_scope = child.effective_value_scope();
+                    let next_scope = child.effective_value_scope()?;
                     curr_scope = match (curr_scope.as_ref(), next_scope.as_ref()) {
                         (_, DataScope::StaticScalar | DataScope::AttributesAll(_)) => curr_scope,
                         (DataScope::StaticScalar | DataScope::AttributesAll(_), _) => next_scope,
@@ -1906,7 +1910,7 @@ impl ScopedExpr {
                         ) => {
                             if left_attrs_id == right_attrs_id {
                                 curr_scope
-                            } else if is_one_to_many(&left_attrs_id, &right_attrs_id) {
+                            } else if is_one_to_many(left_attrs_id, right_attrs_id) {
                                 next_scope
                             } else {
                                 curr_scope
@@ -1932,10 +1936,10 @@ impl ScopedExpr {
                     }
                 }
 
-                curr_scope
+                Ok(curr_scope)
             }
             Self::BitmapAnd(_, _) | Self::BitmapOr(_, _) | Self::BitmapNot(_) => {
-                Cow::Owned(DataScope::Root)
+                Ok(Cow::Owned(DataScope::Root))
             }
         }
     }
@@ -1966,17 +1970,16 @@ impl ScopedExpr {
 }
 
 fn is_literal_eval(plan: &PlannedOp) -> bool {
-    match plan.expr {
+    matches!(
+        plan.expr,
         ScopedExpr::Eval {
-            eval:
-                LeafEval::DatafusionExpr {
-                    logical_expr: Expr::Literal(_, _),
-                    ..
-                },
+            eval: LeafEval::DatafusionExpr {
+                logical_expr: Expr::Literal(_, _),
+                ..
+            },
             ..
-        } => true,
-        _ => false,
-    }
+        }
+    )
 }
 
 /// Try to combine the scopes of two `PlannedOp`s. Returns `Some(scope)` if they're

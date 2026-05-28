@@ -106,7 +106,7 @@ impl Projection {
             match projected_col {
                 ProjectedSchemaColumn::Root(desired_col_name) => {
                     let (column, field) =
-                        if let Some(index) = original_schema.index_of(desired_col_name).ok() {
+                        if let Ok(index) = original_schema.index_of(desired_col_name) {
                             // original column
                             Some((
                                 record_batch.column(index).clone(),

@@ -50,7 +50,6 @@ use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::expr::{DataScope, arg_column_name};
-use crate::pipeline::id_mask::IdMask;
 use crate::pipeline::planner::AttributesIdentifier;
 
 /// Input to the join module, representing an evaluated expression result with its scope
@@ -147,7 +146,7 @@ pub fn join<'a>(
             DataScope::Root | DataScope::RootParent(_),
         ) => {
             let join_result = EqualScopeJoin::default().join(left, right, otap_batch)?;
-            return Ok((join_result, left.data_scope.clone()));
+            Ok((join_result, left.data_scope.clone()))
         }
         (_, DataScope::StaticScalar) => {
             let join_exec = ScalarJoin {
@@ -787,13 +786,18 @@ impl JoinExec for EqualScopeJoin {
     }
 }
 
+/// flips the left/right side of a two way join.
+///
+/// When we do a two-way join, the left-side gets column name "arg_0" and the right side
+/// gets column name "arg_1". This function simply switches the column names.
+///
+/// Safety note: it is expected that the record batch passed has both these columns.
 fn flip_left_right(record_batch: RecordBatch) -> RecordBatch {
     // join left to right, then switch the field names
     let (schema, columns, _) = record_batch.into_parts();
     let fields = schema.fields.clone();
     let (left_field_idx, left_field) = fields
         .find(&arg_column_name(0))
-        // TOOD unsure we can "expect" here since we've refactored this into a helper
         .expect("left column present");
     let (right_field_idx, right_field) = fields
         .find(&arg_column_name(1))
@@ -1382,11 +1386,11 @@ impl AttributesAllSelectionVecJoin {
             extract_u16_array(ids, consts::ID)
         } else {
             // not yet supported
-            return Err(Error::NotYetSupportedError {
+            Err(Error::NotYetSupportedError {
                 message:
                     "joining result with scope AttributesAll to non-root scope not yet supported"
                         .into(),
-            });
+            })
         }
     }
 }

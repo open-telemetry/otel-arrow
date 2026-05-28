@@ -3378,7 +3378,7 @@ mod test {
         assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
-            &[log_record2.clone()]
+            std::slice::from_ref(&log_record2)
         );
 
         let result = exec_logs_pipeline::<OplParser>(
@@ -3389,7 +3389,7 @@ mod test {
         assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
-            &[log_record1.clone()]
+            std::slice::from_ref(&log_record1)
         );
 
         let result = exec_logs_pipeline::<OplParser>(
@@ -3400,7 +3400,7 @@ mod test {
         assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
-            &[log_record0.clone()]
+            std::slice::from_ref(&log_record0)
         );
 
         let result = exec_logs_pipeline::<OplParser>(
@@ -3411,7 +3411,7 @@ mod test {
         assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
-            &[log_record0.clone()]
+            std::slice::from_ref(&log_record0)
         );
 
         let result = exec_logs_pipeline::<OplParser>(
@@ -3466,7 +3466,7 @@ mod test {
         assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
-            &[log_record2.clone()]
+            std::slice::from_ref(&log_record2)
         );
 
         let result = exec_logs_pipeline::<OplParser>(
@@ -3477,11 +3477,11 @@ mod test {
         assert_eq!(result.resource_logs[0].scope_logs.len(), 2);
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
-            &[log_record0.clone()]
+            std::slice::from_ref(&log_record0)
         );
         assert_eq!(
             &result.resource_logs[0].scope_logs[1].log_records,
-            &[log_record2.clone()]
+            std::slice::from_ref(&log_record2)
         );
 
         let result = exec_logs_pipeline::<OplParser>(
@@ -3492,11 +3492,11 @@ mod test {
         assert_eq!(result.resource_logs[0].scope_logs.len(), 2);
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
-            &[log_record1.clone()],
+            std::slice::from_ref(&log_record1)
         );
         assert_eq!(
             &result.resource_logs[0].scope_logs[1].log_records,
-            &[log_record2.clone()]
+            std::slice::from_ref(&log_record2)
         );
 
         let result = exec_logs_pipeline::<OplParser>(
@@ -3533,7 +3533,7 @@ mod test {
         );
         assert_eq!(
             &result.resource_logs[0].scope_logs[1].log_records,
-            &[log_record2.clone()]
+            std::slice::from_ref(&log_record2)
         );
 
         let result = exec_logs_pipeline::<OplParser>(
@@ -3795,11 +3795,11 @@ mod test {
         .await;
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
-            &[log_record0.clone()]
+            std::slice::from_ref(&log_record0)
         );
         assert_eq!(
             &result.resource_logs[0].scope_logs[1].log_records,
-            &[log_record3.clone()]
+            std::slice::from_ref(&log_record3)
         );
 
         // compare column w/ nulls to all null struct column (where struct column is present)
@@ -3810,11 +3810,11 @@ mod test {
         .await;
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
-            &[log_record1.clone()]
+            std::slice::from_ref(&log_record1)
         );
         assert_eq!(
             &result.resource_logs[0].scope_logs[1].log_records,
-            &[log_record3.clone()]
+            std::slice::from_ref(&log_record3)
         );
 
         // compare column w/ nulls to all null struct column (where struct column is present)
@@ -3825,11 +3825,11 @@ mod test {
         .await;
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
-            &[log_record0.clone()]
+            std::slice::from_ref(&log_record0)
         );
         assert_eq!(
             &result.resource_logs[0].scope_logs[1].log_records,
-            &[log_record3.clone()]
+            std::slice::from_ref(&log_record3)
         );
 
         // compare column w/ nulls to all null struct column (where struct column is present)
@@ -3840,11 +3840,11 @@ mod test {
         .await;
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
-            &[log_record0.clone()]
+            std::slice::from_ref(&log_record0)
         );
         assert_eq!(
             &result.resource_logs[0].scope_logs[1].log_records,
-            &[log_record3.clone()]
+            std::slice::from_ref(&log_record3)
         );
 
         // compare column w/ nulls to all null struct column (where struct column is present)
@@ -4108,7 +4108,7 @@ mod test {
         );
         assert_eq!(
             &result.resource_logs[0].scope_logs[1].log_records,
-            &[log_record4.clone()]
+            std::slice::from_ref(&log_record4)
         );
 
         // compare column w/ nulls to all null struct column (where struct column is present)
@@ -4123,7 +4123,7 @@ mod test {
         );
         assert_eq!(
             &result.resource_logs[0].scope_logs[1].log_records,
-            &[log_record4.clone()]
+            std::slice::from_ref(&log_record4)
         );
 
         // compare column w/ nulls to all null struct column (where struct column is present)
@@ -4138,7 +4138,7 @@ mod test {
         );
         assert_eq!(
             &result.resource_logs[0].scope_logs[1].log_records,
-            &[log_record4.clone()]
+            std::slice::from_ref(&log_record4)
         );
 
         // compare column w/ nulls to all null struct column (where struct column is present)
@@ -4153,7 +4153,7 @@ mod test {
         );
         assert_eq!(
             &result.resource_logs[0].scope_logs[1].log_records,
-            &[log_record4.clone()]
+            std::slice::from_ref(&log_record4)
         );
 
         // compare column w/ nulls to all null struct column (where struct column is present)
@@ -4168,7 +4168,7 @@ mod test {
         .await;
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
-            &[log_record2.clone()]
+            std::slice::from_ref(&log_record2)
         );
         assert_eq!(
             &result.resource_logs[0].scope_logs[1].log_records,
@@ -4187,7 +4187,7 @@ mod test {
         assert_eq!(result.resource_logs.len(), 1);
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
-            &[log_record2.clone()]
+            std::slice::from_ref(&log_record2)
         );
     }
 
