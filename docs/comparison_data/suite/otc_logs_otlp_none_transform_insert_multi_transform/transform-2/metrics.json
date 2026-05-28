@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "OTC OTLP Transform Insert Multi Transform (Logs)/transform-2 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -1.6949152946472168
+  },
+  {
+    "extra": "OTC OTLP Transform Insert Multi Transform (Logs)/transform-2 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 75.57304748398003
+  },
+  {
+    "extra": "OTC OTLP Transform Insert Multi Transform (Logs)/transform-2 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 77.8741
+  },
+  {
+    "extra": "OTC OTLP Transform Insert Multi Transform (Logs)/transform-2 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 92.17760416666667
+  },
+  {
+    "extra": "OTC OTLP Transform Insert Multi Transform (Logs)/transform-2 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 104.75
+  },
+  {
+    "extra": "OTC OTLP Transform Insert Multi Transform (Logs)/transform-2 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 200425.69398288266
+  },
+  {
+    "extra": "OTC OTLP Transform Insert Multi Transform (Logs)/transform-2 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 201742.1951618691
+  },
+  {
+    "extra": "OTC OTLP Transform Insert Multi Transform (Logs)/transform-2 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000648
+  },
+  {
+    "extra": "OTC OTLP Transform Insert Multi Transform (Logs)/transform-2 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 185683607.30425745
+  },
+  {
+    "extra": "OTC OTLP Transform Insert Multi Transform (Logs)/transform-2 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 171940199.19062617
+  },
+  {
+    "extra": "OTC OTLP Transform Insert Multi Transform (Logs)/transform-2 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 920.4004504623986
+  }
+]

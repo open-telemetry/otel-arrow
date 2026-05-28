@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-2 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -0.025425883010029793
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-2 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 74.46664352366865
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-2 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 77.502541367468
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-2 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 95.37747395833334
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-2 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 102.26953125
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-2 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 200322.737094158
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-2 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 200719.03743027386
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-2 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000604
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-2 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 171192679.8789017
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-2 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 171687305.547213
+  },
+  {
+    "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-2 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 852.8970747897837
+  }
+]

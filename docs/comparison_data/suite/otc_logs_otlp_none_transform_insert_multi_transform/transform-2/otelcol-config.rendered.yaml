@@ -1,0 +1,48 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  transform:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(attributes["processing.engine"], "benchmark")
+          - set(attributes["processing.stage"], "benchmark")
+
+exporters:
+  otlp:
+    endpoint: 'backend-service:1235'
+    compression: none
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: True
+      wait_for_result: True
+      block_on_overflow: True
+      sizer: requests
+      queue_size: 100
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: '0.0.0.0'
+                port: 8086
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [transform]
+      exporters: [otlp]
+    metrics:
+      receivers: [otlp]
+      exporters: [otlp]
+    traces:
+      receivers: [otlp]
+      exporters: [otlp]

@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "DFE OTLP Attr Insert Multi Transform (Logs)/transform-2 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -1.6949152946472168
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Transform (Logs)/transform-2 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 58.99631582401169
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Transform (Logs)/transform-2 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 60.96302635658915
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Transform (Logs)/transform-2 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 60.365625
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Transform (Logs)/transform-2 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 61.4765625
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Transform (Logs)/transform-2 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 200573.67470519495
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Transform (Logs)/transform-2 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 201901.28760022402
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Transform (Logs)/transform-2 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.005611
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Transform (Logs)/transform-2 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 203322307.09968802
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Transform (Logs)/transform-2 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 172246771.66635096
+  },
+  {
+    "extra": "DFE OTLP Attr Insert Multi Transform (Logs)/transform-2 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 1007.0381893862792
+  }
+]
