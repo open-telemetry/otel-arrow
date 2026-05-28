@@ -147,8 +147,8 @@ Use the
 A good bug report lets anyone reproduce the problem without further
 back-and-forth. The template prompts for the version, affected
 component(s), steps to reproduce, expected vs. actual behavior,
-environment, and logs - please fill in as many fields as apply. Minimal,
-self-contained reproductions are especially welcome.
+environment, and logs - please fill in as many fields as apply. **Minimal,
+self-contained reproductions are required for all bug reports.**
 
 ### Feature requests and proposals
 
