@@ -1,10 +1,9 @@
-slug: logs_attr_processor_insert_multi_transform
-name: Attribute Insert Multi Transform (Logs)
+slug: log_transform_attr_processor_insert_multi_transform
+name: Log Attribute Insert (Multi Transform)
 description: >
-  Cost of running 1, 2, 3, or 4 insert actions on logs, comparing the
-  attributes processor vs the transform processor (OPL/OTTL) across the
-  Dataflow Engine (OTAP and OTLP) and the OpenTelemetry Collector (OTAP
-  and OTLP) at a fixed 200k logs/sec generated load. OTC OTAP runs only
+  Inserting 1-4 attributes with static values on logs. Comparing the
+  attributes processor vs the transform processor across engines and
+  transports at a fixed 200k logs/sec generated load. OTC OTAP runs only
   the attribute processor (transform processor not measured).
 
 chart:
@@ -29,30 +28,30 @@ tests:
 
 suites:
   # DFE OTAP
-  - name: DFE OTAP Attr Insert Multi Transform (Logs)
+  - name: DFE OTAP Attr Insert
     slug: dfe_logs_otap_none_attr_insert_multi_transform
-    short: DFE/OTAP/Attr
-  - name: DFE OTAP Transform Insert Multi Transform (Logs)
+    short: DFE OTAP/Attr
+  - name: DFE OTAP Transform Insert
     slug: dfe_logs_otap_none_transform_insert_multi_transform
-    short: DFE/OTAP/Transform
+    short: DFE OTAP/Transform
 
   # DFE OTLP
-  - name: DFE OTLP Attr Insert Multi Transform (Logs)
+  - name: DFE OTLP Attr Insert
     slug: dfe_logs_otlp_none_attr_insert_multi_transform
-    short: DFE/OTLP/Attr
-  - name: DFE OTLP Transform Insert Multi Transform (Logs)
+    short: DFE OTLP/Attr
+  - name: DFE OTLP Transform Insert
     slug: dfe_logs_otlp_none_transform_insert_multi_transform
-    short: DFE/OTLP/Transform
+    short: DFE OTLP/Transform
 
   # OTC OTAP (attr-only)
-  - name: OTC OTAP Attr Insert Multi Transform (Logs)
+  - name: OTC OTAP Attr Insert
     slug: otc_logs_otap_none_attr_insert_multi_transform
-    short: OTC/OTAP/Attr
+    short: OTC OTAP/Attr
 
   # OTC OTLP
-  - name: OTC OTLP Attr Insert Multi Transform (Logs)
+  - name: OTC OTLP Attr Insert
     slug: otc_logs_otlp_none_attr_insert_multi_transform
-    short: OTC/OTLP/Attr
-  - name: OTC OTLP Transform Insert Multi Transform (Logs)
+    short: OTC OTLP/Attr
+  - name: OTC OTLP Transform Insert
     slug: otc_logs_otlp_none_transform_insert_multi_transform
-    short: OTC/OTLP/Transform
+    short: OTC OTLP/Transform
