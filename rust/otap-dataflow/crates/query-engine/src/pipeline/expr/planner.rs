@@ -395,8 +395,8 @@ impl ExprPlanner {
                             // combine the bitmaps
                             return Ok(ScopedExpr::BitmapAnd(Box::new(left), Box::new(right)));
                         } else {
-                            // here we're "and"ing the results of filters on attributes, but they
-                            // the parent_id columns represent different IDs, so we can't "and" the
+                            // here we're "and"ing the results of filters on attributes, but the
+                            // parent_id columns represent different IDs, so we can't "and" the
                             // bitmaps. We set `align_children_to_root` because it's just the most
                             // performant way to line up the results of the filters on each side in
                             // join eval
@@ -465,13 +465,13 @@ impl ExprPlanner {
                         right.effective_value_scope()?.as_ref(),
                     ) {
                         if left_attrs_id == right_attrs_id {
-                            // most performant way to "and" the results of the children exprs
+                            // most performant way to "or" the results of the children exprs
                             // is to create a bitmap of the parent_ids passing each side then
                             // combine the bitmaps
                             return Ok(ScopedExpr::BitmapOr(Box::new(left), Box::new(right)));
                         } else {
-                            // here we're "or"ing the results of filters on attributes, but they
-                            // the parent_id columns represent different IDs, so we can't "and" the
+                            // here we're "or"ing the results of filters on attributes, but the
+                            // parent_id columns represent different IDs, so we can't "or" the
                             // bitmaps. We set `align_children_to_root` because it's just the most
                             // performant way to line up the results of the filters on each side in
                             // join eval
@@ -1097,7 +1097,7 @@ impl ExprPlanner {
 
         let mut expr = self.build_binary_expr(left, operator, right, requires_dict_downcast)?;
         if !either_side_literal {
-            // if we're here, it means both sides of the comparison are non-null literals. For
+            // if we're here, it means both sides of the comparison are not literals. For
             // these cases, we want to use a special comparison evaluation which handles:
             // - when each side resolves to a different type (the normal DF binary expr evaluation
             //   produces an error for this case)
