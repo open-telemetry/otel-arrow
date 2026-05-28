@@ -61,7 +61,7 @@ pub const JOURNALD_RECEIVER_URN: &str = "urn:otel:receiver:journald";
 /// The set is intentionally small in this first slice; richer counters
 /// (records emitted, cursor commits, batches held by backpressure, etc.) land
 /// alongside the worker thread that produces them.
-#[metric_set(name = "journald.receiver.metrics")]
+#[metric_set(name = "receiver.journald")]
 #[derive(Debug, Default, Clone)]
 pub struct JournaldReceiverMetrics {
     /// Number of times the receiver was started.
