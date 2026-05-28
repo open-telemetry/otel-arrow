@@ -3,66 +3,66 @@
     "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-3 - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 4.208333492279053
+    "value": 5.0
   },
   {
     "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-3 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 99.69479116855527
+    "value": 79.25080298351229
   },
   {
     "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-3 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.35016229712859
+    "value": 79.78856785490932
   },
   {
     "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-3 - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 166.621484375
+    "value": 82.679296875
   },
   {
     "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-3 - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 184.97265625
+    "value": 85.10546875
   },
   {
     "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-3 - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 246045.53564728226
+    "value": 207403.38839063683
   },
   {
     "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-3 - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 239415.12312123174
+    "value": 197033.21897110497
   },
   {
     "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-3 - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 20.000768
+    "value": 20.000639
   },
   {
     "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-3 - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 204754328.8644591
+    "value": 170899783.2892664
   },
   {
     "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-3 - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 206240908.44927734
+    "value": 172329596.03780752
   },
   {
     "extra": "OTC OTLP Attr Rename Multi Transform (Logs)/transform-3 - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 855.2272145347243
+    "value": 867.3653314994003
   }
 ]

@@ -3,66 +3,66 @@
     "extra": "DFE OTAP Transform Insert Multi Transform (Logs)/transform-3 - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -5.555555820465088
+    "value": 5.0
   },
   {
     "extra": "DFE OTAP Transform Insert Multi Transform (Logs)/transform-3 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 23.09105466613369
+    "value": 19.930618867679613
   },
   {
     "extra": "DFE OTAP Transform Insert Multi Transform (Logs)/transform-3 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 23.378254364089777
+    "value": 20.23495945102932
   },
   {
     "extra": "DFE OTAP Transform Insert Multi Transform (Logs)/transform-3 - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 57.36875
+    "value": 55.733203125
   },
   {
     "extra": "DFE OTAP Transform Insert Multi Transform (Logs)/transform-3 - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 57.7265625
+    "value": 57.03125
   },
   {
     "extra": "DFE OTAP Transform Insert Multi Transform (Logs)/transform-3 - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 230942.94378159125
+    "value": 205507.73048154367
   },
   {
     "extra": "DFE OTAP Transform Insert Multi Transform (Logs)/transform-3 - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 237288.8993911198
+    "value": 198307.41490211335
   },
   {
     "extra": "DFE OTAP Transform Insert Multi Transform (Logs)/transform-3 - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 20.001211
+    "value": 20.000571
   },
   {
     "extra": "DFE OTAP Transform Insert Multi Transform (Logs)/transform-3 - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 39510342.021958195
+    "value": 32897478.03345409
   },
   {
     "extra": "DFE OTAP Transform Insert Multi Transform (Logs)/transform-3 - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 33259950.432918906
+    "value": 27657672.270078905
   },
   {
     "extra": "DFE OTAP Transform Insert Multi Transform (Logs)/transform-3 - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 166.50733398545492
+    "value": 165.8913160140413
   }
 ]

@@ -3,66 +3,66 @@
     "extra": "DFE OTAP Transform Rename Multi Transform (Logs)/transform-4 - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 0.0
+    "value": 5.0
   },
   {
     "extra": "DFE OTAP Transform Rename Multi Transform (Logs)/transform-4 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 17.79697032446233
+    "value": 15.687226254398205
   },
   {
     "extra": "DFE OTAP Transform Rename Multi Transform (Logs)/transform-4 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 18.076004993757802
+    "value": 15.867613707165109
   },
   {
     "extra": "DFE OTAP Transform Rename Multi Transform (Logs)/transform-4 - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 51.177734375
+    "value": 50.183984375
   },
   {
     "extra": "DFE OTAP Transform Rename Multi Transform (Logs)/transform-4 - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 51.98828125
+    "value": 50.57421875
   },
   {
     "extra": "DFE OTAP Transform Rename Multi Transform (Logs)/transform-4 - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 232801.4721629937
+    "value": 206297.91430229918
   },
   {
     "extra": "DFE OTAP Transform Rename Multi Transform (Logs)/transform-4 - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 237759.46740210813
+    "value": 199081.4278140959
   },
   {
     "extra": "DFE OTAP Transform Rename Multi Transform (Logs)/transform-4 - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 20.000577
+    "value": 20.0006
   },
   {
     "extra": "DFE OTAP Transform Rename Multi Transform (Logs)/transform-4 - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 33158010.99969569
+    "value": 27649364.286536805
   },
   {
     "extra": "DFE OTAP Transform Rename Multi Transform (Logs)/transform-4 - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 33120986.14620607
+    "value": 27599332.440717142
   },
   {
     "extra": "DFE OTAP Transform Rename Multi Transform (Logs)/transform-4 - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 139.46031828721067
+    "value": 138.8846995429229
   }
 ]

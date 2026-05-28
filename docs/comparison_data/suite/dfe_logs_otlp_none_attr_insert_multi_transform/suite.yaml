@@ -1,7 +1,7 @@
 name: DFE OTLP Attr Insert Multi Transform (Logs)
 slug: dfe_logs_otlp_none_attr_insert_multi_transform
 description: Dataflow Engine OTLP logs, attributes processor insert sweep over 1-4
-  insert actions at 240k signals/sec
+  insert actions at 200k signals/sec
 meta:
   binary: dfe
   protocols:
