@@ -124,10 +124,10 @@ and there is no separate "in-progress" label - an assigned
 
 There is no `blocked` label. If an issue cannot proceed, leave a
 comment explaining the blocker and, where possible, link the upstream
-issue or PR with GitHub's `Blocked by` reference (or just `Blocked on
-#N` in prose). The link surfaces in the issue thread and creates a
-back-reference on the blocker. The issue stays in its current
-`triage:*` state.
+issue or PR with GitHub's `Blocked by` reference (or just write
+`Blocked on issue #N` in prose). The link surfaces in the issue thread
+and creates a back-reference on the blocker. The issue stays in its
+current `triage:*` state.
 
 Changing a `triage:*` label requires the Triage permission or higher
 (see [GitHub Permissions](#github-permissions)) - contributors cannot
@@ -205,11 +205,11 @@ A few transitions are mechanical reflections of other GitHub state
 triagers only intervene when judgment is needed. Tracked in
 [Open Items](#open-items-for-implementation):
 
-| Transition                                       | Trigger                                                                   |
-|--------------------------------------------------|---------------------------------------------------------------------------|
-| (new / reopened) -> `triage:deciding`            | Already implemented in [`issue_triage.yml`](./.github/workflows/issue_triage.yml). |
-| `triage:needs-info` -> `triage:deciding`         | Workflow on `issue_comment.created`: if commenter is the issue author and `triage:needs-info` is set, swap labels. |
-| Stale `triage:needs-info`                        | Handled by the stale workflow per [Stale Policy](#stale-policy).          |
+| Transition | Trigger |
+| --- | --- |
+| (new / reopened) -> `triage:deciding` | Already implemented in [`issue_triage.yml`](./.github/workflows/issue_triage.yml). |
+| `triage:needs-info` -> `triage:deciding` | Workflow on `issue_comment.created`: if commenter is the issue author and `triage:needs-info` is set, swap labels. |
+| Stale `triage:needs-info` | Handled by the stale workflow per [Stale Policy](#stale-policy). |
 
 None of these workflows make irreversible changes - they only adjust
 labels - so the cost of getting one wrong is low. A triager can always
