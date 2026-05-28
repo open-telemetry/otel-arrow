@@ -196,12 +196,6 @@ pub(super) fn eval_datafusion_expr_value(
                 source_rb.as_ref().clone()
             };
 
-            println!("In eval - source RB:");
-            arrow::util::pretty::print_batches(&[source_rb.as_ref().clone()]).unwrap();
-
-            println!("In eval - projected RB:");
-            arrow::util::pretty::print_batches(&[projected_rb.clone()]).unwrap();
-
             // check for AnyValue struct columns that need resolution
             let any_value_indices = find_any_value_columns(projected_rb.schema_ref());
 
@@ -256,7 +250,8 @@ pub(super) fn join_and_eval_value(
     for child in children.iter_mut() {
         let result = match child.execute_as_value(otap_batch, session_ctx)? {
             Some(mut result) => {
-                // align children to root if configured to do so
+                // maybe align children to root if configured. We skip alignment for scalar results
+                // because it's handled by the join below
                 if align_children_to_root && matches!(result.values, ColumnarValue::Array(_)) {
                     result = align_value_to_root(result, otap_batch)?;
                 }
@@ -313,12 +308,6 @@ pub(super) fn join_and_eval_value(
         None => return Ok(None),
     };
 
-    println!("In join - joined RB:");
-    arrow::util::pretty::print_batches(&[joined_rb.clone()]).unwrap();
-
-    println!("In join - projected RB:");
-    arrow::util::pretty::print_batches(&[projected_rb.clone()]).unwrap();
-
     // handle AnyValue columns
     let any_value_indices = find_any_value_columns(projected_rb.schema_ref());
     let result_vals = if any_value_indices.is_empty() || *eval_anyval_as_struct {
@@ -334,7 +323,7 @@ pub(super) fn join_and_eval_value(
         )?
     };
 
-    let mut result = ScopedValue::new(
+    let result = ScopedValue::new(
         coerce_nulls_for_predicate(result_vals, *missing_data_passes),
         DataScope::clone(&result_scope),
         &joined_rb,
@@ -556,9 +545,12 @@ pub(super) fn invert_id_mask(mask: IdMask) -> IdMask {
 }
 
 /// Materialize an `IdMask` to a root-aligned `BooleanArray` wrapped in a `ScopedValue`.
+///
+/// The `mask_scope`, if passed, parameter will be used to determine which ID column
+/// (`id`, `scope.id` or `resource.id`) will be checked for membership in the `mask`.
+/// When `mask_scope` is `None`, the `id` column will be used by default.
 fn materialize_id_mask_to_value(
     mask: IdMask,
-    // TODO could comment on the argument?
     mask_scope: Option<DataScope>,
     otap_batch: &OtapArrowRecords,
 ) -> Result<Option<ScopedValue>> {
@@ -852,15 +844,17 @@ fn align_value_to_root(value: ScopedValue, otap_batch: &OtapArrowRecords) -> Res
 
     let right_input = scoped_value_to_join_input(value, otap_batch)?;
 
-    // arg_column_name(0)
-
-    // TODO is this GUARANTEED to always be root?
-    // TODO using the join machinery is a hack here
     let (result_rb, result_scope) = join(&left_input, &right_input, otap_batch)?;
+    let result_col_name = arg_column_name(1);
     let col = result_rb
-        .column_by_name(&arg_column_name(1))
-        .unwrap() // TODO uwnrap?
+        .column_by_name(&result_col_name)
+        .ok_or_else(|| Error::ExecutionError {
+            // shouldn't happen - we expect the join to always produce the column with the
+            // correct name, but returning the error here is just being defensive
+            cause: format!("unexpected join result - expected column {result_col_name}"),
+        })?
         .clone();
+    debug_assert!(matches!(result_scope.as_ref(), DataScope::Root));
 
     Ok(ScopedValue::new(
         ColumnarValue::Array(col),

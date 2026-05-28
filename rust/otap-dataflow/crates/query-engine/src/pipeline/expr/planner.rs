@@ -1093,10 +1093,7 @@ impl ExprPlanner {
 
         let requires_dict_downcast = left.requires_dict_downcast || right.requires_dict_downcast;
 
-        // println!("left = {:?}", left.expr);
-        // println!("right = {:?}", right.expr);
         let mut expr = self.build_binary_expr(left, operator, right, requires_dict_downcast)?;
-
         if !either_side_literal {
             // if we're here, it means both sides of the comparison are non-null literals. For
             // these cases, we want to use a special comparison evaluation which handles:
@@ -1104,7 +1101,6 @@ impl ExprPlanner {
             //   produces an error for this case)
             // - when both sides are null we treat want to treat this as equal whereas datafusion
             //   will produce a `null` which may get coerced into false by ScopedExpr.
-
             expr = self.compare_using_udf(operator, expr);
         }
 

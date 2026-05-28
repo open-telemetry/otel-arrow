@@ -1310,9 +1310,46 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
     }
 }
 
-/// TODO comments
-/// TODO - add comments about how this only works when the non-attrs side is root
-/// TODO - need to implement this for when the attrs side is not root attrs (and test)
+/// This implementation aligns the result of a "fused" attribute evaluation with the data on
+/// the other side. The resulting data is always aligned with the join on the non-all-attrs side.
+///
+/// It expects the all-attrs side has returned a boolean, and this implementation produces a result
+/// from this boolean column in the order of the non-attrs batch, selecting a boolean value of
+/// "true" if some row in the attrs side has a "true", and "false" otherwise.
+///
+/// For example:
+/// ```text
+/// left side:
+/// parent_id | value
+/// ----------|------
+///    0      | true
+///    0      | false
+///    1      | true
+///    2      | false
+///    4      | true
+///
+/// right side:
+/// id  | val
+/// --- | ---
+///  0  | ... (val column of right side isn't factored into join)
+///  1  |
+///  2  |
+///  3  |
+///  4  |
+///
+/// result:
+/// id  | arg0  | arg1
+/// --- | ----- |----
+///  0  | true  | ... (the original val column)
+///  1  | true  |
+///  2  | false |
+///  3  | false |
+///  4  | true  |
+/// ```
+///
+/// Currently the only "other side" supported is the root record batch, since this is currently
+/// the only data that gets planned for the other side. Other implementations may be added in
+/// future as need arises.
 struct AttributesAllSelectionVecJoin {
     all_attrs_left: bool,
 }
@@ -1336,15 +1373,20 @@ impl AttributesAllSelectionVecJoin {
                     ArrowPayloadType::ResourceAttrs => input.resource_ids.as_ref(),
                     ArrowPayloadType::ScopeAttrs => input.scope_ids.as_ref(),
                     _ => {
-                        // invalid
-                        todo!()
+                        return Err(Error::ExecutionError {
+                            cause: format!("invalid attrs payload {payload:?}"),
+                        });
                     }
                 },
             };
             extract_u16_array(ids, consts::ID)
         } else {
             // not yet supported
-            todo!()
+            return Err(Error::NotYetSupportedError {
+                message:
+                    "joining result with scope AttributesAll to non-root scope not yet supported"
+                        .into(),
+            });
         }
     }
 }

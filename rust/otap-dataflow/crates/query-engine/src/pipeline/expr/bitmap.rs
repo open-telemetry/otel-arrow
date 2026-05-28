@@ -115,6 +115,23 @@ pub fn combine_scope(left: Option<DataScope>, right: Option<DataScope>) -> Optio
         return left;
     }
 
+    // if left != right, we've got a planning error because we shouldn't be trying to combine
+    // ID bitmaps from different scopes. This would mean we're combining IdMasks for parent IDs
+    // that are associated with different ID columns (e.g. parent_ids from Root Attrs/Scope Attrs
+    // which point to different ID columns on the root record batch).
+    #[cfg(debug_assertions)]
+    {
+        match (&left, &right) {
+            (
+                Some(DataScope::Attribute(l_attr_id, _) | DataScope::AttributesAll(l_attr_id)),
+                Some(DataScope::Attribute(r_attr_id, _) | DataScope::AttributesAll(r_attr_id)),
+            ) => {
+                debug_assert!(l_attr_id == r_attr_id);
+            }
+            _ => {}
+        }
+    }
+
     left
 }
 
