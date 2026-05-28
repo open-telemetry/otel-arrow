@@ -7,11 +7,13 @@ receivers:
 processors:
   attributes:
     actions:
-      - key: exception.kind
-        from_attribute: exception.type
+{%- for p in rename_pairs %}
+      - key: {{ p.destination }}
+        from_attribute: {{ p.source }}
         action: insert
-      - key: exception.type
+      - key: {{ p.source }}
         action: delete
+{%- endfor %}
 
 exporters:
   otlp:

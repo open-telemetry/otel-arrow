@@ -10,7 +10,9 @@ processors:
     log_statements:
       - context: log
         statements:
-          - set(attributes["processing.engine"], "benchmark")
+{%- for a in insert_actions %}
+          - set(attributes["{{ a.key }}"], "{{ a.value }}")
+{%- endfor %}
 
 exporters:
   otlp:
