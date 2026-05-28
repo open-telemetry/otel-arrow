@@ -342,6 +342,9 @@ impl TryFrom<Config> for RuntimeConfig {
         if batch.max_records == 0 {
             return Err(invalid("batch.max_records must be greater than zero"));
         }
+        if batch.max_records > u16::MAX as usize {
+            return Err(invalid("batch.max_records must be <= u16::MAX"));
+        }
         if batch.max_flush_period.is_zero() {
             return Err(invalid("batch.max_flush_period must be greater than zero"));
         }
