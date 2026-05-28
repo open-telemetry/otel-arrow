@@ -264,7 +264,7 @@ urgent; otherwise it is left unset. Anything `Urgent` should also be:
 
 - `stale` - applied automatically by the stale workflow (see
   [Stale Policy](#stale-policy)).
-- `keep-open` - exempt from the stale workflow. Use sparingly.
+- `do-not-stale` - exempt from the stale workflow. Use sparingly.
 - `security` - applied to issues filed via the security process. Exempt from
   stale.
 
@@ -392,7 +392,7 @@ Proposed target policy for issues (tracked in
 - Tighten the issue cycle to 60 days to stale + 14 days to close.
 - Add a shorter 14 + 14 cycle for `triage:needs-info` so the queue does
   not accumulate questions the author never returned to.
-- Expand the exempt-label list to: `keep-open`, `security`,
+- Expand the exempt-label list to: `security`,
   `triage:accepted`, `help wanted`, `good first issue`, and the
   existing `do-not-stale`.
 
