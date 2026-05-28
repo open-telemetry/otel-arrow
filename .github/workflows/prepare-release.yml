@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g., 0.40.0)'
+        description: "Release version (e.g., 0.40.0)"
         required: true
         type: string
       dry_run:
-        description: 'Dry run mode (just show what would happen)'
+        description: "Dry run mode (just show what would happen)"
         required: true
         type: boolean
         default: true
@@ -32,7 +32,7 @@ jobs:
           ref: ${{ github.ref }}
 
       - name: Create GitHub App token
-        if: '!inputs.dry_run'
+        if: "!inputs.dry_run"
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         id: app-token
         with:
@@ -40,13 +40,17 @@ jobs:
           private-key: ${{ secrets.OTELBOT_PRIVATE_KEY }}
 
       - name: Checkout (release preparation)
-        if: '!inputs.dry_run'
+        if: "!inputs.dry_run"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ github.ref }}
           token: ${{ steps.app-token.outputs.token }}
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: stable
+          cache-dependency-path: "**/*.sum"
 
       - name: Validate inputs
         run: ./.github/workflows/scripts/validate-version.sh "${{ inputs.version }}"
@@ -62,14 +66,34 @@ jobs:
       - name: Validate version increment
         run: ./.github/workflows/scripts/validate-version-increment.sh "${{ steps.last_version.outputs.last_version }}" "${{ inputs.version }}"
 
-      - name: Extract unreleased changelog content
-        id: changelog
+      - name: Generate dependency-bot changelog entries
         run: |
-          # Extract original content for CHANGELOG.md update (preserves formatting)
-          ./.github/workflows/scripts/extract-changelog.sh /tmp/changelog_content.txt
+          # Renovate and Dependabot do not author chloggen entries on their
+          # own PRs. Synthesize one umbrella entry per tree summarizing
+          # their merged PRs since the last release tag. The script
+          # silently skips a tree if it has no qualifying commits.
+          ./.github/workflows/scripts/generate-dependency-changelog.sh \
+            go Go go/.chloggen/auto-dependency-updates.yaml
+          ./.github/workflows/scripts/generate-dependency-changelog.sh \
+            rust/otap-dataflow Rust \
+            rust/otap-dataflow/.chloggen/auto-dependency-updates.yaml
 
-          # Extract normalized content for PR body (removes extra newlines)
-          ./.github/workflows/scripts/extract-changelog.sh /tmp/changelog_content_normalized.txt --normalize
+      - name: Render chloggen entries into CHANGELOG files
+        run: |
+          # Renders pending entries from go/.chloggen/ and
+          # rust/otap-dataflow/.chloggen/ into their respective CHANGELOG.md
+          # files under the new `## v${{ inputs.version }}` heading, then
+          # deletes the consumed .yaml entry files.
+          make chlog-install
+          make chlog-update VERSION="v${{ inputs.version }}"
+
+      - name: Bump Rust crate versions
+        run: |
+          # Rust crates currently track the same release version as Go.
+          # Replace the version in both [workspace.package] and the root
+          # [package] section (both have `version = "X.Y.Z"` at column 0).
+          sed -i 's/^version = "[0-9]\+\.[0-9]\+\.[0-9]\+"/version = "${{ inputs.version }}"/g' rust/otap-dataflow/Cargo.toml
+          echo "Updated rust/otap-dataflow/Cargo.toml to ${{ inputs.version }}"
 
       - name: Update collector build version
         run: |
@@ -83,8 +107,47 @@ jobs:
           sed -i "s/Version:     \"[0-9]\+\.[0-9]\+\.[0-9]\+\"/Version:     \"${{ inputs.version }}\"/" collector/cmd/otelarrowcol/main.go
           echo "Updated collector/cmd/otelarrowcol/main.go version to ${{ inputs.version }}"
 
-      - name: Update CHANGELOG.md
-        run: ./.github/workflows/scripts/update-changelog.sh "${{ inputs.version }}" /tmp/changelog_content.txt
+      - name: Extract release notes for PR body
+        id: changelog
+        run: |
+          # Pull the freshly-rendered section from each CHANGELOG and
+          # combine them under per-language `## What's Changed (...)`
+          # headings for embedding in the PR body. --allow-missing keeps
+          # the workflow working if one side had no chloggen entries
+          # this release.
+          ./.github/workflows/scripts/extract-changelog.sh \
+            --version "${{ inputs.version }}" \
+            --file go/CHANGELOG.md \
+            --allow-missing \
+            /tmp/go_release_content.txt
+          ./.github/workflows/scripts/extract-changelog.sh \
+            --version "${{ inputs.version }}" \
+            --file rust/otap-dataflow/CHANGELOG.md \
+            --allow-missing \
+            /tmp/rust_release_content.txt
+
+          {
+            echo "## What's Changed (Go 🐹)"
+            echo ""
+            if [ -s /tmp/go_release_content.txt ]; then
+              cat /tmp/go_release_content.txt
+            else
+              echo "_No Go changes in this release._"
+            fi
+            echo ""
+            echo "## What's Changed (Rust 🦀)"
+            echo ""
+            if [ -s /tmp/rust_release_content.txt ]; then
+              cat /tmp/rust_release_content.txt
+            else
+              echo "_No Rust changes in this release._"
+            fi
+          } > /tmp/combined_release_content.txt
+
+          echo "Combined release notes preview:"
+          echo "----------------------------------------"
+          cat /tmp/combined_release_content.txt
+          echo "----------------------------------------"
 
       - name: Dry run - Show planned changes
         if: inputs.dry_run
@@ -107,14 +170,18 @@ jobs:
 
           ## File Changes
           The following files would be modified:
-          - `CHANGELOG.md` - Add release notes for v${{ inputs.version }}
+          - `go/.chloggen/auto-dependency-updates.yaml`, `rust/otap-dataflow/.chloggen/auto-dependency-updates.yaml` - Auto-generated entries aggregating renovate[bot]/dependabot[bot] PRs (created only when such commits exist for the tree)
+          - `go/CHANGELOG.md` - Render pending `go/.chloggen/*.yaml` entries under `## v${{ inputs.version }}`
+          - `rust/otap-dataflow/CHANGELOG.md` - Render pending `rust/otap-dataflow/.chloggen/*.yaml` entries under `## v${{ inputs.version }}`
+          - `go/.chloggen/*.yaml`, `rust/otap-dataflow/.chloggen/*.yaml` - Consumed entries deleted
+          - `rust/otap-dataflow/Cargo.toml` - Bump workspace and root package version to ${{ inputs.version }}
           - `collector/otelarrowcol-build.yaml` - Update version to ${{ inputs.version }}
           - `collector/cmd/otelarrowcol/main.go` - Update version to ${{ inputs.version }}
 
           ## Release Notes Preview
           ```
           EOF
-          cat /tmp/changelog_content_normalized.txt >> $GITHUB_STEP_SUMMARY
+          cat /tmp/combined_release_content.txt >> $GITHUB_STEP_SUMMARY
           cat >> $GITHUB_STEP_SUMMARY << 'EOF'
           ```
 
@@ -128,7 +195,7 @@ jobs:
           EOF
 
       - name: Create release branch and commit changes
-        if: '!inputs.dry_run'
+        if: "!inputs.dry_run"
         run: |
           # Configure git for otelbot
           git config user.name otelbot
@@ -138,13 +205,13 @@ jobs:
           ./.github/workflows/scripts/create-release-branch.sh "${{ inputs.version }}" --push
 
       - name: Create pull request
-        if: '!inputs.dry_run'
+        if: "!inputs.dry_run"
         env:
           # not using secrets.GITHUB_TOKEN since pull requests from that token do not trigger workflows
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          # Read normalized changelog content for PR body
-          CHANGELOG_CONTENT=$(cat /tmp/changelog_content_normalized.txt)
+          # Read combined changelog content for PR body
+          CHANGELOG_CONTENT=$(cat /tmp/combined_release_content.txt)
 
           # Create PR body content
           cat > /tmp/pr_body.md << EOF
@@ -153,15 +220,16 @@ jobs:
           This PR prepares the repository for release v${{ inputs.version }}.
 
           ### Changes included:
-          - Updated CHANGELOG.md with release notes
-          - Updated collector/otelarrowcol-build.yaml version to v${{ inputs.version }}
-          - Updated collector/cmd/otelarrowcol/main.go version to v${{ inputs.version }}
+          - Rendered pending chloggen entries into \`go/CHANGELOG.md\` and \`rust/otap-dataflow/CHANGELOG.md\`
+          - Bumped \`rust/otap-dataflow/Cargo.toml\` (workspace + root package)
+          - Updated \`collector/otelarrowcol-build.yaml\` version to v${{ inputs.version }}
+          - Updated \`collector/cmd/otelarrowcol/main.go\` version to v${{ inputs.version }}
 
-          ### Release Notes:
           ${CHANGELOG_CONTENT}
 
           ### Checklist:
-          - [ ] Verify CHANGELOG.md formatting and content
+          - [ ] Verify both CHANGELOG.md files render the expected entries
+          - [ ] Verify Rust crate versions updated
           - [ ] Verify collector version update in collector/otelarrowcol-build.yaml
           - [ ] Verify collector main.go version update in collector/cmd/otelarrowcol/main.go
           - [ ] Confirm all tests pass
