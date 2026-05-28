@@ -992,6 +992,43 @@ mod test {
     }
 
     #[tokio::test]
+    async fn filter_contains_where_haystack_is_expression() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("hello")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("bonjour")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("bonjour"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("HI")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("HI"))])
+                .finish(),
+        ];
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where contains(lower_case(attributes[\"x\"]), \"h\")",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where contains(lower_case(event_name), \"h\")",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
     async fn test_filter_event_name_using_starts_with_opl() {
         let input = vec![
             LogRecord::build().event_name("hello world").finish(),
@@ -1175,6 +1212,43 @@ mod test {
             r#"logs | where matches(attributes["username"], r"^t.*")"#,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn filter_matches_where_haystack_is_expression() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("hello")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("bonjour")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("bonjour"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("HI")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("HI"))])
+                .finish(),
+        ];
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where matches(lower_case(attributes[\"x\"]), \"h.*\")",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where matches(lower_case(event_name), \"h.*\")",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
     }
 
     async fn test_filter_text_matches_regex_struct_cols<P: Parser>(q1: &str) {

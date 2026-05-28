@@ -1221,6 +1221,10 @@ impl ExprPlanner {
             _ => return Ok(None),
         };
 
+        if !is_simple_attr_value_column(haystack) {
+            return Ok(None);
+        }
+
         if !matches!(needle.expr.eval_scope(), Some(DataScope::StaticScalar)) {
             return Ok(None);
         }
@@ -1305,12 +1309,12 @@ impl ExprPlanner {
         let eval = if has_body_field {
             LeafEval::new_df_expr_anyval_as_struct(
                 binary_expr(haystack_expr, Operator::RegexMatch, pattern),
-                false,
+                haystack.requires_dict_downcast,
             )?
         } else {
             LeafEval::new_df_expr_with_key_case(
                 binary_expr(haystack_expr, Operator::RegexMatch, pattern),
-                false,
+                haystack.requires_dict_downcast,
                 self.attr_key_case_sensitive,
             )?
         };
@@ -1331,6 +1335,10 @@ impl ExprPlanner {
             Some(DataScope::Attribute(id, key)) => (*id, key.clone()),
             _ => return Ok(None),
         };
+
+        if !is_simple_attr_value_column(haystack) {
+            return Ok(None);
+        }
 
         let key_filter = if self.attr_key_case_sensitive {
             col(consts::ATTRIBUTE_KEY).eq(lit(&key))
