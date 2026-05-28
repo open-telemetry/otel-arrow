@@ -3339,7 +3339,7 @@ mod test {
     }
 
     /// Test to ensure that we correctly combine the results of filtering with predicates on
-    /// attributes that are kept in different OTAPr record batches
+    /// attributes that are kept in different OTAP record batches
     #[tokio::test]
     async fn test_attribute_and_attribute_different_record_batches() {
         let log_record0 = LogRecord::build()
@@ -3427,7 +3427,7 @@ mod test {
     }
 
     /// Test to ensure that we correctly combine the results of filtering with predicates on
-    /// attributes that are kept in different OTAPr record batches using or
+    /// attributes that are kept in different OTAP record batches using or
     #[tokio::test]
     async fn test_attribute_or_attribute_different_record_batches() {
         let log_record0 = LogRecord::build()
