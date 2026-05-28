@@ -168,23 +168,25 @@ pub fn join<'a>(
                 Ok((join_result, left.data_scope.clone()))
             }
         }
-        (DataScope::Root, DataScope::Attribute(attr_id, _)) => {
+        (DataScope::Root | DataScope::RootParent(_), DataScope::Attribute(attr_id, _)) => {
             let join_exec = RootToAttributesJoin::new(*attr_id);
             let join_result = join_exec.join(left, right, otap_batch)?;
             Ok((join_result, left.data_scope.clone()))
         }
-        (DataScope::Attribute(attr_id, _), DataScope::Root) => match attr_id {
-            AttributesIdentifier::Root => {
-                let join_exec = RootAttrsToRootJoin::new();
-                let join_result = join_exec.join(left, right, otap_batch)?;
-                Ok((join_result, left.data_scope.clone()))
+        (DataScope::Attribute(attr_id, _), DataScope::Root | DataScope::RootParent(_)) => {
+            match attr_id {
+                AttributesIdentifier::Root => {
+                    let join_exec = RootAttrsToRootJoin::new();
+                    let join_result = join_exec.join(left, right, otap_batch)?;
+                    Ok((join_result, left.data_scope.clone()))
+                }
+                AttributesIdentifier::NonRoot(payload_type) => {
+                    let join_exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
+                    let join_result = join_exec.join(left, right, otap_batch)?;
+                    Ok((join_result, right.data_scope.clone()))
+                }
             }
-            AttributesIdentifier::NonRoot(payload_type) => {
-                let join_exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
-                let join_result = join_exec.join(left, right, otap_batch)?;
-                Ok((join_result, right.data_scope.clone()))
-            }
-        },
+        }
         (left, right) => {
             // Note: with expression trees created by our logical expression planner, we shouldn't
             // end up in this error case, non-handled combinations of data scopes don't end up
@@ -274,7 +276,7 @@ fn compute_join_alignment(
                 ))
             }
         }
-        (DataScope::Root, DataScope::Attribute(attr_id, _)) => {
+        (DataScope::Root | DataScope::RootParent(_), DataScope::Attribute(attr_id, _)) => {
             let exec = RootToAttributesJoin::new(*attr_id);
             let indices = exec.rows_to_take(left, right, otap_batch)?;
             Ok((
@@ -282,24 +284,26 @@ fn compute_join_alignment(
                 left.data_scope.clone(),
             ))
         }
-        (DataScope::Attribute(attr_id, _), DataScope::Root) => match attr_id {
-            AttributesIdentifier::Root => {
-                let exec = RootAttrsToRootJoin::new();
-                let indices = exec.rows_to_take(left, right, otap_batch)?;
-                Ok((
-                    JoinAlignment::LeftPreserved(indices),
-                    left.data_scope.clone(),
-                ))
+        (DataScope::Attribute(attr_id, _), DataScope::Root | DataScope::RootParent(_)) => {
+            match attr_id {
+                AttributesIdentifier::Root => {
+                    let exec = RootAttrsToRootJoin::new();
+                    let indices = exec.rows_to_take(left, right, otap_batch)?;
+                    Ok((
+                        JoinAlignment::LeftPreserved(indices),
+                        left.data_scope.clone(),
+                    ))
+                }
+                AttributesIdentifier::NonRoot(payload_type) => {
+                    let exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
+                    let indices = exec.rows_to_take(left, right, otap_batch)?;
+                    Ok((
+                        JoinAlignment::RightPreserved(indices),
+                        right.data_scope.clone(),
+                    ))
+                }
             }
-            AttributesIdentifier::NonRoot(payload_type) => {
-                let exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
-                let indices = exec.rows_to_take(left, right, otap_batch)?;
-                Ok((
-                    JoinAlignment::RightPreserved(indices),
-                    right.data_scope.clone(),
-                ))
-            }
-        },
+        }
         (left, right) => Err(Error::ExecutionError {
             cause: format!("invalid data scopes for join: left {left:?} right {right:?}"),
         }),

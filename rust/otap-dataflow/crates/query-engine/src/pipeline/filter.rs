@@ -4165,6 +4165,58 @@ mod test {
         test_filter_expr_combined_with_fast_path::<OplParser>().await;
     }
 
+    #[tokio::test]
+    async fn test_filter_comparing_root_parent_fields_with_attributes() {
+        let log_record0 = LogRecord::build()
+            .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+            .finish();
+        let log_record1 = LogRecord::build()
+            .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+            .finish();
+        let log_record2 = LogRecord::build()
+            .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+            .finish();
+
+        let logs_data = LogsData::new(vec![
+            ResourceLogs {
+                resource: Some(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("y", AnyValue::new_string("0"))])
+                        .finish(),
+                ),
+                scope_logs: vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![log_record0.clone(), log_record1.clone()],
+                )],
+                schema_url: "0".into(),
+            },
+            ResourceLogs {
+                resource: Some(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("y", AnyValue::new_string("1"))])
+                        .finish(),
+                ),
+                scope_logs: vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![log_record2.clone()],
+                )],
+                schema_url: "2".into(),
+            },
+        ]);
+
+        // severity_text == "ERROR" uses fast path; severity_number == attributes["x"] uses expr path
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where resource.schema_url == resource.attributes[\"y\"]",
+            logs_data,
+        )
+        .await;
+        assert_eq!(result.resource_logs.len(), 1);
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_record0.clone(), log_record1.clone()]
+        );
+    }
+
     /// Filter where no rows match the expression predicate
     async fn test_filter_expr_no_match<P: Parser>() {
         let log_records = vec![

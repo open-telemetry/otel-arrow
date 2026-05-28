@@ -464,7 +464,7 @@ pub(crate) fn scoped_value_to_join_input(
     sv: ScopedValue,
     otap_batch: &OtapArrowRecords,
 ) -> Result<JoinInput> {
-    let is_root = sv.scope == DataScope::Root;
+    let is_root = matches!(sv.scope, DataScope::Root | DataScope::RootParent(_));
 
     let mut result = JoinInput {
         values: sv.values,
