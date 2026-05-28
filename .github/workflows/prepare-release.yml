@@ -19,8 +19,7 @@ permissions:
 jobs:
   prepare-release:
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -116,6 +115,10 @@ jobs:
         with:
           app-id: ${{ vars.OTELBOT_APP_ID }}
           private-key: ${{ secrets.OTELBOT_PRIVATE_KEY }}
+
+      - name: Configure git remote with app token
+        if: '!inputs.dry_run'
+        run: git remote set-url origin "https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ github.repository }}.git"
 
       - name: Create release branch and commit changes
         if: '!inputs.dry_run'
