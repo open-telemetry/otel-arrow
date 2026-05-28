@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Attribute Processor Different Batch Sizes - Benchmark Dashboard</title>
+  <title>Log Attribute Rename (Multi Batch) - Benchmark Dashboard</title>
   <link rel="stylesheet" href="../shared/styles.css">
 </head>
 <body>
@@ -29,17 +29,14 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>
   <script>window.DATA_PATH = "../../comparison_data/suite";</script>
   <script>window.METRICS_META = {"cpu_percentage_normalized_avg": {"label": "CPU Average"}, "cpu_percentage_normalized_max": {"label": "CPU Max"}, "ram_mib_avg": {"label": "Memory Average"}, "ram_mib_max": {"label": "Memory Max"}, "network_tx_bytes_rate_avg": {"label": "Network TX Rate"}, "network_rx_bytes_rate_avg": {"label": "Network RX Rate"}, "dropped_logs_percentage": {"label": "Dropped Logs"}, "logs_delivery_deviation_percentage": {"label": "Logs Delivery Deviation"}, "logs_produced_rate": {"label": "Offered Load Rate"}, "loadgen_logs_sent_rate": {"label": "Loadgen Sent Rate"}, "logs_received_rate": {"label": "Collector Received Rate"}, "collector_logs_sent_rate": {"label": "Collector Sent Rate"}, "backend_logs_received_rate": {"label": "Backend Received Rate"}, "test_duration": {"label": "Test Duration"}};</script>
-  <script>window.COMPARISON_SLUG = "logs_attr_processor_multi_batch";</script>
-  <script src="../../comparison_data/suite/dfe_logs_otap_none_attr_insert_multi_batch/data.js"></script>
+  <script>window.COMPARISON_SLUG = "log_attr_processor_rename_multi_batch";</script>
   <script src="../../comparison_data/suite/dfe_logs_otap_none_attr_rename_multi_batch/data.js"></script>
-  <script src="../../comparison_data/suite/dfe_logs_otlp_none_attr_insert_multi_batch/data.js"></script>
   <script src="../../comparison_data/suite/dfe_logs_otlp_none_attr_rename_multi_batch/data.js"></script>
-  <script src="../../comparison_data/suite/otc_logs_otlp_none_attr_insert_multi_batch/data.js"></script>
   <script src="../../comparison_data/suite/otc_logs_otlp_none_attr_rename_multi_batch/data.js"></script>
   <script>window.COMPARISON = {
-  "slug": "logs_attr_processor_multi_batch",
-  "name": "Attribute Processor Different Batch Sizes",
-  "description": "Attribute processor insert and rename workloads on logs with varying loadgen batch sizes.\n",
+  "slug": "log_attr_processor_rename_multi_batch",
+  "name": "Log Attribute Rename (Multi Batch)",
+  "description": "Renaming the semantic-convention attribute exception.type to exception.kind on logs. Comparing the attributes processor across engines and transports with varying loadgen batch sizes at a fixed 400k logs/sec generated load.\n",
   "chart": {
     "axes": {
       "x": {
@@ -77,34 +74,19 @@
   ],
   "suites": [
     {
-      "name": "DFE OTAP Attr Insert Multi Batch (Logs)",
-      "slug": "dfe_logs_otap_none_attr_insert_multi_batch",
-      "short": "DFE/OTAP/Insert"
-    },
-    {
-      "name": "DFE OTAP Attr Rename Multi Batch (Logs)",
+      "name": "DFE OTAP Attr Rename",
       "slug": "dfe_logs_otap_none_attr_rename_multi_batch",
-      "short": "DFE/OTAP/Rename"
+      "short": "DFE OTAP/Attr"
     },
     {
-      "name": "DFE OTLP Attr Insert Multi Batch (Logs)",
-      "slug": "dfe_logs_otlp_none_attr_insert_multi_batch",
-      "short": "DFE/OTLP/Insert"
-    },
-    {
-      "name": "DFE OTLP Attr Rename Multi Batch (Logs)",
+      "name": "DFE OTLP Attr Rename",
       "slug": "dfe_logs_otlp_none_attr_rename_multi_batch",
-      "short": "DFE/OTLP/Rename"
+      "short": "DFE OTLP/Attr"
     },
     {
-      "name": "OTC OTLP Attr Insert Multi Batch (Logs)",
-      "slug": "otc_logs_otlp_none_attr_insert_multi_batch",
-      "short": "OTC/OTLP/Insert"
-    },
-    {
-      "name": "OTC OTLP Attr Rename Multi Batch (Logs)",
+      "name": "OTC OTLP Attr Rename",
       "slug": "otc_logs_otlp_none_attr_rename_multi_batch",
-      "short": "OTC/OTLP/Rename"
+      "short": "OTC OTLP/Attr"
     }
   ]
 };</script>

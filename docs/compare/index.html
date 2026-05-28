@@ -33,20 +33,28 @@
   <script src="../comparison_data/suite/dfe_logs_otap_gzip_baseline/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otap_none_attr_insert/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otap_none_attr_insert_multi_batch/data.js"></script>
+  <script src="../comparison_data/suite/dfe_logs_otap_none_attr_insert_multi_transform/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otap_none_attr_rename/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otap_none_attr_rename_multi_batch/data.js"></script>
+  <script src="../comparison_data/suite/dfe_logs_otap_none_attr_rename_multi_transform/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otap_none_baseline/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otap_none_transform_insert/data.js"></script>
+  <script src="../comparison_data/suite/dfe_logs_otap_none_transform_insert_multi_transform/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otap_none_transform_rename/data.js"></script>
+  <script src="../comparison_data/suite/dfe_logs_otap_none_transform_rename_multi_transform/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otap_zstd_baseline/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otlp_gzip_baseline/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otlp_none_attr_insert/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otlp_none_attr_insert_multi_batch/data.js"></script>
+  <script src="../comparison_data/suite/dfe_logs_otlp_none_attr_insert_multi_transform/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otlp_none_attr_rename/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otlp_none_attr_rename_multi_batch/data.js"></script>
+  <script src="../comparison_data/suite/dfe_logs_otlp_none_attr_rename_multi_transform/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otlp_none_baseline/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otlp_none_transform_insert/data.js"></script>
+  <script src="../comparison_data/suite/dfe_logs_otlp_none_transform_insert_multi_transform/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otlp_none_transform_rename/data.js"></script>
+  <script src="../comparison_data/suite/dfe_logs_otlp_none_transform_rename_multi_transform/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otlp_zstd_baseline/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otlphttp_gzip_baseline/data.js"></script>
   <script src="../comparison_data/suite/dfe_logs_otlphttp_none_baseline/data.js"></script>
@@ -70,16 +78,22 @@
   <script src="../comparison_data/suite/dfe_traces_otlphttp_none_baseline/data.js"></script>
   <script src="../comparison_data/suite/dfe_traces_otlphttp_zstd_baseline/data.js"></script>
   <script src="../comparison_data/suite/otc_logs_otap_gzip_baseline/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otap_none_attr_insert_multi_transform/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otap_none_attr_rename_multi_transform/data.js"></script>
   <script src="../comparison_data/suite/otc_logs_otap_none_baseline/data.js"></script>
   <script src="../comparison_data/suite/otc_logs_otap_zstd_baseline/data.js"></script>
   <script src="../comparison_data/suite/otc_logs_otlp_gzip_baseline/data.js"></script>
   <script src="../comparison_data/suite/otc_logs_otlp_none_attr_insert/data.js"></script>
   <script src="../comparison_data/suite/otc_logs_otlp_none_attr_insert_multi_batch/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otlp_none_attr_insert_multi_transform/data.js"></script>
   <script src="../comparison_data/suite/otc_logs_otlp_none_attr_rename/data.js"></script>
   <script src="../comparison_data/suite/otc_logs_otlp_none_attr_rename_multi_batch/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otlp_none_attr_rename_multi_transform/data.js"></script>
   <script src="../comparison_data/suite/otc_logs_otlp_none_baseline/data.js"></script>
   <script src="../comparison_data/suite/otc_logs_otlp_none_transform_insert/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otlp_none_transform_insert_multi_transform/data.js"></script>
   <script src="../comparison_data/suite/otc_logs_otlp_none_transform_rename/data.js"></script>
+  <script src="../comparison_data/suite/otc_logs_otlp_none_transform_rename_multi_transform/data.js"></script>
   <script src="../comparison_data/suite/otc_logs_otlp_zstd_baseline/data.js"></script>
   <script src="../comparison_data/suite/otc_logs_otlphttp_none_baseline/data.js"></script>
   <script src="../comparison_data/suite/otc_metrics_otap_gzip_baseline/data.js"></script>
@@ -690,9 +704,9 @@
     ]
   },
   {
-    "slug": "logs_attr_processor_multi_batch",
-    "name": "Attribute Processor Different Batch Sizes",
-    "description": "Attribute processor insert and rename workloads on logs with varying loadgen batch sizes.\n",
+    "slug": "log_attr_processor_insert_multi_batch",
+    "name": "Log Attribute Insert (Multi Batch)",
+    "description": "Inserting an attribute \"processing.engine\" with a static value \"benchmark\" on logs. Comparing the attributes processor across engines and transports with varying loadgen batch sizes at a fixed 400k logs/sec generated load.\n",
     "chart": {
       "axes": {
         "x": {
@@ -730,34 +744,220 @@
     ],
     "suites": [
       {
-        "name": "DFE OTAP Attr Insert Multi Batch (Logs)",
+        "name": "DFE OTAP Attr Insert",
         "slug": "dfe_logs_otap_none_attr_insert_multi_batch",
-        "short": "DFE/OTAP/Insert"
+        "short": "DFE OTAP/Attr"
       },
       {
-        "name": "DFE OTAP Attr Rename Multi Batch (Logs)",
-        "slug": "dfe_logs_otap_none_attr_rename_multi_batch",
-        "short": "DFE/OTAP/Rename"
-      },
-      {
-        "name": "DFE OTLP Attr Insert Multi Batch (Logs)",
+        "name": "DFE OTLP Attr Insert",
         "slug": "dfe_logs_otlp_none_attr_insert_multi_batch",
-        "short": "DFE/OTLP/Insert"
+        "short": "DFE OTLP/Attr"
       },
       {
-        "name": "DFE OTLP Attr Rename Multi Batch (Logs)",
-        "slug": "dfe_logs_otlp_none_attr_rename_multi_batch",
-        "short": "DFE/OTLP/Rename"
-      },
-      {
-        "name": "OTC OTLP Attr Insert Multi Batch (Logs)",
+        "name": "OTC OTLP Attr Insert",
         "slug": "otc_logs_otlp_none_attr_insert_multi_batch",
-        "short": "OTC/OTLP/Insert"
+        "short": "OTC OTLP/Attr"
+      }
+    ]
+  },
+  {
+    "slug": "log_attr_processor_rename_multi_batch",
+    "name": "Log Attribute Rename (Multi Batch)",
+    "description": "Renaming the semantic-convention attribute exception.type to exception.kind on logs. Comparing the attributes processor across engines and transports with varying loadgen batch sizes at a fixed 400k logs/sec generated load.\n",
+    "chart": {
+      "axes": {
+        "x": {
+          "title": "Loadgen Batch Size (logs/batch)",
+          "description": "Batch size emitted by the load generator. All tests run at a fixed 400k logs/sec generated load."
+        }
+      }
+    },
+    "tests": [
+      {
+        "name": "batch-256",
+        "label": "256",
+        "loadgen_rate": 400000
       },
       {
-        "name": "OTC OTLP Attr Rename Multi Batch (Logs)",
+        "name": "batch-512",
+        "label": "512",
+        "loadgen_rate": 400000
+      },
+      {
+        "name": "batch-1024",
+        "label": "1024",
+        "loadgen_rate": 400000
+      },
+      {
+        "name": "batch-2048",
+        "label": "2048",
+        "loadgen_rate": 400000
+      },
+      {
+        "name": "batch-4096",
+        "label": "4096",
+        "loadgen_rate": 400000
+      }
+    ],
+    "suites": [
+      {
+        "name": "DFE OTAP Attr Rename",
+        "slug": "dfe_logs_otap_none_attr_rename_multi_batch",
+        "short": "DFE OTAP/Attr"
+      },
+      {
+        "name": "DFE OTLP Attr Rename",
+        "slug": "dfe_logs_otlp_none_attr_rename_multi_batch",
+        "short": "DFE OTLP/Attr"
+      },
+      {
+        "name": "OTC OTLP Attr Rename",
         "slug": "otc_logs_otlp_none_attr_rename_multi_batch",
-        "short": "OTC/OTLP/Rename"
+        "short": "OTC OTLP/Attr"
+      }
+    ]
+  },
+  {
+    "slug": "log_transform_attr_processor_insert_multi_transform",
+    "name": "Log Attribute Insert (Multi Transform)",
+    "description": "Inserting 1-4 attributes on logs across engines and transports at a fixed 200k logs/sec generated load.\n",
+    "chart": {
+      "axes": {
+        "x": {
+          "title": "Number of Insert Actions",
+          "description": "Number of insert actions configured on the processor. All tests run at a fixed 200k logs/sec generated load."
+        }
+      }
+    },
+    "tests": [
+      {
+        "name": "transform-1",
+        "label": "1",
+        "loadgen_rate": 200000
+      },
+      {
+        "name": "transform-2",
+        "label": "2",
+        "loadgen_rate": 200000
+      },
+      {
+        "name": "transform-3",
+        "label": "3",
+        "loadgen_rate": 200000
+      },
+      {
+        "name": "transform-4",
+        "label": "4",
+        "loadgen_rate": 200000
+      }
+    ],
+    "suites": [
+      {
+        "name": "DFE OTAP Attr Insert",
+        "slug": "dfe_logs_otap_none_attr_insert_multi_transform",
+        "short": "DFE OTAP/Attr"
+      },
+      {
+        "name": "DFE OTAP Transform Insert",
+        "slug": "dfe_logs_otap_none_transform_insert_multi_transform",
+        "short": "DFE OTAP/Transform"
+      },
+      {
+        "name": "DFE OTLP Attr Insert",
+        "slug": "dfe_logs_otlp_none_attr_insert_multi_transform",
+        "short": "DFE OTLP/Attr"
+      },
+      {
+        "name": "DFE OTLP Transform Insert",
+        "slug": "dfe_logs_otlp_none_transform_insert_multi_transform",
+        "short": "DFE OTLP/Transform"
+      },
+      {
+        "name": "OTC OTAP Attr Insert",
+        "slug": "otc_logs_otap_none_attr_insert_multi_transform",
+        "short": "OTC OTAP/Attr"
+      },
+      {
+        "name": "OTC OTLP Attr Insert",
+        "slug": "otc_logs_otlp_none_attr_insert_multi_transform",
+        "short": "OTC OTLP/Attr"
+      },
+      {
+        "name": "OTC OTLP Transform Insert",
+        "slug": "otc_logs_otlp_none_transform_insert_multi_transform",
+        "short": "OTC OTLP/Transform"
+      }
+    ]
+  },
+  {
+    "slug": "log_transform_attr_processor_rename_multi_transform",
+    "name": "Log Attribute Rename (Multi Transform)",
+    "description": "Renaming 1-4 attributes on logs across engines and transports at a fixed 200k logs/sec generated load.\n",
+    "chart": {
+      "axes": {
+        "x": {
+          "title": "Number of Rename Actions",
+          "description": "Number of rename actions configured on the processor. All tests run at a fixed 200k logs/sec generated load."
+        }
+      }
+    },
+    "tests": [
+      {
+        "name": "transform-1",
+        "label": "1",
+        "loadgen_rate": 200000
+      },
+      {
+        "name": "transform-2",
+        "label": "2",
+        "loadgen_rate": 200000
+      },
+      {
+        "name": "transform-3",
+        "label": "3",
+        "loadgen_rate": 200000
+      },
+      {
+        "name": "transform-4",
+        "label": "4",
+        "loadgen_rate": 200000
+      }
+    ],
+    "suites": [
+      {
+        "name": "DFE OTAP Attr Rename",
+        "slug": "dfe_logs_otap_none_attr_rename_multi_transform",
+        "short": "DFE OTAP/Attr"
+      },
+      {
+        "name": "DFE OTAP Transform Rename",
+        "slug": "dfe_logs_otap_none_transform_rename_multi_transform",
+        "short": "DFE OTAP/Transform"
+      },
+      {
+        "name": "DFE OTLP Attr Rename",
+        "slug": "dfe_logs_otlp_none_attr_rename_multi_transform",
+        "short": "DFE OTLP/Attr"
+      },
+      {
+        "name": "DFE OTLP Transform Rename",
+        "slug": "dfe_logs_otlp_none_transform_rename_multi_transform",
+        "short": "DFE OTLP/Transform"
+      },
+      {
+        "name": "OTC OTAP Attr Rename",
+        "slug": "otc_logs_otap_none_attr_rename_multi_transform",
+        "short": "OTC OTAP/Attr"
+      },
+      {
+        "name": "OTC OTLP Attr Rename",
+        "slug": "otc_logs_otlp_none_attr_rename_multi_transform",
+        "short": "OTC OTLP/Attr"
+      },
+      {
+        "name": "OTC OTLP Transform Rename",
+        "slug": "otc_logs_otlp_none_transform_rename_multi_transform",
+        "short": "OTC OTLP/Transform"
       }
     ]
   }

@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log Attribute Rename (Multi Transform) - Benchmark Dashboard</title>
+  <link rel="stylesheet" href="../shared/styles.css">
+</head>
+<body>
+  <div class="wip-banner" role="alert">
+    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>
+   <span class="wip-text">The Dataflow Engine and these benchmarks are a work in progress. Do you have feedback? <a class="wip-link" href="https://github.com/open-telemetry/otel-arrow/issues" target="_blank" rel="noopener">Tell us here!</a></span>
+    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>
+  </div>
+  <div class="wrap">
+    <div id="app"></div>
+  </div>
+
+  <div id="run-detail-modal" class="modal-backdrop" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <div id="run-detail-title" class="modal-title"></div>
+        <button id="run-detail-close" class="modal-close" type="button">Close</button>
+      </div>
+      <div id="run-detail-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>
+  <script>window.DATA_PATH = "../../comparison_data/suite";</script>
+  <script>window.METRICS_META = {"cpu_percentage_normalized_avg": {"label": "CPU Average"}, "cpu_percentage_normalized_max": {"label": "CPU Max"}, "ram_mib_avg": {"label": "Memory Average"}, "ram_mib_max": {"label": "Memory Max"}, "network_tx_bytes_rate_avg": {"label": "Network TX Rate"}, "network_rx_bytes_rate_avg": {"label": "Network RX Rate"}, "dropped_logs_percentage": {"label": "Dropped Logs"}, "logs_delivery_deviation_percentage": {"label": "Logs Delivery Deviation"}, "logs_produced_rate": {"label": "Offered Load Rate"}, "loadgen_logs_sent_rate": {"label": "Loadgen Sent Rate"}, "logs_received_rate": {"label": "Collector Received Rate"}, "collector_logs_sent_rate": {"label": "Collector Sent Rate"}, "backend_logs_received_rate": {"label": "Backend Received Rate"}, "test_duration": {"label": "Test Duration"}};</script>
+  <script>window.COMPARISON_SLUG = "log_transform_attr_processor_rename_multi_transform";</script>
+  <script src="../../comparison_data/suite/dfe_logs_otap_none_attr_rename_multi_transform/data.js"></script>
+  <script src="../../comparison_data/suite/dfe_logs_otap_none_transform_rename_multi_transform/data.js"></script>
+  <script src="../../comparison_data/suite/dfe_logs_otlp_none_attr_rename_multi_transform/data.js"></script>
+  <script src="../../comparison_data/suite/dfe_logs_otlp_none_transform_rename_multi_transform/data.js"></script>
+  <script src="../../comparison_data/suite/otc_logs_otap_none_attr_rename_multi_transform/data.js"></script>
+  <script src="../../comparison_data/suite/otc_logs_otlp_none_attr_rename_multi_transform/data.js"></script>
+  <script src="../../comparison_data/suite/otc_logs_otlp_none_transform_rename_multi_transform/data.js"></script>
+  <script>window.COMPARISON = {
+  "slug": "log_transform_attr_processor_rename_multi_transform",
+  "name": "Log Attribute Rename (Multi Transform)",
+  "description": "Renaming 1-4 attributes on logs across engines and transports at a fixed 200k logs/sec generated load.\n",
+  "chart": {
+    "axes": {
+      "x": {
+        "title": "Number of Rename Actions",
+        "description": "Number of rename actions configured on the processor. All tests run at a fixed 200k logs/sec generated load."
+      }
+    }
+  },
+  "tests": [
+    {
+      "name": "transform-1",
+      "label": "1",
+      "loadgen_rate": 200000
+    },
+    {
+      "name": "transform-2",
+      "label": "2",
+      "loadgen_rate": 200000
+    },
+    {
+      "name": "transform-3",
+      "label": "3",
+      "loadgen_rate": 200000
+    },
+    {
+      "name": "transform-4",
+      "label": "4",
+      "loadgen_rate": 200000
+    }
+  ],
+  "suites": [
+    {
+      "name": "DFE OTAP Attr Rename",
+      "slug": "dfe_logs_otap_none_attr_rename_multi_transform",
+      "short": "DFE OTAP/Attr"
+    },
+    {
+      "name": "DFE OTAP Transform Rename",
+      "slug": "dfe_logs_otap_none_transform_rename_multi_transform",
+      "short": "DFE OTAP/Transform"
+    },
+    {
+      "name": "DFE OTLP Attr Rename",
+      "slug": "dfe_logs_otlp_none_attr_rename_multi_transform",
+      "short": "DFE OTLP/Attr"
+    },
+    {
+      "name": "DFE OTLP Transform Rename",
+      "slug": "dfe_logs_otlp_none_transform_rename_multi_transform",
+      "short": "DFE OTLP/Transform"
+    },
+    {
+      "name": "OTC OTAP Attr Rename",
+      "slug": "otc_logs_otap_none_attr_rename_multi_transform",
+      "short": "OTC OTAP/Attr"
+    },
+    {
+      "name": "OTC OTLP Attr Rename",
+      "slug": "otc_logs_otlp_none_attr_rename_multi_transform",
+      "short": "OTC OTLP/Attr"
+    },
+    {
+      "name": "OTC OTLP Transform Rename",
+      "slug": "otc_logs_otlp_none_transform_rename_multi_transform",
+      "short": "OTC OTLP/Transform"
+    }
+  ]
+};</script>
+  <script type="module" src="../shared/app.js"></script>
+</body>
+</html>
