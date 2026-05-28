@@ -1,5 +1,5 @@
 receivers:
-  otlp:
+  otelarrow:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
@@ -7,18 +7,23 @@ receivers:
 processors:
   attributes:
     actions:
-{%- for a in insert_actions %}
-      - key: {{ a.key }}
-        value: {{ a.value }}
+{%- for p in rename_pairs %}
+      - key: {{ p.destination }}
+        from_attribute: {{ p.source }}
         action: insert
+      - key: {{ p.source }}
+        action: delete
 {%- endfor %}
 
 exporters:
-  otlp:
+  otelarrow:
     endpoint: '{{backend_hostname}}:1235'
     compression: {{ compression_method | default("none") }}
     tls:
       insecure: true
+    arrow:
+      payload_compression: {{ payload_compression | default("none") }}
+      disabled: false
     sending_queue:
       enabled: {{ sending_queue_enabled | default(true) }}
       wait_for_result: {{ wait_for_result | default(true) }}
@@ -36,13 +41,13 @@ service:
                 host: '0.0.0.0'
                 port: 8086
   pipelines:
-    logs:
-      receivers: [otlp]
+    logs/arrow:
+      receivers: [otelarrow]
       processors: [attributes]
-      exporters: [otlp]
-    metrics:
-      receivers: [otlp]
-      exporters: [otlp]
-    traces:
-      receivers: [otlp]
-      exporters: [otlp]
+      exporters: [otelarrow]
+    metrics/arrow:
+      receivers: [otelarrow]
+      exporters: [otelarrow]
+    traces/arrow:
+      receivers: [otelarrow]
+      exporters: [otelarrow]

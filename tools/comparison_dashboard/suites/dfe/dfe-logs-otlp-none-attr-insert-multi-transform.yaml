@@ -1,7 +1,7 @@
-name: DFE OTLP Attr Insert (Logs)
-slug: dfe_logs_otlp_none_attr_insert
-description: Dataflow Engine OTLP logs, attributes processor inserting processing.engine=benchmark
-orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/dfe-single-core-multi-rate.yaml
+name: DFE OTLP Attr Insert Multi Transform (Logs)
+slug: dfe_logs_otlp_none_attr_insert_multi_transform
+description: Dataflow Engine OTLP logs, attributes processor insert sweep over 1-4 insert actions at 200k signals/sec
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/dfe-single-core-multi-transform.yaml
 
 meta:
   binary: dfe
@@ -17,7 +17,12 @@ variables:
   protocol: otlp
   signal: logs
   loadgen_max_batch_size: 1000
+  data_source: synthetic
+  num_log_attributes: 12
   compression_method: none
   wait_for_result: true
   insert_actions:
-    - {key: "processing.engine", value: "benchmark"}
+    - {key: "processing.engine",   value: "benchmark"}
+    - {key: "processing.stage",    value: "benchmark"}
+    - {key: "processing.batch.id", value: "benchmark"}
+    - {key: "processing.cluster",  value: "benchmark"}
