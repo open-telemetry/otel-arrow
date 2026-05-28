@@ -144,7 +144,7 @@ Before filing, please:
 
 Use the
 [Bug Report template](https://github.com/open-telemetry/otel-arrow/issues/new?template=bug_report.yaml).
-A good bug report lets a maintainer reproduce the problem without further
+A good bug report lets anyone reproduce the problem without further
 back-and-forth. The template prompts for the version, affected
 component(s), steps to reproduce, expected vs. actual behavior,
 environment, and logs - please fill in as many fields as apply. Minimal,
