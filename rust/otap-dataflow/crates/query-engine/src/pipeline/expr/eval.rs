@@ -584,8 +584,10 @@ fn materialize_id_mask_to_value(
                             consts::ID,
                         )?
                     }
-                    _ => {
-                        todo!()
+                    other => {
+                        return Err(Error::ExecutionError {
+                            cause: format!("invalid payload type from IdMask scope: {other:?}"),
+                        });
                     }
                 },
                 _ => root_rb.column_by_name(consts::ID),

@@ -1111,7 +1111,6 @@ impl ExprPlanner {
 
     /// Switches from using datafusion's BinaryExpr for comparison to a custom scalar UDF wrapping
     /// [`compare`](crate::pipeline::filter::compare::compare)
-    // TODO shouldn't have to pass op
     fn compare_using_udf(&self, op: Operator, expr: ScopedExpr) -> ScopedExpr {
         fn transform_leaf(eval: LeafEval) -> LeafEval {
             match eval {

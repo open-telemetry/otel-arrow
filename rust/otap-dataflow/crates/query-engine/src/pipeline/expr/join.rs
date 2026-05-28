@@ -1422,15 +1422,23 @@ impl JoinExec for AttributesAllSelectionVecJoin {
         };
 
         if vals.data_type() != DataType::Boolean {
-            // TODO - need to return an error here
-            todo!()
+            return Err(Error::ExecutionError {
+                cause: format!(
+                    "Invalid type from AttributesAll eval {:?}",
+                    vals.data_type()
+                ),
+            });
         }
 
         let selection_vec = match vals {
             ColumnarValue::Array(arr) => arr.as_boolean(),
             ColumnarValue::Scalar(_) => {
-                // TODO - refactor to return a bitmap here
-                todo!()
+                // In the future (if needed someday) we could handle by invoking scalar join
+                return Err(Error::ExecutionError {
+                    cause: "Invalid columnar value from AttributesAll eval. \
+                        expected Array got Scalar"
+                        .into(),
+                });
             }
         };
 
@@ -1458,8 +1466,10 @@ impl JoinExec for AttributesAllSelectionVecJoin {
             .as_ref();
         let attrs_side_id = match attrs_side_scope {
             DataScope::AttributesAll(attrs_id) => attrs_id,
-            _ => {
-                todo!();
+            other => {
+                return Err(Error::ExecutionError {
+                    cause: format!("Invalid scope value from AttributesAll join {other:?}"),
+                });
             }
         };
 

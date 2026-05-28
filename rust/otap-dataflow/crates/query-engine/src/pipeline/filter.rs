@@ -3718,7 +3718,6 @@ mod test {
         ];
         assert_eq!(result_log_records, expected);
 
-        // TODO comment about what this is testing
         let result = exec_logs_pipeline::<OplParser>(
             "logs | where  attributes[\"x\"] == attributes[\"y\"] and attributes[\"z\"] == null",
             to_logs_data(log_records.clone()),
