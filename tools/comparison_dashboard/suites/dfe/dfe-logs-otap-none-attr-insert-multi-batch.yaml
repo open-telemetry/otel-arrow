@@ -18,3 +18,5 @@ variables:
   signal: logs
   compression_method: none
   wait_for_result: true
+  insert_actions:
+    - {key: "processing.engine", value: "benchmark"}

@@ -18,3 +18,5 @@ variables:
   signal: logs
   compression_method: none
   otelcol_gomaxprocs: 1
+  insert_actions:
+    - {key: "processing.engine", value: "benchmark"}
