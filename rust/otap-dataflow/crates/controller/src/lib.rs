@@ -91,7 +91,7 @@ use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
     InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup, otel_error, otel_info,
-    otel_info_span, otel_warn, self_tracing::LogContext,
+    otel_info_span, otel_warn, raw_error, self_tracing::LogContext,
 };
 use smallvec::smallvec;
 use std::collections::{HashMap, HashSet};
@@ -1705,27 +1705,45 @@ impl<
 
                         // Give pipelines a generous deadline to drain (60 s by default —
                         // matches the default Kubernetes terminationGracePeriodSeconds).
+                        // TODO: make this configurable via engine config.
                         const SHUTDOWN_TIMEOUT_SECS: u64 = 60;
 
-                        match control_plane.shutdown_all(SHUTDOWN_TIMEOUT_SECS) {
-                            Ok(()) => {
-                                otel_info!(
-                                    "shutdown.signal_dispatched",
-                                    message = "Shutdown requested for all pipelines"
-                                );
+                        // Retry a few times if the control channel is full under
+                        // backpressure — avoids silently dropping the shutdown request.
+                        const MAX_RETRIES: u32 = 3;
+                        const RETRY_INTERVAL: Duration = Duration::from_millis(500);
+
+                        let mut last_err = None;
+                        for attempt in 0..MAX_RETRIES {
+                            match control_plane.shutdown_all(SHUTDOWN_TIMEOUT_SECS) {
+                                Ok(()) => {
+                                    otel_info!(
+                                        "shutdown.signal_dispatched",
+                                        message = "Shutdown requested for all pipelines"
+                                    );
+                                    last_err = None;
+                                    break;
+                                }
+                                Err(e) => {
+                                    last_err = Some(e);
+                                    if attempt + 1 < MAX_RETRIES {
+                                        tokio::time::sleep(RETRY_INTERVAL).await;
+                                    }
+                                }
                             }
-                            Err(e) => {
-                                otel_error!(
-                                    "shutdown.signal_dispatch_failed",
-                                    error = ?e,
-                                    message = "Failed to request shutdown via control plane"
-                                );
-                            }
+                        }
+                        if let Some(e) = last_err {
+                            otel_error!(
+                                "shutdown.signal_dispatch_failed",
+                                error = ?e,
+                                message = "Failed to request shutdown via control plane after \
+                                       retries; awaiting a second signal for forced exit"
+                            );
                         }
 
                         // ── Second signal: force exit ───────────────────────
                         let signal_name = Self::recv_termination_signal().await;
-                        otel_error!(
+                        raw_error!(
                             "shutdown.force_exit",
                             signal = signal_name,
                             message = "Second termination signal received, forcing immediate exit"
@@ -1757,7 +1775,20 @@ impl<
             }
         }
 
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            use tokio::signal::windows::{ctrl_break, ctrl_c};
+
+            let mut sigint = ctrl_c().expect("failed to register Ctrl-C handler");
+            let mut sigterm = ctrl_break().expect("failed to register Ctrl-Break handler");
+
+            tokio::select! {
+                _ = sigterm.recv() => "CTRL_BREAK",
+                _ = sigint.recv() => "CTRL_C",
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
         {
             tokio::signal::ctrl_c()
                 .await

@@ -1,0 +1,4 @@
+change_type: enhancement
+component: engine
+note: Handle SIGINT/SIGTERM (and Ctrl-C/Ctrl-Break on Windows) to trigger graceful pipeline shutdown; a second signal forces immediate exit.
+issues: [2325]
