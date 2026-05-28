@@ -381,26 +381,27 @@ impl ExprPlanner {
                         eval: LeafEval::new_df_expr(left_expr.and(right_expr), downcast_dicts)?,
                     })
                 } else {
-                    match (
+                    let mut align_children_to_root = false;
+                    if let (
+                        DataScope::AttributesAll(left_attrs_id),
+                        DataScope::AttributesAll(right_attrs_id),
+                    ) = (
                         left.effective_value_scope().as_ref(),
                         right.effective_value_scope().as_ref(),
                     ) {
-                        (
-                            DataScope::AttributesAll(left_attrs_id),
-                            DataScope::AttributesAll(right_attrs_id),
-                        ) if left_attrs_id == right_attrs_id => {
+                        if left_attrs_id == right_attrs_id {
+                            // most performant way to "and" the results of the children exprs
+                            // is to create a bitmap of the parent_ids passing each side then
+                            // combine the bitmaps
                             return Ok(ScopedExpr::BitmapAnd(Box::new(left), Box::new(right)));
+                        } else {
+                            // here we're "and"ing the results of filters on attributes, but they
+                            // the parent_id columns represent different IDs, so we can't "and" the
+                            // bitmaps. We set `align_children_to_root` because it's just the most
+                            // performant way to line up the results of the filters on each side in
+                            // join eval
+                            align_children_to_root = true;
                         }
-                        (
-                            DataScope::AttributesAll(left_attrs_id),
-                            DataScope::AttributesAll(right_attrs_id),
-                        ) if left_attrs_id != right_attrs_id => {
-                            // TODO should we comment why we're doing this?
-                            // TODO would a custom join impl be faster?
-                            left.set_eval_align_to_root();
-                            right.set_eval_align_to_root();
-                        }
-                        _ => {}
                     }
 
                     Ok(ScopedExpr::JoinAndEval {
@@ -409,6 +410,7 @@ impl ExprPlanner {
                             col(arg_column_name(0)).and(col(arg_column_name(1))),
                             false,
                         )?,
+                        align_children_to_root,
                         default_null_children: false,
                     })
                 }
@@ -428,8 +430,8 @@ impl ExprPlanner {
                     requires_dict_downcast: false,
                 };
                 let combined_scope = try_combine_scopes(&left_planned, &right_planned);
-                let mut left = left_planned.expr;
-                let mut right = right_planned.expr;
+                let left = left_planned.expr;
+                let right = right_planned.expr;
 
                 if let Some(combined_scope) = combined_scope
                     && !matches!(combined_scope, DataScope::AttributesAll(_))
@@ -454,26 +456,27 @@ impl ExprPlanner {
                         eval: LeafEval::new_df_expr(left_expr.or(right_expr), downcast_dicts)?,
                     })
                 } else {
-                    match (
+                    let mut align_children_to_root = false;
+                    if let (
+                        DataScope::AttributesAll(left_attrs_id),
+                        DataScope::AttributesAll(right_attrs_id),
+                    ) = (
                         left.effective_value_scope().as_ref(),
                         right.effective_value_scope().as_ref(),
                     ) {
-                        (
-                            DataScope::AttributesAll(left_attrs_id),
-                            DataScope::AttributesAll(right_attrs_id),
-                        ) if left_attrs_id == right_attrs_id => {
+                        if left_attrs_id == right_attrs_id {
+                            // most performant way to "and" the results of the children exprs
+                            // is to create a bitmap of the parent_ids passing each side then
+                            // combine the bitmaps
                             return Ok(ScopedExpr::BitmapOr(Box::new(left), Box::new(right)));
+                        } else {
+                            // here we're "or"ing the results of filters on attributes, but they
+                            // the parent_id columns represent different IDs, so we can't "and" the
+                            // bitmaps. We set `align_children_to_root` because it's just the most
+                            // performant way to line up the results of the filters on each side in
+                            // join eval
+                            align_children_to_root = true;
                         }
-                        (
-                            DataScope::AttributesAll(left_attrs_id),
-                            DataScope::AttributesAll(right_attrs_id),
-                        ) if left_attrs_id != right_attrs_id => {
-                            // TODO should we comment why we're doing this?
-                            // TODO would a custom join impl be faster?
-                            left.set_eval_align_to_root();
-                            right.set_eval_align_to_root();
-                        }
-                        _ => {}
                     }
 
                     Ok(ScopedExpr::JoinAndEval {
@@ -482,27 +485,9 @@ impl ExprPlanner {
                             col(arg_column_name(0)).or(col(arg_column_name(1))),
                             false,
                         )?,
+                        align_children_to_root,
                         default_null_children: false,
                     })
-
-                    // let left_is_root_scope =
-                    //     matches!(left.effective_value_scope().as_ref(), DataScope::Root);
-                    // let right_is_root_scope =
-                    //     matches!(right.effective_value_scope().as_ref(), DataScope::Root);
-                    // let should_join = (left_is_root_scope && !left.is_bitmap_exec())
-                    //     || (right_is_root_scope && !right.is_bitmap_exec());
-                    // if should_join {
-                    //     Ok(ScopedExpr::JoinAndEval {
-                    //         children: vec![left, right],
-                    //         eval: LeafEval::new_df_expr(
-                    //             col(arg_column_name(0)).or(col(arg_column_name(1))),
-                    //             false,
-                    //         )?,
-                    //         default_null_children: false,
-                    //     })
-                    // } else {
-                    //     Ok(ScopedExpr::BitmapOr(Box::new(left), Box::new(right)))
-                    // }
                 }
             }
 
@@ -546,7 +531,6 @@ impl ExprPlanner {
                             eval_anyval_as_struct,
                             attr_key_case_sensitive,
                             missing_data_passes,
-                            align_to_root,
                         } if !is_attrs_all_scope => ScopedExpr::Eval {
                             scope,
                             eval: LeafEval::DatafusionExpr {
@@ -557,7 +541,6 @@ impl ExprPlanner {
                                 eval_anyval_as_struct,
                                 attr_key_case_sensitive,
                                 missing_data_passes: !missing_data_passes,
-                                align_to_root,
                             },
                         },
                         _ => ScopedExpr::BitmapNot(Box::new(ScopedExpr::Eval { scope, eval })),
@@ -566,6 +549,7 @@ impl ExprPlanner {
                         children,
                         eval,
                         default_null_children,
+                        align_children_to_root,
                     } if !is_attrs_all_scope => match eval {
                         LeafEval::DatafusionExpr {
                             logical_expr,
@@ -575,10 +559,10 @@ impl ExprPlanner {
                             eval_anyval_as_struct,
                             attr_key_case_sensitive,
                             missing_data_passes,
-                            align_to_root,
                         } => ScopedExpr::JoinAndEval {
                             children,
                             default_null_children,
+                            align_children_to_root,
                             eval: LeafEval::DatafusionExpr {
                                 logical_expr: not(logical_expr),
                                 physical_expr: None,
@@ -587,13 +571,13 @@ impl ExprPlanner {
                                 eval_anyval_as_struct,
                                 attr_key_case_sensitive,
                                 missing_data_passes: !missing_data_passes,
-                                align_to_root,
                             },
                         },
                         _ => ScopedExpr::BitmapNot(Box::new(ScopedExpr::JoinAndEval {
                             children,
                             eval,
                             default_null_children,
+                            align_children_to_root,
                         })),
                     },
                     _ => ScopedExpr::BitmapNot(Box::new(inner)),
@@ -1141,7 +1125,6 @@ impl ExprPlanner {
                     eval_anyval_as_struct,
                     attr_key_case_sensitive,
                     missing_data_passes,
-                    align_to_root,
                 } => LeafEval::DatafusionExpr {
                     logical_expr: CompareFunc::new_expr(
                         *binary_expr.left,
@@ -1158,56 +1141,22 @@ impl ExprPlanner {
                     eval_anyval_as_struct,
                     attr_key_case_sensitive,
                     missing_data_passes,
-                    align_to_root,
                 },
                 other => other,
             }
         }
 
-        // TODO - is this all kind of messy?
-        // TODO - we only need to do the pre-align if the op is Eq I'm pretty sure
-
-        fn set_align_to_root(eval: &mut LeafEval) {
-            match eval {
-                LeafEval::DatafusionExpr { align_to_root, .. } => *align_to_root = true,
-                _ => {}
-            }
-        }
-
         match expr {
-            ScopedExpr::Eval { scope, eval } => {
-                let mut new_eval = transform_leaf(eval);
-                if op == Operator::Eq {
-                    set_align_to_root(&mut new_eval);
-                }
-                ScopedExpr::Eval {
-                    scope,
-                    eval: new_eval,
-                }
-            }
-            ScopedExpr::JoinAndEval {
-                mut children, eval, ..
-            } => {
-                if op == Operator::Eq {
-                    for child in &mut children {
-                        // TODO I'm not sure both these branches are covered by tests?
-                        match child {
-                            ScopedExpr::Eval { eval, .. } => {
-                                set_align_to_root(eval);
-                            }
-                            ScopedExpr::JoinAndEval { eval, .. } => {
-                                set_align_to_root(eval);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                ScopedExpr::JoinAndEval {
-                    children,
-                    default_null_children: true,
-                    eval: transform_leaf(eval),
-                }
-            }
+            ScopedExpr::Eval { scope, eval } => ScopedExpr::Eval {
+                scope,
+                eval: transform_leaf(eval),
+            },
+            ScopedExpr::JoinAndEval { children, eval, .. } => ScopedExpr::JoinAndEval {
+                children,
+                default_null_children: true,
+                align_children_to_root: op == Operator::Eq,
+                eval: transform_leaf(eval),
+            },
             other => other,
         }
     }
@@ -1445,6 +1394,7 @@ impl ExprPlanner {
             Ok(ScopedExpr::JoinAndEval {
                 children: vec![haystack.expr, needle.expr],
                 default_null_children: false,
+                align_children_to_root: false,
                 eval: LeafEval::new_df_expr(
                     contains(col(arg_column_name(0)), col(arg_column_name(1))),
                     true,
@@ -1810,6 +1760,7 @@ impl ExprPlanner {
             Ok(ScopedExpr::JoinAndEval {
                 children: vec![left.expr, right.expr],
                 default_null_children: false,
+                align_children_to_root: false,
                 eval: LeafEval::new_df_expr(
                     Expr::BinaryExpr(BinaryExpr::new(
                         Box::new(col(arg_column_name(0))),
@@ -1842,6 +1793,7 @@ impl ExprPlanner {
             FunctionArgScope::Join(children) => Ok(ScopedExpr::JoinAndEval {
                 children,
                 default_null_children: false,
+                align_children_to_root: false,
                 eval: LeafEval::new_df_expr(expr, dict_downcast)?,
             }),
         }
@@ -1923,33 +1875,28 @@ impl ScopedExpr {
         }
     }
 
-    pub(crate) fn set_eval_align_to_root(&mut self) {
-        match self {
-            Self::Eval {
-                eval: LeafEval::DatafusionExpr { align_to_root, .. },
-                ..
-            } => *align_to_root = true,
-            _ => {}
-        }
-    }
-
     /// returns the scope of the data that would be produced if this Expr was evaluated to
     /// produce a scoped value
     pub(crate) fn effective_value_scope(&self) -> Cow<'_, DataScope> {
         match self {
             Self::Eval { scope, eval } => match eval {
-                LeafEval::DatafusionExpr {
-                    align_to_root: true,
-                    ..
-                } => Cow::Owned(DataScope::Root),
                 _ => Cow::Borrowed(scope),
             },
-            Self::JoinAndEval { children, .. } => {
+            Self::JoinAndEval {
+                children,
+                align_children_to_root,
+                ..
+            } => {
                 // TODO comment on what's going on here ...
                 if children.is_empty() {
                     // weird
                     todo!()
                 }
+
+                if *align_children_to_root {
+                    return Cow::Owned(DataScope::Root);
+                }
+
                 let mut curr_scope = children[0].effective_value_scope();
 
                 for child in children.iter().skip(1) {
@@ -1995,13 +1942,6 @@ impl ScopedExpr {
                 Cow::Owned(DataScope::Root)
             }
         }
-    }
-
-    fn is_bitmap_exec(&self) -> bool {
-        matches!(
-            self,
-            Self::BitmapAnd(_, _) | Self::BitmapOr(_, _) | Self::BitmapNot(_)
-        )
     }
 
     /// Consume an `Eval(DatafusionExpr)` node and return its DataFusion logical expression.

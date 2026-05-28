@@ -199,11 +199,22 @@ pub(crate) enum ScopedExpr {
         children: Vec<ScopedExpr>,
         eval: LeafEval,
 
-        /// Whether to default a child that evaluates to null to a null array when evaluating the
-        /// leaf expression. Normally, if some child evaluates to null, we propagate the null by
-        /// having this expr node evaluate to null as well. However, some expressions may have
-        /// special null handling semantics where they expect the null value to be passed.
+        /// Whether to produce a null placeholder when some child evaluates to `None`, likely due
+        /// to some optional column used by an expression not being present.
+        ///
+        /// Ordinarily, we propagate what equates to a null value by having this expression node
+        /// also evaluate to `None`. However, some expressions may have special null handling
+        /// semantics where they expect the null value to be passed.
         default_null_children: bool,
+
+        /// Whether to force the children to be aligned to the root row order before joining the
+        /// results.
+        ///
+        /// When this is false, the expression evaluation will attempt to choose the most
+        /// appropriate join type to avoid reordering the child results if possible. Setting this
+        /// flag overrides the dynamic join choice and forces root alignment when combining the
+        /// child results.
+        align_children_to_root: bool,
     },
 
     /// Combine two boolean-producing children via IdMask bitmap intersection (AND).
@@ -298,11 +309,6 @@ pub(crate) enum LeafEval {
         /// treated as "passes" rather than "fails". This is set to true for `is_null()`
         /// expressions, where a missing field means the field IS null — which is a match.
         missing_data_passes: bool,
-
-        /// Whether to align the result of the expression to the root record batch. This adds
-        /// extra overhead, but sometimes it is necessary in cases where we can
-        /// TODO comment comment blah blah
-        align_to_root: bool,
     },
 
     /// A batch-level predicate that evaluates a property of the entire `OtapArrowRecords`
@@ -340,7 +346,6 @@ impl LeafEval {
             eval_anyval_as_struct: true,
             attr_key_case_sensitive: true,
             missing_data_passes: false,
-            align_to_root: false,
         })
     }
 
@@ -365,7 +370,6 @@ impl LeafEval {
             eval_anyval_as_struct,
             attr_key_case_sensitive,
             missing_data_passes,
-            align_to_root: false,
         })
     }
 }
@@ -667,6 +671,7 @@ mod test {
         let mut op = ScopedExpr::JoinAndEval {
             children: vec![left_child, right_child],
             default_null_children: false,
+            align_children_to_root: false,
             eval: LeafEval::new_df_expr(
                 Expr::BinaryExpr(datafusion::logical_expr::BinaryExpr::new(
                     Box::new(col(arg_column_name(0))),

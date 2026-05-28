@@ -49,10 +49,12 @@ impl ScopedExpr {
                 children,
                 eval,
                 default_null_children,
+                align_children_to_root,
             } => execute_join_and_eval_as_id_mask(
                 children.as_mut_slice(),
                 eval,
                 *default_null_children,
+                *align_children_to_root,
                 otap_batch,
                 session_ctx,
                 pool,
@@ -159,6 +161,7 @@ fn execute_join_and_eval_as_id_mask(
     children: &mut [ScopedExpr],
     eval: &mut LeafEval,
     default_null_children: bool,
+    align_children_to_root: bool,
     otap_batch: &OtapArrowRecords,
     session_ctx: &SessionContext,
     pool: &mut IdBitmapPool,
@@ -169,6 +172,7 @@ fn execute_join_and_eval_as_id_mask(
         children,
         eval,
         default_null_children,
+        align_children_to_root,
         otap_batch,
         session_ctx,
     )?;

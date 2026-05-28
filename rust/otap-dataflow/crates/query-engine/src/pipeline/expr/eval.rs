@@ -63,7 +63,6 @@ impl ScopedExpr {
         otap_batch: &OtapArrowRecords,
         session_ctx: &SessionContext,
     ) -> Result<Option<ScopedValue>> {
-        println!("executing {self:?}");
         match self {
             Self::Eval { scope, eval } => {
                 eval_datafusion_expr_value(scope, eval, otap_batch, session_ctx)
@@ -72,10 +71,12 @@ impl ScopedExpr {
                 children,
                 eval,
                 default_null_children,
+                align_children_to_root,
             } => join_and_eval_value(
                 children.as_mut_slice(),
                 eval,
                 *default_null_children,
+                *align_children_to_root,
                 otap_batch,
                 session_ctx,
             ),
@@ -135,7 +136,6 @@ pub(super) fn eval_datafusion_expr_value(
             eval_anyval_as_struct,
             attr_key_case_sensitive,
             missing_data_passes,
-            align_to_root,
         } => {
             // resolve the source RecordBatch for this scope
             let source_rb = match scope {
@@ -218,17 +218,11 @@ pub(super) fn eval_datafusion_expr_value(
                 )?
             };
 
-            let mut result = ScopedValue::new(
+            let result = ScopedValue::new(
                 coerce_nulls_for_predicate(result_vals, *missing_data_passes),
                 scope.clone(),
                 &source_rb,
             );
-
-            if *align_to_root {
-                result = align_value_to_root(result, otap_batch)?;
-            }
-
-            // println!("result of eval = {:#?}", result);
 
             Ok(Some(result))
         }
@@ -253,6 +247,7 @@ pub(super) fn join_and_eval_value(
     children: &mut [ScopedExpr],
     eval: &mut LeafEval,
     default_null_children: bool,
+    align_children_to_root: bool,
     otap_batch: &OtapArrowRecords,
     session_ctx: &SessionContext,
 ) -> Result<Option<ScopedValue>> {
@@ -260,7 +255,13 @@ pub(super) fn join_and_eval_value(
     let mut child_results = Vec::with_capacity(children.len());
     for child in children.iter_mut() {
         let result = match child.execute_as_value(otap_batch, session_ctx)? {
-            Some(result) => result,
+            Some(mut result) => {
+                // align children to root if configured to do so
+                if align_children_to_root && matches!(result.values, ColumnarValue::Array(_)) {
+                    result = align_value_to_root(result, otap_batch)?;
+                }
+                result
+            }
             None => {
                 if default_null_children {
                     ScopedValue::new_scalar(ScalarValue::Null)
@@ -269,6 +270,7 @@ pub(super) fn join_and_eval_value(
                 }
             }
         };
+
         child_results.push(result)
     }
 
@@ -277,8 +279,6 @@ pub(super) fn join_and_eval_value(
         .into_iter()
         .map(|sv| scoped_value_to_join_input(sv, otap_batch))
         .collect::<Result<Vec<_>>>()?;
-
-    println!("join inputs = {join_inputs:?}");
 
     // perform the join
     // TODO in the future we should consolidate join strategy so multi-join is the only option.
@@ -297,7 +297,6 @@ pub(super) fn join_and_eval_value(
         eval_anyval_as_struct,
         attr_key_case_sensitive: _,
         missing_data_passes,
-        align_to_root,
     } = eval
     else {
         // TODO - technically we could evaluate the batch predicate w/out joining. It would be
@@ -340,15 +339,6 @@ pub(super) fn join_and_eval_value(
         DataScope::clone(&result_scope),
         &joined_rb,
     );
-
-    // println!("result before join = {:#?}", result);
-
-    if *align_to_root {
-        // println!("doing realignment");
-        result = align_value_to_root(result, otap_batch)?;
-    }
-
-    // println!("result of join = {:#?}", result);
 
     Ok(Some(result))
 }
@@ -849,7 +839,6 @@ fn maybe_downcast_dicts(batch: RecordBatch, opts: &ProjectionOptions) -> Result<
 }
 
 fn align_value_to_root(value: ScopedValue, otap_batch: &OtapArrowRecords) -> Result<ScopedValue> {
-    println!("in alignment value = {value:?}");
     let root_batch = match otap_batch.root_record_batch() {
         Some(rb) => rb,
         None => return Ok(value),

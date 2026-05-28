@@ -1352,9 +1352,9 @@ impl AttributesAllSelectionVecJoin {
 impl JoinExec for AttributesAllSelectionVecJoin {
     fn rows_to_take(
         &self,
-        left: &JoinInput,
-        right: &JoinInput,
-        otap_batch: &OtapArrowRecords,
+        _left: &JoinInput,
+        _right: &JoinInput,
+        _otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array> {
         // Not implemented - should not need to compute rows to take. instead, just determine
         // alignment based on the ordering of the other side's matching IDs
@@ -1367,7 +1367,7 @@ impl JoinExec for AttributesAllSelectionVecJoin {
         &self,
         left: &JoinInput,
         right: &JoinInput,
-        otap_batch: &OtapArrowRecords,
+        _otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
         let vals = if self.all_attrs_left {
             &left.values

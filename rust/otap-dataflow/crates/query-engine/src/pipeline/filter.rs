@@ -392,7 +392,6 @@ mod test {
     use crate::pipeline::{Pipeline, PipelineOptions};
 
     use super::*;
-    use datafusion::functions::math::log;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::schema::consts;
 
