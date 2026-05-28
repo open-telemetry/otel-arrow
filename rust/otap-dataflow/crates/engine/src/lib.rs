@@ -60,6 +60,7 @@ pub mod error;
 pub mod exporter;
 pub mod extension;
 mod extension_lifecycle;
+mod extension_monitor;
 pub mod message;
 pub mod processor;
 pub mod receiver;
@@ -815,8 +816,12 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // post-build pruning step uses this flag to keep them
         // unconditionally (they are engine-driven and do not need a
         // node binding to be useful).
-        let mut extension_bundles: Vec<(otap_df_config::ExtensionId, ExtensionBundle, bool)> =
-            Vec::new();
+        let mut extension_bundles: Vec<(
+            otap_df_config::ExtensionId,
+            ExtensionBundle,
+            bool,
+            extension::wrapper::ExtensionEntityKeys,
+        )> = Vec::new();
         for (ext_id, ext_user_config) in config.extension_iter() {
             let raw_urn = ext_user_config.r#type.as_str();
             let factory = self
@@ -836,12 +841,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             )
             .map_err(|e| Error::ConfigError(Box::new(e)))?;
             let mut bundle = bundle;
-            let extension_entity_key = pipeline_ctx.register_extension_entity(ext_id.clone());
-            let extension_telemetry =
-                EntityTelemetryHandle::new(pipeline_ctx.metrics_registry(), extension_entity_key);
-            bundle.wire_telemetry(
-                extension_telemetry,
-                &pipeline_ctx,
+            let ext_ctx = pipeline_ctx.extension_context();
+            let entity_keys = bundle.wire_telemetry(
+                ext_id.clone(),
+                &ext_ctx,
                 &mut build_state.channel_metrics,
                 channel_metrics_enabled,
             );
@@ -852,7 +855,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     message: format!("{e}"),
                 })?;
             let is_background = factory.capabilities.is_none();
-            extension_bundles.push((ext_id.clone(), bundle, is_background));
+            extension_bundles.push((ext_id.clone(), bundle, is_background, entity_keys));
         }
 
         // Resolve each node's bindings against the populated registry. A
@@ -1037,7 +1040,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             consumed_tracker.consumed_shared();
         let extension_wrappers: Vec<extension::ExtensionWrapper> = extension_bundles
             .into_iter()
-            .flat_map(|(ext_id, mut bundle, is_background)| {
+            .flat_map(|(ext_id, mut bundle, is_background, _entity_keys)| {
                 let mut kept: Vec<extension::ExtensionWrapper> = Vec::new();
 
                 // Category 1: Background — always kept, no warning.

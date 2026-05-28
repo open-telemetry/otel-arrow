@@ -453,18 +453,13 @@ impl PipelineContext {
             .register_entity(self.pipeline_attribute_set())
     }
 
-    /// Returns the attribute set for an extension hosted in this pipeline.
+    /// Returns an [`ExtensionContext`] suitable for hosting extensions
+    /// at this pipeline scope.
     #[must_use]
-    pub fn extension_attribute_set(&self, extension_id: Cow<'static, str>) -> ExtensionAttributeSet {
-        ExtensionAttributeSet { extension_id }
-    }
-
-    /// Registers an extension entity for this pipeline context.
-    #[must_use]
-    pub fn register_extension_entity(&self, extension_id: Cow<'static, str>) -> EntityKey {
-        self.controller_context
-            .telemetry_registry_handle
-            .register_entity(self.extension_attribute_set(extension_id))
+    pub fn extension_context(&self) -> ExtensionContext {
+        ExtensionContext {
+            controller_context: self.controller_context.clone(),
+        }
     }
 
     /// Registers the node entity for this context.
@@ -580,43 +575,6 @@ impl PipelineContext {
             .register_entity(attrs)
     }
 
-    /// Returns a channel attribute set tied to the given extension.
-    #[must_use]
-    pub fn extension_channel_attribute_set(
-        &self,
-        extension_id: Cow<'static, str>,
-        channel_id: Cow<'static, str>,
-        channel_mode: &'static str,
-        channel_impl: &'static str,
-    ) -> ExtensionChannelAttributeSet {
-        ExtensionChannelAttributeSet {
-            extension_attrs: self.extension_attribute_set(extension_id),
-            channel_id,
-            channel_mode: Cow::Borrowed(channel_mode),
-            channel_impl: Cow::Borrowed(channel_impl),
-        }
-    }
-
-    /// Registers an extension-scoped channel entity for the given channel attributes.
-    #[must_use]
-    pub fn register_extension_channel_entity(
-        &self,
-        extension_id: Cow<'static, str>,
-        channel_id: Cow<'static, str>,
-        channel_mode: &'static str,
-        channel_impl: &'static str,
-    ) -> EntityKey {
-        let attrs = self.extension_channel_attribute_set(
-            extension_id,
-            channel_id,
-            channel_mode,
-            channel_impl,
-        );
-        self.controller_context
-            .telemetry_registry_handle
-            .register_entity(attrs)
-    }
-
     /// Returns a metrics registry handle.
     #[must_use]
     pub fn metrics_registry(&self) -> TelemetryRegistryHandle {
@@ -645,5 +603,112 @@ impl PipelineContext {
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),
         }
+    }
+}
+
+/// Host-scope context for extensions.
+///
+/// Decoupled from [`PipelineContext`] (which is node/pipeline scoped) so the
+/// extension subsystem stays scope-agnostic: today minted from a pipeline,
+/// tomorrow from engine/group/node scopes. Surface is intentionally minimal —
+/// just what's needed to register extension entities and their metric sets.
+#[derive(Clone, Debug)]
+pub struct ExtensionContext {
+    controller_context: ControllerContext,
+}
+
+impl ExtensionContext {
+    /// Creates an `ExtensionContext` directly from a controller context.
+    #[must_use]
+    pub fn new(controller_context: ControllerContext) -> Self {
+        Self { controller_context }
+    }
+
+    /// Returns the telemetry registry handle for this scope.
+    #[must_use]
+    pub fn metrics_registry(&self) -> TelemetryRegistryHandle {
+        self.controller_context.telemetry_registry_handle.clone()
+    }
+
+    /// Returns the attribute set for an extension hosted at this scope.
+    #[must_use]
+    pub fn extension_attribute_set(
+        &self,
+        extension_id: Cow<'static, str>,
+        variant: crate::extension::wrapper::ExtensionVariant,
+    ) -> ExtensionAttributeSet {
+        ExtensionAttributeSet {
+            extension_id,
+            extension_variant: Cow::Borrowed(variant.as_str()),
+        }
+    }
+
+    /// Registers an extension entity at this scope.
+    #[must_use]
+    pub fn register_extension_entity(
+        &self,
+        extension_id: Cow<'static, str>,
+        variant: crate::extension::wrapper::ExtensionVariant,
+    ) -> EntityKey {
+        self.controller_context
+            .telemetry_registry_handle
+            .register_entity(self.extension_attribute_set(extension_id, variant))
+    }
+
+    /// Returns a channel attribute set tied to the given extension.
+    #[must_use]
+    pub fn extension_channel_attribute_set(
+        &self,
+        extension_id: Cow<'static, str>,
+        variant: crate::extension::wrapper::ExtensionVariant,
+        channel_id: Cow<'static, str>,
+        channel_mode: &'static str,
+        channel_impl: &'static str,
+    ) -> ExtensionChannelAttributeSet {
+        ExtensionChannelAttributeSet {
+            extension_attrs: self.extension_attribute_set(extension_id, variant),
+            channel_id,
+            channel_mode: Cow::Borrowed(channel_mode),
+            channel_impl: Cow::Borrowed(channel_impl),
+        }
+    }
+
+    /// Registers an extension-scoped channel entity for the given attributes.
+    #[must_use]
+    pub fn register_extension_channel_entity(
+        &self,
+        extension_id: Cow<'static, str>,
+        variant: crate::extension::wrapper::ExtensionVariant,
+        channel_id: Cow<'static, str>,
+        channel_mode: &'static str,
+        channel_impl: &'static str,
+    ) -> EntityKey {
+        let attrs = self.extension_channel_attribute_set(
+            extension_id,
+            variant,
+            channel_id,
+            channel_mode,
+            channel_impl,
+        );
+        self.controller_context
+            .telemetry_registry_handle
+            .register_entity(attrs)
+    }
+
+    /// Registers a metric set for the given entity key.
+    ///
+    /// Unlike [`PipelineContext::register_metric_set_for_entity`], this does
+    /// not hook into any ambient node telemetry — extension entities own their
+    /// own lifecycle via the per-variant `EntityTelemetryGuard`.
+    #[must_use]
+    pub fn register_metric_set_for_entity<
+        T: MetricSetHandler + Default + Debug + Send + Sync,
+    >(
+        &self,
+        entity_key: EntityKey,
+    ) -> MetricSet<T> {
+        self.controller_context
+            .telemetry_registry_handle
+            .register_metric_set_for_entity::<T>(entity_key)
     }
 }

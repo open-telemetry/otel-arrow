@@ -19,7 +19,7 @@ use crate::channel_metrics::{
     CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPSC, ChannelMetricsRegistry, ChannelReceiverMetrics,
     ChannelSenderMetrics, control_channel_id,
 };
-use crate::context::PipelineContext;
+use crate::context::{ExtensionContext, PipelineContext};
 use crate::entity_context::{EntityTelemetryHandle, current_node_telemetry_handle};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -189,14 +189,13 @@ where
     M: ChannelMode,
 {
     wrap_control_channel_metrics_inner::<M, Msg>(
-        pipeline_ctx,
         channel_metrics,
         channel_metrics_enabled,
         capacity,
         control_sender,
         control_receiver,
-        |ctx| {
-            let key = ctx.register_node_channel_entity(
+        || {
+            let key = pipeline_ctx.register_node_channel_entity(
                 control_channel_id(name),
                 "input".into(),
                 CHANNEL_KIND_CONTROL,
@@ -212,10 +211,10 @@ where
         // Node version: tracking is handled inside
         // `PipelineContext::register_metric_set_for_entity` via ambient
         // `current_node_telemetry_handle()`.
-        |ctx, channel_entity_key| {
+        |channel_entity_key| {
             (
-                ctx.register_metric_set_for_entity::<ChannelSenderMetrics>(channel_entity_key),
-                ctx.register_metric_set_for_entity::<ChannelReceiverMetrics>(channel_entity_key),
+                pipeline_ctx.register_metric_set_for_entity::<ChannelSenderMetrics>(channel_entity_key),
+                pipeline_ctx.register_metric_set_for_entity::<ChannelReceiverMetrics>(channel_entity_key),
             )
         },
     )
@@ -228,8 +227,9 @@ where
 /// so everything is cleaned up with the extension.
 pub(crate) fn wrap_extension_control_channel_metrics<M, Msg>(
     extension_id: Cow<'static, str>,
+    variant: crate::extension::wrapper::ExtensionVariant,
     entity_handle: &EntityTelemetryHandle,
-    pipeline_ctx: &PipelineContext,
+    ext_ctx: &ExtensionContext,
     channel_metrics: &mut ChannelMetricsRegistry,
     channel_metrics_enabled: bool,
     capacity: u64,
@@ -240,15 +240,15 @@ where
     M: ChannelMode,
 {
     wrap_control_channel_metrics_inner::<M, Msg>(
-        pipeline_ctx,
         channel_metrics,
         channel_metrics_enabled,
         capacity,
         control_sender,
         control_receiver,
-        |ctx| {
-            let key = ctx.register_extension_channel_entity(
+        || {
+            let key = ext_ctx.register_extension_channel_entity(
                 extension_id.clone(),
+                variant,
                 control_channel_id(extension_id.as_ref()),
                 M::CHANNEL_MODE,
                 M::CHANNEL_IMPL,
@@ -256,7 +256,7 @@ where
             entity_handle.track_entity(key);
             key
         },
-        |_ctx, channel_entity_key| {
+        |channel_entity_key| {
             (
                 entity_handle
                     .register_metric_set_for_entity::<ChannelSenderMetrics>(channel_entity_key),
@@ -272,15 +272,13 @@ where
 /// `register_metrics`. If the channel is already wrapped, preserves the existing
 /// wrapper to avoid double instrumentation.
 fn wrap_control_channel_metrics_inner<M, Msg>(
-    pipeline_ctx: &PipelineContext,
     channel_metrics: &mut ChannelMetricsRegistry,
     channel_metrics_enabled: bool,
     capacity: u64,
     control_sender: M::ControlSender<Msg>,
     control_receiver: M::ControlReceiver<Msg>,
-    register_channel: impl FnOnce(&PipelineContext) -> EntityKey,
+    register_channel: impl FnOnce() -> EntityKey,
     register_metrics: impl FnOnce(
-        &PipelineContext,
         EntityKey,
     ) -> (
         MetricSet<ChannelSenderMetrics>,
@@ -294,10 +292,10 @@ where
     let control_receiver = M::try_into_inner_receiver(control_receiver);
     match (control_sender, control_receiver) {
         (Ok(sender), Ok(receiver)) => {
-            let channel_entity_key = register_channel(pipeline_ctx);
+            let channel_entity_key = register_channel();
             if channel_metrics_enabled {
                 let (sender_metrics, receiver_metrics) =
-                    register_metrics(pipeline_ctx, channel_entity_key);
+                    register_metrics(channel_entity_key);
                 (
                     M::attach_sender_metrics(sender, channel_metrics, sender_metrics),
                     M::attach_receiver_metrics(

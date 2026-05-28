@@ -16,7 +16,7 @@ use crate::capability::factory::{LocalInstanceFactory, SharedInstanceFactory};
 use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_extension_control_channel_metrics};
 use crate::config::ExtensionConfig;
-use crate::context::PipelineContext;
+use crate::context::ExtensionContext;
 use crate::control::ExtensionControlMsg;
 use crate::entity_context::{EntityTelemetryGuard, EntityTelemetryHandle};
 use crate::error::Error;
@@ -148,6 +148,29 @@ impl EffectHandler {
     }
 }
 
+// ── Variant kind ─────────────────────────────────────────────────────────────
+
+/// Identifies a physical extension variant within an [`ExtensionBundle`].
+/// A single `ExtensionId` may register both `Local` and `Shared` variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExtensionVariant {
+    /// `!Send` variant scheduled onto the host `LocalSet`.
+    Local,
+    /// `Send` variant runnable on multi-threaded executors.
+    Shared,
+}
+
+impl ExtensionVariant {
+    /// Attribute string used in telemetry (`extension.variant`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ExtensionVariant::Local => "local",
+            ExtensionVariant::Shared => "shared",
+        }
+    }
+}
+
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
 /// The lifecycle state of an extension variant (local or shared).
@@ -254,6 +277,15 @@ impl ExtensionWrapper {
         }
     }
 
+    /// Returns the variant kind of this extension wrapper.
+    #[must_use]
+    pub fn variant(&self) -> ExtensionVariant {
+        match self {
+            ExtensionWrapper::Local { .. } => ExtensionVariant::Local,
+            ExtensionWrapper::Shared { .. } => ExtensionVariant::Shared,
+        }
+    }
+
     /// Returns `true` if this extension is passive (no active lifecycle).
     #[must_use]
     pub fn is_passive(&self) -> bool {
@@ -300,7 +332,7 @@ impl ExtensionWrapper {
     pub(crate) fn with_control_channel_metrics(
         self,
         entity_handle: &EntityTelemetryHandle,
-        pipeline_ctx: &PipelineContext,
+        ext_ctx: &ExtensionContext,
         channel_metrics: &mut ChannelMetricsRegistry,
         channel_metrics_enabled: bool,
     ) -> Self {
@@ -330,8 +362,9 @@ impl ExtensionWrapper {
                             ExtensionControlMsg,
                         >(
                             name.clone(),
+                            ExtensionVariant::Local,
                             entity_handle,
-                            pipeline_ctx,
+                            ext_ctx,
                             channel_metrics,
                             channel_metrics_enabled,
                             capacity,
@@ -379,8 +412,9 @@ impl ExtensionWrapper {
                             ExtensionControlMsg,
                         >(
                             name.clone(),
+                            ExtensionVariant::Shared,
                             entity_handle,
-                            pipeline_ctx,
+                            ext_ctx,
                             channel_metrics,
                             channel_metrics_enabled,
                             capacity,
@@ -613,35 +647,50 @@ impl ExtensionBundle {
     }
 
     /// Wire entity telemetry and control-channel metrics onto each variant
-    /// present in this bundle.
-    ///
-    /// Both variants of a dual-registered extension share the same entity;
-    /// the underlying handle's cleanup is idempotent.
+    /// present in this bundle. Local and Shared variants of the same
+    /// `ExtensionId` get **distinct** entity registrations so their
+    /// telemetry stays separable downstream.
     pub(crate) fn wire_telemetry(
         &mut self,
-        handle: EntityTelemetryHandle,
-        pipeline_ctx: &PipelineContext,
+        extension_id: ExtensionId,
+        ext_ctx: &ExtensionContext,
         channel_metrics: &mut ChannelMetricsRegistry,
         channel_metrics_enabled: bool,
-    ) {
+    ) -> ExtensionEntityKeys {
+        let mut keys = ExtensionEntityKeys::default();
         if let Some(w) = self.local.take() {
+            let entity_key = ext_ctx
+                .register_extension_entity(extension_id.clone(), ExtensionVariant::Local);
+            let handle = EntityTelemetryHandle::new(ext_ctx.metrics_registry(), entity_key);
+            keys.local = Some(entity_key);
             let w = w.with_control_channel_metrics(
                 &handle,
-                pipeline_ctx,
+                ext_ctx,
                 channel_metrics,
                 channel_metrics_enabled,
             );
-            self.local =
-                Some(w.with_entity_telemetry_guard(EntityTelemetryGuard::new(handle.clone())));
+            self.local = Some(w.with_entity_telemetry_guard(EntityTelemetryGuard::new(handle)));
         }
         if let Some(w) = self.shared.take() {
+            let entity_key = ext_ctx
+                .register_extension_entity(extension_id, ExtensionVariant::Shared);
+            let handle = EntityTelemetryHandle::new(ext_ctx.metrics_registry(), entity_key);
+            keys.shared = Some(entity_key);
             let w = w.with_control_channel_metrics(
                 &handle,
-                pipeline_ctx,
+                ext_ctx,
                 channel_metrics,
                 channel_metrics_enabled,
             );
             self.shared = Some(w.with_entity_telemetry_guard(EntityTelemetryGuard::new(handle)));
         }
+        keys
     }
+}
+
+/// Entity keys assigned to each variant in a wired [`ExtensionBundle`].
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct ExtensionEntityKeys {
+    pub local: Option<otap_df_telemetry::registry::EntityKey>,
+    pub shared: Option<otap_df_telemetry::registry::EntityKey>,
 }

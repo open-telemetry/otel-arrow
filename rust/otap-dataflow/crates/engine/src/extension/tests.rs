@@ -454,9 +454,9 @@ fn test_passive_ctrl_metrics_noop() {
         .unwrap()
         .take_shared()
         .unwrap();
-    let (ctx, _) = crate::testing::test_pipeline_ctx();
+    let (ctx, _) = crate::testing::test_extension_ctx();
     let mut cm = ChannelMetricsRegistry::default();
-    let key = ctx.register_extension_entity("pm".into());
+    let key = ctx.register_extension_entity("pm".into(), crate::extension::wrapper::ExtensionVariant::Shared);
     let handle =
         crate::entity_context::EntityTelemetryHandle::new(ctx.metrics_registry(), key);
     let w = w.with_control_channel_metrics(&handle, &ctx, &mut cm, true);
@@ -510,9 +510,9 @@ fn test_active_with_control_channel_metrics() {
         .take_shared()
         .unwrap();
 
-    let (ctx, _) = crate::testing::test_pipeline_ctx();
+    let (ctx, _) = crate::testing::test_extension_ctx();
     let mut cm = ChannelMetricsRegistry::default();
-    let key = ctx.register_extension_entity("acm".into());
+    let key = ctx.register_extension_entity("acm".into(), crate::extension::wrapper::ExtensionVariant::Shared);
     let handle =
         crate::entity_context::EntityTelemetryHandle::new(ctx.metrics_registry(), key);
     let w = w.with_control_channel_metrics(&handle, &ctx, &mut cm, true);
@@ -648,11 +648,11 @@ fn test_extension_attribute_set_is_scope_agnostic() {
 
     let attrs = ExtensionAttributeSet {
         extension_id: "ext1".into(),
+        extension_variant: "local".into(),
     };
     assert_eq!(attrs.schema_name(), "extension.attrs");
-    // extension_id is the only attribute; no pipeline/engine attributes baked in.
     let keys: Vec<&'static str> = attrs.iter_attributes().map(|(k, _)| k).collect();
-    assert_eq!(keys, vec!["extension.id"]);
+    assert_eq!(keys, vec!["extension.id", "extension.variant"]);
 }
 
 #[test]
@@ -664,6 +664,7 @@ fn test_extension_channel_attribute_set_shape() {
         channel_id: "ext1:control".into(),
         extension_attrs: ExtensionAttributeSet {
             extension_id: "ext1".into(),
+            extension_variant: "shared".into(),
         },
         channel_mode: "local".into(),
         channel_impl: "internal".into(),
@@ -683,9 +684,9 @@ fn test_extension_channel_attribute_set_shape() {
 
 #[test]
 fn test_register_extension_entity_unregister_roundtrip() {
-    let (ctx, registry) = crate::testing::test_pipeline_ctx();
+    let (ctx, registry) = crate::testing::test_extension_ctx();
     let before = registry.entity_count();
-    let key = ctx.register_extension_entity("ext1".into());
+    let key = ctx.register_extension_entity("ext1".into(), crate::extension::wrapper::ExtensionVariant::Local);
     assert_eq!(registry.entity_count(), before + 1);
     let schema = registry
         .visit_entity(key, |attrs| attrs.schema_name())
@@ -697,9 +698,10 @@ fn test_register_extension_entity_unregister_roundtrip() {
 
 #[test]
 fn test_register_extension_channel_entity_carries_extension_scope() {
-    let (ctx, registry) = crate::testing::test_pipeline_ctx();
+    let (ctx, registry) = crate::testing::test_extension_ctx();
     let key = ctx.register_extension_channel_entity(
         "ext1".into(),
+        crate::extension::wrapper::ExtensionVariant::Shared,
         "ext1:control".into(),
         "shared",
         "tokio",
@@ -721,14 +723,11 @@ fn test_wire_telemetry_passive_registers_only_extension_entity() {
         .build()
         .unwrap();
 
-    let (ctx, registry) = crate::testing::test_pipeline_ctx();
+    let (ctx, registry) = crate::testing::test_extension_ctx();
     let mut cm = ChannelMetricsRegistry::default();
     let before = registry.entity_count();
 
-    let key = ctx.register_extension_entity("pwt".into());
-    let handle =
-        crate::entity_context::EntityTelemetryHandle::new(ctx.metrics_registry(), key);
-    bundle.wire_telemetry(handle, &ctx, &mut cm, true);
+    let _ = bundle.wire_telemetry("pwt".into(), &ctx, &mut cm, true);
 
     // Passive => no control channel entity registered. Only the extension entity.
     assert_eq!(registry.entity_count(), before + 1);
@@ -747,14 +746,11 @@ fn test_wire_telemetry_active_registers_extension_and_control_channel() {
         .build()
         .unwrap();
 
-    let (ctx, registry) = crate::testing::test_pipeline_ctx();
+    let (ctx, registry) = crate::testing::test_extension_ctx();
     let mut cm = ChannelMetricsRegistry::default();
     let before = registry.entity_count();
 
-    let key = ctx.register_extension_entity("awt".into());
-    let handle =
-        crate::entity_context::EntityTelemetryHandle::new(ctx.metrics_registry(), key);
-    bundle.wire_telemetry(handle, &ctx, &mut cm, true);
+    let _ = bundle.wire_telemetry("awt".into(), &ctx, &mut cm, true);
 
     // Active shared => extension entity + 1 control-channel entity.
     assert_eq!(registry.entity_count(), before + 2);
@@ -773,19 +769,14 @@ fn test_wire_telemetry_dual_active_registers_both_control_channels() {
         .build()
         .unwrap();
 
-    let (ctx, registry) = crate::testing::test_pipeline_ctx();
+    let (ctx, registry) = crate::testing::test_extension_ctx();
     let mut cm = ChannelMetricsRegistry::default();
     let before = registry.entity_count();
 
-    let key = ctx.register_extension_entity("dwt".into());
-    let handle =
-        crate::entity_context::EntityTelemetryHandle::new(ctx.metrics_registry(), key);
-    bundle.wire_telemetry(handle, &ctx, &mut cm, true);
+    let _ = bundle.wire_telemetry("dwt".into(), &ctx, &mut cm, true);
 
-    // Dual active => extension entity + 2 control-channel entities
-    // (one for local variant, one for shared variant), both tracked on the
-    // shared handle.
-    assert_eq!(registry.entity_count(), before + 3);
+    // Dual active => 2 extension entities (local + shared) + 2 control-channel entities.
+    assert_eq!(registry.entity_count(), before + 4);
 
     drop(bundle);
     assert_eq!(registry.entity_count(), before);
@@ -803,14 +794,11 @@ fn test_wire_telemetry_disabled_still_registers_channel_entity() {
         .build()
         .unwrap();
 
-    let (ctx, registry) = crate::testing::test_pipeline_ctx();
+    let (ctx, registry) = crate::testing::test_extension_ctx();
     let mut cm = ChannelMetricsRegistry::default();
     let before = registry.entity_count();
 
-    let key = ctx.register_extension_entity("dis".into());
-    let handle =
-        crate::entity_context::EntityTelemetryHandle::new(ctx.metrics_registry(), key);
-    bundle.wire_telemetry(handle, &ctx, &mut cm, false);
+    let _ = bundle.wire_telemetry("dis".into(), &ctx, &mut cm, false);
 
     assert_eq!(registry.entity_count(), before + 2);
 

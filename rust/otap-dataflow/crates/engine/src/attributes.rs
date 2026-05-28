@@ -104,6 +104,10 @@ pub struct ExtensionAttributeSet {
     /// Extension unique identifier within its host scope.
     #[attribute]
     pub extension_id: Cow<'static, str>,
+
+    /// Physical variant of the extension (`"local"` or `"shared"`).
+    #[attribute(key = "extension.variant")]
+    pub extension_variant: Cow<'static, str>,
 }
 
 /// Node attributes.
