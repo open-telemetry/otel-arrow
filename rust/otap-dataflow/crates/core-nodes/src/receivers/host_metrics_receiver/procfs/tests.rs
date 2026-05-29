@@ -87,7 +87,7 @@ fn load_only_procfs_config() -> ProcfsConfig {
 }
 
 fn write_fake_process(
-    proc: &std::path::Path,
+    proc: &Path,
     pid: u32,
     command: &str,
     parent_pid: u32,
