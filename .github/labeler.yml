@@ -29,7 +29,6 @@ ci-repo:
 release:
   - changed-files:
       - any-glob-to-any-file:
-          - "**/.chloggen/**"
           - "**/CHANGELOG.md"
           - "RELEASING.md"
           - ".github/workflows/prepare-release.yml"
