@@ -213,8 +213,10 @@ where
         // `current_node_telemetry_handle()`.
         |channel_entity_key| {
             (
-                pipeline_ctx.register_metric_set_for_entity::<ChannelSenderMetrics>(channel_entity_key),
-                pipeline_ctx.register_metric_set_for_entity::<ChannelReceiverMetrics>(channel_entity_key),
+                pipeline_ctx
+                    .register_metric_set_for_entity::<ChannelSenderMetrics>(channel_entity_key),
+                pipeline_ctx
+                    .register_metric_set_for_entity::<ChannelReceiverMetrics>(channel_entity_key),
             )
         },
     )
@@ -294,8 +296,7 @@ where
         (Ok(sender), Ok(receiver)) => {
             let channel_entity_key = register_channel();
             if channel_metrics_enabled {
-                let (sender_metrics, receiver_metrics) =
-                    register_metrics(channel_entity_key);
+                let (sender_metrics, receiver_metrics) = register_metrics(channel_entity_key);
                 (
                     M::attach_sender_metrics(sender, channel_metrics, sender_metrics),
                     M::attach_receiver_metrics(

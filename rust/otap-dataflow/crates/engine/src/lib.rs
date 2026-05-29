@@ -832,12 +832,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 ext_id.clone(),
                 channel_capacity_policy.control.node,
             );
-            let bundle = (factory.create)(
-                ext_id.clone(),
-                ext_user_config.clone(),
-                &runtime_config,
-            )
-            .map_err(|e| Error::ConfigError(Box::new(e)))?;
+            let bundle = (factory.create)(ext_id.clone(), ext_user_config.clone(), &runtime_config)
+                .map_err(|e| Error::ConfigError(Box::new(e)))?;
             let mut bundle = bundle;
             let ext_ctx = pipeline_ctx.extension_context();
             let entity_keys = bundle.wire_telemetry(

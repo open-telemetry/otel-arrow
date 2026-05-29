@@ -659,8 +659,8 @@ impl ExtensionBundle {
     ) -> ExtensionEntityKeys {
         let mut keys = ExtensionEntityKeys::default();
         if let Some(w) = self.local.take() {
-            let entity_key = ext_ctx
-                .register_extension_entity(extension_id.clone(), ExtensionVariant::Local);
+            let entity_key =
+                ext_ctx.register_extension_entity(extension_id.clone(), ExtensionVariant::Local);
             let handle = EntityTelemetryHandle::new(ext_ctx.metrics_registry(), entity_key);
             keys.local = Some(entity_key);
             let w = w.with_control_channel_metrics(
@@ -672,8 +672,8 @@ impl ExtensionBundle {
             self.local = Some(w.with_entity_telemetry_guard(EntityTelemetryGuard::new(handle)));
         }
         if let Some(w) = self.shared.take() {
-            let entity_key = ext_ctx
-                .register_extension_entity(extension_id, ExtensionVariant::Shared);
+            let entity_key =
+                ext_ctx.register_extension_entity(extension_id, ExtensionVariant::Shared);
             let handle = EntityTelemetryHandle::new(ext_ctx.metrics_registry(), entity_key);
             keys.shared = Some(entity_key);
             let w = w.with_control_channel_metrics(

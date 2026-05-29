@@ -358,17 +358,19 @@ impl ExtensionLifecycle {
             while let Some(result) = self.futures.next().await {
                 match result {
                     Ok((key, Ok(()))) => {
-                        self.monitor.apply_event(ExtensionLifecycleEvent::Completed {
-                            key,
-                            outcome: ExtensionOutcome::Ok,
-                        });
+                        self.monitor
+                            .apply_event(ExtensionLifecycleEvent::Completed {
+                                key,
+                                outcome: ExtensionOutcome::Ok,
+                            });
                     }
                     Ok((key, Err(e))) => {
                         otel_warn!("extension.shutdown.task.error", error = format!("{e}"));
-                        self.monitor.apply_event(ExtensionLifecycleEvent::Completed {
-                            key,
-                            outcome: ExtensionOutcome::Err(e.to_string()),
-                        });
+                        self.monitor
+                            .apply_event(ExtensionLifecycleEvent::Completed {
+                                key,
+                                outcome: ExtensionOutcome::Err(e.to_string()),
+                            });
                     }
                     Err(e) => {
                         otel_warn!(

@@ -701,9 +701,7 @@ impl ExtensionContext {
     /// not hook into any ambient node telemetry — extension entities own their
     /// own lifecycle via the per-variant `EntityTelemetryGuard`.
     #[must_use]
-    pub fn register_metric_set_for_entity<
-        T: MetricSetHandler + Default + Debug + Send + Sync,
-    >(
+    pub fn register_metric_set_for_entity<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
         entity_key: EntityKey,
     ) -> MetricSet<T> {

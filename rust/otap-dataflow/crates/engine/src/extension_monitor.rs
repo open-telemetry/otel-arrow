@@ -413,10 +413,7 @@ mod tests {
         }
     }
 
-    fn count_in_state(
-        monitor: &ExtensionMetricsMonitor,
-        state: ExtensionRuntimeState,
-    ) -> usize {
+    fn count_in_state(monitor: &ExtensionMetricsMonitor, state: ExtensionRuntimeState) -> usize {
         monitor
             .entries
             .iter()
@@ -425,8 +422,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn register_creates_per_extension_metric_set() {
+    async fn register_creates_per_extension_metric_set() {
         let (mut monitor, ctx) = fresh_monitor();
         let ext_key = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
         monitor.register(&ctx, ExtensionKey::local("ext1"), ext_key, None);
@@ -443,8 +439,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn lifecycle_transitions_update_per_entry_state() {
+    async fn lifecycle_transitions_update_per_entry_state() {
         let (mut monitor, ctx) = fresh_monitor();
         let ext_key = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
         let key = ExtensionKey::local("ext1");
@@ -480,8 +475,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn local_and_shared_same_id_tracked_independently() {
+    async fn local_and_shared_same_id_tracked_independently() {
         let (mut monitor, ctx) = fresh_monitor();
         let ext_key = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
         let local = ExtensionKey::new("ext1".into(), ExtensionVariant::Local);
@@ -504,8 +498,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn shutdown_sent_is_idempotent() {
+    async fn shutdown_sent_is_idempotent() {
         let (mut monitor, ctx) = fresh_monitor();
         let ext_key = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
         let key = ExtensionKey::local("ext1");
@@ -522,8 +515,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn failure_outcomes_count_per_entry_failures() {
+    async fn failure_outcomes_count_per_entry_failures() {
         let (mut monitor, ctx) = fresh_monitor();
         for name in ["a", "b", "c"] {
             let ent = ctx.register_extension_entity(name.into(), ExtensionVariant::Local);
@@ -566,8 +558,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn shutdown_timeout_counts_per_entry_timed_out() {
+    async fn shutdown_timeout_counts_per_entry_timed_out() {
         let (mut monitor, ctx) = fresh_monitor();
         let ent = ctx.register_extension_entity("a".into(), ExtensionVariant::Local);
         let key = ExtensionKey::local("a");
@@ -580,7 +571,10 @@ mod tests {
         });
         assert_eq!(count_in_state(&monitor, ExtensionRuntimeState::TimedOut), 1);
         assert_eq!(count_in_state(&monitor, ExtensionRuntimeState::Failed), 0);
-        assert_eq!(monitor.entries[0].lifecycle_metrics.shutdown_timeout.get(), 1);
+        assert_eq!(
+            monitor.entries[0].lifecycle_metrics.shutdown_timeout.get(),
+            1
+        );
         assert!(matches!(
             monitor.entries[0].state,
             ExtensionRuntimeState::TimedOut
@@ -588,8 +582,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn refresh_state_gauges_reasserts_after_clear() {
+    async fn refresh_state_gauges_reasserts_after_clear() {
         // Defensive guard for Lalit L2/L5: the `state` gauge is the
         // monitor's only long-running absolute value. If anything ever
         // clears it between lifecycle events — today the derive macro
@@ -625,8 +618,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn local_and_shared_get_distinct_metric_set_keys() {
+    async fn local_and_shared_get_distinct_metric_set_keys() {
         // Regression guard for Lalit L3: local and shared variants of
         // the same extension id must produce independent metric sets,
         // not share storage. Verifying distinct MetricSetKeys catches
@@ -655,8 +647,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn disabled_monitor_is_inert() {
+    async fn disabled_monitor_is_inert() {
         let (ctx, _registry) = crate::testing::test_extension_ctx();
         let mut monitor = ExtensionMetricsMonitor::disabled(ctx.clone());
         let ent = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
@@ -668,8 +659,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn dropping_monitor_unregisters_metric_sets() {
+    async fn dropping_monitor_unregisters_metric_sets() {
         let (ctx, registry) = crate::testing::test_extension_ctx();
         let before = registry.metric_set_count();
         {
@@ -688,8 +678,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn mark_pending_as_timeout_transitions_stragglers() {
+    async fn mark_pending_as_timeout_transitions_stragglers() {
         // After drain_until_deadline elapses, any entry that has not
         // observed a clean completion must surface as TimedOut. This
         // includes Pending (task cancelled before first poll, so
@@ -739,8 +728,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn out_of_order_spawned_after_completed_does_not_resurrect_state() {
+    async fn out_of_order_spawned_after_completed_does_not_resurrect_state() {
         // Concurrency invariant: if the host ever delivered a Spawned
         // event AFTER a Completed for the same key (e.g., a stale
         // signal arriving late), the entry's state must not regress
@@ -776,8 +764,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn duplicate_completed_does_not_double_count_or_flip_state() {
+    async fn duplicate_completed_does_not_double_count_or_flip_state() {
         // Concurrency invariant: a second Completed for an already-
         // terminal entry must be a no-op — counters do not re-increment
         // and the terminal state does not flip to a different terminal.
@@ -817,8 +804,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn mark_pending_as_timeout_is_inert_when_disabled() {
+    async fn mark_pending_as_timeout_is_inert_when_disabled() {
         let (ctx, _registry) = crate::testing::test_extension_ctx();
         let mut monitor = ExtensionMetricsMonitor::disabled(ctx.clone());
         // No entries are ever registered when disabled; just ensure it
@@ -828,8 +814,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn maybe_collect_telemetry_targets_only_spawned_with_sender() {
+    async fn maybe_collect_telemetry_targets_only_spawned_with_sender() {
         // CollectTelemetry messages must go only to extensions that are
         // actually spawned AND have a registered control sender. Others
         // (no sender, not yet spawned, already completed) must be
@@ -858,8 +843,7 @@ mod tests {
         });
 
         // Registered but never spawned — has a sender but wrong state.
-        let e_pending =
-            ctx.register_extension_entity("pending".into(), ExtensionVariant::Local);
+        let e_pending = ctx.register_extension_entity("pending".into(), ExtensionVariant::Local);
         monitor.register(
             &ctx,
             ExtensionKey::local("pending"),
@@ -868,8 +852,7 @@ mod tests {
         );
 
         // Spawned but no sender — wrong sender, right state.
-        let e_no_send =
-            ctx.register_extension_entity("no_send".into(), ExtensionVariant::Local);
+        let e_no_send = ctx.register_extension_entity("no_send".into(), ExtensionVariant::Local);
         monitor.register(&ctx, ExtensionKey::local("no_send"), e_no_send, None);
         monitor.apply_event(ExtensionLifecycleEvent::Spawned {
             key: ExtensionKey::local("no_send"),
@@ -877,12 +860,7 @@ mod tests {
 
         // Spawned then completed — already done.
         let e_done = ctx.register_extension_entity("done".into(), ExtensionVariant::Local);
-        monitor.register(
-            &ctx,
-            ExtensionKey::local("done"),
-            e_done,
-            Some(sender_done),
-        );
+        monitor.register(&ctx, ExtensionKey::local("done"), e_done, Some(sender_done));
         monitor.apply_event(ExtensionLifecycleEvent::Spawned {
             key: ExtensionKey::local("done"),
         });
@@ -906,8 +884,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async
-    fn maybe_collect_telemetry_respects_interval_gating() {
+    async fn maybe_collect_telemetry_respects_interval_gating() {
         // First call within a tick window dispatches; subsequent calls
         // before the interval elapses must skip dispatching so we don't
         // overwhelm extensions with collect requests.
@@ -941,8 +918,7 @@ mod tests {
             "second call within interval must be gated"
         );
 
-        monitor
-            .maybe_collect_telemetry(t0 + Duration::from_secs(61), &reporter);
+        monitor.maybe_collect_telemetry(t0 + Duration::from_secs(61), &reporter);
         assert!(
             rx.try_recv().is_ok(),
             "call past the interval must dispatch again"

@@ -456,9 +456,11 @@ fn test_passive_ctrl_metrics_noop() {
         .unwrap();
     let (ctx, _) = crate::testing::test_extension_ctx();
     let mut cm = ChannelMetricsRegistry::default();
-    let key = ctx.register_extension_entity("pm".into(), crate::extension::wrapper::ExtensionVariant::Shared);
-    let handle =
-        crate::entity_context::EntityTelemetryHandle::new(ctx.metrics_registry(), key);
+    let key = ctx.register_extension_entity(
+        "pm".into(),
+        crate::extension::wrapper::ExtensionVariant::Shared,
+    );
+    let handle = crate::entity_context::EntityTelemetryHandle::new(ctx.metrics_registry(), key);
     let w = w.with_control_channel_metrics(&handle, &ctx, &mut cm, true);
     assert!(w.is_passive());
 }
@@ -512,9 +514,11 @@ fn test_active_with_control_channel_metrics() {
 
     let (ctx, _) = crate::testing::test_extension_ctx();
     let mut cm = ChannelMetricsRegistry::default();
-    let key = ctx.register_extension_entity("acm".into(), crate::extension::wrapper::ExtensionVariant::Shared);
-    let handle =
-        crate::entity_context::EntityTelemetryHandle::new(ctx.metrics_registry(), key);
+    let key = ctx.register_extension_entity(
+        "acm".into(),
+        crate::extension::wrapper::ExtensionVariant::Shared,
+    );
+    let handle = crate::entity_context::EntityTelemetryHandle::new(ctx.metrics_registry(), key);
     let w = w.with_control_channel_metrics(&handle, &ctx, &mut cm, true);
     assert!(!w.is_passive());
     assert!(w.extension_control_sender().is_some());
@@ -686,7 +690,10 @@ fn test_extension_channel_attribute_set_shape() {
 fn test_register_extension_entity_unregister_roundtrip() {
     let (ctx, registry) = crate::testing::test_extension_ctx();
     let before = registry.entity_count();
-    let key = ctx.register_extension_entity("ext1".into(), crate::extension::wrapper::ExtensionVariant::Local);
+    let key = ctx.register_extension_entity(
+        "ext1".into(),
+        crate::extension::wrapper::ExtensionVariant::Local,
+    );
     assert_eq!(registry.entity_count(), before + 1);
     let schema = registry
         .visit_entity(key, |attrs| attrs.schema_name())
@@ -820,7 +827,8 @@ struct TestExtensionInternalMetrics {
 }
 
 struct TelemetryReportingLocalExt {
-    metrics: std::cell::RefCell<otap_df_telemetry::metrics::MetricSet<TestExtensionInternalMetrics>>,
+    metrics:
+        std::cell::RefCell<otap_df_telemetry::metrics::MetricSet<TestExtensionInternalMetrics>>,
     started: std::cell::Cell<bool>,
 }
 
@@ -875,8 +883,8 @@ fn active_extension_reports_internal_metrics_on_collect_telemetry() {
             "telemetry_ext".into(),
             crate::extension::wrapper::ExtensionVariant::Local,
         );
-        let internal_metrics = ctx
-            .register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity);
+        let internal_metrics =
+            ctx.register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity);
 
         let ext = std::rc::Rc::new(TelemetryReportingLocalExt {
             metrics: std::cell::RefCell::new(internal_metrics),
@@ -894,9 +902,7 @@ fn active_extension_reports_internal_metrics_on_collect_telemetry() {
             .unwrap();
         let sender = w.extension_control_sender().unwrap();
 
-        let h = tokio::task::spawn_local(async move {
-            w.start(test_metrics_reporter()).await
-        });
+        let h = tokio::task::spawn_local(async move { w.start(test_metrics_reporter()).await });
 
         // A test-owned reporter so we can observe the snapshot the
         // extension publishes.
@@ -911,13 +917,11 @@ fn active_extension_reports_internal_metrics_on_collect_telemetry() {
 
         // Wait for the snapshot via async recv (works on a LocalSet
         // because the channel is flume which exposes recv_async).
-        let snapshot = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            snapshot_rx.recv_async(),
-        )
-        .await
-        .expect("extension did not publish a snapshot in time")
-        .expect("snapshot channel closed without delivery");
+        let snapshot =
+            tokio::time::timeout(std::time::Duration::from_secs(2), snapshot_rx.recv_async())
+                .await
+                .expect("extension did not publish a snapshot in time")
+                .expect("snapshot channel closed without delivery");
 
         assert!(
             started_probe.started.get(),
@@ -968,16 +972,16 @@ fn two_active_extensions_report_isolated_internal_metrics() {
             "ext_a".into(),
             crate::extension::wrapper::ExtensionVariant::Local,
         );
-        let metrics_a = ctx
-            .register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity_a);
+        let metrics_a =
+            ctx.register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity_a);
         let key_a = metrics_a.metric_set_key();
 
         let entity_b = ctx.register_extension_entity(
             "ext_b".into(),
             crate::extension::wrapper::ExtensionVariant::Local,
         );
-        let metrics_b = ctx
-            .register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity_b);
+        let metrics_b =
+            ctx.register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity_b);
         let key_b = metrics_b.metric_set_key();
 
         assert_ne!(
@@ -1014,18 +1018,13 @@ fn two_active_extensions_report_isolated_internal_metrics() {
             .unwrap();
         let sender_b = w_b.extension_control_sender().unwrap();
 
-        let h_a = tokio::task::spawn_local(async move {
-            w_a.start(test_metrics_reporter()).await
-        });
-        let h_b = tokio::task::spawn_local(async move {
-            w_b.start(test_metrics_reporter()).await
-        });
+        let h_a = tokio::task::spawn_local(async move { w_a.start(test_metrics_reporter()).await });
+        let h_b = tokio::task::spawn_local(async move { w_b.start(test_metrics_reporter()).await });
 
         // ONE shared reporter — both extensions publish through the same
         // channel. Isolation must be enforced by per-MetricSet keys, not
         // by separate transports.
-        let (snapshot_rx, shared_reporter) =
-            MetricsReporter::create_new_and_receiver(8);
+        let (snapshot_rx, shared_reporter) = MetricsReporter::create_new_and_receiver(8);
 
         // Drive extension A twice and extension B once so values differ.
         sender_a
@@ -1050,8 +1049,7 @@ fn two_active_extensions_report_isolated_internal_metrics() {
         // Collect snapshots until we have one with `key_a` and one with
         // `key_b`. Bounded loop guards against hangs while tolerating
         // arbitrary interleaving from the LocalSet scheduler.
-        let mut sum_by_key: std::collections::HashMap<_, u64> =
-            std::collections::HashMap::new();
+        let mut sum_by_key: std::collections::HashMap<_, u64> = std::collections::HashMap::new();
         let deadline = Instant::now() + std::time::Duration::from_secs(2);
         while (!sum_by_key.contains_key(&key_a) || !sum_by_key.contains_key(&key_b))
             && Instant::now() < deadline
