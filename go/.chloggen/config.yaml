@@ -1,0 +1,29 @@
+# chloggen configuration for the Go components of otel-arrow.
+#
+# Entries placed in this directory are rendered into ../CHANGELOG.md
+# (i.e. go/CHANGELOG.md) at release time. See ./README.md.
+
+entries_dir: go/.chloggen
+template_yaml: go/.chloggen/TEMPLATE.yaml
+summary_template: go/.chloggen/summary.tmpl
+
+change_logs:
+  go: go/CHANGELOG.md
+
+default_change_logs:
+  - go
+
+# Allowed values for an entry's `component:` field.
+#
+# Kept intentionally short — pick the broadest bucket that fits.
+# Finer-grained path routing happens via PR labels (.github/labeler.yml).
+#
+# Note: `pkg/otel/arrow` and `pkg/otel/otlp` are category names spanning
+# the per-signal subdirs (e.g. `go/pkg/otel/{logs,metrics,traces,common}/arrow`),
+# not literal directory paths.
+components:
+  - all
+  - pkg/arrow
+  - pkg/otel/arrow
+  - pkg/otel/otlp
+  - collector/cmd/otelarrowcol

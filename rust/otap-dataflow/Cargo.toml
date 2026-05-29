@@ -207,18 +207,18 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc"}
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc" }
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc"}
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc"}
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "37c645a5ebc9e0d2a68f9228205f1d7d6a32ccbc"}
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0" }
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
 sha1 = { version = "0.11" }
 sha2 = "0.10.9"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
-one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "6ccba44608bf5890e9a9113d5ca8156ba375cda8" }
+one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "f655a30aec1d15467501ae9f735defb2d6b86581" }
 
 azure_core = {version = "1.0.0", default-features = false }
 azure_identity = {version = "1.0.0", default-features = false }
@@ -253,7 +253,7 @@ tonic-prost-build = "0.14"
 tracepoint = { version = "0.5.0", features = ["user_events"] }
 tracepoint_decode = "0.5.0"
 urlencoding = "2"
-geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "199b00f488c5d198f9d1e0771230aec3b191e403" }
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "47ece283fa10334cca14c2dd6311824c052c08e3" }
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata = { path = "crates/pdata" }
