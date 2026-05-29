@@ -1,0 +1,12 @@
+# OTAP saturation test with 8 core df_engine
+# NUMA-aware layout: SUT on NUMA node 0 (physical 0-7), loadgen+backend spread across remaining cores.
+# Uses all NUMA1 physical+HT for loadgen, and NUMA0 HT siblings (not used by SUT) for extra loadgen+backend.
+from_template:
+  path: test_suites/integration/continuous/saturation-otap-cores-template.yaml.j2
+  variables:
+    num_cores: 8
+    engine_core_range: "0-7"
+    loadgen_cores: 64
+    loadgen_core_range: "32-63,96-127"
+    backend_cores: 16
+    backend_core_range: "64-79"
