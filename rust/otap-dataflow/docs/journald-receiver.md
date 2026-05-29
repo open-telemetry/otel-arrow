@@ -23,7 +23,7 @@ depend on the #2844 filelog assignment extension landing first.
 
 | Decision | Choice |
 | --- | --- |
-| Source API | `sd-journal` behind a small internal `JournalSource` boundary |
+| Source API | `sd-journal` through runtime-loaded `libsystemd` FFI |
 | Progress unit | Opaque journald cursor (`__CURSOR`) |
 | First implementation | Linux-only, default local system journal, single-instance source pipeline (one core) |
 | Delivery model | At-least-once from the last committed cursor |
@@ -39,12 +39,11 @@ receiver needs only a narrow `sd-journal` API surface and should keep
 native `pkg-config`/linker setup to normal builds. If `libsystemd.so.0` is not
 available when the receiver starts, startup fails with an explicit error.
 
-In v1, `SdJournalSource` is the only production `JournalSource`
-implementation. The boundary exists to keep the worker and Ack/checkpoint
-logic independent from the raw FFI wrapper and to allow deterministic
+A future `JournalSource` trait boundary can keep the worker and Ack/checkpoint
+logic independent from the raw FFI wrapper and allow deterministic
 `FakeJournalSource` tests. Its surface should stay narrow: open the source,
 seek after a cursor, read the next entry, wait for new entries, and close. It
-does not imply v1 support for `journalctl`, offline journal files, remote
+does not imply support for `journalctl`, offline journal files, remote
 journals, or multiple source backends.
 
 ## Journald vs Filelog
@@ -323,9 +322,11 @@ Checkpoint commit ownership is split deliberately:
 - in-memory `committed_cursor` advances only after the worker confirms the
   on-disk write succeeded
 
-If there is no committed cursor yet, `on_nack: rewind` fails closed instead of
-seeking to the live tail and silently skipping the Nacked batch. Operators can
-use `on_nack: fail` for the same terminal behavior explicitly.
+If there is no committed cursor yet, `on_nack: rewind` replays the retained
+un-Acked batch instead of reopening at the live tail and silently skipping it.
+This is equivalent to rewinding from a committed cursor once one exists: the
+batch replays until downstream Acks, drain or shutdown ends the receiver, or
+operators choose `on_nack: fail` for terminal failure behavior.
 
 ## Checkpoints
 
@@ -559,10 +560,10 @@ surfaces an error through the receiver/engine path.
 
 ## Receiver Self-Telemetry
 
-The first implementation emits receiver self-telemetry because journald access
-is operationally sensitive and failures can otherwise look like an idle source.
-Metric names should follow the repository's receiver metric conventions, but
-the v1 signal set includes:
+The receiver emits core self-telemetry because journald access is
+operationally sensitive and failures can otherwise look like an idle source.
+Metric names should follow the repository's receiver metric conventions. The
+broader intended signal set includes:
 
 | Signal | Type |
 | --- | --- |
@@ -632,8 +633,9 @@ Included in the first implementation:
 - dedicated blocking worker thread with bounded handoff channels
 - Ack-driven checkpoint advancement and Nack-aware rewind/fail behavior
 - raw journald field projection without semantic-convention normalization
-- receiver self-telemetry for reads, drops, batches, checkpoints, cursor
-  failures, permission warnings, worker restarts, and backpressure
+- receiver self-telemetry for lifecycle transitions, batches, Ack/Nack
+  handling, checkpoint commits/failures, source failures, field drops, and
+  rewinds
 
 Excluded from the first implementation:
 

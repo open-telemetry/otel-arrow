@@ -27,7 +27,7 @@ mod imp {
     type NextFn = unsafe extern "C" fn(*mut SdJournal) -> c_int;
     type WaitFn = unsafe extern "C" fn(*mut SdJournal, u64) -> c_int;
     type SeekHeadFn = unsafe extern "C" fn(*mut SdJournal) -> c_int;
-    type SeekRealtimeUsecFn = unsafe extern "C" fn(*mut SdJournal, u64) -> c_int;
+    type SeekTailFn = unsafe extern "C" fn(*mut SdJournal) -> c_int;
     type SeekCursorFn = unsafe extern "C" fn(*mut SdJournal, *const c_char) -> c_int;
     type TestCursorFn = unsafe extern "C" fn(*mut SdJournal, *const c_char) -> c_int;
     type GetCursorFn = unsafe extern "C" fn(*mut SdJournal, *mut *mut c_char) -> c_int;
@@ -48,7 +48,7 @@ mod imp {
         next: NextFn,
         wait: WaitFn,
         seek_head: SeekHeadFn,
-        seek_realtime_usec: SeekRealtimeUsecFn,
+        seek_tail: SeekTailFn,
         seek_cursor: SeekCursorFn,
         test_cursor: TestCursorFn,
         get_cursor: GetCursorFn,
@@ -99,7 +99,7 @@ mod imp {
                 next: sym!("sd_journal_next", NextFn),
                 wait: sym!("sd_journal_wait", WaitFn),
                 seek_head: sym!("sd_journal_seek_head", SeekHeadFn),
-                seek_realtime_usec: sym!("sd_journal_seek_realtime_usec", SeekRealtimeUsecFn),
+                seek_tail: sym!("sd_journal_seek_tail", SeekTailFn),
                 seek_cursor: sym!("sd_journal_seek_cursor", SeekCursorFn),
                 test_cursor: sym!("sd_journal_test_cursor", TestCursorFn),
                 get_cursor: sym!("sd_journal_get_cursor", GetCursorFn),
@@ -216,17 +216,10 @@ mod imp {
                     unsafe { (self.lib.seek_head)(self.journal.as_ptr()) },
                     "sd_journal_seek_head",
                 ),
-                StartAt::End => {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_err(|_| "system clock is before Unix epoch".to_owned())?
-                        .as_micros()
-                        .min(u64::MAX as u128) as u64;
-                    check(
-                        unsafe { (self.lib.seek_realtime_usec)(self.journal.as_ptr(), now) },
-                        "sd_journal_seek_realtime_usec",
-                    )
-                }
+                StartAt::End => check(
+                    unsafe { (self.lib.seek_tail)(self.journal.as_ptr()) },
+                    "sd_journal_seek_tail",
+                ),
             }
         }
 
@@ -311,7 +304,7 @@ mod imp {
             )?;
 
             unsafe { (self.lib.restart_data)(self.journal.as_ptr()) };
-            let mut fields = Vec::new();
+            let mut fields = Vec::with_capacity(self.extraction.max_fields_per_entry.min(64));
             let mut copied_entry_bytes = 0u64;
             let mut copied_field_count = 0usize;
             let mut dropped_fields = 0u64;
@@ -344,7 +337,9 @@ mod imp {
                             }
                         }
                     }
-                    let name = String::from_utf8_lossy(&bytes[..eq]).into_owned();
+                    let name = std::str::from_utf8(&bytes[..eq])
+                        .map_err(|err| format!("journald field name is not UTF-8: {err}"))?
+                        .to_owned();
                     let value = bytes[eq + 1..].to_vec();
                     fields.push(JournalField { name, value });
                     copied_entry_bytes = copied_entry_bytes.saturating_add(field_len);

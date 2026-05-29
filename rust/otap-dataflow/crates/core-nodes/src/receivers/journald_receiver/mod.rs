@@ -497,6 +497,9 @@ fn worker_loop_inner(
                         committed_cursor = Some(cursor.clone());
                         in_flight = None;
                     }
+                    // On failure, keep the batch in flight and report the result.
+                    // The async task owns retry counting and resends Commit until
+                    // the write succeeds or max_consecutive_failures is reached.
                     let _ = event_tx.blocking_send(WorkerEvent::CommitResult {
                         batch_id,
                         cursor,
@@ -551,6 +554,8 @@ fn worker_loop_inner(
                 }
                 WorkerCommand::Rewind => {
                     let Some(cursor) = committed_cursor.as_deref() else {
+                        // Defense-in-depth: with max_in_flight=1, a valid Nack rewind
+                        // before the first commit is handled by the in-flight arm above.
                         return Err(
                             "journald cannot rewind before the first checkpoint is committed"
                                 .to_owned(),
@@ -811,7 +816,13 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                             return Ok(terminal_state(deadline, &metrics));
                         }
                         Ok(_) => {}
-                        Err(e) => return Err(Error::ChannelRecvError(e)),
+                        Err(e) => {
+                            let _ =
+                                send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
+                            drop(event_rx);
+                            join_worker(worker, &effect_handler).await?;
+                            return Err(Error::ChannelRecvError(e));
+                        }
                     }
                 }
 
@@ -904,7 +915,13 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                                     Ok(_) => {
                                                         continue;
                                                     }
-                                                    Err(e) => return Err(Error::ChannelRecvError(e)),
+                                                    Err(e) => {
+                                                        let _ =
+                                                            send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
+                                                        drop(event_rx);
+                                                        join_worker(worker, &effect_handler).await?;
+                                                        return Err(Error::ChannelRecvError(e));
+                                                    }
                                                 }
                                             }
 
@@ -974,11 +991,6 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                         batch_id = batch_id,
                                         cursor = cursor.as_str()
                                     );
-                                    if drain_deadline.is_some() {
-                                        if pending.is_empty() {
-                                            continue;
-                                        }
-                                    }
                                 }
                                 Err(err) => {
                                     checkpoint_failures = checkpoint_failures.saturating_add(1);

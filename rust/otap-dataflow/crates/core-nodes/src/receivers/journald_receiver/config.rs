@@ -524,6 +524,8 @@ fn validate_journal(
         .as_os_str()
         .to_str()
         .expect("journal.root_path UTF-8 checked above");
+    // Validation runs on non-Linux CI too. Accept Unix-style host-root paths
+    // such as /host even when the host platform's Path::is_absolute disagrees.
     if !journal.root_path.is_absolute() && !root_path_text.starts_with('/') {
         return Err(invalid(&format!(
             "journal.root_path must be absolute: {}",
