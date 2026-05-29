@@ -64,6 +64,8 @@ pub struct ProcfsConfig {
     pub network: bool,
     /// Process summary metrics.
     pub processes: bool,
+    /// Linux load average metrics.
+    pub load: bool,
     /// Derived aggregate CPU utilization.
     pub cpu_utilization: bool,
     /// Emit memory limit metric.
@@ -209,6 +211,8 @@ pub struct ProcfsFamilies {
     pub network: bool,
     /// Process summary metrics.
     pub processes: bool,
+    /// Linux load average metrics.
+    pub load: bool,
 }
 
 impl ProcfsFamilies {
@@ -222,6 +226,7 @@ impl ProcfsFamilies {
             filesystem: self.filesystem && config.filesystem,
             network: self.network && config.network,
             processes: self.processes && config.processes,
+            load: self.load && config.load,
         }
     }
 }
@@ -299,6 +304,19 @@ impl ProcfsSource {
             Err(err) => {
                 record_partial_error(&mut partial_errors, &mut first_error, err);
                 CpuInfo::default()
+            }
+        };
+
+        let load = match due
+            .load
+            .then(|| self.read_path(PathKind::Loadavg))
+            .transpose()
+        {
+            Ok(Some(loadavg)) => parse_loadavg(loadavg),
+            Ok(None) => None,
+            Err(err) => {
+                record_partial_error(&mut partial_errors, &mut first_error, err);
+                None
             }
         };
 
@@ -454,6 +472,7 @@ impl ProcfsSource {
             cpu: due.cpu.then_some(stat.cpu).flatten(),
             cpu_utilization,
             cpuinfo,
+            load,
             memory,
             uptime_seconds,
             paging,
@@ -502,6 +521,9 @@ impl ProcfsSource {
         if self.config.memory {
             let _ = File::open(self.paths.path(PathKind::Meminfo))?;
         }
+        if self.config.load {
+            let _ = File::open(self.paths.path(PathKind::Loadavg))?;
+        }
         if self.config.system {
             let _ = File::open(self.paths.path(PathKind::Uptime))?;
         }
@@ -534,6 +556,9 @@ impl ProcfsSource {
         }
         if self.config.memory && !self.source_available(PathKind::Meminfo) {
             self.config.memory = false;
+        }
+        if self.config.load && !self.source_available(PathKind::Loadavg) {
+            self.config.load = false;
         }
         if self.config.system && !self.source_available(PathKind::Uptime) {
             self.config.system = false;

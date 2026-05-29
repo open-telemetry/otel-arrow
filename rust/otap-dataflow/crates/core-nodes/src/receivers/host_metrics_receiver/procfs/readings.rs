@@ -29,6 +29,13 @@ pub(super) struct CpuInfo {
 }
 
 #[derive(Copy, Clone, Default)]
+pub(super) struct LoadAverage {
+    pub(super) one_minute: f64,
+    pub(super) five_minutes: f64,
+    pub(super) fifteen_minutes: f64,
+}
+
+#[derive(Copy, Clone, Default)]
 pub(super) struct StatSnapshot {
     pub(super) boot_time_unix_nano: u64,
     pub(super) cpu: Option<CpuTimes>,
@@ -378,6 +385,15 @@ pub(super) fn parse_meminfo(input: &str) -> Option<MemoryStats> {
 
 pub(super) fn parse_uptime(input: &str) -> Option<f64> {
     input.split_whitespace().next()?.parse().ok()
+}
+
+pub(super) fn parse_loadavg(input: &str) -> Option<LoadAverage> {
+    let mut fields = input.split_whitespace();
+    Some(LoadAverage {
+        one_minute: fields.next()?.parse().ok()?,
+        five_minutes: fields.next()?.parse().ok()?,
+        fifteen_minutes: fields.next()?.parse().ok()?,
+    })
 }
 
 pub(super) fn parse_vmstat(input: &str) -> PagingStats {
