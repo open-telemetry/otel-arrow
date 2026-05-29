@@ -48,6 +48,7 @@ static BENCH_SCOPE_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescr
             brief: "CPU ID",
         },
     ],
+    scope_keys: &[],
 };
 
 /// Mock attribute set for benchmarking scope attributes.

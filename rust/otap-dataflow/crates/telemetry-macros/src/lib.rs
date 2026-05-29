@@ -484,10 +484,7 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
 
         // Detect `#[attribute(..., scope)]` to mark this attribute as a
         // scope-level (instrumentation-scope) attribute.
-        let is_scope_field = field
-            .attrs
-            .iter()
-            .any(parse_attribute_field_is_scope);
+        let is_scope_field = field.attrs.iter().any(parse_attribute_field_is_scope);
         if is_scope_field {
             attr_field_scope_keys.push(final_key.clone());
         }
