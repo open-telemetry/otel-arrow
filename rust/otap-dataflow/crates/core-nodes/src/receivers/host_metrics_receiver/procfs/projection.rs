@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::receivers::host_metrics_receiver::ProcessMetricsConfig;
 use crate::receivers::host_metrics_receiver::otap_builder::HostMetricsArrowBuilder;
 use crate::receivers::host_metrics_receiver::semconv::{attr, metric};
 use std::collections::{HashMap, HashSet};
@@ -8,7 +9,8 @@ use std::collections::{HashMap, HashSet};
 use super::COUNTER_KEY_SEPARATOR;
 use super::readings::{
     CpuInfo, CpuTimes, DiskStats, FilesystemStats, HugepageStats, LoadAverage, MemoryStats,
-    NetworkStats, PagingStats, ProcessStats, SwapStats, frequency_hz_i64, saturating_i64,
+    NetworkStats, PagingStats, ProcessMetrics, ProcessStats, SwapStats, frequency_hz_i64,
+    saturating_i64,
 };
 
 /// Result of one host metrics scrape.
@@ -28,6 +30,7 @@ pub(crate) struct HostSnapshot {
     pub(super) memory_limit: bool,
     pub(super) memory_shared: bool,
     pub(super) memory_hugepages: bool,
+    pub(super) process_metrics: ProcessMetricsConfig,
     pub(super) cpu: Option<CpuTimes>,
     pub(super) cpu_utilization: Option<CpuTimes>,
     pub(super) cpuinfo: CpuInfo,
@@ -37,6 +40,7 @@ pub(crate) struct HostSnapshot {
     pub(super) paging: Option<PagingStats>,
     pub(super) swaps: Vec<SwapStats>,
     pub(super) processes: Option<ProcessStats>,
+    pub(super) per_processes: Vec<ProcessMetrics>,
     pub(super) disks: Vec<DiskStats>,
     pub(super) filesystems: Vec<FilesystemStats>,
     pub(super) networks: Vec<NetworkStats>,
@@ -56,6 +60,7 @@ impl HostSnapshot {
             || self.paging.is_some()
             || !self.swaps.is_empty()
             || self.processes.is_some()
+            || !self.per_processes.is_empty()
             || !self.disks.is_empty()
             || !self.filesystems.is_empty()
             || !self.networks.is_empty()
@@ -298,6 +303,9 @@ pub(super) fn project_snapshot(snap: &HostSnapshot, b: &mut HostMetricsArrowBuil
             |_| {},
         );
     }
+    if !snap.per_processes.is_empty() {
+        project_per_process_metrics(snap, b);
+    }
 
     // ── Disk ─────────────────────────────────────────────────────────────────
     if snap.disks.iter().any(|disk| disk.limit_bytes.is_some()) {
@@ -516,6 +524,213 @@ pub(super) fn project_snapshot(snap: &HostSnapshot, b: &mut HostMetricsArrowBuil
     }
 }
 
+fn project_per_process_metrics(snap: &HostSnapshot, b: &mut HostMetricsArrowBuilder) {
+    let now = snap.now_unix_nano;
+    let cs = &snap.counter_starts;
+    let processes = &snap.per_processes;
+
+    if snap.process_metrics.cpu_time {
+        let m = b.begin_counter_f64(metric::PROCESS_CPU_TIME, "s");
+        for process in processes {
+            append_process_f64_sum(
+                b,
+                m,
+                cs.get_joined(
+                    metric::PROCESS_CPU_TIME,
+                    &process_series_key(process),
+                    "user",
+                    process.key.start_time_unix_nano,
+                ),
+                now,
+                process.user_cpu_seconds,
+                process,
+                |w| w.str(attr::CPU_MODE, "user"),
+            );
+            append_process_f64_sum(
+                b,
+                m,
+                cs.get_joined(
+                    metric::PROCESS_CPU_TIME,
+                    &process_series_key(process),
+                    "system",
+                    process.key.start_time_unix_nano,
+                ),
+                now,
+                process.system_cpu_seconds,
+                process,
+                |w| w.str(attr::CPU_MODE, "system"),
+            );
+        }
+    }
+
+    if snap.process_metrics.cpu_utilization
+        && processes
+            .iter()
+            .any(|process| process.cpu_utilization.is_some())
+    {
+        let m = b.begin_gauge_f64(metric::PROCESS_CPU_UTILIZATION, "1");
+        for process in processes {
+            if let Some(utilization) = process.cpu_utilization {
+                append_process_f64_gauge(b, m, now, utilization, process, |_| {});
+            }
+        }
+    }
+
+    if snap.process_metrics.memory_usage {
+        let m = b.begin_updown_i64(metric::PROCESS_MEMORY_USAGE, "By");
+        for process in processes {
+            append_process_i64_sum(
+                b,
+                m,
+                process.key.start_time_unix_nano,
+                now,
+                saturating_i64(process.memory_usage_bytes),
+                process,
+                |_| {},
+            );
+        }
+    }
+
+    if snap.process_metrics.memory_virtual {
+        let m = b.begin_updown_i64(metric::PROCESS_MEMORY_VIRTUAL, "By");
+        for process in processes {
+            append_process_i64_sum(
+                b,
+                m,
+                process.key.start_time_unix_nano,
+                now,
+                saturating_i64(process.memory_virtual_bytes),
+                process,
+                |_| {},
+            );
+        }
+    }
+
+    if snap.process_metrics.disk_io
+        && processes
+            .iter()
+            .any(|process| process.read_bytes.is_some() || process.write_bytes.is_some())
+    {
+        let m = b.begin_counter_i64(metric::PROCESS_DISK_IO, "By");
+        for process in processes {
+            for (direction, value) in [("read", process.read_bytes), ("write", process.write_bytes)]
+            {
+                let Some(value) = value else {
+                    continue;
+                };
+                append_process_i64_sum(
+                    b,
+                    m,
+                    cs.get_joined(
+                        metric::PROCESS_DISK_IO,
+                        &process_series_key(process),
+                        direction,
+                        process.key.start_time_unix_nano,
+                    ),
+                    now,
+                    saturating_i64(value),
+                    process,
+                    |w| w.str(attr::DISK_IO_DIRECTION, direction),
+                );
+            }
+        }
+    }
+
+    if snap.process_metrics.threads {
+        let m = b.begin_updown_i64(metric::PROCESS_THREADS, "{thread}");
+        for process in processes {
+            append_process_i64_sum(
+                b,
+                m,
+                process.key.start_time_unix_nano,
+                now,
+                saturating_i64(process.threads),
+                process,
+                |_| {},
+            );
+        }
+    }
+
+    if snap.process_metrics.uptime {
+        let m = b.begin_gauge_f64(metric::PROCESS_UPTIME, "s");
+        for process in processes {
+            append_process_f64_gauge(b, m, now, process.uptime_seconds, process, |_| {});
+        }
+    }
+}
+
+fn append_process_i64_sum<F>(
+    b: &mut HostMetricsArrowBuilder,
+    metric: crate::receivers::host_metrics_receiver::otap_builder::MetricHandle,
+    start: u64,
+    now: u64,
+    value: i64,
+    process: &ProcessMetrics,
+    attrs: F,
+) where
+    F: FnOnce(&mut crate::receivers::host_metrics_receiver::otap_builder::DpAttrWriter<'_>),
+{
+    b.append_i64_sum_dp(metric, start, now, value, |w| {
+        append_process_attrs(w, process);
+        attrs(w);
+    });
+}
+
+fn append_process_f64_sum<F>(
+    b: &mut HostMetricsArrowBuilder,
+    metric: crate::receivers::host_metrics_receiver::otap_builder::MetricHandle,
+    start: u64,
+    now: u64,
+    value: f64,
+    process: &ProcessMetrics,
+    attrs: F,
+) where
+    F: FnOnce(&mut crate::receivers::host_metrics_receiver::otap_builder::DpAttrWriter<'_>),
+{
+    b.append_f64_sum_dp(metric, start, now, value, |w| {
+        append_process_attrs(w, process);
+        attrs(w);
+    });
+}
+
+fn append_process_f64_gauge<F>(
+    b: &mut HostMetricsArrowBuilder,
+    metric: crate::receivers::host_metrics_receiver::otap_builder::MetricHandle,
+    now: u64,
+    value: f64,
+    process: &ProcessMetrics,
+    attrs: F,
+) where
+    F: FnOnce(&mut crate::receivers::host_metrics_receiver::otap_builder::DpAttrWriter<'_>),
+{
+    b.append_f64_gauge_dp(metric, now, value, |w| {
+        append_process_attrs(w, process);
+        attrs(w);
+    });
+}
+
+fn append_process_attrs(
+    w: &mut crate::receivers::host_metrics_receiver::otap_builder::DpAttrWriter<'_>,
+    process: &ProcessMetrics,
+) {
+    if process.labels.pid {
+        w.int(attr::PROCESS_PID, i64::from(process.key.pid));
+    }
+    if process.labels.command {
+        w.str(attr::PROCESS_COMMAND, &process.command);
+    }
+    if process.labels.executable_name {
+        w.str(attr::PROCESS_EXECUTABLE_NAME, &process.executable_name);
+    }
+    if process.labels.parent_pid {
+        w.int(attr::PROCESS_PARENT_PID, i64::from(process.parent_pid));
+    }
+}
+
+fn process_series_key(process: &ProcessMetrics) -> String {
+    format!("{}:{}", process.key.pid, process.key.start_time_unix_nano)
+}
+
 pub(super) fn project_hugepages(
     b: &mut HostMetricsArrowBuilder,
     start: u64,
@@ -601,6 +816,7 @@ impl CounterTracker {
         cpu: Option<&CpuTimes>,
         paging: Option<&PagingStats>,
         processes: Option<&ProcessStats>,
+        per_processes: Option<&[ProcessMetrics]>,
         disks: Option<&[DiskStats]>,
         networks: Option<&[NetworkStats]>,
     ) -> CounterStarts {
@@ -658,6 +874,56 @@ impl CounterTracker {
                 default_start,
                 now,
                 &mut starts,
+            );
+        }
+        if let Some(processes) = per_processes {
+            let first_process_entry = starts.entries.len();
+            for process in processes {
+                let series = process_series_key(process);
+                self.observe_joined(
+                    metric::PROCESS_CPU_TIME,
+                    &series,
+                    "user",
+                    process.user_cpu_seconds,
+                    default_start,
+                    now,
+                    &mut starts,
+                );
+                self.observe_joined(
+                    metric::PROCESS_CPU_TIME,
+                    &series,
+                    "system",
+                    process.system_cpu_seconds,
+                    default_start,
+                    now,
+                    &mut starts,
+                );
+                if let Some(read_bytes) = process.read_bytes {
+                    self.observe_joined(
+                        metric::PROCESS_DISK_IO,
+                        &series,
+                        "read",
+                        read_bytes as f64,
+                        default_start,
+                        now,
+                        &mut starts,
+                    );
+                }
+                if let Some(write_bytes) = process.write_bytes {
+                    self.observe_joined(
+                        metric::PROCESS_DISK_IO,
+                        &series,
+                        "write",
+                        write_bytes as f64,
+                        default_start,
+                        now,
+                        &mut starts,
+                    );
+                }
+            }
+            self.prune_scraped_family(
+                &starts.entries[first_process_entry..],
+                &[metric::PROCESS_CPU_TIME, metric::PROCESS_DISK_IO],
             );
         }
         if let Some(disks) = disks {

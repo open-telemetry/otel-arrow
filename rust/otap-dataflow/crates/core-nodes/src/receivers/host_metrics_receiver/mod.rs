@@ -74,7 +74,8 @@ pub use config::{
     Config, CpuFamilyConfig, DeviceFilterConfig, DiskFamilyConfig, FamiliesConfig, FamilyConfig,
     FilesystemFamilyConfig, FilesystemTypeFilterConfig, HostViewConfig, HostViewValidationMode,
     InterfaceFilterConfig, LoadFamilyConfig, MatchType, MemoryFamilyConfig, MountPointFilterConfig,
-    NetworkFamilyConfig, ProcessMode, ProcessesFamilyConfig,
+    NetworkFamilyConfig, PerProcessConfig, ProcessFilterConfig, ProcessLabelsConfig,
+    ProcessMetricsConfig, ProcessMode, ProcessesFamilyConfig,
 };
 #[cfg(target_os = "linux")]
 use config::{RuntimeFamily, effective_root_path, normalized_root_path};
@@ -286,7 +287,7 @@ enum ScheduledFamilyKind {
     Disk,
     Filesystem,
     Network,
-    Processes,
+    Processes { per_process: bool },
     Load,
 }
 
@@ -352,12 +353,15 @@ impl FamilyScheduler {
                 next_due: first_due,
             });
         }
-        push_scheduled(
-            &mut entries,
-            ScheduledFamilyKind::Processes,
-            &config.families.processes,
-            first_due,
-        );
+        if config.families.processes.enabled {
+            entries.push(ScheduledFamily {
+                kind: ScheduledFamilyKind::Processes {
+                    per_process: config.families.processes.per_process,
+                },
+                interval: config.families.processes.interval,
+                next_due: first_due,
+            });
+        }
         push_scheduled(
             &mut entries,
             ScheduledFamilyKind::Load,
@@ -387,7 +391,10 @@ impl FamilyScheduler {
                     ScheduledFamilyKind::Disk => due.disk = true,
                     ScheduledFamilyKind::Filesystem => due.filesystem = true,
                     ScheduledFamilyKind::Network => due.network = true,
-                    ScheduledFamilyKind::Processes => due.processes = true,
+                    ScheduledFamilyKind::Processes { per_process } => {
+                        due.processes = true;
+                        due.per_processes = per_process;
+                    }
                     ScheduledFamilyKind::Load => due.load = true,
                 }
             }
@@ -406,7 +413,7 @@ impl FamilyScheduler {
                 ScheduledFamilyKind::Disk => due.disk,
                 ScheduledFamilyKind::Filesystem => due.filesystem,
                 ScheduledFamilyKind::Network => due.network,
-                ScheduledFamilyKind::Processes => due.processes,
+                ScheduledFamilyKind::Processes { .. } => due.processes,
                 ScheduledFamilyKind::Load => due.load,
             })
             .map(|entry| entry.interval)
@@ -513,6 +520,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                 network: config.families.network.enabled,
                 processes: config.families.processes.enabled,
                 load: config.families.load.enabled,
+                per_processes: config.families.processes.per_process,
                 cpu_utilization: config.cpu_utilization,
                 memory_limit: config.memory_limit,
                 memory_shared: config.memory_shared,
@@ -539,6 +547,11 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                     .clone(),
                 network_include: config.families.network.include.clone(),
                 network_exclude: config.families.network.exclude.clone(),
+                process_include: config.families.processes.include.clone(),
+                process_exclude: config.families.processes.exclude.clone(),
+                process_max_processes: config.families.processes.max_processes,
+                process_labels: config.families.processes.labels.clone(),
+                process_metrics: config.families.processes.metrics.clone(),
                 validation: config.validation,
             },
         )
@@ -927,6 +940,47 @@ mod tests {
         .expect("valid disk config");
 
         assert!(config.families.disk.limit);
+        validate_config(&config).expect("valid config");
+    }
+
+    #[test]
+    fn accepts_per_process_opt_in_config() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "families": {
+                "processes": {
+                    "mode": "summary_and_per_process",
+                    "process": {
+                        "include": {
+                            "names": ["df_engine", "otelcol"],
+                            "match_type": "regexp"
+                        },
+                        "max_processes": 10,
+                        "labels": {
+                            "pid": false,
+                            "command": true,
+                            "executable_name": true,
+                            "parent_pid": true
+                        },
+                        "metrics": {
+                            "cpu_time": true,
+                            "cpu_utilization": true,
+                            "memory_usage": true,
+                            "memory_virtual": true,
+                            "disk_io": true,
+                            "threads": true,
+                            "uptime": true
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("valid process config");
+
+        assert_eq!(
+            config.families.processes.mode,
+            ProcessMode::SummaryAndPerProcess
+        );
+        assert_eq!(config.families.processes.process.max_processes, 10);
         validate_config(&config).expect("valid config");
     }
 

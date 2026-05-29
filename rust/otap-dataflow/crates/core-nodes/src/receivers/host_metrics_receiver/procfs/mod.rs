@@ -7,12 +7,15 @@ mod paths;
 mod projection;
 mod readings;
 
-use crate::receivers::host_metrics_receiver::{CompiledFilter, HostViewValidationMode};
+use crate::receivers::host_metrics_receiver::{
+    CompiledFilter, HostViewValidationMode, ProcessLabelsConfig, ProcessMetricsConfig,
+};
 use paths::{PathKind, ProcfsPaths};
 use projection::{CounterTracker, host_arch};
 pub(crate) use projection::{HostResource, HostScrape, HostSnapshot};
 use readings::*;
-use std::fs::File;
+use std::collections::HashMap;
+use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
 use std::path::PathBuf;
@@ -31,6 +34,18 @@ const FILESYSTEM_STAT_TIMEOUT: Duration = Duration::from_millis(100);
 const FILESYSTEM_SCRAPE_TIMEOUT: Duration = Duration::from_secs(1);
 const COUNTER_KEY_SEPARATOR: char = '\x1f';
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub(super) struct ProcessKey {
+    pub(super) pid: u32,
+    pub(super) start_time_unix_nano: u64,
+}
+
+#[derive(Clone, Copy)]
+struct ProcessCpuSample {
+    total_cpu_seconds: f64,
+    observed_unix_nano: u64,
+}
+
 /// Procfs-backed source for host metrics.
 pub struct ProcfsSource {
     paths: ProcfsPaths,
@@ -40,6 +55,7 @@ pub struct ProcfsSource {
     previous_cpu: Option<CpuTimes>,
     filesystem_worker: FilesystemStatWorker,
     counter_tracker: CounterTracker,
+    previous_process_cpu: HashMap<ProcessKey, ProcessCpuSample>,
     boot_time_unix_nano: Option<u64>,
     fallback_start_time_unix_nano: u64,
     resource: Option<HostResource>,
@@ -66,6 +82,8 @@ pub struct ProcfsConfig {
     pub processes: bool,
     /// Linux load average metrics.
     pub load: bool,
+    /// Per-process metrics.
+    pub per_processes: bool,
     /// Derived aggregate CPU utilization.
     pub cpu_utilization: bool,
     /// Emit memory limit metric.
@@ -102,6 +120,16 @@ pub struct ProcfsConfig {
     pub network_include: Option<CompiledFilter>,
     /// Network exclude filter.
     pub network_exclude: Option<CompiledFilter>,
+    /// Process include filter.
+    pub process_include: Option<CompiledFilter>,
+    /// Process exclude filter.
+    pub process_exclude: Option<CompiledFilter>,
+    /// Per-process cardinality limit.
+    pub process_max_processes: usize,
+    /// Per-process label controls.
+    pub process_labels: ProcessLabelsConfig,
+    /// Per-process metric controls.
+    pub process_metrics: ProcessMetricsConfig,
     /// Startup validation mode.
     pub validation: HostViewValidationMode,
 }
@@ -213,6 +241,8 @@ pub struct ProcfsFamilies {
     pub processes: bool,
     /// Linux load average metrics.
     pub load: bool,
+    /// Per-process metrics.
+    pub per_processes: bool,
 }
 
 impl ProcfsFamilies {
@@ -227,6 +257,7 @@ impl ProcfsFamilies {
             network: self.network && config.network,
             processes: self.processes && config.processes,
             load: self.load && config.load,
+            per_processes: self.per_processes && config.per_processes,
         }
     }
 }
@@ -242,6 +273,7 @@ impl ProcfsSource {
             previous_cpu: None,
             filesystem_worker: FilesystemStatWorker::new()?,
             counter_tracker: CounterTracker::default(),
+            previous_process_cpu: HashMap::new(),
             boot_time_unix_nano: None,
             fallback_start_time_unix_nano: now_unix_nano(),
             resource: None,
@@ -451,6 +483,17 @@ impl ProcfsSource {
             Vec::new()
         };
 
+        let per_processes = if due.per_processes {
+            self.read_processes(
+                start_time_unix_nano,
+                now_unix_nano,
+                &mut partial_errors,
+                &mut first_error,
+            )
+        } else {
+            Vec::new()
+        };
+
         let resource = self.read_resource().clone();
         let counter_starts = self.counter_tracker.snapshot(
             start_time_unix_nano,
@@ -458,6 +501,7 @@ impl ProcfsSource {
             due.cpu.then_some(stat.cpu).flatten().as_ref(),
             paging.as_ref(),
             due.processes.then_some(stat.processes).as_ref(),
+            due.per_processes.then_some(per_processes.as_slice()),
             disks.as_deref(),
             networks.as_deref(),
         );
@@ -469,6 +513,7 @@ impl ProcfsSource {
             memory_limit: self.config.memory_limit,
             memory_shared: self.config.memory_shared,
             memory_hugepages: self.config.memory_hugepages,
+            process_metrics: self.config.process_metrics.clone(),
             cpu: due.cpu.then_some(stat.cpu).flatten(),
             cpu_utilization,
             cpuinfo,
@@ -478,6 +523,7 @@ impl ProcfsSource {
             paging,
             swaps,
             processes: due.processes.then_some(stat.processes),
+            per_processes,
             disks: disks.unwrap_or_default(),
             filesystems,
             networks: networks.unwrap_or_default(),
@@ -502,6 +548,131 @@ impl ProcfsSource {
                 Ok(())
             }
         }
+    }
+
+    fn read_processes(
+        &mut self,
+        host_start_time_unix_nano: u64,
+        now_unix_nano: u64,
+        partial_errors: &mut u64,
+        first_error: &mut Option<io::Error>,
+    ) -> Vec<ProcessMetrics> {
+        let mut processes = Vec::new();
+        let proc_dir = self.paths.proc_path();
+        let entries = match fs::read_dir(proc_dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                record_partial_error(partial_errors, first_error, err);
+                return processes;
+            }
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            match self.read_process(
+                entry.path(),
+                pid,
+                host_start_time_unix_nano,
+                now_unix_nano,
+                partial_errors,
+                first_error,
+            ) {
+                Ok(Some(process)) => processes.push(process),
+                Ok(None) => {}
+                Err(err) => record_partial_error(partial_errors, first_error, err),
+            }
+        }
+        processes.sort_by_key(|process| process.key.pid);
+        processes.truncate(self.config.process_max_processes);
+        let current_keys = processes
+            .iter()
+            .map(|process| process.key)
+            .collect::<std::collections::HashSet<_>>();
+        self.previous_process_cpu
+            .retain(|key, _| current_keys.contains(key));
+        processes
+    }
+
+    fn read_process(
+        &mut self,
+        process_dir: PathBuf,
+        pid: u32,
+        host_start_time_unix_nano: u64,
+        now_unix_nano: u64,
+        partial_errors: &mut u64,
+        first_error: &mut Option<io::Error>,
+    ) -> io::Result<Option<ProcessMetrics>> {
+        let stat = fs::read_to_string(process_dir.join("stat"))?;
+        let Some(stat) = parse_process_stat(&stat, pid, self.clk_tck) else {
+            return Ok(None);
+        };
+        if !filter_allows(
+            &stat.command,
+            self.config.process_include.as_ref(),
+            self.config.process_exclude.as_ref(),
+        ) {
+            return Ok(None);
+        }
+        let start_offset_nano =
+            (stat.start_time_ticks as f64 / self.clk_tck * NANOS_PER_SEC as f64) as u64;
+        let start_time_unix_nano = host_start_time_unix_nano.saturating_add(start_offset_nano);
+        let key = ProcessKey {
+            pid: stat.pid,
+            start_time_unix_nano,
+        };
+        let total_cpu_seconds = stat.user_cpu_seconds + stat.system_cpu_seconds;
+        let previous = self.previous_process_cpu.insert(
+            key,
+            ProcessCpuSample {
+                total_cpu_seconds,
+                observed_unix_nano: now_unix_nano,
+            },
+        );
+        let cpu_utilization = previous.and_then(|previous| {
+            let cpu_delta = counter_delta(previous.total_cpu_seconds, total_cpu_seconds)?;
+            let elapsed = now_unix_nano.saturating_sub(previous.observed_unix_nano) as f64
+                / NANOS_PER_SEC as f64;
+            (elapsed > 0.0).then_some(cpu_delta / elapsed)
+        });
+        let io = match fs::read_to_string(process_dir.join("io")) {
+            Ok(content) => Some(parse_process_io(&content)),
+            Err(err) => {
+                record_partial_error(partial_errors, first_error, err);
+                None
+            }
+        };
+        let executable_name = stat
+            .command
+            .rsplit('/')
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&stat.command)
+            .to_owned();
+        Ok(Some(ProcessMetrics {
+            key,
+            labels: self.config.process_labels.clone(),
+            command: stat.command,
+            executable_name,
+            parent_pid: stat.parent_pid,
+            user_cpu_seconds: stat.user_cpu_seconds,
+            system_cpu_seconds: stat.system_cpu_seconds,
+            cpu_utilization,
+            memory_usage_bytes: stat.resident_pages.saturating_mul(page_size_bytes()),
+            memory_virtual_bytes: stat.virtual_memory_bytes,
+            read_bytes: io.as_ref().map(|io| io.read_bytes),
+            write_bytes: io.as_ref().map(|io| io.write_bytes),
+            threads: stat.threads,
+            uptime_seconds: now_unix_nano.saturating_sub(start_time_unix_nano) as f64
+                / NANOS_PER_SEC as f64,
+        }))
     }
 
     fn validate_selected_paths(&self) -> io::Result<()> {

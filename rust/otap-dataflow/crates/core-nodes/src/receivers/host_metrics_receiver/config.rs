@@ -351,8 +351,10 @@ pub struct ProcessesFamilyConfig {
     /// Family collection interval. Defaults to top-level `collection_interval`.
     #[serde(default, with = "humantime_serde::option")]
     pub interval: Option<Duration>,
-    /// Only `summary` is supported in v1.
+    /// Process collection mode.
     pub mode: ProcessMode,
+    /// Per-process collection controls.
+    pub process: PerProcessConfig,
 }
 
 impl Default for ProcessesFamilyConfig {
@@ -361,6 +363,35 @@ impl Default for ProcessesFamilyConfig {
             enabled: true,
             interval: None,
             mode: ProcessMode::Summary,
+            process: PerProcessConfig::default(),
+        }
+    }
+}
+
+/// Per-process collection controls.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PerProcessConfig {
+    /// Per-process include filter.
+    pub include: Option<ProcessFilterConfig>,
+    /// Per-process exclude filter.
+    pub exclude: Option<ProcessFilterConfig>,
+    /// Maximum number of per-process series emitted per scrape.
+    pub max_processes: usize,
+    /// Per-process attribute controls.
+    pub labels: ProcessLabelsConfig,
+    /// Per-process metric controls.
+    pub metrics: ProcessMetricsConfig,
+}
+
+impl Default for PerProcessConfig {
+    fn default() -> Self {
+        Self {
+            include: None,
+            exclude: None,
+            max_processes: 100,
+            labels: ProcessLabelsConfig::default(),
+            metrics: ProcessMetricsConfig::default(),
         }
     }
 }
@@ -383,6 +414,90 @@ pub enum ProcessMode {
     /// Aggregate host process summary.
     #[default]
     Summary,
+    /// Aggregate summary plus per-process metrics.
+    SummaryAndPerProcess,
+}
+
+/// Process name filter.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessFilterConfig {
+    /// Process names.
+    pub names: Vec<String>,
+    /// Match type.
+    #[serde(default)]
+    pub match_type: MatchType,
+}
+
+/// Per-process attribute controls.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProcessLabelsConfig {
+    /// Emit process.pid.
+    pub pid: bool,
+    /// Emit process.command.
+    pub command: bool,
+    /// Emit process.executable.name.
+    pub executable_name: bool,
+    /// Emit process.executable.path.
+    pub executable_path: bool,
+    /// Emit process.command_line.
+    pub command_line: bool,
+    /// Emit process.owner.
+    pub owner: bool,
+    /// Emit process.cgroup.
+    pub cgroup: bool,
+    /// Emit process.parent_pid.
+    pub parent_pid: bool,
+}
+
+impl Default for ProcessLabelsConfig {
+    fn default() -> Self {
+        Self {
+            pid: false,
+            command: true,
+            executable_name: true,
+            executable_path: false,
+            command_line: false,
+            owner: false,
+            cgroup: false,
+            parent_pid: true,
+        }
+    }
+}
+
+/// Per-process metric controls.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProcessMetricsConfig {
+    /// Emit process.cpu.time.
+    pub cpu_time: bool,
+    /// Emit process.cpu.utilization.
+    pub cpu_utilization: bool,
+    /// Emit process.memory.usage.
+    pub memory_usage: bool,
+    /// Emit process.memory.virtual.
+    pub memory_virtual: bool,
+    /// Emit process.disk.io.
+    pub disk_io: bool,
+    /// Emit process.threads.
+    pub threads: bool,
+    /// Emit process.uptime.
+    pub uptime: bool,
+}
+
+impl Default for ProcessMetricsConfig {
+    fn default() -> Self {
+        Self {
+            cpu_time: true,
+            cpu_utilization: true,
+            memory_usage: true,
+            memory_virtual: true,
+            disk_io: true,
+            threads: true,
+            uptime: true,
+        }
+    }
 }
 
 /// Disk device filter.
@@ -441,8 +556,8 @@ pub(super) struct RuntimeFamilies {
     pub(super) disk: RuntimeDiskFamily,
     pub(super) filesystem: RuntimeFilesystemFamily,
     pub(super) network: RuntimeNetworkFamily,
-    pub(super) processes: RuntimeFamily,
     pub(super) load: RuntimeFamily,
+    pub(super) processes: RuntimeProcessFamily,
 }
 
 #[derive(Clone)]
@@ -481,6 +596,18 @@ pub(super) struct RuntimeNetworkFamily {
     pub(super) interval: Duration,
     pub(super) include: Option<CompiledFilter>,
     pub(super) exclude: Option<CompiledFilter>,
+}
+
+#[derive(Clone)]
+pub(super) struct RuntimeProcessFamily {
+    pub(super) enabled: bool,
+    pub(super) interval: Duration,
+    pub(super) per_process: bool,
+    pub(super) include: Option<CompiledFilter>,
+    pub(super) exclude: Option<CompiledFilter>,
+    pub(super) max_processes: usize,
+    pub(super) labels: ProcessLabelsConfig,
+    pub(super) metrics: ProcessMetricsConfig,
 }
 
 #[derive(Clone)]
@@ -576,6 +703,26 @@ pub(super) fn validate_config(config: &Config) -> Result<(), otap_df_config::err
     if config.families.cpu.per_cpu {
         return Err(otap_df_config::error::Error::InvalidUserConfig {
             error: "cpu per_cpu is not supported in v1".to_owned(),
+        });
+    }
+    if config.families.processes.mode == ProcessMode::SummaryAndPerProcess
+        && config.families.processes.process.max_processes == 0
+    {
+        return Err(otap_df_config::error::Error::InvalidUserConfig {
+            error: "processes max_processes must be greater than zero for per-process metrics"
+                .to_owned(),
+        });
+    }
+    let process_labels = &config.families.processes.process.labels;
+    if config.families.processes.mode == ProcessMode::SummaryAndPerProcess
+        && (process_labels.executable_path
+            || process_labels.command_line
+            || process_labels.owner
+            || process_labels.cgroup)
+    {
+        return Err(otap_df_config::error::Error::InvalidUserConfig {
+            error: "process labels executable_path, command_line, owner, and cgroup are not supported yet"
+                .to_owned(),
         });
     }
     validate_family_interval(
@@ -731,6 +878,24 @@ impl TryFrom<Config> for RuntimeConfig {
             .map(|filter| CompiledFilter::compile(filter.match_type, filter.interfaces))
             .transpose()?
             .flatten();
+        let process_include = config
+            .families
+            .processes
+            .process
+            .include
+            .clone()
+            .map(|filter| CompiledFilter::compile(filter.match_type, filter.names))
+            .transpose()?
+            .flatten();
+        let process_exclude = config
+            .families
+            .processes
+            .process
+            .exclude
+            .clone()
+            .map(|filter| CompiledFilter::compile(filter.match_type, filter.names))
+            .transpose()?
+            .flatten();
 
         Ok(Self {
             root_path,
@@ -792,13 +957,20 @@ impl TryFrom<Config> for RuntimeConfig {
                     include: network_include,
                     exclude: network_exclude,
                 },
-                processes: RuntimeFamily {
+                processes: RuntimeProcessFamily {
                     enabled: config.families.processes.enabled,
                     interval: config
                         .families
                         .processes
                         .interval
                         .unwrap_or(config.collection_interval),
+                    per_process: config.families.processes.mode
+                        == ProcessMode::SummaryAndPerProcess,
+                    include: process_include,
+                    exclude: process_exclude,
+                    max_processes: config.families.processes.process.max_processes,
+                    labels: config.families.processes.process.labels,
+                    metrics: config.families.processes.process.metrics,
                 },
                 load: RuntimeFamily::new_load(&config.families.load, config.collection_interval),
             },

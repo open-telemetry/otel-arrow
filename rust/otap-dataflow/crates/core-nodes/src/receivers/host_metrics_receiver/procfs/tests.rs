@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::receivers::host_metrics_receiver::semconv::{attr, metric};
+use crate::receivers::host_metrics_receiver::{ProcessLabelsConfig, ProcessMetricsConfig};
 #[cfg(feature = "dev-tools")]
 use otap_df_pdata::proto::opentelemetry::common::v1::AnyValue;
 use otap_df_pdata::proto::opentelemetry::common::v1::{KeyValue, any_value};
@@ -49,6 +50,7 @@ fn memory_only_procfs_config() -> ProcfsConfig {
         network: false,
         processes: false,
         load: false,
+        per_processes: false,
         cpu_utilization: false,
         memory_limit: false,
         memory_shared: false,
@@ -67,6 +69,11 @@ fn memory_only_procfs_config() -> ProcfsConfig {
         disk_exclude: None,
         network_include: None,
         network_exclude: None,
+        process_include: None,
+        process_exclude: None,
+        process_max_processes: 100,
+        process_labels: ProcessLabelsConfig::default(),
+        process_metrics: ProcessMetricsConfig::default(),
         validation: HostViewValidationMode::None,
     }
 }
@@ -77,6 +84,35 @@ fn load_only_procfs_config() -> ProcfsConfig {
         memory: false,
         ..memory_only_procfs_config()
     }
+}
+
+fn write_fake_process(
+    proc: &std::path::Path,
+    pid: u32,
+    command: &str,
+    parent_pid: u32,
+    utime: u64,
+    stime: u64,
+    start_time: u64,
+    vsize: u64,
+    rss_pages: u64,
+    read_bytes: u64,
+    write_bytes: u64,
+) {
+    let dir = proc.join(pid.to_string());
+    std::fs::create_dir_all(&dir).expect("process dir");
+    std::fs::write(
+        dir.join("stat"),
+        format!(
+            "{pid} ({command}) S {parent_pid} 0 0 0 0 0 0 0 0 0 {utime} {stime} 0 0 0 0 2 0 {start_time} {vsize} {rss_pages}\n"
+        ),
+    )
+    .expect("process stat");
+    std::fs::write(
+        dir.join("io"),
+        format!("read_bytes: {read_bytes}\nwrite_bytes: {write_bytes}\n"),
+    )
+    .expect("process io");
 }
 
 #[test]
@@ -203,6 +239,20 @@ fn projection_uses_expected_metric_shapes() {
         "running",
     );
     assert_metric_shape(metrics, metric::PROCESS_CREATED, "{process}", Some(true));
+    assert_metric_shape(metrics, metric::PROCESS_CPU_TIME, "s", Some(true));
+    assert_first_point_attr(
+        metrics,
+        metric::PROCESS_CPU_TIME,
+        attr::PROCESS_COMMAND,
+        "df_engine",
+    );
+    assert_sum_point_attr(metrics, metric::PROCESS_CPU_TIME, attr::CPU_MODE, "system");
+    assert_metric_shape(metrics, metric::PROCESS_CPU_UTILIZATION, "1", None);
+    assert_metric_shape(metrics, metric::PROCESS_MEMORY_USAGE, "By", Some(false));
+    assert_metric_shape(metrics, metric::PROCESS_MEMORY_VIRTUAL, "By", Some(false));
+    assert_metric_shape(metrics, metric::PROCESS_DISK_IO, "By", Some(true));
+    assert_metric_shape(metrics, metric::PROCESS_THREADS, "{thread}", Some(false));
+    assert_metric_shape(metrics, metric::PROCESS_UPTIME, "s", None);
     assert_metric_shape(metrics, metric::DISK_IO, "By", Some(true));
     assert_first_point_attr(metrics, metric::DISK_IO, attr::DISK_IO_DIRECTION, "read");
     assert_metric_shape(metrics, metric::DISK_OPERATIONS, "{operation}", Some(true));
@@ -365,7 +415,7 @@ fn counter_tracker_rebaselines_reset_series_only() {
         write_bytes: 200,
         ..DiskStats::default()
     }];
-    let starts = tracker.snapshot(10, 20, None, None, None, Some(&disks), None);
+    let starts = tracker.snapshot(10, 20, None, None, None, None, Some(&disks), None);
 
     assert_eq!(starts.get_joined(metric::DISK_IO, "sda", "read", 10), 10);
     assert_eq!(starts.get_joined(metric::DISK_IO, "sda", "write", 10), 10);
@@ -376,7 +426,7 @@ fn counter_tracker_rebaselines_reset_series_only() {
         write_bytes: 250,
         ..DiskStats::default()
     }];
-    let starts = tracker.snapshot(10, 30, None, None, None, Some(&disks), None);
+    let starts = tracker.snapshot(10, 30, None, None, None, None, Some(&disks), None);
 
     assert_eq!(starts.get_joined(metric::DISK_IO, "sda", "read", 10), 30);
     assert_eq!(starts.get_joined(metric::DISK_IO, "sda", "write", 10), 10);
@@ -392,7 +442,7 @@ fn counter_tracker_rebaselines_paging_operations_by_direction_and_fault_type() {
         page_out: 400,
         ..PagingStats::default()
     };
-    let starts = tracker.snapshot(10, 20, None, Some(&paging), None, None, None);
+    let starts = tracker.snapshot(10, 20, None, Some(&paging), None, None, None, None);
 
     assert_eq!(
         starts.get_joined(metric::PAGING_OPERATIONS, "in", "major", 10),
@@ -410,7 +460,7 @@ fn counter_tracker_rebaselines_paging_operations_by_direction_and_fault_type() {
         page_out: 450,
         ..PagingStats::default()
     };
-    let starts = tracker.snapshot(10, 30, None, Some(&paging), None, None, None);
+    let starts = tracker.snapshot(10, 30, None, Some(&paging), None, None, None, None);
 
     assert_eq!(
         starts.get_joined(metric::PAGING_OPERATIONS, "in", "major", 10),
@@ -439,28 +489,28 @@ fn counter_tracker_prunes_disappeared_disk_series_only_when_disk_is_scraped() {
         write_bytes: 200,
         ..DiskStats::default()
     }];
-    let starts = tracker.snapshot(10, 20, None, None, None, Some(&disks), None);
+    let starts = tracker.snapshot(10, 20, None, None, None, None, Some(&disks), None);
     assert_eq!(starts.get_joined(metric::DISK_IO, "sda", "read", 10), 10);
 
-    let _ = tracker.snapshot(20, 30, None, None, None, None, None);
+    let _ = tracker.snapshot(20, 30, None, None, None, None, None, None);
     let disks = vec![DiskStats {
         name: "sda".to_owned(),
         read_bytes: 150,
         write_bytes: 250,
         ..DiskStats::default()
     }];
-    let starts = tracker.snapshot(30, 40, None, None, None, Some(&disks), None);
+    let starts = tracker.snapshot(30, 40, None, None, None, None, Some(&disks), None);
     assert_eq!(starts.get_joined(metric::DISK_IO, "sda", "read", 30), 30);
 
     let empty_disks = Vec::new();
-    let _ = tracker.snapshot(40, 50, None, None, None, Some(&empty_disks), None);
+    let _ = tracker.snapshot(40, 50, None, None, None, None, Some(&empty_disks), None);
     let disks = vec![DiskStats {
         name: "sda".to_owned(),
         read_bytes: 200,
         write_bytes: 300,
         ..DiskStats::default()
     }];
-    let starts = tracker.snapshot(50, 60, None, None, None, Some(&disks), None);
+    let starts = tracker.snapshot(50, 60, None, None, None, None, Some(&disks), None);
     assert_eq!(starts.get_joined(metric::DISK_IO, "sda", "read", 50), 50);
 }
 
@@ -473,34 +523,34 @@ fn counter_tracker_prunes_disappeared_network_series_only_when_network_is_scrape
         tx_bytes: 200,
         ..NetworkStats::default()
     }];
-    let starts = tracker.snapshot(10, 20, None, None, None, None, Some(&networks));
+    let starts = tracker.snapshot(10, 20, None, None, None, None, None, Some(&networks));
     assert_eq!(
         starts.get_joined(metric::NETWORK_IO, "veth0", "receive", 10),
         10
     );
 
-    let _ = tracker.snapshot(20, 30, None, None, None, None, None);
+    let _ = tracker.snapshot(20, 30, None, None, None, None, None, None);
     let networks = vec![NetworkStats {
         name: "veth0".to_owned(),
         rx_bytes: 150,
         tx_bytes: 250,
         ..NetworkStats::default()
     }];
-    let starts = tracker.snapshot(30, 40, None, None, None, None, Some(&networks));
+    let starts = tracker.snapshot(30, 40, None, None, None, None, None, Some(&networks));
     assert_eq!(
         starts.get_joined(metric::NETWORK_IO, "veth0", "receive", 30),
         30
     );
 
     let empty_networks = Vec::new();
-    let _ = tracker.snapshot(40, 50, None, None, None, None, Some(&empty_networks));
+    let _ = tracker.snapshot(40, 50, None, None, None, None, None, Some(&empty_networks));
     let networks = vec![NetworkStats {
         name: "veth0".to_owned(),
         rx_bytes: 200,
         tx_bytes: 300,
         ..NetworkStats::default()
     }];
-    let starts = tracker.snapshot(50, 60, None, None, None, None, Some(&networks));
+    let starts = tracker.snapshot(50, 60, None, None, None, None, None, Some(&networks));
     assert_eq!(
         starts.get_joined(metric::NETWORK_IO, "veth0", "receive", 50),
         50
@@ -546,6 +596,7 @@ fn scrape_due_emits_successful_families_after_partial_read_error() {
             network: false,
             processes: false,
             load: false,
+            per_processes: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -564,6 +615,11 @@ fn scrape_due_emits_successful_families_after_partial_read_error() {
             disk_exclude: None,
             network_include: None,
             network_exclude: None,
+            process_include: None,
+            process_exclude: None,
+            process_max_processes: 100,
+            process_labels: ProcessLabelsConfig::default(),
+            process_metrics: ProcessMetricsConfig::default(),
             validation: HostViewValidationMode::None,
         },
     )
@@ -582,6 +638,90 @@ fn scrape_due_emits_successful_families_after_partial_read_error() {
     assert_eq!(scrape.partial_errors, 1);
     assert!(scrape.snapshot.memory.is_some());
     assert!(scrape.snapshot.disks.is_empty());
+}
+
+#[test]
+fn scrape_due_collects_opt_in_per_process_metrics_with_filters_and_limit() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let proc = root.path().join("proc");
+    std::fs::create_dir_all(&proc).expect("proc dir");
+    std::fs::write(proc.join("stat"), "btime 1700000000\n").expect("stat");
+    write_fake_process(&proc, 100, "df_engine", 1, 10, 20, 100, 4096, 2, 100, 200);
+    write_fake_process(&proc, 200, "otelcol", 1, 30, 40, 200, 8192, 3, 300, 400);
+
+    let include = CompiledFilter::compile(
+        crate::receivers::host_metrics_receiver::MatchType::Strict,
+        vec!["df_engine".to_owned(), "otelcol".to_owned()],
+    )
+    .expect("filter")
+    .expect("non-empty filter");
+    let mut source = ProcfsSource::new(
+        Some(root.path()),
+        ProcfsConfig {
+            cpu: false,
+            memory: false,
+            paging: false,
+            system: false,
+            disk: false,
+            filesystem: false,
+            network: false,
+            processes: true,
+            per_processes: true,
+            cpu_utilization: false,
+            memory_limit: false,
+            memory_shared: false,
+            memory_hugepages: false,
+            disk_limit: false,
+            filesystem_include_virtual: false,
+            filesystem_include_remote: false,
+            filesystem_limit: false,
+            filesystem_include_devices: None,
+            filesystem_exclude_devices: None,
+            filesystem_include_fs_types: None,
+            filesystem_exclude_fs_types: None,
+            filesystem_include_mount_points: None,
+            filesystem_exclude_mount_points: None,
+            disk_include: None,
+            disk_exclude: None,
+            network_include: None,
+            network_exclude: None,
+            process_include: Some(include),
+            process_exclude: None,
+            process_max_processes: 1,
+            process_labels: ProcessLabelsConfig::default(),
+            process_metrics: ProcessMetricsConfig::default(),
+            validation: HostViewValidationMode::None,
+        },
+    )
+    .expect("source");
+
+    let first = scrape_blocking(
+        &mut source,
+        ProcfsFamilies {
+            processes: true,
+            per_processes: true,
+            ..ProcfsFamilies::default()
+        },
+    )
+    .expect("first scrape");
+    assert_eq!(first.snapshot.processes.expect("summary").created, 0);
+    assert_eq!(first.snapshot.per_processes.len(), 1);
+    assert_eq!(first.snapshot.per_processes[0].command, "df_engine");
+    assert!(first.snapshot.per_processes[0].cpu_utilization.is_none());
+
+    write_fake_process(&proc, 100, "df_engine", 1, 20, 30, 100, 4096, 2, 150, 250);
+    let second = scrape_blocking(
+        &mut source,
+        ProcfsFamilies {
+            processes: true,
+            per_processes: true,
+            ..ProcfsFamilies::default()
+        },
+    )
+    .expect("second scrape");
+    assert!(second.snapshot.per_processes[0].cpu_utilization.is_some());
+    assert_eq!(second.snapshot.per_processes[0].read_bytes, Some(150));
+    assert_eq!(second.snapshot.per_processes[0].write_bytes, Some(250));
 }
 
 #[test]
@@ -612,6 +752,7 @@ fn scrape_due_preserves_disk_counter_state_after_diskstats_read_error() {
             network: false,
             processes: false,
             load: false,
+            per_processes: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -630,6 +771,11 @@ fn scrape_due_preserves_disk_counter_state_after_diskstats_read_error() {
             disk_exclude: None,
             network_include: None,
             network_exclude: None,
+            process_include: None,
+            process_exclude: None,
+            process_max_processes: 100,
+            process_labels: ProcessLabelsConfig::default(),
+            process_metrics: ProcessMetricsConfig::default(),
             validation: HostViewValidationMode::None,
         },
     )
@@ -707,6 +853,7 @@ fn scrape_due_uses_stable_fallback_start_time_when_stat_is_unavailable() {
             network: false,
             processes: false,
             load: false,
+            per_processes: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -725,6 +872,11 @@ fn scrape_due_uses_stable_fallback_start_time_when_stat_is_unavailable() {
             disk_exclude: None,
             network_include: None,
             network_exclude: None,
+            process_include: None,
+            process_exclude: None,
+            process_max_processes: 100,
+            process_labels: ProcessLabelsConfig::default(),
+            process_metrics: ProcessMetricsConfig::default(),
             validation: HostViewValidationMode::None,
         },
     )
@@ -779,6 +931,7 @@ fn validation_requires_stat_for_cumulative_families() {
             network: false,
             processes: false,
             load: false,
+            per_processes: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -797,6 +950,11 @@ fn validation_requires_stat_for_cumulative_families() {
             disk_exclude: None,
             network_include: None,
             network_exclude: None,
+            process_include: None,
+            process_exclude: None,
+            process_max_processes: 100,
+            process_labels: ProcessLabelsConfig::default(),
+            process_metrics: ProcessMetricsConfig::default(),
             validation: HostViewValidationMode::FailSelected,
         },
     ) {
@@ -830,6 +988,7 @@ fn scrape_worker_preserves_startup_validation_errors() {
             network: false,
             processes: false,
             load: false,
+            per_processes: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -848,6 +1007,11 @@ fn scrape_worker_preserves_startup_validation_errors() {
             disk_exclude: None,
             network_include: None,
             network_exclude: None,
+            process_include: None,
+            process_exclude: None,
+            process_max_processes: 100,
+            process_labels: ProcessLabelsConfig::default(),
+            process_metrics: ProcessMetricsConfig::default(),
             validation: HostViewValidationMode::FailSelected,
         },
     ) {
@@ -985,6 +1149,7 @@ fn scrape_due_fails_when_all_due_families_fail() {
             network: false,
             processes: false,
             load: false,
+            per_processes: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -1003,6 +1168,11 @@ fn scrape_due_fails_when_all_due_families_fail() {
             disk_exclude: None,
             network_include: None,
             network_exclude: None,
+            process_include: None,
+            process_exclude: None,
+            process_max_processes: 100,
+            process_labels: ProcessLabelsConfig::default(),
+            process_metrics: ProcessMetricsConfig::default(),
             validation: HostViewValidationMode::None,
         },
     )
@@ -1045,6 +1215,7 @@ fn scrape_due_reads_opt_in_disk_limit_from_sysfs() {
             network: false,
             processes: false,
             load: false,
+            per_processes: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -1063,6 +1234,11 @@ fn scrape_due_reads_opt_in_disk_limit_from_sysfs() {
             disk_exclude: None,
             network_include: None,
             network_exclude: None,
+            process_include: None,
+            process_exclude: None,
+            process_max_processes: 100,
+            process_labels: ProcessLabelsConfig::default(),
+            process_metrics: ProcessMetricsConfig::default(),
             validation: HostViewValidationMode::None,
         },
     )
@@ -1122,6 +1298,7 @@ fn scrape_due_uses_boot_time_for_counter_only_family_ticks() {
             network: true,
             processes: false,
             load: false,
+            per_processes: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -1140,6 +1317,11 @@ fn scrape_due_uses_boot_time_for_counter_only_family_ticks() {
             disk_exclude: None,
             network_include: None,
             network_exclude: None,
+            process_include: None,
+            process_exclude: None,
+            process_max_processes: 100,
+            process_labels: ProcessLabelsConfig::default(),
+            process_metrics: ProcessMetricsConfig::default(),
             validation: HostViewValidationMode::None,
         },
     )
@@ -1204,6 +1386,7 @@ fn scrape_due_reads_filesystem_usage_from_mountinfo() {
             network: false,
             processes: false,
             load: false,
+            per_processes: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -1222,6 +1405,11 @@ fn scrape_due_reads_filesystem_usage_from_mountinfo() {
             disk_exclude: None,
             network_include: None,
             network_exclude: None,
+            process_include: None,
+            process_exclude: None,
+            process_max_processes: 100,
+            process_labels: ProcessLabelsConfig::default(),
+            process_metrics: ProcessMetricsConfig::default(),
             validation: HostViewValidationMode::None,
         },
     )
@@ -1938,6 +2126,7 @@ fn projection_fixture_request() -> MetricsData {
             memory_limit: true,
             memory_shared: true,
             memory_hugepages: true,
+            process_metrics: ProcessMetricsConfig::default(),
             cpu: Some(CpuTimes {
                 user: 1.0,
                 nice: 2.0,
@@ -2005,6 +2194,25 @@ fn projection_fixture_request() -> MetricsData {
                 blocked: 1,
                 created: 99,
             }),
+            per_processes: vec![ProcessMetrics {
+                key: ProcessKey {
+                    pid: 42,
+                    start_time_unix_nano: 1_000,
+                },
+                labels: ProcessLabelsConfig::default(),
+                command: "df_engine".to_owned(),
+                executable_name: "df_engine".to_owned(),
+                parent_pid: 1,
+                user_cpu_seconds: 1.0,
+                system_cpu_seconds: 2.0,
+                cpu_utilization: Some(0.25),
+                memory_usage_bytes: 4096,
+                memory_virtual_bytes: 8192,
+                read_bytes: Some(10),
+                write_bytes: Some(20),
+                threads: 3,
+                uptime_seconds: 10.0,
+            }],
             disks: vec![DiskStats {
                 name: "sda".to_owned(),
                 limit_bytes: Some(123),

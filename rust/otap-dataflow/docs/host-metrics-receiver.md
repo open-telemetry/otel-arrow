@@ -37,9 +37,9 @@ The v1 receiver must:
 
 ## Non-Goals
 
-The v1 receiver does not include:
+The initial receiver scope did not include:
 
-- per-PID process metrics;
+- per-PID process metrics by default;
 - top-k process metrics;
 - grouped process aggregates;
 - eBPF;
@@ -203,6 +203,24 @@ nodes:
         processes:
           interval: 60s
           mode: summary
+          process:
+            include:
+              names: ["df_engine", "otelcol"]
+              match_type: strict
+            max_processes: 100
+            labels:
+              pid: false
+              command: true
+              executable_name: true
+              parent_pid: true
+            metrics:
+              cpu_time: true
+              cpu_utilization: true
+              memory_usage: true
+              memory_virtual: true
+              disk_io: true
+              threads: true
+              uptime: true
 ```
 
 Rules:
@@ -213,12 +231,19 @@ Rules:
 - `initial_delay` defaults to zero if omitted.
 - Unknown fields must be rejected with `serde(deny_unknown_fields)`.
 - `include_connection_count: true` is invalid in v1.
-- `processes.mode` only accepts `summary` in v1.
+- `processes.mode` defaults to `summary`. `summary_and_per_process` enables
+  per-process Linux metrics in addition to the aggregate summary.
 - `processes.mode: summary` emits `system.process.count` and
   `system.process.created`; `system.process.count` is limited to registered
   `process.state` values. The v1 implementation emits `running` from
   `/proc/stat`. It parses `procs_blocked` but does not emit it because
   `blocked` is not a registered `process.state` value.
+- `processes.mode: summary_and_per_process` is opt-in and emits the configured
+  subset of `process.cpu.time`, `process.cpu.utilization`,
+  `process.memory.usage`, `process.memory.virtual`, `process.disk.io`,
+  `process.threads`, and `process.uptime`. It requires `max_processes` to be
+  greater than zero and tracks CPU deltas by `(pid, start_time)` to avoid PID
+  reuse mixing.
 - The load family is not shown in the default example because Semantic
   Conventions 1.41.0 does not register a load metric. If maintainers choose an
   experimental Linux load metric, add it as an explicit opt-in.

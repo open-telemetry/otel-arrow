@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use super::ProcessKey;
 use super::{BYTES_PER_KIB, DISKSTAT_SECTOR_BYTES, NANOS_PER_SEC};
+use crate::receivers::host_metrics_receiver::ProcessLabelsConfig;
 
 #[derive(Copy, Clone, Default)]
 pub(super) struct CpuTimes {
@@ -89,6 +91,42 @@ pub(super) struct ProcessStats {
     pub(super) running: u64,
     pub(super) blocked: u64,
     pub(super) created: u64,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct ProcessMetrics {
+    pub(super) key: ProcessKey,
+    pub(super) labels: ProcessLabelsConfig,
+    pub(super) command: String,
+    pub(super) executable_name: String,
+    pub(super) parent_pid: u32,
+    pub(super) user_cpu_seconds: f64,
+    pub(super) system_cpu_seconds: f64,
+    pub(super) cpu_utilization: Option<f64>,
+    pub(super) memory_usage_bytes: u64,
+    pub(super) memory_virtual_bytes: u64,
+    pub(super) read_bytes: Option<u64>,
+    pub(super) write_bytes: Option<u64>,
+    pub(super) threads: u64,
+    pub(super) uptime_seconds: f64,
+}
+
+pub(super) struct ProcessStat {
+    pub(super) pid: u32,
+    pub(super) command: String,
+    pub(super) parent_pid: u32,
+    pub(super) user_cpu_seconds: f64,
+    pub(super) system_cpu_seconds: f64,
+    pub(super) threads: u64,
+    pub(super) start_time_ticks: u64,
+    pub(super) virtual_memory_bytes: u64,
+    pub(super) resident_pages: u64,
+}
+
+#[derive(Default)]
+pub(super) struct ProcessIo {
+    pub(super) read_bytes: u64,
+    pub(super) write_bytes: u64,
 }
 
 #[derive(Default)]
@@ -457,6 +495,54 @@ pub(super) fn parse_swaps(input: &str) -> Vec<SwapStats> {
     swaps
 }
 
+pub(super) fn parse_process_stat(input: &str, pid: u32, clk_tck: f64) -> Option<ProcessStat> {
+    let open = input.find('(')?;
+    let close = input.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    let command = input[open + 1..close].to_owned();
+    let fields: Vec<&str> = input[close + 1..].split_whitespace().collect();
+    if fields.len() < 22 {
+        return None;
+    }
+    let parent_pid = parse_u64(fields[1]).try_into().unwrap_or(u32::MAX);
+    let user_cpu_seconds = ticks_to_seconds(parse_u64(fields[11]), clk_tck);
+    let system_cpu_seconds = ticks_to_seconds(parse_u64(fields[12]), clk_tck);
+    let threads = parse_u64(fields[17]);
+    let start_time_ticks = parse_u64(fields[19]);
+    let virtual_memory_bytes = parse_u64(fields[20]);
+    let resident_pages = parse_u64(fields[21]);
+    Some(ProcessStat {
+        pid,
+        command,
+        parent_pid,
+        user_cpu_seconds,
+        system_cpu_seconds,
+        threads,
+        start_time_ticks,
+        virtual_memory_bytes,
+        resident_pages,
+    })
+}
+
+pub(super) fn parse_process_io(input: &str) -> ProcessIo {
+    let mut io = ProcessIo::default();
+    for line in input.lines() {
+        let mut fields = line.split_whitespace();
+        let Some(key) = fields.next() else {
+            continue;
+        };
+        let value = fields.next().map(parse_u64).unwrap_or_default();
+        match key.trim_end_matches(':') {
+            "read_bytes" => io.read_bytes = value,
+            "write_bytes" => io.write_bytes = value,
+            _ => {}
+        }
+    }
+    io
+}
+
 pub(super) fn parse_diskstats(
     input: &str,
     include: Option<&CompiledFilter>,
@@ -781,6 +867,16 @@ pub(super) fn clock_ticks_per_second() -> f64 {
     // SAFETY: _SC_CLK_TCK is a valid sysconf name; the call has no side effects.
     let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
     if ticks > 0 { ticks as f64 } else { 100.0 }
+}
+
+#[allow(unsafe_code)]
+pub(super) fn page_size_bytes() -> u64 {
+    // SAFETY: _SC_PAGESIZE is a valid sysconf name; the call has no side effects.
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    u64::try_from(page_size)
+        .ok()
+        .filter(|size| *size > 0)
+        .unwrap_or(4096)
 }
 
 pub(super) fn now_unix_nano() -> u64 {
