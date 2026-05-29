@@ -108,7 +108,7 @@ groups:
 | `initial_delay` | duration | `0s` | Delay before the first scrape. |
 | `host_view.root_path` | path | `/` | Host filesystem root to read procfs/sysfs from. |
 | `host_view.validation` | enum | `fail_selected` | One of `fail_selected`, `warn_selected`, or `none`. |
-| `families.<name>.enabled` | bool | `true` | Enables or disables a metric family. Load defaults to `false`. |
+| `families.<name>.enabled` | bool | varies | Enables or disables a metric family. All families default to `true` except `load`, which defaults to `false`. |
 | `families.<name>.interval` | duration | unset | Per-family interval; falls back to `collection_interval`. |
 | `families.cpu.utilization` | bool | `false` | Emits derived CPU utilization gauges. |
 | `families.load.enabled` | bool | `false` | Emits development-stability Linux load averages from `/proc/loadavg`. |
