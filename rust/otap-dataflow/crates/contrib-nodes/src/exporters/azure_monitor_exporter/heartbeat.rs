@@ -119,8 +119,8 @@ impl Heartbeat {
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_nodelay(true);
 
-        if let Some(ref ua) = config.user_agent {
-            builder = builder.user_agent(ua);
+        if let Some(ua) = &config.user_agent {
+            builder = builder.user_agent(ua.as_str());
         }
 
         let http_client = builder.build().map_err(Error::CreateClient)?;

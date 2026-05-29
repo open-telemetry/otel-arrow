@@ -247,11 +247,7 @@ impl Config {
                     "Invalid configuration: user_agent must be non-empty when set".to_string(),
                 ));
             }
-            if HeaderValue::from_str(ua)
-                .ok()
-                .and_then(|v| v.to_str().ok().map(|_| ()))
-                .is_none()
-            {
+            if HeaderValue::from_str(ua).is_err() {
                 return Err(Error::Config(
                     "Invalid configuration: user_agent contains characters that cannot be represented as an HTTP header value".to_string(),
                 ));
