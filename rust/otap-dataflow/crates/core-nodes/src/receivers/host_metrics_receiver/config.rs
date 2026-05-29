@@ -106,6 +106,8 @@ pub struct FamiliesConfig {
     pub network: NetworkFamilyConfig,
     /// Process summary metrics.
     pub processes: ProcessesFamilyConfig,
+    /// Linux load average metrics.
+    pub load: LoadFamilyConfig,
 }
 
 impl FamiliesConfig {
@@ -118,6 +120,7 @@ impl FamiliesConfig {
             + usize::from(self.filesystem.enabled)
             + usize::from(self.network.enabled)
             + usize::from(self.processes.enabled)
+            + usize::from(self.load.enabled)
     }
 }
 
@@ -362,6 +365,17 @@ impl Default for ProcessesFamilyConfig {
     }
 }
 
+/// Linux load average family config.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LoadFamilyConfig {
+    /// Enable Linux load average metrics.
+    pub enabled: bool,
+    /// Family collection interval. Defaults to top-level `collection_interval`.
+    #[serde(default, with = "humantime_serde::option")]
+    pub interval: Option<Duration>,
+}
+
 /// Process collection mode.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -428,6 +442,7 @@ pub(super) struct RuntimeFamilies {
     pub(super) filesystem: RuntimeFilesystemFamily,
     pub(super) network: RuntimeNetworkFamily,
     pub(super) processes: RuntimeFamily,
+    pub(super) load: RuntimeFamily,
 }
 
 #[derive(Clone)]
@@ -602,6 +617,11 @@ pub(super) fn validate_config(config: &Config) -> Result<(), otap_df_config::err
         "processes",
         config.families.processes.enabled,
         config.families.processes.interval,
+    )?;
+    validate_family_interval(
+        "load",
+        config.families.load.enabled,
+        config.families.load.interval,
     )?;
     let _ = normalized_root_path(Some(effective_root_path(config)?))?;
     Ok(())
@@ -780,6 +800,7 @@ impl TryFrom<Config> for RuntimeConfig {
                         .interval
                         .unwrap_or(config.collection_interval),
                 },
+                load: RuntimeFamily::new_load(&config.families.load, config.collection_interval),
             },
         })
     }
@@ -801,6 +822,13 @@ impl RuntimeFamily {
     }
 
     fn new_memory(config: &MemoryFamilyConfig, default_interval: Duration) -> Self {
+        Self {
+            enabled: config.enabled,
+            interval: config.interval.unwrap_or(default_interval),
+        }
+    }
+
+    fn new_load(config: &LoadFamilyConfig, default_interval: Duration) -> Self {
         Self {
             enabled: config.enabled,
             interval: config.interval.unwrap_or(default_interval),

@@ -48,6 +48,7 @@ fn memory_only_procfs_config() -> ProcfsConfig {
         filesystem: false,
         network: false,
         processes: false,
+        load: false,
         cpu_utilization: false,
         memory_limit: false,
         memory_shared: false,
@@ -67,6 +68,14 @@ fn memory_only_procfs_config() -> ProcfsConfig {
         network_include: None,
         network_exclude: None,
         validation: HostViewValidationMode::None,
+    }
+}
+
+fn load_only_procfs_config() -> ProcfsConfig {
+    ProcfsConfig {
+        load: true,
+        memory: false,
+        ..memory_only_procfs_config()
     }
 }
 
@@ -92,6 +101,12 @@ fn projection_uses_expected_metric_shapes() {
     assert_metric_shape(metrics, metric::CPU_FREQUENCY, "Hz", None);
     assert_first_point_int(metrics, metric::CPU_FREQUENCY, 2_400_000_000);
     assert_first_point_attr_int(metrics, metric::CPU_FREQUENCY, attr::CPU_LOGICAL_NUMBER, 0);
+    assert_metric_shape(metrics, metric::CPU_LOAD_AVERAGE_1M, "{thread}", None);
+    assert_first_point_double(metrics, metric::CPU_LOAD_AVERAGE_1M, 1.25);
+    assert_metric_shape(metrics, metric::CPU_LOAD_AVERAGE_5M, "{thread}", None);
+    assert_first_point_double(metrics, metric::CPU_LOAD_AVERAGE_5M, 0.75);
+    assert_metric_shape(metrics, metric::CPU_LOAD_AVERAGE_15M, "{thread}", None);
+    assert_first_point_double(metrics, metric::CPU_LOAD_AVERAGE_15M, 0.5);
     assert_metric_shape(metrics, metric::MEMORY_USAGE, "By", Some(false));
     assert_first_point_attr(
         metrics,
@@ -254,9 +269,13 @@ fn emitted_phase1_metric_shapes_match_weaver_semconv() {
     let emitted_shapes = emitted_phase1_metric_shapes();
 
     for (name, emitted) in emitted_shapes {
-        let semconv = semconv_shapes
-            .get(&name)
-            .unwrap_or_else(|| panic!("missing semconv metric {name}"));
+        let Some(semconv) = semconv_shapes.get(&name) else {
+            assert!(
+                is_intentional_experimental_metric(&name),
+                "missing semconv metric {name}"
+            );
+            continue;
+        };
 
         assert_eq!(emitted.unit, semconv.unit, "unit mismatch for {name}");
         assert_eq!(
@@ -304,6 +323,14 @@ fn emitted_phase1_metric_shapes_match_weaver_semconv() {
             }
         }
     }
+}
+
+#[cfg(feature = "dev-tools")]
+fn is_intentional_experimental_metric(name: &str) -> bool {
+    matches!(
+        name,
+        metric::CPU_LOAD_AVERAGE_1M | metric::CPU_LOAD_AVERAGE_5M | metric::CPU_LOAD_AVERAGE_15M
+    )
 }
 
 #[test]
@@ -518,6 +545,7 @@ fn scrape_due_emits_successful_families_after_partial_read_error() {
             filesystem: false,
             network: false,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -583,6 +611,7 @@ fn scrape_due_preserves_disk_counter_state_after_diskstats_read_error() {
             filesystem: false,
             network: false,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -677,6 +706,7 @@ fn scrape_due_uses_stable_fallback_start_time_when_stat_is_unavailable() {
             filesystem: false,
             network: false,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -748,6 +778,7 @@ fn validation_requires_stat_for_cumulative_families() {
             filesystem: false,
             network: false,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -798,6 +829,7 @@ fn scrape_worker_preserves_startup_validation_errors() {
             filesystem: false,
             network: false,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -952,6 +984,7 @@ fn scrape_due_fails_when_all_due_families_fail() {
             filesystem: false,
             network: false,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -1011,6 +1044,7 @@ fn scrape_due_reads_opt_in_disk_limit_from_sysfs() {
             filesystem: false,
             network: false,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -1087,6 +1121,7 @@ fn scrape_due_uses_boot_time_for_counter_only_family_ticks() {
             filesystem: false,
             network: true,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -1168,6 +1203,7 @@ fn scrape_due_reads_filesystem_usage_from_mountinfo() {
             filesystem: true,
             network: false,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -1529,6 +1565,45 @@ fn netdev_parser_applies_interface_filters() {
 }
 
 #[test]
+fn loadavg_parser_reads_first_three_fields() {
+    let load = parse_loadavg("1.25 0.75 0.50 2/123 456\n").expect("load avg");
+
+    assert_eq!(load.one_minute, 1.25);
+    assert_eq!(load.five_minutes, 0.75);
+    assert_eq!(load.fifteen_minutes, 0.5);
+}
+
+#[test]
+fn loadavg_parser_rejects_missing_or_invalid_fields() {
+    assert!(parse_loadavg("1.25 0.75\n").is_none());
+    assert!(parse_loadavg("1.25 nope 0.50 2/123 456\n").is_none());
+}
+
+#[test]
+fn scrape_due_reads_loadavg_from_host_root() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let proc = root.path().join("proc");
+    std::fs::create_dir(&proc).expect("proc dir");
+    std::fs::write(proc.join("loadavg"), "1.25 0.75 0.50 2/123 456\n").expect("loadavg");
+
+    let mut source =
+        ProcfsSource::new(Some(root.path()), load_only_procfs_config()).expect("source");
+    let scrape = scrape_blocking(
+        &mut source,
+        ProcfsFamilies {
+            load: true,
+            ..ProcfsFamilies::default()
+        },
+    )
+    .expect("load scrape");
+    let load = scrape.snapshot.load.expect("load metrics");
+
+    assert_eq!(load.one_minute, 1.25);
+    assert_eq!(load.five_minutes, 0.75);
+    assert_eq!(load.fifteen_minutes, 0.5);
+}
+
+#[test]
 fn root_path_uses_host_pid_one_netdev() {
     let paths = ProcfsPaths::new(Some(Path::new("/host")));
     assert_eq!(paths.net_dev, PathBuf::from("/host/proc/1/net/dev"));
@@ -1886,6 +1961,11 @@ fn projection_fixture_request() -> MetricsData {
                 physical_count: 1,
                 frequencies_hz: vec![2_400_000_000.0],
             },
+            load: Some(LoadAverage {
+                one_minute: 1.25,
+                five_minutes: 0.75,
+                fifteen_minutes: 0.5,
+            }),
             memory: Some(MemoryStats {
                 total: 100,
                 used: 80,
@@ -2066,6 +2146,21 @@ fn assert_first_point_int(metrics: &[Metric], name: &'static str, expected: i64)
         point.value,
         Some(number_data_point::Value::AsInt(expected)),
         "{name} first point should be int"
+    );
+}
+
+fn assert_first_point_double(metrics: &[Metric], name: &'static str, expected: f64) {
+    let metric = metric_by_name(metrics, name);
+    let point = match metric.data.as_ref().expect("metric data") {
+        otlp_metric::Data::Sum(sum) => sum.data_points.first(),
+        otlp_metric::Data::Gauge(gauge) => gauge.data_points.first(),
+        _ => None,
+    }
+    .expect("data point");
+    assert_eq!(
+        point.value,
+        Some(number_data_point::Value::AsDouble(expected)),
+        "{name} first point should be double"
     );
 }
 

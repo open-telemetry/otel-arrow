@@ -108,9 +108,10 @@ groups:
 | `initial_delay` | duration | `0s` | Delay before the first scrape. |
 | `host_view.root_path` | path | `/` | Host filesystem root to read procfs/sysfs from. |
 | `host_view.validation` | enum | `fail_selected` | One of `fail_selected`, `warn_selected`, or `none`. |
-| `families.<name>.enabled` | bool | `true` | Enables or disables a metric family. |
+| `families.<name>.enabled` | bool | `true` | Enables or disables a metric family. Load defaults to `false`. |
 | `families.<name>.interval` | duration | unset | Per-family interval; falls back to `collection_interval`. |
 | `families.cpu.utilization` | bool | `false` | Emits derived CPU utilization gauges. |
+| `families.load.enabled` | bool | `false` | Emits development-stability Linux load averages from `/proc/loadavg`. |
 | `families.memory.limit` | bool | `false` | Emits `system.memory.limit`. |
 | `families.memory.shared` | bool | `false` | Emits Linux shared memory. |
 | `families.memory.hugepages` | bool | `false` | Emits Linux hugepage metrics. |
@@ -120,7 +121,7 @@ groups:
 | `families.filesystem.include_remote_filesystems` | bool | `false` | Includes remote and userspace filesystems such as NFS, CIFS, 9p, and FUSE. |
 
 Families are `cpu`, `memory`, `paging`, `system`, `disk`, `filesystem`,
-`network`, and `processes`.
+`network`, `processes`, and `load`.
 
 Host-wide collection must run in a one-core source pipeline. Use a topic
 exporter to fan out to multicore downstream processing when needed.
@@ -169,8 +170,11 @@ groups:
 ## Current Limits
 
 - Linux only.
-- Load metrics are not emitted in v1 because Semantic Conventions 1.41.0 does
-  not register a system load metric.
+- `families.load.enabled` is disabled by default. When enabled, it emits
+  development-stability Collector-compatible gauges:
+  `system.cpu.load_average.1m`, `system.cpu.load_average.5m`, and
+  `system.cpu.load_average.15m` with unit `{thread}`. Semantic Conventions
+  1.41.0 does not register these names.
 - `families.cpu.per_cpu` is rejected in v1.
 - `families.network.include_connection_count` is rejected in v1.
 - Process metrics are aggregate host summaries, not per-process scrapes.
