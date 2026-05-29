@@ -293,9 +293,11 @@ mod imp {
                 "sd_journal_get_cursor",
             )?;
             let cursor = unsafe { CStr::from_ptr(cursor_ptr) }
-                .to_string_lossy()
-                .into_owned();
+                .to_str()
+                .map(str::to_owned)
+                .map_err(|err| format!("sd_journal_get_cursor returned non-UTF-8 cursor: {err}"));
             unsafe { libc::free(cursor_ptr.cast()) };
+            let cursor = cursor?;
 
             let mut realtime_usec = 0u64;
             check(
@@ -337,9 +339,13 @@ mod imp {
                             }
                         }
                     }
-                    let name = std::str::from_utf8(&bytes[..eq])
-                        .map_err(|err| format!("journald field name is not UTF-8: {err}"))?
-                        .to_owned();
+                    let name = match std::str::from_utf8(&bytes[..eq]) {
+                        Ok(name) => name.to_owned(),
+                        Err(_) => {
+                            dropped_fields = dropped_fields.saturating_add(1);
+                            continue;
+                        }
+                    };
                     let value = bytes[eq + 1..].to_vec();
                     fields.push(JournalField { name, value });
                     copied_entry_bytes = copied_entry_bytes.saturating_add(field_len);
