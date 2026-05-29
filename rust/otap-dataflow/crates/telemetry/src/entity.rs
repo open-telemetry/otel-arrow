@@ -87,6 +87,15 @@ impl PartialEq for EntityAttributeSet {
             return false;
         }
 
+        // `scope_keys` is part of the semantic identity of an attribute set:
+        // two sets with identical fields/values but different scope designations
+        // must not be de-duplicated, otherwise a scope attribute could be emitted
+        // as a data-point attribute (or vice versa) after type erasure. Compare
+        // order-independently since the field order is not significant here.
+        if !scope_keys_equal(self.descriptor.scope_keys, other.descriptor.scope_keys) {
+            return false;
+        }
+
         self.sorted_indices
             .iter()
             .zip(other.sorted_indices.iter())
@@ -122,6 +131,16 @@ impl Hash for EntityAttributeSet {
             attribute_value_type_rank(field.r#type).hash(state);
             let value = &self.values[*idx];
             hash_attribute_value(value, state);
+        }
+
+        // Mirror the `PartialEq` treatment of `scope_keys` so the scope/data-point
+        // designation survives registry de-duplication. Hash in sorted order to
+        // stay consistent with the order-independent equality comparison.
+        let mut scope_keys: Vec<&'static str> = self.descriptor.scope_keys.to_vec();
+        scope_keys.sort_unstable();
+        scope_keys.len().hash(state);
+        for key in scope_keys {
+            key.hash(state);
         }
     }
 }
@@ -293,6 +312,18 @@ fn attribute_value_equal(left: &AttributeValue, right: &AttributeValue) -> bool 
     }
 }
 
+/// Compares two scope-key slices for set equality, ignoring ordering.
+fn scope_keys_equal(left: &[&'static str], right: &[&'static str]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut left_sorted: Vec<&'static str> = left.to_vec();
+    let mut right_sorted: Vec<&'static str> = right.to_vec();
+    left_sorted.sort_unstable();
+    right_sorted.sort_unstable();
+    left_sorted == right_sorted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,6 +461,88 @@ mod tests {
 
         assert_eq!(outcome1.key(), outcome2.key());
         assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn test_scope_keys_prevent_dedup() {
+        // Two descriptors with identical fields and values, differing only in
+        // which key is designated as a scope-level attribute. They must NOT be
+        // de-duplicated, otherwise a scope attribute could be emitted as a
+        // data-point attribute (or vice versa) after type erasure.
+        static DESCRIPTOR_UNSCOPED: AttributesDescriptor = AttributesDescriptor {
+            name: "unscoped",
+            fields: &[AttributeField {
+                key: "alpha",
+                r#type: AttributeValueType::String,
+                brief: "alpha",
+            }],
+            scope_keys: &[],
+        };
+
+        static DESCRIPTOR_SCOPED: AttributesDescriptor = AttributesDescriptor {
+            name: "scoped",
+            fields: &[AttributeField {
+                key: "alpha",
+                r#type: AttributeValueType::String,
+                brief: "alpha",
+            }],
+            scope_keys: &["alpha"],
+        };
+
+        #[derive(Debug)]
+        struct Unscoped {
+            values: Vec<AttributeValue>,
+        }
+
+        #[derive(Debug)]
+        struct Scoped {
+            values: Vec<AttributeValue>,
+        }
+
+        impl AttributeSetHandler for Unscoped {
+            fn descriptor(&self) -> &'static AttributesDescriptor {
+                &DESCRIPTOR_UNSCOPED
+            }
+
+            fn attribute_values(&self) -> &[AttributeValue] {
+                &self.values
+            }
+        }
+
+        impl AttributeSetHandler for Scoped {
+            fn descriptor(&self) -> &'static AttributesDescriptor {
+                &DESCRIPTOR_SCOPED
+            }
+
+            fn attribute_values(&self) -> &[AttributeValue] {
+                &self.values
+            }
+        }
+
+        let mut registry = EntityRegistry::default();
+
+        let outcome1 = registry.register(Unscoped {
+            values: vec![AttributeValue::String("value".to_string())],
+        });
+        assert!(matches!(outcome1, RegisterOutcome::Created(_)));
+
+        let outcome2 = registry.register(Scoped {
+            values: vec![AttributeValue::String("value".to_string())],
+        });
+        assert!(matches!(outcome2, RegisterOutcome::Created(_)));
+
+        let key1 = outcome1.key();
+        let key2 = outcome2.key();
+        assert_ne!(key1, key2);
+        assert_eq!(registry.len(), 2);
+
+        // Registering the same scoped set again should reuse the scoped entry.
+        let outcome3 = registry.register(Scoped {
+            values: vec![AttributeValue::String("value".to_string())],
+        });
+        assert!(matches!(outcome3, RegisterOutcome::Existing(_)));
+        assert_eq!(key2, outcome3.key());
+        assert_eq!(registry.len(), 2);
     }
 
     #[test]
