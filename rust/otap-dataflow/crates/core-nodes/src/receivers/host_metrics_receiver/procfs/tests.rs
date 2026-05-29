@@ -587,10 +587,10 @@ fn counter_tracker_prunes_disappeared_process_series_only_when_per_processes_are
         10
     );
 
-    let _ = tracker.snapshot(20, 30, None, None, None, None, None, None);
-    let starts = tracker.snapshot(30, 40, None, None, None, Some(&processes), None, None);
+    let _ = tracker.snapshot(10, 30, None, None, None, None, None, None);
+    let starts = tracker.snapshot(10, 40, None, None, None, Some(&processes), None, None);
     assert_eq!(
-        starts.get_joined(metric::PROCESS_CPU_TIME, "10:100", "user", 30),
+        starts.get_joined(metric::PROCESS_CPU_TIME, "10:100", "user", 10),
         10
     );
 
