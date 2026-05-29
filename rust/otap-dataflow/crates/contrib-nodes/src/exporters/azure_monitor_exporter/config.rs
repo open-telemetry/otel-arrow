@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::Error;
+use reqwest::header::HeaderValue;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -238,6 +239,23 @@ impl Config {
             return Err(Error::Config(
                 "Invalid configuration: gzip_compression_level must be 0-9".to_string(),
             ));
+        }
+
+        if let Some(ua) = &self.api.user_agent {
+            if ua.is_empty() {
+                return Err(Error::Config(
+                    "Invalid configuration: user_agent must be non-empty when set".to_string(),
+                ));
+            }
+            if HeaderValue::from_str(ua)
+                .ok()
+                .and_then(|v| v.to_str().ok().map(|_| ()))
+                .is_none()
+            {
+                return Err(Error::Config(
+                    "Invalid configuration: user_agent contains characters that cannot be represented as an HTTP header value".to_string(),
+                ));
+            }
         }
 
         if self.heartbeat.enabled && self.heartbeat.frequency.is_zero() {
@@ -666,6 +684,52 @@ mod tests {
         assert_eq!(
             result.unwrap_err().to_string(),
             "Configuration error: Invalid configuration: gzip_compression_level must be 0-9"
+        );
+    }
+
+    #[test]
+    fn test_user_agent_valid() {
+        let config = Config {
+            api: ApiConfig {
+                user_agent: Some("my-app/1.0".to_string()),
+                ..test_api_config()
+            },
+            ..test_config()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_user_agent_empty_rejected() {
+        let config = Config {
+            api: ApiConfig {
+                user_agent: Some("".to_string()),
+                ..test_api_config()
+            },
+            ..test_config()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Configuration error: Invalid configuration: user_agent must be non-empty when set"
+        );
+    }
+
+    #[test]
+    fn test_user_agent_invalid_header_rejected() {
+        let config = Config {
+            api: ApiConfig {
+                user_agent: Some("bad\nvalue".to_string()),
+                ..test_api_config()
+            },
+            ..test_config()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Configuration error: Invalid configuration: user_agent contains characters that cannot be represented as an HTTP header value"
         );
     }
 
