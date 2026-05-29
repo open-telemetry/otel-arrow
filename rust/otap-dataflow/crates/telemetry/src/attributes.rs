@@ -121,6 +121,18 @@ pub trait AttributeSetHandler {
         AttributeIterator::new(self.descriptor().fields, self.attribute_values())
     }
 
+    /// Returns `true` if the given attribute key should be emitted on the
+    /// OpenTelemetry instrumentation scope rather than as a data-point attribute.
+    ///
+    /// Backed by the static descriptor's `scope_keys`, which the
+    /// `#[derive(AttributeSetHandler)]` macro populates from fields marked
+    /// `#[attribute(key = "...", scope)]`. Because this reads the descriptor, it
+    /// keeps working through type-erased wrappers (e.g. `EntityAttributeSet`)
+    /// that carry the original `&'static` descriptor.
+    fn is_scope_attribute(&self, key: &str) -> bool {
+        self.descriptor().scope_keys.contains(&key)
+    }
+
     /// Returns the schema name for this attribute set (e.g., "pipeline.attrs").
     fn schema_name(&self) -> &'static str {
         self.descriptor().name
@@ -429,6 +441,7 @@ mod tests {
                 r#type: AttributeValueType::String,
                 brief: "Test attribute",
             }],
+            scope_keys: &[],
         };
 
         impl AttributeSetHandler for TestAttributeSet {

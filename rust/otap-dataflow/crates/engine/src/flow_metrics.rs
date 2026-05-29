@@ -69,10 +69,10 @@ pub struct FlowAttributeSet {
     #[attribute(key = "flow.node.end")]
     pub end_node: Cow<'static, str>,
     /// Optional per-flow purpose differentiator (e.g. `filter`, `transform`).
-    /// Empty when the flow declares no purpose. Lets OTel View selectors target
-    /// distinct flavors of processor work while all flows share the single
-    /// `flow` scope.
-    #[attribute(key = "flow.purpose")]
+    /// Empty when the flow declares no purpose. Emitted on the OpenTelemetry
+    /// instrumentation scope so View selectors can target distinct flavors of
+    /// processor work while all flows share the single `flow` scope.
+    #[attribute(key = "flow.purpose", scope)]
     pub purpose: Cow<'static, str>,
     /// Pipeline attributes.
     #[compose]
@@ -933,6 +933,19 @@ mod tests {
             "flow.purpose missing from FlowAttributeSet descriptor"
         );
 
+        // `flow.purpose` must be designated a scope-level attribute (it is
+        // emitted on the OpenTelemetry instrumentation scope, not on data
+        // points), while ordinary flow attributes remain data-point attributes.
+        assert!(
+            descriptor.scope_keys.contains(&"flow.purpose"),
+            "flow.purpose missing from descriptor scope_keys: {:?}",
+            descriptor.scope_keys
+        );
+        let attrs = FlowAttributeSet::default();
+        assert!(attrs.is_scope_attribute("flow.purpose"));
+        assert!(!attrs.is_scope_attribute("flow.id"));
+        assert!(!attrs.is_scope_attribute("flow.node.start"));
+
         // When set, the value is emitted under the `flow.purpose` key.
         let attrs = FlowAttributeSet {
             flow_id: "sampling".into(),
@@ -950,8 +963,9 @@ mod tests {
             "expected flow.purpose=filter in {set:?}"
         );
 
-        // When unset, the key is still present but carries an empty value
-        // (preserving the single `flow` scope behavior).
+        // When unset, the attribute-set layer still yields the key with an empty
+        // value; the metrics dispatcher omits empty scope attributes before
+        // emission, so the instrumentation scope keeps its prior shape.
         let unset = FlowAttributeSet::default();
         let unset_set: Vec<(&str, AttributeValue)> = unset
             .iter_attributes()

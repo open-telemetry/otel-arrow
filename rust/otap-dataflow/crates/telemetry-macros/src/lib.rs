@@ -325,6 +325,8 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
 ///   - `#[attributes(name = "my.attributes.name")]`
 ///     Field attributes:
 ///   - `#[attribute(key = "field.key")]` (optional, defaults to field name with dots)
+///   - `#[attribute(key = "field.key", scope)]` to emit the attribute on the
+///     OpenTelemetry instrumentation scope instead of on each data point
 ///   - `#[compose]` for fields that implement AttributeSetHandler
 #[proc_macro_derive(AttributeSetHandler, attributes(attributes, attribute, compose))]
 pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
@@ -413,6 +415,7 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     let mut attr_field_descriptions = Vec::new();
     let mut attr_field_types: Vec<proc_macro2::TokenStream> = Vec::new();
     let mut attr_iter_values: Vec<proc_macro2::TokenStream> = Vec::new();
+    let mut attr_field_scope_keys: Vec<String> = Vec::new();
 
     let mut composed_field_idents = Vec::new();
 
@@ -478,6 +481,16 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         }
         let derived_key = ident.to_string().replace('_', ".");
         let final_key = key_attr.unwrap_or(derived_key);
+
+        // Detect `#[attribute(..., scope)]` to mark this attribute as a
+        // scope-level (instrumentation-scope) attribute.
+        let is_scope_field = field
+            .attrs
+            .iter()
+            .any(parse_attribute_field_is_scope);
+        if is_scope_field {
+            attr_field_scope_keys.push(final_key.clone());
+        }
 
         // Determine attribute value type based on field type
         let (attr_type, iter_value) = match &field.ty {
@@ -555,6 +568,9 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
 
     let desc_ident = format_ident!("ATTRIBUTES_DESCRIPTOR");
 
+    // Local scope-attribute keys (from `#[attribute(key = "...", scope)]`).
+    let local_scope_keys = &attr_field_scope_keys;
+
     // Generate the descriptor and iterator implementation
     if composed_field_idents.is_empty() {
         // Simple case: no composition - keep the original approach
@@ -570,6 +586,7 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                                 r#type: #attr_field_types
                             } ),*
                         ],
+                        scope_keys: &[ #( #local_scope_keys ),* ],
                     };
                     &#desc_ident
                 }
@@ -636,9 +653,17 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                             // Leak the vector to get a 'static reference
                             let fields_slice: &'static [#field_path] = ::std::boxed::Box::leak(all_fields.into_boxed_slice());
 
+                            // Merge local scope keys with those of composed sets.
+                            let mut all_scope_keys: ::std::vec::Vec<&'static str> =
+                                ::std::vec![ #( #local_scope_keys ),* ];
+                            #( all_scope_keys.extend_from_slice(dummy.#composed_field_idents.descriptor().scope_keys); )*
+                            let scope_keys_slice: &'static [&'static str] =
+                                ::std::boxed::Box::leak(all_scope_keys.into_boxed_slice());
+
                             #desc_ident = Some(#descriptor_path {
                                 name: #attributes_name,
                                 fields: fields_slice,
+                                scope_keys: scope_keys_slice,
                             });
                         });
 
@@ -864,4 +889,24 @@ fn parse_attribute_field_attr(attr: &Attribute) -> Option<String> {
         Ok(())
     });
     out
+}
+
+/// Returns `true` when a field is marked as a scope-level attribute via
+/// `#[attribute(key = "...", scope)]`. Scope attributes are emitted on the
+/// OpenTelemetry instrumentation scope rather than as data-point attributes.
+fn parse_attribute_field_is_scope(attr: &Attribute) -> bool {
+    if !attr.path().is_ident("attribute") {
+        return false;
+    }
+    let mut is_scope = false;
+    let _ = attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("scope") {
+            is_scope = true;
+        } else if meta.path.is_ident("key") {
+            // Consume the `key = "..."` value so nested-meta parsing succeeds.
+            let _: LitStr = meta.value()?.parse()?;
+        }
+        Ok(())
+    });
+    is_scope
 }

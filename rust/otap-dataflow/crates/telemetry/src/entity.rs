@@ -306,6 +306,7 @@ mod tests {
             r#type: AttributeValueType::String,
             brief: "Test attribute",
         }],
+        scope_keys: &[],
     };
 
     #[derive(Debug)]
@@ -360,6 +361,7 @@ mod tests {
                     brief: "beta",
                 },
             ],
+            scope_keys: &[],
         };
 
         static DESCRIPTOR_B: AttributesDescriptor = AttributesDescriptor {
@@ -376,6 +378,7 @@ mod tests {
                     brief: "alpha",
                 },
             ],
+            scope_keys: &[],
         };
 
         #[derive(Debug)]
@@ -462,5 +465,68 @@ mod tests {
         assert_eq!(registry.len(), 0);
         assert!(registry.get_shared(key).is_none());
         assert!(!registry.unregister(key));
+    }
+
+    // Regression: scope-attribute designation must survive type erasure through
+    // `EntityAttributeSet`. The registry stores attribute sets as
+    // `EntityAttributeSet` (descriptor + values), discarding the original
+    // concrete type. Because `is_scope_attribute` is backed by the static
+    // descriptor's `scope_keys`, the type-erased entity must still report which
+    // attributes belong on the instrumentation scope.
+    #[test]
+    fn test_scope_attribute_survives_type_erasure() {
+        static SCOPED_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+            name: "scoped_attrs",
+            fields: &[
+                AttributeField {
+                    key: "data.point.key",
+                    r#type: AttributeValueType::String,
+                    brief: "a data-point attribute",
+                },
+                AttributeField {
+                    key: "scope.key",
+                    r#type: AttributeValueType::String,
+                    brief: "a scope-level attribute",
+                },
+            ],
+            scope_keys: &["scope.key"],
+        };
+
+        #[derive(Debug)]
+        struct ScopedAttributeSet {
+            values: Vec<AttributeValue>,
+        }
+
+        impl AttributeSetHandler for ScopedAttributeSet {
+            fn descriptor(&self) -> &'static AttributesDescriptor {
+                &SCOPED_DESCRIPTOR
+            }
+
+            fn attribute_values(&self) -> &[AttributeValue] {
+                &self.values
+            }
+        }
+
+        let mut registry = EntityRegistry::default();
+        let key = registry
+            .register(ScopedAttributeSet {
+                values: vec![
+                    AttributeValue::String("dp".to_string()),
+                    AttributeValue::String("sc".to_string()),
+                ],
+            })
+            .key();
+
+        // `get` returns the type-erased `EntityAttributeSet`.
+        let erased = registry.get(key).expect("missing attributes");
+        assert!(
+            erased.is_scope_attribute("scope.key"),
+            "scope attribute should survive type erasure"
+        );
+        assert!(
+            !erased.is_scope_attribute("data.point.key"),
+            "data-point attribute must not be reported as scope-level"
+        );
+        assert!(!erased.is_scope_attribute("unknown.key"));
     }
 }

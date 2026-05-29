@@ -1,0 +1,192 @@
+# flow.purpose scope-attribute demo
+# =================================================================
+# Demonstrates the `flow.purpose` scope attribute: two DIFFERENT flows that
+# both emit under the single `flow` instrumentation scope, disambiguated by a
+# per-flow `purpose` so OpenTelemetry View selectors can target each one.
+#
+# This mirrors the PR use case of two distinct flavors of processor work:
+#
+#   1. SAMPLING  (purpose: log_sampler) - a 1-in-3 log sampler.
+#      Enables the volume metrics (signals_incoming / signals_outgoing) so you
+#      can see "how many records came in vs survived sampling", plus
+#      compute_duration so you can see "how long sampling takes".
+#
+#   2. ENRICH    (purpose: transform)   - an attribute-enrichment stage.
+#      Enables only compute_duration so you can see "how long enrichment takes"
+#      without volume noise.
+#
+# BOTH flows emit `compute.duration` on the SAME `flow` scope with the SAME
+# instrument name. This is exactly the collision this feature targets: before
+# this change a View keyed on `scope_name: flow` + `instrument_name:
+# compute.duration` would match BOTH flows and conflate their durations. Now
+# each flow stamps `flow.purpose` onto the instrumentation scope, so the Views
+# below select on `scope_attributes: { flow.purpose: ... }` to pull each flow's
+# `compute.duration` (and the sampling volume metrics) into distinct,
+# customer-facing Prometheus metrics.
+#
+# -----------------------------------------------------------------------------
+# Run it:
+#   cd rust/otap-dataflow
+#   .dev/run.sh flow-purpose-demo.yaml
+#
+# Inspect results (Prometheus pull endpoint on :9090):
+#   # All demo metrics:
+#   curl -s http://127.0.0.1:9090/metrics | grep -E 'sampling_|enrich_'
+#
+#   # Sampling flow: records in vs records emitted (expect emitted ~= in/3):
+#   curl -s http://127.0.0.1:9090/metrics | grep sampling_log_records
+#
+#   # Enrich flow: compute-duration histogram:
+#   curl -s http://127.0.0.1:9090/metrics | grep enrich_compute_duration
+#
+#   # Confirm flow.purpose rode along on the instrumentation scope
+#   # (OTel Prometheus exposes scope attributes via otel_scope_* labels):
+#   curl -s http://127.0.0.1:9090/metrics | grep otel_scope
+# -----------------------------------------------------------------------------
+
+version: otel_dataflow/v1
+
+engine:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              type: prometheus
+              config:
+                host: "0.0.0.0"
+                port: 9090
+                path: "/metrics"
+      views:
+        # --- SAMPLING flow (flow.purpose = log_sampler) ----------------------
+        # Records entering the sampler (full input volume).
+        - selector:
+            scope_name: "flow"
+            scope_attributes:
+              flow.purpose: "log_sampler"
+            instrument_name: "signals.incoming"
+          stream:
+            name: "sampling.log_records.received"
+            description: "Log records entering the sampling flow"
+        # Records leaving the sampler (survivors, ~1/3 of received).
+        - selector:
+            scope_name: "flow"
+            scope_attributes:
+              flow.purpose: "log_sampler"
+            instrument_name: "signals.outgoing"
+          stream:
+            name: "sampling.log_records.emitted"
+            description: "Log records surviving the sampling flow"
+        # Sampler duration.
+        - selector:
+            scope_name: "flow"
+            scope_attributes:
+              flow.purpose: "log_sampler"
+            instrument_name: "compute.duration"
+          stream:
+            name: "sampling.compute.duration"
+            description: "Compute duration of the sampling flow"
+
+        # --- ENRICH flow (flow.purpose = transform) --------------------------
+        # Only the compute-duration latency of the enrichment stage.
+        - selector:
+            scope_name: "flow"
+            scope_attributes:
+              flow.purpose: "transform"
+            instrument_name: "compute.duration"
+          stream:
+            name: "enrich.compute.duration"
+            description: "Compute duration of the enrichment flow"
+    resource:
+      service.name: "flow-purpose-demo"
+
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+          telemetry:
+            runtime_metrics: normal
+            flow_metrics:
+              # Flow 1: SAMPLING. Volume metrics plus compute_duration.
+              - id: sampling_ingest
+                purpose: log_sampler
+                bounds:
+                  start_node: sampler
+                  end_node: attr1
+                metrics: [compute_duration, signals_incoming, signals_outgoing]
+
+              # Flow 2: ENRICH. compute_duration only, no volume.
+              # Non-overlapping with the sampling range above.
+              - id: enrich_stage
+                purpose: transform
+                bounds:
+                  start_node: enrich1
+                  end_node: enrich2
+                metrics: [compute_duration]
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 30
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+
+          # Sampling flow: keep 1 of every 3 log records.
+          sampler:
+            type: processor:log_sampling
+            config:
+              policy:
+                ratio:
+                  emit: 1
+                  out_of: 3
+
+          # End node of the sampling flow range.
+          attr1:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: pipeline.stage
+                  value: "sampled"
+
+          # Enrich flow: two attribute-enrichment nodes forming a 2-node range.
+          enrich1:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: enrich.tenant
+                  value: "demo-tenant"
+
+          enrich2:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: enrich.region
+                  value: "demo-region"
+
+          noop:
+            type: exporter:noop
+            config:
+
+        connections:
+          - from: receiver
+            to: sampler
+          - from: sampler
+            to: attr1
+          - from: attr1
+            to: enrich1
+          - from: enrich1
+            to: enrich2
+          - from: enrich2
+            to: noop

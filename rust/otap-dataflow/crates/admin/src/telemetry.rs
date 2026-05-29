@@ -2541,6 +2541,7 @@ mod tests {
                     brief: "Region",
                 },
             ],
+            scope_keys: &[],
         };
 
         #[derive(Debug)]
@@ -3480,6 +3481,7 @@ mod tests {
             r#type: AttributeValueType::String,
             brief: "HTTP method",
         }],
+        scope_keys: &[],
     };
 
     impl MetricSetHandler for E2eMetricSet {

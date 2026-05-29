@@ -674,6 +674,7 @@ mod tests {
                 brief: "CPU ID",
             },
         ],
+        scope_keys: &[],
     };
 
     /// Mock attribute set for testing scope attributes.
@@ -796,6 +797,7 @@ mod tests {
             r#type: AttributeValueType::Map,
             brief: "Custom user-defined attributes",
         }],
+        scope_keys: &[],
     };
 
     /// Mirrors engine::CustomAttributeSet: a single "custom" field of type Map.

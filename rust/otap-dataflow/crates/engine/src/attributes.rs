@@ -190,6 +190,7 @@ static CUSTOM_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor
         brief: "Custom user-defined attributes",
         r#type: AttributeValueType::Map,
     }],
+    scope_keys: &[],
 };
 
 impl CustomAttributeSet {

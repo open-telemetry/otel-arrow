@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use opentelemetry::{global, metrics::Meter};
+use opentelemetry::{InstrumentationScope, global, metrics::Meter};
 use tokio::time::{MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 
@@ -59,28 +59,62 @@ impl MetricsDispatcher {
     fn dispatch_metrics(&self) -> Result<(), Error> {
         self.metrics_handler
             .visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
-                let meter = global::meter(descriptor.name);
+                // Split the entity's attributes into instrumentation-scope
+                // attributes (those the attribute set marks `#[attribute(...,
+                // scope)]`, e.g. `flow.purpose`) and data-point attributes.
+                // Scope attributes are attached to the meter so View selectors
+                // keyed on scope attributes can match the emitted metrics.
+                let (scope_attributes, datapoint_attributes) =
+                    Self::partition_otel_attributes(attributes);
+
+                let meter = if scope_attributes.is_empty() {
+                    global::meter(descriptor.name)
+                } else {
+                    global::meter_with_scope(
+                        InstrumentationScope::builder(descriptor.name)
+                            .with_attributes(scope_attributes)
+                            .build(),
+                    )
+                };
 
                 // There is no support for metric level attributes currently. Attaching resource level attributes to every metric.
                 // TODO: Consider adding metric level attributes and not to add resource level attributes to every metric.
-                let otel_attributes = Self::to_opentelemetry_attributes(attributes);
-
                 for (field, value) in metrics_iter {
-                    self.add_opentelemetry_metric(field, value, &otel_attributes, &meter);
+                    self.add_opentelemetry_metric(field, value, &datapoint_attributes, &meter);
                 }
             });
 
         Ok(())
     }
 
-    fn to_opentelemetry_attributes(
+    /// Split an entity's attributes into `(scope, data_point)` OpenTelemetry
+    /// attributes in a single pass. An attribute is scope-level when the
+    /// attribute set declares it so via [`AttributeSetHandler::is_scope_attribute`]
+    /// (driven by `#[attribute(key = "...", scope)]`); everything else is a
+    /// data-point attribute.
+    ///
+    /// Scope attributes with an empty string value are omitted entirely (pushed
+    /// to neither bucket). Scope attributes participate in the OpenTelemetry
+    /// instrumentation-scope identity, so emitting an unset value (e.g. an
+    /// undeclared `flow.purpose`) would change the scope identity and export a
+    /// spurious empty attribute. Omitting them keeps the previous scope shape
+    /// for entities that do not configure the attribute.
+    fn partition_otel_attributes(
         attributes: &dyn AttributeSetHandler,
-    ) -> Vec<opentelemetry::KeyValue> {
-        let mut kvs = Vec::new();
+    ) -> (Vec<opentelemetry::KeyValue>, Vec<opentelemetry::KeyValue>) {
+        let mut scope = Vec::new();
+        let mut data_point = Vec::new();
         for (key, value) in attributes.iter_attributes() {
-            kvs.push(Self::to_opentelemetry_key_value(key, value));
+            if attributes.is_scope_attribute(key) {
+                if matches!(value, AttributeValue::String(s) if s.is_empty()) {
+                    continue;
+                }
+                scope.push(Self::to_opentelemetry_key_value(key, value));
+            } else {
+                data_point.push(Self::to_opentelemetry_key_value(key, value));
+            }
         }
-        kvs
+        (scope, data_point)
     }
 
     fn to_opentelemetry_key_value(key: &str, value: &AttributeValue) -> opentelemetry::KeyValue {
@@ -376,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn test_to_opentelemetry_attributes() {
+    fn test_partition_otel_attributes() {
         struct MockAttributeSetHandler {
             values: Vec<AttributeValue>,
         }
@@ -408,6 +442,73 @@ mod tests {
                             r#type: AttributeValueType::Int,
                         },
                     ],
+                    scope_keys: &[],
+                }
+            }
+
+            fn attribute_values(&self) -> &[AttributeValue] {
+                &self.values
+            }
+
+            fn iter_attributes<'a>(&'a self) -> AttributeIterator<'a> {
+                AttributeIterator::new(self.descriptor().fields, self.attribute_values())
+            }
+
+            // Mark `key2` as a scope-level attribute to exercise partitioning.
+            fn is_scope_attribute(&self, key: &str) -> bool {
+                key == "key2"
+            }
+        }
+
+        let attributes = MockAttributeSetHandler::new();
+        let (scope_attributes, datapoint_attributes) =
+            MetricsDispatcher::partition_otel_attributes(&attributes);
+
+        // `key1` is a data-point attribute, `key2` is lifted onto the scope.
+        assert_eq!(datapoint_attributes.len(), 1);
+        assert!(
+            datapoint_attributes
+                .iter()
+                .any(|kv| kv.key.as_str() == "key1" && kv.value.as_str() == "value1")
+        );
+        assert!(
+            !datapoint_attributes
+                .iter()
+                .any(|kv| kv.key.as_str() == "key2")
+        );
+
+        assert_eq!(scope_attributes.len(), 1);
+        assert!(scope_attributes.iter().any(
+            |kv| kv.key.as_str() == "key2" && matches!(kv.value, opentelemetry::Value::I64(42))
+        ));
+    }
+
+    #[test]
+    fn test_partition_otel_attributes_omits_empty_scope_attribute() {
+        // A scope attribute with an empty string value must be omitted entirely
+        // so it does not alter the instrumentation-scope identity or export a
+        // spurious empty attribute (e.g. an unset `flow.purpose`).
+        struct MockAttributeSetHandler {
+            values: Vec<AttributeValue>,
+        }
+
+        impl AttributeSetHandler for MockAttributeSetHandler {
+            fn descriptor(&self) -> &'static AttributesDescriptor {
+                &AttributesDescriptor {
+                    name: "mock",
+                    fields: &[
+                        AttributeField {
+                            key: "data.key",
+                            brief: "a data-point attribute",
+                            r#type: AttributeValueType::String,
+                        },
+                        AttributeField {
+                            key: "scope.key",
+                            brief: "an unset scope attribute",
+                            r#type: AttributeValueType::String,
+                        },
+                    ],
+                    scope_keys: &["scope.key"],
                 }
             }
 
@@ -420,17 +521,25 @@ mod tests {
             }
         }
 
-        let attributes = MockAttributeSetHandler::new();
-        let otel_attributes = MetricsDispatcher::to_opentelemetry_attributes(&attributes);
-        assert_eq!(otel_attributes.len(), 2);
+        let attributes = MockAttributeSetHandler {
+            values: vec![
+                AttributeValue::String("present".to_string()),
+                AttributeValue::String(String::new()),
+            ],
+        };
+        let (scope_attributes, datapoint_attributes) =
+            MetricsDispatcher::partition_otel_attributes(&attributes);
+
+        // The empty scope attribute is dropped, leaving no scope attributes so
+        // the dispatcher falls back to the plain meter.
+        assert!(scope_attributes.is_empty());
+        // The non-empty data-point attribute is retained.
+        assert_eq!(datapoint_attributes.len(), 1);
         assert!(
-            otel_attributes
+            datapoint_attributes
                 .iter()
-                .any(|kv| kv.key.as_str() == "key1" && kv.value.as_str() == "value1")
+                .any(|kv| kv.key.as_str() == "data.key" && kv.value.as_str() == "present")
         );
-        assert!(otel_attributes.iter().any(
-            |kv| kv.key.as_str() == "key2" && matches!(kv.value, opentelemetry::Value::I64(42))
-        ));
     }
 
     #[test]
@@ -630,6 +739,7 @@ mod tests {
                 r#type: AttributeValueType::String,
                 brief: "service name",
             }],
+            scope_keys: &[],
         };
 
         #[derive(Debug)]
@@ -680,9 +790,10 @@ mod tests {
             MetricsDispatcher::new(registry.clone(), std::time::Duration::from_secs(1));
         registry.visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
             let meter = meter_provider.meter(descriptor.name);
-            let otel_attributes = MetricsDispatcher::to_opentelemetry_attributes(attributes);
+            let (_scope_attributes, datapoint_attributes) =
+                MetricsDispatcher::partition_otel_attributes(attributes);
             for (field, value) in metrics_iter {
-                dispatcher.add_opentelemetry_metric(field, value, &otel_attributes, &meter);
+                dispatcher.add_opentelemetry_metric(field, value, &datapoint_attributes, &meter);
             }
         });
 
