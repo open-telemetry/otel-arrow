@@ -511,9 +511,10 @@ will become:
 CUSTOM=["value1", "value2"]
 ```
 
-Extraction has hard resource limits. `sd_journal_set_data_threshold` may be
-used as an optimization hint, but it is not treated as a safety boundary. The
-receiver enforces `max_field_bytes`, `max_entry_bytes`, and
+Extraction has hard resource limits. The receiver disables libsystemd's
+per-field data threshold with `sd_journal_set_data_threshold(0)` so
+`sd_journal_enumerate_data` can surface fields to the receiver's own extraction
+policy. The receiver enforces `max_field_bytes`, `max_entry_bytes`, and
 `max_fields_per_entry` while copying fields out of the journal handle. With the
 v1 `large_field_policy: drop_and_count`, any field value that exceeds the
 per-field limit, any field that would exceed the per-entry copied-byte budget,

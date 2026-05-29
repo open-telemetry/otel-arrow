@@ -32,6 +32,7 @@ mod imp {
     type TestCursorFn = unsafe extern "C" fn(*mut SdJournal, *const c_char) -> c_int;
     type GetCursorFn = unsafe extern "C" fn(*mut SdJournal, *mut *mut c_char) -> c_int;
     type GetRealtimeUsecFn = unsafe extern "C" fn(*mut SdJournal, *mut u64) -> c_int;
+    type SetDataThresholdFn = unsafe extern "C" fn(*mut SdJournal, size_t) -> c_int;
     type RestartDataFn = unsafe extern "C" fn(*mut SdJournal);
     type EnumerateDataFn =
         unsafe extern "C" fn(*mut SdJournal, *mut *const c_void, *mut size_t) -> c_int;
@@ -52,6 +53,7 @@ mod imp {
         test_cursor: TestCursorFn,
         get_cursor: GetCursorFn,
         get_realtime_usec: GetRealtimeUsecFn,
+        set_data_threshold: SetDataThresholdFn,
         restart_data: RestartDataFn,
         enumerate_data: EnumerateDataFn,
         add_match: AddMatchFn,
@@ -102,6 +104,7 @@ mod imp {
                 test_cursor: sym!("sd_journal_test_cursor", TestCursorFn),
                 get_cursor: sym!("sd_journal_get_cursor", GetCursorFn),
                 get_realtime_usec: sym!("sd_journal_get_realtime_usec", GetRealtimeUsecFn),
+                set_data_threshold: sym!("sd_journal_set_data_threshold", SetDataThresholdFn),
                 restart_data: sym!("sd_journal_restart_data", RestartDataFn),
                 enumerate_data: sym!("sd_journal_enumerate_data", EnumerateDataFn),
                 add_match: sym!("sd_journal_add_match", AddMatchFn),
@@ -150,6 +153,10 @@ mod imp {
                 journal,
                 extraction: config.extraction.clone(),
             };
+            check(
+                unsafe { (reader.lib.set_data_threshold)(reader.journal.as_ptr(), 0) },
+                "sd_journal_set_data_threshold",
+            )?;
             reader.configure(config, checkpoint)?;
             Ok(reader)
         }
