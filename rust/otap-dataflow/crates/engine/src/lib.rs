@@ -12,9 +12,7 @@ use crate::{
     config::{ExporterConfig, ExtensionConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
     effect_handler::SourceTagging,
-    entity_context::{
-        EntityTelemetryHandle, NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle,
-    },
+    entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
     error::{Error, TypedError},
     exporter::ExporterWrapper,
     extension::ExtensionBundle,
@@ -1038,18 +1036,34 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             consumed_tracker.consumed_local();
         let consumed_shared: HashSet<otap_df_config::ExtensionId> =
             consumed_tracker.consumed_shared();
-        let extension_wrappers: Vec<extension::ExtensionWrapper> = extension_bundles
+        let extension_wrappers: Vec<(
+            extension::ExtensionWrapper,
+            otap_df_telemetry::registry::EntityKey,
+        )> = extension_bundles
             .into_iter()
-            .flat_map(|(ext_id, mut bundle, is_background, _entity_keys)| {
-                let mut kept: Vec<extension::ExtensionWrapper> = Vec::new();
+            .flat_map(|(ext_id, mut bundle, is_background, entity_keys)| {
+                let mut kept: Vec<(
+                    extension::ExtensionWrapper,
+                    otap_df_telemetry::registry::EntityKey,
+                )> = Vec::new();
 
                 // Category 1: Background — always kept, no warning.
                 if is_background {
                     if let Some(local) = bundle.take_local() {
-                        kept.push(local);
+                        kept.push((
+                            local,
+                            entity_keys
+                                .local
+                                .expect("wire_telemetry mints a key for every present variant"),
+                        ));
                     }
                     if let Some(shared) = bundle.take_shared() {
-                        kept.push(shared);
+                        kept.push((
+                            shared,
+                            entity_keys
+                                .shared
+                                .expect("wire_telemetry mints a key for every present variant"),
+                        ));
                     }
                     return kept;
                 }
@@ -1097,12 +1111,22 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 if let Some(local) = bundle.take_local()
                     && local_consumed
                 {
-                    kept.push(local);
+                    kept.push((
+                        local,
+                        entity_keys
+                            .local
+                            .expect("wire_telemetry mints a key for every present variant"),
+                    ));
                 }
                 if let Some(shared) = bundle.take_shared()
                     && shared_consumed
                 {
-                    kept.push(shared);
+                    kept.push((
+                        shared,
+                        entity_keys
+                            .shared
+                            .expect("wire_telemetry mints a key for every present variant"),
+                    ));
                 }
                 kept
             })

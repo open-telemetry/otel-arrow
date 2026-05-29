@@ -24,13 +24,19 @@
 //! See `runtime_pipeline.rs::run_forever` for how this is wired in
 //! at pipeline scope today.
 
+use crate::context::ExtensionContext;
 use crate::control::{ExtensionControlMsg, ExtensionControlSender};
 use crate::error::Error;
 use crate::extension::ExtensionWrapper;
+use crate::extension_monitor::{
+    ExtensionKey, ExtensionLifecycleEvent, ExtensionMetricsMonitor, ExtensionOutcome,
+};
 use futures::stream::{FuturesUnordered, StreamExt};
 use otap_df_telemetry::otel_warn;
+use otap_df_telemetry::registry::EntityKey;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinHandle, LocalSet};
 use tokio::time::Instant as TokioInstant;
 
@@ -61,15 +67,31 @@ pub(crate) const EXTENSION_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_mill
 /// where possible.
 const DEFAULT_SHUTDOWN_REASON: &str = "host data-path drained";
 
+/// Event surfaced by [`ExtensionLifecycle::next_event`] so the host's
+/// outer `select!` can drive completions and monitor ticks through a
+/// single `&mut` borrow of the lifecycle.
+pub(crate) enum LifecycleEvent {
+    /// An active+background extension task finished. The inner result
+    /// preserves the same `Result<Result<(), Error>, JoinError>` shape
+    /// callers already match on for direct task completions.
+    Completion(Result<Result<(), Error>, JoinError>),
+    /// The per-scope extension monitor's tick interval fired. The host
+    /// should call [`ExtensionLifecycle::monitor_tick`] with the
+    /// returned `Instant`.
+    MonitorTick(Instant),
+}
+
 /// Holds the spawned extension tasks, control senders, and passive
 /// wrappers for the duration of an extension-hosting run.
 pub(crate) struct ExtensionLifecycle {
-    /// Active+background extension `JoinHandle`s, awaited concurrently
-    /// with the data path.
-    futures: FuturesUnordered<JoinHandle<Result<(), Error>>>,
-    /// Control senders for the extensions in [`Self::futures`], used
-    /// once to broadcast `Shutdown` after the data path drains.
-    shutdown_senders: Vec<ExtensionControlSender>,
+    /// Active+background extension `JoinHandle`s. Each yields its
+    /// `ExtensionKey` alongside the lifecycle result so completion
+    /// outcomes can be routed to the monitor without a side channel.
+    futures: FuturesUnordered<JoinHandle<(ExtensionKey, Result<(), Error>)>>,
+    /// Control senders for the extensions in [`Self::futures`], paired
+    /// with their key so `broadcast_shutdown` can record a per-key
+    /// `ShutdownSent` event in the monitor.
+    shutdown_senders: Vec<(ExtensionKey, ExtensionControlSender)>,
     /// Passive extensions held alive for the duration of the run so
     /// any state their capability instances reference (via cloned
     /// `Arc`s minted by the builder) survives until `run_forever`
@@ -83,6 +105,15 @@ pub(crate) struct ExtensionLifecycle {
     /// runtime will wait for extensions to honour `Shutdown` so a
     /// misbehaving extension can't hang the host runtime indefinitely.
     shutdown_deadline: Option<Instant>,
+    /// Per-scope lifecycle/telemetry monitor. Records spawn/shutdown/
+    /// completion events for each registered extension and drives the
+    /// `CollectTelemetry` fan-out on its own tick cadence.
+    monitor: ExtensionMetricsMonitor,
+    /// Receives an `ExtensionKey` from each spawned task as its first
+    /// action. `next_event` drains this internally so the monitor's
+    /// `Spawned` event reflects "task body began executing" rather
+    /// than the earlier "task registered with the executor".
+    started_rx: mpsc::UnboundedReceiver<ExtensionKey>,
 }
 
 impl ExtensionLifecycle {
@@ -91,27 +122,43 @@ impl ExtensionLifecycle {
     /// running concurrently with the data path; passive extensions
     /// have no lifecycle but must remain owned for their capability
     /// state to remain valid.
+    ///
+    /// Each non-passive wrapper is registered with `monitor` so spawn/
+    /// shutdown/completion events are recorded and `CollectTelemetry`
+    /// fan-out has a routing target.
     pub fn spawn(
-        extensions: Vec<ExtensionWrapper>,
+        extensions: Vec<(ExtensionWrapper, EntityKey)>,
         local_tasks: &LocalSet,
         metrics_reporter: MetricsReporter,
+        ext_ctx: &ExtensionContext,
+        mut monitor: ExtensionMetricsMonitor,
     ) -> Self {
         let futures = FuturesUnordered::new();
-        let mut shutdown_senders = Vec::new();
+        let mut shutdown_senders: Vec<(ExtensionKey, ExtensionControlSender)> = Vec::new();
         let mut passive = Vec::new();
+        let (started_tx, started_rx) = mpsc::unbounded_channel::<ExtensionKey>();
 
-        for ext_wrapper in extensions {
+        for (ext_wrapper, entity_key) in extensions {
             if ext_wrapper.is_passive() {
                 passive.push(ext_wrapper);
                 continue;
             }
-            if let Some(sender) = ext_wrapper.extension_control_sender() {
-                shutdown_senders.push(sender);
+            let ext_id = ext_wrapper.name();
+            let key = ExtensionKey::new(ext_id.clone(), ext_wrapper.variant());
+            let control_sender = ext_wrapper.extension_control_sender();
+            monitor.register(ext_ctx, key.clone(), entity_key, control_sender.clone());
+            if let Some(sender) = control_sender {
+                shutdown_senders.push((key.clone(), sender));
             }
             let ext_metrics_reporter = metrics_reporter.clone();
-            let ext_id = ext_wrapper.name();
+            let task_key = key.clone();
+            let started_tx = started_tx.clone();
             let fut = async move {
-                match ext_wrapper.start(ext_metrics_reporter.clone()).await {
+                // Signal "task body is running" as the first action so
+                // the monitor's Spawned event reflects actual execution,
+                // not just registration with the LocalSet.
+                let _ = started_tx.send(task_key.clone());
+                let res = match ext_wrapper.start(ext_metrics_reporter.clone()).await {
                     Ok(terminal_state) => {
                         crate::runtime_pipeline::report_terminal_metrics(
                             &ext_metrics_reporter,
@@ -122,15 +169,20 @@ impl ExtensionLifecycle {
                     Err(e) => {
                         otel_warn!(
                             "extension.task.error",
-                            extension = ext_id.as_ref(),
+                            extension = task_key.id.as_ref(),
                             error = format!("{e}"),
                         );
                         Err(e)
                     }
-                }
+                };
+                (task_key, res)
             };
             futures.push(local_tasks.spawn_local(fut));
         }
+        // Drop the seed sender so `started_rx.recv()` returns `None`
+        // once every per-task clone has been dropped (i.e., once all
+        // spawned tasks have either signalled or been cancelled).
+        drop(started_tx);
 
         Self {
             futures,
@@ -138,19 +190,88 @@ impl ExtensionLifecycle {
             _passive: passive,
             shutdown_broadcast_fired: false,
             shutdown_deadline: None,
+            monitor,
+            started_rx,
         }
     }
 
     /// Returns `true` if there are no remaining active+background
     /// extension tasks to await.
+    #[allow(dead_code)] // host uses `next_event`; kept as public introspection
     pub fn is_empty(&self) -> bool {
         self.futures.is_empty()
     }
 
-    /// Awaits the next active+background extension task to complete.
-    /// Returns `None` when no extension tasks remain.
-    pub async fn next_completion(&mut self) -> Option<Result<Result<(), Error>, JoinError>> {
-        self.futures.next().await
+    /// Awaits either the next active+background extension completion
+    /// or the next monitor tick, whichever fires first. Hosts plug
+    /// this into their main `select!` so the monitor's tick cadence
+    /// shares the same task as completion handling — avoiding the
+    /// double-`&mut` borrow that two separate methods would require.
+    ///
+    /// `Spawned` signals from started tasks are absorbed internally
+    /// (recorded into the monitor) and never surface to the host —
+    /// the host only ever sees completions and monitor ticks.
+    pub async fn next_event(&mut self) -> LifecycleEvent {
+        loop {
+            let Self {
+                futures,
+                monitor,
+                started_rx,
+                ..
+            } = self;
+            if futures.is_empty() {
+                tokio::select! {
+                    biased;
+                    Some(key) = started_rx.recv() => {
+                        monitor.apply_event(ExtensionLifecycleEvent::Spawned { key });
+                        continue;
+                    }
+                    now = monitor.next_tick() => return LifecycleEvent::MonitorTick(now),
+                }
+            }
+            tokio::select! {
+                biased;
+                Some(key) = started_rx.recv() => {
+                    monitor.apply_event(ExtensionLifecycleEvent::Spawned { key });
+                    continue;
+                }
+                Some(joined) = futures.next() => {
+                    return LifecycleEvent::Completion(Self::route_joined(monitor, joined));
+                }
+                now = monitor.next_tick() => return LifecycleEvent::MonitorTick(now),
+            }
+        }
+    }
+
+    /// Maps a joined task result to the outer `Result` shape expected
+    /// by `next_event` callers and records the completion outcome in
+    /// the monitor (when the task didn't panic/cancel).
+    fn route_joined(
+        monitor: &mut ExtensionMetricsMonitor,
+        joined: Result<(ExtensionKey, Result<(), Error>), JoinError>,
+    ) -> Result<Result<(), Error>, JoinError> {
+        match joined {
+            Ok((key, res)) => {
+                let outcome = match &res {
+                    Ok(()) => ExtensionOutcome::Ok,
+                    Err(e) => ExtensionOutcome::Err(e.to_string()),
+                };
+                monitor.apply_event(ExtensionLifecycleEvent::Completed { key, outcome });
+                Ok(res)
+            }
+            Err(e) => {
+                // The task panicked or was cancelled; the key is lost
+                // with the task frame. Stragglers still in `Spawned`/
+                // `ShutdownSent` are reconciled by `drain_until_deadline`.
+                Err(e)
+            }
+        }
+    }
+
+    /// Drives one monitor tick: fans out `CollectTelemetry` to spawned
+    /// extensions on cadence and reports lifecycle + aggregate metrics.
+    pub fn monitor_tick(&mut self, now: Instant, reporter: &mut MetricsReporter) {
+        self.monitor.tick(now, reporter);
     }
 
     /// Broadcasts `Shutdown` to all active+background extensions.
@@ -172,7 +293,7 @@ impl ExtensionLifecycle {
         self.shutdown_deadline = Some(deadline);
 
         let reason = reason.unwrap_or(DEFAULT_SHUTDOWN_REASON).to_string();
-        let sends = self.shutdown_senders.iter().map(|sender| {
+        let sends = self.shutdown_senders.iter().map(|(key, sender)| {
             let msg = ExtensionControlMsg::Shutdown {
                 deadline,
                 reason: reason.clone(),
@@ -181,13 +302,14 @@ impl ExtensionLifecycle {
                 match tokio::time::timeout(EXTENSION_SHUTDOWN_SEND_TIMEOUT, sender.sender.send(msg))
                     .await
                 {
-                    Ok(Ok(())) => {}
+                    Ok(Ok(())) => Some(key.clone()),
                     Ok(Err(e)) => {
                         otel_warn!(
                             "extension.shutdown.send_failed",
                             extension = sender.name.as_ref(),
                             error = format!("{e}"),
                         );
+                        None
                     }
                     Err(_elapsed) => {
                         otel_warn!(
@@ -195,11 +317,16 @@ impl ExtensionLifecycle {
                             extension = sender.name.as_ref(),
                             timeout_ms = EXTENSION_SHUTDOWN_SEND_TIMEOUT.as_millis() as u64,
                         );
+                        None
                     }
                 }
             }
         });
-        let _: Vec<()> = futures::future::join_all(sends).await;
+        let delivered: Vec<Option<ExtensionKey>> = futures::future::join_all(sends).await;
+        for key in delivered.into_iter().flatten() {
+            self.monitor
+                .apply_event(ExtensionLifecycleEvent::ShutdownSent { key });
+        }
     }
 
     /// Drain remaining active+background extension tasks, but never
@@ -230,9 +357,18 @@ impl ExtensionLifecycle {
         let drain = async {
             while let Some(result) = self.futures.next().await {
                 match result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => {
+                    Ok((key, Ok(()))) => {
+                        self.monitor.apply_event(ExtensionLifecycleEvent::Completed {
+                            key,
+                            outcome: ExtensionOutcome::Ok,
+                        });
+                    }
+                    Ok((key, Err(e))) => {
                         otel_warn!("extension.shutdown.task.error", error = format!("{e}"));
+                        self.monitor.apply_event(ExtensionLifecycleEvent::Completed {
+                            key,
+                            outcome: ExtensionOutcome::Err(e.to_string()),
+                        });
                     }
                     Err(e) => {
                         otel_warn!(
@@ -255,6 +391,10 @@ impl ExtensionLifecycle {
                 grace_secs = EXTENSION_SHUTDOWN_GRACE.as_secs(),
                 remaining = self.futures.len()
             );
+            // Any extension still in `Spawned` or `ShutdownSent` after
+            // the bounded drain timed out is reconciled in the monitor
+            // as a shutdown timeout.
+            self.monitor.mark_pending_as_timeout();
         }
     }
 }
@@ -262,6 +402,7 @@ impl ExtensionLifecycle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extension::wrapper::ExtensionVariant;
 
     /// Regression test: a misbehaving extension that never returns
     /// must not stall `drain_until_deadline` past its deadline. The
@@ -270,23 +411,31 @@ mod tests {
     fn drain_until_deadline_is_bounded_for_stuck_extension() {
         let (rt, local_tasks) = crate::testing::setup_test_runtime();
         rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+            let key = ExtensionKey::new("stuck".into(), ExtensionVariant::Local);
             let futures = FuturesUnordered::new();
-            futures.push(tokio::task::spawn_local(async {
-                // Misbehaving extension that ignores `Shutdown` and
-                // never returns from `start()`. `pending` is cancelled
-                // when the surrounding `LocalSet` drops at the end of
-                // the test, so this does not actually run forever.
-                std::future::pending::<()>().await;
-                Ok(())
+            futures.push(tokio::task::spawn_local({
+                let key = key.clone();
+                async move {
+                    // Misbehaving extension that ignores `Shutdown` and
+                    // never returns from `start()`. `pending` is cancelled
+                    // when the surrounding `LocalSet` drops at the end of
+                    // the test, so this does not actually run forever.
+                    std::future::pending::<()>().await;
+                    (key, Ok(()))
+                }
             }));
 
             let injected_deadline = Instant::now() + Duration::from_millis(100);
+            let (_started_tx, started_rx) = mpsc::unbounded_channel();
             let mut lifecycle = ExtensionLifecycle {
                 futures,
                 shutdown_senders: Vec::new(),
                 _passive: Vec::new(),
                 shutdown_broadcast_fired: true,
                 shutdown_deadline: Some(injected_deadline),
+                monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
+                started_rx,
             };
 
             let start = Instant::now();

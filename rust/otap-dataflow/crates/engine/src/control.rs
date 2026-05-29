@@ -789,6 +789,7 @@ impl ExtensionControlMsg {
 ///
 /// Stored separately from [`ControlSenders`] because extensions use
 /// [`ExtensionControlMsg`] (PData-free) rather than [`NodeControlMsg<PData>`].
+#[derive(Clone)]
 pub struct ExtensionControlSender {
     /// Unique identifier of the extension.
     pub(crate) name: otap_df_config::ExtensionId,

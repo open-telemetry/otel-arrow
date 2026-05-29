@@ -45,6 +45,14 @@ use tokio::runtime::Builder;
 use tokio::sync::watch;
 use tokio::task::LocalSet;
 
+/// Cadence at which the per-pipeline extension monitor reports its
+/// lifecycle and aggregate metric sets.
+const EXTENSION_MONITOR_TICK_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Cadence at which the extension monitor fans `CollectTelemetry` out
+/// to active extensions so they can refresh their own metric sets.
+const EXTENSION_MONITOR_COLLECT_TELEMETRY_INTERVAL: Duration = Duration::from_secs(10);
+
 /// Build produced-request metric sets indexed by sorted output port name,
 /// matching the `output_port_index` layout used in `RouteData`.
 fn make_produced_metrics(
@@ -110,13 +118,17 @@ pub struct RuntimePipeline<PData: Debug> {
     processors: Vec<ProcessorWrapper<PData>>,
     /// A map node id to exporter runtime node.
     exporters: Vec<ExporterWrapper<PData>>,
-    /// Extension wrappers that survived the build-time consumed-tracker pruning.
+    /// Extension wrappers that survived the build-time consumed-tracker pruning,
+    /// each paired with the telemetry entity key registered for that variant.
     /// One entry per surviving local-or-shared variant. Active extensions in
     /// this list have their lifecycle tasks spawned by `run_forever` before
     /// data-path nodes; passive extensions hold their instance factories so
     /// `Capabilities::require_*` calls keep working at run time but are not
     /// spawned themselves.
-    extensions: Vec<crate::extension::ExtensionWrapper>,
+    extensions: Vec<(
+        crate::extension::ExtensionWrapper,
+        otap_df_telemetry::registry::EntityKey,
+    )>,
 
     /// A precomputed map of all node IDs to their Node trait objects (? @@@) for efficient access
     /// Indexed by NodeIndex
@@ -184,7 +196,10 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         receivers: Vec<ReceiverWrapper<PData>>,
         processors: Vec<ProcessorWrapper<PData>>,
         exporters: Vec<ExporterWrapper<PData>>,
-        extensions: Vec<crate::extension::ExtensionWrapper>,
+        extensions: Vec<(
+            crate::extension::ExtensionWrapper,
+            otap_df_telemetry::registry::EntityKey,
+        )>,
         nodes: NodeDefs<PData, PipeNode>,
         telemetry_policy: TelemetryPolicy,
     ) -> Self {
@@ -260,6 +275,29 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
 
+        // Build the extension monitor (or its no-op variant when
+        // pipeline-internal telemetry is disabled) and pass it into
+        // the lifecycle. The lifecycle records spawn/shutdown/
+        // completion events and drives the monitor's `CollectTelemetry`
+        // fan-out from its own tick cadence.
+        //
+        // Construction enters the runtime so `tokio::time::interval_at`
+        // can attach to the timer driver; the guard is dropped before
+        // `rt.block_on` so the runtime can be re-entered there.
+        let ext_ctx = pipeline_context.extension_context();
+        let ext_monitor = {
+            let _enter = rt.enter();
+            if telemetry_policy.pipeline_metrics {
+                crate::extension_monitor::ExtensionMetricsMonitor::new(
+                    ext_ctx.clone(),
+                    EXTENSION_MONITOR_TICK_INTERVAL,
+                    EXTENSION_MONITOR_COLLECT_TELEMETRY_INTERVAL,
+                )
+            } else {
+                crate::extension_monitor::ExtensionMetricsMonitor::disabled(ext_ctx.clone())
+            }
+        };
+
         // Lifecycle invariant: "extensions start first, shut down last".
         // Concretely, `start()` is invoked on every active extension before
         // any data-path node task is spawned, and `Shutdown` is delivered
@@ -290,6 +328,8 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             extensions,
             &local_tasks,
             metrics_reporter.clone(),
+            &ext_ctx,
+            ext_monitor,
         );
 
         let mut control_senders = ControlSenders::default();
@@ -612,15 +652,23 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                                         }),
                                     }
                                 }
-                                Some(result) = extension_lifecycle.next_completion(), if !extension_lifecycle.is_empty() => {
-                                    match result {
-                                        Ok(Ok(())) => {}
-                                        Ok(Err(e)) => return Err(e),
-                                        Err(e) => return Err(Error::JoinTaskError {
-                                            is_canceled: e.is_cancelled(),
-                                            is_panic: e.is_panic(),
-                                            error: e.to_string(),
-                                        }),
+                                event = extension_lifecycle.next_event() => {
+                                    match event {
+                                        crate::extension_lifecycle::LifecycleEvent::Completion(result) => {
+                                            match result {
+                                                Ok(Ok(())) => {}
+                                                Ok(Err(e)) => return Err(e),
+                                                Err(e) => return Err(Error::JoinTaskError {
+                                                    is_canceled: e.is_cancelled(),
+                                                    is_panic: e.is_panic(),
+                                                    error: e.to_string(),
+                                                }),
+                                            }
+                                        }
+                                        crate::extension_lifecycle::LifecycleEvent::MonitorTick(now) => {
+                                            let mut reporter = metrics_reporter.clone();
+                                            extension_lifecycle.monitor_tick(now, &mut reporter);
+                                        }
                                     }
                                 }
                                 else => break,
@@ -658,6 +706,13 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         .broadcast_shutdown(Some("pipeline data-path drained"))
                         .await;
                     extension_lifecycle.drain_until_deadline().await;
+                    // Final monitor flush so the host-scope aggregate
+                    // and per-extension lifecycle counters reflect the
+                    // terminal state (incl. any `ShutdownTimeout`
+                    // entries) on the way out.
+                    let mut final_monitor_reporter = metrics_reporter.clone();
+                    extension_lifecycle
+                        .monitor_tick(std::time::Instant::now(), &mut final_monitor_reporter);
 
                     let task_results = loop_result?;
                     let mut final_metrics_reporter = final_metrics_reporter.clone();

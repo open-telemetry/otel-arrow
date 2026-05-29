@@ -805,3 +805,312 @@ fn test_wire_telemetry_disabled_still_registers_channel_entity() {
     drop(bundle);
     assert_eq!(registry.entity_count(), before);
 }
+
+// Active extension contract: when the host's monitor dispatches
+// `CollectTelemetry { metrics_reporter }`, the extension must use that
+// supplied reporter to publish its own internal metrics. This test
+// stands in for the runtime: it sends a `CollectTelemetry` whose
+// reporter the test owns the receiver of, and asserts the extension's
+// snapshot lands on that channel.
+#[otap_df_telemetry_macros::metric_set(name = "test.extension.internal")]
+#[derive(Debug, Default, Clone)]
+struct TestExtensionInternalMetrics {
+    #[metric(unit = "{tick}")]
+    collect_invocations: otap_df_telemetry::instrument::Counter<u64>,
+}
+
+struct TelemetryReportingLocalExt {
+    metrics: std::cell::RefCell<otap_df_telemetry::metrics::MetricSet<TestExtensionInternalMetrics>>,
+    started: std::cell::Cell<bool>,
+}
+
+// `Clone` is required by `ActiveStage::local`. The clones share state
+// via interior mutability, which is fine for this test since only one
+// live instance ever runs.
+impl Clone for TelemetryReportingLocalExt {
+    fn clone(&self) -> Self {
+        Self {
+            metrics: std::cell::RefCell::new(self.metrics.borrow().clone()),
+            started: std::cell::Cell::new(self.started.get()),
+        }
+    }
+}
+
+#[async_trait(?Send)]
+impl crate::local::extension::Extension for TelemetryReportingLocalExt {
+    async fn start(
+        self: std::rc::Rc<Self>,
+        mut ctrl: local_ext::ControlChannel,
+        _eh: EffectHandler,
+    ) -> Result<TerminalState, Error> {
+        self.started.set(true);
+        loop {
+            match ctrl.recv().await? {
+                ExtensionControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                } => {
+                    let mut m = self.metrics.borrow_mut();
+                    m.collect_invocations.add(1);
+                    let _ = metrics_reporter.report(&mut *m);
+                }
+                ExtensionControlMsg::Shutdown { .. } => break,
+                _ => {}
+            }
+        }
+        Ok(TerminalState::default())
+    }
+}
+
+#[test]
+fn active_extension_reports_internal_metrics_on_collect_telemetry() {
+    use otap_df_telemetry::reporter::MetricsReporter;
+
+    let (rt, ls) = crate::testing::setup_test_runtime();
+    rt.block_on(ls.run_until(async {
+        let (ctx, _registry) = crate::testing::test_extension_ctx();
+
+        // Pre-register the extension's internal metric set through the
+        // host context, the same way real extensions would do at setup.
+        let entity = ctx.register_extension_entity(
+            "telemetry_ext".into(),
+            crate::extension::wrapper::ExtensionVariant::Local,
+        );
+        let internal_metrics = ctx
+            .register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity);
+
+        let ext = std::rc::Rc::new(TelemetryReportingLocalExt {
+            metrics: std::cell::RefCell::new(internal_metrics),
+            started: std::cell::Cell::new(false),
+        });
+        let started_probe = ext.clone();
+
+        let (n, u, c) = ext_config("telemetry_ext");
+        let w = ExtensionWrapper::builder(n, u, &c)
+            .active()
+            .local(ext)
+            .build()
+            .unwrap()
+            .take_local()
+            .unwrap();
+        let sender = w.extension_control_sender().unwrap();
+
+        let h = tokio::task::spawn_local(async move {
+            w.start(test_metrics_reporter()).await
+        });
+
+        // A test-owned reporter so we can observe the snapshot the
+        // extension publishes.
+        let (snapshot_rx, ext_reporter) = MetricsReporter::create_new_and_receiver(4);
+
+        sender
+            .send(ExtensionControlMsg::CollectTelemetry {
+                metrics_reporter: ext_reporter,
+            })
+            .await
+            .unwrap();
+
+        // Wait for the snapshot via async recv (works on a LocalSet
+        // because the channel is flume which exposes recv_async).
+        let snapshot = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            snapshot_rx.recv_async(),
+        )
+        .await
+        .expect("extension did not publish a snapshot in time")
+        .expect("snapshot channel closed without delivery");
+
+        assert!(
+            started_probe.started.get(),
+            "extension start() must have run before reporting"
+        );
+        let value_sum: u64 = snapshot
+            .get_metrics()
+            .iter()
+            .map(|v| match v {
+                otap_df_telemetry::metrics::MetricValue::U64(n) => *n,
+                _ => 0,
+            })
+            .sum();
+        assert!(
+            value_sum >= 1,
+            "expected the collect_invocations counter to be reported, got snapshot: {:?}",
+            snapshot.get_metrics()
+        );
+
+        sender
+            .send(ExtensionControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "done".into(),
+            })
+            .await
+            .unwrap();
+        assert!(h.await.unwrap().is_ok());
+    }));
+}
+
+#[test]
+fn two_active_extensions_report_isolated_internal_metrics() {
+    // Cross-contamination guard: when two active extensions report via
+    // the same MetricsReporter, the collector must receive two snapshots
+    // with distinct `MetricSetKey`s — one per extension — and the values
+    // recorded by extension A must NOT appear under extension B's key
+    // (or vice versa). This is the invariant that lets the host monitor
+    // safely share a single reporter across all extensions.
+    use otap_df_telemetry::reporter::MetricsReporter;
+
+    let (rt, ls) = crate::testing::setup_test_runtime();
+    rt.block_on(ls.run_until(async {
+        let (ctx, _registry) = crate::testing::test_extension_ctx();
+
+        // Each extension gets its own entity AND its own MetricSet,
+        // mirroring how `ExtensionMetricsMonitor::register` wires them.
+        let entity_a = ctx.register_extension_entity(
+            "ext_a".into(),
+            crate::extension::wrapper::ExtensionVariant::Local,
+        );
+        let metrics_a = ctx
+            .register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity_a);
+        let key_a = metrics_a.metric_set_key();
+
+        let entity_b = ctx.register_extension_entity(
+            "ext_b".into(),
+            crate::extension::wrapper::ExtensionVariant::Local,
+        );
+        let metrics_b = ctx
+            .register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity_b);
+        let key_b = metrics_b.metric_set_key();
+
+        assert_ne!(
+            key_a, key_b,
+            "two distinct entities must yield distinct metric-set keys"
+        );
+
+        let ext_a = std::rc::Rc::new(TelemetryReportingLocalExt {
+            metrics: std::cell::RefCell::new(metrics_a),
+            started: std::cell::Cell::new(false),
+        });
+        let ext_b = std::rc::Rc::new(TelemetryReportingLocalExt {
+            metrics: std::cell::RefCell::new(metrics_b),
+            started: std::cell::Cell::new(false),
+        });
+
+        let (n_a, u_a, c_a) = ext_config("ext_a");
+        let w_a = ExtensionWrapper::builder(n_a, u_a, &c_a)
+            .active()
+            .local(ext_a)
+            .build()
+            .unwrap()
+            .take_local()
+            .unwrap();
+        let sender_a = w_a.extension_control_sender().unwrap();
+
+        let (n_b, u_b, c_b) = ext_config("ext_b");
+        let w_b = ExtensionWrapper::builder(n_b, u_b, &c_b)
+            .active()
+            .local(ext_b)
+            .build()
+            .unwrap()
+            .take_local()
+            .unwrap();
+        let sender_b = w_b.extension_control_sender().unwrap();
+
+        let h_a = tokio::task::spawn_local(async move {
+            w_a.start(test_metrics_reporter()).await
+        });
+        let h_b = tokio::task::spawn_local(async move {
+            w_b.start(test_metrics_reporter()).await
+        });
+
+        // ONE shared reporter — both extensions publish through the same
+        // channel. Isolation must be enforced by per-MetricSet keys, not
+        // by separate transports.
+        let (snapshot_rx, shared_reporter) =
+            MetricsReporter::create_new_and_receiver(8);
+
+        // Drive extension A twice and extension B once so values differ.
+        sender_a
+            .send(ExtensionControlMsg::CollectTelemetry {
+                metrics_reporter: shared_reporter.clone(),
+            })
+            .await
+            .unwrap();
+        sender_a
+            .send(ExtensionControlMsg::CollectTelemetry {
+                metrics_reporter: shared_reporter.clone(),
+            })
+            .await
+            .unwrap();
+        sender_b
+            .send(ExtensionControlMsg::CollectTelemetry {
+                metrics_reporter: shared_reporter.clone(),
+            })
+            .await
+            .unwrap();
+
+        // Collect snapshots until we have one with `key_a` and one with
+        // `key_b`. Bounded loop guards against hangs while tolerating
+        // arbitrary interleaving from the LocalSet scheduler.
+        let mut sum_by_key: std::collections::HashMap<_, u64> =
+            std::collections::HashMap::new();
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while (!sum_by_key.contains_key(&key_a) || !sum_by_key.contains_key(&key_b))
+            && Instant::now() < deadline
+        {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                snapshot_rx.recv_async(),
+            )
+            .await
+            {
+                Ok(Ok(snap)) => {
+                    let k = snap.key();
+                    let v: u64 = snap
+                        .get_metrics()
+                        .iter()
+                        .map(|m| match m {
+                            otap_df_telemetry::metrics::MetricValue::U64(n) => *n,
+                            _ => 0,
+                        })
+                        .sum();
+                    // Counter::add() reports deltas; sum across snapshots
+                    // gives total invocations observed for that key.
+                    *sum_by_key.entry(k).or_insert(0) += v;
+                }
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+
+        let a_total = *sum_by_key.get(&key_a).unwrap_or(&0);
+        let b_total = *sum_by_key.get(&key_b).unwrap_or(&0);
+
+        // Each extension's reported total equals its own invocation count
+        // and no others. If contamination existed (e.g., a single shared
+        // counter, or wrong key routing), A's two invocations would leak
+        // into B's total, or vice versa.
+        assert_eq!(a_total, 2, "ext_a should report exactly its 2 invocations");
+        assert_eq!(b_total, 1, "ext_b should report exactly its 1 invocation");
+        // Only A's and B's keys ever appear — no spurious third entry.
+        assert_eq!(
+            sum_by_key.len(),
+            2,
+            "only the two registered metric-set keys should appear, got: {sum_by_key:?}"
+        );
+
+        sender_a
+            .send(ExtensionControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "done".into(),
+            })
+            .await
+            .unwrap();
+        sender_b
+            .send(ExtensionControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "done".into(),
+            })
+            .await
+            .unwrap();
+        assert!(h_a.await.unwrap().is_ok());
+        assert!(h_b.await.unwrap().is_ok());
+    }));
+}
