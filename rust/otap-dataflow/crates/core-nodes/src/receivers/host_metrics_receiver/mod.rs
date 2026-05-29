@@ -550,8 +550,8 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                 process_include: config.families.processes.include.clone(),
                 process_exclude: config.families.processes.exclude.clone(),
                 process_max_processes: config.families.processes.max_processes,
-                process_labels: config.families.processes.labels.clone(),
-                process_metrics: config.families.processes.metrics.clone(),
+                process_labels: config.families.processes.labels,
+                process_metrics: config.families.processes.metrics,
                 validation: config.validation,
             },
         )
@@ -1138,6 +1138,45 @@ mod tests {
         assert!(!second_due.memory);
         assert!(!second_due.disk);
         assert!(!second_due.filesystem);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn scheduler_marks_per_processes_when_mode_is_summary_and_per_process() {
+        let config = RuntimeConfig::try_from(Config {
+            initial_delay: Duration::ZERO,
+            families: FamiliesConfig {
+                processes: ProcessesFamilyConfig {
+                    mode: ProcessMode::SummaryAndPerProcess,
+                    ..ProcessesFamilyConfig::default()
+                },
+                ..FamiliesConfig::default()
+            },
+            ..Config::default()
+        })
+        .expect("valid config");
+        let now = Instant::now();
+        let mut scheduler = FamilyScheduler::new(&config, now);
+
+        let due = scheduler.mark_due(now);
+        assert!(due.processes);
+        assert!(due.per_processes);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn scheduler_keeps_per_processes_disabled_in_summary_mode() {
+        let config = RuntimeConfig::try_from(Config {
+            initial_delay: Duration::ZERO,
+            ..Config::default()
+        })
+        .expect("valid config");
+        let now = Instant::now();
+        let mut scheduler = FamilyScheduler::new(&config, now);
+
+        let due = scheduler.mark_due(now);
+        assert!(due.processes);
+        assert!(!due.per_processes);
     }
 
     #[cfg(target_os = "linux")]

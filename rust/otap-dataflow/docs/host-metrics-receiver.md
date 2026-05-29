@@ -244,6 +244,13 @@ Rules:
   `process.threads`, and `process.uptime`. It requires `max_processes` to be
   greater than zero and tracks CPU deltas by `(pid, start_time)` to avoid PID
   reuse mixing.
+- Per-process filters match `process.command`, which is read from the first
+  `/proc/<pid>/cmdline` argument when available and falls back to the kernel
+  comm field from `/proc/<pid>/stat`. The emitted `process.executable.name` is
+  the basename of that command value.
+- When more processes match than `max_processes`, the receiver emits the top
+  processes by cumulative CPU time, then resident memory, then PID. This is a
+  first-pass cardinality guard, not a complete top-k process feature.
 - The load family is not shown in the default example because Semantic
   Conventions 1.41.0 does not register a load metric. If maintainers choose an
   experimental Linux load metric, add it as an explicit opt-in.

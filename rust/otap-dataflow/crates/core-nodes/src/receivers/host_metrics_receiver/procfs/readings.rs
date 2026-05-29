@@ -111,6 +111,12 @@ pub(super) struct ProcessMetrics {
     pub(super) uptime_seconds: f64,
 }
 
+impl ProcessMetrics {
+    pub(super) fn total_cpu_seconds(&self) -> f64 {
+        self.user_cpu_seconds + self.system_cpu_seconds
+    }
+}
+
 pub(super) struct ProcessStat {
     pub(super) pid: u32,
     pub(super) command: String,

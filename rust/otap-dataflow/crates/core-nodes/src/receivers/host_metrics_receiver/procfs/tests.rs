@@ -113,6 +113,8 @@ fn write_fake_process(
         format!("read_bytes: {read_bytes}\nwrite_bytes: {write_bytes}\n"),
     )
     .expect("process io");
+    std::fs::write(dir.join("cmdline"), format!("/usr/bin/{command}\0--flag\0"))
+        .expect("process cmdline");
 }
 
 #[test]
@@ -558,6 +560,54 @@ fn counter_tracker_prunes_disappeared_network_series_only_when_network_is_scrape
 }
 
 #[test]
+fn counter_tracker_prunes_disappeared_process_series_only_when_per_processes_are_scraped() {
+    let mut tracker = CounterTracker::default();
+    let processes = vec![ProcessMetrics {
+        key: ProcessKey {
+            pid: 10,
+            start_time_unix_nano: 100,
+        },
+        labels: ProcessLabelsConfig::default(),
+        command: "df_engine".to_owned(),
+        executable_name: "df_engine".to_owned(),
+        parent_pid: 1,
+        user_cpu_seconds: 1.0,
+        system_cpu_seconds: 2.0,
+        read_bytes: Some(100),
+        write_bytes: Some(200),
+        ..ProcessMetrics::default()
+    }];
+    let starts = tracker.snapshot(10, 20, None, None, None, Some(&processes), None, None);
+    assert_eq!(
+        starts.get_joined(metric::PROCESS_CPU_TIME, "10:100", "user", 10),
+        10
+    );
+    assert_eq!(
+        starts.get_joined(metric::PROCESS_DISK_IO, "10:100", "read", 10),
+        10
+    );
+
+    let _ = tracker.snapshot(20, 30, None, None, None, None, None, None);
+    let starts = tracker.snapshot(30, 40, None, None, None, Some(&processes), None, None);
+    assert_eq!(
+        starts.get_joined(metric::PROCESS_CPU_TIME, "10:100", "user", 30),
+        10
+    );
+
+    let empty_processes = Vec::new();
+    let _ = tracker.snapshot(40, 50, None, None, None, Some(&empty_processes), None, None);
+    let starts = tracker.snapshot(50, 60, None, None, None, Some(&processes), None, None);
+    assert_eq!(
+        starts.get_joined(metric::PROCESS_CPU_TIME, "10:100", "user", 50),
+        50
+    );
+    assert_eq!(
+        starts.get_joined(metric::PROCESS_DISK_IO, "10:100", "read", 50),
+        50
+    );
+}
+
+#[test]
 fn counter_keys_do_not_collide_with_pipe_in_series_values() {
     let metric = metric::DISK_IO;
     let device = "read|write";
@@ -646,7 +696,7 @@ fn scrape_due_collects_opt_in_per_process_metrics_with_filters_and_limit() {
     let proc = root.path().join("proc");
     std::fs::create_dir_all(&proc).expect("proc dir");
     std::fs::write(proc.join("stat"), "btime 1700000000\n").expect("stat");
-    write_fake_process(&proc, 100, "df_engine", 1, 10, 20, 100, 4096, 2, 100, 200);
+    write_fake_process(&proc, 100, "df_engine", 1, 100, 200, 100, 4096, 2, 100, 200);
     write_fake_process(&proc, 200, "otelcol", 1, 30, 40, 200, 8192, 3, 300, 400);
 
     let include = CompiledFilter::compile(
@@ -709,7 +759,7 @@ fn scrape_due_collects_opt_in_per_process_metrics_with_filters_and_limit() {
     assert_eq!(first.snapshot.per_processes[0].command, "df_engine");
     assert!(first.snapshot.per_processes[0].cpu_utilization.is_none());
 
-    write_fake_process(&proc, 100, "df_engine", 1, 20, 30, 100, 4096, 2, 150, 250);
+    write_fake_process(&proc, 100, "df_engine", 1, 110, 220, 100, 4096, 2, 150, 250);
     let second = scrape_blocking(
         &mut source,
         ProcfsFamilies {
@@ -722,6 +772,71 @@ fn scrape_due_collects_opt_in_per_process_metrics_with_filters_and_limit() {
     assert!(second.snapshot.per_processes[0].cpu_utilization.is_some());
     assert_eq!(second.snapshot.per_processes[0].read_bytes, Some(150));
     assert_eq!(second.snapshot.per_processes[0].write_bytes, Some(250));
+}
+
+#[test]
+fn scrape_due_ignores_expected_per_process_races_and_permission_shapes() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let proc = root.path().join("proc");
+    std::fs::create_dir_all(&proc).expect("proc dir");
+    std::fs::write(proc.join("stat"), "btime 1700000000\n").expect("stat");
+    write_fake_process(&proc, 100, "df_engine", 1, 10, 20, 100, 4096, 2, 100, 200);
+    std::fs::remove_file(proc.join("100/io")).expect("remove io");
+    std::fs::create_dir_all(proc.join("200")).expect("raced process dir");
+
+    let mut source = ProcfsSource::new(
+        Some(root.path()),
+        ProcfsConfig {
+            cpu: false,
+            memory: false,
+            paging: false,
+            system: false,
+            disk: false,
+            filesystem: false,
+            network: false,
+            processes: true,
+            per_processes: true,
+            cpu_utilization: false,
+            memory_limit: false,
+            memory_shared: false,
+            memory_hugepages: false,
+            disk_limit: false,
+            filesystem_include_virtual: false,
+            filesystem_include_remote: false,
+            filesystem_limit: false,
+            filesystem_include_devices: None,
+            filesystem_exclude_devices: None,
+            filesystem_include_fs_types: None,
+            filesystem_exclude_fs_types: None,
+            filesystem_include_mount_points: None,
+            filesystem_exclude_mount_points: None,
+            disk_include: None,
+            disk_exclude: None,
+            network_include: None,
+            network_exclude: None,
+            process_include: None,
+            process_exclude: None,
+            process_max_processes: 100,
+            process_labels: ProcessLabelsConfig::default(),
+            process_metrics: ProcessMetricsConfig::default(),
+            validation: HostViewValidationMode::None,
+        },
+    )
+    .expect("source");
+
+    let scrape = scrape_blocking(
+        &mut source,
+        ProcfsFamilies {
+            processes: true,
+            per_processes: true,
+            ..ProcfsFamilies::default()
+        },
+    )
+    .expect("scrape");
+    assert_eq!(scrape.partial_errors, 0);
+    assert_eq!(scrape.snapshot.per_processes.len(), 1);
+    assert_eq!(scrape.snapshot.per_processes[0].read_bytes, None);
+    assert_eq!(scrape.snapshot.per_processes[0].write_bytes, None);
 }
 
 #[test]

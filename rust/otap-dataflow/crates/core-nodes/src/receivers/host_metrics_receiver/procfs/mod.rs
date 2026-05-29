@@ -46,6 +46,20 @@ struct ProcessCpuSample {
     observed_unix_nano: u64,
 }
 
+struct ProcessCommand {
+    command: String,
+    executable_name: String,
+}
+
+impl ProcessCommand {
+    fn from_comm(comm: &str) -> Self {
+        Self {
+            command: comm.to_owned(),
+            executable_name: comm.to_owned(),
+        }
+    }
+}
+
 /// Procfs-backed source for host metrics.
 pub struct ProcfsSource {
     paths: ProcfsPaths,
@@ -295,9 +309,12 @@ impl ProcfsSource {
             || due.disk
             || due.filesystem
             || due.network
-            || due.processes;
-        let needs_stat =
-            due.cpu || due.processes || (needs_start_time && self.boot_time_unix_nano.is_none());
+            || due.processes
+            || due.per_processes;
+        let needs_stat = due.cpu
+            || due.processes
+            || due.per_processes
+            || (needs_start_time && self.boot_time_unix_nano.is_none());
         let stat = match needs_stat
             .then(|| self.read_path(PathKind::Stat))
             .transpose()
@@ -513,7 +530,7 @@ impl ProcfsSource {
             memory_limit: self.config.memory_limit,
             memory_shared: self.config.memory_shared,
             memory_hugepages: self.config.memory_hugepages,
-            process_metrics: self.config.process_metrics.clone(),
+            process_metrics: self.config.process_metrics,
             cpu: due.cpu.then_some(stat.cpu).flatten(),
             cpu_utilization,
             cpuinfo,
@@ -590,7 +607,12 @@ impl ProcfsSource {
                 Err(err) => record_partial_error(partial_errors, first_error, err),
             }
         }
-        processes.sort_by_key(|process| process.key.pid);
+        processes.sort_by(|a, b| {
+            b.total_cpu_seconds()
+                .total_cmp(&a.total_cpu_seconds())
+                .then_with(|| b.memory_usage_bytes.cmp(&a.memory_usage_bytes))
+                .then_with(|| a.key.pid.cmp(&b.key.pid))
+        });
         processes.truncate(self.config.process_max_processes);
         let current_keys = processes
             .iter()
@@ -610,12 +632,18 @@ impl ProcfsSource {
         partial_errors: &mut u64,
         first_error: &mut Option<io::Error>,
     ) -> io::Result<Option<ProcessMetrics>> {
-        let stat = fs::read_to_string(process_dir.join("stat"))?;
+        let stat = match fs::read_to_string(process_dir.join("stat")) {
+            Ok(stat) => stat,
+            Err(err) if Self::is_expected_process_read_error(&err) => return Ok(None),
+            Err(err) => return Err(err),
+        };
         let Some(stat) = parse_process_stat(&stat, pid, self.clk_tck) else {
             return Ok(None);
         };
+        let process_command = Self::read_process_command(&process_dir)
+            .unwrap_or_else(|| ProcessCommand::from_comm(&stat.command));
         if !filter_allows(
-            &stat.command,
+            &process_command.command,
             self.config.process_include.as_ref(),
             self.config.process_exclude.as_ref(),
         ) {
@@ -644,23 +672,17 @@ impl ProcfsSource {
         });
         let io = match fs::read_to_string(process_dir.join("io")) {
             Ok(content) => Some(parse_process_io(&content)),
+            Err(err) if Self::is_expected_process_read_error(&err) => None,
             Err(err) => {
                 record_partial_error(partial_errors, first_error, err);
                 None
             }
         };
-        let executable_name = stat
-            .command
-            .rsplit('/')
-            .next()
-            .filter(|name| !name.is_empty())
-            .unwrap_or(&stat.command)
-            .to_owned();
         Ok(Some(ProcessMetrics {
             key,
-            labels: self.config.process_labels.clone(),
-            command: stat.command,
-            executable_name,
+            labels: self.config.process_labels,
+            command: process_command.command,
+            executable_name: process_command.executable_name,
             parent_pid: stat.parent_pid,
             user_cpu_seconds: stat.user_cpu_seconds,
             system_cpu_seconds: stat.system_cpu_seconds,
@@ -675,6 +697,31 @@ impl ProcfsSource {
         }))
     }
 
+    fn read_process_command(process_dir: &Path) -> Option<ProcessCommand> {
+        let cmdline = fs::read(process_dir.join("cmdline")).ok()?;
+        let argv0 = cmdline
+            .split(|byte| *byte == 0)
+            .find(|arg| !arg.is_empty())?;
+        let command = String::from_utf8_lossy(argv0).into_owned();
+        let executable_name = Path::new(&command)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&command)
+            .to_owned();
+        Some(ProcessCommand {
+            command,
+            executable_name,
+        })
+    }
+
+    fn is_expected_process_read_error(err: &io::Error) -> bool {
+        matches!(
+            err.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+        )
+    }
+
     fn validate_selected_paths(&self) -> io::Result<()> {
         if self.config.cpu
             || self.config.memory
@@ -683,6 +730,7 @@ impl ProcfsSource {
             || self.config.filesystem
             || self.config.network
             || self.config.processes
+            || self.config.per_processes
         {
             let _ = File::open(self.paths.path(PathKind::Stat))?;
         }
@@ -715,12 +763,16 @@ impl ProcfsSource {
     }
 
     fn disable_unavailable_sources(&mut self) {
-        if (self.config.cpu || self.config.system || self.config.processes)
+        if (self.config.cpu
+            || self.config.system
+            || self.config.processes
+            || self.config.per_processes)
             && !self.source_available(PathKind::Stat)
         {
             self.config.cpu = false;
             self.config.system = false;
             self.config.processes = false;
+            self.config.per_processes = false;
         }
         if self.config.cpu && !self.source_available(PathKind::Cpuinfo) {
             self.config.cpu = false;

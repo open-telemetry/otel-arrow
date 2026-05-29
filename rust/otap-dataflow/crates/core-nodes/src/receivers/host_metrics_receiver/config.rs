@@ -430,7 +430,7 @@ pub struct ProcessFilterConfig {
 }
 
 /// Per-process attribute controls.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProcessLabelsConfig {
     /// Emit process.pid.
@@ -467,7 +467,7 @@ impl Default for ProcessLabelsConfig {
 }
 
 /// Per-process metric controls.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProcessMetricsConfig {
     /// Emit process.cpu.time.
@@ -714,16 +714,28 @@ pub(super) fn validate_config(config: &Config) -> Result<(), otap_df_config::err
         });
     }
     let process_labels = &config.families.processes.process.labels;
-    if config.families.processes.mode == ProcessMode::SummaryAndPerProcess
-        && (process_labels.executable_path
-            || process_labels.command_line
-            || process_labels.owner
-            || process_labels.cgroup)
-    {
-        return Err(otap_df_config::error::Error::InvalidUserConfig {
-            error: "process labels executable_path, command_line, owner, and cgroup are not supported yet"
-                .to_owned(),
-        });
+    if config.families.processes.mode == ProcessMode::SummaryAndPerProcess {
+        let mut unsupported_labels = Vec::new();
+        if process_labels.executable_path {
+            unsupported_labels.push("executable_path");
+        }
+        if process_labels.command_line {
+            unsupported_labels.push("command_line");
+        }
+        if process_labels.owner {
+            unsupported_labels.push("owner");
+        }
+        if process_labels.cgroup {
+            unsupported_labels.push("cgroup");
+        }
+        if !unsupported_labels.is_empty() {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "process labels are not supported yet: {}",
+                    unsupported_labels.join(", ")
+                ),
+            });
+        }
     }
     validate_family_interval(
         "cpu",
