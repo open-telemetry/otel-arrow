@@ -642,8 +642,8 @@ impl ProcfsSource {
         };
         let process_command = Self::read_process_command(&process_dir)
             .unwrap_or_else(|| ProcessCommand::from_comm(&stat.command));
-        if !filter_allows(
-            &process_command.command,
+        if !process_filter_allows(
+            &process_command,
             self.config.process_include.as_ref(),
             self.config.process_exclude.as_ref(),
         ) {
@@ -707,7 +707,13 @@ impl ProcfsSource {
             .split(|byte| *byte == 0)
             .find(|arg| !arg.is_empty())?;
         let command = String::from_utf8_lossy(argv0).into_owned();
-        let executable_name = Path::new(&command)
+        let executable_path = command.trim_end_matches('/');
+        let executable_source = if executable_path.is_empty() {
+            command.as_str()
+        } else {
+            executable_path
+        };
+        let executable_name = Path::new(executable_source)
             .file_name()
             .and_then(|name| name.to_str())
             .filter(|name| !name.is_empty())
@@ -895,6 +901,17 @@ impl ProcfsSource {
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
     }
+}
+
+fn process_filter_allows(
+    command: &ProcessCommand,
+    include: Option<&CompiledFilter>,
+    exclude: Option<&CompiledFilter>,
+) -> bool {
+    let matches = |filter: &CompiledFilter| {
+        filter.matches(&command.command) || filter.matches(&command.executable_name)
+    };
+    include.is_none_or(matches) && !exclude.is_some_and(matches)
 }
 
 #[cfg(test)]

@@ -244,10 +244,12 @@ Rules:
   `process.threads`, and `process.uptime`. It requires `max_processes` to be
   greater than zero and tracks CPU deltas by `(pid, start_time)` to avoid PID
   reuse mixing.
-- Per-process filters match `process.command`, which is read from the first
-  `/proc/<pid>/cmdline` argument when available and falls back to the kernel
-  comm field from `/proc/<pid>/stat`. The emitted `process.executable.name` is
-  the basename of that command value.
+- Per-process filters match either `process.command` or
+  `process.executable.name`. `process.command` is read from the first
+  `/proc/<pid>/cmdline` argument with lossy UTF-8 conversion when available and
+  falls back to the kernel comm field from `/proc/<pid>/stat`. The emitted
+  `process.executable.name` is the basename of that command value, so strict
+  filters such as `names: ["postgres"]` match `/usr/bin/postgres`.
 - When more processes match than `max_processes`, the receiver emits the top
   processes by cumulative CPU time, then resident memory, then PID. This is a
   first-pass cardinality guard, not a complete top-k process feature.

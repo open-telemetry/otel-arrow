@@ -756,7 +756,11 @@ fn scrape_due_collects_opt_in_per_process_metrics_with_filters_and_limit() {
     .expect("first scrape");
     assert_eq!(first.snapshot.processes.expect("summary").created, 0);
     assert_eq!(first.snapshot.per_processes.len(), 1);
-    assert_eq!(first.snapshot.per_processes[0].command, "df_engine");
+    assert_eq!(
+        first.snapshot.per_processes[0].command,
+        "/usr/bin/df_engine"
+    );
+    assert_eq!(first.snapshot.per_processes[0].executable_name, "df_engine");
     assert!(first.snapshot.per_processes[0].cpu_utilization.is_none());
 
     write_fake_process(&proc, 100, "df_engine", 1, 110, 220, 100, 4096, 2, 150, 250);
