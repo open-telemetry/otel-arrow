@@ -18,7 +18,7 @@ pub(crate) mod transport_guard_test_util;
 use crate::error::Result;
 use crate::otap::OtapArrowRecords;
 
-pub use logs::OtapLogsView;
+pub use logs::{DecodedOtapLogsResources, OtapLogsResourcesView, OtapLogsView};
 pub use metrics::OtapMetricsView;
 pub use traces::OtapTracesView;
 
@@ -27,6 +27,9 @@ pub use traces::OtapTracesView;
 /// OTAP views borrow from decoded records, so callers that only have a borrowed
 /// payload can use this wrapper to preserve the original payload while keeping
 /// the cloned, decoded records alive for view construction.
+///
+/// Prefer [`DecodedOtapLogsResources`] when a logs caller only needs
+/// resource-level data.
 pub struct DecodedOtapArrowRecords {
     records: OtapArrowRecords,
 }

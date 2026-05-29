@@ -5,6 +5,8 @@ use super::test_util::encoded_field;
 use super::*;
 use arrow::array::{ArrayRef, StringArray, StructArray, UInt8Array, UInt16Array};
 use arrow::datatypes::{DataType, Field, Schema};
+use otap_df_pdata_views::views::common::{AnyValueView, AttributeView};
+use otap_df_pdata_views::views::resource::ResourceView;
 use std::sync::Arc;
 
 fn logs_batch_with_id_encodings(
@@ -189,6 +191,12 @@ fn allows_view_after_decode() {
         .unwrap();
     otap_records
         .set(
+            ArrowPayloadType::ScopeAttrs,
+            attrs_batch_with_parent_encoding(consts::metadata::encodings::PLAIN),
+        )
+        .unwrap();
+    otap_records
+        .set(
             ArrowPayloadType::LogAttrs,
             attrs_batch_with_parent_encoding(consts::metadata::encodings::PLAIN),
         )
@@ -221,4 +229,54 @@ fn allows_view_after_decode_with_empty_attr_batch() {
     otap_records.decode_transport_optimized_ids().unwrap();
     let _logs_view = OtapLogsView::try_from(&otap_records)
         .expect("decoded empty transport child batches should allow logs view creation");
+}
+
+#[test]
+fn resource_only_view_decodes_only_resource_batches() {
+    let mut otap_records = OtapArrowRecords::Logs(Default::default());
+    otap_records
+        .set(ArrowPayloadType::Logs, logs_batch_with_plain_ids())
+        .unwrap();
+    otap_records
+        .set(
+            ArrowPayloadType::ResourceAttrs,
+            attrs_batch_with_parent_encoding(consts::metadata::encodings::PLAIN),
+        )
+        .unwrap();
+    otap_records
+        .set(
+            ArrowPayloadType::ScopeAttrs,
+            attrs_batch_with_parent_encoding(consts::metadata::encodings::PLAIN),
+        )
+        .unwrap();
+    otap_records
+        .set(
+            ArrowPayloadType::LogAttrs,
+            attrs_batch_with_parent_encoding(consts::metadata::encodings::PLAIN),
+        )
+        .unwrap();
+
+    otap_records.encode_transport_optimized().unwrap();
+    assert!(matches!(
+        OtapLogsView::try_from(&otap_records),
+        Err(Error::TransportOptimizedIdsNotDecoded { .. })
+    ));
+
+    let decoded_resources = DecodedOtapLogsResources::clone_and_decode(&otap_records)
+        .expect("resource-only decode should ignore scope/log child batches");
+    let resources_view = decoded_resources
+        .resources_view()
+        .expect("resource-only view should only require resource ID columns");
+
+    let mut resources = resources_view.resources();
+    let resource_logs = resources.next().expect("expected one resource");
+    let resource = resource_logs.resource();
+    let mut attrs = resource.attributes();
+    let attr = attrs.next().expect("expected resource attribute");
+
+    assert_eq!(attr.key(), b"service.name");
+    let value = attr.value().expect("attribute should have a value");
+    assert_eq!(value.as_string(), Some("test-service".as_bytes()));
+    assert!(attrs.next().is_none());
+    assert!(resources.next().is_none());
 }

@@ -65,7 +65,7 @@ use otap_df_pdata::TryFromWithOptions;
 #[cfg(test)]
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otlp::OtlpProtoBytes;
-use otap_df_pdata::views::otap::DecodedOtapArrowRecords;
+use otap_df_pdata::views::otap::DecodedOtapLogsResources;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
@@ -383,24 +383,19 @@ impl ResourceValidatorProcessor {
         arrow_records: &OtapArrowRecords,
         allowed_values: &HashSet<String>,
     ) -> Result<(), (ValidationFailure, String)> {
-        let decoded_records =
-            DecodedOtapArrowRecords::clone_and_decode(arrow_records).map_err(|_| {
+        let decoded_resources =
+            DecodedOtapLogsResources::clone_and_decode(arrow_records).map_err(|_| {
                 let failure = ValidationFailure::ConversionError;
                 (failure, self.format_error_message(failure))
             })?;
-        let logs_view = decoded_records.logs_view().map_err(|_| {
+        let logs_resources = decoded_resources.resources_view().map_err(|_| {
             let failure = ValidationFailure::ConversionError;
             (failure, self.format_error_message(failure))
         })?;
 
-        for resource_logs in logs_view.resources() {
-            if let Some(resource) = resource_logs.resource() {
-                if let Err(failure) = self.validate_resource_with_allowed(&resource, allowed_values)
-                {
-                    return Err((failure, self.format_error_message(failure)));
-                }
-            } else {
-                let failure = ValidationFailure::MissingAttribute;
+        for resource_logs in logs_resources.resources() {
+            let resource = resource_logs.resource();
+            if let Err(failure) = self.validate_resource_with_allowed(&resource, allowed_values) {
                 return Err((failure, self.format_error_message(failure)));
             }
         }

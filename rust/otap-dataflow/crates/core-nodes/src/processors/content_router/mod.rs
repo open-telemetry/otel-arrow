@@ -87,7 +87,7 @@ use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
 use otap_df_pdata::TryFromWithOptions;
 use otap_df_pdata::otlp::OtlpProtoBytes;
-use otap_df_pdata::views::otap::DecodedOtapArrowRecords;
+use otap_df_pdata::views::otap::DecodedOtapLogsResources;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
@@ -456,20 +456,18 @@ impl ContentRouter {
         &self,
         arrow_records: &otap_df_pdata::OtapArrowRecords,
     ) -> RouteResolution {
-        let decoded_records = match DecodedOtapArrowRecords::clone_and_decode(arrow_records) {
-            Ok(decoded_records) => decoded_records,
+        let decoded_resources = match DecodedOtapLogsResources::clone_and_decode(arrow_records) {
+            Ok(decoded_resources) => decoded_resources,
             Err(_) => return RouteResolution::ConversionError,
         };
-        let logs_view = match decoded_records.logs_view() {
+        let logs_resources = match decoded_resources.resources_view() {
             Ok(view) => view,
             Err(_) => return RouteResolution::ConversionError,
         };
         let mut acc: Option<RouteResolution> = None;
-        for resource_logs in logs_view.resources() {
-            let res = match resource_logs.resource() {
-                Some(resource) => self.extract_route_from_resource(&resource),
-                None => RouteResolution::MissingKey,
-            };
+        for resource_logs in logs_resources.resources() {
+            let resource = resource_logs.resource();
+            let res = self.extract_route_from_resource(&resource);
             acc = Some(Self::fold_resolution(acc, res));
             if matches!(acc, Some(RouteResolution::MixedBatch)) {
                 return RouteResolution::MixedBatch;

@@ -31,6 +31,10 @@ use otap_df_pdata_views::views::logs::{
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 
+mod resources;
+
+pub use resources::{DecodedOtapLogsResources, OtapLogsResourcesView};
+
 /// Zero-copy view over OTAP logs Arrow RecordBatches
 pub struct OtapLogsView<'a> {
     // Cached root (Logs) columns. `None` when the root Logs payload is missing.
