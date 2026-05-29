@@ -992,7 +992,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                         batch_id = batch_id,
                                         cursor = cursor.as_str()
                                     );
-                                    if let Some(deadline) = drain_deadline {
+                                    if drain_deadline.is_some() {
                                         if pending.is_empty() {
                                             continue;
                                         }

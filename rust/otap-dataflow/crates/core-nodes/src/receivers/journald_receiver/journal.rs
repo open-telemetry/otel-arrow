@@ -114,7 +114,6 @@ mod imp {
     pub(crate) struct SdJournalReader {
         lib: &'static LibSystemd,
         journal: NonNull<SdJournal>,
-        wait_timeout: Duration,
         extraction: ExtractionConfig,
     }
 
@@ -149,12 +148,9 @@ mod imp {
             let mut reader = Self {
                 lib,
                 journal,
-                wait_timeout: config.wait_timeout,
                 extraction: config.extraction.clone(),
             };
-            if let Err(err) = reader.configure(config, checkpoint) {
-                return Err(err);
-            }
+            reader.configure(config, checkpoint)?;
             Ok(reader)
         }
 
@@ -265,10 +261,6 @@ mod imp {
                 },
                 "sd_journal_add_match",
             )
-        }
-
-        pub(crate) fn next_entry(&mut self) -> Result<Option<JournalEntry>, String> {
-            self.next_entry_with_wait_timeout(self.wait_timeout)
         }
 
         pub(crate) fn next_entry_with_wait_timeout(
