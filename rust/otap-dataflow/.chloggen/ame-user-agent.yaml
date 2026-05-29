@@ -1,0 +1,7 @@
+change_type: enhancement
+
+component: pipeline
+
+note: Add optional `user_agent` config field to the Azure Monitor exporter for injecting a custom User-Agent HTTP header on all outgoing requests including heartbeat.
+
+issues: []

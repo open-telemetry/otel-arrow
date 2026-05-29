@@ -184,6 +184,11 @@ pub struct ApiConfig {
     /// - 9: maximum compression (highest CPU, marginal size reduction over 6)
     #[serde(default = "default_gzip_compression_level")]
     pub gzip_compression_level: u32,
+
+    /// Custom User-Agent string to send with HTTP requests (optional).
+    /// When set, this value is used as the User-Agent header on all outgoing requests
+    /// (including heartbeat). When not set, the default reqwest User-Agent is used.
+    pub user_agent: Option<String>,
 }
 
 /// Schema mapping configuration
@@ -312,6 +317,7 @@ mod tests {
             schema: SchemaConfig::default(),
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
+            user_agent: None,
         }
     }
 
