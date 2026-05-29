@@ -50,8 +50,8 @@ pub mod metrics;
 pub mod producer;
 /// generates signals based on OTel semantic conventions registry
 pub mod semconv_signal;
-/// Static hardcoded signal generators for lightweight load testing
-pub mod static_signal;
+/// Synthetic hardcoded signal generators for lightweight load testing
+pub mod synthetic_signal;
 
 /// The URN for the traffic generator receiver.
 pub const TRAFFIC_GENERATOR_RECEIVER_URN: &str = "urn:otel:receiver:traffic_generator";
@@ -96,7 +96,8 @@ pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig| {
+             receiver_config: &ReceiverConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         Ok(ReceiverWrapper::local(
             TrafficGeneratorReceiver::from_config(pipeline, &node_config.config)?,
             node,
@@ -176,8 +177,8 @@ impl TrafficGeneratorReceiver {
                                 .smooth_behind_remaining_items
                                 .record(remaining_items as f64);
                             otel_warn!(
-                                "Data generator is falling behind and didn't finish the current run. For highest
-                                possible throughput, use production_mode: open",
+                                "traffic_generator.smooth_run_behind",
+                                message = "Data generator is falling behind and didn't finish the current run. For highest possible throughput, use production_mode: open",
                                 remaining=remaining_batches,
                                 remaining_items,
                             );
@@ -283,7 +284,8 @@ impl TrafficGeneratorReceiver {
 
                     _ = run_ticker.tick() => {
                         otel_debug!(
-                            "Data generator is falling behind and didn't finish the current run.",
+                            "traffic_generator.open_run_behind",
+                            message = "Data generator is falling behind and didn't finish the current run.",
                             remaining=current_run.len(),
                         );
 
@@ -566,7 +568,8 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
                     .await
                 } else {
                     otel_warn!(
-                        "Falling back to Open production mode because smooth batch interval is zero"
+                        "traffic_generator.smooth_fallback_open",
+                        reason = "smooth batch interval is zero"
                     );
                     self.run_open(
                         ctrl_msg_recv,
@@ -1085,7 +1088,7 @@ mod tests {
     fn test_traffic_generator_receiver_static_pregenerated() {
         let test_runtime = TestRuntime::new();
 
-        // Use Static data source with PreGenerated strategy
+        // Use Synthetic data source with PreGenerated strategy
         let registry_path = VirtualDirectoryPath::GitRepo {
             url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
             sub_folder: Some("model".to_owned()),
@@ -1094,7 +1097,7 @@ mod tests {
 
         let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 1, 1);
         let config = Config::new(traffic_config, registry_path)
-            .with_data_source(DataSource::Static)
+            .with_data_source(DataSource::Synthetic)
             .with_generation_strategy(GenerationStrategy::PreGenerated);
 
         // create our receiver
@@ -1138,7 +1141,7 @@ mod tests {
         // DrainIngress must interrupt that sleep and exit promptly.
         let traffic_config = TrafficConfig::new(Some(1), None, 1, 0, 0, 1);
         let config =
-            Config::new(traffic_config, registry_path).with_data_source(DataSource::Static);
+            Config::new(traffic_config, registry_path).with_data_source(DataSource::Synthetic);
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             TRAFFIC_GENERATOR_RECEIVER_URN,
@@ -1197,7 +1200,7 @@ mod tests {
 
         let traffic_config = TrafficConfig::new(Some(1000), None, 1, 0, 0, 1);
         let config = Config::new(traffic_config, registry_path)
-            .with_data_source(DataSource::Static)
+            .with_data_source(DataSource::Synthetic)
             .with_generation_strategy(GenerationStrategy::PreGenerated);
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
@@ -1258,7 +1261,7 @@ mod tests {
         // message breaks the sleep, we'd see more than 2 batches in 1.5s.
         let traffic_config = TrafficConfig::new(Some(1), None, 1, 0, 0, 1);
         let config =
-            Config::new(traffic_config, registry_path).with_data_source(DataSource::Static);
+            Config::new(traffic_config, registry_path).with_data_source(DataSource::Synthetic);
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             TRAFFIC_GENERATOR_RECEIVER_URN,
@@ -1345,7 +1348,7 @@ mod tests {
             1,
         );
         let config = Config::new(traffic_config, registry_path)
-            .with_data_source(DataSource::Static)
+            .with_data_source(DataSource::Synthetic)
             .with_generation_strategy(GenerationStrategy::Fresh)
             .with_transport_headers(HashMap::from([(
                 "x-tenant-id".to_string(),
@@ -1424,7 +1427,7 @@ mod tests {
             1,
         );
         let config = Config::new(traffic_config, registry_path)
-            .with_data_source(DataSource::Static)
+            .with_data_source(DataSource::Synthetic)
             .with_generation_strategy(GenerationStrategy::Fresh)
             .with_transport_headers(HashMap::from([("x-request-id".to_string(), None)]));
 
@@ -1510,7 +1513,7 @@ mod tests {
             1,
         );
         let config = Config::new(traffic_config, registry_path)
-            .with_data_source(DataSource::Static)
+            .with_data_source(DataSource::Synthetic)
             .with_generation_strategy(GenerationStrategy::Fresh)
             .with_transport_headers(HashMap::from([("x-trace-bin".to_string(), None)]));
 
@@ -1591,7 +1594,7 @@ mod tests {
             1,
         );
         let config = Config::new(traffic_config, registry_path)
-            .with_data_source(DataSource::Static)
+            .with_data_source(DataSource::Synthetic)
             .with_generation_strategy(GenerationStrategy::Fresh);
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(

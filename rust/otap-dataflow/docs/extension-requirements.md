@@ -103,10 +103,12 @@ extensions:
 
 Multiple instances may exist using different configurations or implementations.
 
-The execution model of an extension (for example **local per core** or **shared
-across cores**) is defined by the **extension provider implementation**, not by
-the configuration. The placement of the extension declaration in the
-configuration hierarchy remains an orthogonal concern handled by the runtime.
+The execution model of an extension (for example **local per core** or
+**shared**) is defined by the **extension provider implementation**, not by the
+configuration. The placement of the extension declaration in the configuration
+hierarchy remains an orthogonal concern handled by the runtime, and ultimately
+determines the *sharing boundary* of an instance (see
+[Extension Scopes](#extension-scopes)).
 
 ### Capability Binding
 
@@ -315,9 +317,12 @@ Pipeline  Pipeline  Pipeline  Pipeline     <- All configured from the same confi
 Instance  Instance  Instance  Instance
 ```
 
-The execution model of an extension (local per core or shared across cores) is
-determined by the **extension provider implementation**, not by user
-configuration.
+The execution model of an extension (`local` or `shared`) is determined by the
+**extension provider implementation**, not by user configuration. The execution
+model defines the *type constraints* on the implementation (`!Send` for
+`local`, `Send + Clone` for `shared`); the *sharing boundary* of an instance is
+determined by the configuration scope at which the extension is declared (see
+[Extension Scopes](#extension-scopes)).
 
 ## Extension Scopes
 
@@ -326,14 +331,27 @@ configuration.
 In phase 1, extensions are declared at the **pipeline level** and consumed by
 nodes within that pipeline.
 
-Two execution models are supported by extension providers.
+Two execution models are supported by extension providers. The execution model
+expresses the *type constraints* the implementation accepts; the actual
+*sharing boundary* of an instance is determined by the scope at which it is
+declared (pipeline scope in Phase 1).
 
-| Execution Model | Description                              |
-|-----------------|------------------------------------------|
-| `local`         | One runtime instance per core            |
-| `shared`        | One runtime instance shared across cores |
+| Execution Model | Type Constraints  | Phase 1 Sharing Boundary (pipeline scope)                     |
+|-----------------|-------------------|---------------------------------------------------------------|
+| `local`         | `!Send`           | One instance per pipeline instance (per core)                 |
+| `shared`        | `Send + Clone`    | One instance per pipeline instance (per core); cloned on bind |
 
 The supported model is declared by the extension provider implementation.
+
+> **Phase 1 note on `shared`.** Because Phase 1 only supports pipeline scope,
+> a `shared` extension is still instantiated *per pipeline instance* (i.e., per
+> core) -- it is not yet shared across cores. The `Send + Clone` bounds are
+> what makes true cross-core sharing possible *later*, when extensions can be
+> declared at higher scopes (group, engine). At those scopes, a single
+> `shared` instance will be cloned to each pipeline instance, giving genuine
+> cross-core sharing of state behind `Arc`. Until then, treat `shared` as
+> "per-pipeline-instance, ready to be hoisted to a broader scope without code
+> changes" rather than "one instance for the whole engine".
 
 ### Local Execution Model Advantages
 

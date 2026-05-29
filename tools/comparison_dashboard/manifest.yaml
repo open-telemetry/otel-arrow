@@ -25,6 +25,39 @@ meta:
   signals: [logs, metrics, traces]
   compression: [none, gzip, zstd]
 
+# Display registry for dashboard metrics. Names must match the `name` field on
+# per-test metric records in published suite data; units come from those
+# records (manifest declares label only).
+metrics:
+  - name: cpu_percentage_normalized_avg
+    label: CPU Average
+  - name: cpu_percentage_normalized_max
+    label: CPU Max
+  - name: ram_mib_avg
+    label: Memory Average
+  - name: ram_mib_max
+    label: Memory Max
+  - name: network_tx_bytes_rate_avg
+    label: Network TX Rate
+  - name: network_rx_bytes_rate_avg
+    label: Network RX Rate
+  - name: dropped_logs_percentage
+    label: Dropped Logs
+  - name: logs_delivery_deviation_percentage
+    label: Logs Delivery Deviation
+  - name: logs_produced_rate
+    label: Offered Load Rate
+  - name: loadgen_logs_sent_rate
+    label: Loadgen Sent Rate
+  - name: logs_received_rate
+    label: Collector Received Rate
+  - name: collector_logs_sent_rate
+    label: Collector Sent Rate
+  - name: backend_logs_received_rate
+    label: Backend Received Rate
+  - name: test_duration
+    label: Test Duration
+
 # Suite definitions, listed by path. Each entry must point at an existing
 # YAML file with at least `name`, `slug`, `variables`, and `orchestrator_template`.
 suites:
@@ -62,8 +95,63 @@ suites:
   - suites/otc/otc-logs-otlp-gzip-baseline.yaml
   - suites/otc/otc-logs-otlp-zstd-baseline.yaml
   - suites/otc/otc-logs-otlphttp-none-baseline.yaml
+  - suites/otc/otc-metrics-otap-none-baseline.yaml
+  - suites/otc/otc-metrics-otap-gzip-baseline.yaml
+  - suites/otc/otc-metrics-otap-zstd-baseline.yaml
+  - suites/otc/otc-metrics-otlp-none-baseline.yaml
+  - suites/otc/otc-metrics-otlp-gzip-baseline.yaml
+  - suites/otc/otc-metrics-otlp-zstd-baseline.yaml
+  - suites/otc/otc-metrics-otlphttp-none-baseline.yaml
+  - suites/otc/otc-traces-otap-none-baseline.yaml
+  - suites/otc/otc-traces-otap-gzip-baseline.yaml
+  - suites/otc/otc-traces-otap-zstd-baseline.yaml
+  - suites/otc/otc-traces-otlp-none-baseline.yaml
+  - suites/otc/otc-traces-otlp-gzip-baseline.yaml
+  - suites/otc/otc-traces-otlp-zstd-baseline.yaml
+  - suites/otc/otc-traces-otlphttp-none-baseline.yaml
+  - suites/dfe/dfe-logs-otap-none-attr-insert.yaml
+  - suites/dfe/dfe-logs-otlp-none-attr-insert.yaml
+  - suites/dfe/dfe-logs-otap-none-transform-insert.yaml
+  - suites/dfe/dfe-logs-otlp-none-transform-insert.yaml
+  - suites/dfe/dfe-logs-otap-none-attr-rename.yaml
+  - suites/dfe/dfe-logs-otlp-none-attr-rename.yaml
+  - suites/dfe/dfe-logs-otap-none-transform-rename.yaml
+  - suites/dfe/dfe-logs-otlp-none-transform-rename.yaml
+  - suites/otc/otc-logs-otlp-none-attr-insert.yaml
+  - suites/otc/otc-logs-otlp-none-transform-insert.yaml
+  - suites/otc/otc-logs-otlp-none-attr-rename.yaml
+  - suites/otc/otc-logs-otlp-none-transform-rename.yaml
+  - suites/otc/otc-logs-otlp-none-transform-rename-replace.yaml
+  - suites/dfe/dfe-logs-otap-none-attr-insert-multi-batch.yaml
+  - suites/dfe/dfe-logs-otap-none-attr-rename-multi-batch.yaml
+  - suites/dfe/dfe-logs-otlp-none-attr-insert-multi-batch.yaml
+  - suites/dfe/dfe-logs-otlp-none-attr-rename-multi-batch.yaml
+  - suites/otc/otc-logs-otlp-none-attr-insert-multi-batch.yaml
+  - suites/otc/otc-logs-otlp-none-attr-rename-multi-batch.yaml
+  - suites/dfe/dfe-logs-otap-none-attr-insert-multi-transform.yaml
+  - suites/dfe/dfe-logs-otap-none-attr-rename-multi-transform.yaml
+  - suites/dfe/dfe-logs-otlp-none-attr-insert-multi-transform.yaml
+  - suites/dfe/dfe-logs-otlp-none-attr-rename-multi-transform.yaml
+  - suites/otc/otc-logs-otlp-none-attr-insert-multi-transform.yaml
+  - suites/otc/otc-logs-otlp-none-attr-rename-multi-transform.yaml
+  - suites/dfe/dfe-logs-otap-none-transform-insert-multi-transform.yaml
+  - suites/dfe/dfe-logs-otap-none-transform-rename-multi-transform.yaml
+  - suites/dfe/dfe-logs-otlp-none-transform-insert-multi-transform.yaml
+  - suites/dfe/dfe-logs-otlp-none-transform-rename-multi-transform.yaml
+  - suites/otc/otc-logs-otlp-none-transform-insert-multi-transform.yaml
+  - suites/otc/otc-logs-otlp-none-transform-rename-multi-transform.yaml
+  - suites/otc/otc-logs-otap-none-attr-insert-multi-transform.yaml
+  - suites/otc/otc-logs-otap-none-attr-rename-multi-transform.yaml
 
 # Comparison definitions, listed by path. Each entry must point at an
 # existing YAML file with `slug` and `suites` (a list of suite refs).
 comparisons:
-  - comparisons/dfe_baselines.yaml
+  - comparisons/log_baselines_multi_rate.yaml
+  - comparisons/metric_baselines_multi_rate.yaml
+  - comparisons/trace_baselines_multi_rate.yaml
+  - comparisons/log_transform_attr_processor_rename.yaml
+  - comparisons/log_transform_attr_processor_insert.yaml
+  - comparisons/log_attr_processor_insert_multi_batch.yaml
+  - comparisons/log_attr_processor_rename_multi_batch.yaml
+  - comparisons/log_transform_attr_processor_insert_multi_transform.yaml
+  - comparisons/log_transform_attr_processor_rename_multi_transform.yaml

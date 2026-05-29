@@ -25,55 +25,16 @@ if (!DATA_PATH) {
 }
 
 // ── Metric display config ──────────────────────────────────────────────────
-
-const METRIC_LABELS = {
-  cpu_percentage_normalized_avg: "CPU Average",
-  cpu_percentage_normalized_max: "CPU Max",
-  ram_mib_avg: "Memory Average",
-  ram_mib_max: "Memory Max",
-  network_tx_bytes_rate_avg: "Network TX Rate",
-  network_rx_bytes_rate_avg: "Network RX Rate",
-  dropped_logs_percentage: "Dropped Logs",
-  logs_delivery_deviation_percentage: "Logs Delivery Deviation",
-  logs_produced_rate: "Offered Load Rate",
-  loadgen_logs_sent_rate: "Loadgen Sent Rate",
-  logs_received_rate: "Collector Received Rate",
-  collector_logs_sent_rate: "Collector Sent Rate",
-  backend_logs_received_rate: "Backend Received Rate",
-  test_duration: "Test Duration",
-};
-
-const METRIC_UNITS = {
-  cpu_percentage_normalized_avg: "%",
-  cpu_percentage_normalized_max: "%",
-  ram_mib_avg: "MiB",
-  ram_mib_max: "MiB",
-  network_tx_bytes_rate_avg: "bytes/sec",
-  network_rx_bytes_rate_avg: "bytes/sec",
-  dropped_logs_percentage: "%",
-  logs_delivery_deviation_percentage: "%",
-  logs_produced_rate: "logs/sec",
-  loadgen_logs_sent_rate: "logs/sec",
-  logs_received_rate: "logs/sec",
-  collector_logs_sent_rate: "logs/sec",
-  backend_logs_received_rate: "logs/sec",
-  test_duration: "seconds",
-};
-
-const DASHBOARD_METRICS = [
-  "cpu_percentage_normalized_avg",
-  "cpu_percentage_normalized_max",
-  "ram_mib_avg",
-  "ram_mib_max",
-  "network_tx_bytes_rate_avg",
-  "network_rx_bytes_rate_avg",
-];
+// Display labels come from window.METRICS_META (emitted by dashboard.py from
+// manifest.yaml). Units come from each per-test metric record's `unit` field
+// in the published JSON.
 
 const AUTO_COLORS = [
-  "#f97316", "#3b82f6", "#22c55e", "#a855f7",
-  "#ef4444", "#14b8a6", "#eab308", "#ec4899",
-  "#06b6d4", "#84cc16", "#e11d48", "#8b5cf6",
-  "#f59e0b", "#0ea5e9", "#10b981", "#d946ef",
+  "#1F77B4", "#AEC7E8", "#FF7F0E", "#FFBB78",
+  "#2CA02C", "#98DF8A", "#D62728", "#FF9896",
+  "#9467BD", "#C5B0D5", "#8C564B", "#C49C94",
+  "#E377C2", "#F7B6D2", "#7F7F7F", "#C7C7C7",
+  "#BCBD22", "#DBDB8D", "#17BECF", "#9EDAE5",
 ];
 
 const COLORBLIND_COLORS = [
@@ -81,6 +42,7 @@ const COLORBLIND_COLORS = [
   "#56b4e9", "#d55e00", "#f0e442", "#000000",
   "#0099cc", "#994f00", "#006d5b", "#ad5c85",
   "#3a9bd9", "#aa4400", "#c4b832", "#444444",
+  "#882e72", "#b178a6", "#117733", "#88ccaa",
 ];
 
 let colorblindMode = localStorage.getItem("colorblindMode") === "true";
@@ -280,20 +242,35 @@ const activeCharts = new Map();
 
 function getColor(index) { const p = getActivePalette(); return p[index % p.length]; }
 
+const RECEIVED_RATE_METRICS = ["logs_received_rate", "metrics_received_rate", "spans_received_rate"];
+
 function hasBackpressure(metricsArray, loadgenRate) {
   if (!metricsArray) return false;
   const dropped = metricsArray.find((m) => m.name === "dropped_logs_percentage");
   if (dropped && typeof dropped.value === "number" && dropped.value > DATA_LOSS_THRESHOLD) return true;
   if (loadgenRate && loadgenRate > 0) {
-    const produced = metricsArray.find((m) => m.name === "logs_produced_rate");
-    if (produced && typeof produced.value === "number") {
-      if ((loadgenRate - produced.value) / loadgenRate * 100 > RATE_DEVIATION_THRESHOLD) return true;
+    const received = metricsArray.find((m) => RECEIVED_RATE_METRICS.includes(m.name));
+    if (received && typeof received.value === "number") {
+      if ((loadgenRate - received.value) / loadgenRate * 100 > RATE_DEVIATION_THRESHOLD) return true;
     }
   }
   return false;
 }
 
-function buildComparisonChartData(suiteData, comparison, testNames, selectedMetric) {
+// Determines whether any test in a comparison currently shows backpressure. 
+// Drives both the landing-page legend.
+function anyComparisonBackpressure(suiteData, comparison) {
+  const tests = comparison.tests || [];
+  return (comparison.suites || []).some((r) => {
+    const suiteTests = getSuiteTests(suiteData, r.slug);
+    return tests.some((ct) => {
+      const t = suiteTests.find((x) => x.name === ct.name);
+      return t && hasBackpressure(t.metrics, ct.loadgen_rate);
+    });
+  });
+}
+
+function buildComparisonChartData(suiteData, comparison, tests, selectedMetric) {
   const refs = comparison.suites || [];
   const origIdx = comparison._originalIndices || null;
 
@@ -312,39 +289,54 @@ function buildComparisonChartData(suiteData, comparison, testNames, selectedMetr
     const colorIdx = origIdx ? origIdx[si] : si;
     const color = getColor(colorIdx);
     const pattern = createDiagonalPattern(color);
-    const tests = getSuiteTests(suiteData, ref.slug);
+    const suiteTests = getSuiteTests(suiteData, ref.slug);
     const data = [], bp = [], missing = [];
-    for (const tn of testNames) {
-      const t = tests.find((x) => x.name === tn);
+    for (const ct of tests) {
+      const t = suiteTests.find((x) => x.name === ct.name);
       if (!t || !t.metrics) { data.push(sentinel); bp.push(false); missing.push(true); continue; }
       const m = t.metrics.find((x) => x.name === selectedMetric);
       const val = m && typeof m.value === "number" && Number.isFinite(m.value) ? m.value : null;
       if (val === null) { data.push(sentinel); bp.push(false); missing.push(true); }
       else {
         data.push(val);
-        const rm = tn.match(/^(\d+)k$/);
-        bp.push(hasBackpressure(t.metrics, rm ? parseInt(rm[1]) * 1000 : null));
+        bp.push(hasBackpressure(t.metrics, ct.loadgen_rate));
         missing.push(false);
       }
     }
+    // Fall back to a scalar color when no bars will be drawn (e.g. the
+    // comparison has zero published tests). Chart.js reads index 0 of
+    // backgroundColor for the legend swatch; an empty array yields black.
+    const bgColor = data.length ? data.map((_, i) => missing[i] ? pattern : color) : color;
+    const bdColor = data.length ? data.map((_, i) => missing[i] ? `${color}80` : color) : color;
     return {
       label: ref.short || ref.name, data, _hasBackpressure: bp, _missing: missing,
-      backgroundColor: data.map((_, i) => missing[i] ? pattern : color),
-      borderColor: data.map((_, i) => missing[i] ? `${color}80` : color),
+      backgroundColor: bgColor,
+      borderColor: bdColor,
       borderWidth: 1,
       borderRadius: 4, borderSkipped: "bottom",
     };
   });
-  return { labels: testNames, datasets };
+  return { labels: tests.map((t) => t.label), datasets };
 }
 
-function chartOptions(onClick) {
+function axisTitleConfig(text) {
+  if (!text) return { display: false };
+  return {
+    display: true,
+    text,
+    color: "#475569",
+    font: { size: 12, weight: "600" },
+  };
+}
+
+function chartOptions(onClick, xTitle) {
   return {
     responsive: true, maintainAspectRatio: false, animation: false,
     layout: { padding: { top: 24 } },
     datasets: { bar: { categoryPercentage: 0.85, barPercentage: 0.9 } },
     scales: {
-      x: { grid: { display: false }, border: { display: false }, ticks: { font: { size: 12, weight: "600" }, color: "#64748b" } },
+      x: { grid: { display: false }, border: { display: false }, ticks: { font: { size: 12, weight: "600" }, color: "#64748b" },
+        title: axisTitleConfig(xTitle) },
       y: { beginAtZero: true, border: { display: true, color: "#cbd5e1" },
         ticks: { maxTicksLimit: 5, color: "#94a3b8", font: { size: 10 }, callback: (v) => formatMetricValue(v, "") },
         grid: { color: "#e2e8f0" } },
@@ -362,10 +354,24 @@ function chartOptions(onClick) {
   };
 }
 
-function createBarChart(canvas, suiteData, comparison, testNames, selectedMetric, onClick) {
-  const chart = new Chart(canvas, { type: "bar", data: buildComparisonChartData(suiteData, comparison, testNames, selectedMetric), options: chartOptions(onClick), plugins: [barValueLabelsPlugin] });
+function createBarChart(canvas, suiteData, comparison, tests, selectedMetric, onClick) {
+  const xTitle = resolveXAxisTitle(comparison);
+  const chart = new Chart(canvas, { type: "bar", data: buildComparisonChartData(suiteData, comparison, tests, selectedMetric), options: chartOptions(onClick, xTitle), plugins: [barValueLabelsPlugin] });
   sizeChartContainer(chart, canvas);
+  attachAxisHoverTooltips(chart, canvas, comparison, tests);
   return chart;
+}
+
+// Only the x-axis title is configurable; the y-axis is left unlabeled
+// because the metric (with unit) is already shown in the chart's title
+// dropdown.
+function resolveXAxisTitle(comparison) {
+  const axes = chartAxesConfig(comparison);
+  return (axes.x && axes.x.title) ? axes.x.title : null;
+}
+
+function chartAxesConfig(comparison) {
+  return (comparison && comparison.chart && comparison.chart.axes) || {};
 }
 
 function sizeChartContainer(chart, canvas, baseHeight = 220) {
@@ -374,8 +380,154 @@ function sizeChartContainer(chart, canvas, baseHeight = 220) {
   chart.resize();
 }
 
-function updateBarChartData(chart, suiteData, comparison, testNames, selectedMetric) {
-  const d = buildComparisonChartData(suiteData, comparison, testNames, selectedMetric);
+// Wire mousemove on the chart canvas so hovering over the x-axis title or
+// an individual tick label reveals a floating tooltip. Axis title hover
+// shows chart.axes.x.description. Tick label hover shows a per-tick string
+// (currently derived from each test's loadgen_rate). No-op when there is
+// nothing to show.
+//
+// Charts are destroyed and recreated on the same <canvas> when filters or
+// metrics change — detach any previously-attached handlers before adding
+// new ones so listeners don't accumulate on the reused canvas element.
+function attachAxisHoverTooltips(chart, canvas, comparison, tests) {
+  detachAxisHoverTooltips(canvas);
+  const axes = chartAxesConfig(comparison);
+  const xDesc = axes.x && typeof axes.x.description === "string" && axes.x.description.trim() ? axes.x.description : null;
+  const tickTexts = (tests || []).map(tickHoverText);
+  const hasTickHovers = tickTexts.some(Boolean);
+  if (!xDesc && !hasTickHovers) return;
+  // Text width for the x-axis title is static for the chart's lifetime;
+  // measure it once instead of recomputing in xTitleBox on every mousemove.
+  const xTitleWidth = xDesc ? measureXAxisTitleWidth(chart, canvas) : 0;
+  const PAD = 4;
+  const onMove = (ev) => {
+    const sx = chart.scales && chart.scales.x;
+    if (!sx) { hideAxisHoverTooltip(); return; }
+    const rect = canvas.getBoundingClientRect();
+    const px = ev.clientX - rect.left;
+    const py = ev.clientY - rect.top;
+
+    if (xDesc) {
+      const box = xTitleBoxFromWidth(sx, xTitleWidth);
+      if (box && px >= box.left - PAD && px <= box.right + PAD
+              && py >= box.top - PAD && py <= box.bottom + PAD) {
+        showAxisHoverTooltip(ev.clientX, ev.clientY, xDesc);
+        return;
+      }
+    }
+
+    if (hasTickHovers) {
+      const xLabelH = tickFontSize(sx) + 4;
+      if (py >= sx.top - PAD && py <= sx.top + xLabelH + PAD
+          && px >= sx.left - PAD && px <= sx.right + PAD) {
+        const i = nearestTickIndex(sx, px);
+        const text = i >= 0 ? tickTexts[i] : null;
+        if (text) { showAxisHoverTooltip(ev.clientX, ev.clientY, text); return; }
+      }
+    }
+
+    hideAxisHoverTooltip();
+  };
+  canvas.addEventListener("mousemove", onMove);
+  canvas.addEventListener("mouseleave", hideAxisHoverTooltip);
+  canvas._axisHoverHandlers = { onMove, onLeave: hideAxisHoverTooltip };
+}
+
+function detachAxisHoverTooltips(canvas) {
+  const h = canvas._axisHoverHandlers;
+  if (!h) return;
+  canvas.removeEventListener("mousemove", h.onMove);
+  canvas.removeEventListener("mouseleave", h.onLeave);
+  canvas._axisHoverHandlers = null;
+}
+
+function tickHoverText(test) {
+  if (!test) return null;
+  if (typeof test.description === "string" && test.description.trim()) return test.description;
+  if (typeof test.loadgen_rate === "number" && Number.isFinite(test.loadgen_rate)) {
+    return `${test.loadgen_rate.toLocaleString()}/sec`;
+  }
+  return null;
+}
+
+function tickFontSize(scale) {
+  return (scale.options && scale.options.ticks && scale.options.ticks.font && scale.options.ticks.font.size) || 12;
+}
+
+function measureXAxisTitleWidth(chart, canvas) {
+  const sx = chart.scales && chart.scales.x;
+  const t = sx && sx.options && sx.options.title;
+  if (!t || !t.display || !t.text) return 0;
+  const fs = (t.font && t.font.size) || 12;
+  const weight = (t.font && t.font.weight) || "normal";
+  return measureCanvasText(canvas, t.text, fs, weight);
+}
+
+// Bounding box for the x-axis title text, in canvas-relative pixels. Title
+// is rendered centered horizontally at the bottom of the scale. Width is
+// precomputed (see measureXAxisTitleWidth) so this is cheap to call per
+// mousemove.
+function xTitleBoxFromWidth(scale, textW) {
+  const t = scale.options && scale.options.title;
+  if (!t || !t.display || !t.text || !textW) return null;
+  const fs = (t.font && t.font.size) || 12;
+  const centerX = (scale.left + scale.right) / 2;
+  return {
+    left: centerX - textW / 2,
+    right: centerX + textW / 2,
+    top: scale.bottom - fs - 2,
+    bottom: scale.bottom,
+  };
+}
+
+function measureCanvasText(canvas, text, fontSize, fontWeight) {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return text.length * fontSize * 0.6;
+  ctx.save();
+  ctx.font = `${fontWeight} ${fontSize}px "SF Pro Text", "Segoe UI", system-ui, sans-serif`;
+  const w = ctx.measureText(text).width;
+  ctx.restore();
+  return w;
+}
+
+function nearestTickIndex(scale, px) {
+  const n = (scale.ticks || []).length;
+  if (!n) return -1;
+  let best = -1, bestDist = Infinity;
+  for (let i = 0; i < n; i++) {
+    const tx = scale.getPixelForTick ? scale.getPixelForTick(i) : scale.getPixelForValue(i);
+    const d = Math.abs(px - tx);
+    if (d < bestDist) { bestDist = d; best = i; }
+  }
+  // Cap: only count a hit when within half the inter-tick spacing.
+  const halfSpan = n > 1 ? Math.abs(scale.getPixelForTick(1) - scale.getPixelForTick(0)) / 2 : (scale.right - scale.left) / 2;
+  return bestDist <= halfSpan ? best : -1;
+}
+
+let axisHoverTooltipEl = null;
+function showAxisHoverTooltip(clientX, clientY, text) {
+  if (!axisHoverTooltipEl) {
+    axisHoverTooltipEl = document.createElement("div");
+    axisHoverTooltipEl.className = "axis-hover-tooltip";
+    axisHoverTooltipEl.hidden = true;
+    document.body.appendChild(axisHoverTooltipEl);
+  }
+  axisHoverTooltipEl.textContent = text;
+  axisHoverTooltipEl.hidden = false;
+  // Offset from cursor; keep within viewport on the right edge.
+  const pad = 12;
+  const x = Math.min(clientX + pad, window.innerWidth - axisHoverTooltipEl.offsetWidth - pad);
+  const y = Math.min(clientY + pad, window.innerHeight - axisHoverTooltipEl.offsetHeight - pad);
+  axisHoverTooltipEl.style.left = `${x}px`;
+  axisHoverTooltipEl.style.top = `${y}px`;
+}
+
+function hideAxisHoverTooltip() {
+  if (axisHoverTooltipEl && !axisHoverTooltipEl.hidden) axisHoverTooltipEl.hidden = true;
+}
+
+function updateBarChartData(chart, suiteData, comparison, tests, selectedMetric) {
+  const d = buildComparisonChartData(suiteData, comparison, tests, selectedMetric);
   chart.data.labels = d.labels;
   for (let i = 0; i < d.datasets.length; i++) {
     if (chart.data.datasets[i]) {
@@ -397,11 +549,15 @@ const TIMESERIES_METRICS = [
   { key: "network_rx_bytes_rate", label: "Network RX Rate", unit: "bytes/sec", avg: "network_rx_bytes_rate_avg" },
   { key: "logs_produced_rate", label: "Offered Load Rate", unit: "logs/sec", avg: "logs_produced_rate" },
   { key: "logs_received_rate", label: "Backend Received Rate", unit: "logs/sec", avg: "logs_received_rate" },
+  { key: "metrics_produced_rate", label: "Offered Load Rate", unit: "metrics/sec", avg: "metrics_produced_rate" },
+  { key: "metrics_received_rate", label: "Backend Received Rate", unit: "metrics/sec", avg: "metrics_received_rate" },
+  { key: "spans_produced_rate", label: "Offered Load Rate", unit: "spans/sec", avg: "spans_produced_rate" },
+  { key: "spans_received_rate", label: "Backend Received Rate", unit: "spans/sec", avg: "spans_received_rate" },
 ];
 
 const SCALAR_ONLY_METRICS = [
-  { name: "dropped_logs_percentage", label: "Dropped Logs", unit: "%" },
-  { name: "test_duration", label: "Test Duration", unit: "seconds" },
+  { name: "dropped_logs_percentage" },
+  { name: "test_duration" },
 ];
 
 function tmTitle(tm) { return tm.unit ? `${tm.label} (${tm.unit})` : tm.label; }
@@ -461,27 +617,50 @@ function formatBytes(v) {
 }
 
 function metricLabel(name) {
-  return METRIC_LABELS[name] || name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const meta = (window.METRICS_META || {})[name];
+  if (meta && meta.label) return meta.label;
+  return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function metricTitle(name) {
+function lookupMetricUnit(suiteData, comparison, name) {
+  for (const ref of comparison.suites || []) {
+    for (const t of getSuiteTests(suiteData, ref.slug)) {
+      if (!t.metrics) continue;
+      const m = t.metrics.find((x) => x.name === name);
+      if (m && m.unit) return m.unit;
+    }
+  }
+  return null;
+}
+
+function metricTitle(name, suiteData, comparison) {
   const label = metricLabel(name);
-  const unit = METRIC_UNITS[name];
+  const unit = suiteData && comparison ? lookupMetricUnit(suiteData, comparison, name) : null;
   return unit ? `${label} (${unit})` : label;
 }
 
-function collectTestNames(suiteData, comparison) {
-  const names = new Set();
-  for (const ref of comparison.suites || [])
-    for (const t of getSuiteTests(suiteData, ref.slug)) names.add(t.name);
-  return [...names].sort((a, b) => (parseInt(a) || 0) - (parseInt(b) || 0));
+function chartMetricsConfig(comparison) {
+  return (comparison.chart && comparison.chart.metrics) || {};
 }
 
 function findAvailableMetrics(suiteData, comparison) {
-  return DASHBOARD_METRICS.filter((mn) =>
+  const allowed = chartMetricsConfig(comparison).allowed;
+  const candidates = allowed && allowed.length
+    ? allowed
+    : Object.keys(window.METRICS_META || {});
+  return candidates.filter((mn) =>
     (comparison.suites || []).some((ref) =>
       getSuiteTests(suiteData, ref.slug).some((t) =>
         t.metrics && t.metrics.some((m) => m.name === mn && m.value != null))));
+}
+
+// Resolve the default metric for a comparison: prefer the configured
+// chart.metrics.default if it is available; otherwise fall back to the
+// first available metric.
+function defaultMetric(comparison, availableMetrics) {
+  const configured = chartMetricsConfig(comparison).default;
+  if (configured && availableMetrics.includes(configured)) return configured;
+  return availableMetrics[0] || null;
 }
 
 // ── Syntax highlighting ────────────────────────────────────────────────────
@@ -560,14 +739,13 @@ function renderComparisonSection(suiteData, comparison) {
   const categories = collectFilterCategories(suiteData, comparison);
   const filterState = getFilterState(slug, categories);
   const filtered = filterComparison(comparison, suiteData, filterState);
-  const testNames = collectTestNames(suiteData, filtered);
   const metrics = findAvailableMetrics(suiteData, filtered);
-  if (!perComparisonMetrics.has(slug)) perComparisonMetrics.set(slug, metrics.includes("cpu_percentage_normalized_avg") ? "cpu_percentage_normalized_avg" : metrics[0] || "cpu_percentage_normalized_avg");
+  if (!perComparisonMetrics.has(slug)) perComparisonMetrics.set(slug, defaultMetric(comparison, metrics));
   const sel = perComparisonMetrics.get(slug);
-  const optsHtml = metrics.map((n) => `<option value="${escapeHtml(n)}" ${n === sel ? "selected" : ""}>${escapeHtml(metricLabel(n))}</option>`).join("");
+  const optsHtml = metrics.map((n) => `<option value="${escapeHtml(n)}" ${n === sel ? "selected" : ""}>${escapeHtml(metricTitle(n, suiteData, filtered))}</option>`).join("");
   const hasFilters = Object.keys(categories).length > 0;
   const filterHtml = hasFilters ? buildFilterHtml(categories, filterState) : "";
-  const anyBP = (filtered.suites || []).some((r) => getSuiteTests(suiteData, r.slug).some((t) => { const rm = t.name.match(/^(\d+)k$/); return hasBackpressure(t.metrics, rm ? parseInt(rm[1])*1000 : null); }));
+  const anyBP = anyComparisonBackpressure(suiteData, filtered);
   const bpHtml = anyBP ? '<div class="chart-backpressure-legend">\u26A0 Backpressure detected</div>' : "";
   const link = `${encodeURIComponent(slug)}/`;
   return `
@@ -592,18 +770,15 @@ function wireComparisonSection(suiteData, comparison) {
 
   function renderChart() {
     const filtered = filterComparison(comparison, suiteData, filterState);
-    const testNames = collectTestNames(suiteData, filtered);
+    const tests = comparison.tests || [];
     const sel = perComparisonMetrics.get(slug);
     if (activeCharts.has(slug)) { activeCharts.get(slug).destroy(); activeCharts.delete(slug); }
     const canvas = section.querySelector("canvas");
     if (canvas && filtered.suites.length > 0) {
-      activeCharts.set(slug, createBarChart(canvas, suiteData, filtered, testNames, sel));
+      activeCharts.set(slug, createBarChart(canvas, suiteData, filtered, tests, sel));
     }
     const bpEl = section.querySelector(".chart-backpressure-legend");
-    if (bpEl) {
-      const anyBP = (filtered.suites || []).some((r) => getSuiteTests(suiteData, r.slug).some((t) => { const rm = t.name.match(/^(\d+)k$/); return hasBackpressure(t.metrics, rm ? parseInt(rm[1])*1000 : null); }));
-      bpEl.style.display = anyBP ? "" : "none";
-    }
+    if (bpEl) bpEl.style.display = anyComparisonBackpressure(suiteData, filtered) ? "" : "none";
   }
 
   const fc = section.querySelector(".chart-filters");
@@ -626,6 +801,7 @@ function renderComparisonPage(compSlug) {
   const filterState = getFilterState(compSlug, categories);
   const hasFilters = Object.keys(categories).length > 0;
   const filterHtml = hasFilters ? buildFilterHtml(categories, filterState) : "";
+  const envHeaderHtml = renderComparisonEnvHeader(suiteData, comparison);
 
   app.innerHTML = `
     <div class="scenario-header">
@@ -633,6 +809,7 @@ function renderComparisonPage(compSlug) {
       <h1>${escapeHtml(comparison.name || compSlug)}</h1>
       <div class="sub">${escapeHtml(comparison.description || "")}</div>
     </div>
+    ${envHeaderHtml}
     ${renderColorblindToggle()}
     ${filterHtml}
     <div id="comparison-chart"></div>
@@ -642,12 +819,13 @@ function renderComparisonPage(compSlug) {
 
   function renderAll() {
     const filtered = filterComparison(comparison, suiteData, filterState);
-    const testNames = collectTestNames(suiteData, filtered);
+    const tests = comparison.tests || [];
+    const testNames = tests.map((t) => t.name);
     if (detailSuiteIdx >= filtered.suites.length) detailSuiteIdx = 0;
     if (!testNames.includes(detailTestName)) detailTestName = testNames[0] || "";
 
-    const setDetail = renderComparisonDetail(suiteData, filtered, testNames, detailSuiteIdx, detailTestName, (si, tn) => { detailSuiteIdx = si; detailTestName = tn; });
-    renderComparisonChart(suiteData, filtered, testNames, (si, tn) => { detailSuiteIdx = si; detailTestName = tn; setDetail(si, tn); });
+    const setDetail = renderComparisonDetail(suiteData, filtered, tests, detailSuiteIdx, detailTestName, (si, tn) => { detailSuiteIdx = si; detailTestName = tn; });
+    renderComparisonChart(suiteData, filtered, tests, (si, tn) => { detailSuiteIdx = si; detailTestName = tn; setDetail(si, tn); });
   }
 
   wireColorblindToggle(app, () => renderComparisonPage(compSlug));
@@ -656,22 +834,28 @@ function renderComparisonPage(compSlug) {
   renderAll();
 }
 
-function renderComparisonChart(suiteData, comparison, testNames, onBarClick) {
+function renderComparisonChart(suiteData, comparison, tests, onBarClick) {
   const target = document.getElementById("comparison-chart");
   if (!target) return;
   const metrics = findAvailableMetrics(suiteData, comparison);
-  let sel = metrics.includes("cpu_percentage_normalized_avg") ? "cpu_percentage_normalized_avg" : metrics[0] || "cpu_percentage_normalized_avg";
-  const optsHtml = metrics.map((n) => `<option value="${escapeHtml(n)}" ${n === sel ? "selected" : ""}>${escapeHtml(metricLabel(n))}</option>`).join("");
+  // Preserve the user's selection across re-renders (e.g. filter changes).
+  // Fall back to the comparison's configured default, then the first
+  // available metric.
+  const compSlug = window.COMPARISON_SLUG;
+  const prev = perComparisonMetrics.get(compSlug);
+  let sel = prev && metrics.includes(prev) ? prev : defaultMetric(comparison, metrics);
+  perComparisonMetrics.set(compSlug, sel);
+  const optsHtml = metrics.map((n) => `<option value="${escapeHtml(n)}" ${n === sel ? "selected" : ""}>${escapeHtml(metricTitle(n, suiteData, comparison))}</option>`).join("");
 
   const onClick = onBarClick ? (event, elements) => {
     if (!elements.length) return;
     const { datasetIndex, index } = elements[0];
     const ref = (comparison.suites || [])[datasetIndex];
-    const tn = testNames[index];
-    if (ref && tn) onBarClick(datasetIndex, tn);
+    const ct = tests[index];
+    if (ref && ct) onBarClick(datasetIndex, ct.name);
   } : null;
 
-  const anyBP = (comparison.suites || []).some((r) => getSuiteTests(suiteData, r.slug).some((t) => { const rm = t.name.match(/^(\d+)k$/); return hasBackpressure(t.metrics, rm ? parseInt(rm[1])*1000 : null); }));
+  const anyBP = anyComparisonBackpressure(suiteData, comparison);
   const bpHtml = anyBP ? '<div class="chart-backpressure-legend">\u26A0 Backpressure detected</div>' : "";
 
   if (comparison.suites.length === 0) {
@@ -682,7 +866,7 @@ function renderComparisonChart(suiteData, comparison, testNames, onBarClick) {
   target.innerHTML = `
     <div class="scenario-section">
       <div class="scenario-section-head">
-        <div class="scenario-section-title">${escapeHtml(metricTitle(sel))}</div>
+        <div class="scenario-section-title">${escapeHtml(metricTitle(sel, suiteData, comparison))}</div>
         <select id="metric-select" class="scenario-metric-select">${optsHtml}</select>
       </div>
       <div class="chart-container"><canvas></canvas></div>
@@ -690,19 +874,20 @@ function renderComparisonChart(suiteData, comparison, testNames, onBarClick) {
     </div>`;
 
   const canvas = target.querySelector("canvas");
-  let chart = createBarChart(canvas, suiteData, comparison, testNames, sel, onClick);
+  let chart = createBarChart(canvas, suiteData, comparison, tests, sel, onClick);
   const ms = document.getElementById("metric-select");
   if (ms) ms.onchange = () => {
     sel = ms.value;
-    updateBarChartData(chart, suiteData, comparison, testNames, sel);
+    perComparisonMetrics.set(compSlug, sel);
+    updateBarChartData(chart, suiteData, comparison, tests, sel);
     const t = target.querySelector(".scenario-section-title");
-    if (t) t.textContent = metricTitle(sel);
+    if (t) t.textContent = metricTitle(sel, suiteData, comparison);
   };
 }
 
 // ── Comparison page: test detail panel ─────────────────────────────────────
 
-function renderComparisonDetail(suiteData, comparison, testNames, initialSuiteIdx, initialTestName, onSelectionChange) {
+function renderComparisonDetail(suiteData, comparison, tests, initialSuiteIdx, initialTestName, onSelectionChange) {
   const target = document.getElementById("comparison-detail");
   if (!target) return () => {};
   const refs = comparison.suites || [];
@@ -731,7 +916,7 @@ function renderComparisonDetail(suiteData, comparison, testNames, initialSuiteId
       return `<button class="detail-pill ${i === selSuite ? "active" : ""}" style="--pill-color: ${getColor(ci)}" data-suite-idx="${i}" type="button">${escapeHtml(r.short || r.name)}</button>`;
     }).join("");
 
-    const testOptsHtml = testNames.map((n) => `<option value="${escapeHtml(n)}" ${n === selTest ? "selected" : ""}>${escapeHtml(n)}</option>`).join("");
+    const testOptsHtml = tests.map((ct) => `<option value="${escapeHtml(ct.name)}" ${ct.name === selTest ? "selected" : ""}>${escapeHtml(ct.label)}</option>`).join("");
 
     let filesHtml = '<div class="muted">No files available.</div>';
     if (test) {
@@ -739,14 +924,16 @@ function renderComparisonDetail(suiteData, comparison, testNames, initialSuiteId
       if (files.length) filesHtml = `<div class="files-flex">${files.map((f) => `<div class="file-list-item" data-file="${escapeHtml(f)}">${escapeHtml(f)}</div>`).join("")}</div>`;
     }
 
-    const rm = selTest.match(/^(\d+)k$/);
-    const lr = rm ? parseInt(rm[1]) * 1000 : null;
+    const envHtml = ref ? renderEnvDetail(suiteData[ref.slug] ? suiteData[ref.slug].env : null) : "";
+
+    const selTestCfg = tests.find((ct) => ct.name === selTest);
+    const lr = selTestCfg ? selTestCfg.loadgen_rate : null;
     const bpBadge = hasBackpressure(metrics, lr) ? '<div class="detail-backpressure-badge">\u26A0 Backpressure detected</div>' : "";
 
     let scalarsHtml = "";
     if (test && metrics.length) {
       const cards = SCALAR_ONLY_METRICS.map((sm) => { const m = getAgg(sm.name); if (!m) return ""; const bad = sm.name === "dropped_logs_percentage" && m.value > DATA_LOSS_THRESHOLD;
-        return `<div class="metric-scalar-card${bad ? " backpressure" : ""}"><div class="metric-scalar-name">${escapeHtml(sm.label)}</div><div class="metric-scalar-value">${formatMetricValue(m.value, m.unit || sm.unit)}</div></div>`; }).filter(Boolean).join("");
+        return `<div class="metric-scalar-card${bad ? " backpressure" : ""}"><div class="metric-scalar-name">${escapeHtml(metricLabel(sm.name))}</div><div class="metric-scalar-value">${formatMetricValue(m.value, m.unit)}</div></div>`; }).filter(Boolean).join("");
       if (cards) scalarsHtml = `<div class="metric-scalars">${cards}</div>`;
     }
 
@@ -764,9 +951,9 @@ function renderComparisonDetail(suiteData, comparison, testNames, initialSuiteId
     }
 
     if (!test) {
-      target.innerHTML = `<div class="scenario-section"><div class="scenario-section-head"><div class="scenario-section-title">Test Details</div></div><div class="detail-controls"><div class="detail-pills">${pillsHtml}</div><select class="detail-test-select">${testOptsHtml}</select></div><div class="muted" style="padding:12px 0">No data available for this selection.</div></div>`;
+      target.innerHTML = `<div class="scenario-section"><div class="scenario-section-head"><div class="scenario-section-title">Test Details</div></div><div class="detail-controls"><div class="detail-pills">${pillsHtml}</div><select class="detail-test-select">${testOptsHtml}</select></div>${envHtml}<div class="muted" style="padding:12px 0">No data available for this selection.</div></div>`;
     } else {
-      target.innerHTML = `<div class="scenario-section"><div class="scenario-section-head"><div class="scenario-section-title">Test Details</div></div><div class="detail-controls"><div class="detail-pills">${pillsHtml}</div><select class="detail-test-select">${testOptsHtml}</select></div>${bpBadge}<div class="files-section"><div class="detail-pane-title">Files</div>${filesHtml}</div><div class="detail-pane-title" style="margin-top:16px">Metrics</div>${scalarsHtml}${chartsHtml || '<div class="muted">No metrics available.</div>'}</div>`;
+      target.innerHTML = `<div class="scenario-section"><div class="scenario-section-head"><div class="scenario-section-title">Test Details</div></div><div class="detail-controls"><div class="detail-pills">${pillsHtml}</div><select class="detail-test-select">${testOptsHtml}</select></div>${bpBadge}<div class="files-section"><div class="detail-pane-title">Files</div>${filesHtml}</div>${envHtml}<div class="detail-pane-title" style="margin-top:16px">Metrics</div>${scalarsHtml}${chartsHtml || '<div class="muted">No metrics available.</div>'}</div>`;
     }
 
     for (const pill of target.querySelectorAll(".detail-pill")) pill.onclick = () => { selSuite = Number(pill.dataset.suiteIdx); if (onSelectionChange) onSelectionChange(selSuite, selTest); render(); };
@@ -787,6 +974,88 @@ function renderComparisonDetail(suiteData, comparison, testNames, initialSuiteId
 
   render();
   return setSelection;
+}
+
+// ── Environment summary / detail ───────────────────────────────────────────
+
+function renderComparisonEnvHeader(suiteData, comparison) {
+  // If the build flagged a mismatch (only happens with --allow-env-mismatch),
+  // surface the warning prominently with a per-suite breakdown.
+  if (comparison.envMismatch) return renderEnvMismatchBanner(comparison.envMismatch);
+
+  // No mismatch: every suite that has env data agrees on its fingerprint.
+  // Show the fingerprint once. If no suite has env data, say so.
+  const refs = comparison.suites || [];
+  for (const ref of refs) {
+    const suite = suiteData[ref.slug];
+    const env = suite && suite.env;
+    if (env) return renderEnvSummary(env);
+  }
+  return '<div class="env-summary env-summary-unknown">Environment: unknown (no run_env.json recorded)</div>';
+}
+
+function renderEnvSummary(env) {
+  const line = envFingerprintLine(env);
+  return `<div class="env-summary"><span class="env-summary-label">Environment:</span> <span class="env-summary-value">${escapeHtml(line)}</span></div>`;
+}
+
+function renderEnvMismatchBanner(mm) {
+  const ref = mm.reference || {};
+  const con = mm.conflict || {};
+  return `<div class="env-mismatch-banner" role="alert">
+    <div class="env-mismatch-title">&#9888;&#65039; Mismatched run environments</div>
+    <div class="env-mismatch-reason">This comparison mixes data collected on different hardware. Results are not apples-to-apples.</div>
+    <ul class="env-mismatch-list">
+      <li><span class="env-mismatch-slug">${escapeHtml(ref.slug || "?")}</span> (reference): ${escapeHtml(ref.fingerprintStr || "no env recorded")}</li>
+      <li><span class="env-mismatch-slug">${escapeHtml(con.slug || "?")}</span>: ${escapeHtml(con.fingerprintStr || "no env recorded")}</li>
+    </ul>
+    <div class="env-mismatch-note">Re-run the conflicting suite on the reference hardware, or omit it from the comparison.</div>
+  </div>`;
+}
+
+function renderEnvDetail(env) {
+  if (!env) {
+    return '<div class="detail-pane-title" style="margin-top:16px">Environment</div><div class="muted" style="padding:4px 0">No environment data recorded for this run.</div>';
+  }
+  const cpu = env.cpu || {};
+  const os = env.os || {};
+  const mem = env.memory || {};
+  const rows = [
+    ["CPU", cpu.model || "unknown"],
+    ["Architecture", cpu.architecture || "unknown"],
+    ["Cores", `${cpu.physical_cores ?? "?"} physical / ${cpu.logical_cores ?? "?"} logical`],
+    ["RAM", mem.total_gib_rounded != null ? `${mem.total_gib_rounded} GiB` : "unknown"],
+    ["OS", `${os.system || "unknown"} ${os.release || ""}`.trim()],
+  ];
+  if (cpu.max_freq_mhz) rows.push(["Max CPU freq", `${cpu.max_freq_mhz.toFixed(0)} MHz`]);
+  if (os.distro && os.distro.NAME) {
+    const ver = os.distro.VERSION_ID || os.distro.VERSION || "";
+    rows.push(["Distro", `${os.distro.NAME} ${ver}`.trim()]);
+  }
+  if (env.started_at) rows.push(["Started", env.started_at]);
+  if (env.ended_at) rows.push(["Ended", env.ended_at]);
+
+  const body = rows.map(([k, v]) =>
+    `<div class="env-detail-row"><div class="env-detail-key">${escapeHtml(k)}</div><div class="env-detail-val">${escapeHtml(String(v))}</div></div>`
+  ).join("");
+  return `<div class="detail-pane-title" style="margin-top:16px">Environment</div><div class="env-detail">${body}</div>`;
+}
+
+function envFingerprintLine(env) {
+  if (!env) return "unknown environment";
+  const cpu = env.cpu || {};
+  const os = env.os || {};
+  const mem = env.memory || {};
+  const parts = [`${cpu.model || "unknown CPU"} / ${cpu.architecture || "?"}`];
+  if (cpu.physical_cores != null) parts.push(`${cpu.physical_cores} cores`);
+  if (mem.total_gib_rounded != null) parts.push(`${mem.total_gib_rounded} GiB`);
+  // OS portion: prefer "Ubuntu 24.04" over kernel release (kernel is
+  // captured but is not part of the comparison-invalidation fingerprint).
+  const distro = os.distro || {};
+  const distroLabel = [distro.NAME, distro.VERSION_ID || distro.VERSION].filter(Boolean).join(" ");
+  if (distroLabel) parts.push(distroLabel);
+  else if (os.system) parts.push(String(os.system));
+  return parts.join(" / ");
 }
 
 // ── File viewer modal ──────────────────────────────────────────────────────

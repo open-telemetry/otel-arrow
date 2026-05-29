@@ -22,3 +22,6 @@ pub mod otlp_receiver;
 
 /// Host metrics receiver.
 pub mod host_metrics_receiver;
+
+/// Journald receiver.
+pub mod journald_receiver;

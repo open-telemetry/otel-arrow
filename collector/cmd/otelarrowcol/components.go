@@ -23,6 +23,7 @@ import (
 	otelarrowreceiver "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver"
 	otlpjsonfilereceiver "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver"
 	otlpreceiver "go.opentelemetry.io/collector/receiver/otlpreceiver"
+	syslogreceiver "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/syslogreceiver"
 )
 
 type aliasProvider interface{ DeprecatedAlias() component.Type }
@@ -63,6 +64,7 @@ func components() (otelcol.Factories, error) {
 		otelarrowreceiver.NewFactory(),
 		otlpjsonfilereceiver.NewFactory(),
 		otlpreceiver.NewFactory(),
+		syslogreceiver.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err
@@ -71,6 +73,7 @@ func components() (otelcol.Factories, error) {
 		otelarrowreceiver.NewFactory().Type(): "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.149.0",
 		otlpjsonfilereceiver.NewFactory().Type(): "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver v0.149.0",
 		otlpreceiver.NewFactory().Type(): "go.opentelemetry.io/collector/receiver/otlpreceiver v0.149.0",
+		syslogreceiver.NewFactory().Type(): "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/syslogreceiver v0.149.0",
 	})
 
 	factories.Exporters, err = otelcol.MakeFactoryMap[exporter.Factory](
