@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780021405374,
+  "lastUpdate": 1780079742127,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -1444,6 +1444,82 @@ window.BENCHMARK_DATA = {
             "value": 40.34,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=40.7 MiB, error=0.9%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb",
+            "email": "lalit_fin@yahoo.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d624d457aedfdfa11eb8b3d7db98fbc57576a6a8",
+          "message": "  chore: document component naming conventions in AGENTS.md (#3125)\n\n# Change Summary\n\nDocument naming conventions for new OTAP Dataflow components in\n`AGENTS.md`, covering consistent module names, component URNs, and\ntelemetry metric set names.\n\n  ## What issue does this PR close?\n\n  None.\n\n  ## How are these changes tested?\n\n  - `npx markdownlint-cli rust/otap-dataflow/AGENTS.md`\n  - `python3 tools/sanitycheck.py`\n  - `git diff --check`\n\n  ## Are there any user-facing changes?\n\n  No. This is contributor/agent guidance only.\n\n  ### Changelog\n\n* [x] Added a `.chloggen/*.yaml` entry, OR this PR is a `chore`\n(indicated in title).\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-05-29T15:25:20Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/d624d457aedfdfa11eb8b3d7db98fbc57576a6a8"
+        },
+        "date": 1780079741362,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 15.29,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.78,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9973,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 16.52,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=16.1 MiB, error=2.7%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 16.24,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=16.8 MiB, error=3.7%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 18.05,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.4 MiB, error=2.0%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 21.71,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=21.5 MiB, error=0.9%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 28.33,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=27.7 MiB, error=2.1%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 39.93,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=40.2 MiB, error=0.7%"
           }
         ]
       }
