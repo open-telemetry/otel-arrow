@@ -100,20 +100,20 @@ fn write_fake_process(
     write_bytes: u64,
 ) {
     let dir = proc.join(pid.to_string());
-    std::fs::create_dir_all(&dir).expect("process dir");
-    std::fs::write(
+    fs::create_dir_all(&dir).expect("process dir");
+    fs::write(
         dir.join("stat"),
         format!(
             "{pid} ({command}) S {parent_pid} 0 0 0 0 0 0 0 0 0 {utime} {stime} 0 0 0 0 2 0 {start_time} {vsize} {rss_pages}\n"
         ),
     )
     .expect("process stat");
-    std::fs::write(
+    fs::write(
         dir.join("io"),
         format!("read_bytes: {read_bytes}\nwrite_bytes: {write_bytes}\n"),
     )
     .expect("process io");
-    std::fs::write(dir.join("cmdline"), format!("/usr/bin/{command}\0--flag\0"))
+    fs::write(dir.join("cmdline"), format!("/usr/bin/{command}\0--flag\0"))
         .expect("process cmdline");
 }
 
@@ -625,15 +625,15 @@ fn counter_keys_do_not_collide_with_pipe_in_series_values() {
 fn scrape_due_emits_successful_families_after_partial_read_error() {
     let root = tempfile::tempdir().expect("tempdir");
     let proc = root.path().join("proc");
-    std::fs::create_dir(&proc).expect("proc dir");
-    std::fs::write(
+    fs::create_dir(&proc).expect("proc dir");
+    fs::write(
         proc.join("meminfo"),
         "MemTotal: 1000 kB\nMemFree: 100 kB\nMemAvailable: 200 kB\n",
     )
     .expect("meminfo");
     // Cumulative metrics read /proc/stat once to cache boot time. Provide
     // btime here so this test only exercises the missing diskstats error.
-    std::fs::write(proc.join("stat"), "btime 1700000000\n").expect("stat");
+    fs::write(proc.join("stat"), "btime 1700000000\n").expect("stat");
     let mut source = ProcfsSource::new(
         Some(root.path()),
         ProcfsConfig {
@@ -694,8 +694,8 @@ fn scrape_due_emits_successful_families_after_partial_read_error() {
 fn scrape_due_collects_opt_in_per_process_metrics_with_filters_and_limit() {
     let root = tempfile::tempdir().expect("tempdir");
     let proc = root.path().join("proc");
-    std::fs::create_dir_all(&proc).expect("proc dir");
-    std::fs::write(proc.join("stat"), "btime 1700000000\n").expect("stat");
+    fs::create_dir_all(&proc).expect("proc dir");
+    fs::write(proc.join("stat"), "btime 1700000000\n").expect("stat");
     write_fake_process(&proc, 100, "df_engine", 1, 100, 200, 100, 4096, 2, 100, 200);
     write_fake_process(&proc, 200, "otelcol", 1, 30, 40, 200, 8192, 3, 300, 400);
 
@@ -778,11 +778,11 @@ fn scrape_due_collects_opt_in_per_process_metrics_with_filters_and_limit() {
 fn scrape_due_ignores_expected_per_process_races_and_permission_shapes() {
     let root = tempfile::tempdir().expect("tempdir");
     let proc = root.path().join("proc");
-    std::fs::create_dir_all(&proc).expect("proc dir");
-    std::fs::write(proc.join("stat"), "btime 1700000000\n").expect("stat");
+    fs::create_dir_all(&proc).expect("proc dir");
+    fs::write(proc.join("stat"), "btime 1700000000\n").expect("stat");
     write_fake_process(&proc, 100, "df_engine", 1, 10, 20, 100, 4096, 2, 100, 200);
-    std::fs::remove_file(proc.join("100/io")).expect("remove io");
-    std::fs::create_dir_all(proc.join("200")).expect("raced process dir");
+    fs::remove_file(proc.join("100/io")).expect("remove io");
+    fs::create_dir_all(proc.join("200")).expect("raced process dir");
 
     let mut source = ProcfsSource::new(
         Some(root.path()),
@@ -840,17 +840,85 @@ fn scrape_due_ignores_expected_per_process_races_and_permission_shapes() {
 }
 
 #[test]
+fn scrape_due_skips_process_io_when_disk_io_metric_is_disabled() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let proc = root.path().join("proc");
+    fs::create_dir_all(&proc).expect("proc dir");
+    fs::write(proc.join("stat"), "btime 1700000000\n").expect("stat");
+    write_fake_process(&proc, 100, "df_engine", 1, 10, 20, 100, 4096, 2, 100, 200);
+    fs::remove_file(proc.join("100/io")).expect("remove io");
+    fs::create_dir(proc.join("100/io")).expect("io dir");
+
+    let mut source = ProcfsSource::new(
+        Some(root.path()),
+        ProcfsConfig {
+            cpu: false,
+            memory: false,
+            paging: false,
+            system: false,
+            disk: false,
+            filesystem: false,
+            network: false,
+            processes: true,
+            per_processes: true,
+            cpu_utilization: false,
+            memory_limit: false,
+            memory_shared: false,
+            memory_hugepages: false,
+            disk_limit: false,
+            filesystem_include_virtual: false,
+            filesystem_include_remote: false,
+            filesystem_limit: false,
+            filesystem_include_devices: None,
+            filesystem_exclude_devices: None,
+            filesystem_include_fs_types: None,
+            filesystem_exclude_fs_types: None,
+            filesystem_include_mount_points: None,
+            filesystem_exclude_mount_points: None,
+            disk_include: None,
+            disk_exclude: None,
+            network_include: None,
+            network_exclude: None,
+            process_include: None,
+            process_exclude: None,
+            process_max_processes: 100,
+            process_labels: ProcessLabelsConfig::default(),
+            process_metrics: ProcessMetricsConfig {
+                disk_io: false,
+                ..ProcessMetricsConfig::default()
+            },
+            validation: HostViewValidationMode::None,
+        },
+    )
+    .expect("source");
+
+    let scrape = scrape_blocking(
+        &mut source,
+        ProcfsFamilies {
+            processes: true,
+            per_processes: true,
+            ..ProcfsFamilies::default()
+        },
+    )
+    .expect("scrape");
+    assert_eq!(scrape.partial_errors, 0);
+    assert_eq!(scrape.snapshot.per_processes.len(), 1);
+    assert_eq!(scrape.snapshot.per_processes[0].read_bytes, None);
+    assert_eq!(scrape.snapshot.per_processes[0].write_bytes, None);
+}
+
+#[test]
 fn scrape_due_preserves_disk_counter_state_after_diskstats_read_error() {
     let root = tempfile::tempdir().expect("tempdir");
     let proc = root.path().join("proc");
-    std::fs::create_dir_all(&proc).expect("proc dir");
-    std::fs::write(proc.join("stat"), "btime 1700000000\n").expect("stat");
-    std::fs::write(
+    fs::create_dir_all(&proc).expect("proc dir");
+    fs::write(proc.join("stat"), "btime 1700000000\n").expect("stat");
+    fs::write(
         proc.join("meminfo"),
         "MemTotal: 1000 kB\nMemFree: 100 kB\nMemAvailable: 200 kB\n",
     )
     .expect("meminfo");
-    std::fs::write(
+    fs::write(
         proc.join("diskstats"),
         "8 0 sda 1 0 100 0 2 0 200 0 0 0 0 0 0 0 0\n",
     )
@@ -909,7 +977,7 @@ fn scrape_due_preserves_disk_counter_state_after_diskstats_read_error() {
         .counter_starts
         .get_joined(metric::DISK_IO, "sda", "read", 0);
 
-    std::fs::remove_file(proc.join("diskstats")).expect("remove diskstats");
+    fs::remove_file(proc.join("diskstats")).expect("remove diskstats");
     let partial = scrape_blocking(
         &mut source,
         ProcfsFamilies {
@@ -922,7 +990,7 @@ fn scrape_due_preserves_disk_counter_state_after_diskstats_read_error() {
     assert_eq!(partial.partial_errors, 1);
     assert!(partial.snapshot.disks.is_empty());
 
-    std::fs::write(
+    fs::write(
         proc.join("diskstats"),
         "8 0 sda 1 0 50 0 2 0 100 0 0 0 0 0 0 0 0\n",
     )
@@ -950,8 +1018,8 @@ fn scrape_due_preserves_disk_counter_state_after_diskstats_read_error() {
 fn scrape_due_uses_stable_fallback_start_time_when_stat_is_unavailable() {
     let root = tempfile::tempdir().expect("tempdir");
     let proc = root.path().join("proc");
-    std::fs::create_dir(&proc).expect("proc dir");
-    std::fs::write(
+    fs::create_dir(&proc).expect("proc dir");
+    fs::write(
         proc.join("diskstats"),
         "8 0 sda 1 0 100 0 2 0 200 0 0 0 0 0 0 0 0\n",
     )
@@ -1027,8 +1095,8 @@ fn scrape_due_uses_stable_fallback_start_time_when_stat_is_unavailable() {
 fn validation_requires_stat_for_cumulative_families() {
     let root = tempfile::tempdir().expect("tempdir");
     let proc = root.path().join("proc");
-    std::fs::create_dir(&proc).expect("proc dir");
-    std::fs::write(
+    fs::create_dir(&proc).expect("proc dir");
+    fs::write(
         proc.join("diskstats"),
         "8 0 sda 1 0 100 0 2 0 200 0 0 0 0 0 0 0 0\n",
     )
@@ -1084,8 +1152,8 @@ fn validation_requires_stat_for_cumulative_families() {
 fn scrape_worker_preserves_startup_validation_errors() {
     let root = tempfile::tempdir().expect("tempdir");
     let proc = root.path().join("proc");
-    std::fs::create_dir(&proc).expect("proc dir");
-    std::fs::write(
+    fs::create_dir(&proc).expect("proc dir");
+    fs::write(
         proc.join("diskstats"),
         "8 0 sda 1 0 100 0 2 0 200 0 0 0 0 0 0 0 0\n",
     )
@@ -1141,8 +1209,8 @@ fn scrape_worker_preserves_startup_validation_errors() {
 fn scrape_worker_accepts_immediate_startup_scrape() {
     let root = tempfile::tempdir().expect("tempdir");
     let proc = root.path().join("proc");
-    std::fs::create_dir(&proc).expect("proc dir");
-    std::fs::write(
+    fs::create_dir(&proc).expect("proc dir");
+    fs::write(
         proc.join("meminfo"),
         "MemTotal: 1000 kB\nMemFree: 100 kB\nMemAvailable: 200 kB\n",
     )
@@ -1173,7 +1241,7 @@ fn scrape_worker_accepts_immediate_startup_scrape() {
 fn scrape_worker_rejects_second_real_scrape_as_busy() {
     let root = tempfile::tempdir().expect("tempdir");
     let proc = root.path().join("proc");
-    std::fs::create_dir(&proc).expect("proc dir");
+    fs::create_dir(&proc).expect("proc dir");
     let meminfo = proc.join("meminfo");
     nix::unistd::mkfifo(
         &meminfo,
@@ -1200,7 +1268,7 @@ fn scrape_worker_rejects_second_real_scrape_as_busy() {
     ));
 
     let writer = std::thread::spawn(move || {
-        let mut file = std::fs::OpenOptions::new()
+        let mut file = fs::OpenOptions::new()
             .write(true)
             .open(meminfo)
             .expect("open meminfo fifo writer");
@@ -1310,14 +1378,14 @@ fn scrape_due_reads_opt_in_disk_limit_from_sysfs() {
     let root = tempfile::tempdir().expect("tempdir");
     let proc = root.path().join("proc");
     let sys_sda = root.path().join("sys/block/sda");
-    std::fs::create_dir(&proc).expect("proc dir");
-    std::fs::create_dir_all(&sys_sda).expect("sys block dir");
-    std::fs::write(
+    fs::create_dir(&proc).expect("proc dir");
+    fs::create_dir_all(&sys_sda).expect("sys block dir");
+    fs::write(
         proc.join("diskstats"),
         "8 0 sda 1 0 2 3 4 0 5 6 0 0 0 0 0 0 0 0\n",
     )
     .expect("diskstats");
-    std::fs::write(sys_sda.join("size"), "4096\n").expect("disk size");
+    fs::write(sys_sda.join("size"), "4096\n").expect("disk size");
     let mut source = ProcfsSource::new(
         Some(root.path()),
         ProcfsConfig {
@@ -1380,26 +1448,26 @@ fn scrape_due_uses_boot_time_for_counter_only_family_ticks() {
     let root = tempfile::tempdir().expect("tempdir");
     let proc = root.path().join("proc");
     let proc_one = proc.join("1");
-    std::fs::create_dir_all(proc_one.join("net")).expect("proc dirs");
-    std::fs::write(proc.join("stat"), "btime 123\n").expect("stat");
-    std::fs::write(
+    fs::create_dir_all(proc_one.join("net")).expect("proc dirs");
+    fs::write(proc.join("stat"), "btime 123\n").expect("stat");
+    fs::write(
         proc.join("diskstats"),
         "8 0 sda 1 0 2 3 4 0 5 6 0 0 0 0 0 0 0 0\n",
     )
     .expect("diskstats");
-    std::fs::write(
+    fs::write(
         proc_one.join("net/dev"),
         "Inter-|   Receive                                                |  Transmit\n\
           face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n\
           eth0: 10 1 0 0 0 0 0 0 20 2 0 0 0 0 0 0\n",
     )
     .expect("netdev");
-    std::fs::write(
+    fs::write(
         proc.join("vmstat"),
         "pgfault 10\npgmajfault 1\npgpgin 2\npgpgout 3\npswpin 4\npswpout 5\n",
     )
     .expect("vmstat");
-    std::fs::write(proc.join("swaps"), "Filename Type Size Used Priority\n").expect("swaps");
+    fs::write(proc.join("swaps"), "Filename Type Size Used Priority\n").expect("swaps");
 
     let mut source = ProcfsSource::new(
         Some(root.path()),
@@ -1454,7 +1522,7 @@ fn scrape_due_uses_boot_time_for_counter_only_family_ticks() {
     assert_eq!(disk_scrape.snapshot.start_time_unix_nano, expected_start);
     assert_eq!(disk_scrape.snapshot.disks.len(), 1);
 
-    std::fs::remove_file(proc.join("stat")).expect("remove stat after cache");
+    fs::remove_file(proc.join("stat")).expect("remove stat after cache");
 
     let network_scrape = scrape_blocking(
         &mut source,
@@ -1483,8 +1551,8 @@ fn scrape_due_uses_boot_time_for_counter_only_family_ticks() {
 fn scrape_due_reads_filesystem_usage_from_mountinfo() {
     let root = tempfile::tempdir().expect("tempdir");
     let proc_one = root.path().join("proc/1");
-    std::fs::create_dir_all(&proc_one).expect("proc one dir");
-    std::fs::write(
+    fs::create_dir_all(&proc_one).expect("proc one dir");
+    fs::write(
         proc_one.join("mountinfo"),
         "36 25 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n",
     )

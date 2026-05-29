@@ -670,13 +670,17 @@ impl ProcfsSource {
                 / NANOS_PER_SEC as f64;
             (elapsed > 0.0).then_some(cpu_delta / elapsed)
         });
-        let io = match fs::read_to_string(process_dir.join("io")) {
-            Ok(content) => Some(parse_process_io(&content)),
-            Err(err) if Self::is_expected_process_read_error(&err) => None,
-            Err(err) => {
-                record_partial_error(partial_errors, first_error, err);
-                None
+        let io = if self.config.process_metrics.disk_io {
+            match fs::read_to_string(process_dir.join("io")) {
+                Ok(content) => Some(parse_process_io(&content)),
+                Err(err) if Self::is_expected_process_read_error(&err) => None,
+                Err(err) => {
+                    record_partial_error(partial_errors, first_error, err);
+                    None
+                }
             }
+        } else {
+            None
         };
         Ok(Some(ProcessMetrics {
             key,
