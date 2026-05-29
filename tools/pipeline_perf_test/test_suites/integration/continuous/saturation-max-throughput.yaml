@@ -82,5 +82,5 @@ tests:
         backend_receiver_type: otlp
         observation_interval: 60
         signals_per_second: null
-        max_batch_size: 1000
+        max_batch_size: 512
         num_connections: 4
