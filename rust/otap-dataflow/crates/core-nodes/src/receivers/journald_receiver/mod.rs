@@ -375,11 +375,6 @@ fn apply_pending_nack(
     }
 }
 
-#[cfg(any(target_os = "linux", test))]
-fn should_complete_drain_after_nack(effect: &PendingControlEffect, draining: bool) -> bool {
-    draining && matches!(effect.command, Some(WorkerCommand::Rewind))
-}
-
 #[cfg(target_os = "linux")]
 fn receiver_error(receiver: NodeId, error: impl Into<String>) -> Error {
     Error::ReceiverError {
@@ -766,28 +761,15 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                             if let Some(effect) =
                                 apply_pending_nack(&mut pending, batch_id, config.checkpoint.on_nack)
                             {
-                                let complete_drain = should_complete_drain_after_nack(
-                                    &effect,
-                                    drain_deadline.is_some(),
-                                );
                                 if let Some(metrics) = metrics.as_mut() {
                                     if effect.record_nack {
                                         metrics.nacks.add(1);
                                     }
-                                    if effect.record_rewind && !complete_drain {
+                                    if effect.record_rewind {
                                         metrics.rewinds.add(1);
                                     }
                                 }
-                                if complete_drain {
-                                    let deadline =
-                                        drain_deadline.expect("drain deadline must be set");
-                                    let _ =
-                                        send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
-                                    drop(event_rx);
-                                    join_worker(worker, &effect_handler).await?;
-                                    effect_handler.notify_receiver_drained().await?;
-                                    return Ok(terminal_state(deadline, &metrics));
-                                } else if let Some(command) = effect.command {
+                                if let Some(command) = effect.command {
                                     send_worker_command(&worker.cmd_tx, command, &effect_handler).await?;
                                 }
                                 if effect.fail_nack {
@@ -1189,17 +1171,6 @@ mod tests {
             }
         );
         assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn nack_with_rewind_completes_active_drain_instead_of_rewinding() {
-        let mut pending = BTreeMap::from([(7, pending_batch("cursor-7"))]);
-
-        let effect =
-            apply_pending_nack(&mut pending, 7, OnNack::Rewind).expect("nack should apply");
-
-        assert!(should_complete_drain_after_nack(&effect, true));
-        assert!(!should_complete_drain_after_nack(&effect, false));
     }
 
     #[test]
