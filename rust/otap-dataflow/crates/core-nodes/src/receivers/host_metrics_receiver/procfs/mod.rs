@@ -671,10 +671,12 @@ impl ProcfsSource {
             },
         );
         let cpu_utilization = previous.and_then(|previous| {
-            let cpu_delta = counter_delta(previous.total_cpu_seconds, total_cpu_seconds)?;
-            let elapsed = now_unix_nano.saturating_sub(previous.observed_unix_nano) as f64
-                / NANOS_PER_SEC as f64;
-            (elapsed > 0.0).then_some(cpu_delta / elapsed / self.process_cpu_count)
+            process_cpu_utilization(
+                previous,
+                total_cpu_seconds,
+                now_unix_nano,
+                self.process_cpu_count,
+            )
         });
         let io = if self.config.process_metrics.disk_io {
             match self.read_process_file_text(&process_dir, "io") {
@@ -939,6 +941,18 @@ fn process_filter_allows(
         filter.matches(&command.command) || filter.matches(&command.executable_name)
     };
     include.is_none_or(matches) && !exclude.is_some_and(matches)
+}
+
+fn process_cpu_utilization(
+    previous: ProcessCpuSample,
+    total_cpu_seconds: f64,
+    now_unix_nano: u64,
+    process_cpu_count: f64,
+) -> Option<f64> {
+    let cpu_delta = counter_delta(previous.total_cpu_seconds, total_cpu_seconds)?;
+    let elapsed =
+        now_unix_nano.saturating_sub(previous.observed_unix_nano) as f64 / NANOS_PER_SEC as f64;
+    (elapsed > 0.0).then_some(cpu_delta / elapsed / process_cpu_count)
 }
 
 #[cfg(test)]

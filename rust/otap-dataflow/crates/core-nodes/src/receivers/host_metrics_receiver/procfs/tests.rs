@@ -780,6 +780,50 @@ fn scrape_due_collects_opt_in_per_process_metrics_with_filters_and_limit() {
 }
 
 #[test]
+fn process_cpu_utilization_normalizes_by_available_cpu_count() {
+    let utilization = process_cpu_utilization(
+        ProcessCpuSample {
+            total_cpu_seconds: 10.0,
+            observed_unix_nano: 1_000_000_000,
+        },
+        14.0,
+        3_000_000_000,
+        4.0,
+    )
+    .expect("utilization");
+
+    assert_eq!(utilization, 0.5);
+}
+
+#[test]
+fn process_cpu_utilization_skips_resets_and_zero_elapsed() {
+    assert_eq!(
+        process_cpu_utilization(
+            ProcessCpuSample {
+                total_cpu_seconds: 10.0,
+                observed_unix_nano: 1_000_000_000,
+            },
+            9.0,
+            3_000_000_000,
+            4.0,
+        ),
+        None
+    );
+    assert_eq!(
+        process_cpu_utilization(
+            ProcessCpuSample {
+                total_cpu_seconds: 10.0,
+                observed_unix_nano: 1_000_000_000,
+            },
+            11.0,
+            1_000_000_000,
+            4.0,
+        ),
+        None
+    );
+}
+
+#[test]
 fn scrape_due_ignores_expected_per_process_races_and_permission_shapes() {
     let root = tempfile::tempdir().expect("tempdir");
     let proc = root.path().join("proc");
