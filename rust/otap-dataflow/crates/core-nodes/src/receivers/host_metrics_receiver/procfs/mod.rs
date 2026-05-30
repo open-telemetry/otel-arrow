@@ -69,6 +69,7 @@ pub struct ProcfsSource {
     process_bytes_buf: Vec<u8>,
     process_file_path: PathBuf,
     clk_tck: f64,
+    process_cpu_count: f64,
     previous_cpu: Option<CpuTimes>,
     filesystem_worker: FilesystemStatWorker,
     counter_tracker: CounterTracker,
@@ -290,6 +291,7 @@ impl ProcfsSource {
             process_bytes_buf: Vec::with_capacity(512),
             process_file_path: PathBuf::new(),
             clk_tck: clock_ticks_per_second(),
+            process_cpu_count: available_process_cpu_count(),
             previous_cpu: None,
             filesystem_worker: FilesystemStatWorker::new()?,
             counter_tracker: CounterTracker::default(),
@@ -672,7 +674,7 @@ impl ProcfsSource {
             let cpu_delta = counter_delta(previous.total_cpu_seconds, total_cpu_seconds)?;
             let elapsed = now_unix_nano.saturating_sub(previous.observed_unix_nano) as f64
                 / NANOS_PER_SEC as f64;
-            (elapsed > 0.0).then_some(cpu_delta / elapsed)
+            (elapsed > 0.0).then_some(cpu_delta / elapsed / self.process_cpu_count)
         });
         let io = if self.config.process_metrics.disk_io {
             match self.read_process_file_text(&process_dir, "io") {

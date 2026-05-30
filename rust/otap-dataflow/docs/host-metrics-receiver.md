@@ -202,7 +202,7 @@ nodes:
             match_type: strict
         processes:
           interval: 60s
-          mode: summary
+          mode: summary_and_per_process
           process:
             include:
               names: ["df_engine", "otelcol"]
