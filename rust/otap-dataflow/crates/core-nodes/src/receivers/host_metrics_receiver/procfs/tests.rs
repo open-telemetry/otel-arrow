@@ -580,18 +580,18 @@ fn counter_tracker_prunes_disappeared_process_series_only_when_per_processes_are
     let starts = tracker.snapshot(10, 20, None, None, None, Some(&processes), None, None);
     assert_eq!(
         starts.get_joined(metric::PROCESS_CPU_TIME, "10:100", "user", 10),
-        10
+        100
     );
     assert_eq!(
         starts.get_joined(metric::PROCESS_DISK_IO, "10:100", "read", 10),
-        10
+        100
     );
 
     let _ = tracker.snapshot(10, 30, None, None, None, None, None, None);
     let starts = tracker.snapshot(10, 40, None, None, None, Some(&processes), None, None);
     assert_eq!(
         starts.get_joined(metric::PROCESS_CPU_TIME, "10:100", "user", 10),
-        10
+        100
     );
 
     let empty_processes = Vec::new();
@@ -599,11 +599,11 @@ fn counter_tracker_prunes_disappeared_process_series_only_when_per_processes_are
     let starts = tracker.snapshot(50, 60, None, None, None, Some(&processes), None, None);
     assert_eq!(
         starts.get_joined(metric::PROCESS_CPU_TIME, "10:100", "user", 50),
-        50
+        100
     );
     assert_eq!(
         starts.get_joined(metric::PROCESS_DISK_IO, "10:100", "read", 50),
-        50
+        100
     );
 }
 

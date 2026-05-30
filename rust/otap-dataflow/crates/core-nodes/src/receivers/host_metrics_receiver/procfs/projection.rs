@@ -882,12 +882,13 @@ impl CounterTracker {
             let first_process_entry = starts.entries.len();
             for process in processes {
                 let series = process_series_key(process);
+                let process_start = process.key.start_time_unix_nano;
                 self.observe_joined(
                     metric::PROCESS_CPU_TIME,
                     &series,
                     "user",
                     process.user_cpu_seconds,
-                    default_start,
+                    process_start,
                     now,
                     &mut starts,
                 );
@@ -896,7 +897,7 @@ impl CounterTracker {
                     &series,
                     "system",
                     process.system_cpu_seconds,
-                    default_start,
+                    process_start,
                     now,
                     &mut starts,
                 );
@@ -906,7 +907,7 @@ impl CounterTracker {
                         &series,
                         "read",
                         read_bytes as f64,
-                        default_start,
+                        process_start,
                         now,
                         &mut starts,
                     );
@@ -917,7 +918,7 @@ impl CounterTracker {
                         &series,
                         "write",
                         write_bytes as f64,
-                        default_start,
+                        process_start,
                         now,
                         &mut starts,
                     );
