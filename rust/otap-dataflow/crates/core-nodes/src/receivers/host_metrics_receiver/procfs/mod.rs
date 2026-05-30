@@ -65,6 +65,9 @@ pub struct ProcfsSource {
     paths: ProcfsPaths,
     config: ProcfsConfig,
     buf: String,
+    process_text_buf: String,
+    process_bytes_buf: Vec<u8>,
+    process_file_path: PathBuf,
     clk_tck: f64,
     previous_cpu: Option<CpuTimes>,
     filesystem_worker: FilesystemStatWorker,
@@ -283,6 +286,9 @@ impl ProcfsSource {
             paths: ProcfsPaths::new(root_path),
             config,
             buf: String::with_capacity(16 * 1024),
+            process_text_buf: String::with_capacity(1024),
+            process_bytes_buf: Vec::with_capacity(512),
+            process_file_path: PathBuf::new(),
             clk_tck: clock_ticks_per_second(),
             previous_cpu: None,
             filesystem_worker: FilesystemStatWorker::new()?,
@@ -614,12 +620,8 @@ impl ProcfsSource {
                 .then_with(|| a.key.pid.cmp(&b.key.pid))
         });
         processes.truncate(self.config.process_max_processes);
-        let current_keys = processes
-            .iter()
-            .map(|process| process.key)
-            .collect::<std::collections::HashSet<_>>();
         self.previous_process_cpu
-            .retain(|key, _| current_keys.contains(key));
+            .retain(|key, _| processes.iter().any(|process| process.key == *key));
         processes
     }
 
@@ -632,15 +634,17 @@ impl ProcfsSource {
         partial_errors: &mut u64,
         first_error: &mut Option<io::Error>,
     ) -> io::Result<Option<ProcessMetrics>> {
-        let stat = match fs::read_to_string(process_dir.join("stat")) {
-            Ok(stat) => stat,
+        let clk_tck = self.clk_tck;
+        let stat = match self.read_process_file_text(&process_dir, "stat") {
+            Ok(stat) => parse_process_stat(stat, pid, clk_tck),
             Err(err) if Self::is_expected_process_read_error(&err) => return Ok(None),
             Err(err) => return Err(err),
         };
-        let Some(stat) = parse_process_stat(&stat, pid, self.clk_tck) else {
+        let Some(stat) = stat else {
             return Ok(None);
         };
-        let process_command = Self::read_process_command(&process_dir)
+        let process_command = self
+            .read_process_command(&process_dir)
             .unwrap_or_else(|| ProcessCommand::from_comm(&stat.command));
         if !process_filter_allows(
             &process_command,
@@ -671,8 +675,8 @@ impl ProcfsSource {
             (elapsed > 0.0).then_some(cpu_delta / elapsed)
         });
         let io = if self.config.process_metrics.disk_io {
-            match fs::read_to_string(process_dir.join("io")) {
-                Ok(content) => Some(parse_process_io(&content)),
+            match self.read_process_file_text(&process_dir, "io") {
+                Ok(content) => Some(parse_process_io(content)),
                 Err(err) if Self::is_expected_process_read_error(&err) => None,
                 Err(err) => {
                     record_partial_error(partial_errors, first_error, err);
@@ -701,9 +705,10 @@ impl ProcfsSource {
         }))
     }
 
-    fn read_process_command(process_dir: &Path) -> Option<ProcessCommand> {
-        let cmdline = fs::read(process_dir.join("cmdline")).ok()?;
-        let argv0 = cmdline
+    fn read_process_command(&mut self, process_dir: &Path) -> Option<ProcessCommand> {
+        self.read_process_file_bytes(process_dir, "cmdline").ok()?;
+        let argv0 = self
+            .process_bytes_buf
             .split(|byte| *byte == 0)
             .find(|arg| !arg.is_empty())?;
         let command = String::from_utf8_lossy(argv0).into_owned();
@@ -723,6 +728,26 @@ impl ProcfsSource {
             command,
             executable_name,
         })
+    }
+
+    fn read_process_file_text(&mut self, process_dir: &Path, file_name: &str) -> io::Result<&str> {
+        self.process_text_buf.clear();
+        self.process_file_path.clear();
+        self.process_file_path.push(process_dir);
+        self.process_file_path.push(file_name);
+        let mut file = File::open(&self.process_file_path)?;
+        let _ = file.read_to_string(&mut self.process_text_buf)?;
+        Ok(self.process_text_buf.as_str())
+    }
+
+    fn read_process_file_bytes(&mut self, process_dir: &Path, file_name: &str) -> io::Result<()> {
+        self.process_bytes_buf.clear();
+        self.process_file_path.clear();
+        self.process_file_path.push(process_dir);
+        self.process_file_path.push(file_name);
+        let mut file = File::open(&self.process_file_path)?;
+        let _ = file.read_to_end(&mut self.process_bytes_buf)?;
+        Ok(())
     }
 
     fn is_expected_process_read_error(err: &io::Error) -> bool {

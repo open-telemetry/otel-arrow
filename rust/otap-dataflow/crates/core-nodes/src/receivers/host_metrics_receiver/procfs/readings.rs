@@ -508,17 +508,33 @@ pub(super) fn parse_process_stat(input: &str, pid: u32, clk_tck: f64) -> Option<
         return None;
     }
     let command = input[open + 1..close].to_owned();
-    let fields: Vec<&str> = input[close + 1..].split_whitespace().collect();
-    if fields.len() < 22 {
-        return None;
+
+    let mut parent_pid = 0;
+    let mut user_cpu_seconds = 0.0;
+    let mut system_cpu_seconds = 0.0;
+    let mut threads = 0;
+    let mut start_time_ticks = 0;
+    let mut virtual_memory_bytes = 0;
+    let mut resident_pages = None;
+
+    for (index, field) in input[close + 1..].split_whitespace().enumerate() {
+        match index {
+            1 => parent_pid = parse_u64(field).try_into().unwrap_or(u32::MAX),
+            11 => user_cpu_seconds = ticks_to_seconds(parse_u64(field), clk_tck),
+            12 => system_cpu_seconds = ticks_to_seconds(parse_u64(field), clk_tck),
+            17 => threads = parse_u64(field),
+            19 => start_time_ticks = parse_u64(field),
+            20 => virtual_memory_bytes = parse_u64(field),
+            21 => {
+                resident_pages = Some(parse_u64(field));
+                break;
+            }
+            _ => {}
+        }
     }
-    let parent_pid = parse_u64(fields[1]).try_into().unwrap_or(u32::MAX);
-    let user_cpu_seconds = ticks_to_seconds(parse_u64(fields[11]), clk_tck);
-    let system_cpu_seconds = ticks_to_seconds(parse_u64(fields[12]), clk_tck);
-    let threads = parse_u64(fields[17]);
-    let start_time_ticks = parse_u64(fields[19]);
-    let virtual_memory_bytes = parse_u64(fields[20]);
-    let resident_pages = parse_u64(fields[21]);
+
+    let resident_pages = resident_pages?;
+
     Some(ProcessStat {
         pid,
         command,
@@ -894,4 +910,34 @@ pub(super) fn now_unix_nano() -> u64 {
 
 pub(super) fn saturating_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_process_stat_reads_required_fields_without_collecting_all_fields() {
+        let stat = parse_process_stat(
+            "123 (test process) S 42 0 0 0 0 0 0 0 0 0 150 25 0 0 0 0 7 0 900 4096 3",
+            123,
+            100.0,
+        )
+        .expect("process stat");
+
+        assert_eq!(stat.pid, 123);
+        assert_eq!(stat.command, "test process");
+        assert_eq!(stat.parent_pid, 42);
+        assert_eq!(stat.user_cpu_seconds, 1.5);
+        assert_eq!(stat.system_cpu_seconds, 0.25);
+        assert_eq!(stat.threads, 7);
+        assert_eq!(stat.start_time_ticks, 900);
+        assert_eq!(stat.virtual_memory_bytes, 4096);
+        assert_eq!(stat.resident_pages, 3);
+    }
+
+    #[test]
+    fn parse_process_stat_rejects_truncated_input() {
+        assert!(parse_process_stat("123 (test) S 42", 123, 100.0).is_none());
+    }
 }
