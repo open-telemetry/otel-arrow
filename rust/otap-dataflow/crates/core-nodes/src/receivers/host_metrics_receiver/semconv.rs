@@ -71,7 +71,7 @@ pub(crate) mod metric {
     pub(crate) const PROCESS_DISK_IO: &str = "process.disk.io";
     pub(crate) const PROCESS_MEMORY_USAGE: &str = "process.memory.usage";
     pub(crate) const PROCESS_MEMORY_VIRTUAL: &str = "process.memory.virtual";
-    pub(crate) const PROCESS_THREADS: &str = "process.threads";
+    pub(crate) const PROCESS_THREADS: &str = "process.thread.count";
     pub(crate) const PROCESS_UPTIME: &str = "process.uptime";
     pub(crate) const UPTIME: &str = "system.uptime";
 }

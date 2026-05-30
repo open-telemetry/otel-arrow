@@ -480,7 +480,7 @@ pub struct ProcessMetricsConfig {
     pub memory_virtual: bool,
     /// Emit process.disk.io.
     pub disk_io: bool,
-    /// Emit process.threads.
+    /// Emit process.thread.count.
     pub threads: bool,
     /// Emit process.uptime.
     pub uptime: bool,

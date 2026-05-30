@@ -42,7 +42,8 @@ pub(super) struct ProcessKey {
 
 #[derive(Clone, Copy)]
 struct ProcessCpuSample {
-    total_cpu_seconds: f64,
+    user_cpu_seconds: f64,
+    system_cpu_seconds: f64,
     observed_unix_nano: u64,
 }
 
@@ -662,18 +663,28 @@ impl ProcfsSource {
             pid: stat.pid,
             start_time_unix_nano,
         };
-        let total_cpu_seconds = stat.user_cpu_seconds + stat.system_cpu_seconds;
         let previous = self.previous_process_cpu.insert(
             key,
             ProcessCpuSample {
-                total_cpu_seconds,
+                user_cpu_seconds: stat.user_cpu_seconds,
+                system_cpu_seconds: stat.system_cpu_seconds,
                 observed_unix_nano: now_unix_nano,
             },
         );
-        let cpu_utilization = previous.and_then(|previous| {
+        let user_cpu_utilization = previous.and_then(|previous| {
             process_cpu_utilization(
-                previous,
-                total_cpu_seconds,
+                previous.user_cpu_seconds,
+                stat.user_cpu_seconds,
+                previous.observed_unix_nano,
+                now_unix_nano,
+                self.process_cpu_count,
+            )
+        });
+        let system_cpu_utilization = previous.and_then(|previous| {
+            process_cpu_utilization(
+                previous.system_cpu_seconds,
+                stat.system_cpu_seconds,
+                previous.observed_unix_nano,
                 now_unix_nano,
                 self.process_cpu_count,
             )
@@ -698,7 +709,8 @@ impl ProcfsSource {
             parent_pid: stat.parent_pid,
             user_cpu_seconds: stat.user_cpu_seconds,
             system_cpu_seconds: stat.system_cpu_seconds,
-            cpu_utilization,
+            user_cpu_utilization,
+            system_cpu_utilization,
             memory_usage_bytes: stat.resident_pages.saturating_mul(page_size_bytes()),
             memory_virtual_bytes: stat.virtual_memory_bytes,
             read_bytes: io.as_ref().map(|io| io.read_bytes),
@@ -944,14 +956,14 @@ fn process_filter_allows(
 }
 
 fn process_cpu_utilization(
-    previous: ProcessCpuSample,
-    total_cpu_seconds: f64,
+    previous_cpu_seconds: f64,
+    current_cpu_seconds: f64,
+    previous_unix_nano: u64,
     now_unix_nano: u64,
     process_cpu_count: f64,
 ) -> Option<f64> {
-    let cpu_delta = counter_delta(previous.total_cpu_seconds, total_cpu_seconds)?;
-    let elapsed =
-        now_unix_nano.saturating_sub(previous.observed_unix_nano) as f64 / NANOS_PER_SEC as f64;
+    let cpu_delta = counter_delta(previous_cpu_seconds, current_cpu_seconds)?;
+    let elapsed = now_unix_nano.saturating_sub(previous_unix_nano) as f64 / NANOS_PER_SEC as f64;
     (elapsed > 0.0).then_some(cpu_delta / elapsed / process_cpu_count)
 }
 

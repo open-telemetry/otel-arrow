@@ -241,7 +241,7 @@ Rules:
 - `processes.mode: summary_and_per_process` is opt-in and emits the configured
   subset of `process.cpu.time`, `process.cpu.utilization`,
   `process.memory.usage`, `process.memory.virtual`, `process.disk.io`,
-  `process.threads`, and `process.uptime`. It requires `max_processes` to be
+  `process.thread.count`, and `process.uptime`. It requires `max_processes` to be
   greater than zero and tracks CPU deltas by `(pid, start_time)` to avoid PID
   reuse mixing.
 - Per-process filters match either `process.command` or

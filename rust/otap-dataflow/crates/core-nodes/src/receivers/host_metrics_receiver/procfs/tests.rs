@@ -317,7 +317,7 @@ fn projection_uses_expected_metric_shapes() {
 #[ignore = "dev-only semconv drift check; may access a local or remote semantic-conventions registry"]
 fn emitted_phase1_metric_shapes_match_weaver_semconv() {
     let registry = load_semconv_registry();
-    let semconv_shapes = semconv_system_metric_shapes(&registry);
+    let semconv_shapes = semconv_host_metric_shapes(&registry);
     let emitted_shapes = emitted_phase1_metric_shapes();
 
     for (name, emitted) in emitted_shapes {
@@ -762,7 +762,16 @@ fn scrape_due_collects_opt_in_per_process_metrics_with_filters_and_limit() {
         "/usr/bin/df_engine"
     );
     assert_eq!(first.snapshot.per_processes[0].executable_name, "df_engine");
-    assert!(first.snapshot.per_processes[0].cpu_utilization.is_none());
+    assert!(
+        first.snapshot.per_processes[0]
+            .user_cpu_utilization
+            .is_none()
+    );
+    assert!(
+        first.snapshot.per_processes[0]
+            .system_cpu_utilization
+            .is_none()
+    );
 
     write_fake_process(&proc, 100, "df_engine", 1, 110, 220, 100, 4096, 2, 150, 250);
     let second = scrape_blocking(
@@ -774,23 +783,24 @@ fn scrape_due_collects_opt_in_per_process_metrics_with_filters_and_limit() {
         },
     )
     .expect("second scrape");
-    assert!(second.snapshot.per_processes[0].cpu_utilization.is_some());
+    assert!(
+        second.snapshot.per_processes[0]
+            .user_cpu_utilization
+            .is_some()
+    );
+    assert!(
+        second.snapshot.per_processes[0]
+            .system_cpu_utilization
+            .is_some()
+    );
     assert_eq!(second.snapshot.per_processes[0].read_bytes, Some(150));
     assert_eq!(second.snapshot.per_processes[0].write_bytes, Some(250));
 }
 
 #[test]
 fn process_cpu_utilization_normalizes_by_available_cpu_count() {
-    let utilization = process_cpu_utilization(
-        ProcessCpuSample {
-            total_cpu_seconds: 10.0,
-            observed_unix_nano: 1_000_000_000,
-        },
-        14.0,
-        3_000_000_000,
-        4.0,
-    )
-    .expect("utilization");
+    let utilization = process_cpu_utilization(10.0, 14.0, 1_000_000_000, 3_000_000_000, 4.0)
+        .expect("utilization");
 
     assert_eq!(utilization, 0.5);
 }
@@ -798,27 +808,11 @@ fn process_cpu_utilization_normalizes_by_available_cpu_count() {
 #[test]
 fn process_cpu_utilization_skips_resets_and_zero_elapsed() {
     assert_eq!(
-        process_cpu_utilization(
-            ProcessCpuSample {
-                total_cpu_seconds: 10.0,
-                observed_unix_nano: 1_000_000_000,
-            },
-            9.0,
-            3_000_000_000,
-            4.0,
-        ),
+        process_cpu_utilization(10.0, 9.0, 1_000_000_000, 3_000_000_000, 4.0,),
         None
     );
     assert_eq!(
-        process_cpu_utilization(
-            ProcessCpuSample {
-                total_cpu_seconds: 10.0,
-                observed_unix_nano: 1_000_000_000,
-            },
-            11.0,
-            1_000_000_000,
-            4.0,
-        ),
+        process_cpu_utilization(10.0, 11.0, 1_000_000_000, 1_000_000_000, 4.0,),
         None
     );
 }
@@ -2115,14 +2109,21 @@ fn load_semconv_registry() -> ResolvedRegistry {
 }
 
 #[cfg(feature = "dev-tools")]
-fn semconv_system_metric_shapes(registry: &ResolvedRegistry) -> BTreeMap<String, MetricShape> {
+fn semconv_host_metric_shapes(registry: &ResolvedRegistry) -> BTreeMap<String, MetricShape> {
+    let entity_attributes: BTreeMap<String, Vec<_>> = registry
+        .groups
+        .iter()
+        .filter(|group| group.r#type == GroupType::Entity)
+        .filter_map(|group| Some((group.name.clone()?, group.attributes.clone())))
+        .collect();
+
     registry
         .groups
         .iter()
         .filter(|group| group.r#type == GroupType::Metric)
         .filter_map(|group| {
             let name = group.metric_name.as_ref()?;
-            if !name.starts_with("system.") {
+            if !name.starts_with("system.") && !name.starts_with("process.") {
                 return None;
             }
 
@@ -2141,10 +2142,29 @@ fn semconv_system_metric_shapes(registry: &ResolvedRegistry) -> BTreeMap<String,
                 .attributes
                 .iter()
                 .map(|attr| attr.name.clone())
+                .chain(
+                    group
+                        .entity_associations
+                        .iter()
+                        .filter_map(|entity| entity_attributes.get(entity))
+                        .flatten()
+                        .map(|attr| attr.name.clone()),
+                )
+                .chain(
+                    (name.starts_with("process."))
+                        .then_some(attr::PROCESS_EXECUTABLE_NAME.to_owned()),
+                )
                 .collect();
             let enum_values = group
                 .attributes
                 .iter()
+                .chain(
+                    group
+                        .entity_associations
+                        .iter()
+                        .filter_map(|entity| entity_attributes.get(entity))
+                        .flatten(),
+                )
                 .filter_map(|attr| match &attr.r#type {
                     AttributeType::Enum { members } => Some((
                         attr.name.clone(),
@@ -2159,6 +2179,13 @@ fn semconv_system_metric_shapes(registry: &ResolvedRegistry) -> BTreeMap<String,
             let attribute_types = group
                 .attributes
                 .iter()
+                .chain(
+                    group
+                        .entity_associations
+                        .iter()
+                        .filter_map(|entity| entity_attributes.get(entity))
+                        .flatten(),
+                )
                 .filter_map(|attr| {
                     attribute_value_kind(&attr.r#type).map(|kind| (attr.name.clone(), kind))
                 })
@@ -2439,7 +2466,8 @@ fn projection_fixture_request() -> MetricsData {
                 parent_pid: 1,
                 user_cpu_seconds: 1.0,
                 system_cpu_seconds: 2.0,
-                cpu_utilization: Some(0.25),
+                user_cpu_utilization: Some(0.1),
+                system_cpu_utilization: Some(0.15),
                 memory_usage_bytes: 4096,
                 memory_virtual_bytes: 8192,
                 read_bytes: Some(10),

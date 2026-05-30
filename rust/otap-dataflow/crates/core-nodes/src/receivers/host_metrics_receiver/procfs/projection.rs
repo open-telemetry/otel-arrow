@@ -565,14 +565,21 @@ fn project_per_process_metrics(snap: &HostSnapshot, b: &mut HostMetricsArrowBuil
     }
 
     if snap.process_metrics.cpu_utilization
-        && processes
-            .iter()
-            .any(|process| process.cpu_utilization.is_some())
+        && processes.iter().any(|process| {
+            process.user_cpu_utilization.is_some() || process.system_cpu_utilization.is_some()
+        })
     {
         let m = b.begin_gauge_f64(metric::PROCESS_CPU_UTILIZATION, "1");
         for process in processes {
-            if let Some(utilization) = process.cpu_utilization {
-                append_process_f64_gauge(b, m, now, utilization, process, |_| {});
+            if let Some(utilization) = process.user_cpu_utilization {
+                append_process_f64_gauge(b, m, now, utilization, process, |w| {
+                    w.str(attr::CPU_MODE, "user")
+                });
+            }
+            if let Some(utilization) = process.system_cpu_utilization {
+                append_process_f64_gauge(b, m, now, utilization, process, |w| {
+                    w.str(attr::CPU_MODE, "system")
+                });
             }
         }
     }
