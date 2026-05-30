@@ -715,6 +715,7 @@ fn scrape_due_collects_opt_in_per_process_metrics_with_filters_and_limit() {
             disk: false,
             filesystem: false,
             network: false,
+            load: false,
             processes: true,
             per_processes: true,
             cpu_utilization: false,
@@ -798,6 +799,7 @@ fn scrape_due_ignores_expected_per_process_races_and_permission_shapes() {
             disk: false,
             filesystem: false,
             network: false,
+            load: false,
             processes: true,
             per_processes: true,
             cpu_utilization: false,
@@ -863,6 +865,7 @@ fn scrape_due_skips_process_io_when_disk_io_metric_is_disabled() {
             disk: false,
             filesystem: false,
             network: false,
+            load: false,
             processes: true,
             per_processes: true,
             cpu_utilization: false,
@@ -1958,8 +1961,8 @@ fn loadavg_parser_rejects_missing_or_invalid_fields() {
 fn scrape_due_reads_loadavg_from_host_root() {
     let root = tempfile::tempdir().expect("tempdir");
     let proc = root.path().join("proc");
-    std::fs::create_dir(&proc).expect("proc dir");
-    std::fs::write(proc.join("loadavg"), "1.25 0.75 0.50 2/123 456\n").expect("loadavg");
+    fs::create_dir(&proc).expect("proc dir");
+    fs::write(proc.join("loadavg"), "1.25 0.75 0.50 2/123 456\n").expect("loadavg");
 
     let mut source =
         ProcfsSource::new(Some(root.path()), load_only_procfs_config()).expect("source");
