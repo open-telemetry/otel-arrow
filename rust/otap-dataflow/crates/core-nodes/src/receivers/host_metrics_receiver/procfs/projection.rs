@@ -532,12 +532,13 @@ fn project_per_process_metrics(snap: &HostSnapshot, b: &mut HostMetricsArrowBuil
     if snap.process_metrics.cpu_time {
         let m = b.begin_counter_f64(metric::PROCESS_CPU_TIME, "s");
         for process in processes {
+            let series = process_series_key(process);
             append_process_f64_sum(
                 b,
                 m,
                 cs.get_joined(
                     metric::PROCESS_CPU_TIME,
-                    &process_series_key(process),
+                    &series,
                     "user",
                     process.key.start_time_unix_nano,
                 ),
@@ -551,7 +552,7 @@ fn project_per_process_metrics(snap: &HostSnapshot, b: &mut HostMetricsArrowBuil
                 m,
                 cs.get_joined(
                     metric::PROCESS_CPU_TIME,
-                    &process_series_key(process),
+                    &series,
                     "system",
                     process.key.start_time_unix_nano,
                 ),
@@ -613,6 +614,7 @@ fn project_per_process_metrics(snap: &HostSnapshot, b: &mut HostMetricsArrowBuil
     {
         let m = b.begin_counter_i64(metric::PROCESS_DISK_IO, "By");
         for process in processes {
+            let series = process_series_key(process);
             for (direction, value) in [("read", process.read_bytes), ("write", process.write_bytes)]
             {
                 let Some(value) = value else {
@@ -623,7 +625,7 @@ fn project_per_process_metrics(snap: &HostSnapshot, b: &mut HostMetricsArrowBuil
                     m,
                     cs.get_joined(
                         metric::PROCESS_DISK_IO,
-                        &process_series_key(process),
+                        &series,
                         direction,
                         process.key.start_time_unix_nano,
                     ),
@@ -1173,10 +1175,13 @@ impl CounterTracker {
         now: u64,
         starts: &mut CounterStarts,
     ) {
-        let state = self.states.entry(key.clone()).or_insert(CounterState {
-            previous: value,
-            start_time_unix_nano: default_start,
-        });
+        let state = match self.states.get_mut(&key) {
+            Some(state) => state,
+            None => self.states.entry(key.clone()).or_insert(CounterState {
+                previous: value,
+                start_time_unix_nano: default_start,
+            }),
+        };
         if state.start_time_unix_nano < default_start {
             state.start_time_unix_nano = default_start;
         } else if value < state.previous {
