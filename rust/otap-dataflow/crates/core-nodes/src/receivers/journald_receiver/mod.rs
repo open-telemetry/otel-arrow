@@ -254,10 +254,29 @@ enum WorkerEvent {
     CommitResult {
         batch_id: u64,
         cursor: String,
-        result: Result<(), String>,
+        result: Result<(), checkpoint::CheckpointError>,
     },
-    Failed(String),
+    Failed(WorkerError),
     Stopped,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, thiserror::Error)]
+enum WorkerError {
+    #[error(transparent)]
+    Checkpoint(#[from] checkpoint::CheckpointError),
+    #[error(transparent)]
+    Journal(#[from] journal::JournalError),
+    #[error("failed to encode journald batch: {source}")]
+    Encode {
+        source: otap_df_pdata::encode::Error,
+    },
+    #[error("journald receiver event channel closed")]
+    EventChannelClosed,
+    #[error("journald worker received an unexpected command while handing off a batch")]
+    UnexpectedCommand,
+    #[error("journald cannot rewind before the first checkpoint is committed")]
+    RewindBeforeCheckpoint,
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -476,7 +495,7 @@ fn worker_loop_inner(
     checkpoint_path: PathBuf,
     event_tx: &tokio::sync::mpsc::Sender<WorkerEvent>,
     cmd_rx: &std::sync::mpsc::Receiver<WorkerCommand>,
-) -> Result<(), String> {
+) -> Result<(), WorkerError> {
     let mut committed_cursor = checkpoint::read_cursor(&checkpoint_path)?;
     let mut reader = journal::SdJournalReader::open(&config, committed_cursor.as_deref())?;
     let mut next_batch_id = 1u64;
@@ -556,10 +575,7 @@ fn worker_loop_inner(
                     let Some(cursor) = committed_cursor.as_deref() else {
                         // Defense-in-depth: with max_in_flight=1, a valid Nack rewind
                         // before the first commit is handled by the in-flight arm above.
-                        return Err(
-                            "journald cannot rewind before the first checkpoint is committed"
-                                .to_owned(),
-                        );
+                        return Err(WorkerError::RewindBeforeCheckpoint);
                     };
                     builder = arrow_records_encoder::JournaldArrowRecordsBuilder::new();
                     first_cursor.clear();
@@ -613,7 +629,7 @@ fn worker_loop_inner(
                 arrow_records_encoder::JournaldArrowRecordsBuilder::new(),
             )
             .build()
-            .map_err(|err| format!("failed to encode journald batch: {err}"))?;
+            .map_err(|source| WorkerError::Encode { source })?;
             let batch = WorkerBatch {
                 id: next_batch_id,
                 first_cursor: std::mem::take(&mut first_cursor),
@@ -642,14 +658,14 @@ fn send_batch_or_observe_shutdown(
     event_tx: &tokio::sync::mpsc::Sender<WorkerEvent>,
     cmd_rx: &std::sync::mpsc::Receiver<WorkerCommand>,
     batch: WorkerBatch,
-) -> Result<BatchHandoff, String> {
+) -> Result<BatchHandoff, WorkerError> {
     let mut event = WorkerEvent::Batch(batch);
     let mut drain_requested = false;
     loop {
         match event_tx.try_send(event) {
             Ok(()) => return Ok(BatchHandoff::Sent { drain_requested }),
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                return Err("journald receiver event channel closed".to_owned());
+                return Err(WorkerError::EventChannelClosed);
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(returned)) => {
                 event = returned;
@@ -662,10 +678,7 @@ fn send_batch_or_observe_shutdown(
                         return Ok(BatchHandoff::Shutdown);
                     }
                     Ok(WorkerCommand::Commit { .. } | WorkerCommand::Rewind) => {
-                        return Err(
-                            "journald worker received an unexpected command while handing off a batch"
-                                .to_owned(),
-                        );
+                        return Err(WorkerError::UnexpectedCommand);
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                 }
@@ -1001,7 +1014,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                         "journald_receiver.checkpoint_failed",
                                         source_id = config.source_id.as_str(),
                                         batch_id = batch_id,
-                                        error = err.as_str()
+                                        error = err.to_string()
                                     );
                                     if checkpoint_failures >= config.checkpoint.max_consecutive_failures {
                                         let _ =

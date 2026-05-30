@@ -4,6 +4,7 @@
 //! Durable cursor checkpoint helpers for the journald receiver.
 
 use serde::{Deserialize, Serialize};
+use std::io;
 use std::path::{Path, PathBuf};
 
 const ENVELOPE_VERSION: u8 = 1;
@@ -14,6 +15,43 @@ struct CursorEnvelope {
     version: u8,
     cursor: String,
     checksum: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CheckpointError {
+    #[error("failed to read checkpoint {path}: {source}")]
+    Read { path: PathBuf, source: io::Error },
+    #[error("failed to parse checkpoint {path}: {source}")]
+    Parse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    #[error("unsupported checkpoint version {version} in {path}")]
+    UnsupportedVersion { path: PathBuf, version: u8 },
+    #[error("checkpoint checksum mismatch in {path}")]
+    ChecksumMismatch { path: PathBuf },
+    #[error("failed to encode checkpoint envelope: {source}")]
+    Encode { source: serde_json::Error },
+    #[error("checkpoint path has no parent: {path}")]
+    NoParent { path: PathBuf },
+    #[error("failed to create checkpoint directory {path}: {source}")]
+    CreateDirectory { path: PathBuf, source: io::Error },
+    #[error("failed to write checkpoint {path}: {source}")]
+    Write { path: PathBuf, source: io::Error },
+    #[error("failed to reopen checkpoint {path}: {source}")]
+    Reopen { path: PathBuf, source: io::Error },
+    #[error("failed to fsync checkpoint {path}: {source}")]
+    FsyncFile { path: PathBuf, source: io::Error },
+    #[error("failed to install checkpoint {tmp} -> {path}: {source}")]
+    Rename {
+        tmp: PathBuf,
+        path: PathBuf,
+        source: io::Error,
+    },
+    #[error("failed to open checkpoint directory {path} for fsync: {source}")]
+    OpenDirectory { path: PathBuf, source: io::Error },
+    #[error("failed to fsync checkpoint directory {path}: {source}")]
+    FsyncDirectory { path: PathBuf, source: io::Error },
 }
 
 pub(crate) fn checkpoint_path(
@@ -31,85 +69,87 @@ pub(crate) fn checkpoint_path(
     path
 }
 
-pub(crate) fn read_cursor(path: &Path) -> Result<Option<String>, String> {
+pub(crate) fn read_cursor(path: &Path) -> Result<Option<String>, CheckpointError> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(format!(
-                "failed to read checkpoint {}: {err}",
-                path.display()
-            ));
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(CheckpointError::Read {
+                path: path.to_path_buf(),
+                source,
+            });
         }
     };
-    let envelope: CursorEnvelope = serde_json::from_slice(&bytes)
-        .map_err(|err| format!("failed to parse checkpoint {}: {err}", path.display()))?;
+    let envelope: CursorEnvelope =
+        serde_json::from_slice(&bytes).map_err(|source| CheckpointError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
     if envelope.version != ENVELOPE_VERSION {
-        return Err(format!(
-            "unsupported checkpoint version {} in {}",
-            envelope.version,
-            path.display()
-        ));
+        return Err(CheckpointError::UnsupportedVersion {
+            path: path.to_path_buf(),
+            version: envelope.version,
+        });
     }
     let expected = checksum(&envelope.cursor);
     if envelope.checksum != expected {
-        return Err(format!(
-            "checkpoint checksum mismatch in {}",
-            path.display()
-        ));
+        return Err(CheckpointError::ChecksumMismatch {
+            path: path.to_path_buf(),
+        });
     }
     Ok(Some(envelope.cursor))
 }
 
-pub(crate) fn write_cursor(path: &Path, cursor: &str) -> Result<(), String> {
+pub(crate) fn write_cursor(path: &Path, cursor: &str) -> Result<(), CheckpointError> {
     let envelope = CursorEnvelope {
         version: ENVELOPE_VERSION,
         cursor: cursor.to_owned(),
         checksum: checksum(cursor),
     };
-    let bytes = serde_json::to_vec(&envelope)
-        .map_err(|err| format!("failed to encode checkpoint envelope: {err}"))?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("checkpoint path has no parent: {}", path.display()))?;
-    std::fs::create_dir_all(parent).map_err(|err| {
-        format!(
-            "failed to create checkpoint directory {}: {err}",
-            parent.display()
-        )
+    let bytes =
+        serde_json::to_vec(&envelope).map_err(|source| CheckpointError::Encode { source })?;
+    let parent = path.parent().ok_or_else(|| CheckpointError::NoParent {
+        path: path.to_path_buf(),
+    })?;
+    std::fs::create_dir_all(parent).map_err(|source| CheckpointError::CreateDirectory {
+        path: parent.to_path_buf(),
+        source,
     })?;
     // Keep the temporary file beside the final checkpoint so rename is atomic.
     let tmp = path.with_extension("cursor.tmp");
-    std::fs::write(&tmp, bytes)
-        .map_err(|err| format!("failed to write checkpoint {}: {err}", tmp.display()))?;
+    std::fs::write(&tmp, bytes).map_err(|source| CheckpointError::Write {
+        path: tmp.clone(),
+        source,
+    })?;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .open(&tmp)
-        .map_err(|err| format!("failed to reopen checkpoint {}: {err}", tmp.display()))?;
+        .map_err(|source| CheckpointError::Reopen {
+            path: tmp.clone(),
+            source,
+        })?;
     file.sync_all()
-        .map_err(|err| format!("failed to fsync checkpoint {}: {err}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|err| {
-        format!(
-            "failed to install checkpoint {} -> {}: {err}",
-            tmp.display(),
-            path.display()
-        )
+        .map_err(|source| CheckpointError::FsyncFile {
+            path: tmp.clone(),
+            source,
+        })?;
+    std::fs::rename(&tmp, path).map_err(|source| CheckpointError::Rename {
+        tmp: tmp.clone(),
+        path: path.to_path_buf(),
+        source,
     })?;
     let dir = std::fs::OpenOptions::new()
         .read(true)
         .open(parent)
-        .map_err(|err| {
-            format!(
-                "failed to open checkpoint directory {} for fsync: {err}",
-                parent.display()
-            )
+        .map_err(|source| CheckpointError::OpenDirectory {
+            path: parent.to_path_buf(),
+            source,
         })?;
-    dir.sync_all().map_err(|err| {
-        format!(
-            "failed to fsync checkpoint directory {}: {err}",
-            parent.display()
-        )
-    })?;
+    dir.sync_all()
+        .map_err(|source| CheckpointError::FsyncDirectory {
+            path: parent.to_path_buf(),
+            source,
+        })?;
     Ok(())
 }
 

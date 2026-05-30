@@ -15,6 +15,7 @@ mod imp {
     use libc::{RTLD_NOW, c_char, c_int, c_void, size_t};
     use std::ffi::{CStr, CString};
     use std::ptr::NonNull;
+    use std::str::Utf8Error;
     use std::time::Duration;
 
     const SD_JOURNAL_LOCAL_ONLY: c_int = 1;
@@ -39,6 +40,24 @@ mod imp {
     type AddMatchFn = unsafe extern "C" fn(*mut SdJournal, *const c_void, size_t) -> c_int;
     type AddDisjunctionFn = unsafe extern "C" fn(*mut SdJournal) -> c_int;
     type AddConjunctionFn = unsafe extern "C" fn(*mut SdJournal) -> c_int;
+
+    #[derive(Debug, thiserror::Error, Clone)]
+    pub(crate) enum JournalError {
+        #[error("failed to load libsystemd.so.0")]
+        LoadLibSystemd,
+        #[error("missing libsystemd symbol {symbol}")]
+        MissingSymbol { symbol: &'static str },
+        #[error("{operation} failed with {rc}")]
+        SystemdCall { operation: &'static str, rc: c_int },
+        #[error("sd_journal_open returned null")]
+        OpenReturnedNull,
+        #[error("{field} contains NUL")]
+        Nul { field: &'static str },
+        #[error("checkpoint cursor is no longer present in journal")]
+        CheckpointCursorMissing,
+        #[error("sd_journal_get_cursor returned non-UTF-8 cursor: {source}")]
+        CursorUtf8 { source: Utf8Error },
+    }
 
     struct LibSystemd {
         _handle: NonNull<c_void>,
@@ -66,26 +85,25 @@ mod imp {
     unsafe impl Sync for LibSystemd {}
 
     impl LibSystemd {
-        fn load() -> Result<&'static Self, String> {
-            static LIB: std::sync::OnceLock<Result<LibSystemd, String>> =
+        fn load() -> Result<&'static Self, JournalError> {
+            static LIB: std::sync::OnceLock<Result<LibSystemd, JournalError>> =
                 std::sync::OnceLock::new();
             LIB.get_or_init(Self::load_inner)
                 .as_ref()
                 .map_err(Clone::clone)
         }
 
-        fn load_inner() -> Result<Self, String> {
+        fn load_inner() -> Result<Self, JournalError> {
             let name = CString::new("libsystemd.so.0").expect("static string");
             let handle = unsafe { libc::dlopen(name.as_ptr(), RTLD_NOW) };
-            let handle =
-                NonNull::new(handle).ok_or_else(|| "failed to load libsystemd.so.0".to_owned())?;
+            let handle = NonNull::new(handle).ok_or(JournalError::LoadLibSystemd)?;
 
             macro_rules! sym {
                 ($name:literal, $ty:ty) => {{
                     let cname = CString::new($name).expect("static string");
                     let ptr = unsafe { libc::dlsym(handle.as_ptr(), cname.as_ptr()) };
                     if ptr.is_null() {
-                        return Err(format!("missing libsystemd symbol {}", $name));
+                        return Err(JournalError::MissingSymbol { symbol: $name });
                     }
                     unsafe { std::mem::transmute::<*mut c_void, $ty>(ptr) }
                 }};
@@ -124,7 +142,7 @@ mod imp {
         pub(crate) fn open(
             config: &RuntimeConfig,
             checkpoint: Option<&str>,
-        ) -> Result<Self, String> {
+        ) -> Result<Self, JournalError> {
             let lib = LibSystemd::load()?;
             let mut raw = std::ptr::null_mut();
             if config.journal.root_path == std::path::Path::new("/") {
@@ -134,7 +152,9 @@ mod imp {
                 )?;
             } else {
                 let root_path = CString::new(config.journal.root_path.to_string_lossy().as_bytes())
-                    .map_err(|_| "journal.root_path contains NUL".to_owned())?;
+                    .map_err(|_| JournalError::Nul {
+                        field: "journal.root_path",
+                    })?;
                 check(
                     unsafe {
                         (lib.open_directory)(
@@ -146,8 +166,7 @@ mod imp {
                     "sd_journal_open_directory",
                 )?;
             }
-            let journal =
-                NonNull::new(raw).ok_or_else(|| "sd_journal_open returned null".to_owned())?;
+            let journal = NonNull::new(raw).ok_or(JournalError::OpenReturnedNull)?;
             let mut reader = Self {
                 lib,
                 journal,
@@ -165,7 +184,7 @@ mod imp {
             &mut self,
             config: &RuntimeConfig,
             checkpoint: Option<&str>,
-        ) -> Result<(), String> {
+        ) -> Result<(), JournalError> {
             let mut has_match_group = false;
             has_match_group |=
                 self.add_match_group("_SYSTEMD_UNIT", config.units.iter().map(String::as_str))?;
@@ -188,25 +207,32 @@ mod imp {
             )?;
 
             if let Some(cursor) = checkpoint {
-                let c = CString::new(cursor)
-                    .map_err(|_| "checkpoint cursor contains NUL".to_owned())?;
+                let c = CString::new(cursor).map_err(|_| JournalError::Nul {
+                    field: "checkpoint cursor",
+                })?;
                 check(
                     unsafe { (self.lib.seek_cursor)(self.journal.as_ptr(), c.as_ptr()) },
                     "sd_journal_seek_cursor",
                 )?;
                 let next = unsafe { (self.lib.next)(self.journal.as_ptr()) };
                 if next < 0 {
-                    return Err(format!("sd_journal_next failed with {next}"));
+                    return Err(JournalError::SystemdCall {
+                        operation: "sd_journal_next",
+                        rc: next,
+                    });
                 }
                 if next == 0 {
-                    return Err("checkpoint cursor is no longer present in journal".to_owned());
+                    return Err(JournalError::CheckpointCursorMissing);
                 }
                 let matches = unsafe { (self.lib.test_cursor)(self.journal.as_ptr(), c.as_ptr()) };
                 if matches < 0 {
-                    return Err(format!("sd_journal_test_cursor failed with {matches}"));
+                    return Err(JournalError::SystemdCall {
+                        operation: "sd_journal_test_cursor",
+                        rc: matches,
+                    });
                 }
                 if matches == 0 {
-                    return Err("checkpoint cursor is no longer present in journal".to_owned());
+                    return Err(JournalError::CheckpointCursorMissing);
                 }
                 return Ok(());
             }
@@ -223,7 +249,7 @@ mod imp {
             }
         }
 
-        fn add_match_group<I, V>(&mut self, field: &str, values: I) -> Result<bool, String>
+        fn add_match_group<I, V>(&mut self, field: &str, values: I) -> Result<bool, JournalError>
         where
             I: IntoIterator<Item = V>,
             V: AsRef<str>,
@@ -242,14 +268,14 @@ mod imp {
             Ok(added)
         }
 
-        fn add_conjunction(&mut self) -> Result<(), String> {
+        fn add_conjunction(&mut self) -> Result<(), JournalError> {
             check(
                 unsafe { (self.lib.add_conjunction)(self.journal.as_ptr()) },
                 "sd_journal_add_conjunction",
             )
         }
 
-        fn add_match(&mut self, field: &str, value: &str) -> Result<(), String> {
+        fn add_match(&mut self, field: &str, value: &str) -> Result<(), JournalError> {
             let matcher = format!("{field}={value}");
             check(
                 unsafe {
@@ -266,11 +292,14 @@ mod imp {
         pub(crate) fn next_entry_with_wait_timeout(
             &mut self,
             wait_timeout: Duration,
-        ) -> Result<Option<JournalEntry>, String> {
+        ) -> Result<Option<JournalEntry>, JournalError> {
             loop {
                 let next = unsafe { (self.lib.next)(self.journal.as_ptr()) };
                 if next < 0 {
-                    return Err(format!("sd_journal_next failed with {next}"));
+                    return Err(JournalError::SystemdCall {
+                        operation: "sd_journal_next",
+                        rc: next,
+                    });
                 }
                 if next > 0 {
                     return self.current_entry().map(Some);
@@ -278,7 +307,10 @@ mod imp {
                 let timeout = duration_to_usec(wait_timeout);
                 let waited = unsafe { (self.lib.wait)(self.journal.as_ptr(), timeout) };
                 if waited < 0 {
-                    return Err(format!("sd_journal_wait failed with {waited}"));
+                    return Err(JournalError::SystemdCall {
+                        operation: "sd_journal_wait",
+                        rc: waited,
+                    });
                 }
                 if waited == 0 {
                     return Ok(None);
@@ -286,7 +318,7 @@ mod imp {
             }
         }
 
-        fn current_entry(&mut self) -> Result<JournalEntry, String> {
+        fn current_entry(&mut self) -> Result<JournalEntry, JournalError> {
             let mut cursor_ptr: *mut c_char = std::ptr::null_mut();
             check(
                 unsafe { (self.lib.get_cursor)(self.journal.as_ptr(), &mut cursor_ptr) },
@@ -295,7 +327,7 @@ mod imp {
             let cursor = unsafe { CStr::from_ptr(cursor_ptr) }
                 .to_str()
                 .map(str::to_owned)
-                .map_err(|err| format!("sd_journal_get_cursor returned non-UTF-8 cursor: {err}"));
+                .map_err(|source| JournalError::CursorUtf8 { source });
             unsafe { libc::free(cursor_ptr.cast()) };
             let cursor = cursor?;
 
@@ -317,7 +349,10 @@ mod imp {
                     (self.lib.enumerate_data)(self.journal.as_ptr(), &mut data, &mut len)
                 };
                 if rc < 0 {
-                    return Err(format!("sd_journal_enumerate_data failed with {rc}"));
+                    return Err(JournalError::SystemdCall {
+                        operation: "sd_journal_enumerate_data",
+                        rc,
+                    });
                 }
                 if rc == 0 {
                     break;
@@ -376,9 +411,9 @@ mod imp {
         }
     }
 
-    fn check(rc: c_int, name: &str) -> Result<(), String> {
+    fn check(rc: c_int, operation: &'static str) -> Result<(), JournalError> {
         if rc < 0 {
-            Err(format!("{name} failed with {rc}"))
+            Err(JournalError::SystemdCall { operation, rc })
         } else {
             Ok(())
         }
@@ -386,4 +421,4 @@ mod imp {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) use imp::SdJournalReader;
+pub(crate) use imp::{JournalError, SdJournalReader};
