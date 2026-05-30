@@ -26,7 +26,8 @@ the scraper-per-family shape used by the Collector hostmetrics receiver.
 The v1 receiver must:
 
 - run as a local receiver;
-- collect only host-wide metrics, not per-process time series;
+- collect host-wide metrics by default, with bounded opt-in Linux per-process
+  metrics;
 - support one receiver instance with per-family intervals;
 - apply `root_path` consistently for container host filesystem collection;
 - emit metrics aligned with current OpenTelemetry system metric semantic
@@ -40,7 +41,6 @@ The v1 receiver must:
 The initial receiver scope did not include:
 
 - per-PID process metrics by default;
-- top-k process metrics;
 - grouped process aggregates;
 - eBPF;
 - io_uring;
@@ -86,8 +86,9 @@ architecture. The OTAP receiver deliberately diverges in these areas:
 - Keep Linux load averages behind explicit configuration while they use the
   Collector-compatible development names `system.cpu.load_average.*`, which are
   not listed in Semantic Conventions 1.41.0 system metrics.
-- Do not include per-process metrics in v1. The Collector's `process` scraper
-  is useful future reference, but v1 only emits aggregate process metrics.
+- Keep per-process metrics explicitly opt-in and bounded. The Collector's
+  `process` scraper is useful reference material, but this receiver only emits
+  a small Linux subset guarded by filters and `max_processes`.
 - Do not copy entity-event logs. They are explicitly out of scope for v1.
 
 Collector behavior worth preserving at the boundary: root-path consistency,

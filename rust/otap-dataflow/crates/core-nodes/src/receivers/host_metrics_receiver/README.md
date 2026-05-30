@@ -177,7 +177,8 @@ groups:
   1.41.0 does not register these names.
 - `families.cpu.per_cpu` is rejected in v1.
 - `families.network.include_connection_count` is rejected in v1.
-- Process metrics are aggregate host summaries, not per-process scrapes.
+- Process metrics are aggregate host summaries by default. Linux per-process
+  metrics are available only with `processes.mode: summary_and_per_process`.
 - `system.process.count` emits the registered `process.state=running` summary.
   Linux `procs_blocked` is parsed but not emitted because `blocked` is not a
   registered `process.state` value.
