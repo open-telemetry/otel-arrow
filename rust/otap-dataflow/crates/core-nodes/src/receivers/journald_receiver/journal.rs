@@ -389,10 +389,6 @@ mod imp {
                     (self.lib.enumerate_data)(self.journal.as_ptr(), &mut data, &mut len)
                 };
                 if rc < 0 {
-                    if rc == -libc::E2BIG {
-                        dropped_fields = dropped_fields.saturating_add(1);
-                        continue;
-                    }
                     return Err(JournalError::SystemdCall {
                         operation: "sd_journal_enumerate_data",
                         rc,
