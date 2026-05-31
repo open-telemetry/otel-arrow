@@ -221,6 +221,32 @@ mod imp {
             config: &RuntimeConfig,
             checkpoint: Option<&str>,
         ) -> Result<(), JournalError> {
+            if let Some(cursor) = checkpoint {
+                // Verify checkpoint existence against the unfiltered journal. If filters are
+                // applied first, a normal unit/identifier/priority config change can hide the
+                // checkpoint entry and make a valid cursor look stale. The verify step leaves the
+                // read head on the committed entry; after installing matches, the worker's first
+                // next() advances from that committed position to the first newly visible entry.
+                self.verify_checkpoint_cursor(cursor)?;
+                self.configure_matches(config)?;
+                return Ok(());
+            }
+
+            self.configure_matches(config)?;
+
+            match config.start_at {
+                StartAt::Beginning => check(
+                    unsafe { (self.lib.seek_head)(self.journal.as_ptr()) },
+                    "sd_journal_seek_head",
+                ),
+                StartAt::End => check(
+                    unsafe { (self.lib.seek_tail)(self.journal.as_ptr()) },
+                    "sd_journal_seek_tail",
+                ),
+            }
+        }
+
+        fn configure_matches(&mut self, config: &RuntimeConfig) -> Result<(), JournalError> {
             let mut has_match_group = false;
             has_match_group |=
                 self.add_match_group("_SYSTEMD_UNIT", config.units.iter().map(String::as_str))?;
@@ -243,48 +269,38 @@ mod imp {
                         .map(|priority| priority.to_string()),
                 )?;
             }
+            Ok(())
+        }
 
-            if let Some(cursor) = checkpoint {
-                let c = CString::new(cursor).map_err(|_| JournalError::Nul {
-                    field: "checkpoint cursor",
-                })?;
-                check(
-                    unsafe { (self.lib.seek_cursor)(self.journal.as_ptr(), c.as_ptr()) },
-                    "sd_journal_seek_cursor",
-                )?;
-                let next = unsafe { (self.lib.next)(self.journal.as_ptr()) };
-                if next < 0 {
-                    return Err(JournalError::SystemdCall {
-                        operation: "sd_journal_next",
-                        rc: next,
-                    });
-                }
-                if next == 0 {
-                    return Err(JournalError::CheckpointCursorMissing);
-                }
-                let matches = unsafe { (self.lib.test_cursor)(self.journal.as_ptr(), c.as_ptr()) };
-                if matches < 0 {
-                    return Err(JournalError::SystemdCall {
-                        operation: "sd_journal_test_cursor",
-                        rc: matches,
-                    });
-                }
-                if matches == 0 {
-                    return Err(JournalError::CheckpointCursorMissing);
-                }
-                return Ok(());
+        fn verify_checkpoint_cursor(&mut self, cursor: &str) -> Result<(), JournalError> {
+            let c = CString::new(cursor).map_err(|_| JournalError::Nul {
+                field: "checkpoint cursor",
+            })?;
+            check(
+                unsafe { (self.lib.seek_cursor)(self.journal.as_ptr(), c.as_ptr()) },
+                "sd_journal_seek_cursor",
+            )?;
+            let next = unsafe { (self.lib.next)(self.journal.as_ptr()) };
+            if next < 0 {
+                return Err(JournalError::SystemdCall {
+                    operation: "sd_journal_next",
+                    rc: next,
+                });
             }
-
-            match config.start_at {
-                StartAt::Beginning => check(
-                    unsafe { (self.lib.seek_head)(self.journal.as_ptr()) },
-                    "sd_journal_seek_head",
-                ),
-                StartAt::End => check(
-                    unsafe { (self.lib.seek_tail)(self.journal.as_ptr()) },
-                    "sd_journal_seek_tail",
-                ),
+            if next == 0 {
+                return Err(JournalError::CheckpointCursorMissing);
             }
+            let matches = unsafe { (self.lib.test_cursor)(self.journal.as_ptr(), c.as_ptr()) };
+            if matches < 0 {
+                return Err(JournalError::SystemdCall {
+                    operation: "sd_journal_test_cursor",
+                    rc: matches,
+                });
+            }
+            if matches == 0 {
+                return Err(JournalError::CheckpointCursorMissing);
+            }
+            Ok(())
         }
 
         fn add_match_group<I, V>(&mut self, field: &str, values: I) -> Result<bool, JournalError>
