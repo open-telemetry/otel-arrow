@@ -21,6 +21,7 @@ mod imp {
 
     const SD_JOURNAL_LOCAL_ONLY: c_int = 1;
     const SD_JOURNAL_OS_ROOT: c_int = 16;
+    const FIELD_NAME_THRESHOLD_HEADROOM_BYTES: u64 = 4096;
 
     type SdJournal = c_void;
     type OpenFn = unsafe extern "C" fn(*mut *mut SdJournal, c_int) -> c_int;
@@ -206,8 +207,9 @@ mod imp {
                 journal,
                 extraction: config.extraction.clone(),
             };
+            let data_threshold = extraction_data_threshold(&reader.extraction);
             check(
-                unsafe { (reader.lib.set_data_threshold)(reader.journal.as_ptr(), 0) },
+                unsafe { (reader.lib.set_data_threshold)(reader.journal.as_ptr(), data_threshold) },
                 "sd_journal_set_data_threshold",
             )?;
             reader.configure(config, checkpoint)?;
@@ -387,6 +389,10 @@ mod imp {
                     (self.lib.enumerate_data)(self.journal.as_ptr(), &mut data, &mut len)
                 };
                 if rc < 0 {
+                    if rc == -libc::E2BIG {
+                        dropped_fields = dropped_fields.saturating_add(1);
+                        continue;
+                    }
                     return Err(JournalError::SystemdCall {
                         operation: "sd_journal_enumerate_data",
                         rc,
@@ -405,9 +411,12 @@ mod imp {
                     };
                     let value_len = bytes.len().saturating_sub(eq + 1) as u64;
                     let field_len = bytes.len() as u64;
+                    let possibly_truncated =
+                        field_len >= extraction_data_threshold_u64(&self.extraction);
                     let would_exceed_entry = copied_entry_bytes.saturating_add(field_len)
                         > self.extraction.max_entry_bytes;
-                    let should_drop = value_len > self.extraction.max_field_bytes
+                    let should_drop = possibly_truncated
+                        || value_len > self.extraction.max_field_bytes
                         || copied_field_count >= self.extraction.max_fields_per_entry
                         || would_exceed_entry;
                     if should_drop {
@@ -451,6 +460,18 @@ mod imp {
         }
         let usec = duration.as_micros().min(u64::MAX as u128) as u64;
         usec.max(1)
+    }
+
+    fn extraction_data_threshold(extraction: &ExtractionConfig) -> size_t {
+        extraction_data_threshold_u64(extraction).min(size_t::MAX as u64) as size_t
+    }
+
+    fn extraction_data_threshold_u64(extraction: &ExtractionConfig) -> u64 {
+        extraction
+            .max_field_bytes
+            .saturating_add(FIELD_NAME_THRESHOLD_HEADROOM_BYTES)
+            .min(extraction.max_entry_bytes)
+            .max(1)
     }
 
     impl Drop for SdJournalReader {

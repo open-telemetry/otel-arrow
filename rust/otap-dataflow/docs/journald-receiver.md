@@ -515,14 +515,16 @@ will become:
 CUSTOM=["value1", "value2"]
 ```
 
-Extraction has hard resource limits. The receiver disables libsystemd's
-per-field data threshold with `sd_journal_set_data_threshold(0)` so
-`sd_journal_enumerate_data` can surface fields to the receiver's own extraction
-policy. The receiver enforces `max_field_bytes`, `max_entry_bytes`, and
-`max_fields_per_entry` while copying fields out of the journal handle. With the
-v1 `large_field_policy: drop_and_count`, any field value that exceeds the
-per-field limit, any field that would exceed the per-entry copied-byte budget,
-and any field beyond the per-entry field-count limit is omitted and counted.
+Extraction has hard resource limits. The receiver configures libsystemd's
+per-field data threshold from the extraction limits, with small headroom for the
+`FIELD_NAME=` prefix, so pathological journal fields are not materialized
+unboundedly before the receiver can apply its own copy limits. The receiver
+enforces `max_field_bytes`, `max_entry_bytes`, and `max_fields_per_entry` while
+copying fields out of the journal handle. With the v1
+`large_field_policy: drop_and_count`, any field value that exceeds the per-field
+limit, any field that would exceed the per-entry copied-byte budget, any field
+at the libsystemd threshold, and any field beyond the per-entry field-count
+limit is omitted and counted.
 If the first `MESSAGE` value is dropped, the body is unset; preserved
 `MESSAGE` values are still preserved as native journal attributes.
 
