@@ -123,6 +123,7 @@ pub(crate) fn write_cursor(path: &Path, cursor: &str) -> Result<(), CheckpointEr
     })?;
     let file = std::fs::OpenOptions::new()
         .read(true)
+        .write(true)
         .open(&tmp)
         .map_err(|source| CheckpointError::Reopen {
             path: tmp.clone(),
