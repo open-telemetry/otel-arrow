@@ -138,6 +138,12 @@ pub(crate) fn write_cursor(path: &Path, cursor: &str) -> Result<(), CheckpointEr
         path: path.to_path_buf(),
         source,
     })?;
+    sync_parent_directory(parent)?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn sync_parent_directory(parent: &Path) -> Result<(), CheckpointError> {
     let dir = std::fs::OpenOptions::new()
         .read(true)
         .open(parent)
@@ -149,7 +155,11 @@ pub(crate) fn write_cursor(path: &Path, cursor: &str) -> Result<(), CheckpointEr
         .map_err(|source| CheckpointError::FsyncDirectory {
             path: parent.to_path_buf(),
             source,
-        })?;
+        })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn sync_parent_directory(_parent: &Path) -> Result<(), CheckpointError> {
     Ok(())
 }
 
