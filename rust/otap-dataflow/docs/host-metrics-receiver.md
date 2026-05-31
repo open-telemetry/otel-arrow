@@ -254,6 +254,9 @@ Rules:
 - When more processes match than `max_processes`, the receiver emits the top
   processes by cumulative CPU time, then resident memory, then PID. This is a
   first-pass cardinality guard, not a complete top-k process feature.
+- Per-process CPU utilization is computed from the previous emitted sample for
+  the same `(pid, start_time)`. A process that moves into the emitted top set
+  after being truncated may not have utilization for its first emitted scrape.
 - The load family is not shown in the default example because Semantic
   Conventions 1.41.0 does not register a load metric. If maintainers choose an
   experimental Linux load metric, add it as an explicit opt-in.
