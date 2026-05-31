@@ -185,6 +185,9 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
   (`journal.root_path` + namespace) unless duplicate collection is intentional.
   The receiver rejects duplicate journal sources inside one process, but v1 does
   not coordinate ownership across separate collector processes.
+  Filters such as units, identifiers, and priorities do not define separate
+  source ownership; two receivers with different filters but the same journal
+  root/namespace still conflict in the same process.
 - Named journal namespaces are not supported in v1.
 - Kernel ring-buffer (`dmesg`) ingestion is not supported by this receiver.
 - `checkpoint.max_in_flight_batches` must be `1` in v1.

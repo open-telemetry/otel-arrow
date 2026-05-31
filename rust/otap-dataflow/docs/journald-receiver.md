@@ -157,7 +157,9 @@ multicore pipeline:
 A process-local startup lease keyed by the concrete journal source selection
 (`journal.root_path` plus `journal.namespace`) prevents duplicate readers in
 the same process, even across different pipelines. Cross-process duplication is
-not prevented in v1.
+not prevented in v1. Filters such as units, syslog identifiers, and priorities
+do not define separate source ownership; two receivers with different filters
+but the same journal root/namespace still conflict in the same process.
 
 The intended v1 deployment model is one active owner per concrete host journal
 source. Running two collector processes against the same host journal may
