@@ -126,6 +126,31 @@ config:
     on_nack: rewind
 ```
 
+## Configuration Options
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `source_id` | string | `system` | Stable source identifier used for checkpoint paths and telemetry labels. |
+| `journal.root_path` | path | `/` | Local or mounted host root used for `sd-journal` access. |
+| `journal.namespace` | string | unset | Named namespaces are rejected in v1. |
+| `units` | list | `[]` | Exact `_SYSTEMD_UNIT` matches. |
+| `identifiers` | list | `[]` | Exact `SYSLOG_IDENTIFIER` matches. |
+| `priorities` | list | unset | Exact journald `PRIORITY` values to include. When unset, no priority filter is installed. |
+| `max_priority` | enum | unset | Shorthand for all priorities up to the selected level. Mutually exclusive with `priorities`. |
+| `start_at` | enum | `end` | `end` reads new entries only when no checkpoint exists; `beginning` reads existing entries. |
+| `batch.max_records` | integer | `1024` | Maximum log records per emitted batch. |
+| `batch.max_flush_period` | duration | `200ms` | Maximum time to hold a partial batch. |
+| `extraction.max_entry_bytes` | byte size | `1MiB` | Maximum copied bytes per journal entry. |
+| `extraction.max_field_bytes` | byte size | `256KiB` | Maximum copied bytes per field value. |
+| `extraction.max_fields_per_entry` | integer | `256` | Maximum copied fields per journal entry. |
+| `extraction.large_field_policy` | enum | `drop_and_count` | Oversized fields are dropped and counted. |
+| `checkpoint.directory` | path | `${engine.state_dir}/journald` | Root directory for durable cursor checkpoints. |
+| `checkpoint.max_in_flight_batches` | integer | `1` | Must be `1` in v1. |
+| `checkpoint.on_nack` | enum | `rewind` | Either `rewind` or `fail`. |
+| `checkpoint.max_consecutive_failures` | integer | `5` | Consecutive checkpoint write failures before failing the source. |
+| `wait_timeout` | duration | `1s` | Bounds idle wait and shutdown responsiveness. |
+| `drain_timeout` | duration | `5s` | Drain deadline budget; must exceed `wait_timeout`. |
+
 ## Telemetry
 
 These tables list telemetry emitted directly by this node. Common engine

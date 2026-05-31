@@ -26,6 +26,7 @@ pub(crate) struct JournalField {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct JournalEntry {
     pub(crate) cursor: String,
+    pub(crate) message_body: Option<Vec<u8>>,
     pub(crate) realtime_unix_nano: u64,
     pub(crate) fields: Vec<JournalField>,
     pub(crate) dropped_fields: u64,
@@ -77,7 +78,7 @@ impl JournaldArrowRecordsBuilder {
         );
         self.logs.append_severity_text(None);
 
-        match entry.field("MESSAGE") {
+        match entry.message_body.as_deref() {
             Some(message) if std::str::from_utf8(message).is_ok() => {
                 self.logs.body.append_str(message);
             }
@@ -167,6 +168,7 @@ mod tests {
     fn projects_message_priority_time_and_attributes() {
         let entry = JournalEntry {
             cursor: "s=1".to_owned(),
+            message_body: Some(b"hello".to_vec()),
             realtime_unix_nano: 123,
             fields: vec![
                 JournalField {
@@ -215,6 +217,38 @@ mod tests {
                 .and_then(|kv| kv.value.as_ref())
                 .and_then(|v| v.value.as_ref()),
             Some(Value::StringValue(v)) if v == "4"
+        ));
+    }
+
+    #[test]
+    fn leaves_body_unset_when_first_message_was_dropped() {
+        let entry = JournalEntry {
+            cursor: "s=2".to_owned(),
+            message_body: None,
+            realtime_unix_nano: 456,
+            fields: vec![JournalField {
+                name: "MESSAGE".to_owned(),
+                value: b"surviving duplicate".to_vec(),
+            }],
+            dropped_fields: 1,
+        };
+
+        let mut builder = JournaldArrowRecordsBuilder::new();
+        builder.append(&entry);
+        let mut records = builder.build().unwrap();
+        let mut encoder = LogsProtoBytesEncoder::new();
+        let mut buffer = ProtoBuffer::default();
+        encoder.encode(&mut records, &mut buffer).unwrap();
+        let req = ExportLogsServiceRequest::decode(buffer.as_ref()).unwrap();
+        let log = &req.resource_logs[0].scope_logs[0].log_records[0];
+        assert!(log.body.is_none());
+        assert!(matches!(
+            log.attributes
+                .iter()
+                .find(|kv| kv.key == "MESSAGE")
+                .and_then(|kv| kv.value.as_ref())
+                .and_then(|v| v.value.as_ref()),
+            Some(Value::StringValue(v)) if v == "surviving duplicate"
         ));
     }
 }

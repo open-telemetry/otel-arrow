@@ -289,7 +289,7 @@ pub struct Config {
     #[serde(default)]
     pub identifiers: Vec<String>,
 
-    /// Exact-match priority set. Defaults to all levels (0..=7) when omitted.
+    /// Exact-match priority set. When omitted, no `PRIORITY` match is added.
     #[serde(default)]
     pub priorities: Option<Vec<u8>>,
 
@@ -371,6 +371,8 @@ pub(crate) struct RuntimeConfig {
     pub(crate) identifiers: Vec<String>,
     /// Sorted, deduplicated set of accepted journald `PRIORITY` levels.
     pub(crate) priorities: Vec<u8>,
+    /// Whether to install a journald `PRIORITY` match group.
+    pub(crate) priority_filter_enabled: bool,
     /// Where to start when there is no committed cursor.
     pub(crate) start_at: StartAt,
     /// Field extraction safety limits.
@@ -409,6 +411,7 @@ impl TryFrom<Config> for RuntimeConfig {
         let lease_key = journal_source_lease_key(&journal);
         let units = dedup_non_empty(units, "units")?;
         let identifiers = dedup_non_empty(identifiers, "identifiers")?;
+        let priority_filter_enabled = priorities.is_some() || max_priority.is_some();
         let priorities = resolve_priorities(priorities, max_priority)?;
 
         if batch.max_records == 0 {
@@ -469,6 +472,7 @@ impl TryFrom<Config> for RuntimeConfig {
             units,
             identifiers,
             priorities,
+            priority_filter_enabled,
             start_at,
             extraction,
             batch,
@@ -680,6 +684,7 @@ mod tests {
             PathBuf::from(DEFAULT_JOURNAL_ROOT_PATH)
         );
         assert_eq!(runtime.priorities, (0..=7).collect::<Vec<u8>>());
+        assert!(!runtime.priority_filter_enabled);
         assert_eq!(runtime.start_at, StartAt::End);
         assert_eq!(runtime.batch.max_records, DEFAULT_BATCH_MAX_RECORDS);
         assert_eq!(runtime.extraction.max_entry_bytes, DEFAULT_MAX_ENTRY_BYTES);
@@ -851,6 +856,7 @@ mod tests {
         };
         let runtime = RuntimeConfig::try_from(cfg).expect("must validate");
         assert_eq!(runtime.priorities, vec![0, 1, 3]);
+        assert!(runtime.priority_filter_enabled);
     }
 
     #[test]
@@ -861,6 +867,18 @@ mod tests {
         };
         let runtime = RuntimeConfig::try_from(cfg).expect("must validate");
         assert_eq!(runtime.priorities, vec![0, 1, 2, 3, 4]);
+        assert!(runtime.priority_filter_enabled);
+    }
+
+    #[test]
+    fn explicit_full_priorities_still_enable_priority_filter() {
+        let cfg = Config {
+            priorities: Some(default_priorities()),
+            ..base()
+        };
+        let runtime = RuntimeConfig::try_from(cfg).expect("must validate");
+        assert_eq!(runtime.priorities, (0..=7).collect::<Vec<u8>>());
+        assert!(runtime.priority_filter_enabled);
     }
 
     #[test]

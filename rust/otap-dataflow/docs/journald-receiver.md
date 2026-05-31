@@ -84,7 +84,7 @@ not copy every behavior directly. The v1 classification is:
 | `journalctl` backend | Reject | Use `sd-journal` through runtime-loaded `libsystemd`; no `journalctl` fallback |
 | `start_at` | Preserve | Keep `start_at: beginning/end`, applied only when no checkpoint exists |
 | Cursor storage | Improve | Ack-driven durable cursor envelope keyed by stable `source_id` |
-| Priority default | Improve | Go defaults to `info`; v1 includes all priorities `0..=7` unless configured |
+| Priority default | Improve | Go defaults to `info`; v1 does not install a priority filter unless configured |
 | `units` | Preserve | Keep exact unit matches |
 | `matches` | Defer | V1 exposes common filters; arbitrary field matches can be added after the first implementation |
 | `grep` | Defer | Content filtering belongs in a processor unless a receiver-side need is proven |
@@ -393,7 +393,7 @@ journal:
 
 When `journal.root_path` is unset or `/`, the receiver opens the local journal
 view. When it is set to a host-root mount such as `/host`, `SdJournalSource`
-opens that root with `sd_journal_open_directory(..., SD_JOURNAL_OS_ROOT | ...)`
+opens that root with `sd_journal_open_directory(..., SD_JOURNAL_OS_ROOT)`.
 so journald resolves the usual journal locations below that root, such as
 `/host/run/log/journal` and `/host/var/log/journal`.
 
@@ -461,8 +461,11 @@ groups:
 ```
 
 `priorities` is an exact-match set. `max_priority` is shorthand expanded by the
-receiver into explicit `PRIORITY=N` matches. The default should include all
-levels `0..=7`; it should not silently drop debug entries.
+receiver into explicit `PRIORITY=N` matches. When neither field is configured,
+the receiver does not install a `PRIORITY` match, so entries without a
+`PRIORITY` field are not silently excluded. Explicit `priorities: [0, 1, 2, 3,
+4, 5, 6, 7]` remains a real filter and only matches entries that carry one of
+those `PRIORITY` values.
 
 Filter changes are not retroactive. If filters are widened after a checkpoint
 exists, the receiver resumes from the existing cursor and does not backfill

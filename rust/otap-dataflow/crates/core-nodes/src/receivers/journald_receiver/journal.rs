@@ -157,11 +157,7 @@ mod imp {
                     })?;
                 check(
                     unsafe {
-                        (lib.open_directory)(
-                            &mut raw,
-                            root_path.as_ptr(),
-                            SD_JOURNAL_LOCAL_ONLY | SD_JOURNAL_OS_ROOT,
-                        )
+                        (lib.open_directory)(&mut raw, root_path.as_ptr(), SD_JOURNAL_OS_ROOT)
                     },
                     "sd_journal_open_directory",
                 )?;
@@ -195,16 +191,18 @@ mod imp {
                 "SYSLOG_IDENTIFIER",
                 config.identifiers.iter().map(String::as_str),
             )?;
-            if has_match_group {
-                self.add_conjunction()?;
+            if config.priority_filter_enabled {
+                if has_match_group {
+                    self.add_conjunction()?;
+                }
+                let _ = self.add_match_group(
+                    "PRIORITY",
+                    config
+                        .priorities
+                        .iter()
+                        .map(|priority| priority.to_string()),
+                )?;
             }
-            let _ = self.add_match_group(
-                "PRIORITY",
-                config
-                    .priorities
-                    .iter()
-                    .map(|priority| priority.to_string()),
-            )?;
 
             if let Some(cursor) = checkpoint {
                 let c = CString::new(cursor).map_err(|_| JournalError::Nul {
@@ -342,6 +340,8 @@ mod imp {
             let mut copied_entry_bytes = 0u64;
             let mut copied_field_count = 0usize;
             let mut dropped_fields = 0u64;
+            let mut message_seen = false;
+            let mut message_body = None;
             loop {
                 let mut data: *const c_void = std::ptr::null();
                 let mut len: size_t = 0;
@@ -359,6 +359,12 @@ mod imp {
                 }
                 let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
                 if let Some(eq) = bytes.iter().position(|b| *b == b'=') {
+                    let is_first_message = if !message_seen && &bytes[..eq] == b"MESSAGE" {
+                        message_seen = true;
+                        true
+                    } else {
+                        false
+                    };
                     let value_len = bytes.len().saturating_sub(eq + 1) as u64;
                     let field_len = bytes.len() as u64;
                     let would_exceed_entry = copied_entry_bytes.saturating_add(field_len)
@@ -382,6 +388,9 @@ mod imp {
                         }
                     };
                     let value = bytes[eq + 1..].to_vec();
+                    if is_first_message {
+                        message_body = Some(value.clone());
+                    }
                     fields.push(JournalField { name, value });
                     copied_entry_bytes = copied_entry_bytes.saturating_add(field_len);
                     copied_field_count = copied_field_count.saturating_add(1);
@@ -390,6 +399,7 @@ mod imp {
 
             Ok(JournalEntry {
                 cursor,
+                message_body,
                 realtime_unix_nano: realtime_usec.saturating_mul(1000),
                 fields,
                 dropped_fields,
