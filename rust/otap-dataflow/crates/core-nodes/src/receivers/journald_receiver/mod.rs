@@ -184,6 +184,7 @@ fn create_journald_receiver(
     Err(unsupported_platform_error())
 }
 
+#[cfg(target_os = "linux")]
 fn validate_journald_config(config: &Value) -> Result<(), otap_df_config::error::Error> {
     let parsed: Config = serde_json::from_value(config.clone()).map_err(|e| {
         otap_df_config::error::Error::InvalidUserConfig {
@@ -191,6 +192,11 @@ fn validate_journald_config(config: &Value) -> Result<(), otap_df_config::error:
         }
     })?;
     RuntimeConfig::try_from(parsed).map(|_| ())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn validate_journald_config(_config: &Value) -> Result<(), otap_df_config::error::Error> {
+    Err(unsupported_platform_error())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -307,6 +313,7 @@ enum PendingDecision {
     Pending,
     CommitSent,
     RewindSent,
+    FailSent,
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -384,13 +391,16 @@ fn apply_pending_nack(
                 record_rewind: true,
             })
         }
-        OnNack::Fail => Some(PendingControlEffect {
-            command: None,
-            fail_nack: true,
-            record_ack: false,
-            record_nack: true,
-            record_rewind: false,
-        }),
+        OnNack::Fail => {
+            pending_batch.decision = PendingDecision::FailSent;
+            Some(PendingControlEffect {
+                command: None,
+                fail_nack: true,
+                record_ack: false,
+                record_nack: true,
+                record_rewind: false,
+            })
+        }
     }
 }
 
@@ -534,7 +544,7 @@ fn worker_loop_inner(
                         first_cursor.clear();
                         last_cursor.clear();
                         dropped_fields = 0;
-                        reader = journal::SdJournalReader::open(&config, Some(cursor))?;
+                        reader = journal::SdJournalReader::open_for_rewind(&config, Some(cursor))?;
                         in_flight = None;
                     } else if let Some(batch) = in_flight.clone() {
                         // No cursor has been committed yet. Re-opening from start_at=end
@@ -581,7 +591,7 @@ fn worker_loop_inner(
                     first_cursor.clear();
                     last_cursor.clear();
                     dropped_fields = 0;
-                    reader = journal::SdJournalReader::open(&config, Some(cursor))?;
+                    reader = journal::SdJournalReader::open_for_rewind(&config, Some(cursor))?;
                 }
                 WorkerCommand::Drain => {
                     draining = true;
@@ -1131,10 +1141,18 @@ mod tests {
         assert!(validate_journald_config(&json).is_err());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn validates_default_config() {
         let json = serde_json::json!({});
         validate_journald_config(&json).expect("default config must validate");
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn rejects_config_validation_on_non_linux() {
+        let json = serde_json::json!({});
+        assert!(validate_journald_config(&json).is_err());
     }
 
     #[test]
@@ -1222,7 +1240,8 @@ mod tests {
         );
         assert_eq!(
             pending.get(&7).map(|batch| batch.decision),
-            Some(PendingDecision::Pending)
+            Some(PendingDecision::FailSent)
         );
+        assert!(apply_pending_nack(&mut pending, 7, OnNack::Fail).is_none());
     }
 }

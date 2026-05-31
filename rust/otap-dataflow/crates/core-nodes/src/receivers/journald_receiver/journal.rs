@@ -163,7 +163,24 @@ mod imp {
             config: &RuntimeConfig,
             checkpoint: Option<&str>,
         ) -> Result<Self, JournalError> {
-            preflight_journal_access(&config.journal.root_path)?;
+            Self::open_inner(config, checkpoint, true)
+        }
+
+        pub(crate) fn open_for_rewind(
+            config: &RuntimeConfig,
+            checkpoint: Option<&str>,
+        ) -> Result<Self, JournalError> {
+            Self::open_inner(config, checkpoint, false)
+        }
+
+        fn open_inner(
+            config: &RuntimeConfig,
+            checkpoint: Option<&str>,
+            run_preflight: bool,
+        ) -> Result<Self, JournalError> {
+            if run_preflight {
+                preflight_journal_access(&config.journal.root_path)?;
+            }
             let lib = LibSystemd::load()?;
             let mut raw = std::ptr::null_mut();
             if config.journal.root_path == Path::new("/") {
@@ -466,12 +483,6 @@ mod imp {
             inspect_journal_path(&root_path.join(relative), 0, &mut summary);
         }
 
-        if root_path != Path::new("/") && summary.visible_directories == 0 {
-            return Err(JournalError::JournalDirectoriesMissing {
-                root_path: root_path.to_path_buf(),
-            });
-        }
-
         if (summary.journal_files > 0 || summary.unreadable_directories > 0)
             && summary.readable_files == 0
             && (summary.unreadable_files > 0 || summary.unreadable_directories > 0)
@@ -484,6 +495,11 @@ mod imp {
                 first_error: summary
                     .first_error
                     .unwrap_or_else(|| "permission denied".to_owned()),
+            });
+        }
+        if root_path != Path::new("/") && summary.visible_directories == 0 {
+            return Err(JournalError::JournalDirectoriesMissing {
+                root_path: root_path.to_path_buf(),
             });
         }
         Ok(())
@@ -573,6 +589,28 @@ mod imp {
     fn record_first_error(summary: &mut JournalAccessSummary, path: &Path, err: &std::io::Error) {
         if summary.first_error.is_none() {
             summary.first_error = Some(format!("{}: {err}", path.display()));
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+
+        #[test]
+        fn preflight_reports_access_when_journal_parent_is_not_traversable() {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let root = temp.path();
+            let log_dir = root.join("var/log");
+            std::fs::create_dir_all(log_dir.join("journal")).expect("journal dir");
+            std::fs::set_permissions(&log_dir, std::fs::Permissions::from_mode(0o000))
+                .expect("chmod log dir");
+
+            let result = preflight_journal_access(root);
+
+            std::fs::set_permissions(&log_dir, std::fs::Permissions::from_mode(0o755))
+                .expect("restore log dir permissions");
+            assert!(matches!(result, Err(JournalError::JournalAccess { .. })));
         }
     }
 }
