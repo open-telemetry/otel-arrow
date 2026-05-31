@@ -181,6 +181,10 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
   Startup fails clearly when journal files are present but unreadable.
 - Must run in a one-core source pipeline. Use `receiver:journald` followed by a
   topic exporter to fan out to multicore downstream processing.
+- Run one active journald receiver per host journal source
+  (`journal.root_path` + namespace) unless duplicate collection is intentional.
+  The receiver rejects duplicate journal sources inside one process, but v1 does
+  not coordinate ownership across separate collector processes.
 - Named journal namespaces are not supported in v1.
 - Kernel ring-buffer (`dmesg`) ingestion is not supported by this receiver.
 - `checkpoint.max_in_flight_batches` must be `1` in v1.
@@ -189,7 +193,9 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 - Only one receiver in a process can target the same concrete journal source.
 - Duplicate journald fields are emitted as repeated same-key attributes in the
   first implementation. Array coalescing is planned as a follow-up.
-- Cross-process duplicate readers are not prevented in v1.
+- Cross-process source locking is not implemented in v1; run one owner for a
+  checkpoint identity (`source_id` and checkpoint directory) to avoid cursor
+  races.
 - NUMA pinning and placement are future work.
 
 ## Related Docs

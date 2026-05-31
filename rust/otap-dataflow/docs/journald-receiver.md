@@ -159,6 +159,14 @@ A process-local startup lease keyed by the concrete journal source selection
 the same process, even across different pipelines. Cross-process duplication is
 not prevented in v1.
 
+The intended v1 deployment model is one active owner per concrete host journal
+source. Running two collector processes against the same host journal may
+duplicate exported logs, and running two processes with the same checkpoint
+identity (`checkpoint.directory` plus pipeline/receiver identity plus
+`source_id`) may race cursor writes. Operators should use a single collector
+owner per host journal source unless duplicate collection is intentional.
+Cross-process file locking is a planned follow-up.
+
 Multiple journald receivers in the *same* engine are not useful in v1 because
 only the default systemd journal namespace is supported and the process-local
 lease rejects duplicate readers. With named-namespace support or a future
@@ -363,11 +371,12 @@ The final segment is the configured `source_id`; it is `system` for the
 default local journal. It is not the systemd journal namespace. There is no
 `instance_id` or `core_id` segment.
 
-A single cursor file must not be written by two processes concurrently. In
-v1, cross-process duplication is prevented operationally by running one engine
-per host against the default systemd journal namespace. The process-local lease covers
-in-process duplication. A future enhancement may add a file lock alongside the
-cursor file; that addition does not change the checkpoint key shape above.
+A single cursor file must not be written by two processes concurrently. In v1,
+cross-process duplication is prevented operationally by running one engine per
+host against the default systemd journal namespace. The process-local lease
+covers in-process duplication. A future enhancement may add a file lock
+alongside the cursor file; that addition does not change the checkpoint key
+shape above.
 
 The cursor file is a small versioned envelope (cursor string + version +
 checksum). Corrupt or unknown-version envelopes fail closed; see [Failure
