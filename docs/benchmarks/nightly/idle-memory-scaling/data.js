@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780163277493,
+  "lastUpdate": 1780195020448,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -1672,6 +1672,82 @@ window.BENCHMARK_DATA = {
             "value": 39.28,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=39.8 MiB, error=1.2%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb",
+            "email": "lalit_fin@yahoo.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "ddeb7d3c651e6fdb1abda29a396062b41b32389c",
+          "message": "feat(host metrics receiver) - Add opt-in host load average metrics (#3141)\n\n# Change Summary\n\nAdds opt-in Linux load average metrics to the Rust `host_metrics`\nreceiver.\n\nWhen `families.load.enabled: true`, the receiver reads `/proc/loadavg`\nthrough the existing `host_view.root_path` abstraction and emits the\nCollector-compatible gauges:\n\n  - `system.cpu.load_average.1m`\n  - `system.cpu.load_average.5m`\n  - `system.cpu.load_average.15m`\n\nThe load family defaults to disabled because these metric names are\ndevelopment/experimental and are not registered in Semantic Conventions\n1.41.0.\n\n  ## What issue does this PR close?\n\n  * Closes #3067\n\n  ## How are these changes tested?\n\n- `cargo check -p otap-df-core-nodes --features otap-df-otap/crypto-ring\n--all-targets`\n- `cargo test -p otap-df-core-nodes --features otap-df-otap/crypto-ring\nhost_metrics_receiver` on Linux test VM\n  - `cargo xtask check` on Linux test VM\n- `npx markdownlint-cli\nrust/otap-dataflow/crates/core-nodes/src/receivers/host_metrics_receiver/README.md`\n  - `python3 tools/sanitycheck.py`\n\n  ## Are there any user-facing changes?\n\n  Yes. Users can now enable Linux load average metrics with:\n\n  ```yaml\n  families:\n    load:\n      enabled: true\n      interval: 30s\n```\n\n  ### Changelog\n\n  - [x] Added a .chloggen/*.yaml entry, OR this PR is a chore (indicated in title).",
+          "timestamp": "2026-05-29T23:21:41Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ddeb7d3c651e6fdb1abda29a396062b41b32389c"
+        },
+        "date": 1780195019321,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 15.37,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.8,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9997,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 16.09,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=16.2 MiB, error=0.5%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 17.2,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=17.0 MiB, error=1.3%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 18.31,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.6 MiB, error=1.4%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 21.85,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=21.8 MiB, error=0.4%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 28.24,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=28.2 MiB, error=0.2%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 40.94,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=41.0 MiB, error=0.1%"
           }
         ]
       }
