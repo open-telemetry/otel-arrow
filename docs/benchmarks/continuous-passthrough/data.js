@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780195027295,
+  "lastUpdate": 1780249965690,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "e3ca57241e90ed25bbc95e719744a1853b398756",
-          "message": "docs: Expand SIG meeting welcoming language (#2897)\n\n## Changes\n\nThe Contributing section already has welcoming language for the SIG\nmeeting, but is missing the explicit opening that the meeting is open to\nall. Adding two short sentences brings the wording in line with the same\ntext used in\n[opentelemetry-rust](https://github.com/open-telemetry/opentelemetry-rust#contributing),\n[opentelemetry-dotnet](https://github.com/open-telemetry/opentelemetry-dotnet#contributing),\nand\n[weaver](https://github.com/open-telemetry/weaver/blob/main/CONTRIBUTING.md).\n\nPer the discussion in\n[open-telemetry/community#1805](https://github.com/open-telemetry/community/issues/1805),\nexplicit welcoming language on SIG meeting invitations helps lower the\nimplicit gatekeeping that the word \"meeting\" can convey to newcomers.\n\nScope is limited to the welcoming paragraph; the broader \"meetings vs.\noffice hours / public meetings\" naming discussion in community#1805 is\nintentionally out of scope here.",
-          "timestamp": "2026-05-07T20:21:38Z",
-          "tree_id": "dc706a7ed7f4e7f9e27a3066df9edb256417529d",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/e3ca57241e90ed25bbc95e719744a1853b398756"
-        },
-        "date": 1778201826056,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0.42553189396858215,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 5.780585608622721,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 6.044466197613949,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 16.559114583333333,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 17.78515625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 6015.637357327976,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 5990.038900488283,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003617,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 211745.46732119063,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 174945.78342199852,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10562,6 +10478,160 @@ window.BENCHMARK_DATA = {
             "value": 28.74363554975234,
             "unit": "bytes/log",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb",
+            "email": "lalit_fin@yahoo.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "ddeb7d3c651e6fdb1abda29a396062b41b32389c",
+          "message": "feat(host metrics receiver) - Add opt-in host load average metrics (#3141)\n\n# Change Summary\n\nAdds opt-in Linux load average metrics to the Rust `host_metrics`\nreceiver.\n\nWhen `families.load.enabled: true`, the receiver reads `/proc/loadavg`\nthrough the existing `host_view.root_path` abstraction and emits the\nCollector-compatible gauges:\n\n  - `system.cpu.load_average.1m`\n  - `system.cpu.load_average.5m`\n  - `system.cpu.load_average.15m`\n\nThe load family defaults to disabled because these metric names are\ndevelopment/experimental and are not registered in Semantic Conventions\n1.41.0.\n\n  ## What issue does this PR close?\n\n  * Closes #3067\n\n  ## How are these changes tested?\n\n- `cargo check -p otap-df-core-nodes --features otap-df-otap/crypto-ring\n--all-targets`\n- `cargo test -p otap-df-core-nodes --features otap-df-otap/crypto-ring\nhost_metrics_receiver` on Linux test VM\n  - `cargo xtask check` on Linux test VM\n- `npx markdownlint-cli\nrust/otap-dataflow/crates/core-nodes/src/receivers/host_metrics_receiver/README.md`\n  - `python3 tools/sanitycheck.py`\n\n  ## Are there any user-facing changes?\n\n  Yes. Users can now enable Linux load average metrics with:\n\n  ```yaml\n  families:\n    load:\n      enabled: true\n      interval: 30s\n```\n\n  ### Changelog\n\n  - [x] Added a .chloggen/*.yaml entry, OR this PR is a chore (indicated in title).",
+          "timestamp": "2026-05-29T23:21:41Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ddeb7d3c651e6fdb1abda29a396062b41b32389c"
+        },
+        "date": 1780249964501,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.23022836446762085,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 100.1997018766463,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.46298162648269,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 23.717578125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 24.6171875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 548535.9556336859,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 549798.8409773762,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.00228,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 15796363.890054945,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 15778628.021158732,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 28.731169862005864,
+            "unit": "bytes/log",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.1343623846769333,
+            "unit": "%",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 100.18678535711571,
+            "unit": "%",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.47563546187229,
+            "unit": "%",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 40.80677083333333,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 41.89453125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 1886071.6953211327,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 1888605.8663165472,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.005422,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 20686371.234676972,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 20649138.133256894,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 10.953249486099898,
+            "unit": "bytes/log",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Egress Bytes Per Log"
           }
         ]
       }
