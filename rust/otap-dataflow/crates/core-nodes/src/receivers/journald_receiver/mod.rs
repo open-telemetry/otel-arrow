@@ -1042,9 +1042,15 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                             if let Some(metrics) = metrics.as_mut() {
                                 metrics.source_failures.add(1);
                             }
+                            let error = err.to_string();
+                            otel_warn!(
+                                "journald_receiver.source_failed",
+                                source_id = config.source_id.as_str(),
+                                error = error.as_str()
+                            );
                             drop(event_rx);
                             join_worker(worker, &effect_handler).await?;
-                            return Err(terminal_error(&effect_handler, err.to_string()));
+                            return Err(terminal_error(&effect_handler, error));
                         }
                         Some(WorkerEvent::Stopped) | None => {
                             drop(event_rx);

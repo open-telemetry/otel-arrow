@@ -14,6 +14,7 @@ mod imp {
 
     use libc::{RTLD_NOW, c_char, c_int, c_void, size_t};
     use std::ffi::{CStr, CString};
+    use std::path::{Path, PathBuf};
     use std::ptr::NonNull;
     use std::str::Utf8Error;
     use std::time::Duration;
@@ -57,6 +58,25 @@ mod imp {
         CheckpointCursorMissing,
         #[error("sd_journal_get_cursor returned non-UTF-8 cursor: {source}")]
         CursorUtf8 { source: Utf8Error },
+        #[error(
+            "selected journal root {root_path} is not readable \
+             (journal_files={journal_files}, unreadable_files={unreadable_files}, \
+             unreadable_directories={unreadable_directories}, first_error={first_error}); \
+             run as root or grant access to the systemd-journal group, and ensure container \
+             host-root mounts expose readable journal files"
+        )]
+        JournalAccess {
+            root_path: PathBuf,
+            journal_files: usize,
+            unreadable_files: usize,
+            unreadable_directories: usize,
+            first_error: String,
+        },
+        #[error(
+            "no systemd journal directories are visible under {root_path}; mount \
+             /run/log/journal or /var/log/journal below journal.root_path"
+        )]
+        JournalDirectoriesMissing { root_path: PathBuf },
     }
 
     struct LibSystemd {
@@ -143,9 +163,10 @@ mod imp {
             config: &RuntimeConfig,
             checkpoint: Option<&str>,
         ) -> Result<Self, JournalError> {
+            preflight_journal_access(&config.journal.root_path)?;
             let lib = LibSystemd::load()?;
             let mut raw = std::ptr::null_mut();
-            if config.journal.root_path == std::path::Path::new("/") {
+            if config.journal.root_path == Path::new("/") {
                 check(
                     unsafe { (lib.open)(&mut raw, SD_JOURNAL_LOCAL_ONLY) },
                     "sd_journal_open",
@@ -426,6 +447,132 @@ mod imp {
             Err(JournalError::SystemdCall { operation, rc })
         } else {
             Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct JournalAccessSummary {
+        journal_files: usize,
+        readable_files: usize,
+        visible_directories: usize,
+        unreadable_files: usize,
+        unreadable_directories: usize,
+        first_error: Option<String>,
+    }
+
+    fn preflight_journal_access(root_path: &Path) -> Result<(), JournalError> {
+        let mut summary = JournalAccessSummary::default();
+        for relative in ["run/log/journal", "var/log/journal"] {
+            inspect_journal_path(&root_path.join(relative), 0, &mut summary);
+        }
+
+        if root_path != Path::new("/") && summary.visible_directories == 0 {
+            return Err(JournalError::JournalDirectoriesMissing {
+                root_path: root_path.to_path_buf(),
+            });
+        }
+
+        if (summary.journal_files > 0 || summary.unreadable_directories > 0)
+            && summary.readable_files == 0
+            && (summary.unreadable_files > 0 || summary.unreadable_directories > 0)
+        {
+            return Err(JournalError::JournalAccess {
+                root_path: root_path.to_path_buf(),
+                journal_files: summary.journal_files,
+                unreadable_files: summary.unreadable_files,
+                unreadable_directories: summary.unreadable_directories,
+                first_error: summary
+                    .first_error
+                    .unwrap_or_else(|| "permission denied".to_owned()),
+            });
+        }
+        Ok(())
+    }
+
+    fn inspect_journal_path(path: &Path, depth: usize, summary: &mut JournalAccessSummary) {
+        const MAX_DEPTH: usize = 4;
+        if depth > MAX_DEPTH {
+            return;
+        }
+
+        let metadata = match std::fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+            Err(err) => {
+                if err.kind() == std::io::ErrorKind::PermissionDenied {
+                    summary.unreadable_directories =
+                        summary.unreadable_directories.saturating_add(1);
+                }
+                record_first_error(summary, path, &err);
+                return;
+            }
+        };
+
+        if metadata.is_file() {
+            inspect_journal_file(path, summary);
+            return;
+        }
+        if !metadata.is_dir() {
+            return;
+        }
+        summary.visible_directories = summary.visible_directories.saturating_add(1);
+
+        let entries = match std::fs::read_dir(path) {
+            Ok(entries) => entries,
+            Err(err) => {
+                if err.kind() == std::io::ErrorKind::PermissionDenied {
+                    summary.unreadable_directories =
+                        summary.unreadable_directories.saturating_add(1);
+                }
+                record_first_error(summary, path, &err);
+                return;
+            }
+        };
+
+        for entry in entries {
+            match entry {
+                Ok(entry) => inspect_journal_path(&entry.path(), depth + 1, summary),
+                Err(err) => {
+                    if err.kind() == std::io::ErrorKind::PermissionDenied {
+                        summary.unreadable_directories =
+                            summary.unreadable_directories.saturating_add(1);
+                    }
+                    if summary.first_error.is_none() {
+                        summary.first_error = Some(err.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    fn inspect_journal_file(path: &Path, summary: &mut JournalAccessSummary) {
+        if !is_journal_file(path) {
+            return;
+        }
+        summary.journal_files = summary.journal_files.saturating_add(1);
+        match std::fs::File::open(path) {
+            Ok(_) => {
+                summary.readable_files = summary.readable_files.saturating_add(1);
+            }
+            Err(err) => {
+                if err.kind() == std::io::ErrorKind::PermissionDenied {
+                    summary.unreadable_files = summary.unreadable_files.saturating_add(1);
+                }
+                record_first_error(summary, path, &err);
+            }
+        }
+    }
+
+    fn is_journal_file(path: &Path) -> bool {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        name.ends_with(".journal") || name.ends_with(".journal~")
+    }
+
+    fn record_first_error(summary: &mut JournalAccessSummary, path: &Path, err: &std::io::Error) {
+        if summary.first_error.is_none() {
+            summary.first_error = Some(format!("{}: {err}", path.display()));
         }
     }
 }

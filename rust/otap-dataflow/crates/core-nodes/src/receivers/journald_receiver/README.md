@@ -178,6 +178,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 - Linux only.
 - Requires `libsystemd.so.0` and permission to read the selected journal.
+  Startup fails clearly when journal files are present but unreadable.
 - Must run in a one-core source pipeline. Use `receiver:journald` followed by a
   topic exporter to fan out to multicore downstream processing.
 - Named journal namespaces are not supported in v1.

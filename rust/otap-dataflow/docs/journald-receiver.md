@@ -393,7 +393,7 @@ journal:
 
 When `journal.root_path` is unset or `/`, the receiver opens the local journal
 view. When it is set to a host-root mount such as `/host`, `SdJournalSource`
-opens that root with `sd_journal_open_directory(..., SD_JOURNAL_OS_ROOT)`.
+opens that root with `sd_journal_open_directory(..., SD_JOURNAL_OS_ROOT)`
 so journald resolves the usual journal locations below that root, such as
 `/host/run/log/journal` and `/host/var/log/journal`.
 
