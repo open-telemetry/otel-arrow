@@ -44,7 +44,7 @@ use otap_df_telemetry::metrics::MetricSet;
 #[cfg(target_os = "linux")]
 use otap_df_telemetry::metrics::MetricSetSnapshot;
 #[cfg(target_os = "linux")]
-use otap_df_telemetry::{otel_info, otel_warn};
+use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde_json::Value;
 #[cfg(any(target_os = "linux", test))]
@@ -977,7 +977,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                         )
                                         .await?;
                                     }
-                                    otel_info!(
+                                    otel_debug!(
                                         "journald_receiver.batch_sent",
                                         source_id = config.source_id.as_str(),
                                         batch_id = batch_id,
@@ -1008,7 +1008,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                     if let Some(metrics) = metrics.as_mut() {
                                         metrics.cursor_commits.add(1);
                                     }
-                                    otel_info!(
+                                    otel_debug!(
                                         "journald_receiver.cursor_committed",
                                         source_id = config.source_id.as_str(),
                                         batch_id = batch_id,

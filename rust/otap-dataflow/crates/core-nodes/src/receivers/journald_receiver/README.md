@@ -178,7 +178,9 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 - Linux only.
 - Requires `libsystemd.so.0` and permission to read the selected journal.
-  Startup fails clearly when journal files are present but unreadable.
+  Startup fails clearly when journal files are present but fully unreadable;
+  failing closed on partially readable journal trees is planned for production
+  hardening.
 - Must run in a one-core source pipeline. Use `receiver:journald` followed by a
   topic exporter to fan out to multicore downstream processing.
 - Run one active journald receiver per host journal source
@@ -196,6 +198,11 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 - Only one receiver in a process can target the same concrete journal source.
 - Duplicate journald fields are emitted as repeated same-key attributes in the
   first implementation. Array coalescing is planned as a follow-up.
+- With `start_at: end`, a process crash before the first successful checkpoint
+  can skip entries already read from journald but not yet durably committed.
+- Extraction limits are per entry and per field. There is no aggregate batch
+  byte cap in v1, so tune `batch.max_records` and extraction limits for the
+  expected host log volume and memory budget.
 - Cross-process source locking is not implemented in v1; run one owner for a
   checkpoint identity (`source_id` and checkpoint directory) to avoid cursor
   races.

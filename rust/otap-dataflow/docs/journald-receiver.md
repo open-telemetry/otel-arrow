@@ -307,6 +307,14 @@ If the committed cursor is invalid, stale, or vacuumed, v1 fails closed and
 does not silently fall back to tail or head. The operator must remove the
 checkpoint or choose an explicit recovery action.
 
+Before the first successful checkpoint exists, `start_at: end` has no durable
+resume anchor. If the process crashes after entries are read from journald but
+before the first cursor commit succeeds, restart applies `start_at` again and
+may skip those uncommitted entries. While the process stays alive, a Nack before
+the first checkpoint replays the retained in-flight batch instead of reopening
+at the live tail. A production follow-up should add an initial durable anchor or
+document an operator policy for first-start loss tolerance.
+
 Each emitted batch carries:
 
 - `batch_id`
@@ -559,6 +567,7 @@ Initial severity mapping:
 | `libsystemd.so.0` load failure | startup failure; this receiver has no `journalctl` fallback |
 | `sd_journal_open` / permission failure | startup failure; not treated as an empty stream |
 | invalid `journal.root_path` / no visible journal directory | startup failure; operator must fix the mount or config |
+| partially readable journal tree | v1 may start if at least one journal file is readable; production hardening should fail closed or emit a mandatory warning/metric |
 | checkpoint missing | apply `start_at` |
 | checkpoint corrupt / unknown version | fail closed; operator must remove or migrate it |
 | cursor vacuumed / stale | fail closed; operator must remove the checkpoint or choose an explicit recovery action |
@@ -610,6 +619,11 @@ Deferred follow-ups include:
 - introducing a `JournalSource` trait and `FakeJournalSource` test boundary
 - expanding receiver self-telemetry for stale cursors, permission warnings,
   worker restarts, last-entry timestamp, and backpressure duration
+- failing closed or warning clearly on partially readable journal trees
+- an initial durable resume anchor for `start_at: end` before the first
+  checkpoint commit
+- aggregate batch byte limits in addition to per-entry and per-field extraction
+  limits
 - named systemd journal namespace support
 - arbitrary journald match expressions
 - NUMA-aware placement
