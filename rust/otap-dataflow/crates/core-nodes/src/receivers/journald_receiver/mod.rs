@@ -1044,7 +1044,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                             }
                             drop(event_rx);
                             join_worker(worker, &effect_handler).await?;
-                            return Err(terminal_error(&effect_handler, err));
+                            return Err(terminal_error(&effect_handler, err.to_string()));
                         }
                         Some(WorkerEvent::Stopped) | None => {
                             drop(event_rx);
