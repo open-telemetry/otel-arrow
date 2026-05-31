@@ -266,10 +266,12 @@ downstream backpressure, the async task races the blocked send against lifecycle
 control messages and the worker polls its command channel while holding a full
 handoff batch.
 
-During drain, a batch that has already been read from journald but is queued or
-currently being sent downstream is not abandoned. Drain first stops additional
-worker reads, then lets the current batch reach a terminal Ack/Commit,
-Nack/Rewind, or configured fail outcome before the receiver reports drained.
+During drain, the worker stops additional reads and attempts to let any batch
+that has already been read from journald reach a terminal Ack/Commit,
+Nack/Rewind, or configured fail outcome before the receiver reports drained. If
+the drain deadline expires first, the receiver shuts down without advancing the
+checkpoint for uncommitted work; those entries may replay on restart under the
+at-least-once delivery model.
 
 ## Ack and Checkpoint Model
 

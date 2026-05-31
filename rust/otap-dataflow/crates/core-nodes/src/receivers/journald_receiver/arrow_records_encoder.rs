@@ -68,8 +68,8 @@ impl JournaldArrowRecordsBuilder {
     }
 
     pub(crate) fn append(&mut self, entry: &JournalEntry) {
-        self.logs
-            .append_time_unix_nano(entry.realtime_unix_nano as i64);
+        let time_unix_nano = i64::try_from(entry.realtime_unix_nano).unwrap_or(i64::MAX);
+        self.logs.append_time_unix_nano(time_unix_nano);
         self.logs.append_severity_number(
             entry
                 .priority()

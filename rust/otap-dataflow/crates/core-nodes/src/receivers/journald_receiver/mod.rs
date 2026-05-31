@@ -752,6 +752,14 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                     }
                 }, if drain_deadline.is_some() => {
                     let deadline = drain_deadline.expect("drain deadline must be set");
+                    if !pending.is_empty() {
+                        otel_warn!(
+                            "journald_receiver.drain_timeout",
+                            source_id = config.source_id.as_str(),
+                            pending_batches = pending.len() as u64,
+                            message = "Drain deadline reached with batches still awaiting Ack/Nack; shutting down without advancing their checkpoints"
+                        );
+                    }
                     let _ =
                         send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
                     drop(event_rx);
@@ -898,6 +906,12 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                                 }
                                             }, if drain_deadline.is_some() => {
                                                 let deadline = drain_deadline.expect("drain deadline must be set");
+                                                otel_warn!(
+                                                    "journald_receiver.drain_timeout",
+                                                    source_id = config.source_id.as_str(),
+                                                    batch_id = batch_id,
+                                                    message = "Drain deadline reached while blocked sending a batch downstream; shutting down without advancing the checkpoint"
+                                                );
                                                 let _ =
                                                     send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
                                                 drop(event_rx);
