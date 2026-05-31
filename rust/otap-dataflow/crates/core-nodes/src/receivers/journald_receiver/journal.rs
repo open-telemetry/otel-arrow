@@ -605,6 +605,11 @@ mod imp {
             std::fs::create_dir_all(log_dir.join("journal")).expect("journal dir");
             std::fs::set_permissions(&log_dir, std::fs::Permissions::from_mode(0o000))
                 .expect("chmod log dir");
+            if std::fs::metadata(log_dir.join("journal")).is_ok() {
+                std::fs::set_permissions(&log_dir, std::fs::Permissions::from_mode(0o755))
+                    .expect("restore log dir permissions");
+                return;
+            }
 
             let result = preflight_journal_access(root);
 
