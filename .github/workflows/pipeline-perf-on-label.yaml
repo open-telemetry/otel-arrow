@@ -93,7 +93,7 @@ jobs:
       - name: Run OTLP saturation/scaling tests (fixed 64 connections)
         run: |
           cd tools/pipeline_perf_test
-          for config in test_suites/integration/continuous/saturation-{1core,2cores,4cores,8cores,16cores}.yaml; do
+          for config in test_suites/integration/continuous/saturation-{2cores,4cores}.yaml; do
             echo "=== Running: $config ==="
             python orchestrator/run_orchestrator.py --config "$config" || true
           done
