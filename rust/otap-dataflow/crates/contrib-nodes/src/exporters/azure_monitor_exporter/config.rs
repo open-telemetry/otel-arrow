@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::Error;
+use reqwest::header::HeaderValue;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -184,6 +185,11 @@ pub struct ApiConfig {
     /// - 9: maximum compression (highest CPU, marginal size reduction over 6)
     #[serde(default = "default_gzip_compression_level")]
     pub gzip_compression_level: u32,
+
+    /// Custom User-Agent string to send with HTTP requests (optional).
+    /// When set, this value is used as the User-Agent header on all outgoing requests
+    /// (including heartbeat). When not set, the default reqwest User-Agent is used.
+    pub user_agent: Option<String>,
 }
 
 /// Schema mapping configuration
@@ -233,6 +239,19 @@ impl Config {
             return Err(Error::Config(
                 "Invalid configuration: gzip_compression_level must be 0-9".to_string(),
             ));
+        }
+
+        if let Some(ua) = &self.api.user_agent {
+            if ua.is_empty() {
+                return Err(Error::Config(
+                    "Invalid configuration: user_agent must be non-empty when set".to_string(),
+                ));
+            }
+            if HeaderValue::from_str(ua).is_err() {
+                return Err(Error::Config(
+                    "Invalid configuration: user_agent contains characters that cannot be represented as an HTTP header value".to_string(),
+                ));
+            }
         }
 
         if self.heartbeat.enabled && self.heartbeat.frequency.is_zero() {
@@ -312,6 +331,7 @@ mod tests {
             schema: SchemaConfig::default(),
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
+            user_agent: None,
         }
     }
 
@@ -660,6 +680,52 @@ mod tests {
         assert_eq!(
             result.unwrap_err().to_string(),
             "Configuration error: Invalid configuration: gzip_compression_level must be 0-9"
+        );
+    }
+
+    #[test]
+    fn test_user_agent_valid() {
+        let config = Config {
+            api: ApiConfig {
+                user_agent: Some("my-app/1.0".to_string()),
+                ..test_api_config()
+            },
+            ..test_config()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_user_agent_empty_rejected() {
+        let config = Config {
+            api: ApiConfig {
+                user_agent: Some("".to_string()),
+                ..test_api_config()
+            },
+            ..test_config()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Configuration error: Invalid configuration: user_agent must be non-empty when set"
+        );
+    }
+
+    #[test]
+    fn test_user_agent_invalid_header_rejected() {
+        let config = Config {
+            api: ApiConfig {
+                user_agent: Some("bad\nvalue".to_string()),
+                ..test_api_config()
+            },
+            ..test_config()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Configuration error: Invalid configuration: user_agent contains characters that cannot be represented as an HTTP header value"
         );
     }
 

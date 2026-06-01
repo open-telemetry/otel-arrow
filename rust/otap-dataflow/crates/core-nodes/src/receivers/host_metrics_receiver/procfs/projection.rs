@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::COUNTER_KEY_SEPARATOR;
 use super::readings::{
-    CpuInfo, CpuTimes, DiskStats, FilesystemStats, HugepageStats, MemoryStats, NetworkStats,
-    PagingStats, ProcessStats, SwapStats, frequency_hz_i64, saturating_i64,
+    CpuInfo, CpuTimes, DiskStats, FilesystemStats, HugepageStats, LoadAverage, MemoryStats,
+    NetworkStats, PagingStats, ProcessStats, SwapStats, frequency_hz_i64, saturating_i64,
 };
 
 /// Result of one host metrics scrape.
@@ -31,6 +31,7 @@ pub(crate) struct HostSnapshot {
     pub(super) cpu: Option<CpuTimes>,
     pub(super) cpu_utilization: Option<CpuTimes>,
     pub(super) cpuinfo: CpuInfo,
+    pub(super) load: Option<LoadAverage>,
     pub(super) memory: Option<MemoryStats>,
     pub(super) uptime_seconds: Option<f64>,
     pub(super) paging: Option<PagingStats>,
@@ -49,6 +50,7 @@ impl HostSnapshot {
             || self.cpuinfo.logical_count != 0
             || self.cpuinfo.physical_count != 0
             || !self.cpuinfo.frequencies_hz.is_empty()
+            || self.load.is_some()
             || self.memory.is_some()
             || self.uptime_seconds.is_some()
             || self.paging.is_some()
@@ -143,6 +145,14 @@ pub(super) fn project_snapshot(snap: &HostSnapshot, b: &mut HostMetricsArrowBuil
                 w.int(attr::CPU_LOGICAL_NUMBER, logical);
             });
         }
+    }
+    if let Some(load) = snap.load {
+        let m = b.begin_gauge_f64(metric::CPU_LOAD_AVERAGE_1M, "{thread}");
+        b.append_f64_gauge_dp(m, now, load.one_minute, |_| {});
+        let m = b.begin_gauge_f64(metric::CPU_LOAD_AVERAGE_5M, "{thread}");
+        b.append_f64_gauge_dp(m, now, load.five_minutes, |_| {});
+        let m = b.begin_gauge_f64(metric::CPU_LOAD_AVERAGE_15M, "{thread}");
+        b.append_f64_gauge_dp(m, now, load.fifteen_minutes, |_| {});
     }
 
     // ── Memory ───────────────────────────────────────────────────────────────

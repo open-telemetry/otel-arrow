@@ -27,3 +27,4 @@ components:
   - pkg/otel/arrow
   - pkg/otel/otlp
   - collector/cmd/otelarrowcol
+  - dependencies
