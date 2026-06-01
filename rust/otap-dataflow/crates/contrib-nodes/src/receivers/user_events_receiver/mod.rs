@@ -114,6 +114,12 @@ struct SubscriptionLimitsConfig {
     max_pending_bytes: Option<usize>,
 }
 
+impl SubscriptionLimitsConfig {
+    fn has_effective_pending_limit(&self) -> bool {
+        self.max_pending_events.is_some() || self.max_pending_bytes.is_some()
+    }
+}
+
 /// Low-level tracepoint session settings.
 ///
 /// These values tune how the receiver opens and services the per-CPU perf ring
@@ -347,6 +353,13 @@ impl UserEventsReceiver {
         let Some(limits) = limits else {
             return Ok(());
         };
+        if !limits.has_effective_pending_limit() {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "user_events receiver subscription `{tracepoint}` `limits` must set at least one pending limit"
+                ),
+            });
+        }
         if limits.max_pending_events == Some(0) {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
                 error: format!(
@@ -1557,6 +1570,25 @@ mod config_tests {
             .expect_err("zero rejected");
         assert!(
             error.to_string().contains("limits.max_pending_bytes"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_subscriptions_rejects_empty_subscription_limits() {
+        let mut subscriptions = vec![SubscriptionConfig {
+            tracepoint: "user_events:example_L5K1".to_owned(),
+            format: FormatConfig::Tracefs,
+            limits: Some(SubscriptionLimitsConfig {
+                max_pending_events: None,
+                max_pending_bytes: None,
+            }),
+        }];
+
+        let error = UserEventsReceiver::normalize_subscriptions(&mut subscriptions)
+            .expect_err("empty limits rejected");
+        assert!(
+            error.to_string().contains("at least one pending limit"),
             "unexpected error: {error}"
         );
     }

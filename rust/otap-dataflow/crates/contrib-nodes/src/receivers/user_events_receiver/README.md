@@ -281,7 +281,9 @@ the retained global `session.max_pending_*` ceilings. This prevents one
 tracepoint from monopolizing receiver-side pending capacity and drain order, but
 does not isolate the shared perf ring or one_collect parse work. With no
 subscription limits configured, the receiver keeps the existing single pending
-queue and FIFO drain behavior.
+queue and FIFO drain behavior. To protect quiet tracepoints from admission drops
+under the shared global ceiling, set limits on the high-volume tracepoints;
+round-robin drain only equalizes drain order.
 
 Late registration is also currently all-or-nothing for multiple subscriptions:
 if any configured tracepoint is missing, the receiver retries opening the

@@ -368,16 +368,23 @@ impl OneCollectUserEventsSession {
     }
 }
 
+impl UserEventsSubscriptionLimits {
+    fn has_effective_pending_limit(self) -> bool {
+        self.max_pending_events.is_some() || self.max_pending_bytes.is_some()
+    }
+}
+
 impl PendingQueues {
     fn new(
         subscriptions: &[UserEventsSubscription],
         max_pending_events: usize,
         max_pending_bytes: usize,
     ) -> Self {
-        if subscriptions
-            .iter()
-            .all(|subscription| subscription.limits.is_none())
-        {
+        if !subscriptions.iter().any(|subscription| {
+            subscription
+                .limits
+                .is_some_and(UserEventsSubscriptionLimits::has_effective_pending_limit)
+        }) {
             return Self::Shared(SharedPending {
                 events: Rc::new(RefCell::new(VecDeque::new())),
                 bytes: Rc::new(Cell::new(0)),
@@ -493,11 +500,8 @@ impl PendingQueues {
                 let Some(subscription) = pending.subscriptions.get_mut(subscription_index) else {
                     return;
                 };
-                {
-                    subscription.pending_bytes =
-                        subscription.pending_bytes.saturating_add(event_len);
-                    subscription.events.push_back(event);
-                }
+                subscription.pending_bytes = subscription.pending_bytes.saturating_add(event_len);
+                subscription.events.push_back(event);
                 pending.total_pending_events = pending.total_pending_events.saturating_add(1);
                 pending.total_pending_bytes = pending.total_pending_bytes.saturating_add(event_len);
             }
@@ -671,13 +675,14 @@ fn pop_next_governed_event(
             continue;
         }
 
-        let Some(event) = ({
+        let event = {
             let subscription = &mut pending.subscriptions[subscription_index];
-            let event = subscription.events.pop_front();
+            let event = subscription
+                .events
+                .pop_front()
+                .expect("front() returned Some");
             subscription.pending_bytes = subscription.pending_bytes.saturating_sub(front_len);
             event
-        }) else {
-            continue;
         };
         pending.total_pending_events = pending.total_pending_events.saturating_sub(1);
         pending.total_pending_bytes = pending.total_pending_bytes.saturating_sub(front_len);
@@ -793,6 +798,44 @@ mod tests {
     #[test]
     fn pending_rejects_byte_cap() {
         assert!(!pending_accepts_event(3, 100, 29, 4, 128));
+    }
+
+    #[test]
+    fn pending_uses_shared_mode_without_effective_limits() {
+        let subscriptions = vec![
+            test_subscription("user_events:first", None),
+            test_subscription(
+                "user_events:second",
+                Some(UserEventsSubscriptionLimits {
+                    max_pending_events: None,
+                    max_pending_bytes: None,
+                }),
+            ),
+        ];
+
+        assert!(matches!(
+            PendingQueues::new(&subscriptions, 10, 1024),
+            PendingQueues::Shared(_)
+        ));
+    }
+
+    #[test]
+    fn pending_uses_governed_mode_with_any_effective_limit() {
+        let subscriptions = vec![
+            test_subscription("user_events:first", None),
+            test_subscription(
+                "user_events:second",
+                Some(UserEventsSubscriptionLimits {
+                    max_pending_events: Some(1),
+                    max_pending_bytes: None,
+                }),
+            ),
+        ];
+
+        assert!(matches!(
+            PendingQueues::new(&subscriptions, 10, 1024),
+            PendingQueues::Governed(_)
+        ));
     }
 
     #[test]
