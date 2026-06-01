@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780281571585,
+  "lastUpdate": 1780342144848,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -1900,6 +1900,82 @@ window.BENCHMARK_DATA = {
             "value": 40.13,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=40.5 MiB, error=0.9%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cijo Thomas",
+            "username": "cijothomas",
+            "email": "cijo.thomas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "43bb12cc2b86b6bbbdfbfd48431609a186a4b52b",
+          "message": "Add OTAP-ATTR-OTAP saturation scaling tests (1,2,4,8 cores) (#3145)\n\n## Summary\n\nAdd OTAP saturation/scaling tests to measure OTAP throughput scaling\nacross core counts, matching the existing OTLP scaling tests.\n\n**Config:** OTAP receiver → attribute rename processor → OTAP exporter,\nzstd compression, batch size 512, 1KB synthetic logs.\n\n**Core layouts (NUMA-aware):**\n| Cores | SUT | Loadgen | Backend |\n|-------|-----|---------|---------|\n| 1 | 0 (1) | 32-41 (10) | 42-43 (2) |\n| 2 | 0-1 (2) | 32-51 (20) | 52-55 (4) |\n| 4 | 0-3 (4) | 32-63,96-119 (56) | 120-127 (8) |\n| 8 | 0-7 (8) | 32-63,96-127 (64) | 64-79 (16) |\n\n## Results (3 runs, highly consistent ±2%)\n\n| Cores | Throughput | SUT CPU | LG CPU (allocated) | BE CPU (allocated)\n| Scaling |\n|-------|-----------|---------|-------|-------|---------|\n| 1 | **2.47M** logs/sec | 100% | 10.0/10 ✅ | 0.63/2 | 100% |\n| 2 | **4.82M** logs/sec | 100% | 20.0/20 ✅ | 0.71/4 | 97% |\n| 4 | **9.04M** logs/sec | 100% ✅ | 56.0/56 ✅ | 2.35/8 | 92% |\n| 8 | **14.1M** logs/sec | 92% ⚠️ | 64.0/64 ⚠️ | 2.87/16 | 72% |\n\n### Analysis\n- **1-4 cores: fully saturated** — near-linear scaling (92-100%)\n- **8 cores: loadgen bottleneck** — used all 64 allocated cores, SUT\nonly at 92%. True throughput is higher.\n- **Backend is never the bottleneck** — peaks at ~3 cores out of 16\nallocated\n- **Per-core throughput: ~2.4-2.5M logs/sec** (vs OTLP ~120K — **~20x\nfaster**)\n\n### 8-core loadgen limitation\n\nThe 8-core SUT cannot be fully saturated due to a NUMA topology\nconstraint:\n- **CI machine:** 2-socket Intel Xeon 8358, 2 NUMA nodes × 64 logical\ncores (32 physical + 32 HT)\n- **SUT on NUMA0** (cores 0-7), **Loadgen on NUMA1** (cores 32-63,\n96-127 = 64 cores)\n- Placing loadgen on the same NUMA node as SUT causes significant\nthroughput reduction (tested: 14M → 8.7M)\n- 64 cores is the maximum loadgen allocation without cross-NUMA\ncontention\n- Each loadgen core produces ~220K logs/sec → 64 × 220K ≈ 14M,\ninsufficient for 8 × 2.5M = 20M theoretical max\n\n### Comparison with OTLP scaling (same test)\n| Cores | OTLP | OTAP | Speedup |\n|-------|------|------|---------|\n| 1 | 121K | 2.47M | 20.4x |\n| 2 | 264K | 4.82M | 18.3x |\n| 4 | 567K | 9.04M | 15.9x |\n| 8 | 1.03M | 14.1M | 13.7x |",
+          "timestamp": "2026-06-01T18:19:04Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/43bb12cc2b86b6bbbdfbfd48431609a186a4b52b"
+        },
+        "date": 1780342144162,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 14.83,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.81,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9985,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 15.71,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=15.6 MiB, error=0.5%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 16.64,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=16.4 MiB, error=1.2%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 17.7,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.1 MiB, error=2.0%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 20.97,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=21.3 MiB, error=1.5%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 28.36,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=27.8 MiB, error=2.1%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 40.48,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=40.7 MiB, error=0.5%"
           }
         ]
       }
