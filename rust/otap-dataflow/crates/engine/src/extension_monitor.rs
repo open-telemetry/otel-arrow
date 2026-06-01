@@ -896,4 +896,129 @@ mod tests {
             "call past the interval must dispatch again"
         );
     }
+
+    /// The `state` gauge's integer encoding is part of the public
+    /// telemetry contract. Downstream dashboards and alerts rely on
+    /// these specific values — a refactor must not silently re-order
+    /// the discriminants.
+    #[test]
+    fn state_gauge_integer_encoding_is_stable() {
+        assert_eq!(ExtensionRuntimeState::Pending as u64, 0);
+        assert_eq!(ExtensionRuntimeState::Spawned as u64, 1);
+        assert_eq!(ExtensionRuntimeState::ShutdownSent as u64, 2);
+        assert_eq!(ExtensionRuntimeState::CompletedOk as u64, 3);
+        assert_eq!(ExtensionRuntimeState::Failed as u64, 4);
+        assert_eq!(ExtensionRuntimeState::TimedOut as u64, 5);
+    }
+
+    /// When the extension's control channel is full,
+    /// `maybe_collect_telemetry` must log a warning and move on without
+    /// flipping the entry's state or bumping any lifecycle counter.
+    #[tokio::test(flavor = "current_thread")]
+    async fn collect_telemetry_try_send_failure_does_not_skew_state_or_counters() {
+        let (ctx, _registry) = crate::testing::test_extension_ctx();
+        let mut monitor = ExtensionMetricsMonitor::new(
+            ctx.clone(),
+            Duration::from_millis(50),
+            Duration::from_millis(50),
+        );
+
+        // Capacity-1 control channel that we pre-fill so the
+        // CollectTelemetry try_send hits "channel full".
+        let (tx, rx) = mpsc::Channel::new(1);
+        let sender = ExtensionControlSender {
+            name: "ext1".into(),
+            sender: Sender::new_local_mpsc_sender(tx),
+        };
+        // Pre-fill so the next try_send fails.
+        sender
+            .sender
+            .try_send(ExtensionControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "filler".into(),
+            })
+            .expect("pre-fill should succeed");
+
+        let ent = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
+        monitor.register(&ctx, ExtensionKey::local("ext1"), ent, Some(sender));
+        monitor.apply_event(ExtensionLifecycleEvent::Spawned {
+            key: ExtensionKey::local("ext1"),
+        });
+
+        let spawned_before = monitor.entries[0].lifecycle_metrics.spawned.get();
+        let completed_ok_before = monitor.entries[0].lifecycle_metrics.completed_ok.get();
+        let completed_err_before = monitor.entries[0].lifecycle_metrics.completed_error.get();
+        let shutdown_sent_before = monitor.entries[0].lifecycle_metrics.shutdown_sent.get();
+
+        let (rep_tx, _rep_rx) = flume::bounded(1);
+        let reporter = MetricsReporter::new(rep_tx);
+        monitor.maybe_collect_telemetry(Instant::now(), &reporter);
+
+        // No state flip, no counter movement — failure is observability-only.
+        assert_eq!(
+            monitor.entries[0].state,
+            ExtensionRuntimeState::Spawned,
+            "try_send failure must not flip the entry state"
+        );
+        assert_eq!(
+            monitor.entries[0].lifecycle_metrics.spawned.get(),
+            spawned_before
+        );
+        assert_eq!(
+            monitor.entries[0].lifecycle_metrics.completed_ok.get(),
+            completed_ok_before
+        );
+        assert_eq!(
+            monitor.entries[0].lifecycle_metrics.completed_error.get(),
+            completed_err_before
+        );
+        assert_eq!(
+            monitor.entries[0].lifecycle_metrics.shutdown_sent.get(),
+            shutdown_sent_before
+        );
+
+        // Drain the pre-fill so the rx is not leaked.
+        let _ = rx.try_recv();
+    }
+
+    /// The `state` gauge must remain asserted across many consecutive
+    /// ticks for long-running extensions — no transient zeros between
+    /// ticks even though gauges are reset semantics on the framework
+    /// side.
+    #[tokio::test(flavor = "current_thread")]
+    async fn state_gauge_stays_asserted_across_multiple_ticks() {
+        let (ctx, _registry) = crate::testing::test_extension_ctx();
+        let mut monitor = ExtensionMetricsMonitor::new(
+            ctx.clone(),
+            Duration::from_millis(50),
+            Duration::from_secs(60), // wide so CollectTelemetry stays gated
+        );
+        let ent = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
+        let key = ExtensionKey::local("ext1");
+        monitor.register(&ctx, key.clone(), ent, None);
+        monitor.apply_event(ExtensionLifecycleEvent::Spawned { key });
+
+        let (rep_tx, _rep_rx) = flume::bounded(64);
+        let mut reporter = MetricsReporter::new(rep_tx);
+
+        let mut now = Instant::now();
+        for cycle in 0..5 {
+            // Simulate the framework clearing the gauge between ticks.
+            monitor.entries[0].lifecycle_metrics.state.reset();
+
+            monitor.tick(now, &mut reporter);
+
+            assert_eq!(
+                monitor.entries[0].lifecycle_metrics.state.get(),
+                ExtensionRuntimeState::Spawned as u64,
+                "cycle {cycle}: state gauge must be re-asserted on every tick"
+            );
+            assert_eq!(
+                monitor.entries[0].state,
+                ExtensionRuntimeState::Spawned,
+                "cycle {cycle}: cached entry state must not drift"
+            );
+            now += Duration::from_millis(50);
+        }
+    }
 }

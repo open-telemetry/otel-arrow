@@ -1274,3 +1274,468 @@ fn extension_attribute_set_carries_pipeline_scope_from_pipeline_context() {
         Some("ext1")
     );
 }
+
+// An extension that panics inside its `CollectTelemetry` handler. Used to
+// verify the host treats it as a terminal `JoinPanic` without leaking into
+// neighbouring extensions' snapshots.
+struct PanicOnCollectExt;
+
+#[async_trait(?Send)]
+impl crate::local::extension::Extension for PanicOnCollectExt {
+    async fn start(
+        self: std::rc::Rc<Self>,
+        mut ctrl: local_ext::ControlChannel,
+        _eh: EffectHandler,
+    ) -> Result<TerminalState, Error> {
+        loop {
+            match ctrl.recv().await? {
+                ExtensionControlMsg::CollectTelemetry { .. } => {
+                    panic!("simulated panic in CollectTelemetry handler");
+                }
+                ExtensionControlMsg::Shutdown { .. } => break,
+                _ => {}
+            }
+        }
+        Ok(TerminalState::default())
+    }
+}
+
+impl Clone for PanicOnCollectExt {
+    fn clone(&self) -> Self {
+        PanicOnCollectExt
+    }
+}
+
+#[test]
+fn two_pipelines_publish_isolated_internal_metrics_through_shared_reporter() {
+    // Live regression: two distinct pipelines (different ids, different
+    // logical cores) each host an instance of the same extension type
+    // and report through ONE shared `MetricsReporter`. Isolation must
+    // be enforced by per-entity `MetricSetKey`s with no value bleed.
+    use crate::extension::wrapper::ExtensionVariant;
+    use otap_df_telemetry::reporter::MetricsReporter;
+
+    let (rt, ls) = crate::testing::setup_test_runtime();
+    rt.block_on(ls.run_until(async {
+        let registry = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller = crate::context::ControllerContext::new(registry.clone());
+
+        // Two pipelines, distinct ids, distinct logical cores. These
+        // are the same coordinates a real deployment would supply when
+        // pinning pipelines to different cores.
+        let pipe_a = controller.pipeline_context_with(
+            "grp".into(),
+            "pipeline_a".into(),
+            0,
+            2,
+            0,
+        );
+        let pipe_b = controller.pipeline_context_with(
+            "grp".into(),
+            "pipeline_b".into(),
+            1,
+            2,
+            1,
+        );
+
+        let ext_ctx_a = pipe_a.extension_context();
+        let ext_ctx_b = pipe_b.extension_context();
+
+        let entity_a = ext_ctx_a
+            .register_extension_entity("same_ext".into(), ExtensionVariant::Local);
+        let entity_b = ext_ctx_b
+            .register_extension_entity("same_ext".into(), ExtensionVariant::Local);
+        assert_ne!(
+            entity_a, entity_b,
+            "two pipelines on different cores must mint distinct entity keys"
+        );
+
+        let metrics_a = ext_ctx_a
+            .register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity_a);
+        let metrics_b = ext_ctx_b
+            .register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity_b);
+        let key_a = metrics_a.metric_set_key();
+        let key_b = metrics_b.metric_set_key();
+        assert_ne!(key_a, key_b);
+
+        let ext_a = std::rc::Rc::new(TelemetryReportingLocalExt {
+            metrics: std::cell::RefCell::new(metrics_a),
+            started: std::cell::Cell::new(false),
+        });
+        let ext_b = std::rc::Rc::new(TelemetryReportingLocalExt {
+            metrics: std::cell::RefCell::new(metrics_b),
+            started: std::cell::Cell::new(false),
+        });
+
+        let (n_a, u_a, c_a) = ext_config("same_ext");
+        let w_a = ExtensionWrapper::builder(n_a, u_a, &c_a)
+            .active()
+            .local(ext_a)
+            .build()
+            .unwrap()
+            .take_local()
+            .unwrap();
+        let sender_a = w_a.extension_control_sender().unwrap();
+
+        let (n_b, u_b, c_b) = ext_config("same_ext");
+        let w_b = ExtensionWrapper::builder(n_b, u_b, &c_b)
+            .active()
+            .local(ext_b)
+            .build()
+            .unwrap()
+            .take_local()
+            .unwrap();
+        let sender_b = w_b.extension_control_sender().unwrap();
+
+        let h_a = tokio::task::spawn_local(async move { w_a.start(test_metrics_reporter()).await });
+        let h_b = tokio::task::spawn_local(async move { w_b.start(test_metrics_reporter()).await });
+
+        let (snapshot_rx, shared_reporter) = MetricsReporter::create_new_and_receiver(8);
+
+        // 3 invocations to pipeline_a's extension, 1 to pipeline_b's.
+        for _ in 0..3 {
+            sender_a
+                .send(ExtensionControlMsg::CollectTelemetry {
+                    metrics_reporter: shared_reporter.clone(),
+                })
+                .await
+                .unwrap();
+        }
+        sender_b
+            .send(ExtensionControlMsg::CollectTelemetry {
+                metrics_reporter: shared_reporter.clone(),
+            })
+            .await
+            .unwrap();
+
+        let mut sum_by_key: std::collections::HashMap<_, u64> =
+            std::collections::HashMap::new();
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while (!sum_by_key.contains_key(&key_a) || !sum_by_key.contains_key(&key_b))
+            && Instant::now() < deadline
+        {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                snapshot_rx.recv_async(),
+            )
+            .await
+            {
+                Ok(Ok(snap)) => {
+                    let k = snap.key();
+                    let v: u64 = snap
+                        .get_metrics()
+                        .iter()
+                        .map(|m| match m {
+                            otap_df_telemetry::metrics::MetricValue::U64(n) => *n,
+                            _ => 0,
+                        })
+                        .sum();
+                    *sum_by_key.entry(k).or_insert(0) += v;
+                }
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+
+        assert_eq!(
+            *sum_by_key.get(&key_a).unwrap_or(&0),
+            3,
+            "pipeline_a should report exactly its 3 invocations"
+        );
+        assert_eq!(
+            *sum_by_key.get(&key_b).unwrap_or(&0),
+            1,
+            "pipeline_b should report exactly its 1 invocation"
+        );
+        assert_eq!(
+            sum_by_key.len(),
+            2,
+            "only the two registered metric-set keys should appear, got: {sum_by_key:?}"
+        );
+
+        sender_a
+            .send(ExtensionControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "done".into(),
+            })
+            .await
+            .unwrap();
+        sender_b
+            .send(ExtensionControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "done".into(),
+            })
+            .await
+            .unwrap();
+        assert!(h_a.await.unwrap().is_ok());
+        assert!(h_b.await.unwrap().is_ok());
+    }));
+}
+
+#[test]
+fn panicking_collect_telemetry_handler_does_not_contaminate_neighbour() {
+    // One extension panics while handling `CollectTelemetry`; the
+    // neighbour must continue publishing its own snapshots through the
+    // shared reporter without skew.
+    use crate::extension::wrapper::ExtensionVariant;
+    use otap_df_telemetry::reporter::MetricsReporter;
+
+    let (rt, ls) = crate::testing::setup_test_runtime();
+    rt.block_on(ls.run_until(async {
+        let (ctx, _registry) = crate::testing::test_extension_ctx();
+
+        let entity_good = ctx
+            .register_extension_entity("good".into(), ExtensionVariant::Local);
+        let metrics_good = ctx
+            .register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity_good);
+        let key_good = metrics_good.metric_set_key();
+
+        let ext_good = std::rc::Rc::new(TelemetryReportingLocalExt {
+            metrics: std::cell::RefCell::new(metrics_good),
+            started: std::cell::Cell::new(false),
+        });
+        let ext_bad = std::rc::Rc::new(PanicOnCollectExt);
+
+        let (n_g, u_g, c_g) = ext_config("good");
+        let w_good = ExtensionWrapper::builder(n_g, u_g, &c_g)
+            .active()
+            .local(ext_good)
+            .build()
+            .unwrap()
+            .take_local()
+            .unwrap();
+        let sender_good = w_good.extension_control_sender().unwrap();
+
+        let (n_b, u_b, c_b) = ext_config("bad");
+        let w_bad = ExtensionWrapper::builder(n_b, u_b, &c_b)
+            .active()
+            .local(ext_bad)
+            .build()
+            .unwrap()
+            .take_local()
+            .unwrap();
+        let sender_bad = w_bad.extension_control_sender().unwrap();
+
+        let h_good = tokio::task::spawn_local(async move {
+            w_good.start(test_metrics_reporter()).await
+        });
+
+        // Silence panic backtrace from the bad extension while we drive it.
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let h_bad = tokio::task::spawn_local(async move {
+            w_bad.start(test_metrics_reporter()).await
+        });
+
+        let (snapshot_rx, shared_reporter) = MetricsReporter::create_new_and_receiver(8);
+
+        // Push the bad one first, then drive the good one twice.
+        sender_bad
+            .send(ExtensionControlMsg::CollectTelemetry {
+                metrics_reporter: shared_reporter.clone(),
+            })
+            .await
+            .unwrap();
+        sender_good
+            .send(ExtensionControlMsg::CollectTelemetry {
+                metrics_reporter: shared_reporter.clone(),
+            })
+            .await
+            .unwrap();
+        sender_good
+            .send(ExtensionControlMsg::CollectTelemetry {
+                metrics_reporter: shared_reporter.clone(),
+            })
+            .await
+            .unwrap();
+
+        // The bad extension's JoinHandle resolves with a panic-style JoinError.
+        let bad_result = h_bad.await;
+        std::panic::set_hook(prev_hook);
+        let bad_panicked = bad_result
+            .as_ref()
+            .err()
+            .map(|e| e.is_panic())
+            .unwrap_or(false);
+        assert!(
+            bad_panicked,
+            "bad extension should surface as JoinError(is_panic=true)"
+        );
+
+        // Collect snapshots until the good extension has reported its 2 invocations.
+        let mut good_total = 0u64;
+        let mut seen_keys = std::collections::HashSet::new();
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while good_total < 2 && Instant::now() < deadline {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                snapshot_rx.recv_async(),
+            )
+            .await
+            {
+                Ok(Ok(snap)) => {
+                    let _ = seen_keys.insert(snap.key());
+                    if snap.key() == key_good {
+                        good_total += snap
+                            .get_metrics()
+                            .iter()
+                            .map(|m| match m {
+                                otap_df_telemetry::metrics::MetricValue::U64(n) => *n,
+                                _ => 0,
+                            })
+                            .sum::<u64>();
+                    }
+                }
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+
+        assert_eq!(
+            good_total, 2,
+            "good extension must publish exactly its 2 invocations despite the neighbour's panic"
+        );
+        // The panicker registered no metric set, so it must not appear in snapshots.
+        assert_eq!(
+            seen_keys.len(),
+            1,
+            "only the good extension's metric set should appear; saw {:?}",
+            seen_keys
+        );
+
+        // The good extension still shuts down cleanly.
+        sender_good
+            .send(ExtensionControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "done".into(),
+            })
+            .await
+            .unwrap();
+        assert!(h_good.await.unwrap().is_ok());
+    }));
+}
+
+#[test]
+fn snapshot_consumed_after_extension_drop_retains_identity() {
+    // An extension publishes a snapshot, then is fully torn down
+    // (entity unregistered via Drop). The in-flight snapshot must
+    // still be consumable with its key/values intact — snapshots are
+    // value types, not references into the registry.
+    use crate::extension::wrapper::ExtensionVariant;
+    use otap_df_telemetry::reporter::MetricsReporter;
+
+    let (rt, ls) = crate::testing::setup_test_runtime();
+    rt.block_on(ls.run_until(async {
+        let (ctx, registry) = crate::testing::test_extension_ctx();
+
+        let entity = ctx
+            .register_extension_entity("ephemeral".into(), ExtensionVariant::Local);
+        let metrics =
+            ctx.register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity);
+        let key = metrics.metric_set_key();
+
+        let ext = std::rc::Rc::new(TelemetryReportingLocalExt {
+            metrics: std::cell::RefCell::new(metrics),
+            started: std::cell::Cell::new(false),
+        });
+        let (n, u, c) = ext_config("ephemeral");
+        let w = ExtensionWrapper::builder(n, u, &c)
+            .active()
+            .local(ext)
+            .build()
+            .unwrap()
+            .take_local()
+            .unwrap();
+        let sender = w.extension_control_sender().unwrap();
+        let h = tokio::task::spawn_local(async move { w.start(test_metrics_reporter()).await });
+
+        let (snapshot_rx, ext_reporter) = MetricsReporter::create_new_and_receiver(4);
+        sender
+            .send(ExtensionControlMsg::CollectTelemetry {
+                metrics_reporter: ext_reporter,
+            })
+            .await
+            .unwrap();
+        sender
+            .send(ExtensionControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "done".into(),
+            })
+            .await
+            .unwrap();
+        assert!(h.await.unwrap().is_ok());
+
+        // Tear down the registry's entity ownership too, simulating
+        // the host releasing the extension after shutdown.
+        let _ = registry.unregister_entity(entity);
+
+        // Now consume the snapshot — it must still resolve to the same
+        // key and carry the recorded value.
+        let snap = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            snapshot_rx.recv_async(),
+        )
+        .await
+        .expect("snapshot should still be deliverable after entity unregistration")
+        .expect("snapshot channel closed without delivery");
+
+        assert_eq!(snap.key(), key, "snapshot key must survive extension drop");
+        let total: u64 = snap
+            .get_metrics()
+            .iter()
+            .map(|m| match m {
+                otap_df_telemetry::metrics::MetricValue::U64(n) => *n,
+                _ => 0,
+            })
+            .sum();
+        assert!(
+            total >= 1,
+            "snapshot recorded value must survive extension drop, got: {:?}",
+            snap.get_metrics()
+        );
+    }));
+}
+
+#[test]
+fn wire_telemetry_dual_returns_distinct_keys_and_releases_all_entities_per_cycle() {
+    // `wire_telemetry` on a dual bundle must mint two distinct entity
+    // keys (one per variant). Re-running the wire/drop cycle must
+    // return entity count to baseline each time — guards against
+    // partial-cleanup leaks under repeated registration.
+    let (ctx, registry) = crate::testing::test_extension_ctx();
+    let baseline = registry.entity_count();
+
+    for cycle in 0..3 {
+        let (n, u, c) = ext_config("dual_cycle");
+        let mut bundle = ExtensionWrapper::builder(n, u, &c)
+            .active()
+            .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
+            .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+            .build()
+            .unwrap();
+
+        let mut cm = ChannelMetricsRegistry::default();
+        let keys = bundle.wire_telemetry("dual_cycle".into(), &ctx, &mut cm, true);
+
+        let local_key = keys.local.unwrap_or_else(|| {
+            panic!("cycle {cycle}: dual bundle must assign a local entity key")
+        });
+        let shared_key = keys.shared.unwrap_or_else(|| {
+            panic!("cycle {cycle}: dual bundle must assign a shared entity key")
+        });
+        assert_ne!(
+            local_key, shared_key,
+            "cycle {cycle}: local and shared variants must own distinct entity keys"
+        );
+        assert_eq!(
+            registry.entity_count(),
+            baseline + 4,
+            "cycle {cycle}: dual active bundle should register 2 extension + 2 channel entities"
+        );
+
+        drop(bundle);
+        assert_eq!(
+            registry.entity_count(),
+            baseline,
+            "cycle {cycle}: dropping the wired bundle must release every entity it registered"
+        );
+    }
+}

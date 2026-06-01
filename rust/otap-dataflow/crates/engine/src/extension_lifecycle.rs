@@ -496,11 +496,172 @@ mod tests {
                 Some(crate::extension_monitor::ExtensionRuntimeState::Failed),
                 "panicking extension must surface as Failed in the monitor",
             );
-            assert_eq!(
-                lifecycle.monitor.completed_panic_count(&key),
-                Some(1),
-                "completed_panic counter must increment exactly once",
+        assert_eq!(
+            lifecycle.monitor.completed_panic_count(&key),
+            Some(1),
+            "completed_panic counter must increment exactly once",
+        );
+        }));
+    }
+
+    /// `broadcast_shutdown` is a one-shot latch: a second call must not
+    /// re-enqueue another `Shutdown` for any extension.
+    #[test]
+    fn broadcast_shutdown_is_idempotent_at_lifecycle_level() {
+        use crate::control::ExtensionControlSender;
+        use crate::message::Sender;
+        use otap_df_channel::mpsc;
+
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+
+            let (tx_a, rx_a) = mpsc::Channel::new(8);
+            let (tx_b, rx_b) = mpsc::Channel::new(8);
+            let key_a = ExtensionKey::new("a".into(), ExtensionVariant::Local);
+            let key_b = ExtensionKey::new("b".into(), ExtensionVariant::Local);
+
+            let mut lifecycle = ExtensionLifecycle {
+                futures: FuturesUnordered::new(),
+                task_id_to_key: HashMap::new(),
+                shutdown_senders: vec![
+                    (
+                        key_a.clone(),
+                        ExtensionControlSender {
+                            name: "a".into(),
+                            sender: Sender::new_local_mpsc_sender(tx_a),
+                        },
+                    ),
+                    (
+                        key_b.clone(),
+                        ExtensionControlSender {
+                            name: "b".into(),
+                            sender: Sender::new_local_mpsc_sender(tx_b),
+                        },
+                    ),
+                ],
+                _passive: Vec::new(),
+                shutdown_broadcast_fired: false,
+                shutdown_deadline: None,
+                monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
+                started_rx: tokio::sync::mpsc::unbounded_channel().1,
+            };
+
+            lifecycle.broadcast_shutdown(Some("first")).await;
+            lifecycle.broadcast_shutdown(Some("second")).await;
+
+            let count = |rx: &mpsc::Receiver<ExtensionControlMsg>| {
+                let mut n = 0;
+                while rx.try_recv().is_ok() {
+                    n += 1;
+                }
+                n
+            };
+            assert_eq!(count(&rx_a), 1, "extension a must receive exactly one Shutdown");
+            assert_eq!(count(&rx_b), 1, "extension b must receive exactly one Shutdown");
+            assert!(
+                lifecycle.shutdown_broadcast_fired,
+                "shutdown_broadcast_fired latch must remain set"
             );
+        }));
+    }
+
+    /// Passive extensions never spawn a task and must not consume a
+    /// monitor entry: monitor only tracks the live-task population.
+    #[test]
+    fn passive_extensions_are_not_registered_in_monitor() {
+        use crate::extension::ExtensionWrapper;
+
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+
+            // Build a passive shared wrapper.
+            let passive_cfg = crate::config::ExtensionConfig::new("passive_ext");
+            let user = std::sync::Arc::new(
+                otap_df_config::extension::ExtensionUserConfig::new(
+                    "urn:otap:extension:test".into(),
+                    serde_json::Value::Null,
+                ),
+            );
+            let mut passive_bundle = ExtensionWrapper::builder(
+                "passive_ext".into(),
+                user.clone(),
+                &passive_cfg,
+            )
+            .passive()
+            .cloned()
+            .shared("state".to_string())
+            .build()
+            .unwrap();
+            let passive_w = passive_bundle.take_shared().unwrap();
+            let passive_entity = ext_ctx
+                .register_extension_entity("passive_ext".into(), ExtensionVariant::Shared);
+
+            // Build an active local wrapper.
+            #[derive(Clone)]
+            struct ActiveExt;
+            #[async_trait::async_trait(?Send)]
+            impl crate::local::extension::Extension for ActiveExt {
+                async fn start(
+                    self: std::rc::Rc<Self>,
+                    mut ctrl: crate::local::extension::ControlChannel,
+                    _eh: crate::extension::wrapper::EffectHandler,
+                ) -> Result<crate::terminal_state::TerminalState, Error>
+                {
+                    while let Ok(msg) = ctrl.recv().await {
+                        if matches!(msg, ExtensionControlMsg::Shutdown { .. }) {
+                            break;
+                        }
+                    }
+                    Ok(Default::default())
+                }
+            }
+            let active_cfg = crate::config::ExtensionConfig::new("active_ext");
+            let mut active_bundle = ExtensionWrapper::builder(
+                "active_ext".into(),
+                user,
+                &active_cfg,
+            )
+            .active()
+            .local(std::rc::Rc::new(ActiveExt))
+            .build()
+            .unwrap();
+            let active_w = active_bundle.take_local().unwrap();
+            let active_entity = ext_ctx
+                .register_extension_entity("active_ext".into(), ExtensionVariant::Local);
+
+            let monitor = ExtensionMetricsMonitor::new(
+                ext_ctx.clone(),
+                Duration::from_millis(50),
+                Duration::from_millis(50),
+            );
+
+            let (tx, _rx) = flume::bounded(1);
+            let reporter = MetricsReporter::new(tx);
+            let lifecycle = ExtensionLifecycle::spawn(
+                vec![
+                    (passive_w, passive_entity),
+                    (active_w, active_entity),
+                ],
+                &local_tasks,
+                reporter,
+                &ext_ctx,
+                monitor,
+            );
+
+            let passive_key = ExtensionKey::new("passive_ext".into(), ExtensionVariant::Shared);
+            let active_key = ExtensionKey::new("active_ext".into(), ExtensionVariant::Local);
+            assert!(
+                lifecycle.monitor.state_for(&passive_key).is_none(),
+                "passive extension must not appear in the monitor"
+            );
+            assert!(
+                lifecycle.monitor.state_for(&active_key).is_some(),
+                "active extension must appear in the monitor"
+            );
+
+            drop(lifecycle);
         }));
     }
 }
