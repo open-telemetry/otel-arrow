@@ -169,7 +169,6 @@ function wireFilters(container, compSlug, categories, onChange) {
     const desc = opt.dataset.metaDescription;
     if (!desc) continue;
     opt.addEventListener("mouseenter", (e) => showAxisHoverTooltip(e.clientX, e.clientY, desc));
-    opt.addEventListener("mousemove", (e) => showAxisHoverTooltip(e.clientX, e.clientY, desc));
     opt.addEventListener("mouseleave", hideAxisHoverTooltip);
   }
   const resetBtn = container.querySelector(".chart-filter-reset");
@@ -1152,7 +1151,7 @@ function initControlsBar() {
       cbBtn.classList.toggle("on", next);
       cbBtn.setAttribute("aria-checked", next ? "true" : "false");
       colorblindMode = next;
-      localStorage.setItem("colorblindMode", String(colorblindMode));
+      try { localStorage.setItem("colorblindMode", String(colorblindMode)); } catch { /* private-mode storage may throw */ }
       patternCache.clear();
       rerenderCurrentPage();
     });
