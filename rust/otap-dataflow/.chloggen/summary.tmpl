@@ -1,7 +1,9 @@
 {{- define "entry" -}}
-- `{{ .Component }}`: {{ .Note }} (
-{{- range $i, $issue := .Issues }}
-{{- if $i }}, {{ end -}}
+- `{{ .Component }}`: {{ .Note }}
+  (
+{{- range $i, $issue := .Issues -}}
+{{ if $i }},
+  {{ end -}}
 [#{{ $issue }}](https://github.com/open-telemetry/otel-arrow/issues/{{ $issue }})
 {{- end -}}
 )
