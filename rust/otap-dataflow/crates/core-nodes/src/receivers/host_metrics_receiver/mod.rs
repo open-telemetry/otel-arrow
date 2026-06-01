@@ -73,7 +73,7 @@ use config::validate_config;
 pub use config::{
     Config, CpuFamilyConfig, DeviceFilterConfig, DiskFamilyConfig, FamiliesConfig, FamilyConfig,
     FilesystemFamilyConfig, FilesystemTypeFilterConfig, HostViewConfig, HostViewValidationMode,
-    InterfaceFilterConfig, MatchType, MemoryFamilyConfig, MountPointFilterConfig,
+    InterfaceFilterConfig, LoadFamilyConfig, MatchType, MemoryFamilyConfig, MountPointFilterConfig,
     NetworkFamilyConfig, ProcessMode, ProcessesFamilyConfig,
 };
 #[cfg(target_os = "linux")]
@@ -263,6 +263,7 @@ fn due_family_count(due: ProcfsFamilies) -> u64 {
         + u64::from(due.filesystem)
         + u64::from(due.network)
         + u64::from(due.processes)
+        + u64::from(due.load)
 }
 
 #[cfg(target_os = "linux")]
@@ -286,6 +287,7 @@ enum ScheduledFamilyKind {
     Filesystem,
     Network,
     Processes,
+    Load,
 }
 
 #[cfg(target_os = "linux")]
@@ -304,7 +306,7 @@ struct FamilyScheduler {
 impl FamilyScheduler {
     fn new(config: &RuntimeConfig, now: Instant) -> Self {
         let first_due = now + config.initial_delay;
-        let mut entries = Vec::with_capacity(8);
+        let mut entries = Vec::with_capacity(9);
         push_scheduled(
             &mut entries,
             ScheduledFamilyKind::Cpu,
@@ -356,6 +358,12 @@ impl FamilyScheduler {
             &config.families.processes,
             first_due,
         );
+        push_scheduled(
+            &mut entries,
+            ScheduledFamilyKind::Load,
+            &config.families.load,
+            first_due,
+        );
         Self { entries }
     }
 
@@ -380,6 +388,7 @@ impl FamilyScheduler {
                     ScheduledFamilyKind::Filesystem => due.filesystem = true,
                     ScheduledFamilyKind::Network => due.network = true,
                     ScheduledFamilyKind::Processes => due.processes = true,
+                    ScheduledFamilyKind::Load => due.load = true,
                 }
             }
         }
@@ -398,6 +407,7 @@ impl FamilyScheduler {
                 ScheduledFamilyKind::Filesystem => due.filesystem,
                 ScheduledFamilyKind::Network => due.network,
                 ScheduledFamilyKind::Processes => due.processes,
+                ScheduledFamilyKind::Load => due.load,
             })
             .map(|entry| entry.interval)
             .min()
@@ -502,6 +512,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                 filesystem: config.families.filesystem.enabled,
                 network: config.families.network.enabled,
                 processes: config.families.processes.enabled,
+                load: config.families.load.enabled,
                 cpu_utilization: config.cpu_utilization,
                 memory_limit: config.memory_limit,
                 memory_shared: config.memory_shared,
@@ -786,6 +797,10 @@ mod tests {
                     enabled: false,
                     ..ProcessesFamilyConfig::default()
                 },
+                load: LoadFamilyConfig {
+                    enabled: false,
+                    ..LoadFamilyConfig::default()
+                },
             },
             ..Config::default()
         };
@@ -880,6 +895,23 @@ mod tests {
         assert!(config.families.memory.limit);
         assert!(config.families.memory.shared);
         assert!(config.families.memory.hugepages);
+        validate_config(&config).expect("valid config");
+    }
+
+    #[test]
+    fn accepts_load_opt_in() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "families": {
+                "load": {
+                    "enabled": true,
+                    "interval": "30s"
+                }
+            }
+        }))
+        .expect("valid load config");
+
+        assert!(config.families.load.enabled);
+        assert_eq!(config.families.load.interval, Some(Duration::from_secs(30)));
         validate_config(&config).expect("valid config");
     }
 

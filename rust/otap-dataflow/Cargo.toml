@@ -207,18 +207,18 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "b64667aea6a93b0916a76962cada13a06bdfb40e"}
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "b64667aea6a93b0916a76962cada13a06bdfb40e" }
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "b64667aea6a93b0916a76962cada13a06bdfb40e"}
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "b64667aea6a93b0916a76962cada13a06bdfb40e"}
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "b64667aea6a93b0916a76962cada13a06bdfb40e"}
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0" }
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
 sha1 = { version = "0.11" }
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
-one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "293b7d3b135f862bf3a128a98b2a9715c97f3994" }
+one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "f655a30aec1d15467501ae9f735defb2d6b86581" }
 
 azure_core = {version = "1.0.0", default-features = false }
 azure_identity = {version = "1.0.0", default-features = false }

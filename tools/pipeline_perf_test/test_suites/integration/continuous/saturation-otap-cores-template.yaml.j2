@@ -1,6 +1,7 @@
-# Template for core scaling saturation tests
-# This template is instantiated by the saturation-*cores.yaml wrapper files
-name: Continuous - Saturation - {{num_cores}} Core(s)
+# Template for OTAP core scaling saturation tests
+# This template is instantiated by the saturation-otap-*cores.yaml wrapper files
+# OTAP is significantly faster than OTLP, so loadgen/backend ratios are higher.
+name: Continuous - Saturation OTAP - {{num_cores}} Core(s)
 components:
   load-generator:
     deployment:
@@ -67,17 +68,16 @@ components:
         endpoint: http://localhost:8087/api/v1/telemetry/metrics?format=prometheus&reset=false
 
 tests:
-  - name: OTLP-ATTR-OTLP
+  - name: OTAP-ATTR-OTAP
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
-        result_dir: "continuous_saturation_{{num_cores}}core_otlp"
-        engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otlp.yaml
-        loadgen_exporter_type: otlp
-        backend_receiver_type: otlp
+        result_dir: "continuous_saturation_{{num_cores}}core_otap"
+        engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otap-attr-otap.yaml
+        loadgen_exporter_type: otap
+        backend_receiver_type: otap
         observation_interval: 60
-        signals_per_second: null # Using null means loadgen don't self-cap the rate.
-        max_batch_size: {{max_batch_size}}
+        signals_per_second: null
+        max_batch_size: 512
         data_source: synthetic
         log_body_size_bytes: 1024
-        num_connections: {{num_cores * 4}}
