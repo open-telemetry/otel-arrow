@@ -557,8 +557,16 @@ mod tests {
                 }
                 n
             };
-            assert_eq!(count(&rx_a), 1, "extension a must receive exactly one Shutdown");
-            assert_eq!(count(&rx_b), 1, "extension b must receive exactly one Shutdown");
+            assert_eq!(
+                count(&rx_a),
+                1,
+                "extension a must receive exactly one Shutdown"
+            );
+            assert_eq!(
+                count(&rx_b),
+                1,
+                "extension b must receive exactly one Shutdown"
+            );
             assert!(
                 lifecycle.shutdown_broadcast_fired,
                 "shutdown_broadcast_fired latch must remain set"
@@ -578,25 +586,20 @@ mod tests {
 
             // Build a passive shared wrapper.
             let passive_cfg = crate::config::ExtensionConfig::new("passive_ext");
-            let user = std::sync::Arc::new(
-                otap_df_config::extension::ExtensionUserConfig::new(
-                    "urn:otap:extension:test".into(),
-                    serde_json::Value::Null,
-                ),
-            );
-            let mut passive_bundle = ExtensionWrapper::builder(
-                "passive_ext".into(),
-                user.clone(),
-                &passive_cfg,
-            )
-            .passive()
-            .cloned()
-            .shared("state".to_string())
-            .build()
-            .unwrap();
+            let user = std::sync::Arc::new(otap_df_config::extension::ExtensionUserConfig::new(
+                "urn:otap:extension:test".into(),
+                serde_json::Value::Null,
+            ));
+            let mut passive_bundle =
+                ExtensionWrapper::builder("passive_ext".into(), user.clone(), &passive_cfg)
+                    .passive()
+                    .cloned()
+                    .shared("state".to_string())
+                    .build()
+                    .unwrap();
             let passive_w = passive_bundle.take_shared().unwrap();
-            let passive_entity = ext_ctx
-                .register_extension_entity("passive_ext".into(), ExtensionVariant::Shared);
+            let passive_entity =
+                ext_ctx.register_extension_entity("passive_ext".into(), ExtensionVariant::Shared);
 
             // Build an active local wrapper.
             #[derive(Clone)]
@@ -607,8 +610,7 @@ mod tests {
                     self: std::rc::Rc<Self>,
                     mut ctrl: crate::local::extension::ControlChannel,
                     _eh: crate::extension::wrapper::EffectHandler,
-                ) -> Result<crate::terminal_state::TerminalState, Error>
-                {
+                ) -> Result<crate::terminal_state::TerminalState, Error> {
                     while let Ok(msg) = ctrl.recv().await {
                         if matches!(msg, ExtensionControlMsg::Shutdown { .. }) {
                             break;
@@ -618,18 +620,15 @@ mod tests {
                 }
             }
             let active_cfg = crate::config::ExtensionConfig::new("active_ext");
-            let mut active_bundle = ExtensionWrapper::builder(
-                "active_ext".into(),
-                user,
-                &active_cfg,
-            )
-            .active()
-            .local(std::rc::Rc::new(ActiveExt))
-            .build()
-            .unwrap();
+            let mut active_bundle =
+                ExtensionWrapper::builder("active_ext".into(), user, &active_cfg)
+                    .active()
+                    .local(std::rc::Rc::new(ActiveExt))
+                    .build()
+                    .unwrap();
             let active_w = active_bundle.take_local().unwrap();
-            let active_entity = ext_ctx
-                .register_extension_entity("active_ext".into(), ExtensionVariant::Local);
+            let active_entity =
+                ext_ctx.register_extension_entity("active_ext".into(), ExtensionVariant::Local);
 
             let monitor = ExtensionMetricsMonitor::new(
                 ext_ctx.clone(),
@@ -640,10 +639,7 @@ mod tests {
             let (tx, _rx) = flume::bounded(1);
             let reporter = MetricsReporter::new(tx);
             let lifecycle = ExtensionLifecycle::spawn(
-                vec![
-                    (passive_w, passive_entity),
-                    (active_w, active_entity),
-                ],
+                vec![(passive_w, passive_entity), (active_w, active_entity)],
                 &local_tasks,
                 reporter,
                 &ext_ctx,

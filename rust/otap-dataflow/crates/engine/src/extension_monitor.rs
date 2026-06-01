@@ -594,7 +594,8 @@ mod tests {
 
         // After the event, the entry is in Spawned and the gauge
         // reflects that on the next refresh.
-        monitor.refresh_state_gauges();        assert_eq!(
+        monitor.refresh_state_gauges();
+        assert_eq!(
             monitor.entries[0].lifecycle_metrics.state.get(),
             ExtensionRuntimeState::Spawned as u64
         );

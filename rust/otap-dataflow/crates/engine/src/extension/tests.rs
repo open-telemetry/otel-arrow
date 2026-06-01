@@ -1323,37 +1323,25 @@ fn two_pipelines_publish_isolated_internal_metrics_through_shared_reporter() {
         // Two pipelines, distinct ids, distinct logical cores. These
         // are the same coordinates a real deployment would supply when
         // pinning pipelines to different cores.
-        let pipe_a = controller.pipeline_context_with(
-            "grp".into(),
-            "pipeline_a".into(),
-            0,
-            2,
-            0,
-        );
-        let pipe_b = controller.pipeline_context_with(
-            "grp".into(),
-            "pipeline_b".into(),
-            1,
-            2,
-            1,
-        );
+        let pipe_a = controller.pipeline_context_with("grp".into(), "pipeline_a".into(), 0, 2, 0);
+        let pipe_b = controller.pipeline_context_with("grp".into(), "pipeline_b".into(), 1, 2, 1);
 
         let ext_ctx_a = pipe_a.extension_context();
         let ext_ctx_b = pipe_b.extension_context();
 
-        let entity_a = ext_ctx_a
-            .register_extension_entity("same_ext".into(), ExtensionVariant::Local);
-        let entity_b = ext_ctx_b
-            .register_extension_entity("same_ext".into(), ExtensionVariant::Local);
+        let entity_a =
+            ext_ctx_a.register_extension_entity("same_ext".into(), ExtensionVariant::Local);
+        let entity_b =
+            ext_ctx_b.register_extension_entity("same_ext".into(), ExtensionVariant::Local);
         assert_ne!(
             entity_a, entity_b,
             "two pipelines on different cores must mint distinct entity keys"
         );
 
-        let metrics_a = ext_ctx_a
-            .register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity_a);
-        let metrics_b = ext_ctx_b
-            .register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity_b);
+        let metrics_a =
+            ext_ctx_a.register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity_a);
+        let metrics_b =
+            ext_ctx_b.register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity_b);
         let key_a = metrics_a.metric_set_key();
         let key_b = metrics_b.metric_set_key();
         assert_ne!(key_a, key_b);
@@ -1408,8 +1396,7 @@ fn two_pipelines_publish_isolated_internal_metrics_through_shared_reporter() {
             .await
             .unwrap();
 
-        let mut sum_by_key: std::collections::HashMap<_, u64> =
-            std::collections::HashMap::new();
+        let mut sum_by_key: std::collections::HashMap<_, u64> = std::collections::HashMap::new();
         let deadline = Instant::now() + std::time::Duration::from_secs(2);
         while (!sum_by_key.contains_key(&key_a) || !sum_by_key.contains_key(&key_b))
             && Instant::now() < deadline
@@ -1483,10 +1470,9 @@ fn panicking_collect_telemetry_handler_does_not_contaminate_neighbour() {
     rt.block_on(ls.run_until(async {
         let (ctx, _registry) = crate::testing::test_extension_ctx();
 
-        let entity_good = ctx
-            .register_extension_entity("good".into(), ExtensionVariant::Local);
-        let metrics_good = ctx
-            .register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity_good);
+        let entity_good = ctx.register_extension_entity("good".into(), ExtensionVariant::Local);
+        let metrics_good =
+            ctx.register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity_good);
         let key_good = metrics_good.metric_set_key();
 
         let ext_good = std::rc::Rc::new(TelemetryReportingLocalExt {
@@ -1515,16 +1501,14 @@ fn panicking_collect_telemetry_handler_does_not_contaminate_neighbour() {
             .unwrap();
         let sender_bad = w_bad.extension_control_sender().unwrap();
 
-        let h_good = tokio::task::spawn_local(async move {
-            w_good.start(test_metrics_reporter()).await
-        });
+        let h_good =
+            tokio::task::spawn_local(async move { w_good.start(test_metrics_reporter()).await });
 
         // Silence panic backtrace from the bad extension while we drive it.
         let prev_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
-        let h_bad = tokio::task::spawn_local(async move {
-            w_bad.start(test_metrics_reporter()).await
-        });
+        let h_bad =
+            tokio::task::spawn_local(async move { w_bad.start(test_metrics_reporter()).await });
 
         let (snapshot_rx, shared_reporter) = MetricsReporter::create_new_and_receiver(8);
 
@@ -1626,10 +1610,8 @@ fn snapshot_consumed_after_extension_drop_retains_identity() {
     rt.block_on(ls.run_until(async {
         let (ctx, registry) = crate::testing::test_extension_ctx();
 
-        let entity = ctx
-            .register_extension_entity("ephemeral".into(), ExtensionVariant::Local);
-        let metrics =
-            ctx.register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity);
+        let entity = ctx.register_extension_entity("ephemeral".into(), ExtensionVariant::Local);
+        let metrics = ctx.register_metric_set_for_entity::<TestExtensionInternalMetrics>(entity);
         let key = metrics.metric_set_key();
 
         let ext = std::rc::Rc::new(TelemetryReportingLocalExt {
@@ -1669,13 +1651,11 @@ fn snapshot_consumed_after_extension_drop_retains_identity() {
 
         // Now consume the snapshot — it must still resolve to the same
         // key and carry the recorded value.
-        let snap = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            snapshot_rx.recv_async(),
-        )
-        .await
-        .expect("snapshot should still be deliverable after entity unregistration")
-        .expect("snapshot channel closed without delivery");
+        let snap =
+            tokio::time::timeout(std::time::Duration::from_secs(2), snapshot_rx.recv_async())
+                .await
+                .expect("snapshot should still be deliverable after entity unregistration")
+                .expect("snapshot channel closed without delivery");
 
         assert_eq!(snap.key(), key, "snapshot key must survive extension drop");
         let total: u64 = snap
@@ -1715,9 +1695,9 @@ fn wire_telemetry_dual_returns_distinct_keys_and_releases_all_entities_per_cycle
         let mut cm = ChannelMetricsRegistry::default();
         let keys = bundle.wire_telemetry("dual_cycle".into(), &ctx, &mut cm, true);
 
-        let local_key = keys.local.unwrap_or_else(|| {
-            panic!("cycle {cycle}: dual bundle must assign a local entity key")
-        });
+        let local_key = keys
+            .local
+            .unwrap_or_else(|| panic!("cycle {cycle}: dual bundle must assign a local entity key"));
         let shared_key = keys.shared.unwrap_or_else(|| {
             panic!("cycle {cycle}: dual bundle must assign a shared entity key")
         });
