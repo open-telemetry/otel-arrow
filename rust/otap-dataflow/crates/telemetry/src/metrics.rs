@@ -604,6 +604,7 @@ mod tests {
             r#type: AttributeValueType::String,
             brief: "Test attribute",
         }],
+        scope_keys: &[],
     };
 
     impl MetricSetHandler for MockMetricSet {

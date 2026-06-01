@@ -10,6 +10,7 @@ use crate::descriptor::AttributesDescriptor;
 static EMPTY_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
     name: "empty_metrics",
     fields: &[],
+    scope_keys: &[],
 };
 
 /// Empty attribute set for testing.
