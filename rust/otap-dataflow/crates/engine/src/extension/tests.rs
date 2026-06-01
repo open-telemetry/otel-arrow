@@ -600,10 +600,8 @@ fn test_background_local() {
 
 #[test]
 fn test_background_factory_capabilities_none() {
-    // The convention paired with `.background()`: an ExtensionFactory built
-    // around the bundle sets `capabilities: None`. `register_into` skips
-    // capability registration, so the bundle contributes zero entries to the
-    // CapabilityRegistry.
+    // Background bundles call `register_into(None, …)` → no-op,
+    // contributing zero entries to the registry.
     use crate::capability::registry::CapabilityRegistry;
 
     let (n, u, c) = ext_config("bg-noreg");
@@ -617,11 +615,6 @@ fn test_background_factory_capabilities_none() {
     bundle
         .register_into(None, &mut registry)
         .expect("Background register_into is a no-op");
-    // Registry remains empty — Background extensions contribute zero entries.
-    // (No `is_empty` accessor is exposed; instead we rely on the absence of
-    // any entries being observable via `get_local`/`get_shared` returning
-    // `None` for any (TypeId, ExtensionId) we might query. The strongest
-    // available assertion here: the no-op call returns `Ok(())`.)
     let _ = registry;
 }
 
@@ -833,12 +826,8 @@ fn test_wire_telemetry_disabled_still_registers_channel_entity() {
     assert_eq!(registry.entity_count(), before);
 }
 
-// Active extension contract: when the host's monitor dispatches
-// `CollectTelemetry { metrics_reporter }`, the extension must use that
-// supplied reporter to publish its own internal metrics. This test
-// stands in for the runtime: it sends a `CollectTelemetry` whose
-// reporter the test owns the receiver of, and asserts the extension's
-// snapshot lands on that channel.
+// When the host's monitor dispatches `CollectTelemetry { metrics_reporter }`,
+// the extension must publish its internal metrics via the supplied reporter.
 #[otap_df_telemetry_macros::metric_set(name = "test.extension.internal")]
 #[derive(Debug, Default, Clone)]
 struct TestExtensionInternalMetrics {
@@ -852,9 +841,8 @@ struct TelemetryReportingLocalExt {
     started: std::cell::Cell<bool>,
 }
 
-// `Clone` is required by `ActiveStage::local`. The clones share state
-// via interior mutability, which is fine for this test since only one
-// live instance ever runs.
+// `Clone` is required by `ActiveStage::local`. Clones share state via
+// interior mutability — only one live instance ever runs.
 impl Clone for TelemetryReportingLocalExt {
     fn clone(&self) -> Self {
         Self {
@@ -974,12 +962,8 @@ fn active_extension_reports_internal_metrics_on_collect_telemetry() {
 
 #[test]
 fn two_active_extensions_report_isolated_internal_metrics() {
-    // Cross-contamination guard: when two active extensions report via
-    // the same MetricsReporter, the collector must receive two snapshots
-    // with distinct `MetricSetKey`s — one per extension — and the values
-    // recorded by extension A must NOT appear under extension B's key
-    // (or vice versa). This is the invariant that lets the host monitor
-    // safely share a single reporter across all extensions.
+    // Two active extensions sharing one MetricsReporter must publish
+    // under distinct `MetricSetKey`s with no value bleed.
     use otap_df_telemetry::reporter::MetricsReporter;
 
     let (rt, ls) = crate::testing::setup_test_runtime();
@@ -1101,13 +1085,10 @@ fn two_active_extensions_report_isolated_internal_metrics() {
         let a_total = *sum_by_key.get(&key_a).unwrap_or(&0);
         let b_total = *sum_by_key.get(&key_b).unwrap_or(&0);
 
-        // Each extension's reported total equals its own invocation count
-        // and no others. If contamination existed (e.g., a single shared
-        // counter, or wrong key routing), A's two invocations would leak
-        // into B's total, or vice versa.
+        // Each extension's reported total equals its own invocation
+        // count and no others.
         assert_eq!(a_total, 2, "ext_a should report exactly its 2 invocations");
         assert_eq!(b_total, 1, "ext_b should report exactly its 1 invocation");
-        // Only A's and B's keys ever appear — no spurious third entry.
         assert_eq!(
             sum_by_key.len(),
             2,

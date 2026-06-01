@@ -609,36 +609,16 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             dispatcher.run().await
         }));
 
-        // Drive all local tasks until completion, returning the first error if any.
-        // Data-path tasks (`futures`) and extension tasks (owned by
-        // `extension_lifecycle`) run concurrently. When the data-path
-        // drains, broadcast `Shutdown` to extensions so they can
-        // terminate gracefully, then continue draining extension
-        // futures.
-        //
-        // Errors from either side short-circuit out of the inner
-        // async block. The outer code then unconditionally
-        // broadcasts `Shutdown` and bounded-drains extensions before
-        // propagating the error. This guarantees that extensions
-        // owning sockets, files, or background work get the same
-        // cleanup signal on the error path that they would on the
-        // normal path, and that a misbehaving extension that ignores
-        // `Shutdown` cannot hang the pipeline beyond
-        // `EXTENSION_SHUTDOWN_GRACE`.
+        // Drive data-path and extension tasks concurrently. On both the
+        // happy and error paths, cleanup unconditionally broadcasts
+        // `Shutdown` and bounded-drains extensions (see
+        // `EXTENSION_SHUTDOWN_GRACE`).
         rt.block_on(async {
             local_tasks
                 .run_until(async {
-                    // Inner async block isolates the loop's
-                    // `return Err(...)` short-circuits from the
-                    // outer cleanup, giving us an "async finally"
-                    // shape: cleanup always runs, then the loop's
-                    // result is propagated.
                     let loop_result: Result<Vec<_>, Error> = async {
                         let mut task_results = Vec::new();
                         loop {
-                            // `biased;`: prefer data-path completions when both
-                            // arms are simultaneously ready. Functionally
-                            // optional — kept to make intent explicit.
                             tokio::select! {
                                 biased;
                                 Some(result) = futures.next(), if !futures.is_empty() => {
@@ -674,12 +654,9 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                                 else => break,
                             }
 
-                            // Once the data path is drained, broadcast
-                            // `Shutdown` and exit the loop so the
-                            // bounded `drain_until_deadline` below owns
-                            // the wait for remaining extension tasks —
-                            // staying in this `select!` would let a
-                            // misbehaving extension hang the pipeline.
+                            // Data path drained: hand off the bounded wait
+                            // for remaining extension tasks to
+                            // `drain_until_deadline` below.
                             if futures.is_empty() {
                                 extension_lifecycle
                                     .broadcast_shutdown(Some("pipeline data-path drained"))
@@ -691,25 +668,14 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     }
                     .await;
 
-                    // "Async finally": unconditional cleanup that
-                    // runs on both the normal and error paths.
-                    // `broadcast_shutdown` is idempotent (latched by
-                    // `shutdown_broadcast_fired`), so a no-op on the
-                    // normal path; on the error path it ensures
-                    // already-started extensions still receive
-                    // `Shutdown` before the pipeline exits, so they
-                    // can release sockets, files, or background work
-                    // cleanly. `drain_until_deadline` then bounds the
-                    // wait so a misbehaving extension can't hang the
-                    // runtime.
+                    // Unconditional cleanup. `broadcast_shutdown` is
+                    // idempotent (no-op on the happy path).
                     extension_lifecycle
                         .broadcast_shutdown(Some("pipeline data-path drained"))
                         .await;
                     extension_lifecycle.drain_until_deadline().await;
-                    // Final monitor flush so the host-scope aggregate
-                    // and per-extension lifecycle counters reflect the
-                    // terminal state (incl. any `ShutdownTimeout`
-                    // entries) on the way out.
+                    // Final monitor flush so per-extension counters reflect
+                    // any terminal `ShutdownTimeout` entries on the way out.
                     let mut final_monitor_reporter = metrics_reporter.clone();
                     extension_lifecycle
                         .monitor_tick(std::time::Instant::now(), &mut final_monitor_reporter);

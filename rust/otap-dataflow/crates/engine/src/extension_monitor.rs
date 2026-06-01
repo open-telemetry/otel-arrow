@@ -583,12 +583,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn refresh_state_gauges_reasserts_after_clear() {
-        // Defensive guard for Lalit L2/L5: the `state` gauge is the
-        // monitor's only long-running absolute value. If anything ever
-        // clears it between lifecycle events — today the derive macro
-        // does not, but pre-Counter-only-clear behavior could regress —
-        // `refresh_state_gauges` must re-assert from the cached state
-        // so long-running extensions never appear inactive on a scrape.
+        // The `state` gauge is the monitor's only long-running absolute
+        // value. If anything ever clears it between lifecycle events,
+        // `refresh_state_gauges` must re-assert it from cached state.
         let (mut monitor, ctx) = fresh_monitor();
         let ent = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
         let key = ExtensionKey::local("ext1");
@@ -597,15 +594,13 @@ mod tests {
 
         // After the event, the entry is in Spawned and the gauge
         // reflects that on the next refresh.
-        monitor.refresh_state_gauges();
-        assert_eq!(
+        monitor.refresh_state_gauges();        assert_eq!(
             monitor.entries[0].lifecycle_metrics.state.get(),
             ExtensionRuntimeState::Spawned as u64
         );
 
-        // Force-zero the gauge to simulate the cleared scenario the
-        // refresh defends against. The cached entry.state is the
-        // source of truth and must be re-asserted on the next tick.
+        // Force-zero the gauge to simulate a clear; the cached state
+        // must be re-asserted on the next tick.
         monitor.entries[0].lifecycle_metrics.state.reset();
         assert_eq!(monitor.entries[0].lifecycle_metrics.state.get(), 0);
 
@@ -674,11 +669,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn mark_pending_as_timeout_transitions_stragglers() {
-        // After drain_until_deadline elapses, any entry that has not
-        // observed a clean completion must surface as TimedOut. This
-        // includes Pending (task cancelled before first poll, so
-        // JoinSet returned a keyless JoinError) — without this, the
-        // state gauge would be stuck reporting Pending forever.
+        // After the drain deadline elapses, any non-terminal entry
+        // must surface as TimedOut — including `Pending` (task
+        // cancelled before first poll, JoinSet returned a keyless
+        // JoinError) so the state gauge does not stick at Pending.
         let (mut monitor, ctx) = fresh_monitor();
         for name in ["never_spawned", "spawned", "shutting", "ok"] {
             let ent = ctx.register_extension_entity(name.into(), ExtensionVariant::Local);
@@ -724,16 +718,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn out_of_order_spawned_after_completed_does_not_resurrect_state() {
-        // Concurrency invariant: if the host ever delivered a Spawned
-        // event AFTER a Completed for the same key (e.g., a stale
-        // signal arriving late), the entry's state must not regress
-        // from a terminal state back to Spawned. The monitor protects
-        // by anchoring on_spawned only for entries currently in
-        // Pending — terminal states are sticky.
-        //
-        // Today's lifecycle code orders these correctly via the biased
-        // select in `next_event`, but this test pins the invariant so
-        // a future refactor of `apply_event` can't silently break it.
+        // Terminal states are sticky: a stale `Spawned` arriving after
+        // `Completed` must not regress the entry.
         let (mut monitor, ctx) = fresh_monitor();
         let ent = ctx.register_extension_entity("ext".into(), ExtensionVariant::Local);
         let key = ExtensionKey::local("ext");
@@ -746,10 +732,7 @@ mod tests {
         });
         assert_eq!(monitor.entries[0].state, ExtensionRuntimeState::CompletedOk);
 
-        // A stray Spawned arriving after the terminal state must not
-        // resurrect the entry. (Today on_spawned still mutates state
-        // unconditionally — this test will fail in that scenario and
-        // document the required invariant.)
+        // Stray Spawned after terminal must not resurrect.
         monitor.apply_event(ExtensionLifecycleEvent::Spawned { key });
         assert_eq!(
             monitor.entries[0].state,
@@ -760,12 +743,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn duplicate_completed_does_not_double_count_or_flip_state() {
-        // Concurrency invariant: a second Completed for an already-
-        // terminal entry must be a no-op — counters do not re-increment
-        // and the terminal state does not flip to a different terminal.
-        // Today no call site delivers duplicate Completeds, but if a
-        // future scheduler change ever did, the metrics would silently
-        // double-count without this guard.
+        // A second `Completed` for an already-terminal entry must be a
+        // no-op (no double-count, no terminal flip).
         let (mut monitor, ctx) = fresh_monitor();
         let ent = ctx.register_extension_entity("ext".into(), ExtensionVariant::Local);
         let key = ExtensionKey::local("ext");
@@ -810,10 +789,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn maybe_collect_telemetry_targets_only_spawned_with_sender() {
-        // CollectTelemetry messages must go only to extensions that are
-        // actually spawned AND have a registered control sender. Others
-        // (no sender, not yet spawned, already completed) must be
-        // skipped to avoid wasted work and false-positive sends.
+        // CollectTelemetry must only target `Spawned`-with-sender
+        // entries; others are skipped.
         let (mut monitor, ctx) = fresh_monitor();
         let (tx_spawned, rx_spawned) = mpsc::Channel::new(8);
         let sender_spawned = ExtensionControlSender {

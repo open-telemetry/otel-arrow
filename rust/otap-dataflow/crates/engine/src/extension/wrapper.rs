@@ -39,25 +39,12 @@ use std::sync::Arc;
 /// A shutdown-aware channel for receiving extension control messages.
 ///
 /// Generic over the receiver type `R` to support both local (!Send) and
-/// shared (Send) channels. Concrete types are defined in
-/// [`local::extension::ControlChannel`](crate::local::extension::ControlChannel)
-/// and [`shared::extension::ControlChannel`](crate::shared::extension::ControlChannel).
+/// shared (Send) channels.
 ///
-/// `Shutdown` is delivered to the extension immediately on arrival; the
-/// deadline carried in the message is the extension's cooperative
-/// cleanup budget (i.e., "you have until `deadline` to wind down"),
-/// **not** a delay before delivery. Once `Shutdown` has been returned,
-/// subsequent calls to [`recv`](Self::recv) return [`RecvError::Closed`]
-/// so the extension's event loop terminates instead of dispatching
-/// further control messages.
-///
-/// Immediate delivery is appropriate here: the runtime broadcasts
-/// `Shutdown` to extensions only after every data-path node has
-/// drained (see [`crate::extension_lifecycle`]), so the full
-/// `deadline - now()` window is available for cleanup. This differs
-/// from the data-path node control channel in [`crate::message`],
-/// which stashes `Shutdown` and keeps delivering other control
-/// messages until the deadline so nodes can drain in-flight PData.
+/// `Shutdown` is delivered immediately and the `deadline` field is the
+/// extension's cooperative cleanup budget. After `Shutdown` is returned,
+/// further [`recv`](Self::recv) calls yield [`RecvError::Closed`] so the
+/// event loop exits cleanly.
 #[doc(hidden)]
 pub struct ControlChannel<R> {
     control_rx: Option<R>,
@@ -91,12 +78,9 @@ impl<R: ControlReceiver> ControlChannel<R> {
         }
     }
 
-    /// Asynchronously receives the next control message.
-    ///
-    /// `Shutdown` is delivered immediately on arrival; the extension is
-    /// responsible for honouring the `deadline` field as its cooperative
-    /// cleanup budget. After `Shutdown` has been delivered the channel
-    /// is closed and subsequent calls return [`RecvError::Closed`].
+    /// Asynchronously receives the next control message. After `Shutdown`
+    /// is delivered the channel is closed and subsequent calls return
+    /// [`RecvError::Closed`].
     ///
     /// # Errors
     ///
@@ -105,10 +89,7 @@ impl<R: ControlReceiver> ControlChannel<R> {
         let rx = self.control_rx.as_mut().ok_or(RecvError::Closed)?;
         match rx.recv().await {
             Ok(ExtensionControlMsg::Shutdown { deadline, reason }) => {
-                // Close the underlying receiver so subsequent recv()
-                // calls return Closed and the extension's event loop
-                // exits instead of attempting to dispatch further
-                // control messages past Shutdown.
+                // Close so subsequent recv() returns Closed past Shutdown.
                 let _ = self.control_rx.take();
                 Ok(ExtensionControlMsg::Shutdown { deadline, reason })
             }
@@ -556,28 +537,13 @@ impl ExtensionBundle {
 
     /// Register this bundle's capabilities into the given registry.
     ///
-    /// Calls the `register_shared` / `register_local` fn pointers on
-    /// `capabilities` (produced by the `extension_capabilities!` macro)
-    /// with a clone of the wrapper's corresponding instance factory.
-    /// The fn pointers fan out one registry entry per listed capability.
-    ///
-    /// `capabilities` is `Some(_)` for active or passive extensions and
-    /// `None` for Background extensions (no capabilities exposed); when
-    /// `None` this method is a no-op.
+    /// No-op when `capabilities` is `None` (Background extensions).
     ///
     /// # Errors
     ///
     /// - [`Error::InternalError`](crate::capability::registry::Error::InternalError)
-    ///   if `capabilities` advertises an execution model that the
-    ///   runtime [`ExtensionBundle`] does not contain (e.g. the
-    ///   `extension_capabilities!` macro lists local capabilities but
-    ///   the factory's `create()` body never called `.local(...)` on
-    ///   the builder). This catches a metadata-vs-bundle drift early
-    ///   instead of letting it surface as a downstream
-    ///   `Error::ConfigError("…does not provide capability…")` from
-    ///   `resolve_bindings`. The shared-only-with-`SharedAsLocal`
-    ///   fallback case stays valid: that macro arm advertises an
-    ///   empty `local: &[]`, so there is no asymmetry to reject.
+    ///   if `capabilities` advertises an execution model the bundle
+    ///   does not contain (metadata-vs-bundle drift caught early).
     /// - Any error returned by the capability registry
     ///   (e.g. duplicate `(capability, extension)` registration).
     pub fn register_into(
@@ -585,25 +551,13 @@ impl ExtensionBundle {
         capabilities: Option<&crate::capability::ExtensionCapabilities>,
         registry: &mut crate::capability::registry::CapabilityRegistry,
     ) -> Result<(), crate::capability::registry::Error> {
-        // Background extensions carry `None` here - engine-driven event
-        // loop only, no capability registration. The `Option`
-        // discriminant is the source of truth: a `.background()` builder
-        // path always pairs with `capabilities: None` on the factory.
-        // (Invariant: builder typestate guides authors but does not
-        //  feed back into the bundle, so we trust the `Option`.)
+        // Background extensions: no capability registration.
         let Some(capabilities) = capabilities else {
             return Ok(());
         };
 
-        // Fail fast on metadata-vs-bundle drift: the
-        // `extension_capabilities!` macro only checks that the listed
-        // types implement the listed capability traits. It cannot see
-        // what the factory's `create()` actually built. If the macro
-        // advertises an execution model the runtime bundle is
-        // missing, the mismatch would silently slip through
-        // `register_into` and surface later as a confusing
-        // `"extension does not provide capability"` config error
-        // pointing at the wrong layer.
+        // Fail fast on metadata-vs-bundle drift instead of letting it
+        // surface later as a confusing config error.
         let bundle_name = self
             .local
             .as_ref()
