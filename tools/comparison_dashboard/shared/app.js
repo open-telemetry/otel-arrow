@@ -712,32 +712,15 @@ function highlightFileContent(name, content) {
 
 const perComparisonMetrics = new Map();
 
-function renderColorblindToggle() {
-  const label = colorblindMode ? "Standard Colors" : "Colorblind Mode";
-  return `<button class="colorblind-toggle${colorblindMode ? " active" : ""}" type="button" title="Toggle colorblind-friendly palette">${label}</button>`;
-}
-
-function wireColorblindToggle(container, rerender) {
-  const btn = container.querySelector(".colorblind-toggle");
-  if (!btn) return;
-  btn.onclick = () => {
-    colorblindMode = !colorblindMode;
-    localStorage.setItem("colorblindMode", String(colorblindMode));
-    patternCache.clear();
-    rerender();
-  };
-}
-
 function renderLandingPage() {
   const app = document.getElementById("app");
   const cardsEl = document.getElementById("comparison-cards");
   if (!app) return;
   const suiteData = loadSuiteData();
   const comparisons = window.COMPARISONS || [];
-  app.innerHTML = renderColorblindToggle();
+  app.innerHTML = "";
   for (const c of activeCharts.values()) c.destroy();
   activeCharts.clear();
-  wireColorblindToggle(app, renderLandingPage);
   if (!comparisons.length) { if (cardsEl) cardsEl.innerHTML = '<div class="muted" style="padding:16px">No comparisons defined.</div>'; return; }
   if (cardsEl) {
     cardsEl.innerHTML = comparisons.map((comp) => renderComparisonSection(suiteData, comp)).join("");
@@ -821,7 +804,6 @@ function renderComparisonPage(compSlug) {
       <div class="sub">${escapeHtml(comparison.description || "")}</div>
     </div>
     ${envHeaderHtml}
-    ${renderColorblindToggle()}
     ${filterHtml}
     <div id="comparison-chart"></div>
     <div id="comparison-detail"></div>`;
@@ -839,7 +821,6 @@ function renderComparisonPage(compSlug) {
     renderComparisonChart(suiteData, filtered, tests, (si, tn) => { detailSuiteIdx = si; detailTestName = tn; setDetail(si, tn); });
   }
 
-  wireColorblindToggle(app, () => renderComparisonPage(compSlug));
   const fc = app.querySelector(".chart-filters");
   if (fc) wireFilters(fc, compSlug, categories, renderAll);
   renderAll();
@@ -1096,9 +1077,31 @@ async function openFileModal(suiteSlug, testName, fileName) {
   }
 }
 
-// ── Legend banner ──────────────────────────────────────────────────────────
+// ── Controls bar + legend banner ──────────────────────────────────────────
 
 const LEGEND_STORAGE_KEY = "legend-banner-expanded";
+
+function readBoolPref(key, defaultValue) {
+  try {
+    const v = window.localStorage.getItem(key);
+    if (v === null) return defaultValue;
+    return v === "1" || v === "true";
+  } catch { return defaultValue; }
+}
+
+function writeBoolPref(key, value) {
+  try { window.localStorage.setItem(key, value ? "1" : "0"); } catch { /* ignore */ }
+}
+
+function renderSwitch(id, label, checked) {
+  return `
+    <label class="switch-control" for="${id}">
+      <span class="switch-label">${escapeHtml(label)}</span>
+      <button id="${id}" class="switch${checked ? " on" : ""}" type="button" role="switch" aria-checked="${checked ? "true" : "false"}">
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+      </button>
+    </label>`;
+}
 
 function initLegendBanner() {
   const banner = document.getElementById("legend-banner");
@@ -1111,39 +1114,54 @@ function initLegendBanner() {
   const items = glossary.map((g) =>
     `<div class="legend-item"><dt class="legend-term">${escapeHtml(g.term)}</dt><dd class="legend-def">${escapeHtml(g.definition)}</dd></div>`
   ).join("");
-  banner.innerHTML = `
-    <div class="legend-banner-header">
-      <span class="legend-banner-title">Glossary</span>
-      <button class="legend-toggle" type="button" role="switch" aria-controls="legend-banner-body" aria-checked="true">
-        <span class="legend-toggle-track"><span class="legend-toggle-thumb"></span></span>
-        <span class="legend-toggle-text">Shown</span>
-      </button>
-    </div>
-    <dl class="legend-banner-body" id="legend-banner-body">${items}</dl>
-  `;
-  const stored = (() => {
-    try { return window.localStorage.getItem(LEGEND_STORAGE_KEY); } catch { return null; }
-  })();
-  const expanded = stored === null ? true : stored === "1";
-  applyLegendState(banner, expanded);
-  const btn = banner.querySelector(".legend-toggle");
-  if (btn) {
-    btn.addEventListener("click", () => {
-      const nowExpanded = banner.classList.contains("collapsed");
-      applyLegendState(banner, nowExpanded);
-      try { window.localStorage.setItem(LEGEND_STORAGE_KEY, nowExpanded ? "1" : "0"); } catch { /* ignore */ }
+  banner.innerHTML = `<dl class="legend-banner-body" id="legend-banner-body">${items}</dl>`;
+  const expanded = readBoolPref(LEGEND_STORAGE_KEY, true);
+  banner.classList.toggle("collapsed", !expanded);
+}
+
+function setLegendVisible(visible) {
+  const banner = document.getElementById("legend-banner");
+  if (banner) banner.classList.toggle("collapsed", !visible);
+  writeBoolPref(LEGEND_STORAGE_KEY, visible);
+}
+
+function initControlsBar() {
+  const bar = document.getElementById("controls-bar");
+  if (!bar) return;
+  const glossary = (typeof window !== "undefined" && window.GLOSSARY) || [];
+  const hasGlossary = Array.isArray(glossary) && glossary.length > 0;
+  const legendOn = readBoolPref(LEGEND_STORAGE_KEY, true);
+  const parts = [];
+  if (hasGlossary) parts.push(renderSwitch("switch-glossary", "Glossary", legendOn));
+  parts.push(renderSwitch("switch-colorblind", "Colorblind mode", colorblindMode));
+  bar.innerHTML = parts.join("");
+
+  const glossaryBtn = bar.querySelector("#switch-glossary");
+  if (glossaryBtn) {
+    glossaryBtn.addEventListener("click", () => {
+      const next = !glossaryBtn.classList.contains("on");
+      glossaryBtn.classList.toggle("on", next);
+      glossaryBtn.setAttribute("aria-checked", next ? "true" : "false");
+      setLegendVisible(next);
+    });
+  }
+  const cbBtn = bar.querySelector("#switch-colorblind");
+  if (cbBtn) {
+    cbBtn.addEventListener("click", () => {
+      const next = !cbBtn.classList.contains("on");
+      cbBtn.classList.toggle("on", next);
+      cbBtn.setAttribute("aria-checked", next ? "true" : "false");
+      colorblindMode = next;
+      localStorage.setItem("colorblindMode", String(colorblindMode));
+      patternCache.clear();
+      rerenderCurrentPage();
     });
   }
 }
 
-function applyLegendState(banner, expanded) {
-  banner.classList.toggle("collapsed", !expanded);
-  const btn = banner.querySelector(".legend-toggle");
-  if (btn) {
-    btn.setAttribute("aria-checked", expanded ? "true" : "false");
-    const txt = btn.querySelector(".legend-toggle-text");
-    if (txt) txt.textContent = expanded ? "Shown" : "Hidden";
-  }
+function rerenderCurrentPage() {
+  if (window.COMPARISON_SLUG) renderComparisonPage(window.COMPARISON_SLUG);
+  else if (window.COMPARISONS) renderLandingPage();
 }
 
 // ── Modal init + Bootstrap ─────────────────────────────────────────────────
@@ -1159,6 +1177,7 @@ function initModal() {
 
 function main() {
   initLegendBanner();
+  initControlsBar();
   initModal();
   if (window.COMPARISON_SLUG) renderComparisonPage(window.COMPARISON_SLUG);
   else if (window.COMPARISONS) renderLandingPage();
