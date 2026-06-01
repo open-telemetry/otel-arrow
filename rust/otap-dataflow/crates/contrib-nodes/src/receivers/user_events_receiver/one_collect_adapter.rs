@@ -936,4 +936,130 @@ mod tests {
         );
         assert_eq!(second_turn[0].subscription_index, 0);
     }
+
+    #[test]
+    fn governed_drain_forward_progresses_after_deadline() {
+        let subscriptions = vec![test_subscription(
+            "user_events:first",
+            Some(UserEventsSubscriptionLimits {
+                max_pending_events: Some(10),
+                max_pending_bytes: None,
+            }),
+        )];
+        let pending = PendingQueues::new(&subscriptions, 10, 1024);
+        assert!(pending.accepts_event(0, 8));
+        pending.push_event(test_event(0, 8));
+
+        let mut cursor = 0usize;
+        let mut events = Vec::new();
+        let mut drained_bytes = 0usize;
+        pending.drain(
+            &mut events,
+            &mut drained_bytes,
+            10,
+            1024,
+            Instant::now(),
+            &mut cursor,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].subscription_index, 0);
+        assert_eq!(drained_bytes, 8);
+        assert_eq!(pending.len(), 0);
+    }
+
+    #[test]
+    fn governed_drain_preserves_oversized_head_behavior() {
+        let subscriptions = vec![test_subscription(
+            "user_events:first",
+            Some(UserEventsSubscriptionLimits {
+                max_pending_events: Some(10),
+                max_pending_bytes: None,
+            }),
+        )];
+        let pending = PendingQueues::new(&subscriptions, 10, 4096);
+        assert!(pending.accepts_event(0, 2048));
+        pending.push_event(test_event(0, 2048));
+
+        let mut cursor = 0usize;
+        let mut events = Vec::new();
+        let mut drained_bytes = 0usize;
+        pending.drain(
+            &mut events,
+            &mut drained_bytes,
+            10,
+            1024,
+            Instant::now() + Duration::from_secs(1),
+            &mut cursor,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(drained_bytes, 2048);
+        assert_eq!(pending.len(), 0);
+
+        assert!(pending.accepts_event(0, 2048));
+        pending.push_event(test_event(0, 2048));
+        events.clear();
+        drained_bytes = 0;
+        pending.drain(
+            &mut events,
+            &mut drained_bytes,
+            10,
+            1024,
+            Instant::now(),
+            &mut cursor,
+        );
+
+        assert!(events.is_empty());
+        assert_eq!(drained_bytes, 0);
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn governed_drain_clears_pending_accounting() {
+        let subscriptions = vec![
+            test_subscription(
+                "user_events:first",
+                Some(UserEventsSubscriptionLimits {
+                    max_pending_events: Some(10),
+                    max_pending_bytes: None,
+                }),
+            ),
+            test_subscription("user_events:second", None),
+        ];
+        let pending = PendingQueues::new(&subscriptions, 10, 1024);
+        for subscription_index in [0, 1, 0] {
+            assert!(pending.accepts_event(subscription_index, 8));
+            pending.push_event(test_event(subscription_index, 8));
+        }
+
+        let mut cursor = 0usize;
+        let mut events = Vec::new();
+        let mut drained_bytes = 0usize;
+        pending.drain(
+            &mut events,
+            &mut drained_bytes,
+            10,
+            1024,
+            Instant::now() + Duration::from_secs(1),
+            &mut cursor,
+        );
+
+        assert_eq!(events.len(), 3);
+        assert_eq!(drained_bytes, 24);
+        assert_eq!(pending.len(), 0);
+        if let PendingQueues::Governed(state) = &pending {
+            let state = state.borrow();
+            assert_eq!(state.total_pending_events, 0);
+            assert_eq!(state.total_pending_bytes, 0);
+            assert!(
+                state
+                    .subscriptions
+                    .iter()
+                    .all(|subscription| subscription.pending_bytes == 0)
+            );
+        } else {
+            panic!("expected governed pending queues");
+        }
+    }
 }
