@@ -709,8 +709,7 @@ pub(super) fn validate_config(config: &Config) -> Result<(), otap_df_config::err
         && config.families.processes.process.max_processes == 0
     {
         return Err(otap_df_config::error::Error::InvalidUserConfig {
-            error: "processes max_processes must be greater than zero for per-process metrics"
-                .to_owned(),
+            error: "processes.process.max_processes must be greater than zero when processes.mode=summary_and_per_process".to_owned(),
         });
     }
     let process_labels = &config.families.processes.process.labels;
