@@ -218,6 +218,9 @@ nodes:
         - tracepoint: "myprovider_L2K1"
           format:
             type: tracefs
+          limits:
+            max_pending_events: 1024
+            max_pending_bytes: 4194304
       session:
         per_cpu_buffer_size: 1048576  # bytes
         late_registration_poll_interval: 100ms
@@ -255,12 +258,12 @@ index, and uses that index to select the configured decoder format. This keeps
 the per-CPU locality model intact while allowing related tracepoints to share a
 receiver.
 
-The tradeoff is shared fate and shared budgets: all subscriptions in the
-receiver share the same perf session, drain limits, batching policy, downstream
-backpressure boundary, and metrics. A high-volume tracepoint can consume the
-shared drain or batch budget and affect quieter tracepoints. If tracepoints need
-independent resource limits or failure isolation, configure separate receiver
-nodes instead.
+The tradeoff is shared fate below the receiver: all subscriptions in the
+receiver share the same one_collect/perf session, kernel perf ring, parse time,
+batching policy, downstream backpressure boundary, and aggregate metrics. A
+high-volume tracepoint can still cause shared perf-ring loss before the receiver
+sees individual samples. If tracepoints need kernel-ring isolation, configure
+separate receiver nodes instead.
 
 The receiver bounds the in-process pending queue between one_collect perf
 callbacks and the drain loop with `session.max_pending_events` and
@@ -270,6 +273,15 @@ space and counted as `dropped_pending_overflow`. This cap covers only the
 adapter pending queue; kernel perf ring memory is governed by
 `session.per_cpu_buffer_size`, Arrow batch memory by `batching.*`, and
 downstream channel pressure by the engine's bounded local channel.
+
+Each subscription may also set `subscriptions[].limits.max_pending_events` and
+`subscriptions[].limits.max_pending_bytes`. When any subscription has limits,
+the receiver uses per-subscription pending queues and round-robin drain under
+the retained global `session.max_pending_*` ceilings. This prevents one
+tracepoint from monopolizing receiver-side pending capacity and drain order, but
+does not isolate the shared perf ring or one_collect parse work. With no
+subscription limits configured, the receiver keeps the existing single pending
+queue and FIFO drain behavior.
 
 Late registration is also currently all-or-nothing for multiple subscriptions:
 if any configured tracepoint is missing, the receiver retries opening the
@@ -298,6 +310,8 @@ tracepoint sessions.
 | --- | --- | --- |
 | `subscriptions` | none | Required non-empty list of `user_events` tracepoints. Each entry may be either `<event>` or `user_events:<event>`. |
 | `subscriptions[].format.type` | `tracefs` | Decode format for one subscription. `tracefs` is always supported; `event_header` requires the `user_events-eventheader` feature. |
+| `subscriptions[].limits.max_pending_events` | none | Optional per-subscription pending event cap. When any subscription has limits, per-subscription queues and round-robin drain are enabled under the global session caps. |
+| `subscriptions[].limits.max_pending_bytes` | none | Optional per-subscription pending raw payload byte cap. Counts raw `event_data` bytes, matching `session.max_pending_bytes`. |
 | `session.per_cpu_buffer_size` | `1048576` | Requested per-CPU perf ring size in bytes. Rounded up to at least one page and then to the next power of two. |
 | `session.wakeup_watermark` | `262144` | Reserved for future one_collect wakeup support; currently ignored. |
 | `session.max_pending_events` | `4096` | Maximum parsed events buffered between one_collect callbacks and the receiver drain loop. New events are dropped when this cap is reached. |
