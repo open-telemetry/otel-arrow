@@ -456,7 +456,7 @@ impl PipelineContext {
     /// Returns an [`ExtensionContext`] scoped to this pipeline.
     #[must_use]
     pub fn extension_context(&self) -> ExtensionContext {
-        ExtensionContext::with_extension_scope(
+        ExtensionContext::new(
             self.controller_context.clone(),
             ExtensionScopeAttributeSet::pipeline(
                 self.pipeline_context_params.pipeline_group_id.clone(),
@@ -619,21 +619,20 @@ pub struct ExtensionContext {
 }
 
 impl ExtensionContext {
-    /// Creates an `ExtensionContext` with an empty scope (test/engine-internal usage).
+    /// Creates an `ExtensionContext` for the supplied host scope.
+    ///
+    /// # Panics (debug builds)
+    ///
+    /// Panics if `extension_scope.kind` is empty.
     #[must_use]
-    pub fn new(controller_context: ControllerContext) -> Self {
-        Self {
-            controller_context,
-            extension_scope: ExtensionScopeAttributeSet::default(),
-        }
-    }
-
-    /// Creates an `ExtensionContext` with the supplied host scope.
-    #[must_use]
-    pub fn with_extension_scope(
+    pub fn new(
         controller_context: ControllerContext,
         extension_scope: ExtensionScopeAttributeSet,
     ) -> Self {
+        debug_assert!(
+            !extension_scope.kind.is_empty(),
+            "ExtensionContext requires a non-empty scope kind"
+        );
         Self {
             controller_context,
             extension_scope,

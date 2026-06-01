@@ -102,7 +102,8 @@ pub struct PipelineAttributeSet {
 #[attribute_set(name = "extension.scope.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct ExtensionScopeAttributeSet {
-    /// Scope kind (e.g., `"pipeline"`). Empty for the default scope.
+    /// Scope kind (e.g., `"pipeline"`). Construct via a named scope
+    /// constructor (e.g. [`ExtensionScopeAttributeSet::pipeline`]).
     #[attribute(key = "scope.kind")]
     pub kind: Cow<'static, str>,
 
@@ -113,7 +114,10 @@ pub struct ExtensionScopeAttributeSet {
 
 impl ExtensionScopeAttributeSet {
     #[must_use]
-    pub fn new(kind: impl Into<Cow<'static, str>>, id: impl Into<Cow<'static, str>>) -> Self {
+    pub(crate) fn new(
+        kind: impl Into<Cow<'static, str>>,
+        id: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Self {
             kind: kind.into(),
             id: id.into(),
@@ -153,14 +157,6 @@ pub struct ExtensionAttributeSet {
     /// Physical variant of the extension (`"local"` or `"shared"`).
     #[attribute(key = "extension.variant")]
     pub extension_variant: Cow<'static, str>,
-}
-
-impl ExtensionAttributeSet {
-    #[must_use]
-    pub fn with_scope(mut self, scope: ExtensionScopeAttributeSet) -> Self {
-        self.extension_scope = scope;
-        self
-    }
 }
 
 /// Node attributes.

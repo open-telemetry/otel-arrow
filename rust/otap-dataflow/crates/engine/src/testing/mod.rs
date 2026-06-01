@@ -14,6 +14,7 @@
 //! The specialized testing utilities for receivers, processors, and exporters are in their respective
 //! submodules.
 
+use crate::attributes::ExtensionScopeAttributeSet;
 use crate::context::{ControllerContext, ExtensionContext, PipelineContext};
 use crate::control::NodeControlMsg;
 use otap_df_channel::mpsc;
@@ -62,7 +63,8 @@ pub fn test_pipeline_ctx() -> (PipelineContext, TelemetryRegistryHandle) {
 pub fn test_extension_ctx() -> (ExtensionContext, TelemetryRegistryHandle) {
     let registry = TelemetryRegistryHandle::new();
     let controller = ControllerContext::new(registry.clone());
-    (ExtensionContext::new(controller), registry)
+    let scope = ExtensionScopeAttributeSet::pipeline("test_group", "test_pipeline", 0, 0);
+    (ExtensionContext::new(controller, scope), registry)
 }
 
 /// A test message type used in component tests.

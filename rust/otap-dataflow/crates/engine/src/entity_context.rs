@@ -517,4 +517,60 @@ mod tests {
         assert_eq!(registry.metric_set_count(), 0);
         assert_eq!(registry.entity_count(), 0);
     }
+
+    #[test]
+    fn entity_telemetry_handle_cleanup_is_idempotent() {
+        // Handle state is `Rc<RefCell<…>>` so multiple paths can call
+        // `cleanup`. Second call must be a no-op; otherwise we'd
+        // double-unregister an entity whose key may have been reissued.
+        let registry = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(registry.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("group".into(), "pipe".into(), 0, 1, 0);
+        let ext_ctx = pipeline_ctx.extension_context();
+
+        let baseline_entities = registry.entity_count();
+        let baseline_metric_sets = registry.metric_set_count();
+
+        let entity_key = ext_ctx.register_extension_entity(
+            "idem".into(),
+            crate::extension::wrapper::ExtensionVariant::Local,
+        );
+        let handle = EntityTelemetryHandle::new(ext_ctx.metrics_registry(), entity_key);
+
+        let extra_entity = ext_ctx.register_extension_channel_entity(
+            "idem".into(),
+            crate::extension::wrapper::ExtensionVariant::Local,
+            "ctrl".into(),
+            CHANNEL_MODE_LOCAL,
+            CHANNEL_IMPL_INTERNAL,
+        );
+        handle.track_entity(extra_entity);
+        let _metrics = handle.register_metric_set::<ChannelSenderMetrics>();
+
+        assert_eq!(registry.entity_count(), baseline_entities + 2);
+        assert_eq!(registry.metric_set_count(), baseline_metric_sets + 1);
+
+        let clone = handle.clone();
+        clone.cleanup();
+        assert_eq!(registry.entity_count(), baseline_entities);
+        assert_eq!(registry.metric_set_count(), baseline_metric_sets);
+
+        // Re-register to expose any latent double-unregister.
+        let resurrected = ext_ctx.register_extension_entity(
+            "resurrected".into(),
+            crate::extension::wrapper::ExtensionVariant::Local,
+        );
+        assert_eq!(registry.entity_count(), baseline_entities + 1);
+
+        let guard = EntityTelemetryGuard::new(handle);
+        drop(guard);
+        assert_eq!(
+            registry.entity_count(),
+            baseline_entities + 1,
+            "second cleanup must not unregister the resurrected entity"
+        );
+
+        let _ = registry.unregister_entity(resurrected);
+    }
 }
