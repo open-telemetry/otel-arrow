@@ -18,12 +18,40 @@ variables:
 
 # Allowed values for every meta key a suite may declare. Validation rejects
 # any meta key not listed here, and any value (or list element) outside the
-# allowed set.
+# allowed set. Each entry is an object with `value` (the token used in suite
+# YAMLs and filter UI) and `description` (long-form text shown as the
+# tooltip when hovering the filter chip in the dashboard).
 meta:
-  binary: [dfe, otc]
-  protocols: [otap, otlp, otlphttp]
-  signals: [logs, metrics, traces]
-  compression: [none, gzip, zstd]
+  binary:
+    - { value: dfe, description: "Dataflow Engine - the OTAP-native pipeline engine developed as a part of OTel Arrow." }
+    - { value: otc, description: "OpenTelemetry Collector (contrib distribution)." }
+  protocols:
+    - { value: otap, description: "OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches." }
+    - { value: otlp, description: "OpenTelemetry Protocol over gRPC (row-oriented protobuf)." }
+    - { value: otlphttp, description: "OpenTelemetry Protocol over HTTP/protobuf." }
+  signals:
+    - { value: logs, description: "OpenTelemetry Logs signal." }
+    - { value: metrics, description: "OpenTelemetry Metrics signal." }
+    - { value: traces, description: "OpenTelemetry Traces signal." }
+  compression:
+    - { value: none, description: "No payload compression on the wire." }
+    - { value: gzip, description: "gzip payload compression." }
+    - { value: zstd, description: "zstd payload compression." }
+
+# Glossary entries shown in the pinned legend banner on every page. These are
+# independent from `meta` so the legend can cover terms that aren't filter
+# values (e.g. Backpressure). Order is preserved in the rendered banner.
+glossary:
+  - term: DFE
+    definition: Dataflow Engine - the OTAP-native Rust pipeline being benchmarked in this repo.
+  - term: OTC
+    definition: OpenTelemetry Collector (contrib distribution) - the reference Go implementation.
+  - term: OTAP
+    definition: OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches.
+  - term: OTLP
+    definition: OpenTelemetry Protocol - the standard row-oriented gRPC/HTTP protobuf protocol.
+  - term: OTLP HTTP
+    definition: OpenTelemetry Protocol over pure HTTP.
 
 # Display registry for dashboard metrics. Names must match the `name` field on
 # per-test metric records in published suite data; units come from those
