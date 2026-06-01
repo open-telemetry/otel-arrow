@@ -1,9 +1,9 @@
-slug: dfe_logs_transform_attr_processor_insert
-name: Dataflow Engine Attribute Insert
+slug: log_transform_attr_processor_insert
+name: Log Attribute Insert (Multi Rate)
 description: >
   Inserting an attribute "processing.engine" with a static value "benchmark" on
-  logs in the Dataflow Engine. Comparing the attributes processor vs the transform
-  processor (OPL) across the OTAP and OTLP protocols.
+  logs. Comparing the attributes processor vs the transform processor across
+  engines and transports.
 
 chart:
   axes:
@@ -30,23 +30,34 @@ tests:
 
 suites:
   # DFE OTAP
-  - name: DFE OTAP Attr Insert (Logs)
+  - name: DFE OTAP Attr Insert
     slug: dfe_logs_otap_none_attr_insert
-    short: OTAP/Attr
-  - name: DFE OTAP Transform Insert (Logs)
+    short: DFE OTAP/Attr
+  - name: DFE OTAP Transform Insert
     slug: dfe_logs_otap_none_transform_insert
-    short: OTAP/Transform
-  - name: DFE OTAP Baseline (Logs)
+    short: DFE OTAP/Transform
+  - name: DFE OTAP Baseline
     slug: dfe_logs_otap_none_baseline
-    short: OTAP/Baseline
+    short: DFE OTAP/Baseline
 
   # DFE OTLP
-  - name: DFE OTLP Attr Insert (Logs)
+  - name: DFE OTLP Attr Insert
     slug: dfe_logs_otlp_none_attr_insert
-    short: OTLP/Attr
-  - name: DFE OTLP Transform Insert (Logs)
+    short: DFE OTLP/Attr
+  - name: DFE OTLP Transform Insert
     slug: dfe_logs_otlp_none_transform_insert
-    short: OTLP/Transform
-  - name: DFE OTLP Baseline (Logs)
+    short: DFE OTLP/Transform
+  - name: DFE OTLP Baseline
     slug: dfe_logs_otlp_none_baseline
-    short: OTLP/Baseline
+    short: DFE OTLP/Baseline
+
+  # OTC OTLP
+  - name: OTC OTLP Attr Insert
+    slug: otc_logs_otlp_none_attr_insert
+    short: OTC OTLP/Attr
+  - name: OTC OTLP Transform Insert
+    slug: otc_logs_otlp_none_transform_insert
+    short: OTC OTLP/Transform
+  - name: OTC OTLP Baseline
+    slug: otc_logs_otlp_none_baseline
+    short: OTC OTLP/Baseline

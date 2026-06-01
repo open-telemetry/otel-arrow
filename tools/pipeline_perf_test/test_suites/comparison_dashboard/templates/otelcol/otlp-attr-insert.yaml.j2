@@ -7,9 +7,11 @@ receivers:
 processors:
   attributes:
     actions:
-      - key: processing.engine
-        value: benchmark
+{%- for a in insert_actions %}
+      - key: {{ a.key }}
+        value: {{ a.value }}
         action: insert
+{%- endfor %}
 
 exporters:
   otlp:

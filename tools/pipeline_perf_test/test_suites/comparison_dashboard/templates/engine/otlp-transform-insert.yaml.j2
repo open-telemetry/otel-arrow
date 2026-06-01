@@ -30,7 +30,7 @@ groups:
           processor:
             type: urn:otel:processor:transform
             config:
-              opl_query: 'logs | set attributes["processing.engine"] = "benchmark"'
+              opl_query: 'logs{% for a in insert_actions %} | set attributes["{{ a.key }}"] = "{{ a.value }}"{% endfor %}'
           exporter:
             type: urn:otel:exporter:otlp_grpc
             config:

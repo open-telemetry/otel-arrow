@@ -19,15 +19,34 @@ permissions:
 jobs:
   push-release:
     permissions:
-      contents: write
+      contents: read
     runs-on: ubuntu-latest
     environment: release
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Checkout (dry run)
+        if: inputs.dry_run
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ github.ref }}
+
+      - name: Create GitHub App token
+        if: '!inputs.dry_run'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ vars.OTELBOT_APP_ID }}
+          private-key: ${{ secrets.OTELBOT_PRIVATE_KEY }}
+
+      - name: Checkout (release push)
+        if: '!inputs.dry_run'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.ref }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Validate inputs
         run: |
@@ -39,9 +58,10 @@ jobs:
 
       - name: Verify release preparation
         run: |
-          # Check if the version is already in CHANGELOG.md
-          if ! grep -q "## \[${{ inputs.version }}\]" CHANGELOG.md; then
-            echo "Error: Version ${{ inputs.version }} not found in CHANGELOG.md"
+          # Check if the version is already in go/CHANGELOG.md.
+          # Chloggen renders new entries under `## v<VERSION>`.
+          if ! grep -q "^## v${{ inputs.version }}$" go/CHANGELOG.md; then
+            echo "Error: Version v${{ inputs.version }} not found in go/CHANGELOG.md"
             echo "Make sure you have run the 'Prepare Release' workflow and merged the PR first"
             exit 1
           fi
@@ -91,7 +111,52 @@ jobs:
       - name: Extract changelog content for this release
         id: changelog
         run: |
-          .github/workflows/scripts/extract-changelog.sh "${{ inputs.version }}" /tmp/release_content.txt --normalize
+          # Pull the rendered section from each CHANGELOG and combine
+          # them under per-language `## What's Changed (...)` headings
+          # for the GitHub Release body. --allow-missing keeps the
+          # workflow working if one side had no chloggen entries this
+          # release.
+          .github/workflows/scripts/extract-changelog.sh \
+            --version "${{ inputs.version }}" \
+            --file go/CHANGELOG.md \
+            --allow-missing \
+            /tmp/go_release_content.txt
+          .github/workflows/scripts/extract-changelog.sh \
+            --version "${{ inputs.version }}" \
+            --file rust/otap-dataflow/CHANGELOG.md \
+            --allow-missing \
+            /tmp/rust_release_content.txt
+
+          {
+            echo "## What's Changed (Go :hamster:)"
+            echo ""
+            if [ -s /tmp/go_release_content.txt ]; then
+              cat /tmp/go_release_content.txt
+            else
+              echo "_No Go changes in this release._"
+            fi
+            echo ""
+            echo "### Go Modules"
+            echo ""
+            echo "This release includes the following Go modules:"
+            echo ""
+            echo "- github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}"
+            echo "- github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}"
+            echo ""
+            echo "## What's Changed (Rust :crab:)"
+            echo ""
+            if [ -s /tmp/rust_release_content.txt ]; then
+              cat /tmp/rust_release_content.txt
+            else
+              echo "_No Rust changes in this release._"
+            fi
+            echo ""
+            echo "### Rust Workspace"
+            echo ""
+            echo "The Rust workspace at \`rust/otap-dataflow/\` is tagged as"
+            echo "\`rust/otap-dataflow/v${{ inputs.version }}\`. Crates are not"
+            echo "published to crates.io yet; consume this release via git."
+          } > /tmp/release_content.txt
 
       - name: Dry run - Show planned changes
         if: inputs.dry_run
@@ -111,12 +176,13 @@ jobs:
           - `v${{ inputs.version }}` - Main release tag
           - `go/v${{ inputs.version }}` - Go module tag
           - `collector/cmd/otelarrowcol/v${{ inputs.version }}` - Collector module tag
+          - `rust/otap-dataflow/v${{ inputs.version }}` - Rust workspace tag (git-tag only; no crates.io publish)
 
           ## GitHub Release
           - **Title**: Release v${{ inputs.version }}
           - **Tag**: v${{ inputs.version }}
           - **Type**: Draft release (latest)
-          - **Release notes**: Extracted from CHANGELOG.md
+          - **Release notes**: Combined from `go/CHANGELOG.md` and `rust/otap-dataflow/CHANGELOG.md`
 
           ## Go Modules
           After release, the following modules will be available:
@@ -141,14 +207,6 @@ jobs:
           **Note**: This is a dry run. To execute the actual release push, set `dry_run` to `false`.
           EOF
 
-      - name: Create GitHub App token
-        if: '!inputs.dry_run'
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
-        id: app-token
-        with:
-          app-id: ${{ vars.OTELBOT_APP_ID }}
-          private-key: ${{ secrets.OTELBOT_PRIVATE_KEY }}
-
       - name: Create git tags
         if: '!inputs.dry_run'
         run: |
@@ -163,6 +221,9 @@ jobs:
           git tag -a "go/v${{ inputs.version }}" -m "Release go/v${{ inputs.version }}"
           git tag -a "collector/cmd/otelarrowcol/v${{ inputs.version }}" -m "Release collector/cmd/otelarrowcol/v${{ inputs.version }}"
 
+          # Create Rust workspace tag (git-tag only; no crates.io publish yet)
+          git tag -a "rust/otap-dataflow/v${{ inputs.version }}" -m "Release rust/otap-dataflow/v${{ inputs.version }}"
+
           echo "Created tags:"
           git tag --list "v${{ inputs.version }}"
           git tag --list "*v${{ inputs.version }}"
@@ -174,33 +235,27 @@ jobs:
           git push origin "v${{ inputs.version }}"
           git push origin "go/v${{ inputs.version }}"
           git push origin "collector/cmd/otelarrowcol/v${{ inputs.version }}"
+          git push origin "rust/otap-dataflow/v${{ inputs.version }}"
 
           echo "Pushed tags:"
           echo "- v${{ inputs.version }}"
           echo "- go/v${{ inputs.version }}"
           echo "- collector/cmd/otelarrowcol/v${{ inputs.version }}"
+          echo "- rust/otap-dataflow/v${{ inputs.version }}"
 
       - name: Create GitHub release
         if: '!inputs.dry_run'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          # Read changelog content into a variable
+          # Read combined changelog content into a variable
           RELEASE_CONTENT=$(cat /tmp/release_content.txt)
 
           # Create release body content
           cat > /tmp/release_body.md << EOF
-          ## What's Changed
-
           ${RELEASE_CONTENT}
 
           **Full Changelog**: https://github.com/open-telemetry/otel-arrow/compare/v${{ steps.last_version.outputs.last_version }}...v${{ inputs.version }}
-
-          ## Go Modules
-
-          This release includes the following Go modules:
-          - github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}
-          - github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}
           EOF
 
           # Create the GitHub release using GitHub CLI
@@ -227,6 +282,7 @@ jobs:
             echo "- v${{ inputs.version }}"
             echo "- go/v${{ inputs.version }}"
             echo "- collector/cmd/otelarrowcol/v${{ inputs.version }}"
+            echo "- rust/otap-dataflow/v${{ inputs.version }}"
             echo ""
             echo "Go modules are now available:"
             echo "- go get github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}"

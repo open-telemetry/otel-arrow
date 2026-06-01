@@ -19,3 +19,5 @@ variables:
   loadgen_max_batch_size: 1000
   compression_method: none
   wait_for_result: true
+  rename_pairs:
+    - {source: "exception.type", destination: "exception.kind"}

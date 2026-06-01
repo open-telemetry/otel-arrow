@@ -17,3 +17,13 @@ We highly recommend correlation of every PR to an issue
 ## Are there any user-facing changes?
 
  <!-- If yes, provide further info below -->
+
+### Changelog
+
+<!--
+User-facing changes need a .chloggen/*.yaml entry. Copy the TEMPLATE.yaml
+in go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the fields.
+If not required, include `chore` in the PR title.
+-->
+
+* [ ] Added a `.chloggen/*.yaml` entry, OR this PR is a `chore` (indicated in title).
