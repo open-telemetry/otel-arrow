@@ -144,7 +144,7 @@ config:
 | `extraction.max_field_bytes` | byte size | `256KiB` | Maximum copied bytes per field value. |
 | `extraction.max_fields_per_entry` | integer | `256` | Maximum copied fields per journal entry. |
 | `extraction.large_field_policy` | enum | `drop_and_count` | Oversized fields are dropped and counted. |
-| `checkpoint.directory` | path | `${engine.state_dir}/journald` | Root directory for durable cursor checkpoints. |
+| `checkpoint.directory` | path | `${engine.state_dir}/journald` | Root directory for durable cursor checkpoints. `${engine.state_dir}` expands to `$OTAP_DF_STATE_DIR` or `.otap-state` when unset. |
 | `checkpoint.max_in_flight_batches` | integer | `1` | Must be `1` in v1. |
 | `checkpoint.on_nack` | enum | `rewind` | Either `rewind` or `fail`. |
 | `checkpoint.max_consecutive_failures` | integer | `5` | Consecutive checkpoint write failures before failing the source. |

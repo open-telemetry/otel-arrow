@@ -62,10 +62,10 @@ pub(crate) fn checkpoint_path(
     source_id: &str,
 ) -> PathBuf {
     let mut path = expand_state_dir(root);
-    path.push(sanitize_segment(pipeline_group_id));
-    path.push(sanitize_segment(pipeline_id));
-    path.push(sanitize_segment(receiver_name));
-    path.push(format!("{}.cursor", sanitize_segment(source_id)));
+    path.push(encode_path_segment(pipeline_group_id));
+    path.push(encode_path_segment(pipeline_id));
+    path.push(encode_path_segment(receiver_name));
+    path.push(format!("{}.cursor", encode_path_segment(source_id)));
     path
 }
 
@@ -179,17 +179,35 @@ fn expand_state_dir(root: &Path) -> PathBuf {
     root.to_path_buf()
 }
 
-fn sanitize_segment(value: &str) -> String {
-    value
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+fn encode_path_segment(value: &str) -> String {
+    if value.is_empty() {
+        return "%".to_owned();
+    }
+
+    let encode_all = matches!(value, "." | "..");
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if !encode_all && is_checkpoint_path_safe_byte(byte) {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(hex_digit(byte >> 4)));
+            encoded.push(char::from(hex_digit(byte & 0x0f)));
+        }
+    }
+    encoded
+}
+
+fn is_checkpoint_path_safe_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+}
+
+fn hex_digit(value: u8) -> u8 {
+    match value {
+        0..=9 => b'0' + value,
+        10..=15 => b'A' + (value - 10),
+        _ => unreachable!("nibble must be in range"),
+    }
 }
 
 #[cfg(test)]
@@ -222,5 +240,32 @@ mod tests {
             "system",
         );
         assert!(path.ends_with("journald/g/p/recv/system.cursor"));
+    }
+
+    #[test]
+    fn checkpoint_path_segments_are_collision_free_for_common_unsafe_chars() {
+        let root = Path::new("/state");
+        let slash_path = checkpoint_path(root, "a/b", "p", "recv", "system");
+        let underscore_path = checkpoint_path(root, "a_b", "p", "recv", "system");
+
+        assert_ne!(slash_path, underscore_path);
+        assert!(slash_path.ends_with("a%2Fb/p/recv/system.cursor"));
+        assert!(underscore_path.ends_with("a_b/p/recv/system.cursor"));
+    }
+
+    #[test]
+    fn checkpoint_path_segments_do_not_create_special_path_components() {
+        let path = checkpoint_path(Path::new("/state"), ".", "..", "recv/name", "system");
+        let components: Vec<_> = path
+            .strip_prefix("/state")
+            .unwrap()
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(
+            components,
+            ["%2E", "%2E%2E", "recv%2Fname", "system.cursor"]
+        );
     }
 }

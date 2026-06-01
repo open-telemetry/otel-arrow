@@ -1190,6 +1190,36 @@ mod tests {
         drop(b);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn factory_rejects_multi_core_pipeline() {
+        let registry = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller = otap_df_engine::context::ControllerContext::new(registry);
+        let pipeline =
+            controller.pipeline_context_with("test-group".into(), "test-pipeline".into(), 0, 2, 0);
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(JOURNALD_RECEIVER_URN));
+        let receiver_config = ReceiverConfig::new("journald");
+
+        let result = create_journald_receiver(
+            pipeline,
+            NodeId {
+                index: 0,
+                name: "journald".into(),
+            },
+            node_config,
+            &receiver_config,
+        );
+
+        let Err(err) = result else {
+            panic!("journald receiver must reject multi-core source pipelines");
+        };
+
+        assert!(
+            err.to_string().contains("one-core source pipeline"),
+            "unexpected error: {err}"
+        );
+    }
+
     #[test]
     fn ack_marks_pending_batch_for_commit() {
         let mut pending = BTreeMap::from([(7, pending_batch("cursor-7"))]);
