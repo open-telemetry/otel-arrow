@@ -677,10 +677,9 @@ fn pop_next_governed_event(
 
         let event = {
             let subscription = &mut pending.subscriptions[subscription_index];
-            let event = subscription
-                .events
-                .pop_front()
-                .expect("front() returned Some");
+            let Some(event) = subscription.events.pop_front() else {
+                continue;
+            };
             subscription.pending_bytes = subscription.pending_bytes.saturating_sub(front_len);
             event
         };
@@ -859,6 +858,32 @@ mod tests {
         pending.push_event(test_event(1, 8));
 
         assert_eq!(pending.len(), 2);
+        assert_eq!(pending.take_dropped_pending_overflow(), 1);
+    }
+
+    #[test]
+    fn governed_pending_rejects_subscription_byte_cap() {
+        let subscriptions = vec![
+            test_subscription(
+                "user_events:noisy",
+                Some(UserEventsSubscriptionLimits {
+                    max_pending_events: None,
+                    max_pending_bytes: Some(16),
+                }),
+            ),
+            test_subscription("user_events:quiet", None),
+        ];
+        let pending = PendingQueues::new(&subscriptions, 10, 1024);
+
+        assert!(pending.accepts_event(0, 8));
+        pending.push_event(test_event(0, 8));
+        assert!(pending.accepts_event(0, 8));
+        pending.push_event(test_event(0, 8));
+        assert!(!pending.accepts_event(0, 1));
+        assert!(pending.accepts_event(1, 128));
+        pending.push_event(test_event(1, 128));
+
+        assert_eq!(pending.len(), 3);
         assert_eq!(pending.take_dropped_pending_overflow(), 1);
     }
 

@@ -285,7 +285,9 @@ queue and FIFO drain behavior. To protect quiet tracepoints from admission drops
 under the shared global ceiling, set limits on the high-volume tracepoints;
 round-robin drain only equalizes drain order. Phase 1 keeps
 `dropped_pending_overflow` aggregate-only, so per-tracepoint and per-cap drop
-attribution is not yet reported by metrics.
+attribution is not yet reported by metrics. If `subscriptions[].limits` is
+present, at least one pending cap must be set and all configured cap values must
+be greater than zero.
 
 Late registration is also currently all-or-nothing for multiple subscriptions:
 if any configured tracepoint is missing, the receiver retries opening the
@@ -314,8 +316,8 @@ tracepoint sessions.
 | --- | --- | --- |
 | `subscriptions` | none | Required non-empty list of `user_events` tracepoints. Each entry may be either `<event>` or `user_events:<event>`. |
 | `subscriptions[].format.type` | `tracefs` | Decode format for one subscription. `tracefs` is always supported; `event_header` requires the `user_events-eventheader` feature. |
-| `subscriptions[].limits.max_pending_events` | none | Optional per-subscription pending event cap. When any subscription has limits, per-subscription queues and round-robin drain are enabled under the global session caps. |
-| `subscriptions[].limits.max_pending_bytes` | none | Optional per-subscription pending raw payload byte cap. Counts raw `event_data` bytes, matching `session.max_pending_bytes`. |
+| `subscriptions[].limits.max_pending_events` | none | Optional per-subscription pending event cap. When `limits` is present, at least one pending cap must be set, and configured cap values must be greater than zero. |
+| `subscriptions[].limits.max_pending_bytes` | none | Optional per-subscription pending raw payload byte cap. Counts raw `event_data` bytes, matching `session.max_pending_bytes`. When any subscription has effective limits, per-subscription queues and round-robin drain are enabled under the global session caps. |
 | `session.per_cpu_buffer_size` | `1048576` | Requested per-CPU perf ring size in bytes. Rounded up to at least one page and then to the next power of two. |
 | `session.wakeup_watermark` | `262144` | Reserved for future one_collect wakeup support; currently ignored. |
 | `session.max_pending_events` | `4096` | Maximum parsed events buffered between one_collect callbacks and the receiver drain loop. New events are dropped when this cap is reached. |
