@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version to tag and publish (e.g., 0.40.0)'
+        description: "Release version to tag and publish (e.g., 0.40.0)"
         required: true
         type: string
       dry_run:
-        description: 'Dry run mode (just show what would happen)'
+        description: "Dry run mode (just show what would happen)"
         required: true
         type: boolean
         default: true
@@ -32,21 +32,21 @@ jobs:
           ref: ${{ github.ref }}
 
       - name: Create GitHub App token
-        if: '!inputs.dry_run'
+        if: "!inputs.dry_run"
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: app-token
+        id: otelbot-token
         with:
-          app-id: ${{ vars.OTELBOT_APP_ID }}
-          private-key: ${{ secrets.OTELBOT_PRIVATE_KEY }}
+          app-id: ${{ vars.OTELBOT_ARROW_APP_ID }}
+          private-key: ${{ secrets.OTELBOT_ARROW_PRIVATE_KEY }}
 
       - name: Checkout (release push)
-        if: '!inputs.dry_run'
+        if: "!inputs.dry_run"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ github.ref }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.otelbot-token.outputs.token }}
 
       - name: Validate inputs
         run: |
@@ -208,7 +208,7 @@ jobs:
           EOF
 
       - name: Create git tags
-        if: '!inputs.dry_run'
+        if: "!inputs.dry_run"
         run: |
           # Configure git
           git config user.name otelbot
@@ -229,7 +229,7 @@ jobs:
           git tag --list "*v${{ inputs.version }}"
 
       - name: Push git tags
-        if: '!inputs.dry_run'
+        if: "!inputs.dry_run"
         run: |
           # Push all tags for this version
           git push origin "v${{ inputs.version }}"
@@ -244,9 +244,9 @@ jobs:
           echo "- rust/otap-dataflow/v${{ inputs.version }}"
 
       - name: Create GitHub release
-        if: '!inputs.dry_run'
+        if: "!inputs.dry_run"
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.otelbot-token.outputs.token }}
         run: |
           # Read combined changelog content into a variable
           RELEASE_CONTENT=$(cat /tmp/release_content.txt)

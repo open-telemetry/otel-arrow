@@ -34,10 +34,10 @@ jobs:
       - name: Create GitHub App token
         if: "!inputs.dry_run"
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: app-token
+        id: otelbot-token
         with:
-          app-id: ${{ vars.OTELBOT_APP_ID }}
-          private-key: ${{ secrets.OTELBOT_PRIVATE_KEY }}
+          app-id: ${{ vars.OTELBOT_ARROW_APP_ID }}
+          private-key: ${{ secrets.OTELBOT_ARROW_PRIVATE_KEY }}
 
       - name: Checkout (release preparation)
         if: "!inputs.dry_run"
@@ -46,7 +46,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ github.ref }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.otelbot-token.outputs.token }}
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version: stable
@@ -208,7 +208,7 @@ jobs:
         if: "!inputs.dry_run"
         env:
           # not using secrets.GITHUB_TOKEN since pull requests from that token do not trigger workflows
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.otelbot-token.outputs.token }}
         run: |
           # Read combined changelog content for PR body
           CHANGELOG_CONTENT=$(cat /tmp/combined_release_content.txt)
