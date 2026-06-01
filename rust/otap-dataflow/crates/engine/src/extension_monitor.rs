@@ -34,10 +34,13 @@ pub(crate) enum ExtensionRuntimeState {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // JoinPanic/JoinCancelled wired once join errors carry the key
 pub(crate) enum ExtensionOutcome {
     Ok,
-    Err(String),
+    /// Extension's `start()` returned an error. The captured string is
+    /// preserved for forwarding to richer telemetry surfaces (e.g., a
+    /// "last error" attribute) once those are added; today the monitor
+    /// only counts the failure.
+    Err(#[allow(dead_code)] String),
     JoinPanic,
     JoinCancelled,
     ShutdownTimeout,
@@ -385,6 +388,31 @@ impl ExtensionMetricsMonitor {
             }
         }
     }
+
+    /// Returns the lifecycle state for `key`, or `None` if absent.
+    #[cfg(test)]
+    pub(crate) fn state_for(&self, key: &ExtensionKey) -> Option<ExtensionRuntimeState> {
+        self.entries.iter().find(|e| &e.key == key).map(|e| e.state)
+    }
+
+    /// Returns the `completed_panic` counter for `key`, or `None` if absent.
+    #[cfg(test)]
+    pub(crate) fn completed_panic_count(&self, key: &ExtensionKey) -> Option<u64> {
+        self.entries
+            .iter()
+            .find(|e| &e.key == key)
+            .map(|e| e.lifecycle_metrics.completed_panic.get())
+    }
+
+    /// Returns the `completed_cancelled` counter for `key`, or `None` if absent.
+    #[cfg(test)]
+    #[allow(dead_code)] // kept for symmetry with completed_panic_count
+    pub(crate) fn completed_cancelled_count(&self, key: &ExtensionKey) -> Option<u64> {
+        self.entries
+            .iter()
+            .find(|e| &e.key == key)
+            .map(|e| e.lifecycle_metrics.completed_cancelled.get())
+    }
 }
 
 #[cfg(test)]
@@ -619,11 +647,6 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn local_and_shared_get_distinct_metric_set_keys() {
-        // Regression guard for Lalit L3: local and shared variants of
-        // the same extension id must produce independent metric sets,
-        // not share storage. Verifying distinct MetricSetKeys catches
-        // the original "map keyed only by ExtensionId" bug at the
-        // telemetry-registry layer.
         let (mut monitor, ctx) = fresh_monitor();
         let local_ent = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
         let shared_ent = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Shared);

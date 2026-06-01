@@ -646,22 +646,39 @@ fn test_background_factory_capabilities_none() {
 // ── Extension telemetry wiring tests ─────────────────────────────────────────
 
 #[test]
-fn test_extension_attribute_set_is_scope_agnostic() {
-    use crate::attributes::ExtensionAttributeSet;
+fn test_extension_attribute_set_carries_pipeline_scope() {
+    use crate::attributes::{ExtensionAttributeSet, ExtensionScopeAttributeSet};
     use otap_df_telemetry::attributes::AttributeSetHandler;
 
     let attrs = ExtensionAttributeSet {
         extension_id: "ext1".into(),
         extension_variant: "local".into(),
+        extension_scope: ExtensionScopeAttributeSet::pipeline("grp", "pipeline_a", 7, 3),
     };
     assert_eq!(attrs.schema_name(), "extension.attrs");
-    let keys: Vec<&'static str> = attrs.iter_attributes().map(|(k, _)| k).collect();
-    assert_eq!(keys, vec!["extension.id", "extension.variant"]);
+    let attr_map: std::collections::HashMap<&'static str, String> = attrs
+        .iter_attributes()
+        .map(|(k, v)| (k, v.to_string_value()))
+        .collect();
+    assert!(attr_map.contains_key("extension.id"));
+    assert!(attr_map.contains_key("extension.variant"));
+    assert_eq!(
+        attr_map.get("scope.kind").map(String::as_str),
+        Some("pipeline"),
+        "extension.attrs must carry scope.kind; got: {attr_map:?}"
+    );
+    assert_eq!(
+        attr_map.get("scope.id").map(String::as_str),
+        Some("grp/pipeline_a/core/7/gen/3"),
+        "extension.attrs must carry the formed scope.id; got: {attr_map:?}"
+    );
 }
 
 #[test]
 fn test_extension_channel_attribute_set_shape() {
-    use crate::attributes::{ExtensionAttributeSet, ExtensionChannelAttributeSet};
+    use crate::attributes::{
+        ExtensionAttributeSet, ExtensionChannelAttributeSet, ExtensionScopeAttributeSet,
+    };
     use otap_df_telemetry::attributes::AttributeSetHandler;
 
     let attrs = ExtensionChannelAttributeSet {
@@ -669,6 +686,7 @@ fn test_extension_channel_attribute_set_shape() {
         extension_attrs: ExtensionAttributeSet {
             extension_id: "ext1".into(),
             extension_variant: "shared".into(),
+            extension_scope: ExtensionScopeAttributeSet::pipeline("grp", "pipeline_a", 0, 0),
         },
         channel_mode: "local".into(),
         channel_impl: "internal".into(),
@@ -684,6 +702,8 @@ fn test_extension_channel_attribute_set_shape() {
     assert!(!keys.contains(&"channel.kind"));
     assert!(!keys.contains(&"channel.type"));
     assert!(!keys.contains(&"node.port"));
+    assert!(keys.contains(&"scope.kind"));
+    assert!(keys.contains(&"scope.id"));
 }
 
 #[test]
@@ -1111,4 +1131,165 @@ fn two_active_extensions_report_isolated_internal_metrics() {
         assert!(h_a.await.unwrap().is_ok());
         assert!(h_b.await.unwrap().is_ok());
     }));
+}
+
+fn pipeline_ctx_in_controller(
+    controller: &crate::context::ControllerContext,
+    group: &'static str,
+    pipeline: &'static str,
+    core_id: usize,
+    thread_id: usize,
+) -> crate::context::PipelineContext {
+    controller.pipeline_context_with(group.into(), pipeline.into(), core_id, 1, thread_id)
+}
+
+#[test]
+fn extension_entity_isolated_across_pipelines() {
+    use crate::extension::wrapper::ExtensionVariant;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+    let registry = TelemetryRegistryHandle::new();
+    let controller = crate::context::ControllerContext::new(registry.clone());
+
+    let pipe_a = pipeline_ctx_in_controller(&controller, "grp", "pipeline_a", 0, 0);
+    let pipe_b = pipeline_ctx_in_controller(&controller, "grp", "pipeline_b", 0, 1);
+
+    let ext_a = pipe_a
+        .extension_context()
+        .register_extension_entity("same_ext".into(), ExtensionVariant::Local);
+    let ext_b = pipe_b
+        .extension_context()
+        .register_extension_entity("same_ext".into(), ExtensionVariant::Local);
+
+    assert_ne!(
+        ext_a, ext_b,
+        "two pipelines hosting an extension with the same id+variant must get distinct entity keys",
+    );
+}
+
+#[test]
+fn extension_entity_isolated_across_cores() {
+    use crate::extension::wrapper::ExtensionVariant;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+    let registry = TelemetryRegistryHandle::new();
+    let controller = crate::context::ControllerContext::new(registry.clone());
+
+    // Same pipeline replicated across two cores. Each per-core runtime
+    // registers its own extension instances — they must not alias.
+    let pipe_core0 = pipeline_ctx_in_controller(&controller, "grp", "pipeline_a", 0, 0);
+    let pipe_core1 = pipeline_ctx_in_controller(&controller, "grp", "pipeline_a", 1, 1);
+
+    let ext_core0 = pipe_core0
+        .extension_context()
+        .register_extension_entity("same_ext".into(), ExtensionVariant::Local);
+    let ext_core1 = pipe_core1
+        .extension_context()
+        .register_extension_entity("same_ext".into(), ExtensionVariant::Local);
+
+    assert_ne!(
+        ext_core0, ext_core1,
+        "same pipeline on two cores must register distinct extension entities",
+    );
+}
+
+#[test]
+fn extension_entity_isolated_across_pipeline_groups() {
+    use crate::extension::wrapper::ExtensionVariant;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+    let registry = TelemetryRegistryHandle::new();
+    let controller = crate::context::ControllerContext::new(registry.clone());
+
+    let pipe_grp_a = pipeline_ctx_in_controller(&controller, "grp_a", "pipeline_x", 0, 0);
+    let pipe_grp_b = pipeline_ctx_in_controller(&controller, "grp_b", "pipeline_x", 0, 1);
+
+    let ext_grp_a = pipe_grp_a
+        .extension_context()
+        .register_extension_entity("same_ext".into(), ExtensionVariant::Local);
+    let ext_grp_b = pipe_grp_b
+        .extension_context()
+        .register_extension_entity("same_ext".into(), ExtensionVariant::Local);
+
+    assert_ne!(
+        ext_grp_a, ext_grp_b,
+        "two pipeline groups must isolate their extensions even when the inner pipeline id matches",
+    );
+}
+
+#[test]
+fn extension_channel_entity_isolated_across_pipelines() {
+    use crate::extension::wrapper::ExtensionVariant;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+    let registry = TelemetryRegistryHandle::new();
+    let controller = crate::context::ControllerContext::new(registry.clone());
+
+    let pipe_a = pipeline_ctx_in_controller(&controller, "grp", "pipeline_a", 0, 0);
+    let pipe_b = pipeline_ctx_in_controller(&controller, "grp", "pipeline_b", 0, 1);
+
+    let chan_a = pipe_a
+        .extension_context()
+        .register_extension_channel_entity(
+            "same_ext".into(),
+            ExtensionVariant::Shared,
+            "same_ext:control".into(),
+            "shared",
+            "tokio",
+        );
+    let chan_b = pipe_b
+        .extension_context()
+        .register_extension_channel_entity(
+            "same_ext".into(),
+            ExtensionVariant::Shared,
+            "same_ext:control".into(),
+            "shared",
+            "tokio",
+        );
+
+    assert_ne!(
+        chan_a, chan_b,
+        "extension control-channel entities must be pipeline-scoped",
+    );
+}
+
+#[test]
+fn extension_attribute_set_carries_pipeline_scope_from_pipeline_context() {
+    use crate::extension::wrapper::ExtensionVariant;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+    let registry = TelemetryRegistryHandle::new();
+    let controller = crate::context::ControllerContext::new(registry.clone());
+    let pipe = pipeline_ctx_in_controller(&controller, "grp", "pipeline_a", 7, 0);
+    let ext_ctx = pipe.extension_context();
+    let attrs = ext_ctx.extension_attribute_set("ext1".into(), ExtensionVariant::Local);
+
+    let key = registry.register_entity(attrs);
+
+    let attr_map = registry
+        .visit_entity(key, |a| {
+            a.iter_attributes()
+                .map(|(k, v)| (k.to_string(), v.to_string_value()))
+                .collect::<std::collections::HashMap<_, _>>()
+        })
+        .expect("entity should exist");
+
+    assert!(
+        attr_map.contains_key("scope.kind"),
+        "extension.attrs minted from a PipelineContext must carry scope.kind; got: {attr_map:?}"
+    );
+    assert_eq!(
+        attr_map.get("scope.kind").map(String::as_str),
+        Some("pipeline"),
+        "pipeline-hosted extensions must report scope.kind = \"pipeline\""
+    );
+    assert_eq!(
+        attr_map.get("scope.id").map(String::as_str),
+        Some("grp/pipeline_a/core/7/gen/0"),
+        "scope.id must encode the full pipeline coordinates; got: {attr_map:?}"
+    );
+    assert_eq!(
+        attr_map.get("extension.id").map(String::as_str),
+        Some("ext1")
+    );
 }

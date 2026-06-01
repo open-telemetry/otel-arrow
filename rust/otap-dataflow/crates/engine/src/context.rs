@@ -5,9 +5,9 @@
 
 use crate::attributes::{
     CustomAttributeSet, EngineAttributeSet, ExtensionAttributeSet, ExtensionChannelAttributeSet,
-    NodeAttributeSet, NodeChannelAttributeSet, NodeWithCustomAttributeSet,
-    NodeWithCustomTopicAttributeSet, NodeWithTopicAttributeSet, PipelineAttributeSet,
-    config_map_to_telemetry,
+    ExtensionScopeAttributeSet, NodeAttributeSet, NodeChannelAttributeSet,
+    NodeWithCustomAttributeSet, NodeWithCustomTopicAttributeSet, NodeWithTopicAttributeSet,
+    PipelineAttributeSet, config_map_to_telemetry,
 };
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::memory_limiter::MemoryPressureState;
@@ -453,13 +453,20 @@ impl PipelineContext {
             .register_entity(self.pipeline_attribute_set())
     }
 
-    /// Returns an [`ExtensionContext`] suitable for hosting extensions
-    /// at this pipeline scope.
+    /// Returns an [`ExtensionContext`] scoped to this pipeline so
+    /// extension entities registered through it inherit the pipeline's
+    /// identity.
     #[must_use]
     pub fn extension_context(&self) -> ExtensionContext {
-        ExtensionContext {
-            controller_context: self.controller_context.clone(),
-        }
+        ExtensionContext::with_extension_scope(
+            self.controller_context.clone(),
+            ExtensionScopeAttributeSet::pipeline(
+                self.pipeline_context_params.pipeline_group_id.clone(),
+                self.pipeline_context_params.pipeline_id.clone(),
+                self.pipeline_context_params.core_id,
+                self.deployment_generation,
+            ),
+        )
     }
 
     /// Registers the node entity for this context.
@@ -606,22 +613,39 @@ impl PipelineContext {
     }
 }
 
-/// Host-scope context for extensions.
-///
-/// Decoupled from [`PipelineContext`] (which is node/pipeline scoped) so the
-/// extension subsystem stays scope-agnostic: today minted from a pipeline,
-/// tomorrow from engine/group/node scopes. Surface is intentionally minimal —
-/// just what's needed to register extension entities and their metric sets.
+/// Host-scope context for extensions. Carries the identifying scope of
+/// the host so extension entities don't collide across pipelines, cores,
+/// or deployment generations.
 #[derive(Clone, Debug)]
 pub struct ExtensionContext {
     controller_context: ControllerContext,
+    /// Identifying scope of the host. Empty when minted via
+    /// [`ExtensionContext::new`] (test/engine-internal usage).
+    extension_scope: ExtensionScopeAttributeSet,
 }
 
 impl ExtensionContext {
-    /// Creates an `ExtensionContext` directly from a controller context.
+    /// Creates an `ExtensionContext` with an empty scope. Intended for
+    /// tests and engine-internal usage; pipeline-hosted extensions must
+    /// use [`PipelineContext::extension_context`].
     #[must_use]
     pub fn new(controller_context: ControllerContext) -> Self {
-        Self { controller_context }
+        Self {
+            controller_context,
+            extension_scope: ExtensionScopeAttributeSet::default(),
+        }
+    }
+
+    /// Creates an `ExtensionContext` with the supplied host scope.
+    #[must_use]
+    pub fn with_extension_scope(
+        controller_context: ControllerContext,
+        extension_scope: ExtensionScopeAttributeSet,
+    ) -> Self {
+        Self {
+            controller_context,
+            extension_scope,
+        }
     }
 
     /// Returns the telemetry registry handle for this scope.
@@ -640,6 +664,7 @@ impl ExtensionContext {
         ExtensionAttributeSet {
             extension_id,
             extension_variant: Cow::Borrowed(variant.as_str()),
+            extension_scope: self.extension_scope.clone(),
         }
     }
 

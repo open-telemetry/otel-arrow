@@ -97,7 +97,52 @@ pub struct PipelineAttributeSet {
     pub deployment_generation: u64,
 }
 
-/// Extension attributes.
+/// Host scope of an extension. Composed into [`ExtensionAttributeSet`] so
+/// extensions hosted by distinct pipelines/cores/generations resolve to
+/// distinct entities.
+#[attribute_set(name = "extension.scope.attrs")]
+#[derive(Debug, Clone, Default, Hash)]
+pub struct ExtensionScopeAttributeSet {
+    /// Scope kind (e.g., `"pipeline"`). Empty for the default scope.
+    #[attribute(key = "scope.kind")]
+    pub kind: Cow<'static, str>,
+
+    /// Opaque scope identifier; encoding is owned by the constructor.
+    #[attribute(key = "scope.id")]
+    pub id: Cow<'static, str>,
+}
+
+impl ExtensionScopeAttributeSet {
+    /// Constructs a scope with a caller-supplied kind and id.
+    #[must_use]
+    pub fn new(kind: impl Into<Cow<'static, str>>, id: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            kind: kind.into(),
+            id: id.into(),
+        }
+    }
+
+    /// Constructs a pipeline-host scope. Id is
+    /// `"<group>/<pipeline>/core/<core>/gen/<generation>"`.
+    #[must_use]
+    pub fn pipeline(
+        pipeline_group_id: impl Into<Cow<'static, str>>,
+        pipeline_id: impl Into<Cow<'static, str>>,
+        core_id: usize,
+        deployment_generation: u64,
+    ) -> Self {
+        let group = pipeline_group_id.into();
+        let pipeline = pipeline_id.into();
+        Self::new(
+            "pipeline",
+            format!("{group}/{pipeline}/core/{core_id}/gen/{deployment_generation}"),
+        )
+    }
+}
+
+/// Extension attributes. Composes [`ExtensionScopeAttributeSet`] so the
+/// same `(extension.id, extension.variant)` hosted at distinct scopes
+/// resolves to distinct entities.
 #[attribute_set(name = "extension.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct ExtensionAttributeSet {
@@ -105,9 +150,22 @@ pub struct ExtensionAttributeSet {
     #[attribute]
     pub extension_id: Cow<'static, str>,
 
+    /// Host scope of the extension.
+    #[compose]
+    pub extension_scope: ExtensionScopeAttributeSet,
+
     /// Physical variant of the extension (`"local"` or `"shared"`).
     #[attribute(key = "extension.variant")]
     pub extension_variant: Cow<'static, str>,
+}
+
+impl ExtensionAttributeSet {
+    /// Builder-style setter for the host scope.
+    #[must_use]
+    pub fn with_scope(mut self, scope: ExtensionScopeAttributeSet) -> Self {
+        self.extension_scope = scope;
+        self
+    }
 }
 
 /// Node attributes.

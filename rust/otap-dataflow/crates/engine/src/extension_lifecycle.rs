@@ -35,9 +35,10 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::registry::EntityKey;
 use otap_df_telemetry::reporter::MetricsReporter;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tokio::task::{JoinError, JoinHandle, LocalSet};
+use tokio::task::{self, JoinError, JoinHandle, LocalSet};
 use tokio::time::Instant as TokioInstant;
 
 /// Cleanup window granted to extensions after the data path has
@@ -84,10 +85,20 @@ pub(crate) enum LifecycleEvent {
 /// Holds the spawned extension tasks, control senders, and passive
 /// wrappers for the duration of an extension-hosting run.
 pub(crate) struct ExtensionLifecycle {
-    /// Active+background extension `JoinHandle`s. Each yields its
-    /// `ExtensionKey` alongside the lifecycle result so completion
-    /// outcomes can be routed to the monitor without a side channel.
+    /// Active+background extension tasks driven on the host's
+    /// `LocalSet`. Each task yields its `ExtensionKey` alongside the
+    /// lifecycle result so the success path always has the key in
+    /// hand; on `JoinError` (panic/cancel) the captured key is gone and
+    /// [`Self::task_id_to_key`] is consulted instead.
+    ///
+    /// `FuturesUnordered<JoinHandle<_>>` is the established pattern in
+    /// this codebase for driving `!Send` task handles on a `LocalSet`
+    /// (see `runtime_pipeline.rs`).
     futures: FuturesUnordered<JoinHandle<(ExtensionKey, Result<(), Error>)>>,
+    /// Maps the tokio task id of every live spawned task to its
+    /// `ExtensionKey`. Populated at spawn time and removed on join;
+    /// lets a panic/cancel still resolve to a terminal monitor event.
+    task_id_to_key: HashMap<task::Id, ExtensionKey>,
     /// Control senders for the extensions in [`Self::futures`], paired
     /// with their key so `broadcast_shutdown` can record a per-key
     /// `ShutdownSent` event in the monitor.
@@ -133,7 +144,9 @@ impl ExtensionLifecycle {
         ext_ctx: &ExtensionContext,
         mut monitor: ExtensionMetricsMonitor,
     ) -> Self {
-        let futures = FuturesUnordered::new();
+        let futures: FuturesUnordered<JoinHandle<(ExtensionKey, Result<(), Error>)>> =
+            FuturesUnordered::new();
+        let mut task_id_to_key: HashMap<task::Id, ExtensionKey> = HashMap::new();
         let mut shutdown_senders: Vec<(ExtensionKey, ExtensionControlSender)> = Vec::new();
         let mut passive = Vec::new();
         let (started_tx, started_rx) = mpsc::unbounded_channel::<ExtensionKey>();
@@ -177,7 +190,9 @@ impl ExtensionLifecycle {
                 };
                 (task_key, res)
             };
-            futures.push(local_tasks.spawn_local(fut));
+            let handle = local_tasks.spawn_local(fut);
+            let _ = task_id_to_key.insert(handle.id(), key);
+            futures.push(handle);
         }
         // Drop the seed sender so `started_rx.recv()` returns `None`
         // once every per-task clone has been dropped (i.e., once all
@@ -186,6 +201,7 @@ impl ExtensionLifecycle {
 
         Self {
             futures,
+            task_id_to_key,
             shutdown_senders,
             _passive: passive,
             shutdown_broadcast_fired: false,
@@ -215,6 +231,7 @@ impl ExtensionLifecycle {
         loop {
             let Self {
                 futures,
+                task_id_to_key,
                 monitor,
                 started_rx,
                 ..
@@ -236,7 +253,9 @@ impl ExtensionLifecycle {
                     continue;
                 }
                 Some(joined) = futures.next() => {
-                    return LifecycleEvent::Completion(Self::route_joined(monitor, joined));
+                    return LifecycleEvent::Completion(
+                        Self::route_joined(monitor, task_id_to_key, joined)
+                    );
                 }
                 now = monitor.next_tick() => return LifecycleEvent::MonitorTick(now),
             }
@@ -245,13 +264,16 @@ impl ExtensionLifecycle {
 
     /// Maps a joined task result to the outer `Result` shape expected
     /// by `next_event` callers and records the completion outcome in
-    /// the monitor (when the task didn't panic/cancel).
+    /// the monitor. Panic/cancel paths recover the key from
+    /// `task_id_to_key` since the task frame is gone.
     fn route_joined(
         monitor: &mut ExtensionMetricsMonitor,
+        task_id_to_key: &mut HashMap<task::Id, ExtensionKey>,
         joined: Result<(ExtensionKey, Result<(), Error>), JoinError>,
     ) -> Result<Result<(), Error>, JoinError> {
         match joined {
             Ok((key, res)) => {
+                task_id_to_key.retain(|_, k| k != &key);
                 let outcome = match &res {
                     Ok(()) => ExtensionOutcome::Ok,
                     Err(e) => ExtensionOutcome::Err(e.to_string()),
@@ -260,9 +282,22 @@ impl ExtensionLifecycle {
                 Ok(res)
             }
             Err(e) => {
-                // The task panicked or was cancelled; the key is lost
-                // with the task frame. Stragglers still in `Spawned`/
-                // `ShutdownSent` are reconciled by `drain_until_deadline`.
+                let task_id = e.id();
+                if let Some(key) = task_id_to_key.remove(&task_id) {
+                    let outcome = if e.is_cancelled() {
+                        ExtensionOutcome::JoinCancelled
+                    } else {
+                        ExtensionOutcome::JoinPanic
+                    };
+                    monitor.apply_event(ExtensionLifecycleEvent::Completed { key, outcome });
+                } else {
+                    otel_warn!(
+                        "extension.task.join_error.unknown_task",
+                        is_canceled = e.is_cancelled(),
+                        is_panic = e.is_panic(),
+                        task_id = format!("{task_id}"),
+                    );
+                }
                 Err(e)
             }
         }
@@ -354,31 +389,44 @@ impl ExtensionLifecycle {
         // See `EXTENSION_SHUTDOWN_DRAIN_SLACK` for rationale.
         let drain_deadline = TokioInstant::from_std(*deadline + EXTENSION_SHUTDOWN_DRAIN_SLACK);
 
+        let futures = &mut self.futures;
+        let task_id_to_key = &mut self.task_id_to_key;
+        let monitor = &mut self.monitor;
         let drain = async {
-            while let Some(result) = self.futures.next().await {
+            while let Some(result) = futures.next().await {
                 match result {
                     Ok((key, Ok(()))) => {
-                        self.monitor
-                            .apply_event(ExtensionLifecycleEvent::Completed {
-                                key,
-                                outcome: ExtensionOutcome::Ok,
-                            });
+                        task_id_to_key.retain(|_, k| k != &key);
+                        monitor.apply_event(ExtensionLifecycleEvent::Completed {
+                            key,
+                            outcome: ExtensionOutcome::Ok,
+                        });
                     }
                     Ok((key, Err(e))) => {
+                        task_id_to_key.retain(|_, k| k != &key);
                         otel_warn!("extension.shutdown.task.error", error = format!("{e}"));
-                        self.monitor
-                            .apply_event(ExtensionLifecycleEvent::Completed {
-                                key,
-                                outcome: ExtensionOutcome::Err(e.to_string()),
-                            });
+                        monitor.apply_event(ExtensionLifecycleEvent::Completed {
+                            key,
+                            outcome: ExtensionOutcome::Err(e.to_string()),
+                        });
                     }
                     Err(e) => {
+                        let task_id = e.id();
                         otel_warn!(
                             "extension.shutdown.task.join_error",
                             is_canceled = e.is_cancelled(),
                             is_panic = e.is_panic(),
                             error = e.to_string()
                         );
+                        if let Some(key) = task_id_to_key.remove(&task_id) {
+                            let outcome = if e.is_cancelled() {
+                                ExtensionOutcome::JoinCancelled
+                            } else {
+                                ExtensionOutcome::JoinPanic
+                            };
+                            monitor
+                                .apply_event(ExtensionLifecycleEvent::Completed { key, outcome });
+                        }
                     }
                 }
             }
@@ -406,32 +454,32 @@ mod tests {
     use super::*;
     use crate::extension::wrapper::ExtensionVariant;
 
-    /// Regression test: a misbehaving extension that never returns
-    /// must not stall `drain_until_deadline` past its deadline. The
-    /// deadline is injected directly to keep the test fast.
+    /// `drain_until_deadline` must return after the bounded deadline
+    /// even if an extension never honours `Shutdown`.
     #[test]
     fn drain_until_deadline_is_bounded_for_stuck_extension() {
         let (rt, local_tasks) = crate::testing::setup_test_runtime();
         rt.block_on(local_tasks.run_until(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let key = ExtensionKey::new("stuck".into(), ExtensionVariant::Local);
-            let futures = FuturesUnordered::new();
-            futures.push(tokio::task::spawn_local({
+            let futures: FuturesUnordered<JoinHandle<(ExtensionKey, Result<(), Error>)>> =
+                FuturesUnordered::new();
+            let handle = local_tasks.spawn_local({
                 let key = key.clone();
                 async move {
-                    // Misbehaving extension that ignores `Shutdown` and
-                    // never returns from `start()`. `pending` is cancelled
-                    // when the surrounding `LocalSet` drops at the end of
-                    // the test, so this does not actually run forever.
                     std::future::pending::<()>().await;
                     (key, Ok(()))
                 }
-            }));
+            });
+            let mut task_id_to_key = HashMap::new();
+            let _ = task_id_to_key.insert(handle.id(), key);
+            futures.push(handle);
 
             let injected_deadline = Instant::now() + Duration::from_millis(100);
             let (_started_tx, started_rx) = mpsc::unbounded_channel();
             let mut lifecycle = ExtensionLifecycle {
                 futures,
+                task_id_to_key,
                 shutdown_senders: Vec::new(),
                 _passive: Vec::new(),
                 shutdown_broadcast_fired: true,
@@ -444,8 +492,6 @@ mod tests {
             lifecycle.drain_until_deadline().await;
             let elapsed = start.elapsed();
 
-            // The drain must return shortly after the deadline +
-            // slack, not hang on the never-completing extension task.
             let upper_bound = Duration::from_millis(100)
                 + EXTENSION_SHUTDOWN_DRAIN_SLACK
                 + Duration::from_secs(1);
@@ -457,7 +503,93 @@ mod tests {
             );
             assert!(
                 !lifecycle.futures.is_empty(),
-                "stuck extension should still be in `futures` after the bounded drain timed out",
+                "stuck extension should still be present after the bounded drain timed out",
+            );
+        }));
+    }
+
+    /// A panicking extension task must surface as a terminal `Failed`
+    /// state and bump the `completed_panic` counter.
+    #[test]
+    fn panicking_extension_task_reports_failed_terminal_state() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+            let key = ExtensionKey::new("boom".into(), ExtensionVariant::Local);
+            let entity_key = ext_ctx
+                .register_extension_entity("boom".into(), ExtensionVariant::Local);
+
+            let mut monitor = ExtensionMetricsMonitor::new(
+                ext_ctx.clone(),
+                Duration::from_millis(50),
+                Duration::from_millis(50),
+            );
+            monitor.register(&ext_ctx, key.clone(), entity_key, None);
+            monitor.apply_event(ExtensionLifecycleEvent::Spawned { key: key.clone() });
+
+            let futures: FuturesUnordered<JoinHandle<(ExtensionKey, Result<(), Error>)>> =
+                FuturesUnordered::new();
+            let handle = local_tasks.spawn_local({
+                let task_key = key.clone();
+                async move {
+                    task::yield_now().await;
+                    panic!("simulated extension panic");
+                    #[allow(unreachable_code)]
+                    {
+                        let _: ExtensionKey = task_key;
+                        (
+                            ExtensionKey::new("never".into(), ExtensionVariant::Local),
+                            Ok(()),
+                        )
+                    }
+                }
+            });
+            let mut task_id_to_key = HashMap::new();
+            let _ = task_id_to_key.insert(handle.id(), key.clone());
+            futures.push(handle);
+
+            let (_started_tx, started_rx) = mpsc::unbounded_channel();
+            let mut lifecycle = ExtensionLifecycle {
+                futures,
+                task_id_to_key,
+                shutdown_senders: Vec::new(),
+                _passive: Vec::new(),
+                shutdown_broadcast_fired: false,
+                shutdown_deadline: None,
+                monitor,
+                started_rx,
+            };
+
+            // Silence the default panic hook so the join-induced backtrace
+            // doesn't pollute test output.
+            let prev_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {}));
+
+            let result = lifecycle.next_event().await;
+
+            std::panic::set_hook(prev_hook);
+
+            match result {
+                LifecycleEvent::Completion(Err(e)) => {
+                    assert!(e.is_panic(), "expected panic-style JoinError, got {e:?}");
+                }
+                LifecycleEvent::Completion(Ok(inner)) => panic!(
+                    "expected Completion(Err(JoinError)) for a panicking task, got Completion(Ok({inner:?}))"
+                ),
+                LifecycleEvent::MonitorTick(_) => panic!(
+                    "expected the panicking task to surface as a Completion before any monitor tick"
+                ),
+            }
+
+            assert_eq!(
+                lifecycle.monitor.state_for(&key),
+                Some(crate::extension_monitor::ExtensionRuntimeState::Failed),
+                "panicking extension must surface as Failed in the monitor",
+            );
+            assert_eq!(
+                lifecycle.monitor.completed_panic_count(&key),
+                Some(1),
+                "completed_panic counter must increment exactly once",
             );
         }));
     }

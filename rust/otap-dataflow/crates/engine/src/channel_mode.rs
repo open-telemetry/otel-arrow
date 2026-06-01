@@ -25,6 +25,7 @@ use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::mpsc;
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::registry::EntityKey;
 use std::borrow::Cow;
 
@@ -37,14 +38,16 @@ pub(crate) trait ChannelMode {
     type InnerSender<T>;
     type InnerReceiver<T>;
 
-    /// Returns the original sender when it is already wrapped.
-    /// This allows attaching metrics only once without losing existing wrappers.
+    /// Unwraps the inner MPSC sender from the mode-specific control sender.
+    /// Returns `Err(original)` when the underlying variant is not MPSC
+    /// (e.g. MPMC); the caller must then rewrap unchanged.
     fn try_into_inner_sender<T>(
         sender: Self::ControlSender<T>,
     ) -> Result<Self::InnerSender<T>, Self::ControlSender<T>>;
 
-    /// Returns the original receiver when it is already wrapped.
-    /// This allows attaching metrics only once without losing existing wrappers.
+    /// Unwraps the inner MPSC receiver from the mode-specific control receiver.
+    /// Returns `Err(original)` when the underlying variant is not MPSC
+    /// (e.g. MPMC); the caller must then rewrap unchanged.
     fn try_into_inner_receiver<T>(
         receiver: Self::ControlReceiver<T>,
     ) -> Result<Self::InnerReceiver<T>, Self::ControlReceiver<T>>;
@@ -314,6 +317,25 @@ where
             }
         }
         (sender, receiver) => {
+            // Mismatched halves: one side unwrapped to inner MPSC, the
+            // other did not. Structurally impossible when both halves
+            // come from the same factory; surface loudly so a future
+            // refactor accident is visible rather than silently
+            // skipping metric registration.
+            let sender_was_inner = sender.is_ok();
+            let receiver_was_inner = receiver.is_ok();
+            debug_assert!(
+                false,
+                "wrap_control_channel_metrics_inner: mismatched partial_wrap inputs \
+                 (sender_was_inner={sender_was_inner}, receiver_was_inner={receiver_was_inner}); \
+                 channel sender and receiver must originate from the same factory",
+            );
+            otel_warn!(
+                "channel.metrics.partial_wrap_skip",
+                sender_was_inner = sender_was_inner,
+                receiver_was_inner = receiver_was_inner,
+                message = "mismatched halves; skipping metric registration",
+            );
             let sender = match sender {
                 Ok(sender) => M::from_inner_sender(sender),
                 Err(sender) => sender,
@@ -324,5 +346,90 @@ where
             };
             (sender, receiver)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_channel::mpmc as raw_mpmc;
+    use otap_df_channel::mpsc as raw_mpsc;
+    use std::cell::Cell;
+    use std::num::NonZeroUsize;
+    use std::rc::Rc;
+
+    fn mismatched_local_pair<T: 'static>() -> (LocalSender<T>, LocalReceiver<T>) {
+        let (mpsc_sender, _mpsc_receiver) = raw_mpsc::Channel::<T>::new(4);
+        let (_mpmc_sender, mpmc_receiver) =
+            raw_mpmc::Channel::<T>::new(NonZeroUsize::new(4).expect("non-zero capacity"));
+        (
+            LocalSender::mpsc(mpsc_sender),
+            LocalReceiver::mpmc(mpmc_receiver),
+        )
+    }
+
+    #[test]
+    #[should_panic(expected = "partial_wrap")]
+    fn partial_wrap_panics_in_debug_builds() {
+        let (sender, receiver) = mismatched_local_pair::<u8>();
+        let mut channel_metrics = ChannelMetricsRegistry::default();
+        let _ = wrap_control_channel_metrics_inner::<LocalMode, u8>(
+            &mut channel_metrics,
+            true,
+            4,
+            sender,
+            receiver,
+            || panic!("register_channel must not be invoked on the partial-wrap path"),
+            |_key| panic!("register_metrics must not be invoked on the partial-wrap path"),
+        );
+    }
+
+    #[test]
+    fn partial_wrap_does_not_register_or_attach_metrics() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        let register_invocations: Rc<Cell<u32>> = Rc::new(Cell::new(0));
+        let metrics_invocations: Rc<Cell<u32>> = Rc::new(Cell::new(0));
+        let r_invocations = Rc::clone(&register_invocations);
+        let m_invocations = Rc::clone(&metrics_invocations);
+
+        let mut channel_metrics = ChannelMetricsRegistry::default();
+        let (sender, receiver) = mismatched_local_pair::<u8>();
+
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _ = wrap_control_channel_metrics_inner::<LocalMode, u8>(
+                &mut channel_metrics,
+                true,
+                4,
+                sender,
+                receiver,
+                move || {
+                    r_invocations.set(r_invocations.get() + 1);
+                    EntityKey::default()
+                },
+                move |_key| {
+                    m_invocations.set(m_invocations.get() + 1);
+                    unreachable!("metrics registration must not run when partial-wrap is detected");
+                },
+            );
+        }));
+        std::panic::set_hook(prev_hook);
+
+        assert_eq!(
+            register_invocations.get(),
+            0,
+            "partial-wrap must not register a channel entity",
+        );
+        assert_eq!(
+            metrics_invocations.get(),
+            0,
+            "partial-wrap must not attach metric handles",
+        );
+        assert!(
+            channel_metrics.into_handles().is_empty(),
+            "channel metrics registry must remain empty after a partial-wrap call",
+        );
     }
 }
