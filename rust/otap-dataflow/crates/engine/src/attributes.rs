@@ -245,3 +245,90 @@ pub struct ChannelAttributeSet {
     #[attribute(key = "channel.impl")]
     pub channel_impl: Cow<'static, str>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A dedicated scope-level attribute set: every key it declares is emitted
+    /// on the OpenTelemetry instrumentation scope.
+    #[attribute_set(name = "test.scope.attrs", scope)]
+    #[derive(Debug, Clone, Default, Hash)]
+    struct ScopeOnlyAttributeSet {
+        #[attribute(key = "test.purpose")]
+        purpose: Cow<'static, str>,
+        #[attribute(key = "test.flavor")]
+        flavor: Cow<'static, str>,
+    }
+
+    /// A regular (data-point) attribute set that composes the scope set.
+    #[attribute_set(name = "test.mixed.attrs")]
+    #[derive(Debug, Clone, Default, Hash)]
+    struct MixedAttributeSet {
+        #[attribute(key = "test.id")]
+        id: Cow<'static, str>,
+        #[compose]
+        scope: ScopeOnlyAttributeSet,
+    }
+
+    #[test]
+    fn scope_set_marks_all_its_keys() {
+        let set = ScopeOnlyAttributeSet::default();
+        let scope_keys = set.descriptor().scope_keys;
+        assert_eq!(scope_keys.len(), 2);
+        assert!(scope_keys.contains(&"test.purpose"));
+        assert!(scope_keys.contains(&"test.flavor"));
+        assert!(set.is_scope_attribute("test.purpose"));
+        assert!(set.is_scope_attribute("test.flavor"));
+    }
+
+    #[test]
+    fn composing_set_inherits_only_scope_keys() {
+        let set = MixedAttributeSet::default();
+        let scope_keys = set.descriptor().scope_keys;
+
+        // The composed scope set's keys are scope-level.
+        assert_eq!(scope_keys.len(), 2);
+        assert!(scope_keys.contains(&"test.purpose"));
+        assert!(scope_keys.contains(&"test.flavor"));
+
+        // The composing set's own field is a data-point attribute, not a scope key.
+        assert!(!scope_keys.contains(&"test.id"));
+        assert!(set.is_scope_attribute("test.purpose"));
+        assert!(!set.is_scope_attribute("test.id"));
+    }
+
+    /// A non-scope set composed into a `scope`-marked parent: the parent's own
+    /// keys are scope-level, but the composed child's keys are governed by the
+    /// child's (absent) marker and remain data-point attributes.
+    #[attribute_set(name = "test.data.attrs")]
+    #[derive(Debug, Clone, Default, Hash)]
+    struct DataOnlyAttributeSet {
+        #[attribute(key = "test.detail")]
+        detail: Cow<'static, str>,
+    }
+
+    #[attribute_set(name = "test.scope.parent.attrs", scope)]
+    #[derive(Debug, Clone, Default, Hash)]
+    struct ScopeParentAttributeSet {
+        #[attribute(key = "test.region")]
+        region: Cow<'static, str>,
+        #[compose]
+        data: DataOnlyAttributeSet,
+    }
+
+    #[test]
+    fn scope_marked_parent_does_not_promote_composed_child() {
+        let set = ScopeParentAttributeSet::default();
+        let scope_keys = set.descriptor().scope_keys;
+
+        // Parent's own key is scope-level.
+        assert!(scope_keys.contains(&"test.region"));
+        assert!(set.is_scope_attribute("test.region"));
+
+        // Composed non-scope child's key stays a data-point attribute.
+        assert!(!scope_keys.contains(&"test.detail"));
+        assert!(!set.is_scope_attribute("test.detail"));
+        assert_eq!(scope_keys.len(), 1);
+    }
+}

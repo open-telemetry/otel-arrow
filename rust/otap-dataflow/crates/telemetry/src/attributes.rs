@@ -125,10 +125,10 @@ pub trait AttributeSetHandler {
     /// OpenTelemetry instrumentation scope rather than as a data-point attribute.
     ///
     /// Backed by the static descriptor's `scope_keys`, which the
-    /// `#[derive(AttributeSetHandler)]` macro populates from fields marked
-    /// `#[attribute(key = "...", scope)]`. Because this reads the descriptor, it
-    /// keeps working through type-erased wrappers (e.g. `EntityAttributeSet`)
-    /// that carry the original `&'static` descriptor.
+    /// `#[derive(AttributeSetHandler)]` macro populates from attribute sets
+    /// marked `#[attribute_set(name = "...", scope)]`. Because this reads the
+    /// descriptor, it keeps working through type-erased wrappers (e.g.
+    /// `EntityAttributeSet`) that carry the original `&'static` descriptor.
     fn is_scope_attribute(&self, key: &str) -> bool {
         self.descriptor().scope_keys.contains(&key)
     }

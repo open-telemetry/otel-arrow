@@ -108,8 +108,8 @@ pub struct AttributesDescriptor {
     pub fields: &'static [AttributeField],
     /// Keys of attributes that must be emitted on the OpenTelemetry
     /// instrumentation scope rather than as data-point attributes. Populated by
-    /// the `#[derive(AttributeSetHandler)]` macro from fields marked
-    /// `#[attribute(key = "...", scope)]` (composed sets contribute their own
-    /// scope keys). Empty when the set has no scope-level attributes.
+    /// the `#[derive(AttributeSetHandler)]` macro from attribute sets marked
+    /// `#[attribute_set(name = "...", scope)]` (composed sets contribute their
+    /// own scope keys). Empty when the set has no scope-level attributes.
     pub scope_keys: &'static [&'static str],
 }

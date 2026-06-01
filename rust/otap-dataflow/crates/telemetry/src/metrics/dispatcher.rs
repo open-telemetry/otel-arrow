@@ -60,8 +60,9 @@ impl MetricsDispatcher {
         self.metrics_handler
             .visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
                 // Split the entity's attributes into instrumentation-scope
-                // attributes (those the attribute set marks `#[attribute(...,
-                // scope)]`) and data-point attributes.
+                // attributes (those declared by a set marked
+                // `#[attribute_set(name = "...", scope)]`) and data-point
+                // attributes.
                 // Scope attributes are attached to the meter so View selectors
                 // keyed on scope attributes can match the emitted metrics.
                 let (scope_attributes, datapoint_attributes) =
@@ -90,7 +91,7 @@ impl MetricsDispatcher {
     /// Split an entity's attributes into `(scope, data_point)` OpenTelemetry
     /// attributes in a single pass. An attribute is scope-level when the
     /// attribute set declares it so via [`AttributeSetHandler::is_scope_attribute`]
-    /// (driven by `#[attribute(key = "...", scope)]`); everything else is a
+    /// (driven by `#[attribute_set(name = "...", scope)]`); everything else is a
     /// data-point attribute.
     ///
     /// Scope attributes with an empty string value are omitted entirely (pushed
@@ -102,10 +103,27 @@ impl MetricsDispatcher {
     fn partition_otel_attributes(
         attributes: &dyn AttributeSetHandler,
     ) -> (Vec<opentelemetry::KeyValue>, Vec<opentelemetry::KeyValue>) {
+        let field_count = attributes.descriptor().fields.len();
+
+        // Fast path: no scope attributes declared (the common, behavior-preserving
+        // case). Every attribute is a data-point attribute, so skip the per-key
+        // `is_scope_attribute` checks and the scope bucket allocation.
+        if attributes.descriptor().scope_keys.is_empty() {
+            let mut data_point = Vec::with_capacity(field_count);
+            for (key, value) in attributes.iter_attributes() {
+                data_point.push(Self::to_opentelemetry_key_value(key, value));
+            }
+            return (Vec::new(), data_point);
+        }
+
         let mut scope = Vec::new();
-        let mut data_point = Vec::new();
+        let mut data_point = Vec::with_capacity(field_count);
         for (key, value) in attributes.iter_attributes() {
             if attributes.is_scope_attribute(key) {
+                // Scope attributes are expected to be string-typed; an empty
+                // string is treated as "unset" and dropped so it does not
+                // perturb the instrumentation-scope identity. Non-string types
+                // are not special-cased here.
                 if matches!(value, AttributeValue::String(s) if s.is_empty()) {
                     continue;
                 }
@@ -442,7 +460,7 @@ mod tests {
                             r#type: AttributeValueType::Int,
                         },
                     ],
-                    scope_keys: &[],
+                    scope_keys: &["key2"],
                 }
             }
 

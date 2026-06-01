@@ -323,10 +323,20 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
 ///
 /// Container attribute:
 ///   - `#[attributes(name = "my.attributes.name")]`
+///   - `#[attributes(name = "my.attributes.name", scope)]` marks every
+///     attribute the set itself declares as an OpenTelemetry
+///     instrumentation-scope attribute (emitted on the scope rather than on
+///     each data point). Composed sets are governed by their own marker, not
+///     the parent's: a non-scope set keeps its own keys as data-point
+///     attributes even when composed into a `scope`-marked parent. Usually a
+///     small dedicated scope set is `#[compose]`d into a parent.
+///     Reach for `scope` when a value must be targetable by OpenTelemetry View
+///     selectors; in the engine it offers no perf/cardinality benefit over a
+///     data-point attribute, and moving an attribute between scope and
+///     data-point is a breaking change. See
+///     `docs/telemetry/attributes-guide.md` ("Scope vs. data-point attributes").
 ///     Field attributes:
 ///   - `#[attribute(key = "field.key")]` (optional, defaults to field name with dots)
-///   - `#[attribute(key = "field.key", scope)]` to emit the attribute on the
-///     OpenTelemetry instrumentation scope instead of on each data point
 ///   - `#[compose]` for fields that implement AttributeSetHandler
 #[proc_macro_derive(AttributeSetHandler, attributes(attributes, attribute, compose))]
 pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
@@ -337,10 +347,14 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     let generics = input.generics.clone();
 
     let mut attributes_name: Option<String> = None;
+    let mut attributes_is_scope = false;
 
     for attr in &input.attrs {
         if let Some(name) = parse_attributes_name_attr(attr) {
             attributes_name = Some(name);
+        }
+        if parse_attributes_is_scope(attr) {
+            attributes_is_scope = true;
         }
     }
     let attributes_name = match attributes_name {
@@ -415,7 +429,6 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     let mut attr_field_descriptions = Vec::new();
     let mut attr_field_types: Vec<proc_macro2::TokenStream> = Vec::new();
     let mut attr_iter_values: Vec<proc_macro2::TokenStream> = Vec::new();
-    let mut attr_field_scope_keys: Vec<String> = Vec::new();
 
     let mut composed_field_idents = Vec::new();
 
@@ -481,13 +494,6 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         }
         let derived_key = ident.to_string().replace('_', ".");
         let final_key = key_attr.unwrap_or(derived_key);
-
-        // Detect `#[attribute(..., scope)]` to mark this attribute as a
-        // scope-level (instrumentation-scope) attribute.
-        let is_scope_field = field.attrs.iter().any(parse_attribute_field_is_scope);
-        if is_scope_field {
-            attr_field_scope_keys.push(final_key.clone());
-        }
 
         // Determine attribute value type based on field type
         let (attr_type, iter_value) = match &field.ty {
@@ -565,8 +571,15 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
 
     let desc_ident = format_ident!("ATTRIBUTES_DESCRIPTOR");
 
-    // Local scope-attribute keys (from `#[attribute(key = "...", scope)]`).
-    let local_scope_keys = &attr_field_scope_keys;
+    // When the set is marked `#[attribute_set(..., scope)]`, every attribute it
+    // declares is a scope-level attribute; otherwise it contributes none of its
+    // own (composed sets still contribute their own scope keys below).
+    let local_scope_keys: Vec<String> = if attributes_is_scope {
+        attr_field_keys.clone()
+    } else {
+        Vec::new()
+    };
+    let local_scope_keys = &local_scope_keys;
 
     // Generate the descriptor and iterator implementation
     if composed_field_idents.is_empty() {
@@ -650,10 +663,15 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                             // Leak the vector to get a 'static reference
                             let fields_slice: &'static [#field_path] = ::std::boxed::Box::leak(all_fields.into_boxed_slice());
 
-                            // Merge local scope keys with those of composed sets.
+                            // Merge local scope keys with those of composed sets,
+                            // de-duplicating so a key shared across a parent and
+                            // a composed child (or composed twice) yields a
+                            // canonical scope-key set.
                             let mut all_scope_keys: ::std::vec::Vec<&'static str> =
                                 ::std::vec![ #( #local_scope_keys ),* ];
                             #( all_scope_keys.extend_from_slice(dummy.#composed_field_idents.descriptor().scope_keys); )*
+                            all_scope_keys.sort_unstable();
+                            all_scope_keys.dedup();
                             let scope_keys_slice: &'static [&'static str] =
                                 ::std::boxed::Box::leak(all_scope_keys.into_boxed_slice());
 
@@ -772,19 +790,30 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Usage:
 ///   #[otap_df_telemetry_macros::attribute_set(name = "my.attributes")]
 ///   pub struct MyAttributes { #[attribute(key = "custom.key")] field: String, ... }
+///
+/// Add the `scope` flag to declare that every attribute in the set is emitted
+/// on the OpenTelemetry instrumentation scope rather than as a data-point
+/// attribute (typically a small set `#[compose]`d into a parent):
+///   #[otap_df_telemetry_macros::attribute_set(name = "my.scope.attrs", scope)]
 #[proc_macro_attribute]
 pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse name argument
     let args = proc_macro2::TokenStream::from(attr);
     let mut name_val: Option<String> = None;
+    let mut scope_val = false;
     if let Err(err) = syn::parse::Parser::parse2(
         |input: syn::parse::ParseStream<'_>| -> syn::Result<()> {
             while !input.is_empty() {
                 let ident: syn::Ident = input.parse()?;
-                let _: syn::Token![=] = input.parse()?;
-                let lit: LitStr = input.parse()?;
-                if ident == "name" {
-                    name_val = Some(lit.value());
+                if ident == "scope" {
+                    // Bare flag: the whole set is scope-level.
+                    scope_val = true;
+                } else {
+                    let _: syn::Token![=] = input.parse()?;
+                    let lit: LitStr = input.parse()?;
+                    if ident == "name" {
+                        name_val = Some(lit.value());
+                    }
                 }
                 if input.peek(syn::Token![,]) {
                     let _: syn::Token![,] = input.parse()?;
@@ -817,8 +846,14 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
         parse_quote!(#[derive(otap_df_telemetry_macros::AttributeSetHandler)]);
     s.attrs.push(derive_attr);
 
-    // Add container descriptor attribute consumed by the derive
-    let attributes_attr: Attribute = parse_quote!(#[attributes(name = #attributes_name)]);
+    // Add container descriptor attribute consumed by the derive. Forward the
+    // set-level `scope` designation so the derive can mark every key as a
+    // scope attribute.
+    let attributes_attr: Attribute = if scope_val {
+        parse_quote!(#[attributes(name = #attributes_name, scope)])
+    } else {
+        parse_quote!(#[attributes(name = #attributes_name)])
+    };
     s.attrs.push(attributes_attr);
 
     quote!( #s ).into()
@@ -867,10 +902,33 @@ fn parse_attributes_name_attr(attr: &Attribute) -> Option<String> {
         if meta.path.is_ident("name") {
             let s: LitStr = meta.value()?.parse()?;
             out = Some(s.value());
+        } else if meta.path.is_ident("scope") {
+            // Bare flag handled by `parse_attributes_is_scope`; nothing to consume.
         }
         Ok(())
     });
     out
+}
+
+/// Returns `true` when an `#[attributes(name = "...", scope)]` container marks
+/// the whole set as scope-level. Every attribute the set declares is then
+/// emitted on the OpenTelemetry instrumentation scope rather than as a
+/// data-point attribute.
+fn parse_attributes_is_scope(attr: &Attribute) -> bool {
+    if !attr.path().is_ident("attributes") {
+        return false;
+    }
+    let mut is_scope = false;
+    let _ = attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("scope") {
+            is_scope = true;
+        } else if meta.path.is_ident("name") {
+            // Consume the `name = "..."` value so nested-meta parsing succeeds.
+            let _: LitStr = meta.value()?.parse()?;
+        }
+        Ok(())
+    });
+    is_scope
 }
 
 fn parse_attribute_field_attr(attr: &Attribute) -> Option<String> {
@@ -886,24 +944,4 @@ fn parse_attribute_field_attr(attr: &Attribute) -> Option<String> {
         Ok(())
     });
     out
-}
-
-/// Returns `true` when a field is marked as a scope-level attribute via
-/// `#[attribute(key = "...", scope)]`. Scope attributes are emitted on the
-/// OpenTelemetry instrumentation scope rather than as data-point attributes.
-fn parse_attribute_field_is_scope(attr: &Attribute) -> bool {
-    if !attr.path().is_ident("attribute") {
-        return false;
-    }
-    let mut is_scope = false;
-    let _ = attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("scope") {
-            is_scope = true;
-        } else if meta.path.is_ident("key") {
-            // Consume the `key = "..."` value so nested-meta parsing succeeds.
-            let _: LitStr = meta.value()?.parse()?;
-        }
-        Ok(())
-    });
-    is_scope
 }

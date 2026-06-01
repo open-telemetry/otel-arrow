@@ -2,8 +2,8 @@
 
 Status: Draft
 
-This document consolidates project decisions and guidance on attributes:
-naming, placement, cardinality, normalization, and lifecycle.
+This document consolidates project decisions and guidance on attributes: naming,
+placement, cardinality, normalization, and lifecycle.
 
 It complements:
 
@@ -88,6 +88,27 @@ Do not duplicate information:
 - If a value is already present as an entity attribute, do not repeat it as a
   signal-specific attribute.
 - Prefer a single canonical key.
+
+### Scope vs. data-point attributes
+
+The `#[attribute_set(name = "...", scope)]` marker emits an attribute set on the
+OpenTelemetry **instrumentation scope** instead of on each data point. Use it
+deliberately:
+
+- **Why to choose scope.** A primary motivation is **OpenTelemetry View-based
+  selection**: View selectors match on scope name + scope attributes +
+  instrument name, so a value must be on the scope for a `scope_attributes`
+  selector to target it (e.g. `flow.purpose` distinguishing flows that share the
+  single `flow` scope). If you do not have a concrete reason to put the value on
+  the scope, keep it as a data-point attribute.
+- **Bound the value space.** Scope attributes participate in the
+  instrumentation-scope identity, so each distinct value yields a distinct
+  scope/meter. Only use bounded, known-at-creation values; never an unbounded or
+  high-cardinality value.
+- **Moving an attribute between scope and data-point is a breaking change.** It
+  changes where the value appears in the OTLP export, so any downstream View,
+  query, or dashboard keyed on it breaks. Treat such a move under
+  [stability-compatibility-guide.md](stability-compatibility-guide.md).
 
 ### Core rule
 

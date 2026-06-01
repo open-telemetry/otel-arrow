@@ -8,7 +8,7 @@ change_type: enhancement
 component: observability
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add a mechanism to declare attributes as OpenTelemetry instrumentation-scope attributes via `#[attribute(key = "...", scope)]`, so the metrics dispatcher emits them on the meter scope rather than on each data point.
+note: Add a mechanism to declare attributes as OpenTelemetry instrumentation-scope attributes via `#[attribute_set(name = "...", scope)]`, so the metrics dispatcher emits them on the meter scope rather than on each data point.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [2859]

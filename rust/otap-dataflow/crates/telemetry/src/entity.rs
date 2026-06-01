@@ -136,11 +136,20 @@ impl Hash for EntityAttributeSet {
         // Mirror the `PartialEq` treatment of `scope_keys` so the scope/data-point
         // designation survives registry de-duplication. Hash in sorted order to
         // stay consistent with the order-independent equality comparison.
-        let mut scope_keys: Vec<&'static str> = self.descriptor.scope_keys.to_vec();
-        scope_keys.sort_unstable();
+        let scope_keys = self.descriptor.scope_keys;
         scope_keys.len().hash(state);
-        for key in scope_keys {
-            key.hash(state);
+        match scope_keys.len() {
+            // Fast paths: empty and single-element sets need no allocation or
+            // sorting (ordering is irrelevant), which matters on registry lookups.
+            0 => {}
+            1 => scope_keys[0].hash(state),
+            _ => {
+                let mut sorted: Vec<&'static str> = scope_keys.to_vec();
+                sorted.sort_unstable();
+                for key in sorted {
+                    key.hash(state);
+                }
+            }
         }
     }
 }
@@ -316,6 +325,15 @@ fn attribute_value_equal(left: &AttributeValue, right: &AttributeValue) -> bool 
 fn scope_keys_equal(left: &[&'static str], right: &[&'static str]) -> bool {
     if left.len() != right.len() {
         return false;
+    }
+    // Fast paths for the common cases on the registry hot path: identical
+    // slices (e.g. the same `&'static` descriptor), empty, and single-element
+    // sets need no allocation or sorting.
+    if std::ptr::eq(left, right) || left.is_empty() {
+        return true;
+    }
+    if left.len() == 1 {
+        return left[0] == right[0];
     }
     let mut left_sorted: Vec<&'static str> = left.to_vec();
     let mut right_sorted: Vec<&'static str> = right.to_vec();
