@@ -12,6 +12,8 @@
    <span class="wip-text">The Dataflow Engine and these benchmarks are a work in progress. Do you have feedback? <a class="wip-link" href="https://github.com/open-telemetry/otel-arrow/issues" target="_blank" rel="noopener">Tell us here!</a></span>
     <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>
   </div>
+  <div class="controls-bar" id="controls-bar" aria-label="Display controls"></div>
+  <div class="legend-banner" id="legend-banner" aria-label="Glossary"></div>
   <div class="wrap">
     <div id="app"></div>
   </div>
@@ -29,6 +31,8 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>
   <script>window.DATA_PATH = "../../comparison_data/suite";</script>
   <script>window.METRICS_META = {"cpu_percentage_normalized_avg": {"label": "CPU Average"}, "cpu_percentage_normalized_max": {"label": "CPU Max"}, "ram_mib_avg": {"label": "Memory Average"}, "ram_mib_max": {"label": "Memory Max"}, "network_tx_bytes_rate_avg": {"label": "Network TX Rate"}, "network_rx_bytes_rate_avg": {"label": "Network RX Rate"}, "dropped_logs_percentage": {"label": "Dropped Logs"}, "logs_delivery_deviation_percentage": {"label": "Logs Delivery Deviation"}, "logs_produced_rate": {"label": "Offered Load Rate"}, "loadgen_logs_sent_rate": {"label": "Loadgen Sent Rate"}, "logs_received_rate": {"label": "Collector Received Rate"}, "collector_logs_sent_rate": {"label": "Collector Sent Rate"}, "backend_logs_received_rate": {"label": "Backend Received Rate"}, "test_duration": {"label": "Test Duration"}};</script>
+  <script>window.META_DESCRIPTIONS = {"binary": {"dfe": "Dataflow Engine - the OTAP-native pipeline engine developed as a part of OTel Arrow.", "otc": "OpenTelemetry Collector (contrib distribution)."}, "protocols": {"otap": "OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches.", "otlp": "OpenTelemetry Protocol over gRPC (row-oriented protobuf).", "otlphttp": "OpenTelemetry Protocol over HTTP/protobuf."}, "signals": {"logs": "OpenTelemetry Logs signal.", "metrics": "OpenTelemetry Metrics signal.", "traces": "OpenTelemetry Traces signal."}, "compression": {"none": "No payload compression on the wire.", "gzip": "gzip payload compression.", "zstd": "zstd payload compression."}};</script>
+  <script>window.GLOSSARY = [{"term": "DFE", "definition": "Dataflow Engine - the OTAP-native Rust pipeline being benchmarked in this repo."}, {"term": "OTC", "definition": "OpenTelemetry Collector (contrib distribution) - the reference Go implementation."}, {"term": "OTAP", "definition": "OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches."}, {"term": "OTLP", "definition": "OpenTelemetry Protocol - the standard row-oriented gRPC/HTTP protobuf protocol."}, {"term": "OTLP HTTP", "definition": "OpenTelemetry Protocol over pure HTTP."}];</script>
   <script>window.COMPARISON_SLUG = "log_attr_processor_rename_multi_batch";</script>
   <script src="../../comparison_data/suite/dfe_logs_otap_none_attr_rename_multi_batch/data.js"></script>
   <script src="../../comparison_data/suite/dfe_logs_otlp_none_attr_rename_multi_batch/data.js"></script>
@@ -49,27 +53,32 @@
     {
       "name": "batch-256",
       "label": "256",
-      "loadgen_rate": 400000
+      "loadgen_rate": 400000,
+      "description": "256 logs per batch @ 400k logs/sec"
     },
     {
       "name": "batch-512",
       "label": "512",
-      "loadgen_rate": 400000
+      "loadgen_rate": 400000,
+      "description": "512 logs per batch @ 400k logs/sec"
     },
     {
       "name": "batch-1024",
       "label": "1024",
-      "loadgen_rate": 400000
+      "loadgen_rate": 400000,
+      "description": "1024 logs per batch @ 400k logs/sec"
     },
     {
       "name": "batch-2048",
       "label": "2048",
-      "loadgen_rate": 400000
+      "loadgen_rate": 400000,
+      "description": "2048 logs per batch @ 400k logs/sec"
     },
     {
       "name": "batch-4096",
       "label": "4096",
-      "loadgen_rate": 400000
+      "loadgen_rate": 400000,
+      "description": "4096 logs per batch @ 400k logs/sec"
     }
   ],
   "suites": [
