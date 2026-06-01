@@ -90,20 +90,23 @@ jobs:
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
 
-      - name: Run OTAP 8-core split-NUMA experiment
+      - name: Run OTLP saturation/scaling tests (fixed 64 connections)
         run: |
           cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/saturation-otap-8cores.yaml
+          for config in test_suites/integration/continuous/saturation-{1core,2cores,4cores,8cores,16cores}.yaml; do
+            echo "=== Running: $config ==="
+            python orchestrator/run_orchestrator.py --config "$config" || true
+          done
 
-      - name: Analyze OTAP scaling results
+      - name: Analyze OTLP scaling results
         if: ${{ !cancelled() }}
         run: |
           cd tools/pipeline_perf_test
           python ../../.github/workflows/scripts/analyze-saturation-scaling.py results \
-            | tee otap-scaling-report.txt
-          echo "### OTAP 8-Core Split-NUMA Experiment" >> $GITHUB_STEP_SUMMARY
+            | tee scaling-report.txt
+          echo "### OTLP Scaling (fixed 64 connections)" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          cat otap-scaling-report.txt >> $GITHUB_STEP_SUMMARY
+          cat scaling-report.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Post-run disk usage diagnostics
