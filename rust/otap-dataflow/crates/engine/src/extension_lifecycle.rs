@@ -664,4 +664,134 @@ mod tests {
             drop(lifecycle);
         }));
     }
+
+    /// Two scopes (today: pipelines) each own a distinct
+    /// `ExtensionLifecycle`. A broadcast in one must not reach the
+    /// other's extensions — there is no shared shutdown bus.
+    #[test]
+    fn broadcast_shutdown_in_one_scope_does_not_reach_another_scope() {
+        use crate::control::ExtensionControlSender;
+        use crate::message::Sender;
+        use otap_df_channel::mpsc;
+
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ctx_a, _reg_a) = crate::testing::test_extension_ctx();
+            let (ctx_b, _reg_b) = crate::testing::test_extension_ctx();
+
+            let (tx_a, rx_a) = mpsc::Channel::new(8);
+            let (tx_b, rx_b) = mpsc::Channel::new(8);
+
+            let mut life_a = ExtensionLifecycle {
+                futures: FuturesUnordered::new(),
+                task_id_to_key: HashMap::new(),
+                shutdown_senders: vec![(
+                    ExtensionKey::new("a".into(), ExtensionVariant::Local),
+                    ExtensionControlSender {
+                        name: "a".into(),
+                        sender: Sender::new_local_mpsc_sender(tx_a),
+                    },
+                )],
+                _passive: Vec::new(),
+                shutdown_broadcast_fired: false,
+                shutdown_deadline: None,
+                monitor: ExtensionMetricsMonitor::disabled(ctx_a),
+                started_rx: tokio::sync::mpsc::unbounded_channel().1,
+            };
+            let life_b = ExtensionLifecycle {
+                futures: FuturesUnordered::new(),
+                task_id_to_key: HashMap::new(),
+                shutdown_senders: vec![(
+                    ExtensionKey::new("b".into(), ExtensionVariant::Local),
+                    ExtensionControlSender {
+                        name: "b".into(),
+                        sender: Sender::new_local_mpsc_sender(tx_b),
+                    },
+                )],
+                _passive: Vec::new(),
+                shutdown_broadcast_fired: false,
+                shutdown_deadline: None,
+                monitor: ExtensionMetricsMonitor::disabled(ctx_b),
+                started_rx: tokio::sync::mpsc::unbounded_channel().1,
+            };
+
+            life_a.broadcast_shutdown(Some("a-only")).await;
+
+            assert!(
+                rx_a.try_recv().is_ok(),
+                "scope A's extension must receive its own shutdown"
+            );
+            assert!(
+                rx_b.try_recv().is_err(),
+                "scope B's extension must NOT receive scope A's shutdown"
+            );
+            assert!(
+                !life_b.shutdown_broadcast_fired,
+                "scope B's latch must remain unset"
+            );
+        }));
+    }
+
+    /// Two scopes each own a distinct `ExtensionMetricsMonitor` with
+    /// independent tick cadences and `last_collect_telemetry` gating.
+    /// A `CollectTelemetry` fanout in one scope's monitor must not
+    /// reach the other scope's extensions.
+    #[test]
+    fn collect_telemetry_fanout_is_scoped_to_owning_monitor() {
+        use crate::control::ExtensionControlSender;
+        use crate::message::Sender;
+        use otap_df_channel::mpsc;
+
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ctx_a, _reg_a) = crate::testing::test_extension_ctx();
+            let (ctx_b, _reg_b) = crate::testing::test_extension_ctx();
+
+            let mut monitor_a = ExtensionMetricsMonitor::new(
+                ctx_a.clone(),
+                Duration::from_millis(50),
+                Duration::from_millis(50),
+            );
+            let mut monitor_b = ExtensionMetricsMonitor::new(
+                ctx_b.clone(),
+                Duration::from_millis(50),
+                Duration::from_millis(50),
+            );
+
+            let (tx_a, rx_a) = mpsc::Channel::new(8);
+            let (tx_b, rx_b) = mpsc::Channel::new(8);
+            let sender_a = ExtensionControlSender {
+                name: "a".into(),
+                sender: Sender::new_local_mpsc_sender(tx_a),
+            };
+            let sender_b = ExtensionControlSender {
+                name: "b".into(),
+                sender: Sender::new_local_mpsc_sender(tx_b),
+            };
+
+            let key_a = ExtensionKey::new("a".into(), ExtensionVariant::Local);
+            let key_b = ExtensionKey::new("b".into(), ExtensionVariant::Local);
+            let ent_a = ctx_a.register_extension_entity("a".into(), ExtensionVariant::Local);
+            let ent_b = ctx_b.register_extension_entity("b".into(), ExtensionVariant::Local);
+            monitor_a.register(&ctx_a, key_a.clone(), ent_a, Some(sender_a));
+            monitor_b.register(&ctx_b, key_b.clone(), ent_b, Some(sender_b));
+            monitor_a.apply_event(ExtensionLifecycleEvent::Spawned { key: key_a });
+            monitor_b.apply_event(ExtensionLifecycleEvent::Spawned { key: key_b });
+
+            let (rep_tx, _rep_rx) = flume::bounded(8);
+            let mut reporter = MetricsReporter::new(rep_tx);
+
+            // Only scope A ticks. Scope B's monitor stays idle.
+            monitor_a.tick(Instant::now(), &mut reporter);
+
+            assert!(
+                rx_a.try_recv().is_ok(),
+                "scope A's extension must receive its scope's CollectTelemetry"
+            );
+            assert!(
+                rx_b.try_recv().is_err(),
+                "scope B's extension must NOT receive scope A's CollectTelemetry"
+            );
+        }));
+    }
 }
