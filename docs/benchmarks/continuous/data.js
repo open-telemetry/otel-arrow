@@ -1,392 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780318039841,
+  "lastUpdate": 1780329679668,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "jmacd@users.noreply.github.com",
-            "name": "Joshua MacDonald",
-            "username": "jmacd"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "3e94f1fa256d8ea5acf209853548d6d06efb6d2e",
-          "message": "Honor the console_fallback setting for engine.observed_state.logging_events send policy (#2914)\n\n# Change Summary\n\n`console_fallback: false`\n\nwould not disable telemetry from logging calls that overflow, due to a\ndefault setting.\n\nThe correct field `engine.observed_state.logging_events`.\n\nFixes https://github.com/open-telemetry/otel-arrow/issues/2916\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
-          "timestamp": "2026-05-12T17:04:42Z",
-          "tree_id": "2c63d0c929429a5106d76b9dfd6fd7ec16561003",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/3e94f1fa256d8ea5acf209853548d6d06efb6d2e"
-        },
-        "date": 1778617268931,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 2.5,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.7099709082379,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.31538759389763,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 15.5953125,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 15.9140625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99989.32613943462,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 97489.59298594875,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.002135,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2626804.134568195,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2561313.891834917,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.63727012063958,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 64.81603960396039,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 17.709375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.125,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 94988.76282935729,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 94988.76282935729,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.002366,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 845163.3973020802,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2570914.809976262,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 2.6315789222717285,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 49.101543373776046,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 49.44470733973366,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 16.762890625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 17.28125,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 94989.96431027062,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 92490.22840736876,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.002113,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 831103.914484772,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 764836.120522614,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 2.6315789222717285,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.76671625498427,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 64.92559617461052,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 16.6703125,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 17.1640625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 94980.55747988388,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 92481.06912515008,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.004094,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2610410.242762398,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 779683.124141335,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 2.5,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 65.06189394727723,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.38949183862026,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 17.4984375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 17.91015625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99963.7081757468,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 97464.61547135313,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.007261,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2738443.143501339,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2575642.397789012,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 2.8947367668151855,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 37.59255345219428,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 38.29422552664188,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 23.552734375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 24.6171875,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 94965.29493296675,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 92216.29955332824,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.007309,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 606633.2395904583,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 761044.9079152916,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -41028,6 +40644,426 @@ window.BENCHMARK_DATA = {
             "value": 31.500626733961,
             "unit": "bytes/log",
             "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e5b4c433d3609682765ddf13b43661c2146ea970",
+          "message": "chore(deps): update github workflow dependencies (#3149)\n\n> ℹ️ **Note**\n> \n> This PR body was truncated due to platform limits.\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n|\n[DavidAnson/markdownlint-cli2-action](https://redirect.github.com/DavidAnson/markdownlint-cli2-action)\n| action | minor | `v23.1.0` → `v23.2.0` |\n|\n[EmbarkStudios/cargo-deny-action](https://redirect.github.com/EmbarkStudios/cargo-deny-action)\n| action | patch | `v2.0.17` → `v2.0.20` |\n| [Swatinem/rust-cache](https://redirect.github.com/Swatinem/rust-cache)\n| action | minor | `v2` → `v2.9.1` |\n|\n[actions/create-github-app-token](https://redirect.github.com/actions/create-github-app-token)\n| action | minor | `v3.1.1` → `v3.2.0` |\n| [actions/labeler](https://redirect.github.com/actions/labeler) |\naction | minor | `v6.0.1` → `v6.1.0` |\n| [actions/setup-go](https://redirect.github.com/actions/setup-go) |\naction | minor | `v6.0.0` → `v6.4.0` |\n| [actions/stale](https://redirect.github.com/actions/stale) | action |\nminor | `v10.2.0` → `v10.3.0` |\n|\n[benchmark-action/github-action-benchmark](https://redirect.github.com/benchmark-action/github-action-benchmark)\n| action | patch | `v1.22.0` → `v1.22.1` |\n|\n[codecov/codecov-action](https://redirect.github.com/codecov/codecov-action)\n| action | patch | `v6.0.0` → `v6.0.1` |\n|\n[docker/setup-buildx-action](https://redirect.github.com/docker/setup-buildx-action)\n| action | minor | `v4.0.0` → `v4.1.0` |\n|\n[github/codeql-action](https://redirect.github.com/github/codeql-action)\n| action | minor | `v4.35.3` → `v4.36.0` |\n| [go](https://redirect.github.com/actions/go-versions) | uses-with |\npatch | `1.26.2` → `1.26.3` |\n| [python](https://redirect.github.com/actions/python-versions) |\nuses-with | minor | `3.12` → `3.14` |\n|\n[step-security/harden-runner](https://redirect.github.com/step-security/harden-runner)\n| action | patch | `v2.19.0` → `v2.19.4` |\n|\n[taiki-e/install-action](https://redirect.github.com/taiki-e/install-action)\n| action | minor | `v2.75.28` → `v2.81.1` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>DavidAnson/markdownlint-cli2-action\n(DavidAnson/markdownlint-cli2-action)</summary>\n\n###\n[`v23.2.0`](https://redirect.github.com/DavidAnson/markdownlint-cli2-action/releases/tag/v23.2.0):\nAdd package-lock.json.\n\n[Compare\nSource](https://redirect.github.com/DavidAnson/markdownlint-cli2-action/compare/v23.1.0...v23.2.0)\n\n</details>\n\n<details>\n<summary>EmbarkStudios/cargo-deny-action\n(EmbarkStudios/cargo-deny-action)</summary>\n\n###\n[`v2.0.20`](https://redirect.github.com/EmbarkStudios/cargo-deny-action/releases/tag/v2.0.20):\nRelease 2.0.20 - cargo-deny 0.19.8\n\n[Compare\nSource](https://redirect.github.com/EmbarkStudios/cargo-deny-action/compare/v2.0.19...v2.0.20)\n\n##### Fixed\n\n-\n[PR#864](https://redirect.github.com/EmbarkStudios/cargo-deny/pull/864)\nfixed matching of `^` and `~` with on prerelease versions for when\nchecking if a crate is affected by an advisory. As of the time of the\nPR, this literally affected none of published versions of any crate with\nan advisory, but this just ensures such a case will be handled in the\nfuture.\n\n###\n[`v2.0.19`](https://redirect.github.com/EmbarkStudios/cargo-deny-action/releases/tag/v2.0.19):\nRelease 2.0.19 - cargo-deny 0.19.7\n\n[Compare\nSource](https://redirect.github.com/EmbarkStudios/cargo-deny-action/compare/v2.0.18...v2.0.19)\n\n##### Changed\n\n-\n[PR#860](https://redirect.github.com/EmbarkStudios/cargo-deny/pull/860)\nupdated crates, resolving\n[krates#111](https://redirect.github.com/EmbarkStudios/krates/issues/111).\n\n###\n[`v2.0.18`](https://redirect.github.com/EmbarkStudios/cargo-deny-action/releases/tag/v2.0.18):\nRelease 2.0.18 - cargo-deny 0.19.5\n\n[Compare\nSource](https://redirect.github.com/EmbarkStudios/cargo-deny-action/compare/v2.0.17...v2.0.18)\n\n##### Fixed\n\n-\n[PR#857](https://redirect.github.com/EmbarkStudios/cargo-deny/pull/857)\nfixed a segfault reported in\n[#&#8203;855](https://redirect.github.com/EmbarkStudios/cargo-deny/issues/855).\n\n</details>\n\n<details>\n<summary>Swatinem/rust-cache (Swatinem/rust-cache)</summary>\n\n###\n[`v2.9.1`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.9.1)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.9.0...v2.9.1)\n\nFix regression in hash calculation\n\n**Full Changelog**:\n<https://github.com/Swatinem/rust-cache/compare/v2.9.0...v2.9.1>\n\n###\n[`v2.9.0`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.9.0)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.8.2...v2.9.0)\n\n##### What's Changed\n\n- Add support for running rust-cache commands from within a Nix shell by\n[@&#8203;marc0246](https://redirect.github.com/marc0246) in\n[#&#8203;290](https://redirect.github.com/Swatinem/rust-cache/pull/290)\n- Bump taiki-e/install-action from 2.62.57 to 2.62.60 in the actions\ngroup by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;291](https://redirect.github.com/Swatinem/rust-cache/pull/291)\n- Bump the actions group across 1 directory with 5 updates by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;296](https://redirect.github.com/Swatinem/rust-cache/pull/296)\n- Bump the prd-major group with 3 updates by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;294](https://redirect.github.com/Swatinem/rust-cache/pull/294)\n- Bump [@&#8203;types/node](https://redirect.github.com/types/node) from\n24.10.1 to 25.0.2 in the dev-major group by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;295](https://redirect.github.com/Swatinem/rust-cache/pull/295)\n- Consider all installed toolchains in cache key by\n[@&#8203;tamird](https://redirect.github.com/tamird) in\n[#&#8203;293](https://redirect.github.com/Swatinem/rust-cache/pull/293)\n- Compare case-insenitively for full cache key match by\n[@&#8203;kbriggs](https://redirect.github.com/kbriggs) in\n[#&#8203;303](https://redirect.github.com/Swatinem/rust-cache/pull/303)\n- Migrate to `node24` runner by\n[@&#8203;rhysd](https://redirect.github.com/rhysd) in\n[#&#8203;314](https://redirect.github.com/Swatinem/rust-cache/pull/314)\n- Bump the actions group across 1 directory with 7 updates by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;312](https://redirect.github.com/Swatinem/rust-cache/pull/312)\n- Bump the prd-minor group across 1 directory with 2 updates by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;307](https://redirect.github.com/Swatinem/rust-cache/pull/307)\n- Bump [@&#8203;types/node](https://redirect.github.com/types/node) from\n25.0.2 to 25.2.2 in the dev-minor group by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;309](https://redirect.github.com/Swatinem/rust-cache/pull/309)\n\n##### New Contributors\n\n- [@&#8203;marc0246](https://redirect.github.com/marc0246) made their\nfirst contribution in\n[#&#8203;290](https://redirect.github.com/Swatinem/rust-cache/pull/290)\n- [@&#8203;tamird](https://redirect.github.com/tamird) made their first\ncontribution in\n[#&#8203;293](https://redirect.github.com/Swatinem/rust-cache/pull/293)\n- [@&#8203;kbriggs](https://redirect.github.com/kbriggs) made their\nfirst contribution in\n[#&#8203;303](https://redirect.github.com/Swatinem/rust-cache/pull/303)\n\n**Full Changelog**:\n<https://github.com/Swatinem/rust-cache/compare/v2.8.2...v2.9.0>\n\n###\n[`v2.8.2`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.8.2)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.8.1...v2.8.2)\n\n##### What's Changed\n\n- ci: address lint findings, add zizmor workflow by\n[@&#8203;woodruffw](https://redirect.github.com/woodruffw) in\n[#&#8203;262](https://redirect.github.com/Swatinem/rust-cache/pull/262)\n- feat: Implement ability to disable adding job ID + rust environment\nhashes to cache names by\n[@&#8203;Ryan-Brice](https://redirect.github.com/Ryan-Brice) in\n[#&#8203;279](https://redirect.github.com/Swatinem/rust-cache/pull/279)\n- Don't overwrite env for cargo-metadata call by\n[@&#8203;MaeIsBad](https://redirect.github.com/MaeIsBad) in\n[#&#8203;285](https://redirect.github.com/Swatinem/rust-cache/pull/285)\n\n##### New Contributors\n\n- [@&#8203;woodruffw](https://redirect.github.com/woodruffw) made their\nfirst contribution in\n[#&#8203;262](https://redirect.github.com/Swatinem/rust-cache/pull/262)\n- [@&#8203;Ryan-Brice](https://redirect.github.com/Ryan-Brice) made\ntheir first contribution in\n[#&#8203;279](https://redirect.github.com/Swatinem/rust-cache/pull/279)\n- [@&#8203;MaeIsBad](https://redirect.github.com/MaeIsBad) made their\nfirst contribution in\n[#&#8203;285](https://redirect.github.com/Swatinem/rust-cache/pull/285)\n\n**Full Changelog**:\n<https://github.com/Swatinem/rust-cache/compare/v2.8.1...v2.8.2>\n\n###\n[`v2.8.1`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.8.1)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.8.0...v2.8.1)\n\n##### What's Changed\n\n- Set empty `CARGO_ENCODED_RUSTFLAGS` in workspace metadata retrieval by\n[@&#8203;ark0f](https://redirect.github.com/ark0f) in\n[#&#8203;249](https://redirect.github.com/Swatinem/rust-cache/pull/249)\n- chore(deps): update dependencies by\n[@&#8203;reneleonhardt](https://redirect.github.com/reneleonhardt) in\n[#&#8203;251](https://redirect.github.com/Swatinem/rust-cache/pull/251)\n- chore: fix dependabot groups by\n[@&#8203;reneleonhardt](https://redirect.github.com/reneleonhardt) in\n[#&#8203;253](https://redirect.github.com/Swatinem/rust-cache/pull/253)\n- Bump the prd-patch group with 2 updates by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;254](https://redirect.github.com/Swatinem/rust-cache/pull/254)\n- chore(dependabot): regenerate and commit dist/ by\n[@&#8203;reneleonhardt](https://redirect.github.com/reneleonhardt) in\n[#&#8203;257](https://redirect.github.com/Swatinem/rust-cache/pull/257)\n- Bump [@&#8203;types/node](https://redirect.github.com/types/node) from\n22.16.3 to 24.2.1 in the dev-major group by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;255](https://redirect.github.com/Swatinem/rust-cache/pull/255)\n- Bump typescript from 5.8.3 to 5.9.2 in the dev-minor group by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;256](https://redirect.github.com/Swatinem/rust-cache/pull/256)\n- Bump actions/setup-node from 4 to 5 in the actions group by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;259](https://redirect.github.com/Swatinem/rust-cache/pull/259)\n- Update README.md by\n[@&#8203;Propfend](https://redirect.github.com/Propfend) in\n[#&#8203;234](https://redirect.github.com/Swatinem/rust-cache/pull/234)\n- Bump [@&#8203;types/node](https://redirect.github.com/types/node) from\n24.2.1 to 24.3.0 in the dev-minor group by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;258](https://redirect.github.com/Swatinem/rust-cache/pull/258)\n\n##### New Contributors\n\n- [@&#8203;ark0f](https://redirect.github.com/ark0f) made their first\ncontribution in\n[#&#8203;249](https://redirect.github.com/Swatinem/rust-cache/pull/249)\n- [@&#8203;reneleonhardt](https://redirect.github.com/reneleonhardt)\nmade their first contribution in\n[#&#8203;251](https://redirect.github.com/Swatinem/rust-cache/pull/251)\n- [@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot]\nmade their first contribution in\n[#&#8203;254](https://redirect.github.com/Swatinem/rust-cache/pull/254)\n- [@&#8203;Propfend](https://redirect.github.com/Propfend) made their\nfirst contribution in\n[#&#8203;234](https://redirect.github.com/Swatinem/rust-cache/pull/234)\n\n**Full Changelog**:\n<https://github.com/Swatinem/rust-cache/compare/v2...v2.8.1>\n\n###\n[`v2.8.0`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.8.0)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.7.8...v2.8.0)\n\n##### What's Changed\n\n- Add cache-workspace-crates feature by\n[@&#8203;jbransen](https://redirect.github.com/jbransen) in\n[#&#8203;246](https://redirect.github.com/Swatinem/rust-cache/pull/246)\n- Feat: support warpbuild cache provider by\n[@&#8203;stegaBOB](https://redirect.github.com/stegaBOB) in\n[#&#8203;247](https://redirect.github.com/Swatinem/rust-cache/pull/247)\n\n##### New Contributors\n\n- [@&#8203;jbransen](https://redirect.github.com/jbransen) made their\nfirst contribution in\n[#&#8203;246](https://redirect.github.com/Swatinem/rust-cache/pull/246)\n- [@&#8203;stegaBOB](https://redirect.github.com/stegaBOB) made their\nfirst contribution in\n[#&#8203;247](https://redirect.github.com/Swatinem/rust-cache/pull/247)\n\n**Full Changelog**:\n<https://github.com/Swatinem/rust-cache/compare/v2.7.8...v2.8.0>\n\n###\n[`v2.7.8`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.7.8)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.7.7...v2.7.8)\n\n##### What's Changed\n\n- Include CPU arch in the cache key for arm64 Linux runners by\n[@&#8203;rhysd](https://redirect.github.com/rhysd) in\n[#&#8203;228](https://redirect.github.com/Swatinem/rust-cache/pull/228)\n\n**Full Changelog**:\n<https://github.com/Swatinem/rust-cache/compare/v2.7.7...v2.7.8>\n\n###\n[`v2.7.7`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.7.7)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.7.6...v2.7.7)\n\n**Full Changelog**:\n<https://github.com/Swatinem/rust-cache/compare/v2.7.6...v2.7.7>\n\n###\n[`v2.7.6`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.7.6)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.7.5...v2.7.6)\n\n##### What's Changed\n\n- Updated artifact upload action to v4 by\n[@&#8203;guylamar2006](https://redirect.github.com/guylamar2006) in\n[#&#8203;212](https://redirect.github.com/Swatinem/rust-cache/pull/212)\n- Adds an option to do lookup-only of the cache by\n[@&#8203;danlec](https://redirect.github.com/danlec) in\n[#&#8203;217](https://redirect.github.com/Swatinem/rust-cache/pull/217)\n- add runner OS in cache key by\n[@&#8203;rnbguy](https://redirect.github.com/rnbguy) in\n[#&#8203;220](https://redirect.github.com/Swatinem/rust-cache/pull/220)\n- Allow opting out of caching $CARGO\\_HOME/bin. by\n[@&#8203;benjyw](https://redirect.github.com/benjyw) in\n[#&#8203;216](https://redirect.github.com/Swatinem/rust-cache/pull/216)\n\n##### New Contributors\n\n- [@&#8203;guylamar2006](https://redirect.github.com/guylamar2006) made\ntheir first contribution in\n[#&#8203;212](https://redirect.github.com/Swatinem/rust-cache/pull/212)\n- [@&#8203;danlec](https://redirect.github.com/danlec) made their first\ncontribution in\n[#&#8203;217](https://redirect.github.com/Swatinem/rust-cache/pull/217)\n- [@&#8203;rnbguy](https://redirect.github.com/rnbguy) made their first\ncontribution in\n[#&#8203;220](https://redirect.github.com/Swatinem/rust-cache/pull/220)\n- [@&#8203;benjyw](https://redirect.github.com/benjyw) made their first\ncontribution in\n[#&#8203;216](https://redirect.github.com/Swatinem/rust-cache/pull/216)\n\n**Full Changelog**:\n<https://github.com/Swatinem/rust-cache/compare/v2.7.5...v2.7.6>\n\n###\n[`v2.7.5`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.7.5)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.7.3...v2.7.5)\n\n##### What's Changed\n\n- Upgrade checkout action from version 3 to 4 by\n[@&#8203;carsten-wenderdel](https://redirect.github.com/carsten-wenderdel)\nin\n[#&#8203;190](https://redirect.github.com/Swatinem/rust-cache/pull/190)\n- fix: usage of `deprecated` version of `node` by\n[@&#8203;hamirmahal](https://redirect.github.com/hamirmahal) in\n[#&#8203;197](https://redirect.github.com/Swatinem/rust-cache/pull/197)\n- Only run macOsWorkaround() on macOS by\n[@&#8203;heksesang](https://redirect.github.com/heksesang) in\n[#&#8203;206](https://redirect.github.com/Swatinem/rust-cache/pull/206)\n- Support Cargo.lock format cargo-lock v4 by\n[@&#8203;NobodyXu](https://redirect.github.com/NobodyXu) in\n[#&#8203;211](https://redirect.github.com/Swatinem/rust-cache/pull/211)\n\n##### New Contributors\n\n-\n[@&#8203;carsten-wenderdel](https://redirect.github.com/carsten-wenderdel)\nmade their first contribution in\n[#&#8203;190](https://redirect.github.com/Swatinem/rust-cache/pull/190)\n- [@&#8203;hamirmahal](https://redirect.github.com/hamirmahal) made\ntheir first contribution in\n[#&#8203;197](https://redirect.github.com/Swatinem/rust-cache/pull/197)\n- [@&#8203;heksesang](https://redirect.github.com/heksesang) made their\nfirst contribution in\n[#&#8203;206](https://redirect.github.com/Swatinem/rust-cache/pull/206)\n\n**Full Changelog**:\n<https://github.com/Swatinem/rust-cache/compare/v2.7.3...v2.7.5>\n\n###\n[`v2.7.3`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.7.3)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.7.2...v2.7.3)\n\n- Work around upstream problem that causes cache saving to hang for\nminutes.\n\n**Full Changelog**:\n<https://github.com/Swatinem/rust-cache/compare/v2.7.2...v2.7.3>\n\n###\n[`v2.7.2`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.7.2)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.7.1...v2.7.2)\n\n##### What's Changed\n\n- Update action runtime to `node20` by\n[@&#8203;rhysd](https://redirect.github.com/rhysd) in\n[#&#8203;175](https://redirect.github.com/Swatinem/rust-cache/pull/175)\n- Only key by `Cargo.toml` and `Cargo.lock` files of workspace members\nby [@&#8203;max-heller](https://redirect.github.com/max-heller) in\n[#&#8203;180](https://redirect.github.com/Swatinem/rust-cache/pull/180)\n\n##### New Contributors\n\n- [@&#8203;rhysd](https://redirect.github.com/rhysd) made their first\ncontribution in\n[#&#8203;175](https://redirect.github.com/Swatinem/rust-cache/pull/175)\n- [@&#8203;max-heller](https://redirect.github.com/max-heller) made\ntheir first contribution in\n[#&#8203;180](https://redirect.github.com/Swatinem/rust-cache/pull/180)\n\n**Full Changelog**:\n<https://github.com/Swatinem/rust-cache/compare/v2.7.1...v2.7.2>\n\n###\n[`v2.7.1`](https://redirect.github.com/Swatinem/rust-cache/compare/v2.7.0...v2.7.1)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.7.0...v2.7.1)\n\n###\n[`v2.7.0`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.7.0)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.6.2...v2.7.0)\n\n##### What's Changed\n\n- Fix save-if documentation in readme by\n[@&#8203;rukai](https://redirect.github.com/rukai) in\n[#&#8203;166](https://redirect.github.com/Swatinem/rust-cache/pull/166)\n- Support for `trybuild` and similar macro testing tools by\n[@&#8203;neysofu](https://redirect.github.com/neysofu) in\n[#&#8203;168](https://redirect.github.com/Swatinem/rust-cache/pull/168)\n\n##### New Contributors\n\n- [@&#8203;rukai](https://redirect.github.com/rukai) made their first\ncontribution in\n[#&#8203;166](https://redirect.github.com/Swatinem/rust-cache/pull/166)\n- [@&#8203;neysofu](https://redirect.github.com/neysofu) made their\nfirst contribution in\n[#&#8203;168](https://redirect.github.com/Swatinem/rust-cache/pull/168)\n\n**Full Changelog**:\n<https://github.com/Swatinem/rust-cache/compare/v2.6.2...v2.7.0>\n\n###\n[`v2.6.2`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.6.2)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.6.1...v2.6.2)\n\n##### What's Changed\n\n- dep: Use `smol-toml` instead of `toml` by\n[@&#8203;NobodyXu](https://redirect.github.com/NobodyXu) in\n[#&#8203;164](https://redirect.github.com/Swatinem/rust-cache/pull/164)\n\n**Full Changelog**:\n<https://github.com/Swatinem/rust-cache/compare/v2...v2.6.2>\n\n###\n[`v2.6.1`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.6.1)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.6.0...v2.6.1)\n\n- Fix hash contributions of `Cargo.lock`/`Cargo.toml` files.\n\n###\n[`v2.6.0`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.6.0)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.5.1...v2.6.0)\n\n##### What's Changed\n\n- Add \"buildjet\" as a second `cache-provider` backend\n[@&#8203;joroshiba](https://redirect.github.com/joroshiba) in\n[#&#8203;154](https://redirect.github.com/Swatinem/rust-cache/pull/154)\n- Clean up sparse registry index.\n- Do not clean up src of `-sys` crates.\n- Remove `.cargo/credentials.toml` before saving.\n\n##### New Contributors\n\n- [@&#8203;joroshiba](https://redirect.github.com/joroshiba) made their\nfirst contribution in\n[#&#8203;154](https://redirect.github.com/Swatinem/rust-cache/pull/154)\n\n**Full Changelog**:\n<https://github.com/Swatinem/rust-cache/compare/v2.5.1...v2.6.0>\n\n###\n[`v2.5.1`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.5.1)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.5.0...v2.5.1)\n\n- Fix hash contribution of `Cargo.lock`.\n\n###\n[`v2.5.0`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.5.0)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.4.0...v2.5.0)\n\n##### What's Changed\n\n- feat: Rm workspace crates version before caching by\n[@&#8203;NobodyXu](https://redirect.github.com/NobodyXu) in\n[#&#8203;147](https://redirect.github.com/Swatinem/rust-cache/pull/147)\n- feat: Add hash of `.cargo/config.toml` to key by\n[@&#8203;NobodyXu](https://redirect.github.com/NobodyXu) in\n[#&#8203;149](https://redirect.github.com/Swatinem/rust-cache/pull/149)\n\n##### New Contributors\n\n- [@&#8203;NobodyXu](https://redirect.github.com/NobodyXu) made their\nfirst contribution in\n[#&#8203;147](https://redirect.github.com/Swatinem/rust-cache/pull/147)\n\n**Full Changelog**:\n<https://github.com/Swatinem/rust-cache/compare/v2.4.0...v2.5.0>\n\n###\n[`v2.4.0`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.4.0)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.3.0...v2.4.0)\n\n- Fix cache key stability.\n- Use 8 character hash components to reduce the key length, making it\nmore readable.\n\n###\n[`v2.3.0`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.3.0)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.2.1...v2.3.0)\n\n- Add `cache-all-crates` option, which enables caching of crates\ninstalled by workflows.\n- Add installed packages to cache key, so changes to workflows that\ninstall rust tools are detected and cached properly.\n- Fix cache restore failures due to upstream bug.\n- Fix `EISDIR` error due to globed directories.\n- Update runtime `@actions/cache`, `@actions/io` and dev `typescript`\ndependencies.\n- Update `npm run prepare` so it creates distribution files with the\nright line endings.\n\n###\n[`v2.2.1`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.2.1)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.2.0...v2.2.1)\n\n- Update `@actions/cache` dependency to fix usage of `zstd` compression.\n\n###\n[`v2.2.0`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.2.0)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.1.0...v2.2.0)\n\n- Add new `save-if` option to always restore, but only conditionally\nsave the cache.\n\n###\n[`v2.1.0`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.1.0)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.0.2...v2.1.0)\n\n- Only hash `Cargo.{lock,toml}` files in the configured workspace\ndirectories.\n\n###\n[`v2.0.2`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.0.2)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2.0.1...v2.0.2)\n\n- Avoid calling cargo metadata on pre-cleanup.\n- Added `prefix-key`, `cache-directories` and `cache-targets` options.\n\n###\n[`v2.0.1`](https://redirect.github.com/Swatinem/rust-cache/releases/tag/v2.0.1)\n\n[Compare\nSource](https://redirect.github.com/Swatinem/rust-cache/compare/v2...v2.0.1)\n\n- Primarily just updating dependencies to fix GitHub deprecation\nnotices.\n\n</details>\n\n<details>\n<summary>actions/create-github-app-token\n(actions/create-github-app-token)</summary>\n\n###\n[`v3.2.0`](https://redirect.github.com/actions/create-github-app-token/releases/tag/v3.2.0)\n\n[Compare\nSource](https://redirect.github.com/actions/create-github-app-token/compare/v3.1.1...v3.2.0)\n\n##### Features\n\n- add support for enterprise-level GitHub Apps\n([#&#8203;263](https://redirect.github.com/actions/create-github-app-token/issues/263))\n([952a2a7](https://redirect.github.com/actions/create-github-app-token/commit/952a2a7073df6bfa5f49bc469ec895b6ec1acea4))\n- support full repository names in `repositories` input\n([#&#8203;372](https://redirect.github.com/actions/create-github-app-token/issues/372))\n([85eb8dd](https://redirect.github.com/actions/create-github-app-token/commit/85eb8dd41472213aed25d1a126460e0069138ab6))\n\n##### Bug Fixes\n\n- **deps:** bump\n[@&#8203;actions/core](https://redirect.github.com/actions/core) from\n3.0.0 to 3.0.1 in the production-dependencies group\n([#&#8203;364](https://redirect.github.com/actions/create-github-app-token/issues/364))\n([43e5c34](https://redirect.github.com/actions/create-github-app-token/commit/43e5c345bfd4d4f3ecea019ad0042001a09dd857))\n- validate private-key input\n([#&#8203;376](https://redirect.github.com/actions/create-github-app-token/issues/376))\n([f24bbd8](https://redirect.github.com/actions/create-github-app-token/commit/f24bbd89643991c0de27ae823c01791b2c6bafdd))\n\n</details>\n\n<details>\n<summary>actions/labeler (actions/labeler)</summary>\n\n###\n[`v6.1.0`](https://redirect.github.com/actions/labeler/releases/tag/v6.1.0)\n\n[Compare\nSource](https://redirect.github.com/actions/labeler/compare/v6.0.1...v6.1.0)\n\n#### Enhancements\n\n- Add changed-files-labels-limit and max-files-changed configuration\noptions to cap the number of labels added by\n[@&#8203;bluca](https://redirect.github.com/bluca) in\n[#&#8203;923](https://redirect.github.com/actions/labeler/pull/923)\n\n#### Bug Fixes\n\n- Improve Labeler Action documentation and permission error handling by\n[@&#8203;chiranjib-swain](https://redirect.github.com/chiranjib-swain)\nin [#&#8203;897](https://redirect.github.com/actions/labeler/pull/897)\n- Preserve manually added labels during workflow runs and refine label\nsynchronization logic by\n[@&#8203;chiranjib-swain](https://redirect.github.com/chiranjib-swain)\nin [#&#8203;917](https://redirect.github.com/actions/labeler/pull/917)\n\n#### Dependency Updates\n\n- Upgrade brace-expansion from 1.1.11 to 1.1.12 and document breaking\nchanges in v6 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;877](https://redirect.github.com/actions/labeler/pull/877)\n- Upgrade minimatch from 10.0.1 to 10.2.3 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;926](https://redirect.github.com/actions/labeler/pull/926)\n- Upgrade dependencies\n([@&#8203;actions/core](https://redirect.github.com/actions/core),\n[@&#8203;actions/github](https://redirect.github.com/actions/github),\njs-yaml, minimatch,\n[@&#8203;typescript-eslint](https://redirect.github.com/typescript-eslint))\nby [@&#8203;Copilot](https://redirect.github.com/Copilot) in\n[#&#8203;934](https://redirect.github.com/actions/labeler/pull/934)\n\n#### New Contributors\n\n- [@&#8203;chiranjib-swain](https://redirect.github.com/chiranjib-swain)\nmade their first contribution in\n[#&#8203;897](https://redirect.github.com/actions/labeler/pull/897)\n- [@&#8203;bluca](https://redirect.github.com/bluca) made their first\ncontribution in\n[#&#8203;923](https://redirect.github.com/actions/labeler/pull/923)\n- [@&#8203;Copilot](https://redirect.github.com/Copilot) made their\nfirst contribution in\n[#&#8203;934](https://redirect.github.com/actions/labeler/pull/934)\n\n**Full Changelog**:\n<https://github.com/actions/labeler/compare/v6...v6.1.0>\n\n</details>\n\n<details>\n<summary>actions/setup-go (actions/setup-go)</summary>\n\n###\n[`v6.4.0`](https://redirect.github.com/actions/setup-go/releases/tag/v6.4.0)\n\n[Compare\nSource](https://redirect.github.com/actions/setup-go/compare/v6.3.0...v6.4.0)\n\n##### What's Changed\n\n##### Enhancement\n\n- Add go-download-base-url input for custom Go distributions by\n[@&#8203;gdams](https://redirect.github.com/gdams) in\n[#&#8203;721](https://redirect.github.com/actions/setup-go/pull/721)\n\n##### Dependency update\n\n- Upgrade minimatch from 3.1.2 to 3.1.5 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;727](https://redirect.github.com/actions/setup-go/pull/727)\n\n##### Documentation update\n\n- Rearrange README.md, add advanced-usage.md by\n[@&#8203;priyagupta108](https://redirect.github.com/priyagupta108) in\n[#&#8203;724](https://redirect.github.com/actions/setup-go/pull/724)\n- Fix Microsoft build of Go link by\n[@&#8203;gdams](https://redirect.github.com/gdams) in\n[#&#8203;734](https://redirect.github.com/actions/setup-go/pull/734)\n\n##### New Contributors\n\n- [@&#8203;gdams](https://redirect.github.com/gdams) made their first\ncontribution in\n[#&#8203;721](https://redirect.github.com/actions/setup-go/pull/721)\n\n**Full Changelog**:\n<https://github.com/actions/setup-go/compare/v6...v6.4.0>\n\n###\n[`v6.3.0`](https://redirect.github.com/actions/setup-go/releases/tag/v6.3.0)\n\n[Compare\nSource](https://redirect.github.com/actions/setup-go/compare/v6.2.0...v6.3.0)\n\n#### What's Changed\n\n- Update default Go module caching to use go.mod by\n[@&#8203;priyagupta108](https://redirect.github.com/priyagupta108) in\n[#&#8203;705](https://redirect.github.com/actions/setup-go/pull/705)\n- Fix golang download url to go.dev by\n[@&#8203;178inaba](https://redirect.github.com/178inaba) in\n[#&#8203;469](https://redirect.github.com/actions/setup-go/pull/469)\n\n**Full Changelog**:\n<https://github.com/actions/setup-go/compare/v6...v6.3.0>\n\n###\n[`v6.2.0`](https://redirect.github.com/actions/setup-go/releases/tag/v6.2.0)\n\n[Compare\nSource](https://redirect.github.com/actions/setup-go/compare/v6.1.0...v6.2.0)\n\n##### What's Changed\n\n##### Enhancements\n\n- Example for restore-only cache in documentation by\n[@&#8203;aparnajyothi-y](https://redirect.github.com/aparnajyothi-y) in\n[#&#8203;696](https://redirect.github.com/actions/setup-go/pull/696)\n- Update Node.js version in action.yml by\n[@&#8203;ccoVeille](https://redirect.github.com/ccoVeille) in\n[#&#8203;691](https://redirect.github.com/actions/setup-go/pull/691)\n- Documentation update of actions/checkout by\n[@&#8203;deining](https://redirect.github.com/deining) in\n[#&#8203;683](https://redirect.github.com/actions/setup-go/pull/683)\n\n##### Dependency updates\n\n- Upgrade js-yaml from 3.14.1 to 3.14.2 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;682](https://redirect.github.com/actions/setup-go/pull/682)\n- Upgrade\n[@&#8203;actions/cache](https://redirect.github.com/actions/cache) to v5\nby [@&#8203;salmanmkc](https://redirect.github.com/salmanmkc) in\n[#&#8203;695](https://redirect.github.com/actions/setup-go/pull/695)\n- Upgrade actions/checkout from 5 to 6 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;686](https://redirect.github.com/actions/setup-go/pull/686)\n- Upgrade qs from 6.14.0 to 6.14.1 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;703](https://redirect.github.com/actions/setup-go/pull/703)\n\n##### New Contributors\n\n- [@&#8203;ccoVeille](https://redirect.github.com/ccoVeille) made their\nfirst contribution in\n[#&#8203;691](https://redirect.github.com/actions/setup-go/pull/691)\n- [@&#8203;deining](https://redirect.github.com/deining) made their\nfirst contribution in\n[#&#8203;683](https://redirect.github.com/actions/setup-go/pull/683)\n\n**Full Changelog**:\n<https://github.com/actions/setup-go/compare/v6...v6.2.0>\n\n###\n[`v6.1.0`](https://redirect.github.com/actions/setup-go/releases/tag/v6.1.0)\n\n[Compare\nSource](https://redirect.github.com/actions/setup-go/compare/v6...v6.1.0)\n\n#### What's Changed\n\n##### Enhancements\n\n- Fall back to downloading from go.dev/dl instead of\nstorage.googleapis.com/golang by\n[@&#8203;nicholasngai](https://redirect.github.com/nicholasngai) in\n[#&#8203;665](https://redirect.github.com/actions/setup-go/pull/665)\n- Add support for .tool-versions file and update workflow by\n[@&#8203;priya-kinthali](https://redirect.github.com/priya-kinthali) in\n[#&#8203;673](https://redirect.github.com/actions/setup-go/pull/673)\n- Add comprehensive breaking changes documentation for v6 by\n[@&#8203;mahabaleshwars](https://redirect.github.com/mahabaleshwars) in\n[#&#8203;674](https://redirect.github.com/actions/setup-go/pull/674)\n\n##### Dependency updates\n\n- Upgrade eslint-config-prettier from 10.0.1 to 10.1.8 and document\nbreaking changes in v6 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;617](https://redirect.github.com/actions/setup-go/pull/617)\n- Upgrade actions/publish-action from 0.3.0 to 0.4.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;641](https://redirect.github.com/actions/setup-go/pull/641)\n- Upgrade semver and\n[@&#8203;types/semver](https://redirect.github.com/types/semver) by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;652](https://redirect.github.com/actions/setup-go/pull/652)\n\n#### New Contributors\n\n- [@&#8203;nicholasngai](https://redirect.github.com/nicholasngai) made\ntheir first contribution in\n[#&#8203;665](https://redirect.github.com/actions/setup-go/pull/665)\n- [@&#8203;priya-kinthali](https://redirect.github.com/priya-kinthali)\nmade their first contribution in\n[#&#8203;673](https://redirect.github.com/actions/setup-go/pull/673)\n- [@&#8203;mahabaleshwars](https://redirect.github.com/mahabaleshwars)\nmade their first contribution in\n[#&#8203;674](https://redirect.github.com/actions/setup-go/pull/674)\n\n**Full Changelog**:\n<https://github.com/actions/setup-go/compare/v6...v6.1.0>\n\n</details>\n\n<details>\n<summary>actions/stale (actions/stale)</summary>\n\n###\n[`v10.3.0`](https://redirect.github.com/actions/stale/releases/tag/v10.3.0)\n\n[Compare\nSource](https://redirect.github.com/actions/stale/compare/v10.2.0...v10.3.0)\n\n#### What's Changed\n\n##### Bug Fix\n\n- Enhancement: ignore stale labeling events by\n[@&#8203;shamoon](https://redirect.github.com/shamoon) in\n[#&#8203;1311](https://redirect.github.com/actions/stale/pull/1311)\n\n##### Dependency Updates\n\n- Upgrade dependencies\n([@&#8203;actions/core](https://redirect.github.com/actions/core),\n[@&#8203;octokit/plugin-retry](https://redirect.github.com/octokit/plugin-retry),\n[@&#8203;typescript-eslint](https://redirect.github.com/typescript-eslint))\nby [@&#8203;Copilot](https://redirect.github.com/Copilot) in\n[#&#8203;1335](https://redirect.github.com/actions/stale/pull/1335)\n\n#### New Contributors\n\n- [@&#8203;shamoon](https://redirect.github.com/shamoon) made their\nfirst contribution in\n[#&#8203;1311](https://redirect.github.com/actions/stale/pull/1311)\n\n**Full Changelog**:\n<https://github.com/actions/stale/compare/v10...v10.3.0>\n\n</details>\n\n<details>\n<summary>benchmark-action/github-action-benchmark\n(benchmark-action/github-action-benchmark)</summary>\n\n###\n[`v1.22.1`](https://redirect.github.com/benchmark-action/github-action-benchmark/blob/HEAD/CHANGELOG.md#v1221---6-May-2026)\n\n[Compare\nSource](https://redirect.github.com/benchmark-action/github-action-benchmark/compare/v1.22.0...v1.22.1)\n\n- **fix** scope tsconfig.build.json to src/ for reproducibility\n([#&#8203;352](https://redirect.github.com/benchmark-action/github-action-benchmark/issues/352))\n- **chore** bump minimatch from 3.1.2 to 3.1.5\n([#&#8203;347](https://redirect.github.com/benchmark-action/github-action-benchmark/issues/347))\n- **chore** bump uuid and\n[@&#8203;actions/core](https://redirect.github.com/actions/core)\n([#&#8203;350](https://redirect.github.com/benchmark-action/github-action-benchmark/issues/350))\n- **chore** bump flatted from 3.2.4 to 3.4.2\n([#&#8203;346](https://redirect.github.com/benchmark-action/github-action-benchmark/issues/346))\n- **chore** bump js-yaml\n([#&#8203;344](https://redirect.github.com/benchmark-action/github-action-benchmark/issues/344))\n- **chore** bump picomatch from 2.3.0 to 2.3.2\n([#&#8203;342](https://redirect.github.com/benchmark-action/github-action-benchmark/issues/342))\n\n</details>\n\n<details>\n<summary>codecov/codecov-action (codecov/codecov-action)</summary>\n\n###\n[`v6.0.1`](https://redirect.github.com/codecov/codecov-action/releases/tag/v6.0.1)\n\n[Compare\nSource](https://redirect.github.com/codecov/codecov-action/compare/v6.0.0...v6.0.1)\n\n##### What's Changed\n\n- fix: prevent template injection in run: steps (VULN-1652) by\n[@&#8203;thomasrockhu-codecov](https://redirect.github.com/thomasrockhu-codecov)\nin\n[#&#8203;1947](https://redirect.github.com/codecov/codecov-action/pull/1947)\n- chore(release): 6.0.1 by\n[@&#8203;thomasrockhu-codecov](https://redirect.github.com/thomasrockhu-codecov)\nin\n[#&#8203;1949](https://redirect.github.com/codecov/codecov-action/pull/1949)\n\n**Full Changelog**:\n<https://github.com/codecov/codecov-action/compare/v6.0.0...v6.0.1>\n\n</details>\n\n<details>\n<summary>docker/setup-buildx-action\n(docker/setup-buildx-action)</summary>\n\n###\n[`v4.1.0`](https://redirect.github.com/docker/setup-buildx-action/releases/tag/v4.1.0)\n\n[Compare\nSource](https://redirect.github.com/docker/setup-buildx-action/compare/v4.0.0...v4.1.0)\n\n- Bump\n[@&#8203;docker/actions-toolkit](https://redirect.github.com/docker/actions-toolkit)\nfrom 0.79.0 to 0.90.0 in\n[#&#8203;489](https://redirect.github.com/docker/setup-buildx-action/pull/489)\n- Bump brace-expansion from 1.1.12 to 5.0.6 in\n[#&#8203;547](https://redirect.github.com/docker/setup-buildx-action/pull/547)\n[#&#8203;508](https://redirect.github.com/docker/setup-buildx-action/pull/508)\n- Bump fast-xml-builder from 1.0.0 to 1.2.0 in\n[#&#8203;540](https://redirect.github.com/docker/setup-buildx-action/pull/540)\n- Bump fast-xml-parser from 5.4.2 to 5.8.0 in\n[#&#8203;496](https://redirect.github.com/docker/setup-buildx-action/pull/496)\n- Bump flatted from 3.3.3 to 3.4.2 in\n[#&#8203;499](https://redirect.github.com/docker/setup-buildx-action/pull/499)\n- Bump glob from 10.3.12 to 13.0.6 in\n[#&#8203;495](https://redirect.github.com/docker/setup-buildx-action/pull/495)\n- Bump handlebars from 4.7.8 to 4.7.9 in\n[#&#8203;504](https://redirect.github.com/docker/setup-buildx-action/pull/504)\n- Bump lodash from 4.17.23 to 4.18.1 in\n[#&#8203;523](https://redirect.github.com/docker/setup-buildx-action/pull/523)\n- Bump picomatch from 4.0.3 to 4.0.4 in\n[#&#8203;503](https://redirect.github.com/docker/setup-buildx-action/pull/503)\n- Bump postcss from 8.5.6 to 8.5.10 in\n[#&#8203;537](https://redirect.github.com/docker/setup-buildx-action/pull/537)\n- Bump tar from 6.2.1 to 7.5.15 in\n[#&#8203;545](https://redirect.github.com/docker/setup-buildx-action/pull/545)\n- Bump undici from 6.23.0 to 6.25.0 in\n[#&#8203;492](https://redirect.github.com/docker/setup-buildx-action/pull/492)\n- Bump vite from 7.3.1 to 7.3.2 in\n[#&#8203;520](https://redirect.github.com/docker/setup-buildx-action/pull/520)\n\n**Full Changelog**:\n<https://github.com/docker/setup-buildx-action/compare/v4.0.0...v4.1.0>\n\n</details>\n\n<details>\n<summary>github/codeql-action (github/codeql-action)</summary>\n\n###\n[`v4.36.0`](https://redirect.github.com/github/codeql-action/releases/tag/v4.36.0)\n\n[Compare\nSource](https://redirect.github.com/github/codeql-action/compare/v4.35.5...v4.36.0)\n\n- *Breaking change*: Bump the minimum required CodeQL bundle version to\n2.19.4.\n[#&#8203;3894](https://redirect.github.com/github/codeql-action/pull/3894)\n- Add support for SHA-256 Git object IDs.\n[#&#8203;3893](https://redirect.github.com/github/codeql-action/pull/3893)\n- Update default CodeQL bundle version to\n[2.25.5](https://redirect.github.com/github/codeql-action/releases/tag/codeql-bundle-v2.25.5).\n[#&#8203;3926](https://redirect.github.com/github/codeql-action/pull/3926)\n\n###\n[`v4.35.5`](https://redirect.github.com/github/codeql-action/releases/tag/v4.35.5)\n\n[Compare\nSource](https://redirect.github.com/github/codeql-action/compare/v4.35.4...v4.35.5)\n\n- We have improved how the JavaScript bundles for the CodeQL Action are\ngenerated to avoid duplication across bundles and reduce the size of the\nrepository by around 70%. This should have no effect on the runtime\nbehaviour of the CodeQL Action.\n[#&#8203;3899](https://redirect.github.com/github/codeql-action/pull/3899)\n- For performance and accuracy reasons, [improved incremental\nanalysis](https://redirect.github.com/github/roadmap/issues/1158) will\nnow only be enabled on a pull request when diff-informed analysis is\nalso enabled for that run. If diff-informed analysis is unavailable (for\nexample, because the PR diff ranges could not be computed), the action\nwill fall back to a full analysis.\n[#&#8203;3791](https://redirect.github.com/github/codeql-action/pull/3791)\n- If multiple inputs are provided for the GitHub-internal\n`analysis-kinds` input, only `code-scanning` will be enabled. The\n`analysis-kinds` input is experimental, for GitHub-internal use only,\nand may change without notice at any time.\n[#&#8203;3892](https://redirect.github.com/github/codeql-action/pull/3892)\n- Added an experimental change which, when running a Code Scanning\nanalysis for a PR with [improved incremental\nanalysis](https://redirect.github.com/github/roadmap/issues/1158)\nenabled, prefers CodeQL CLI versions that have a cached overlay-base\ndatabase for the configured languages. This speeds up analysis for a\nrepository when there is not yet a cached overlay-base database for the\nlatest CLI version. We expect to roll this change out to everyone in\nMay.\n[#&#8203;3880](https://redirect.github.com/github/codeql-action/pull/3880)\n\n###\n[`v4.35.4`](https://redirect.github.com/github/codeql-action/releases/tag/v4.35.4)\n\n[Compare\nSource](https://redirect.github.com/github/codeql-action/compare/v4.35.3...v4.35.4)\n\n- Update default CodeQL bundle version to\n[2.25.4](https://redirect.github.com/github/codeql-action/releases/tag/codeql-bundle-v2.25.4).\n[#&#8203;3881](https://redirect.github.com/github/codeql-action/pull/3881)\n\n</details>\n\n<details>\n<summary>actions/go-versions (go)</summary>\n\n###\n[`v1.26.3`](https://redirect.github.com/actions/go-versions/releases/tag/1.26.3-25533533231):\n1.26.3\n\n[Compare\nSource](https://redirect.github.com/actions/go-versions/compare/1.26.2-24114135105...1.26.3-25533533231)\n\nGo 1.26.3\n\n</details>\n\n<details>\n<summary>actions/python-versions (python)</summary>\n\n###\n[`v3.14.5`](https://redirect.github.com/actions/python-versions/releases/tag/3.14.5-25647354415):\n3.14.5\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.14.4-25113653268...3.14.5-25647354415)\n\nPython 3.14.5\n\n###\n[`v3.14.4`](https://redirect.github.com/actions/python-versions/releases/tag/3.14.4-24114161919):\n3.14.4\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.14.3-21673711214...3.14.4-25113653268)\n\nPython 3.14.4\n\n###\n[`v3.14.3`](https://redirect.github.com/actions/python-versions/releases/tag/3.14.3-21673711214):\n3.14.3\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.14.2-20014991423...3.14.3-21673711214)\n\nPython 3.14.3\n\n###\n[`v3.14.2`](https://redirect.github.com/actions/python-versions/releases/tag/3.14.2-20014991423):\n3.14.2\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.14.1-19879739908...3.14.2-20014991423)\n\nPython 3.14.2\n\n###\n[`v3.14.1`](https://redirect.github.com/actions/python-versions/releases/tag/3.14.1-19879739908):\n3.14.1\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.14.0-18313368925...3.14.1-19879739908)\n\nPython 3.14.1\n\n###\n[`v3.14.0`](https://redirect.github.com/actions/python-versions/releases/tag/3.14.0-18313368925):\n3.14.0\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.13-25171464454...3.14.0-18313368925)\n\nPython 3.14.0\n\n###\n[`v3.13.13`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.13-24114113768):\n3.13.13\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.12-21673645133...3.13.13-25171464454)\n\nPython 3.13.13\n\n###\n[`v3.13.12`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.12-21673645133):\n3.13.12\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.11-20014977833...3.13.12-21673645133)\n\nPython 3.13.12\n\n###\n[`v3.13.11`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.11-20014977833):\n3.13.11\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.10-19879712315...3.13.11-20014977833)\n\nPython 3.13.11\n\n###\n[`v3.13.10`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.10-19879712315):\n3.13.10\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.9-18515951191...3.13.10-19879712315)\n\nPython 3.13.10\n\n###\n[`v3.13.9`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.9-18515951191):\n3.13.9\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.8-18331000654...3.13.9-18515951191)\n\nPython 3.13.9\n\n###\n[`v3.13.8`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.8-18331000654):\n3.13.8\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.7-16980743123...3.13.8-18331000654)\n\nPython 3.13.8\n\n###\n[`v3.13.7`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.7-16980743123):\n3.13.7\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.6-16792117939...3.13.7-16980743123)\n\nPython 3.13.7\n\n###\n[`v3.13.6`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.6-16792117939):\n3.13.6\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.5-15601068749...3.13.6-16792117939)\n\nPython 3.13.6\n\n###\n[`v3.13.5`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.5-15601068749):\n3.13.5\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.4-15433317575...3.13.5-15601068749)\n\nPython 3.13.5\n\n###\n[`v3.13.4`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.4-15433317575):\n3.13.4\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.3-14344076652...3.13.4-15433317575)\n\nPython 3.13.4\n\n###\n[`v3.13.3`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.3-14344076652):\n3.13.3\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.2-13708744326...3.13.3-14344076652)\n\nPython 3.13.3\n\n###\n[`v3.13.2`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.2-13708744326):\n3.13.2\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.1-13437882550...3.13.2-13708744326)\n\nPython 3.13.2\n\n###\n[`v3.13.1`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.1-13437882550):\n3.13.1\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.0-13707372259...3.13.1-13437882550)\n\nPython 3.13.1\n\n###\n[`v3.13.0`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.0-13707372259):\n3.13.0\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.12.13-22652080177...3.13.0-13707372259)\n\nPython 3.13.0\n\n</details>\n\n<details>\n<summary>step-security/harden-runner\n(step-security/harden-runner)</summary>\n\n###\n[`v2.19.4`](https://redirect.github.com/step-security/harden-runner/releases/tag/v2.19.4)\n\n[Compare\nSource](https://redirect.github.com/step-security/harden-runner/compare/v2.19.3...v2.19.4)\n\n##### What's Changed\n\n- Improvements for HTTPS Monitoring for the Enterprise tier of Harden\nRunner\n\n**Full Changelog**:\n<https://github.com/step-security/harden-runner/compare/v2.19.3...v2.19.4>\n\n###\n[`v2.19.3`](https://redirect.github.com/step-security/harden-runner/releases/tag/v2.19.3)\n\n[Compare\nSource](https://redirect.github.com/step-security/harden-runner/compare/v2.19.2...v2.19.3)\n\n##### What's Changed\n\n- Default to audit mode when api-key missing with use-policy-store by\n[@&#8203;varunsh-coder](https://redirect.github.com/varunsh-coder) in\n[#&#8203;665](https://redirect.github.com/step-security/harden-runner/pull/665)\n\n**Full Changelog**:\n<https://github.com/step-security/harden-runner/compare/v2.19.2...v2.19.3>\n\n###\n[`v2.19.2`](https://redirect.github.com/step-security/harden-runner/releases/tag/v2.19.2)\n\n[Compare\nSource](https://redirect.github.com/step-security/harden-runner/compare/v2.19.1...v2.19.2)\n\n##### What's Changed\n\n- Update the Harden Runner agent for enterprise tier to use go 1.26 and\nfix minor bugs.\n\n**Full Changelog**:\n<https://github.com/step-security/harden-runner/compare/v2.19.1...v2.19.2>\n\n###\n[`v2.19.1`](https://redirect.github.com/step-security/harden-runner/releases/tag/v2.19.1)\n\n[Compare\nSource](https://redirect.github.com/step-security/harden-runner/compare/v2.19.0...v2.19.1)\n\n#### What's Changed\n\n- fix: detect ubuntu-slim runners early and bail out by\n[@&#8203;devantler](https://redirect.github.com/devantler) in\n[#&#8203;657](https://redirect.github.com/step-security/harden-runner/pull/657)\n\nWhat the fix changes\n\n- Harden-Runner will detect `ubuntu-slim` runners and exit cleanly with\nan informational log message, instead of post harden runner step failing\non chown: invalid user: 'undefined'.\n\nWhat the fix does not do\n\n- Jobs running on `ubuntu-slim` will not be monitored by Harden-Runner.\nThe agent relies on kernel-level features (that require elevated\ncapabilities).\n- Per GitHub's docs on [single-CPU\nrunners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#single-cpu-runners):\n\"The container for ubuntu-slim runners runs in unprivileged mode. This\nmeans that some operations requiring elevated privileges such as\nmounting file systems, using Docker-in-Docker, or accessing low-level\nkernel features are not supported.\" Those low-level kernel features are\nwhat the agent needs, so monitoring inside the unprivileged container is\nnot feasible today.\n\nFor StepSecurity enterprise customers\nIf your security posture requires that workflows are always monitored,\nyou can block the use of `ubuntu-slim` via workflow run policies see the\n[Runner Label\nPolicy](https://docs.stepsecurity.io/workflow-run-policies/policies#runner-label-policy)\ndocs. This lets you enforce that jobs only run on monitored runner\ntypes.\n\n#### New Contributors\n\n- [@&#8203;devantler](https://redirect.github.com/devantler) made their\nfirst contribution in\n[#&#8203;657](https://redirect.github.com/step-security/harden-runner/pull/657)\n\n**Full Changelog**:\n<https://github.com/step-security/harden-runner/compare/v2.19.0...v2.19.1>\n\n</details>\n\n<details>\n<summary>taiki-e/install-action (taiki-e/install-action)</summary>\n\n###\n[`v2.81.1`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.81.1):\n2.81.1\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.81.0...v2.81.1)\n\n- Update `cargo-no-dev-deps@latest` to 0.2.24.\n\n- Update `cargo-hack@latest` to 0.6.45.\n\n###\n[`v2.81.0`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.81.0):\n2.81.0\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.80.0...v2.81.0)\n\n- Support `convco`.\n([#&#8203;1831](https://redirect.github.com/taiki-e/install-action/pull/1831),\nthanks [@&#8203;graelo](https://redirect.github.com/graelo))\n\n- Support `docgarden`\n([#&#8203;1830](https://redirect.github.com/taiki-e/install-action/pull/1830),\nthanks [@&#8203;jesse-black](https://redirect.github.com/jesse-black))\n\n- Update `vacuum@latest` to 0.28.0.\n\n- Update `cargo-binstall@latest` to 1.19.1.\n\n###\n[`v2.80.0`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.80.0):\n2.80.0\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.15...v2.80.0)\n\n- Support `kingfisher`.\n([#&#8203;1874](https://redirect.github.com/taiki-e/install-action/pull/1874),\nthanks [@&#8203;SAY-5](https://redirect.github.com/SAY-5))\n\n###\n[`v2.79.15`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.79.15):\n2.79.15\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.14...v2.79.15)\n\n- Update `typos@latest` to 1.47.0.\n\n- Update `wasm-tools@latest` to 1.251.0.\n\n- Update `vacuum@latest` to 0.27.2.\n\n- Update `uv@latest` to 0.11.17.\n\n- Update `tombi@latest` to 1.1.1.\n\n- Update `mise@latest` to 2026.5.16.\n\n###\n[`v2.79.14`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.79.14):\n2.79.14\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.13...v2.79.14)\n\n- Update `vacuum@latest` to 0.27.0.\n\n- Update `cargo-deny@latest` to 0.19.8.\n\n###\n[`v2.79.13`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.79.13):\n2.79.13\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.12...v2.79.13)\n\n- Update `gungraun-runner@latest` to 0.19.1.\n\n- Update `biome@latest` to 2.4.16.\n\n###\n[`v2.79.12`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.79.12):\n2.79.12\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.11...v2.79.12)\n\n- Update `prek@latest` to 0.4.3.\n\n- Remove uses of crates.io API, which potentially cases 403 error.\n\n###\n[`v2.79.11`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.79.11):\n2.79.11\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.10...v2.79.11)\n\n- Update `vacuum@latest` to 0.26.8.\n\n- Update `cargo-nextest@latest` to 0.9.137.\n\n###\n[`v2.79.10`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.79.10):\n2.79.10\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.9...v2.79.10)\n\n- Update `tombi@latest` to 1.1.0.\n\n- Update `prek@latest` to 0.4.2.\n\n- Update `editorconfig-checker@latest` to 3.7.0.\n\n###\n[`v2.79.9`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.79.9):\n2.79.9\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.8...v2.79.9)\n\n- Update `vacuum@latest` to 0.26.7.\n\n- Update `tombi@latest` to 1.0.0.\n\n###\n[`v2.79.8`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.79.8):\n2.79.8\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.7...v2.79.8)\n\n- Update `parse-dockerfile@latest` to 0.1.6.\n\n- Update `knope@latest` to 0.23.0.\n\n###\n[`v2.79.7`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.79.7):\n2.79.7\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.6...v2.79.7)\n\n- Update `typos@latest` to 1.46.3.\n\n- Update `rclone@latest` to 1.74.2.\n\n- Update `mise@latest` to 2026.5.15.\n\n- Update `tombi@latest` to 0.11.7.\n\n###\n[`v2.79.6`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.79.6):\n2.79.6\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.5...v2.79.6)\n\n- Update `wasm-bindgen@latest` to 0.2.122.\n\n- Update `mise@latest` to 2026.5.14.\n\n- Update `cargo-deny@latest` to 0.19.7.\n\n- Update `vacuum@latest` to 0.26.6.\n\n###\n[`v2.79.5`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.79.5):\n2.79.5\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.4...v2.79.5)\n\n- Update `jaq@latest` to 3.0.0.\n([#&#8203;1861](https://redirect.github.com/taiki-e/install-action/pull/1861),\nthanks\n[@&#8203;MusicalNinjaDad](https://redirect.github.com/MusicalNinjaDad))\n\n- Update `wasmtime@latest` to 45.0.0.\n\n- Update `wasm-tools@latest` to 1.250.0.\n\n- Update `tombi@latest` to 0.11.6.\n\n- Update `mise@latest` to 2026.5.13.\n\n###\n[`v2.79.4`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.79.4):\n2.79.4\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.3...v2.79.4)\n\n- Update `martin@latest` to 1.10.1.\n\n- Update `prek@latest` to 0.4.1.\n\n- Update `protoc@latest` to 3.35.0.\n\n- Update `mdbook@latest` to 0.5.3.\n\n###\n[`v2.79.3`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.79.3):\n2.79.3\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.2...v2.79.3)\n\n- Update `mise@latest` to 2026.5.12.\n\n- Update `martin@latest` to 1.10.0.\n\n- Update `uv@latest` to 0.11.15.\n\n###\n[`v2.79.2`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.79.2):\n2.79.2\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.1...v2.79.2)\n\n- Update `mise@latest` to 2026.5.11.\n\n- Update `vacuum@latest` to 0.26.5.\n\n- Update `cargo-shear@latest` to 1.12.4.\n\n###\n[`v2.79.1`](https://redirect.github.com/taiki-e/install-action/releases/tag/v2.79.1):\n2.79.1\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.79.0...v2.79.1)\n\n- Update `tombi@latest` to 0.11.5.\n\n- Update `cargo-nextest@latest` to 0.9.136.\n\n-\n\n> ✂ **Note**\n> \n> PR body was truncated to here.\n\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on the first day of the month\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4yMDIuMSIsInVwZGF0ZWRJblZlciI6IjQzLjIwMi4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-06-01T13:50:25Z",
+          "tree_id": "1ee985334d93b083c0529a2c80747e92554a1ef8",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/e5b4c433d3609682765ddf13b43661c2146ea970"
+        },
+        "date": 1780329667620,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 5.289125442504883,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.58548147712602,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 64.95982663880505,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 19.109375,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 19.54296875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 95000.25770295633,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 89975.57495879127,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.003651,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2909981.0492825513,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1116021.3011878785,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 32.34190001692481,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.2425263226032257,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 32.720358699955234,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 33.83944090315644,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 27.83671875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 28.43359375,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94989.96431027062,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 94759.58864945918,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.002113,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 720854.8972906526,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1091847.1522176582,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 7.607197409407145,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 10,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.64599541269392,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.04893040635217,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 18.12734375,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.421875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99965.32702632091,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 89968.79432368882,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.006937,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2673475.696808321,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2837101.568385859,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 29.7155887983751,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 38.10530336566943,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 38.435486910186114,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 19.324609375,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 19.5078125,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94990.95211181135,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 94990.95211181135,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.001905,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 1169139.1130283135,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1101589.8031232725,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 12.3078997213561,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 5,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.78818858888555,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.07648700747937,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 19.659375,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 19.9140625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99990.85083714839,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 94991.30829529098,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.00183,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2993535.890185547,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2855047.9948887033,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 31.513787354942096,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 5,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 65.15253707320585,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.41778672032194,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 18.773828125,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 19.08984375,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99990.8708334929,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 94991.32729181825,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.001826,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 1180105.6550696462,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2839443.2724101837,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 12.423298933852148,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Egress Bytes Per Log"
           }
         ]
       }
