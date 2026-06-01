@@ -170,6 +170,15 @@ function wireFilters(container, compSlug, categories, onChange) {
     if (!desc) continue;
     opt.addEventListener("mouseenter", (e) => showAxisHoverTooltip(e.clientX, e.clientY, desc));
     opt.addEventListener("mouseleave", hideAxisHoverTooltip);
+    // Keyboard parity: focusin/focusout bubble up from the nested <input>,
+    // so tabbing through filter checkboxes also reveals the description.
+    // Anchor the tooltip to the option's bounding box since focus events
+    // have no pointer coordinates.
+    opt.addEventListener("focusin", () => {
+      const r = opt.getBoundingClientRect();
+      showAxisHoverTooltip(r.left, r.bottom, desc);
+    });
+    opt.addEventListener("focusout", hideAxisHoverTooltip);
   }
   const resetBtn = container.querySelector(".chart-filter-reset");
   if (resetBtn) {
