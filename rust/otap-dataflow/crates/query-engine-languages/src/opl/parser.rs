@@ -101,6 +101,11 @@ pub(crate) fn invalid_child_rule_error(
 
 #[cfg(test)]
 mod test {
+    use data_engine_expressions::{
+        DataExpression, DiscardDataExpression, EqualToLogicalExpression, LogicalExpression,
+        NotLogicalExpression, QueryLocation, ScalarExpression, SourceScalarExpression,
+        StaticScalarExpression, StringScalarExpression, ValueAccessor,
+    };
     use data_engine_parser_abstractions::Parser;
 
     use super::OplParser;
@@ -125,5 +130,76 @@ mod test {
                 .to_string()
                 .contains("supplied in query is not supported")
         );
+    }
+
+    #[test]
+    fn test_parse_comments() {
+        let programs = [
+            // simple with inline comment
+            "
+            // inline comment
+            logs | where severity_text == \"ERROR\"
+            ",
+            // many inline comments
+            "
+            // inline comment
+            logs | 
+            // yet another inline comment before operator
+            where severity_text == \"ERROR\"  // comment end of line
+            // comment End of program
+            ",
+            // simple block comment
+            "
+            /*
+              block comment
+            */
+            logs | where severity_text == \"ERROR\"
+            ",
+            // many block comments
+            "
+            /* start of program comment */
+            logs /* end of line comment */ 
+            /* start of line comment */ | where severity_text /* another */ == \"ERROR\" /* hello */
+            /* 
+            end of program comment 
+            */
+            ",
+        ];
+
+        for program in programs {
+            let result = OplParser::parse(program).unwrap();
+
+            // expect we've only parsed the one expression, despite the comments
+            let data_exprs = result.pipeline.get_expressions();
+            assert_eq!(data_exprs.len(), 1);
+            pretty_assertions::assert_eq!(
+                &data_exprs[0],
+                &DataExpression::Discard(
+                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                        LogicalExpression::Not(NotLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "severity_text",
+                                            )
+                                        ),)
+                                    ]),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "ERROR"),
+                                )),
+                                false,
+                            )),
+                        )),
+                    ),
+                )
+            );
+        }
     }
 }
