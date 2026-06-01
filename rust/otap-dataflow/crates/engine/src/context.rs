@@ -453,9 +453,7 @@ impl PipelineContext {
             .register_entity(self.pipeline_attribute_set())
     }
 
-    /// Returns an [`ExtensionContext`] scoped to this pipeline so
-    /// extension entities registered through it inherit the pipeline's
-    /// identity.
+    /// Returns an [`ExtensionContext`] scoped to this pipeline.
     #[must_use]
     pub fn extension_context(&self) -> ExtensionContext {
         ExtensionContext::with_extension_scope(
@@ -613,21 +611,15 @@ impl PipelineContext {
     }
 }
 
-/// Host-scope context for extensions. Carries the identifying scope of
-/// the host so extension entities don't collide across pipelines, cores,
-/// or deployment generations.
+/// Host-scope context for extensions.
 #[derive(Clone, Debug)]
 pub struct ExtensionContext {
     controller_context: ControllerContext,
-    /// Identifying scope of the host. Empty when minted via
-    /// [`ExtensionContext::new`] (test/engine-internal usage).
     extension_scope: ExtensionScopeAttributeSet,
 }
 
 impl ExtensionContext {
-    /// Creates an `ExtensionContext` with an empty scope. Intended for
-    /// tests and engine-internal usage; pipeline-hosted extensions must
-    /// use [`PipelineContext::extension_context`].
+    /// Creates an `ExtensionContext` with an empty scope (test/engine-internal usage).
     #[must_use]
     pub fn new(controller_context: ControllerContext) -> Self {
         Self {

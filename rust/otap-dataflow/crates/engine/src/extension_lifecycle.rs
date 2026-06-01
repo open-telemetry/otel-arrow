@@ -5,24 +5,8 @@
 //!
 //! Owns the spawned active+background extension tasks, the control
 //! senders used to broadcast `Shutdown` to them, and the passive
-//! extension wrappers that must outlive the run for capability
-//! handles to remain valid. Encapsulates the "extensions start
-//! first, shut down last" invariant so the host runtime doesn't
-//! interleave that policy with task-driving code.
-//!
-//! ## Shutdown timing
-//!
-//! Extensions shut down strictly after all data-path tasks (nodes
-//! and the dispatcher) have terminated. Because shutdown is
-//! sequential — not simultaneous with the data path — the
-//! extension shutdown deadline is computed locally as
-//! `now() + EXTENSION_SHUTDOWN_GRACE` rather than reusing the
-//! host's data-path drain deadline. This gives extensions a fresh
-//! cleanup budget starting from the moment the data path is fully
-//! drained.
-//!
-//! See `runtime_pipeline.rs::run_forever` for how this is wired in
-//! at pipeline scope today.
+//! extension wrappers that must outlive the run. Encapsulates the
+//! "extensions start first, shut down last" invariant.
 
 use crate::context::ExtensionContext;
 use crate::control::{ExtensionControlMsg, ExtensionControlSender};
@@ -41,102 +25,60 @@ use tokio::sync::mpsc;
 use tokio::task::{self, JoinError, JoinHandle, LocalSet};
 use tokio::time::Instant as TokioInstant;
 
-/// Cleanup window granted to extensions after the data path has
-/// drained. Extensions that don't terminate within this window will
-/// be left to the runtime's natural drop semantics when
-/// `run_forever` returns.
+/// Cleanup window granted to extensions after the data path has drained.
 pub(crate) const EXTENSION_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 /// Slack added past `EXTENSION_SHUTDOWN_GRACE` before the runtime
-/// hard-stops draining extension tasks. The extension's cooperative
-/// budget is exactly `EXTENSION_SHUTDOWN_GRACE`; the runtime then
-/// waits this much longer for the task to actually return after
-/// cleanup completes (context switch + `JoinHandle` poll latency).
-/// Without it, an extension that finishes right at the deadline
-/// would race the drain timeout and be reported as a timeout despite
-/// terminating correctly.
+/// hard-stops draining, covering `JoinHandle` poll latency for an
+/// extension that finishes right at the deadline.
 pub(crate) const EXTENSION_SHUTDOWN_DRAIN_SLACK: Duration = Duration::from_millis(500);
 
 /// Per-extension upper bound on how long `broadcast_shutdown` will
-/// wait to enqueue `Shutdown`. Prevents one backed-up extension from
-/// stalling delivery to the others.
+/// wait to enqueue `Shutdown`.
 pub(crate) const EXTENSION_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Default reason recorded in the `Shutdown` broadcast when the caller
-/// does not supply one. Hosts should pass a scope-appropriate reason
-/// (e.g., `"pipeline data-path drained"`) via [`ExtensionLifecycle::broadcast_shutdown`]
-/// where possible.
+/// does not supply one.
 const DEFAULT_SHUTDOWN_REASON: &str = "host data-path drained";
 
-/// Event surfaced by [`ExtensionLifecycle::next_event`] so the host's
-/// outer `select!` can drive completions and monitor ticks through a
-/// single `&mut` borrow of the lifecycle.
+/// Event surfaced by [`ExtensionLifecycle::next_event`].
 pub(crate) enum LifecycleEvent {
-    /// An active+background extension task finished. The inner result
-    /// preserves the same `Result<Result<(), Error>, JoinError>` shape
-    /// callers already match on for direct task completions.
     Completion(Result<Result<(), Error>, JoinError>),
-    /// The per-scope extension monitor's tick interval fired. The host
-    /// should call [`ExtensionLifecycle::monitor_tick`] with the
-    /// returned `Instant`.
     MonitorTick(Instant),
 }
 
 /// Holds the spawned extension tasks, control senders, and passive
 /// wrappers for the duration of an extension-hosting run.
 pub(crate) struct ExtensionLifecycle {
-    /// Active+background extension tasks driven on the host's
-    /// `LocalSet`. Each task yields its `ExtensionKey` alongside the
-    /// lifecycle result so the success path always has the key in
-    /// hand; on `JoinError` (panic/cancel) the captured key is gone and
-    /// [`Self::task_id_to_key`] is consulted instead.
-    ///
-    /// `FuturesUnordered<JoinHandle<_>>` is the established pattern in
-    /// this codebase for driving `!Send` task handles on a `LocalSet`
-    /// (see `runtime_pipeline.rs`).
+    /// Active+background extension tasks. Each yields its
+    /// `ExtensionKey` alongside its result; on `JoinError`
+    /// (panic/cancel) the key is recovered from [`Self::task_id_to_key`].
     futures: FuturesUnordered<JoinHandle<(ExtensionKey, Result<(), Error>)>>,
-    /// Maps the tokio task id of every live spawned task to its
-    /// `ExtensionKey`. Populated at spawn time and removed on join;
-    /// lets a panic/cancel still resolve to a terminal monitor event.
+    /// Maps live spawned task ids to their `ExtensionKey` so a
+    /// panic/cancel still resolves to a terminal monitor event.
     task_id_to_key: HashMap<task::Id, ExtensionKey>,
     /// Control senders for the extensions in [`Self::futures`], paired
-    /// with their key so `broadcast_shutdown` can record a per-key
-    /// `ShutdownSent` event in the monitor.
+    /// with their key for monitor `ShutdownSent` attribution.
     shutdown_senders: Vec<(ExtensionKey, ExtensionControlSender)>,
     /// Passive extensions held alive for the duration of the run so
-    /// any state their capability instances reference (via cloned
-    /// `Arc`s minted by the builder) survives until `run_forever`
-    /// returns and this struct is dropped.
+    /// state behind their capability handles survives until drop.
     _passive: Vec<ExtensionWrapper>,
     /// One-shot latch: `true` after `Shutdown` has been broadcast.
-    /// Prevents re-firing on subsequent loop iterations.
     shutdown_broadcast_fired: bool,
     /// Deadline established when [`Self::broadcast_shutdown`] fires.
-    /// Used by [`Self::drain_until_deadline`] to bound how long the
-    /// runtime will wait for extensions to honour `Shutdown` so a
-    /// misbehaving extension can't hang the host runtime indefinitely.
     shutdown_deadline: Option<Instant>,
-    /// Per-scope lifecycle/telemetry monitor. Records spawn/shutdown/
-    /// completion events for each registered extension and drives the
-    /// `CollectTelemetry` fan-out on its own tick cadence.
+    /// Per-scope lifecycle/telemetry monitor.
     monitor: ExtensionMetricsMonitor,
     /// Receives an `ExtensionKey` from each spawned task as its first
-    /// action. `next_event` drains this internally so the monitor's
-    /// `Spawned` event reflects "task body began executing" rather
-    /// than the earlier "task registered with the executor".
+    /// action, so monitor `Spawned` reflects actual execution rather
+    /// than just `LocalSet` registration.
     started_rx: mpsc::UnboundedReceiver<ExtensionKey>,
 }
 
 impl ExtensionLifecycle {
     /// Spawn all active+background extensions onto `local_tasks` and
-    /// stash the passive ones. Active+background extensions begin
-    /// running concurrently with the data path; passive extensions
-    /// have no lifecycle but must remain owned for their capability
-    /// state to remain valid.
-    ///
-    /// Each non-passive wrapper is registered with `monitor` so spawn/
-    /// shutdown/completion events are recorded and `CollectTelemetry`
-    /// fan-out has a routing target.
+    /// stash the passive ones. Each non-passive wrapper is registered
+    /// with `monitor`.
     pub fn spawn(
         extensions: Vec<(ExtensionWrapper, EntityKey)>,
         local_tasks: &LocalSet,
@@ -167,9 +109,6 @@ impl ExtensionLifecycle {
             let task_key = key.clone();
             let started_tx = started_tx.clone();
             let fut = async move {
-                // Signal "task body is running" as the first action so
-                // the monitor's Spawned event reflects actual execution,
-                // not just registration with the LocalSet.
                 let _ = started_tx.send(task_key.clone());
                 let res = match ext_wrapper.start(ext_metrics_reporter.clone()).await {
                     Ok(terminal_state) => {
@@ -195,8 +134,7 @@ impl ExtensionLifecycle {
             futures.push(handle);
         }
         // Drop the seed sender so `started_rx.recv()` returns `None`
-        // once every per-task clone has been dropped (i.e., once all
-        // spawned tasks have either signalled or been cancelled).
+        // once every per-task clone has been dropped.
         drop(started_tx);
 
         Self {
@@ -213,20 +151,14 @@ impl ExtensionLifecycle {
 
     /// Returns `true` if there are no remaining active+background
     /// extension tasks to await.
-    #[allow(dead_code)] // host uses `next_event`; kept as public introspection
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.futures.is_empty()
     }
 
     /// Awaits either the next active+background extension completion
-    /// or the next monitor tick, whichever fires first. Hosts plug
-    /// this into their main `select!` so the monitor's tick cadence
-    /// shares the same task as completion handling — avoiding the
-    /// double-`&mut` borrow that two separate methods would require.
-    ///
-    /// `Spawned` signals from started tasks are absorbed internally
-    /// (recorded into the monitor) and never surface to the host —
-    /// the host only ever sees completions and monitor ticks.
+    /// or the next monitor tick. `Spawned` signals are absorbed
+    /// internally and never surface to the host.
     pub async fn next_event(&mut self) -> LifecycleEvent {
         loop {
             let Self {
@@ -262,10 +194,9 @@ impl ExtensionLifecycle {
         }
     }
 
-    /// Maps a joined task result to the outer `Result` shape expected
-    /// by `next_event` callers and records the completion outcome in
-    /// the monitor. Panic/cancel paths recover the key from
-    /// `task_id_to_key` since the task frame is gone.
+    /// Records the completion outcome in the monitor and reshapes the
+    /// join result. Panic/cancel paths recover the key from
+    /// `task_id_to_key`.
     fn route_joined(
         monitor: &mut ExtensionMetricsMonitor,
         task_id_to_key: &mut HashMap<task::Id, ExtensionKey>,
@@ -311,13 +242,8 @@ impl ExtensionLifecycle {
 
     /// Broadcasts `Shutdown` to all active+background extensions.
     /// Idempotent. Sends fan out concurrently, each bounded by
-    /// [`EXTENSION_SHUTDOWN_SEND_TIMEOUT`]; the deadline carried in
-    /// the message is `now() + EXTENSION_SHUTDOWN_GRACE` (a fresh
-    /// cleanup window, not a continuation of the host-scope deadline).
-    ///
-    /// `reason` is propagated verbatim in the `Shutdown` message so
-    /// the host can describe what triggered the shutdown in scope-
-    /// appropriate terms; `None` falls back to [`DEFAULT_SHUTDOWN_REASON`].
+    /// [`EXTENSION_SHUTDOWN_SEND_TIMEOUT`]; `reason` is propagated
+    /// verbatim (defaulting to [`DEFAULT_SHUTDOWN_REASON`]).
     pub async fn broadcast_shutdown(&mut self, reason: Option<&str>) {
         if self.shutdown_broadcast_fired || self.shutdown_senders.is_empty() {
             return;
@@ -364,29 +290,16 @@ impl ExtensionLifecycle {
         }
     }
 
-    /// Drain remaining active+background extension tasks, but never
-    /// past the shutdown deadline.
-    ///
-    /// `Shutdown` is cooperative — extensions may ignore it or take
-    /// longer than the grace window to exit. Without this bound, an
-    /// extension that never returns from `start()` would hang the host
-    /// runtime forever. After the deadline elapses, any still-running
-    /// futures are dropped with a warning; the runtime's natural drop
-    /// semantics take over once the lifecycle holder itself is dropped.
-    ///
-    /// No-op if there are no remaining futures or if shutdown has not
-    /// been broadcast (in which case there is no deadline yet).
+    /// Drains remaining active+background extension tasks, bounded by
+    /// the shutdown deadline so a misbehaving extension can't hang the
+    /// host. No-op when there are no remaining futures.
     pub async fn drain_until_deadline(&mut self) {
         if self.futures.is_empty() {
             return;
         }
-        // If the caller invokes drain without a prior broadcast there
-        // is no deadline yet — synthesize one from the same grace
-        // window so we still bound the wait.
         let deadline = self
             .shutdown_deadline
             .get_or_insert_with(|| Instant::now() + EXTENSION_SHUTDOWN_GRACE);
-        // See `EXTENSION_SHUTDOWN_DRAIN_SLACK` for rationale.
         let drain_deadline = TokioInstant::from_std(*deadline + EXTENSION_SHUTDOWN_DRAIN_SLACK);
 
         let futures = &mut self.futures;
@@ -441,9 +354,6 @@ impl ExtensionLifecycle {
                 grace_secs = EXTENSION_SHUTDOWN_GRACE.as_secs(),
                 remaining = self.futures.len()
             );
-            // Any extension still in `Spawned` or `ShutdownSent` after
-            // the bounded drain timed out is reconciled in the monitor
-            // as a shutdown timeout.
             self.monitor.mark_pending_as_timeout();
         }
     }

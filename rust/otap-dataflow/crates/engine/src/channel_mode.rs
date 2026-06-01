@@ -317,10 +317,8 @@ where
             }
         }
         (sender, receiver) => {
-            // Mismatched halves: one side unwrapped to inner MPSC, the
-            // other did not. Structurally impossible when both halves
-            // come from the same factory; surface loudly so a future
-            // refactor accident is visible rather than silently
+            // Mismatched halves: structurally impossible when both come
+            // from the same factory; surface loudly rather than silently
             // skipping metric registration.
             let sender_was_inner = sender.is_ok();
             let receiver_was_inner = receiver.is_ok();

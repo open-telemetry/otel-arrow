@@ -97,9 +97,8 @@ pub struct PipelineAttributeSet {
     pub deployment_generation: u64,
 }
 
-/// Host scope of an extension. Composed into [`ExtensionAttributeSet`] so
-/// extensions hosted by distinct pipelines/cores/generations resolve to
-/// distinct entities.
+/// Host scope of an extension. Composed into [`ExtensionAttributeSet`]
+/// to disambiguate extensions across hosting scopes.
 #[attribute_set(name = "extension.scope.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct ExtensionScopeAttributeSet {
@@ -107,13 +106,12 @@ pub struct ExtensionScopeAttributeSet {
     #[attribute(key = "scope.kind")]
     pub kind: Cow<'static, str>,
 
-    /// Opaque scope identifier; encoding is owned by the constructor.
+    /// Opaque scope identifier.
     #[attribute(key = "scope.id")]
     pub id: Cow<'static, str>,
 }
 
 impl ExtensionScopeAttributeSet {
-    /// Constructs a scope with a caller-supplied kind and id.
     #[must_use]
     pub fn new(kind: impl Into<Cow<'static, str>>, id: impl Into<Cow<'static, str>>) -> Self {
         Self {
@@ -122,7 +120,7 @@ impl ExtensionScopeAttributeSet {
         }
     }
 
-    /// Constructs a pipeline-host scope. Id is
+    /// Pipeline-host scope. Id is
     /// `"<group>/<pipeline>/core/<core>/gen/<generation>"`.
     #[must_use]
     pub fn pipeline(
@@ -140,9 +138,7 @@ impl ExtensionScopeAttributeSet {
     }
 }
 
-/// Extension attributes. Composes [`ExtensionScopeAttributeSet`] so the
-/// same `(extension.id, extension.variant)` hosted at distinct scopes
-/// resolves to distinct entities.
+/// Extension attributes, including the host scope.
 #[attribute_set(name = "extension.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct ExtensionAttributeSet {
@@ -160,7 +156,6 @@ pub struct ExtensionAttributeSet {
 }
 
 impl ExtensionAttributeSet {
-    /// Builder-style setter for the host scope.
     #[must_use]
     pub fn with_scope(mut self, scope: ExtensionScopeAttributeSet) -> Self {
         self.extension_scope = scope;

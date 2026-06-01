@@ -1,13 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Per-scope extension lifecycle and telemetry monitor.
-//!
-//! Mirrors `PipelineMetricsMonitor` in shape but is scope-agnostic: one
-//! instance per extension-hosting scope (today: pipeline; later: engine,
-//! group, node). Owns its own tick cadence; the host plugs `next_tick()`
-//! into its `select!`. Decoupled from `ExtensionLifecycle` via
-//! [`ExtensionLifecycleEvent`].
+//! Per-scope extension lifecycle and telemetry monitor. Owns its own
+//! tick cadence; the host plugs `next_tick()` into its `select!` and
+//! feeds events via [`ExtensionLifecycleEvent`].
 
 use crate::context::ExtensionContext;
 use crate::control::{ExtensionControlMsg, ExtensionControlSender};
@@ -36,10 +32,6 @@ pub(crate) enum ExtensionRuntimeState {
 #[derive(Debug, Clone)]
 pub(crate) enum ExtensionOutcome {
     Ok,
-    /// Extension's `start()` returned an error. The captured string is
-    /// preserved for forwarding to richer telemetry surfaces (e.g., a
-    /// "last error" attribute) once those are added; today the monitor
-    /// only counts the failure.
     Err(#[allow(dead_code)] String),
     JoinPanic,
     JoinCancelled,
@@ -201,7 +193,7 @@ impl ExtensionMetricsMonitor {
         }
     }
 
-    #[allow(dead_code)] // batch helper kept for future host-side use
+    #[allow(dead_code)]
     pub(crate) fn apply_events<I>(&mut self, events: I)
     where
         I: IntoIterator<Item = ExtensionLifecycleEvent>,
@@ -219,10 +211,6 @@ impl ExtensionMetricsMonitor {
         if let Some(entry) = self.entry_mut(key)
             && matches!(entry.state, ExtensionRuntimeState::Pending)
         {
-            // Only transition Pending → Spawned. A late/duplicate
-            // Spawned event for an entry already past spawn (e.g., a
-            // terminal state from an out-of-order Completed) must not
-            // resurrect the entry — terminal states are sticky.
             entry.state = ExtensionRuntimeState::Spawned;
             entry.lifecycle_metrics.spawned.add(1);
             entry
@@ -249,9 +237,6 @@ impl ExtensionMetricsMonitor {
         let Some(entry) = self.entry_mut(key) else {
             return;
         };
-        // Terminal states are sticky: a duplicate Completed event for
-        // an already-terminal entry would otherwise double-increment
-        // the completion counters and possibly flip the state gauge.
         if matches!(
             entry.state,
             ExtensionRuntimeState::CompletedOk
@@ -286,15 +271,8 @@ impl ExtensionMetricsMonitor {
         entry.lifecycle_metrics.state.set(new_state as u64);
     }
 
-    /// Marks any entries that never observed a clean completion as
-    /// `TimedOut`. Used by the host after `drain_until_deadline`
-    /// elapses so straggling extensions surface in monitor metrics.
-    ///
-    /// Includes `Pending` entries — these represent tasks that were
-    /// cancelled before their first poll (so `started_tx` was dropped
-    /// without sending and the JoinSet returned a `JoinError` whose
-    /// key was lost with the task frame). Without reconciling them,
-    /// their state gauge would be stuck at `Pending` forever.
+    /// Marks non-terminal entries (`Pending`/`Spawned`/`ShutdownSent`)
+    /// as `TimedOut`. Used by the host after the drain deadline elapses.
     pub(crate) fn mark_pending_as_timeout(&mut self) {
         if self.interval.is_none() {
             return;
@@ -317,8 +295,7 @@ impl ExtensionMetricsMonitor {
         }
     }
 
-    /// Awaits the next monitor tick. `disabled()` returns a never-ready
-    /// future so the `select!` arm never fires.
+    /// Awaits the next monitor tick. Never resolves when disabled.
     pub(crate) async fn next_tick(&mut self) -> Instant {
         match self.interval.as_mut() {
             Some(interval) => interval.tick().await.into_std(),
@@ -335,13 +312,8 @@ impl ExtensionMetricsMonitor {
         self.report(reporter);
     }
 
-    /// Re-asserts the per-entry `state` gauge from cached entry state.
-    /// Today the telemetry derive macro preserves gauge values across
-    /// reports (only `Counter`/`Mmsc` are reset by `clear_values()`),
-    /// so this is defensive: it guarantees long-running extensions
-    /// stay visible on every scrape even if framework gauge-reset
-    /// semantics ever change. Counters intentionally remain
-    /// delta-per-interval.
+    /// Re-asserts each entry's `state` gauge so long-running extensions
+    /// stay visible on every scrape regardless of framework reset semantics.
     pub(crate) fn refresh_state_gauges(&mut self) {
         for entry in &mut self.entries {
             entry.lifecycle_metrics.state.set(entry.state as u64);
