@@ -23,16 +23,16 @@ variables:
 # tooltip when hovering the filter chip in the dashboard).
 meta:
   binary:
-    - { value: dfe, description: "Dataflow Engine - the OTAP-native Rust pipeline being benchmarked in this repo." }
-    - { value: otc, description: "OpenTelemetry Collector (contrib distribution) - the reference Go implementation." }
+    - { value: dfe, description: "Dataflow Engine - the OTAP-native pipeline engine developed as a part of OTel Arrow." }
+    - { value: otc, description: "OpenTelemetry Collector (contrib distribution)." }
   protocols:
     - { value: otap, description: "OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches." }
     - { value: otlp, description: "OpenTelemetry Protocol over gRPC (row-oriented protobuf)." }
     - { value: otlphttp, description: "OpenTelemetry Protocol over HTTP/protobuf." }
   signals:
-    - { value: logs, description: "Log records." }
-    - { value: metrics, description: "Metric data points (gauges, sums, histograms, etc.)." }
-    - { value: traces, description: "Distributed tracing spans." }
+    - { value: logs, description: "OpenTelemetry Logs signal." }
+    - { value: metrics, description: "OpenTelemetry Metrics signal." }
+    - { value: traces, description: "OpenTelemetry Traces signal." }
   compression:
     - { value: none, description: "No payload compression on the wire." }
     - { value: gzip, description: "gzip payload compression." }
@@ -50,10 +50,8 @@ glossary:
     definition: OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches.
   - term: OTLP
     definition: OpenTelemetry Protocol - the standard row-oriented gRPC/HTTP protobuf protocol.
-  - term: Baseline
-    definition: A suite that exercises the pipeline with no extra processors, used as a reference point for transform-cost comparisons.
-  - term: Backpressure
-    definition: A condition where downstream components signal upstream to slow down, surfaced in the dashboard as a striped overlay on affected bars.
+  - term: OTLP HTTP
+    definition: OpenTelemetry Protocol over pure HTTP.
 
 # Display registry for dashboard metrics. Names must match the `name` field on
 # per-test metric records in published suite data; units come from those
