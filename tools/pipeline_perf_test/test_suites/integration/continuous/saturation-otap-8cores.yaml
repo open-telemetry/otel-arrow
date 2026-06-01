@@ -1,13 +1,14 @@
 # OTAP saturation test with 8 core df_engine
 # Split-NUMA layout: SUT split 4+4 across both NUMA nodes.
-# Loadgen gets remaining 58 cores per NUMA node = 116 total.
-# Backend gets 2 HT cores per NUMA node = 4 total.
+# SUT HT siblings (64-67, 96-99) left completely unoccupied.
+# Loadgen gets remaining cores = 108 total.
+# Backend on non-sibling HT cores (68-69, 100-101).
 from_template:
   path: test_suites/integration/continuous/saturation-otap-cores-template.yaml.j2
   variables:
     num_cores: 8
     engine_core_range: "0-3,32-35"
-    loadgen_cores: 116
-    loadgen_core_range: "4-31,66-95,36-63,98-127"
+    loadgen_cores: 108
+    loadgen_core_range: "4-31,70-95,36-63,102-127"
     backend_cores: 4
-    backend_core_range: "64-65,96-97"
+    backend_core_range: "68-69,100-101"
