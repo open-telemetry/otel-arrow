@@ -87,6 +87,10 @@ jobs:
           make chlog-install
           make chlog-update VERSION="v${{ inputs.version }}"
 
+      - name: Fix CHANGELOG formatting
+        run: |
+          npx markdownlint-cli2 --fix "go/CHANGELOG.md" "rust/otap-dataflow/CHANGELOG.md"
+
       - name: Bump Rust crate versions
         run: |
           # Rust crates currently track the same release version as Go.
