@@ -188,7 +188,7 @@ mod test {
                                                 QueryLocation::new_fake(),
                                                 "severity_text",
                                             )
-                                        ),)
+                                        ))
                                     ]),
                                 )),
                                 ScalarExpression::Static(StaticScalarExpression::String(
