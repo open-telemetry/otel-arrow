@@ -1354,6 +1354,111 @@ a.scenario-section-title:hover {
   color: #92400e;
 }
 
+/* ── Glossary legend banner ────────────────────────────────────────────── */
+.legend-banner {
+  position: sticky;
+  /* Sits directly below the WIP banner. The WIP banner height varies with
+     line wrapping; this approximates it without measuring at runtime. */
+  top: 48px;
+  z-index: 99;
+  width: 100%;
+  margin: 0;
+  padding: 8px 18px 10px;
+  background: #eff6ff;
+  border-bottom: 1px solid #bfdbfe;
+  color: #1e3a8a;
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: 0 2px 6px rgba(30, 64, 175, 0.08);
+}
+.legend-banner-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.legend-banner-title {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 12px;
+  color: #1e40af;
+}
+.legend-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: #1e40af;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0;
+  cursor: pointer;
+}
+.legend-toggle-track {
+  position: relative;
+  display: inline-block;
+  width: 32px;
+  height: 18px;
+  background: #93c5fd;
+  border-radius: 999px;
+  transition: background 140ms ease;
+}
+.legend-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: left 140ms ease;
+}
+.legend-banner:not(.collapsed) .legend-toggle-track {
+  background: #2563eb;
+}
+.legend-banner:not(.collapsed) .legend-toggle-thumb {
+  left: 16px;
+}
+.legend-toggle-text {
+  min-width: 44px;
+  text-align: left;
+}
+.legend-banner-body {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 24px;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.legend-banner.collapsed .legend-banner-body {
+  display: none;
+}
+.legend-item {
+  display: block;
+  min-width: 0;
+}
+.legend-term {
+  display: inline;
+  font-weight: 700;
+  color: #1e3a8a;
+  margin: 0;
+}
+.legend-term::after { content: ": "; }
+.legend-def {
+  display: inline;
+  color: #1e3a8a;
+  margin: 0;
+}
+@media (max-width: 900px) {
+  .legend-banner-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .legend-banner-body { grid-template-columns: 1fr; }
+}
+
 /* ── Environment summary (comparison header) ─────────────────────────────── */
 .env-summary {
   margin: 12px 0 8px;

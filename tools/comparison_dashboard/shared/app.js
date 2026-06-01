@@ -139,11 +139,15 @@ function filterComparison(comparison, suiteData, filterState) {
 }
 
 function buildFilterHtml(categories, filterState) {
+  const descriptions = (typeof window !== "undefined" && window.META_DESCRIPTIONS) || {};
   const groups = Object.entries(categories).map(([cat, vals]) => {
     const checked = filterState.get(cat) || new Set();
-    const opts = vals.map((v) =>
-      `<label class="chart-filter-option"><input type="checkbox" data-filter-category="${escapeHtml(cat)}" data-filter-value="${escapeHtml(v)}" ${checked.has(v) ? "checked" : ""}> ${escapeHtml(v)}</label>`
-    ).join("");
+    const catDescs = descriptions[cat] || {};
+    const opts = vals.map((v) => {
+      const desc = catDescs[v];
+      const descAttr = desc ? ` data-meta-description="${escapeHtml(desc)}"` : "";
+      return `<label class="chart-filter-option"${descAttr}><input type="checkbox" data-filter-category="${escapeHtml(cat)}" data-filter-value="${escapeHtml(v)}" ${checked.has(v) ? "checked" : ""}> ${escapeHtml(v)}</label>`;
+    }).join("");
     const label = FILTER_LABELS[cat] || cat.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
     return `<div class="chart-filter-group"><span class="chart-filter-label">${escapeHtml(label)}:</span>${opts}</div>`;
   }).join("");
@@ -160,6 +164,13 @@ function wireFilters(container, compSlug, categories, onChange) {
       cb.checked ? s.add(cb.dataset.filterValue) : s.delete(cb.dataset.filterValue);
       onChange();
     };
+  }
+  for (const opt of container.querySelectorAll(".chart-filter-option[data-meta-description]")) {
+    const desc = opt.dataset.metaDescription;
+    if (!desc) continue;
+    opt.addEventListener("mouseenter", (e) => showAxisHoverTooltip(e.clientX, e.clientY, desc));
+    opt.addEventListener("mousemove", (e) => showAxisHoverTooltip(e.clientX, e.clientY, desc));
+    opt.addEventListener("mouseleave", hideAxisHoverTooltip);
   }
   const resetBtn = container.querySelector(".chart-filter-reset");
   if (resetBtn) {
@@ -1085,6 +1096,56 @@ async function openFileModal(suiteSlug, testName, fileName) {
   }
 }
 
+// ── Legend banner ──────────────────────────────────────────────────────────
+
+const LEGEND_STORAGE_KEY = "legend-banner-expanded";
+
+function initLegendBanner() {
+  const banner = document.getElementById("legend-banner");
+  if (!banner) return;
+  const glossary = (typeof window !== "undefined" && window.GLOSSARY) || [];
+  if (!Array.isArray(glossary) || glossary.length === 0) {
+    banner.hidden = true;
+    return;
+  }
+  const items = glossary.map((g) =>
+    `<div class="legend-item"><dt class="legend-term">${escapeHtml(g.term)}</dt><dd class="legend-def">${escapeHtml(g.definition)}</dd></div>`
+  ).join("");
+  banner.innerHTML = `
+    <div class="legend-banner-header">
+      <span class="legend-banner-title">Glossary</span>
+      <button class="legend-toggle" type="button" role="switch" aria-controls="legend-banner-body" aria-checked="true">
+        <span class="legend-toggle-track"><span class="legend-toggle-thumb"></span></span>
+        <span class="legend-toggle-text">Shown</span>
+      </button>
+    </div>
+    <dl class="legend-banner-body" id="legend-banner-body">${items}</dl>
+  `;
+  const stored = (() => {
+    try { return window.localStorage.getItem(LEGEND_STORAGE_KEY); } catch { return null; }
+  })();
+  const expanded = stored === null ? true : stored === "1";
+  applyLegendState(banner, expanded);
+  const btn = banner.querySelector(".legend-toggle");
+  if (btn) {
+    btn.addEventListener("click", () => {
+      const nowExpanded = banner.classList.contains("collapsed");
+      applyLegendState(banner, nowExpanded);
+      try { window.localStorage.setItem(LEGEND_STORAGE_KEY, nowExpanded ? "1" : "0"); } catch { /* ignore */ }
+    });
+  }
+}
+
+function applyLegendState(banner, expanded) {
+  banner.classList.toggle("collapsed", !expanded);
+  const btn = banner.querySelector(".legend-toggle");
+  if (btn) {
+    btn.setAttribute("aria-checked", expanded ? "true" : "false");
+    const txt = btn.querySelector(".legend-toggle-text");
+    if (txt) txt.textContent = expanded ? "Shown" : "Hidden";
+  }
+}
+
 // ── Modal init + Bootstrap ─────────────────────────────────────────────────
 
 function initModal() {
@@ -1097,6 +1158,7 @@ function initModal() {
 }
 
 function main() {
+  initLegendBanner();
   initModal();
   if (window.COMPARISON_SLUG) renderComparisonPage(window.COMPARISON_SLUG);
   else if (window.COMPARISONS) renderLandingPage();
