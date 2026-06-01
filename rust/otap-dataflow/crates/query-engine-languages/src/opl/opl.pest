@@ -16,7 +16,7 @@ single_quote_string_char = _{
   | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
 }
 
-string_literal = {
+string_literal = ${
     ("\"" ~ double_quote_string_char* ~ "\"")
   | ("'" ~ single_quote_string_char* ~ "'")
 }

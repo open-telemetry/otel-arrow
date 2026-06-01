@@ -143,6 +143,7 @@ mod test {
             // many inline comments
             "
             // inline comment
+            // adjacent line inline comment
             logs | 
             // yet another inline comment before operator
             where severity_text == \"ERROR\"  // comment end of line
@@ -166,6 +167,32 @@ mod test {
             ",
         ];
 
+        fn gen_simple_equals_filter_expected(source: &str, str: &str) -> DataExpression {
+            DataExpression::Discard(
+                DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                    LogicalExpression::Not(NotLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        source,
+                                    )),
+                                )]),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), str),
+                            )),
+                            false,
+                        )),
+                    )),
+                ),
+            )
+        }
+
         for program in programs {
             let result = OplParser::parse(program).unwrap();
 
@@ -174,32 +201,25 @@ mod test {
             assert_eq!(data_exprs.len(), 1);
             pretty_assertions::assert_eq!(
                 &data_exprs[0],
-                &DataExpression::Discard(
-                    DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
-                        LogicalExpression::Not(NotLogicalExpression::new(
-                            QueryLocation::new_fake(),
-                            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                                QueryLocation::new_fake(),
-                                ScalarExpression::Source(SourceScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    ValueAccessor::new_with_selectors(vec![
-                                        ScalarExpression::Static(StaticScalarExpression::String(
-                                            StringScalarExpression::new(
-                                                QueryLocation::new_fake(),
-                                                "severity_text",
-                                            )
-                                        ))
-                                    ]),
-                                )),
-                                ScalarExpression::Static(StaticScalarExpression::String(
-                                    StringScalarExpression::new(QueryLocation::new_fake(), "ERROR"),
-                                )),
-                                false,
-                            )),
-                        )),
-                    ),
-                )
+                &gen_simple_equals_filter_expected("severity_text", "ERROR")
             );
         }
+
+        // test that we support the comment characters inside the text
+        let result = OplParser::parse("logs | where body == \"http://example.com\"").unwrap();
+        let data_exprs = result.pipeline.get_expressions();
+        assert_eq!(data_exprs.len(), 1);
+        pretty_assertions::assert_eq!(
+            &data_exprs[0],
+            &gen_simple_equals_filter_expected("body", "http://example.com")
+        );
+
+        let result = OplParser::parse("logs | where body == \"example /* comment */\"").unwrap();
+        let data_exprs = result.pipeline.get_expressions();
+        assert_eq!(data_exprs.len(), 1);
+        pretty_assertions::assert_eq!(
+            &data_exprs[0],
+            &gen_simple_equals_filter_expected("body", "example /* comment */")
+        );
     }
 }
