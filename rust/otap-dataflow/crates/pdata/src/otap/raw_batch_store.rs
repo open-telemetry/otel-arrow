@@ -155,13 +155,13 @@ pub type RawTracesStore = RawBatchStore<TRACES_TYPE_MASK, TRACES_COUNT>;
 /// implementations which wrap this type.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RawBatchStore<const TYPE_MASK: u64, const COUNT: usize> {
-    batches: [Option<RecordBatch>; COUNT],
+    batches: Box<[Option<RecordBatch>; COUNT]>,
 }
 
 impl<const TYPE_MASK: u64, const COUNT: usize> Default for RawBatchStore<TYPE_MASK, COUNT> {
     fn default() -> Self {
         Self {
-            batches: std::array::from_fn(|_| None),
+            batches: Box::new(std::array::from_fn(|_| None)),
         }
     }
 }
@@ -176,7 +176,9 @@ impl<const TYPE_MASK: u64, const COUNT: usize> RawBatchStore<TYPE_MASK, COUNT> {
     /// Create a store from a pre-built batch array.
     #[must_use]
     pub fn from_batches(batches: [Option<RecordBatch>; COUNT]) -> Self {
-        Self { batches }
+        Self {
+            batches: Box::new(batches),
+        }
     }
 
     /// Check whether the given payload type is valid for this store.
@@ -188,18 +190,18 @@ impl<const TYPE_MASK: u64, const COUNT: usize> RawBatchStore<TYPE_MASK, COUNT> {
     /// Read-only access to the underlying batch array as a slice.
     #[must_use]
     pub fn batches(&self) -> &[Option<RecordBatch>] {
-        &self.batches
+        self.batches.as_slice()
     }
 
     /// Mutable access to the underlying batch array as a slice.
     pub fn batches_mut(&mut self) -> &mut [Option<RecordBatch>] {
-        &mut self.batches
+        self.batches.as_mut_slice()
     }
 
     /// Consume the store and return the underlying batch array.
     #[must_use]
     pub fn into_batches(self) -> [Option<RecordBatch>; COUNT] {
-        self.batches
+        *self.batches
     }
 
     /// Get a reference to the batch for the given payload type, if present.

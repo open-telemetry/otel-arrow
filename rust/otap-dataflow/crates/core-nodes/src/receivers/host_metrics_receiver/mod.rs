@@ -41,6 +41,8 @@ use otap_df_telemetry_macros::metric_set;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::{LazyLock, Mutex};
 #[cfg(any(target_os = "linux", test))]
@@ -48,7 +50,9 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 use std::time::Instant as StdInstant;
 #[cfg(target_os = "linux")]
-use tokio::time::{Instant, sleep_until};
+use tokio::sync::oneshot;
+#[cfg(target_os = "linux")]
+use tokio::time::{Instant, Timeout, sleep_until, timeout};
 
 mod config;
 #[cfg(target_os = "linux")]
@@ -59,7 +63,7 @@ mod procfs;
 mod semconv;
 
 #[cfg(target_os = "linux")]
-use procfs::{HostSnapshot, ProcfsConfig, ProcfsFamilies, ProcfsSource};
+use procfs::{HostSnapshot, ProcfsConfig, ProcfsFamilies, ProcfsScrapeWorker, StartScrapeError};
 
 #[cfg(any(target_os = "linux", test))]
 pub(crate) use config::CompiledFilter;
@@ -69,7 +73,7 @@ use config::validate_config;
 pub use config::{
     Config, CpuFamilyConfig, DeviceFilterConfig, DiskFamilyConfig, FamiliesConfig, FamilyConfig,
     FilesystemFamilyConfig, FilesystemTypeFilterConfig, HostViewConfig, HostViewValidationMode,
-    InterfaceFilterConfig, MatchType, MemoryFamilyConfig, MountPointFilterConfig,
+    InterfaceFilterConfig, LoadFamilyConfig, MatchType, MemoryFamilyConfig, MountPointFilterConfig,
     NetworkFamilyConfig, ProcessMode, ProcessesFamilyConfig,
 };
 #[cfg(target_os = "linux")]
@@ -91,6 +95,12 @@ pub struct HostMetricsReceiverMetrics {
     /// Number of fatal scrape failures.
     #[metric(unit = "{scrape}")]
     pub scrapes_failed: Counter<u64>,
+    /// Number of scrape ticks skipped or timed out before completion.
+    #[metric(unit = "{scrape}")]
+    pub scrapes_overrun: Counter<u64>,
+    /// Number of scraper worker failures.
+    #[metric(unit = "{error}")]
+    pub scraper_failures: Counter<u64>,
     // TODO: Decide whether fixed per-family error counters are needed here.
     // Metric-level attributes are not supported by the internal telemetry API today.
     /// Number of source read errors skipped because other families succeeded.
@@ -128,7 +138,13 @@ pub struct HostMetricsReceiver {
 /// Declares the host metrics receiver as a local receiver factory.
 pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: HOST_METRICS_RECEIVER_URN,
-    create: create_host_metrics_receiver,
+    create: |pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             receiver_config: &ReceiverConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+        create_host_metrics_receiver(pipeline, node, node_config, receiver_config)
+    },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: validate_host_metrics_config,
 };
@@ -247,6 +263,17 @@ fn due_family_count(due: ProcfsFamilies) -> u64 {
         + u64::from(due.filesystem)
         + u64::from(due.network)
         + u64::from(due.processes)
+        + u64::from(due.load)
+}
+
+#[cfg(target_os = "linux")]
+type PendingScrapeFuture =
+    Pin<Box<Timeout<oneshot::Receiver<std::io::Result<procfs::HostScrape>>>>>;
+
+#[cfg(target_os = "linux")]
+struct InFlightScrape {
+    result: PendingScrapeFuture,
+    started: StdInstant,
 }
 
 #[cfg(target_os = "linux")]
@@ -260,6 +287,7 @@ enum ScheduledFamilyKind {
     Filesystem,
     Network,
     Processes,
+    Load,
 }
 
 #[cfg(target_os = "linux")]
@@ -278,7 +306,7 @@ struct FamilyScheduler {
 impl FamilyScheduler {
     fn new(config: &RuntimeConfig, now: Instant) -> Self {
         let first_due = now + config.initial_delay;
-        let mut entries = Vec::with_capacity(8);
+        let mut entries = Vec::with_capacity(9);
         push_scheduled(
             &mut entries,
             ScheduledFamilyKind::Cpu,
@@ -330,6 +358,12 @@ impl FamilyScheduler {
             &config.families.processes,
             first_due,
         );
+        push_scheduled(
+            &mut entries,
+            ScheduledFamilyKind::Load,
+            &config.families.load,
+            first_due,
+        );
         Self { entries }
     }
 
@@ -341,9 +375,9 @@ impl FamilyScheduler {
             .unwrap_or(now)
     }
 
-    fn mark_due(&mut self, now: Instant) -> ProcfsFamilies {
+    fn due_at(&self, now: Instant) -> ProcfsFamilies {
         let mut due = ProcfsFamilies::default();
-        for entry in &mut self.entries {
+        for entry in &self.entries {
             if entry.next_due <= now {
                 match entry.kind {
                     ScheduledFamilyKind::Cpu => due.cpu = true,
@@ -354,7 +388,42 @@ impl FamilyScheduler {
                     ScheduledFamilyKind::Filesystem => due.filesystem = true,
                     ScheduledFamilyKind::Network => due.network = true,
                     ScheduledFamilyKind::Processes => due.processes = true,
+                    ScheduledFamilyKind::Load => due.load = true,
                 }
+            }
+        }
+        due
+    }
+
+    fn timeout_for(&self, due: ProcfsFamilies) -> Duration {
+        self.entries
+            .iter()
+            .filter(|entry| match entry.kind {
+                ScheduledFamilyKind::Cpu => due.cpu,
+                ScheduledFamilyKind::Memory => due.memory,
+                ScheduledFamilyKind::Paging => due.paging,
+                ScheduledFamilyKind::System => due.system,
+                ScheduledFamilyKind::Disk => due.disk,
+                ScheduledFamilyKind::Filesystem => due.filesystem,
+                ScheduledFamilyKind::Network => due.network,
+                ScheduledFamilyKind::Processes => due.processes,
+                ScheduledFamilyKind::Load => due.load,
+            })
+            .map(|entry| entry.interval)
+            .min()
+            .expect("due families should match scheduler entries")
+    }
+
+    #[cfg(test)]
+    fn mark_due(&mut self, now: Instant) -> ProcfsFamilies {
+        let due = self.due_at(now);
+        self.advance_due(now);
+        due
+    }
+
+    fn advance_due(&mut self, now: Instant) {
+        for entry in &mut self.entries {
+            if entry.next_due <= now {
                 let elapsed = now.duration_since(entry.next_due);
                 let missed_ticks = elapsed.as_nanos() / entry.interval.as_nanos() + 1;
                 let advance = entry
@@ -366,7 +435,6 @@ impl FamilyScheduler {
                 }
             }
         }
-        due
     }
 }
 
@@ -433,8 +501,8 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
             _lease,
             mut metrics,
         } = *self;
-        let mut source = ProcfsSource::new(
-            Some(config.root_path.as_path()),
+        let scrape_worker = ProcfsScrapeWorker::new(
+            Some(config.root_path.clone()),
             ProcfsConfig {
                 cpu: config.families.cpu.enabled,
                 memory: config.families.memory.enabled,
@@ -444,6 +512,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                 filesystem: config.families.filesystem.enabled,
                 network: config.families.network.enabled,
                 processes: config.families.processes.enabled,
+                load: config.families.load.enabled,
                 cpu_utilization: config.cpu_utilization,
                 memory_limit: config.memory_limit,
                 memory_shared: config.memory_shared,
@@ -476,10 +545,11 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
         .map_err(|err| Error::ReceiverError {
             receiver: effect_handler.receiver_id(),
             kind: ReceiverErrorKind::Configuration,
-            error: format!("failed to validate host metrics procfs sources: {err}"),
+            error: format!("failed to start host metrics scraper worker: {err}"),
             source_detail: String::new(),
         })?;
         let mut scheduler = FamilyScheduler::new(&config, Instant::now());
+        let mut in_flight: Option<InFlightScrape> = None;
 
         loop {
             tokio::select! {
@@ -506,18 +576,66 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                     }
                 }
 
-                _ = sleep_until(scheduler.next_due(Instant::now())) => {
+                _ = sleep_until(scheduler.next_due(Instant::now())), if in_flight.is_none() => {
                     let scheduled_due = scheduler.next_due(Instant::now());
                     let now = Instant::now();
-                    let due = scheduler.mark_due(now);
+                    let due = scheduler.due_at(now);
                     let scrape_start = StdInstant::now();
                     if let Some(metrics) = metrics.as_mut() {
-                        metrics.scrapes_started.add(1);
-                        metrics.families_scraped.add(due_family_count(due));
                         metrics.scrape_lag_ns.record(duration_nanos(now.saturating_duration_since(scheduled_due)));
                     }
-                    match source.scrape_due(due).await {
+                    match scrape_worker.try_start_scrape(due) {
                         Ok(scrape) => {
+                            let scrape_timeout = scheduler.timeout_for(due);
+                            scheduler.advance_due(now);
+                            if let Some(metrics) = metrics.as_mut() {
+                                metrics.scrapes_started.add(1);
+                                metrics.families_scraped.add(due_family_count(due));
+                            }
+                            in_flight = Some(InFlightScrape {
+                                result: Box::pin(timeout(scrape_timeout, scrape)),
+                                started: scrape_start,
+                            });
+                        }
+                        Err(StartScrapeError::Busy) => {
+                            // Busy here means the worker is still processing an accepted scrape
+                            // after the receiver-side future was cleared, typically after timeout.
+                            // Treat this due tick as skipped so the scheduler does not spin.
+                            scheduler.advance_due(now);
+                            if let Some(metrics) = metrics.as_mut() {
+                                metrics.scrapes_overrun.add(1);
+                            }
+                            otel_warn!(
+                                "host_metrics.scraper_busy",
+                                message = "host metrics scraper worker is still busy"
+                            );
+                        }
+                        Err(StartScrapeError::Stopped) => {
+                            if let Some(metrics) = metrics.as_mut() {
+                                metrics.scraper_failures.add(1);
+                                metrics.scrapes_failed.add(1);
+                            }
+                            return Err(Error::ReceiverError {
+                                receiver: effect_handler.receiver_id(),
+                                kind: ReceiverErrorKind::Other,
+                                error: "host metrics scraper worker stopped".to_owned(),
+                                source_detail: String::new(),
+                            });
+                        }
+                    }
+                }
+
+                scrape_result = async {
+                    match in_flight.as_mut() {
+                        Some(scrape) => Some(scrape.result.as_mut().await),
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    let Some(InFlightScrape { started, .. }) = in_flight.take() else {
+                        continue;
+                    };
+                    match scrape_result.expect("pending scrape result should be present") {
+                        Ok(Ok(Ok(scrape))) => {
                             if let Some(metrics) = metrics.as_mut() {
                                 metrics.partial_errors.add(scrape.partial_errors);
                                 metrics.source_read_errors.add(scrape.partial_errors);
@@ -528,7 +646,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                 Err(err) => {
                                     if let Some(metrics) = metrics.as_mut() {
                                         metrics.scrapes_failed.add(1);
-                                        metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
+                                        metrics.scrape_duration_ns.record(elapsed_nanos(started));
                                     }
                                     return Err(Error::ReceiverError {
                                         receiver: effect_handler.receiver_id(),
@@ -544,13 +662,13 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                     if let Some(metrics) = metrics.as_mut() {
                                         metrics.batches_sent.add(1);
                                         metrics.scrapes_completed.add(1);
-                                        metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
+                                        metrics.scrape_duration_ns.record(elapsed_nanos(started));
                                     }
                                 }
                                 Err(TypedError::ChannelSendError(_)) => {
                                     if let Some(metrics) = metrics.as_mut() {
                                         metrics.send_failures.add(1);
-                                        metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
+                                        metrics.scrape_duration_ns.record(elapsed_nanos(started));
                                     }
                                     otel_warn!(
                                         "host_metrics.dropped_backpressure",
@@ -561,7 +679,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                     if let Some(metrics) = metrics.as_mut() {
                                         metrics.send_failures.add(1);
                                         metrics.scrapes_failed.add(1);
-                                        metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
+                                        metrics.scrape_duration_ns.record(elapsed_nanos(started));
                                     }
                                     return Err(Error::ReceiverError {
                                         receiver: effect_handler.receiver_id(),
@@ -572,16 +690,45 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                 }
                             }
                         }
-                        Err(err) => {
+                        Ok(Ok(Err(err))) => {
                             if let Some(metrics) = metrics.as_mut() {
                                 metrics.scrapes_failed.add(1);
                                 metrics.source_read_errors.add(1);
-                                metrics.scrape_duration_ns.record(elapsed_nanos(scrape_start));
+                                metrics.scrape_duration_ns.record(elapsed_nanos(started));
                             }
                             otel_warn!(
                                 "host_metrics.scrape_failed",
                                 message = "host metrics scrape failed; receiver will retry",
                                 error = err.to_string()
+                            );
+                        }
+                        Ok(Err(_)) => {
+                            if let Some(metrics) = metrics.as_mut() {
+                                metrics.scraper_failures.add(1);
+                                metrics.scrapes_failed.add(1);
+                                metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                            }
+                            otel_warn!(
+                                "host_metrics.scraper_stopped",
+                                message = "host metrics scraper worker stopped before returning a result"
+                            );
+                            return Err(Error::ReceiverError {
+                                receiver: effect_handler.receiver_id(),
+                                kind: ReceiverErrorKind::Other,
+                                error: "host metrics scraper worker stopped before returning a result"
+                                    .to_owned(),
+                                source_detail: String::new(),
+                            });
+                        }
+                        Err(_) => {
+                            if let Some(metrics) = metrics.as_mut() {
+                                metrics.scrapes_failed.add(1);
+                                metrics.scrapes_overrun.add(1);
+                                metrics.scrape_duration_ns.record(elapsed_nanos(started));
+                            }
+                            otel_warn!(
+                                "host_metrics.scrape_timeout",
+                                message = "host metrics scrape timed out; receiver will retry"
                             );
                         }
                     }
@@ -649,6 +796,10 @@ mod tests {
                 processes: ProcessesFamilyConfig {
                     enabled: false,
                     ..ProcessesFamilyConfig::default()
+                },
+                load: LoadFamilyConfig {
+                    enabled: false,
+                    ..LoadFamilyConfig::default()
                 },
             },
             ..Config::default()
@@ -744,6 +895,23 @@ mod tests {
         assert!(config.families.memory.limit);
         assert!(config.families.memory.shared);
         assert!(config.families.memory.hugepages);
+        validate_config(&config).expect("valid config");
+    }
+
+    #[test]
+    fn accepts_load_opt_in() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "families": {
+                "load": {
+                    "enabled": true,
+                    "interval": "30s"
+                }
+            }
+        }))
+        .expect("valid load config");
+
+        assert!(config.families.load.enabled);
+        assert_eq!(config.families.load.interval, Some(Duration::from_secs(30)));
         validate_config(&config).expect("valid config");
     }
 
@@ -916,6 +1084,72 @@ mod tests {
         assert!(!second_due.memory);
         assert!(!second_due.disk);
         assert!(!second_due.filesystem);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn scheduler_due_at_does_not_advance_due_families() {
+        let config = RuntimeConfig::try_from(Config {
+            initial_delay: Duration::ZERO,
+            ..Config::default()
+        })
+        .expect("valid config");
+        let now = Instant::now();
+        let mut scheduler = FamilyScheduler::new(&config, now);
+
+        let due = scheduler.due_at(now);
+        assert!(due.cpu);
+        assert!(due.memory);
+        assert_eq!(scheduler.next_due(now), now);
+
+        let marked_due = scheduler.mark_due(now);
+        assert_eq!(marked_due, due);
+        assert!(scheduler.next_due(now) > now);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn scheduler_timeout_uses_due_family_interval() {
+        let config = Config {
+            collection_interval: Duration::from_secs(10),
+            families: FamiliesConfig {
+                cpu: CpuFamilyConfig {
+                    interval: Some(Duration::from_secs(2)),
+                    ..CpuFamilyConfig::default()
+                },
+                filesystem: FilesystemFamilyConfig {
+                    interval: Some(Duration::from_secs(30)),
+                    ..FilesystemFamilyConfig::default()
+                },
+                ..FamiliesConfig::default()
+            },
+            ..Config::default()
+        };
+        let config = RuntimeConfig::try_from(config).expect("valid config");
+        let now = Instant::now();
+        let mut scheduler = FamilyScheduler::new(&config, now);
+
+        let first_due = scheduler.mark_due(now);
+        assert!(first_due.cpu);
+        assert!(first_due.filesystem);
+        assert_eq!(
+            scheduler.timeout_for(first_due),
+            Duration::from_secs(2),
+            "the timeout uses the shortest interval among the due families"
+        );
+
+        let cpu_due = scheduler.mark_due(now + Duration::from_secs(2));
+        assert!(cpu_due.cpu);
+        assert!(!cpu_due.filesystem);
+        assert_eq!(scheduler.timeout_for(cpu_due), Duration::from_secs(2));
+
+        assert_eq!(
+            scheduler.timeout_for(ProcfsFamilies {
+                filesystem: true,
+                ..ProcfsFamilies::default()
+            }),
+            Duration::from_secs(30)
+        );
     }
 
     #[test]

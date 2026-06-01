@@ -1,0 +1,44 @@
+version: otel_dataflow/v1
+engine: { }
+groups:
+  default:
+    pipelines:
+      main:
+        # host_metrics_receiver -> OTLP/gRPC exporter pipeline.
+        #
+        # Used by the `host-metrics-weaver-live-check` CI job to feed real
+        # OTLP traffic from the host metrics receiver into a `weaver registry
+        # live-check` listener. The downstream listener then asserts that
+        # what's emitted matches the OpenTelemetry semantic conventions.
+        #
+        # The host_metrics_receiver requires a single-core source pipeline,
+        # so this config is meant to be run as:
+        #
+        #   df_engine --config configs/host-metrics-otlp.yaml --num-cores 1
+        #
+        # Linux-only. The downstream OTLP/gRPC endpoint defaults to the
+        # Weaver live-check default port (4317).
+
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: urn:otel:receiver:host_metrics
+            config:
+              # Short interval so a brief CI run produces several scrapes.
+              collection_interval: 2s
+              initial_delay: 0s
+
+          exporter:
+            type: exporter:otlp_grpc
+            config:
+              grpc_endpoint: "http://127.0.0.1:4317"
+
+        connections:
+          - from: receiver
+            to: exporter

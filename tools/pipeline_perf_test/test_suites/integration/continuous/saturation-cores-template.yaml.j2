@@ -10,7 +10,7 @@ components:
         ports:
           - "8085:8080"
         volumes:
-          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/nonroot/config.yaml:ro'
         command:
           - "--config"
           - "./config.yaml"
@@ -31,7 +31,7 @@ components:
         ports:
           - "8086:8080"
         volumes:
-          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/nonroot/config.yaml:ro'
         command:
           - "--config"
           - "./config.yaml"
@@ -52,7 +52,7 @@ components:
         ports:
           - "8087:8080"
         volumes:
-          - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+          - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/nonroot/config.yaml:ro'
         command:
           - "--config"
           - "./config.yaml"
@@ -78,4 +78,6 @@ tests:
         observation_interval: 60
         signals_per_second: null # Using null means loadgen don't self-cap the rate.
         max_batch_size: {{max_batch_size}}
+        data_source: synthetic
+        log_body_size_bytes: 1024
         num_connections: {{num_cores * 4}}

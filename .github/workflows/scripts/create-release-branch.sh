@@ -61,8 +61,10 @@ git add .
 # Commit changes
 git commit -m "Prepare release v$VERSION
 
-- Update CHANGELOG.md with release notes for v$VERSION
+- Render chloggen entries into go/CHANGELOG.md and rust/otap-dataflow/CHANGELOG.md
+- Bump rust/otap-dataflow/Cargo.toml workspace + root package version to v$VERSION
 - Update collector/otelarrowcol-build.yaml version to v$VERSION
+- Update collector/cmd/otelarrowcol/main.go version to v$VERSION
 
 This commit prepares the repository for release v$VERSION."
 

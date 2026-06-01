@@ -59,6 +59,11 @@ ALLOWED_EXTENSIONS = {".toml", ".yaml", ".yml", ".json", ".txt"}
 # File extensions to publish from staging to the data dir after a run
 PUBLISH_CONFIG_EXTENSIONS = {".yaml", ".yml", ".toml"}
 
+# Banner text pinned to each page
+BANNER_TEXT = "The Dataflow Engine and these benchmarks are a work in progress. Do you have feedback?"
+BANNER_LINK_TEXT = "Tell us here!"
+ISSUE_URL = "https://github.com/open-telemetry/otel-arrow/issues"
+
 # ---------------------------------------------------------------------------
 # Manifest
 # ---------------------------------------------------------------------------
@@ -70,6 +75,9 @@ class Manifest:
     comparison_files: list[Path]  # absolute paths to comparison YAMLs
     variables: dict               # template variables passed to Jinja at top level
     meta: dict                    # allowed values per meta key (key -> [values])
+    meta_descriptions: dict       # per-value descriptions: key -> {value: description}
+    glossary: list                # ordered list of {term, definition} for the legend banner
+    metrics: list                 # ordered list of {name, label} for dashboard metrics
 
 def load_manifest(manifest_path: Path) -> Manifest:
     """Load and validate the manifest file. Resolves all listed paths."""
@@ -88,7 +96,7 @@ def load_manifest(manifest_path: Path) -> Manifest:
         print(f"ERROR: manifest must be a mapping at top level: {manifest_path}")
         sys.exit(1)
 
-    for key in ("suites", "comparisons", "variables", "meta"):
+    for key in ("suites", "comparisons", "variables", "meta", "glossary", "metrics"):
         if key not in data:
             print(f"ERROR: manifest missing required key '{key}': {manifest_path}")
             sys.exit(1)
@@ -98,14 +106,89 @@ def load_manifest(manifest_path: Path) -> Manifest:
         print(f"ERROR: manifest 'variables' must be a mapping: {manifest_path}")
         sys.exit(1)
 
-    meta = data["meta"] or {}
-    if not isinstance(meta, dict):
+    raw_meta = data["meta"] or {}
+    if not isinstance(raw_meta, dict):
         print(f"ERROR: manifest 'meta' must be a mapping: {manifest_path}")
         sys.exit(1)
-    for key, allowed in meta.items():
-        if not isinstance(allowed, list):
-            print(f"ERROR: manifest meta.{key} must be a list of allowed values: {manifest_path}")
+    # `meta` is normalized to {key: [values]} for downstream allowed-value
+    # checks; `meta_descriptions` carries the per-value tooltip text.
+    meta: dict[str, list[str]] = {}
+    meta_descriptions: dict[str, dict[str, str]] = {}
+    for key, entries in raw_meta.items():
+        if not isinstance(entries, list) or not entries:
+            print(f"ERROR: manifest meta.{key} must be a non-empty list of {{value, description}} objects: {manifest_path}")
             sys.exit(1)
+        values: list[str] = []
+        descs: dict[str, str] = {}
+        seen: set[str] = set()
+        for i, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                print(f"ERROR: manifest meta.{key}[{i}] must be a mapping with 'value' and 'description': {manifest_path}")
+                sys.exit(1)
+            value = entry.get("value")
+            description = entry.get("description")
+            if not isinstance(value, str) or not value:
+                print(f"ERROR: manifest meta.{key}[{i}] missing non-empty string 'value': {manifest_path}")
+                sys.exit(1)
+            if not isinstance(description, str) or not description:
+                print(f"ERROR: manifest meta.{key}[{i}] missing non-empty string 'description': {manifest_path}")
+                sys.exit(1)
+            if value in seen:
+                print(f"ERROR: duplicate manifest meta.{key} value '{value}': {manifest_path}")
+                sys.exit(1)
+            seen.add(value)
+            values.append(value)
+            descs[value] = description
+        meta[key] = values
+        meta_descriptions[key] = descs
+
+    glossary_raw = data["glossary"] or []
+    if not isinstance(glossary_raw, list):
+        print(f"ERROR: manifest 'glossary' must be a list: {manifest_path}")
+        sys.exit(1)
+    glossary: list[dict[str, str]] = []
+    glossary_terms: set[str] = set()
+    for i, entry in enumerate(glossary_raw):
+        if not isinstance(entry, dict):
+            print(f"ERROR: manifest glossary[{i}] must be a mapping: {manifest_path}")
+            sys.exit(1)
+        term = entry.get("term")
+        definition = entry.get("definition")
+        if not isinstance(term, str) or not term:
+            print(f"ERROR: manifest glossary[{i}] missing non-empty 'term': {manifest_path}")
+            sys.exit(1)
+        if not isinstance(definition, str) or not definition:
+            print(f"ERROR: manifest glossary[{i}] missing non-empty 'definition': {manifest_path}")
+            sys.exit(1)
+        if term in glossary_terms:
+            print(f"ERROR: duplicate manifest glossary term '{term}': {manifest_path}")
+            sys.exit(1)
+        glossary_terms.add(term)
+        glossary.append({"term": term, "definition": definition})
+
+    metrics_raw = data["metrics"]
+    if not isinstance(metrics_raw, list) or not metrics_raw:
+        print(f"ERROR: manifest 'metrics' must be a non-empty list: {manifest_path}")
+        sys.exit(1)
+    metrics: list = []
+    seen_metric_names: set[str] = set()
+    for i, m in enumerate(metrics_raw):
+        if not isinstance(m, dict):
+            print(f"ERROR: manifest metrics[{i}] must be a mapping: {manifest_path}")
+            sys.exit(1)
+        name = m.get("name")
+        label = m.get("label")
+        if not isinstance(name, str) or not name:
+            print(f"ERROR: manifest metrics[{i}] missing non-empty 'name': {manifest_path}")
+            sys.exit(1)
+        if not isinstance(label, str) or not label:
+            print(f"ERROR: manifest metrics[{i}] missing non-empty 'label': {manifest_path}")
+            sys.exit(1)
+        if name in seen_metric_names:
+            print(f"ERROR: duplicate manifest metric name '{name}': {manifest_path}")
+            sys.exit(1)
+        seen_metric_names.add(name)
+        metrics.append({"name": name, "label": label})
 
     base = manifest_path.parent
     suite_files = [_resolve_listed_path(base, p, "suite") for p in data["suites"]]
@@ -118,6 +201,9 @@ def load_manifest(manifest_path: Path) -> Manifest:
         comparison_files=comparison_files,
         variables=variables,
         meta=meta,
+        meta_descriptions=meta_descriptions,
+        glossary=glossary,
+        metrics=metrics,
     )
 
 
@@ -830,11 +916,11 @@ def cmd_build(args) -> int:
     print()
 
     print("Generating index.html...")
-    generate_index_html(comparisons, suites, paths)
+    generate_index_html(comparisons, suites, paths, manifest)
     print()
 
     print("Generating comparison stubs...")
-    generate_compare_stubs(comparisons, suites, paths)
+    generate_compare_stubs(comparisons, suites, paths, manifest)
     print()
 
     print("Build complete.")
@@ -1066,14 +1152,14 @@ def load_comparisons(manifest: Manifest) -> list:
         with open(comp_file) as f:
             comp = yaml.safe_load(f)
 
-        for key in ("slug", "suites"):
+        for key in ("slug", "suites", "tests"):
             if key not in comp:
                 print(f"  ERROR: {comp_file.name}: missing required key '{key}'")
                 sys.exit(1)
 
         comp["_source"] = str(comp_file)
         comparisons.append(comp)
-        print(f"  {comp['slug']}: {len(comp['suites'])} suites")
+        print(f"  {comp['slug']}: {len(comp['suites'])} suites, {len(comp['tests'])} tests")
 
     return comparisons
 
@@ -1183,11 +1269,150 @@ def validate_manifest(
                     f"'{ref_slug}' (source: {comp.get('_source')})"
                 )
 
+    known_metric_names = {m["name"] for m in manifest.metrics}
+    for comp in comparisons:
+        chart = comp.get("chart")
+        if chart is None:
+            continue
+        slug = comp.get("slug")
+        src = comp.get("_source", "?")
+        if not isinstance(chart, dict):
+            errors.append(f"comparison '{slug}' 'chart' must be a mapping (source: {src})")
+            continue
+
+        chart_metrics = chart.get("metrics")
+        if chart_metrics is not None:
+            if not isinstance(chart_metrics, dict):
+                errors.append(
+                    f"comparison '{slug}' 'chart.metrics' must be a mapping (source: {src})"
+                )
+            else:
+                allowed = chart_metrics.get("allowed")
+                if allowed is not None:
+                    if not isinstance(allowed, list) or not allowed:
+                        errors.append(
+                            f"comparison '{slug}' 'chart.metrics.allowed' must be a non-empty list (source: {src})"
+                        )
+                    else:
+                        for j, name in enumerate(allowed):
+                            if not isinstance(name, str) or not name:
+                                errors.append(
+                                    f"comparison '{slug}' chart.metrics.allowed[{j}] must be a non-empty string (source: {src})"
+                                )
+                                continue
+                            if name not in known_metric_names:
+                                errors.append(
+                                    f"comparison '{slug}' chart.metrics.allowed references unknown metric '{name}' (source: {src})"
+                                )
+                default = chart_metrics.get("default")
+                if default is not None:
+                    if not isinstance(default, str) or not default:
+                        errors.append(
+                            f"comparison '{slug}' 'chart.metrics.default' must be a non-empty string (source: {src})"
+                        )
+                    elif default not in known_metric_names:
+                        errors.append(
+                            f"comparison '{slug}' chart.metrics.default references unknown metric '{default}' (source: {src})"
+                        )
+                    elif isinstance(allowed, list) and allowed and default not in allowed:
+                        errors.append(
+                            f"comparison '{slug}' chart.metrics.default '{default}' is not in chart.metrics.allowed (source: {src})"
+                        )
+
+        axes = chart.get("axes")
+        if axes is not None:
+            _validate_chart_axes(slug, src, axes, errors)
+
+    for comp in comparisons:
+        comp_slug = comp.get("slug")
+        src = comp.get("_source", "?")
+        tests = comp.get("tests")
+        if not isinstance(tests, list) or not tests:
+            errors.append(
+                f"comparison '{comp_slug}' must define a non-empty 'tests' list (source: {src})"
+            )
+            continue
+        seen_names: set[str] = set()
+        for i, t in enumerate(tests):
+            if not isinstance(t, dict):
+                errors.append(
+                    f"comparison '{comp_slug}' tests[{i}] must be a mapping (source: {src})"
+                )
+                continue
+            name = t.get("name")
+            rate = t.get("loadgen_rate")
+            if not isinstance(name, str) or not name:
+                errors.append(
+                    f"comparison '{comp_slug}' tests[{i}] missing non-empty 'name' (source: {src})"
+                )
+            if "label" in t:
+                label = t.get("label")
+                if not isinstance(label, str) or not label:
+                    errors.append(
+                        f"comparison '{comp_slug}' tests[{i}] 'label' must be a non-empty string when provided (source: {src})"
+                    )
+            elif isinstance(name, str) and name:
+                t["label"] = name
+            if not isinstance(rate, int) or isinstance(rate, bool) or rate <= 0:
+                errors.append(
+                    f"comparison '{comp_slug}' tests[{i}] 'loadgen_rate' must be a positive integer (source: {src})"
+                )
+            if isinstance(name, str) and name:
+                if name in seen_names:
+                    errors.append(
+                        f"comparison '{comp_slug}' has duplicate test name '{name}' (source: {src})"
+                    )
+                seen_names.add(name)
+
     if errors:
         print("ERROR: manifest validation failed:")
         for msg in errors:
             print(f"  - {msg}")
         sys.exit(1)
+
+
+def _validate_chart_axes(slug: str, src: str, axes: object, errors: list) -> None:
+    """
+    Validate a comparison's `chart.axes` block.
+
+    Schema: { x?: AxisCfg } where AxisCfg = { title?: str, description?: str }.
+    Only the x-axis is exposed for configuration today; the y-axis is left
+    unlabeled because the chart's title dropdown already names the metric.
+    Empty strings are permitted (treated as "not set" by the renderer).
+    Unknown keys are rejected to catch typos early.
+    """
+    if not isinstance(axes, dict):
+        errors.append(f"comparison '{slug}' 'chart.axes' must be a mapping (source: {src})")
+        return
+    allowed_axes = {"x"}
+    for ax_key in axes.keys():
+        if ax_key not in allowed_axes:
+            errors.append(
+                f"comparison '{slug}' chart.axes has unknown key '{ax_key}' (allowed: {sorted(allowed_axes)}) (source: {src})"
+            )
+    allowed_axis_fields = {"title", "description"}
+    for ax_key in allowed_axes:
+        ax_cfg = axes.get(ax_key)
+        if ax_cfg is None:
+            continue
+        if not isinstance(ax_cfg, dict):
+            errors.append(
+                f"comparison '{slug}' chart.axes.{ax_key} must be a mapping (source: {src})"
+            )
+            continue
+        for field in ax_cfg.keys():
+            if field not in allowed_axis_fields:
+                errors.append(
+                    f"comparison '{slug}' chart.axes.{ax_key} has unknown field '{field}' (allowed: {sorted(allowed_axis_fields)}) (source: {src})"
+                )
+        for field in allowed_axis_fields:
+            if field not in ax_cfg:
+                continue
+            val = ax_cfg[field]
+            if not isinstance(val, str):
+                errors.append(
+                    f"comparison '{slug}' chart.axes.{ax_key}.{field} must be a string (source: {src})"
+                )
 
 
 def check_comparison_env_consistency(
@@ -1304,7 +1529,7 @@ def _url_relpath(target: Path, start: Path) -> str:
     return Path(os.path.relpath(target, start)).as_posix()
 
 
-def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> None:
+def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths, manifest: Manifest) -> None:
     """Generate <compare_dir>/index.html with comparison sections."""
     shared_rel = _url_relpath(paths.shared_dst, paths.compare_dir)
     data_rel = _url_relpath(paths.data_dir, paths.compare_dir)
@@ -1323,6 +1548,10 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> N
 
     comparisons_public = [_strip_internal(c) for c in comparisons]
     comparisons_json = json.dumps(comparisons_public, indent=2)
+    metrics_meta = {m["name"]: {"label": m["label"]} for m in manifest.metrics}
+    metrics_meta_json = json.dumps(metrics_meta)
+    meta_descriptions_json = json.dumps(manifest.meta_descriptions)
+    glossary_json = json.dumps(manifest.glossary)
 
     lines = [
         '<!DOCTYPE html>',
@@ -1336,9 +1565,11 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> N
         '<body>',
         '  <div class="wip-banner" role="alert">',
         '    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>',
-        '    <span class="wip-text">All benchmarks are WIP and not final. Inaccuracies may exist.</span>',
+        f'   <span class="wip-text">{BANNER_TEXT} <a class="wip-link" href="{ISSUE_URL}" target="_blank" rel="noopener">{BANNER_LINK_TEXT}</a></span>',
         '    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>',
         '  </div>',
+        '  <div class="controls-bar" id="controls-bar" aria-label="Display controls"></div>',
+        '  <div class="legend-banner" id="legend-banner" aria-label="Glossary"></div>',
         '  <div class="wrap">',
         '    <h1>Telemetry Engine Benchmark Dashboard</h1>',
         '    <div class="sub">Compare telemetry engines across a variety of use-cases and protocols.</div>',
@@ -1359,6 +1590,9 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths) -> N
         '  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>',
         data_script_tags,
         f'  <script>window.DATA_PATH = "{data_rel}/suite";</script>',
+        f'  <script>window.METRICS_META = {metrics_meta_json};</script>',
+        f'  <script>window.META_DESCRIPTIONS = {meta_descriptions_json};</script>',
+        f'  <script>window.GLOSSARY = {glossary_json};</script>',
         f'  <script>window.COMPARISONS = {comparisons_json};</script>',
         f'  <script type="module" src="{shared_rel}/app.js"></script>',
         '</body>',
@@ -1376,13 +1610,17 @@ def _strip_internal(comp: dict) -> dict:
     return {k: v for k, v in comp.items() if not (isinstance(k, str) and k.startswith("_"))}
 
 
-def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths) -> None:
+def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths, manifest: Manifest) -> None:
     """Generate <compare_dir>/<slug>/index.html stub pages."""
     # Per-comparison pages are all siblings under compare_dir, so the
     # relpaths to shared/ and data/ are identical for every slug.
     sample_stub = paths.compare_page_dir("_")
     shared_rel = _url_relpath(paths.shared_dst, sample_stub)
     data_rel = _url_relpath(paths.data_dir, sample_stub)
+    metrics_meta = {m["name"]: {"label": m["label"]} for m in manifest.metrics}
+    metrics_meta_json = json.dumps(metrics_meta)
+    meta_descriptions_json = json.dumps(manifest.meta_descriptions)
+    glossary_json = json.dumps(manifest.glossary)
 
     for comp in comparisons:
         comp_slug = comp["slug"]
@@ -1420,9 +1658,11 @@ def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths) -
             '<body>',
             '  <div class="wip-banner" role="alert">',
             '    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>',
-            '    <span class="wip-text">All benchmarks are WIP and not final. Inaccuracies may exist.</span>',
+            f'   <span class="wip-text">{BANNER_TEXT} <a class="wip-link" href="{ISSUE_URL}" target="_blank" rel="noopener">{BANNER_LINK_TEXT}</a></span>',
             '    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>',
             '  </div>',
+            '  <div class="controls-bar" id="controls-bar" aria-label="Display controls"></div>',
+            '  <div class="legend-banner" id="legend-banner" aria-label="Glossary"></div>',
             '  <div class="wrap">',
             '    <div id="app"></div>',
             '  </div>',
@@ -1439,6 +1679,9 @@ def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths) -
             '',
             '  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>',
             f'  <script>window.DATA_PATH = "{data_rel}/suite";</script>',
+            f'  <script>window.METRICS_META = {metrics_meta_json};</script>',
+            f'  <script>window.META_DESCRIPTIONS = {meta_descriptions_json};</script>',
+            f'  <script>window.GLOSSARY = {glossary_json};</script>',
             f'  <script>window.COMPARISON_SLUG = "{comp_slug}";</script>',
             suite_scripts,
             f'  <script>window.COMPARISON = {comp_json};</script>',

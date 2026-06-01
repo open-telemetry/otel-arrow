@@ -1,0 +1,8 @@
+change_type: new_component
+component: pipeline
+note: Add the journald receiver configuration and factory skeleton.
+issues: [2858]
+subtext: |
+  Adds Linux-only receiver registration, validated source/checkpoint/batch configuration,
+  lifecycle metrics, and a process-local source lease. Worker ingestion and checkpoint
+  persistence will land in follow-up PRs.

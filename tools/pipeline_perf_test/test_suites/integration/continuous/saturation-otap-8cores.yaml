@@ -1,0 +1,13 @@
+# OTAP saturation test with 8 core df_engine
+# NUMA-aware layout: SUT on NUMA node 0 (physical 0-7), loadgen on entire NUMA node 1,
+# backend on NUMA0 HT cores (not siblings of SUT cores 0-7).
+# Note: 64 LG cores is the max without cross-NUMA contention. SUT reaches ~91% (loadgen-limited).
+from_template:
+  path: test_suites/integration/continuous/saturation-otap-cores-template.yaml.j2
+  variables:
+    num_cores: 8
+    engine_core_range: "0-7"
+    loadgen_cores: 64
+    loadgen_core_range: "32-63,96-127"
+    backend_cores: 16
+    backend_core_range: "64-79"

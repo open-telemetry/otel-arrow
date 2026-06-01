@@ -100,7 +100,6 @@ use prost::{EncodeError, Message};
 
 /// Container for the various representations of the telemetry data
 #[derive(Clone, Debug)]
-#[allow(clippy::large_enum_variant)]
 pub enum OtapPayload {
     /// data is serialized as a protobuf service message for one of the OTLP GRPC services
     OtlpBytes(OtlpProtoBytes),

@@ -83,9 +83,9 @@ architecture. The OTAP receiver deliberately diverges in these areas:
   receiver.
 - Do not use independent scrapers that reread shared Linux sources in the same
   tick. This receiver builds one shared snapshot for the due family set.
-- Do not preserve legacy metric names just because the Collector emits them.
-  For example, the Collector load scraper emits `system.cpu.load_average.*`,
-  but those names are not listed in Semantic Conventions 1.41.0 system metrics.
+- Keep Linux load averages behind explicit configuration while they use the
+  Collector-compatible development names `system.cpu.load_average.*`, which are
+  not listed in Semantic Conventions 1.41.0 system metrics.
 - Do not include per-process metrics in v1. The Collector's `process` scraper
   is useful future reference, but v1 only emits aggregate process metrics.
 - Do not copy entity-event logs. They are explicitly out of scope for v1.
@@ -500,7 +500,7 @@ This table is the implementation checklist. It is intentionally limited to v1.
 | ------ | ------- |
 | CPU | `system.cpu.time`, `system.cpu.physical.count`, `system.cpu.logical.count`, `system.cpu.frequency`; opt-in: `system.cpu.utilization` |
 | Memory | `system.memory.usage`, `system.memory.utilization`, `system.memory.linux.available`, `system.memory.linux.slab.usage`; opt-in: `system.memory.limit`, `system.memory.linux.shared`, Linux hugepage metrics |
-| Load | Linux-specific load metrics, pending semconv registry decision. Do not emit `system.cpu.load_average.*`; those names are not in the current semconv registry. |
+| Load | Opt-in Linux load metrics: `system.cpu.load_average.1m`, `system.cpu.load_average.5m`, `system.cpu.load_average.15m` |
 | Paging/swap | `system.paging.usage`, `system.paging.utilization`, `system.paging.operations`, `system.paging.faults` |
 | System | `system.uptime` |
 | Disk | `system.disk.io`, `system.disk.operations`, `system.disk.io_time`, `system.disk.operation_time`, `system.disk.merged`; opt-in: `system.disk.limit` |
@@ -584,10 +584,12 @@ must stamp the attribute key required by each metric.
 Load average needs special handling. The semconv docs explain that UNIX load
 average is not well standardized and give `system.linux.cpu.load_1m` as an
 example OS-specific name, but Semantic Conventions 1.41.0 does not list a
-registered load metric. Do not ship `system.cpu.load_average.1m`,
-`system.cpu.load_average.5m`, or `system.cpu.load_average.15m`. If maintainers
-choose an experimental Linux load metric for v1, emit raw `/proc/loadavg`
-values as-is; CPU-normalized load can be a future option.
+registered load metric. The receiver therefore keeps load disabled by default.
+When `families.load.enabled` is true, it emits the Collector-compatible
+development gauges `system.cpu.load_average.1m`,
+`system.cpu.load_average.5m`, and `system.cpu.load_average.15m` with unit
+`{thread}`. Values are raw `/proc/loadavg` values; CPU-normalized load can be a
+future option.
 
 Do not emit `system.filesystem.inodes.usage`; the Collector has that metric, but
 it is not present in Semantic Conventions 1.41.0. If network connection counts
@@ -744,5 +746,6 @@ all Linux collectors are added.
 ## Open Decisions
 
 1. Whether v1 should include an experimental Linux load metric name or defer the
-   load family until a registered semantic convention exists. Do not emit the
-   Collector's legacy `system.cpu.load_average.*` names.
+   load family until a registered semantic convention exists. Current behavior
+   emits the Collector-compatible `system.cpu.load_average.*` names only when
+   `families.load.enabled` is true.
