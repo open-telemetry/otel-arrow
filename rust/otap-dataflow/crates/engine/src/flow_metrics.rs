@@ -304,7 +304,6 @@ pub(crate) fn build_flow_metric_state(
         resolved_ranges.push((start_idx, end_idx, flow_config.id.clone()));
     }
 
-    // Validate that flow_metric ranges don't interleave with each other.
     if !resolved_ranges.is_empty() {
         let adjacency = build_adjacency(pipeline_connections);
         validate_metric_ranges(&resolved_ranges, &adjacency)?;
