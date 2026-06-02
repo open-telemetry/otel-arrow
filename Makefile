@@ -73,6 +73,8 @@ CHLOGGEN_VERSION = v0.30.0
 CHLOGGEN = chloggen
 CHLOGGEN_GO_CONFIG = go/.chloggen/config.yaml
 CHLOGGEN_RUST_CONFIG = rust/otap-dataflow/.chloggen/config.yaml
+CHANGELOG_GO = go/CHANGELOG.md
+CHANGELOG_RUST = rust/otap-dataflow/CHANGELOG.md
 
 .PHONY: chlog-install
 chlog-install:
@@ -97,9 +99,9 @@ chlog-validate:
 
 .PHONY: chlog-preview
 chlog-preview:
-	@echo "=== go/CHANGELOG.md ==="
+	@echo "=== $(CHANGELOG_GO) ==="
 	$(CHLOGGEN) update --config $(CHLOGGEN_GO_CONFIG) --dry
-	@echo "=== rust/otap-dataflow/CHANGELOG.md ==="
+	@echo "=== $(CHANGELOG_RUST) ==="
 	$(CHLOGGEN) update --config $(CHLOGGEN_RUST_CONFIG) --dry
 
 # Render pending entries into the configured CHANGELOG files for VERSION
@@ -108,3 +110,9 @@ chlog-preview:
 chlog-update:
 	$(CHLOGGEN) update --config $(CHLOGGEN_GO_CONFIG) --version $(VERSION)
 	$(CHLOGGEN) update --config $(CHLOGGEN_RUST_CONFIG) --version $(VERSION)
+	# chloggen's indent function leaves trailing whitespace on blank sub-text
+	# lines and the template emits consecutive blank lines; fix both so the
+	# sanity check and markdownlint pass.
+	sed -i 's/[[:space:]]*$$//' $(CHANGELOG_GO) $(CHANGELOG_RUST)
+	cat -s $(CHANGELOG_GO) > $(CHANGELOG_GO).tmp && mv $(CHANGELOG_GO).tmp $(CHANGELOG_GO)
+	cat -s $(CHANGELOG_RUST) > $(CHANGELOG_RUST).tmp && mv $(CHANGELOG_RUST).tmp $(CHANGELOG_RUST)
