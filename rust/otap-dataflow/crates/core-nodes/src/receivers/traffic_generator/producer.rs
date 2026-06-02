@@ -523,6 +523,7 @@ impl SignalGenerator for SyntheticGenerator {
             self.num_log_attributes,
             self.use_trace_context,
             attrs,
+            self.idx,
         );
         let payload = OtlpProtoMessage::Logs(payload);
 

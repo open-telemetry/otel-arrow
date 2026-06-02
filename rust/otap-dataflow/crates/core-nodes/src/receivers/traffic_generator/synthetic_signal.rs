@@ -582,7 +582,7 @@ pub fn static_otlp_logs(
     signal_count: usize,
     extra_attrs: Option<&HashMap<String, String>>,
 ) -> LogsData {
-    static_otlp_logs_with_config(signal_count, None, None, false, extra_attrs)
+    static_otlp_logs_with_config(signal_count, None, None, false, extra_attrs, 0)
 }
 
 /// Generates LogsData with configurable body size, attribute count, and
@@ -593,6 +593,8 @@ pub fn static_otlp_logs(
 /// - `num_log_attributes`: When `Some(n)`, generates `n` key-value string attributes.
 ///   When `None`, uses the default 2 attributes (thread.id, thread.name).
 /// - `extra_attrs`: Optional extra key-value pairs merged into the resource attributes.
+/// - `batch_index`: Shifts pool selection indices so consecutive batches produce
+///   distinct payloads (important for realistic compression in `PreGenerated` mode).
 #[must_use]
 pub fn static_otlp_logs_with_config(
     signal_count: usize,
@@ -600,12 +602,14 @@ pub fn static_otlp_logs_with_config(
     num_log_attributes: Option<usize>,
     use_trace_context: bool,
     extra_attrs: Option<&HashMap<String, String>>,
+    batch_index: usize,
 ) -> LogsData {
     let logs = static_logs(
         signal_count,
         log_body_size_bytes,
         num_log_attributes,
         use_trace_context,
+        batch_index,
     );
 
     let scopes = vec![ScopeLogs::new(
@@ -1083,20 +1087,28 @@ fn static_logs(
     log_body_size_bytes: Option<usize>,
     num_log_attributes: Option<usize>,
     use_trace_context: bool,
+    batch_index: usize,
 ) -> Vec<LogRecord> {
     let body_pool = build_body_pool(log_body_size_bytes);
+    // Use a prime stride to shift pool indices per batch, ensuring consecutive
+    // batches select different body/attribute combinations and produce distinct
+    // compressed payloads.
+    let body_offset = batch_index.wrapping_mul(37);
+    let attr_offset = batch_index.wrapping_mul(13);
 
     (0..signal_count)
         .map(|i| {
             let timestamp = current_time();
-            let (severity_number, severity_text) = match i % 20 {
+            let (severity_number, severity_text) = match (i + attr_offset) % 20 {
                 0..=15 => (SeverityNumber::Info, "INFO"),
                 16..=18 => (SeverityNumber::Warn, "WARN"),
                 _ => (SeverityNumber::Error, "ERROR"),
             };
 
-            let attributes =
-                build_log_attributes(num_log_attributes.unwrap_or(DEFAULT_LOG_ATTRIBUTE_COUNT), i);
+            let attributes = build_log_attributes(
+                num_log_attributes.unwrap_or(DEFAULT_LOG_ATTRIBUTE_COUNT),
+                i + attr_offset,
+            );
 
             let mut builder = LogRecord::build()
                 .time_unix_nano(timestamp)
@@ -1110,7 +1122,8 @@ fn static_logs(
             }
 
             if !body_pool.is_empty() {
-                builder = builder.body(AnyValue::new_string(&body_pool[i % body_pool.len()]));
+                let body_idx = (i + body_offset) % body_pool.len();
+                builder = builder.body(AnyValue::new_string(&body_pool[body_idx]));
             }
 
             builder.finish()
@@ -1267,7 +1280,7 @@ mod tests {
 
     #[test]
     fn test_static_logs_with_custom_body_size() {
-        let logs = static_otlp_logs_with_config(5, Some(1024), None, false, None);
+        let logs = static_otlp_logs_with_config(5, Some(1024), None, false, None, 0);
         let records = &logs.resource_logs[0].scope_logs[0].log_records;
         assert_eq!(records.len(), 5);
         if let Some(body) = &records[0].body {
@@ -1286,7 +1299,7 @@ mod tests {
 
     #[test]
     fn test_static_logs_with_custom_attributes() {
-        let logs = static_otlp_logs_with_config(3, None, Some(5), false, None);
+        let logs = static_otlp_logs_with_config(3, None, Some(5), false, None, 0);
         let records = &logs.resource_logs[0].scope_logs[0].log_records;
         assert_eq!(records.len(), 3);
         assert_eq!(records[0].attributes.len(), 5);
@@ -1304,7 +1317,7 @@ mod tests {
 
     #[test]
     fn test_static_logs_with_both_custom() {
-        let logs = static_otlp_logs_with_config(2, Some(512), Some(10), false, None);
+        let logs = static_otlp_logs_with_config(2, Some(512), Some(10), false, None, 0);
         let records = &logs.resource_logs[0].scope_logs[0].log_records;
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].attributes.len(), 10);
@@ -1312,7 +1325,7 @@ mod tests {
 
     #[test]
     fn test_static_logs_zero_body_size() {
-        let logs = static_otlp_logs_with_config(1, Some(0), None, false, None);
+        let logs = static_otlp_logs_with_config(1, Some(0), None, false, None, 0);
         let records = &logs.resource_logs[0].scope_logs[0].log_records;
         assert!(
             records[0].body.is_none(),
@@ -1322,7 +1335,7 @@ mod tests {
 
     #[test]
     fn test_static_logs_zero_attributes() {
-        let logs = static_otlp_logs_with_config(1, None, Some(0), false, None);
+        let logs = static_otlp_logs_with_config(1, None, Some(0), false, None, 0);
         let records = &logs.resource_logs[0].scope_logs[0].log_records;
         assert!(records[0].attributes.is_empty());
     }
@@ -1347,7 +1360,7 @@ mod tests {
     fn test_compression_ratio_is_realistic() {
         use prost::Message;
 
-        let logs = static_otlp_logs_with_config(500, Some(1024), Some(6), true, None);
+        let logs = static_otlp_logs_with_config(500, Some(1024), Some(6), true, None, 0);
         let raw = logs.encode_to_vec();
         let raw_size = raw.len();
 
@@ -1365,5 +1378,40 @@ mod tests {
             "compression ratio {ratio:.1}:1 is outside acceptable range (3:1 – 45:1); \
              raw={raw_size} bytes, compressed={compressed_size} bytes"
         );
+    }
+
+    /// Verify that consecutive batches with different `batch_index` values
+    /// produce distinct encoded payloads, ensuring `PreGenerated` mode doesn't
+    /// replay identical data that would be trivially compressible across batches.
+    #[test]
+    fn test_pregenerated_batches_are_diverse() {
+        use prost::Message;
+
+        let batch_0 = static_otlp_logs_with_config(512, Some(1024), Some(6), false, None, 0);
+        let batch_1 = static_otlp_logs_with_config(512, Some(1024), Some(6), false, None, 1);
+        let batch_5 = static_otlp_logs_with_config(512, Some(1024), Some(6), false, None, 5);
+
+        let bytes_0 = batch_0.encode_to_vec();
+        let bytes_1 = batch_1.encode_to_vec();
+        let bytes_5 = batch_5.encode_to_vec();
+
+        // Batches must not be identical
+        assert_ne!(bytes_0, bytes_1, "batch 0 and 1 should differ");
+        assert_ne!(bytes_0, bytes_5, "batch 0 and 5 should differ");
+        assert_ne!(bytes_1, bytes_5, "batch 1 and 5 should differ");
+
+        // Each batch individually should have realistic compression
+        for (label, bytes) in [
+            ("batch_0", &bytes_0),
+            ("batch_1", &bytes_1),
+            ("batch_5", &bytes_5),
+        ] {
+            let compressed = zstd::bulk::compress(bytes, 3).expect("zstd failed");
+            let ratio = bytes.len() as f64 / compressed.len() as f64;
+            assert!(
+                (3.0..=45.0).contains(&ratio),
+                "{label}: compression ratio {ratio:.1}:1 is outside acceptable range"
+            );
+        }
     }
 }

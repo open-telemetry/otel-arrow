@@ -35,14 +35,14 @@ run_saturation() {
   cargo run --release -- --config "$sender_config" --num-cores 1 >/dev/null 2>&1 &
   local SENDER=$!; sleep $SETTLE
 
-  local sm=$(curl -s http://127.0.0.1:8080/metrics)
-  local em=$(curl -s http://127.0.0.1:8081/metrics)
-  local sender_cpu=$(echo "$sm" | awk '/^cpu_utilization\{set="pipeline/{print $2}')
-  local sut_cpu=$(echo "$em" | awk '/^cpu_utilization\{set="pipeline/{print $2}')
-  local logs1=$(echo "$sm" | awk '/^logs_produced\{/{print $2}')
+  local sm=$(curl -s http://127.0.0.1:8080/api/v1/telemetry/metrics)
+  local em=$(curl -s http://127.0.0.1:8081/api/v1/telemetry/metrics)
+  local sender_cpu=$(echo "$sm" | awk '/^cpu_utilization\{otel_scope_name="pipeline"/{print $2}')
+  local sut_cpu=$(echo "$em" | awk '/^cpu_utilization\{otel_scope_name="pipeline"/{print $2}')
+  local logs1=$(echo "$sm" | awk '/^logs_produced_total\{/{print $2}')
   sleep $SAMPLE
-  sm=$(curl -s http://127.0.0.1:8080/metrics)
-  local logs2=$(echo "$sm" | awk '/^logs_produced\{/{print $2}')
+  sm=$(curl -s http://127.0.0.1:8080/api/v1/telemetry/metrics)
+  local logs2=$(echo "$sm" | awk '/^logs_produced_total\{/{print $2}')
   local rps=$(( (${logs2:-0} - ${logs1:-0}) / SAMPLE ))
   local s_pct=$(echo "scale=1; ${sender_cpu:-0} * 100" | bc)
   local e_pct=$(echo "scale=1; ${sut_cpu:-0} * 100" | bc)
