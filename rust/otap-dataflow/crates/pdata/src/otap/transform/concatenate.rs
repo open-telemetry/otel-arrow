@@ -10,8 +10,8 @@ use arrow::compute::kernels::cast;
 use arrow::datatypes::{
     ArrowNativeType, DurationMicrosecondType, DurationMillisecondType, DurationNanosecondType,
     DurationSecondType, Float64Type, GenericBinaryType, Int64Type, TimestampMicrosecondType,
-    TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt8Type,
-    UInt16Type, UInt64Type,
+    TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt8Type, UInt16Type,
+    UInt64Type,
 };
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder};
 use itertools::Either;
