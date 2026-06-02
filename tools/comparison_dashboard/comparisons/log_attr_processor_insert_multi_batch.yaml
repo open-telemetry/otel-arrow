@@ -15,18 +15,23 @@ tests:
   - name: batch-256
     label: "256"
     loadgen_rate: 400000
+    description: 256 logs per batch @ 400k logs/sec
   - name: batch-512
     label: "512"
     loadgen_rate: 400000
+    description: 512 logs per batch @ 400k logs/sec
   - name: batch-1024
     label: "1024"
     loadgen_rate: 400000
+    description: 1024 logs per batch @ 400k logs/sec
   - name: batch-2048
     label: "2048"
     loadgen_rate: 400000
+    description: 2048 logs per batch @ 400k logs/sec
   - name: batch-4096
     label: "4096"
     loadgen_rate: 400000
+    description: 4096 logs per batch @ 400k logs/sec
 
 suites:
   # DFE OTAP
