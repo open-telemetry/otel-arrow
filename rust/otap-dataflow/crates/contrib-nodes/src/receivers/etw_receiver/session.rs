@@ -466,31 +466,19 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                     let opcode = anc.op_code();
                     let version = anc.version();
 
-                    let (level, keywords, record_ptr) = match anc.raw_event_record() {
-                        Some(ptr) => {
-                            // SAFETY: The EVENT_RECORD pointer is valid for the
-                            // duration of the ProcessTrace callback.  one_collect
-                            // sets this pointer before dispatching and it points
-                            // to a kernel-owned buffer that is stable until the
-                            // callback returns.
-                            let record = unsafe { &*ptr };
-                            (
-                                record.EventHeader.EventDescriptor.Level,
-                                record.EventHeader.EventDescriptor.Keyword,
-                                Some(ptr),
-                            )
-                        }
-                        None => (0, 0, None),
+                    let (level, keywords) = match anc.record() {
+                        Some(record) => (
+                            record.EventHeader.EventDescriptor.Level,
+                            record.EventHeader.EventDescriptor.Keyword,
+                        ),
+                        None => (0, 0),
                     };
 
                     // TDH decode: attempt to decode TraceLogging event schema.
                     // For manifest-based events (NotFound) we proceed with
                     // empty decoded_fields — future work will add manifest
                     // decoding with a (Provider, Id, Version) cache key.
-                    let (decoded_fields, user_data) = if let Some(ptr) = record_ptr {
-                        // SAFETY: same invariant as above — EVENT_RECORD is valid
-                        // for the duration of this callback.
-                        let record = unsafe { &*ptr };
+                    let (decoded_fields, user_data) = if let Some(record) = anc.record() {
                         let ud = if record.UserData.is_null() || record.UserDataLength == 0 {
                             Vec::new()
                         } else {
@@ -504,9 +492,10 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                         };
 
                         let fields = match decoder.borrow_mut().decode(record) {
-                            Ok(decoded) => {
-                                extract_decoded_fields(decoded.format(), decoded.event_data())
-                            }
+                            Ok(result) => extract_decoded_fields(
+                                result.event_data.format(),
+                                result.event_data.event_data(),
+                            ),
                             Err(TdhDecodeError::NotFound) => {
                                 // Manifest-based event — no TL schema available.
                                 // This is expected and not an error.

@@ -100,9 +100,9 @@ fn decode_field_value(field: &DecodedField) -> AttrValue<'_> {
         ("float", 4) => AttrValue::Double(f64::from(f32::from_ne_bytes(
             data.try_into().expect("matched len==4"),
         ))),
-        ("double", 8) => AttrValue::Double(f64::from_ne_bytes(
-            data.try_into().expect("matched len==8"),
-        )),
+        ("double", 8) => {
+            AttrValue::Double(f64::from_ne_bytes(data.try_into().expect("matched len==8")))
+        }
 
         // Strings (null-terminated or not)
         ("string", _) => {
@@ -110,6 +110,20 @@ fn decode_field_value(field: &DecodedField) -> AttrValue<'_> {
             let trimmed = s.trim_end_matches('\0');
             AttrValue::Str(Cow::Owned(trimmed.to_owned()))
         }
+        // Counted UTF-16 strings from TraceLoggingDynamic (TDH in_type 300/301).
+        // The u16 length prefix has already been consumed by the framework's
+        // StaticLenPrefixArray — `data` contains only the UTF-16 content bytes.
+        ("counted_string", _) if data.len() >= 2 => {
+            let u16_iter = data
+                .chunks_exact(2)
+                .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+                .take_while(|&c| c != 0);
+            let decoded: String = char::decode_utf16(u16_iter)
+                .map(|r| r.unwrap_or('\u{FFFD}'))
+                .collect();
+            AttrValue::Str(Cow::Owned(decoded))
+        }
+        ("counted_string", _) => AttrValue::Str(Cow::Borrowed("")),
         ("wstring", _) if data.len() >= 2 => {
             // UTF-16LE decoding, trim null terminator
             let u16_iter = data
