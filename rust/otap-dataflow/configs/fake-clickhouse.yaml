@@ -1,0 +1,39 @@
+version: otel_dataflow/v1
+engine: { }
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 1000
+                signals_per_second: 30
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          exporter:
+            type: "exporter:clickhouse"
+            config:
+              endpoint: "127.0.0.1:9000"
+              database: "otap"
+              username: "default"
+              password: "TODO-TEST"
+              attributes:
+                trace:
+                  representation: string_map       # otap_array | json | string_map
+                log:
+                  representation: string_map       # otap_array | json | string_map
+
+        connections:
+          - from: receiver
+            to: exporter
+
