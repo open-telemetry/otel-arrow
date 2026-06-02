@@ -64,6 +64,12 @@ pub struct HttpClientSettings {
         alias = "compression_method"
     )]
     pub compression: Option<CompressionMethod>,
+
+    /// Custom User-Agent header for outbound HTTP requests. When set, reqwest
+    /// **replaces** its default User-Agent with this value. When not set, the
+    /// default reqwest User-Agent is used.
+    #[serde(default)]
+    pub user_agent: Option<String>,
 }
 
 impl HttpClientSettings {
@@ -88,6 +94,10 @@ impl HttpClientSettings {
             .connector_layer(ConcurrencyLimitLayer::new(
                 self.effective_concurrency_limit(),
             ));
+
+        if let Some(ua) = &self.user_agent {
+            client_builder = client_builder.user_agent(ua.as_str());
+        }
 
         if let Some(tcp_keepalive) = self.tcp_keepalive {
             client_builder = client_builder.tcp_keepalive(tcp_keepalive);
@@ -231,6 +241,46 @@ impl Default for HttpClientSettings {
             timeout: None,
             tls: None,
             compression: None,
+            user_agent: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_user_agent_deserialization() {
+        let settings: HttpClientSettings = serde_json::from_str(
+            r#"{
+                "user_agent": "otap-custom-agent/1.0"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            settings.user_agent.as_deref(),
+            Some("otap-custom-agent/1.0")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_user_agent_applied_to_client_builder() {
+        crate::crypto::ensure_crypto_provider();
+        let settings = HttpClientSettings {
+            user_agent: Some("otap-custom-agent/1.0".to_string()),
+            ..HttpClientSettings::default()
+        };
+
+        let builder = settings.client_builder().await;
+        assert!(builder.is_ok());
+    }
+
+    #[test]
+    fn test_default_has_no_user_agent() {
+        let settings = HttpClientSettings::default();
+
+        assert_eq!(settings.user_agent, None);
     }
 }

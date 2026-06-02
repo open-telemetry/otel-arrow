@@ -145,6 +145,13 @@ pub struct GrpcClientSettings {
     #[serde(default)]
     #[doc(hidden)]
     pub proxy: Option<ProxyConfig>,
+
+    /// Custom User-Agent header for outbound gRPC requests. When set, tonic
+    /// **prepends** this value to its default `tonic/x.x.x` User-Agent (e.g.
+    /// `my-app/1.0 tonic/0.12.x`). When not set, only the default tonic
+    /// User-Agent is sent.
+    #[serde(default)]
+    pub user_agent: Option<String>,
 }
 
 /// Error returned when building a gRPC [`Endpoint`] (including TLS/mTLS setup).
@@ -342,6 +349,9 @@ impl GrpcClientSettings {
         if let Some(timeout) = self.timeout {
             endpoint = endpoint.timeout(timeout);
         }
+        if let Some(ua) = &self.user_agent {
+            endpoint = endpoint.user_agent(ua.as_str())?;
+        }
 
         Ok(endpoint)
     }
@@ -505,6 +515,7 @@ impl Default for GrpcClientSettings {
             buffer_size: None,
             startup_check: StartupCheck::default(),
             proxy: None,
+            user_agent: None,
         }
     }
 }
@@ -600,6 +611,23 @@ mod tests {
     }
 
     #[test]
+    fn test_user_agent_deserialization() {
+        let settings: GrpcClientSettings = serde_json::from_str(
+            r#"{ "grpc_endpoint": "http://localhost:4317", "user_agent": "my-app/1.0" }"#,
+        )
+        .unwrap();
+
+        assert_eq!(settings.user_agent.as_deref(), Some("my-app/1.0"));
+    }
+
+    #[test]
+    fn test_default_has_no_user_agent() {
+        let settings = GrpcClientSettings::default();
+
+        assert_eq!(settings.user_agent, None);
+    }
+
+    #[test]
     fn effective_concurrency_limit_clamps_to_one() {
         let settings: GrpcClientSettings = serde_json::from_str(
             r#"{ "grpc_endpoint": "http://localhost:4317", "concurrency_limit": 0 }"#,
@@ -607,6 +635,18 @@ mod tests {
         .unwrap();
 
         assert_eq!(settings.effective_concurrency_limit(), 1);
+    }
+
+    #[test]
+    fn test_user_agent_applied_to_endpoint() {
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "http://localhost:4317".to_string(),
+            user_agent: Some("my-app/1.0".to_string()),
+            ..GrpcClientSettings::default()
+        };
+
+        let endpoint = settings.build_endpoint().unwrap();
+        let _ = endpoint;
     }
 
     #[tokio::test]
