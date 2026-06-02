@@ -162,6 +162,28 @@ impl ControllerContext {
         }
     }
 
+    /// Creates a `ControllerContext` with explicit auto-detected identity values.
+    ///
+    /// Test-only: the production [`new`](Self::new) constructor derives these
+    /// from the host environment, which is unsuitable for asserting the
+    /// semantic-convention mapping in [`resource_attributes`](Self::resource_attributes).
+    #[cfg(test)]
+    fn new_with_identity(
+        telemetry_registry_handle: TelemetryRegistryHandle,
+        process_instance_id: impl Into<Cow<'static, str>>,
+        host_id: impl Into<Cow<'static, str>>,
+        container_id: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        Self {
+            telemetry_registry_handle,
+            process_instance_id: process_instance_id.into(),
+            host_id: host_id.into(),
+            container_id: container_id.into(),
+            numa_node_id: 0,
+            memory_pressure_state: MemoryPressureState::default(),
+        }
+    }
+
     /// Returns a new pipeline context with the given identifiers and the current controller context
     /// as the parent context.
     #[must_use]
@@ -604,5 +626,48 @@ impl PipelineContext {
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_attributes_maps_semconv_keys() {
+        let ctx = ControllerContext::new_with_identity(
+            TelemetryRegistryHandle::new(),
+            "proc-123",
+            "machine-abc",
+            "container-xyz",
+        );
+
+        // All three identities present: emitted in a stable order under their
+        // OpenTelemetry semantic-convention keys.
+        assert_eq!(
+            ctx.resource_attributes(),
+            vec![
+                ("host.id".to_string(), "machine-abc".to_string()),
+                ("container.id".to_string(), "container-xyz".to_string()),
+                ("service.instance.id".to_string(), "proc-123".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn resource_attributes_omits_empty_values() {
+        // Empty host/container should be skipped entirely (no empty-valued
+        // attributes), leaving only the populated service.instance.id.
+        let ctx = ControllerContext::new_with_identity(
+            TelemetryRegistryHandle::new(),
+            "proc-123",
+            "",
+            "",
+        );
+
+        assert_eq!(
+            ctx.resource_attributes(),
+            vec![("service.instance.id".to_string(), "proc-123".to_string())]
+        );
     }
 }
