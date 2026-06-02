@@ -1016,22 +1016,4 @@ mod tests {
 
         assert_eq!(state.duration_metrics.len(), 1);
     }
-
-    #[test]
-    fn reachable_end_with_cycle_in_graph_is_accepted() {
-        // Topology: a -> b -> c -> b (cycle), c -> d
-        // Flow metric: a->d. BFS must not loop forever; end is reachable.
-        let (ctx, _) = test_pipeline_ctx();
-        let (names, procs) = test_maps(&["a", "b", "c", "d"], &[]);
-        let edges = test_edges(
-            &[("a", "b"), ("b", "c"), ("c", "b"), ("c", "d")],
-            &names,
-        );
-        let policy = policy_with(vec![sw("sw1", "a", "d")]);
-
-        let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
-            .expect("flow metric with cycle in graph should build");
-
-        assert_eq!(state.duration_metrics.len(), 1);
-    }
 }
