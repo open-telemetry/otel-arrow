@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use opentelemetry::{global, metrics::Meter};
+use opentelemetry::{InstrumentationScope, global, metrics::Meter};
 use tokio::time::{MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 
@@ -59,14 +59,21 @@ impl MetricsDispatcher {
     fn dispatch_metrics(&self) -> Result<(), Error> {
         self.metrics_handler
             .visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
-                let meter = global::meter(descriptor.name);
+                let scope_attributes = Self::to_opentelemetry_attributes(attributes);
+                let meter = if scope_attributes.is_empty() {
+                    global::meter(descriptor.name)
+                } else {
+                    global::meter_with_scope(
+                        InstrumentationScope::builder(descriptor.name)
+                            .with_attributes(scope_attributes)
+                            .build(),
+                    )
+                };
 
-                // There is no support for metric level attributes currently. Attaching resource level attributes to every metric.
-                // TODO: Consider adding metric level attributes and not to add resource level attributes to every metric.
-                let otel_attributes = Self::to_opentelemetry_attributes(attributes);
-
+                // Entity attributes live on the instrumentation scope so OTel Views can
+                // target them via scope_attributes selectors; data points carry none.
                 for (field, value) in metrics_iter {
-                    self.add_opentelemetry_metric(field, value, &otel_attributes, &meter);
+                    self.add_opentelemetry_metric(field, value, &[], &meter);
                 }
             });
 

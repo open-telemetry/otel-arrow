@@ -89,6 +89,40 @@ Do not duplicate information:
   signal-specific attribute.
 - Prefer a single canonical key.
 
+### How the layers are rendered
+
+The self-telemetry pipeline emits each category on its correct OpenTelemetry
+layer for **every exported signal** — both metrics and logs (see issue #3161).
+The mapping is signal-independent:
+
+| Category | OTLP export (metrics + logs) | Admin Prometheus endpoint (metrics only) |
+| --- | --- | --- |
+| Resource | `Resource` on `ResourceMetrics` / `ResourceLogs` | `target_info{...}` gauge labels |
+| Entity | `InstrumentationScope.attributes` on scope metrics / scope logs | `otel_scope_<key>` labels on each series |
+| Signal-specific | Data-point attributes (metrics) / log-record attributes (logs) | Inline (unprefixed) data-point labels |
+
+Notes:
+
+- The engine auto-detects and injects process/host resource attributes
+  (`host.id`, `container.id`, `service.instance.id`) into the configured
+  `engine.telemetry.resource` map. Config-provided keys take precedence over
+  auto-detected values, and empty values are omitted.
+- The **same** resolved resource map feeds every consumer: the SDK metrics
+  `Resource`, the pre-encoded OTLP log `Resource` bytes
+  (`ResourceLogs.resource`), and the admin `target_info` gauge — so resource
+  identity is consistent across metrics, logs, and the admin endpoint.
+- Entity identity is resolved from the telemetry registry once per entity and
+  attached as `InstrumentationScope.attributes` for both metrics and logs
+  (logs carry entity keys via their `LogContext`). On the admin Prometheus
+  endpoint the same entity attributes are rendered as `otel_scope_*` labels per
+  the OpenTelemetry-to-Prometheus specification; the reserved keys
+  `otel_scope_name`, `otel_scope_version`, and `otel_scope_schema_url` are not
+  overridden.
+- Engine-global signals (e.g. the `memory_rss` metric) carry no scope
+  attributes; their identity comes entirely from the Resource layer.
+- Today, no self-telemetry attributes are emitted on the signal-specific
+  (data-point / log-record) layer.
+
 ### Core rule
 
 Attributes attached to core system metrics MUST have bounded cardinality.
