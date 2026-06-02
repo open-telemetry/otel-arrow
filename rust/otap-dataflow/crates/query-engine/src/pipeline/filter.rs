@@ -541,7 +541,7 @@ mod test {
 
     #[tokio::test]
     async fn test_simple_filter_opl_parser() {
-        test_simple_filter::<OplParser, _>(|dt| format!("date_time\"{dt}\"")).await
+        test_simple_filter::<OplParser, _>(|dt| format!("timestamp\"{dt}\"")).await
     }
 
     async fn test_simple_attrs_filter<P: Parser>() {
