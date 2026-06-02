@@ -14,7 +14,7 @@
 
 {{- if .BreakingChanges }}
 
-### 🛑 Breaking changes 🛑
+### :stop_sign: Breaking changes :stop_sign:
 
 {{- range $i, $change := .BreakingChanges }}
 {{- if eq $i 0}}
@@ -25,7 +25,7 @@
 
 {{- if .Deprecations }}
 
-### 🚩 Deprecations 🚩
+### :triangular_flag_on_post: Deprecations :triangular_flag_on_post:
 
 {{- range $i, $change := .Deprecations }}
 {{- if eq $i 0}}
@@ -36,7 +36,7 @@
 
 {{- if .NewComponents }}
 
-### 🚀 New components 🚀
+### :rocket: New components :rocket:
 
 {{- range $i, $change := .NewComponents }}
 {{- if eq $i 0}}
@@ -47,7 +47,7 @@
 
 {{- if .Enhancements }}
 
-### 💡 Enhancements 💡
+### :bulb: Enhancements :bulb:
 
 {{- range $i, $change := .Enhancements }}
 {{- if eq $i 0}}
@@ -58,7 +58,7 @@
 
 {{- if .BugFixes }}
 
-### 🧰 Bug fixes 🧰
+### :toolbox: Bug fixes :toolbox:
 
 {{- range $i, $change := .BugFixes }}
 {{- if eq $i 0}}
