@@ -968,4 +968,70 @@ mod tests {
 
         assert_invalid_user_config(&err, "sw1");
     }
+
+    #[test]
+    fn adjacent_nodes_are_accepted() {
+        // Topology: a -> b
+        // Flow metric: a->b. Minimal reachable range (single direct edge).
+        let (ctx, _) = test_pipeline_ctx();
+        let (names, procs) = test_maps(&["a", "b"], &[]);
+        let edges = test_edges(&[("a", "b")], &names);
+        let policy = policy_with(vec![sw("sw1", "a", "b")]);
+
+        let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
+            .expect("adjacent-node flow metric should build");
+
+        assert_eq!(state.duration_metrics.len(), 1);
+    }
+
+    #[test]
+    fn multi_hop_reachable_end_is_accepted() {
+        // Topology: a -> b -> c -> d -> e
+        // Flow metric: a->e. End is reachable via a long forward path.
+        let (ctx, _) = test_pipeline_ctx();
+        let (names, procs) = test_maps(&["a", "b", "c", "d", "e"], &[]);
+        let edges = test_edges(
+            &[("a", "b"), ("b", "c"), ("c", "d"), ("d", "e")],
+            &names,
+        );
+        let policy = policy_with(vec![sw("sw1", "a", "e")]);
+
+        let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
+            .expect("multi-hop reachable flow metric should build");
+
+        assert_eq!(state.duration_metrics.len(), 1);
+    }
+
+    #[test]
+    fn diamond_end_reachable_via_either_branch_is_accepted() {
+        // Topology: a -> b -> d, a -> c -> d
+        // Flow metric: a->d. End is reachable via two parallel paths.
+        let (ctx, _) = test_pipeline_ctx();
+        let (names, procs) = test_maps(&["a", "b", "c", "d"], &[]);
+        let edges = test_edges(&[("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")], &names);
+        let policy = policy_with(vec![sw("sw1", "a", "d")]);
+
+        let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
+            .expect("diamond-reachable flow metric should build");
+
+        assert_eq!(state.duration_metrics.len(), 1);
+    }
+
+    #[test]
+    fn reachable_end_with_cycle_in_graph_is_accepted() {
+        // Topology: a -> b -> c -> b (cycle), c -> d
+        // Flow metric: a->d. BFS must not loop forever; end is reachable.
+        let (ctx, _) = test_pipeline_ctx();
+        let (names, procs) = test_maps(&["a", "b", "c", "d"], &[]);
+        let edges = test_edges(
+            &[("a", "b"), ("b", "c"), ("c", "b"), ("c", "d")],
+            &names,
+        );
+        let policy = policy_with(vec![sw("sw1", "a", "d")]);
+
+        let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
+            .expect("flow metric with cycle in graph should build");
+
+        assert_eq!(state.duration_metrics.len(), 1);
+    }
 }
