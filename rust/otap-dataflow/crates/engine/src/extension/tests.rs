@@ -28,6 +28,16 @@ fn test_metrics_reporter() -> MetricsReporter {
     MetricsReporter::new(tx)
 }
 
+/// Returns a oneshot receiver that will never receive a shutdown
+/// signal: the matching sender is dropped immediately, so the
+/// receiver resolves to `Err(_)` and the `ControlChannel` falls
+/// through to the regular control path. Used by control-channel
+/// unit tests that don't care about the dedicated shutdown channel.
+fn never_firing_shutdown_rx()
+-> tokio::sync::oneshot::Receiver<crate::control::ShutdownPayload> {
+    tokio::sync::oneshot::channel().1
+}
+
 fn ext_config(name: &'static str) -> (ExtensionId, Arc<ExtensionUserConfig>, ExtensionConfig) {
     (
         name.into(),
@@ -309,7 +319,7 @@ fn test_local_start_shutdown() {
 #[tokio::test]
 async fn test_ctrl_immediate_shutdown() {
     let (tx, rx) = tokio::sync::mpsc::channel(8);
-    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx));
+    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
     SharedSender::mpsc(tx)
         .send(ExtensionControlMsg::Shutdown {
             deadline: Instant::now(),
@@ -325,7 +335,7 @@ async fn test_ctrl_immediate_shutdown() {
 async fn test_ctrl_config_then_shutdown() {
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     let s = SharedSender::mpsc(tx);
-    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx));
+    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
     s.send(ExtensionControlMsg::Config {
         config: Value::String("h".into()),
     })
@@ -348,7 +358,7 @@ async fn test_ctrl_delayed_shutdown() {
     // future its deadline is — the deadline is the extension's
     // cooperative cleanup budget, not a wait time before delivery.
     let (tx, rx) = tokio::sync::mpsc::channel(8);
-    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx));
+    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
     let dl = Instant::now() + std::time::Duration::from_secs(60);
     let sender = SharedSender::mpsc(tx);
     sender
@@ -375,7 +385,7 @@ async fn test_ctrl_shutdown_closes_channel() {
     // is delivered the channel is closed and the extension's event
     // loop terminates.
     let (tx, rx) = tokio::sync::mpsc::channel(8);
-    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx));
+    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
     let s = SharedSender::mpsc(tx);
     s.send(ExtensionControlMsg::Shutdown {
         deadline: Instant::now() + std::time::Duration::from_secs(1),
@@ -395,7 +405,7 @@ async fn test_ctrl_shutdown_closes_channel() {
 #[tokio::test]
 async fn test_ctrl_collect_telemetry() {
     let (tx, rx) = tokio::sync::mpsc::channel(8);
-    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx));
+    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
     SharedSender::mpsc(tx)
         .send(ExtensionControlMsg::CollectTelemetry {
             metrics_reporter: test_metrics_reporter(),
@@ -411,7 +421,7 @@ async fn test_ctrl_collect_telemetry() {
 #[tokio::test]
 async fn test_ctrl_closed() {
     let (tx, rx) = tokio::sync::mpsc::channel::<ExtensionControlMsg>(8);
-    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx));
+    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
     drop(tx);
     assert!(ch.recv().await.is_err());
 }
@@ -420,7 +430,6 @@ async fn test_ctrl_closed() {
 async fn test_ctrl_sender_send() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     let sender = crate::control::ExtensionControlSender {
-        name: "st".into(),
         sender: Sender::Shared(SharedSender::mpsc(tx)),
     };
     sender
@@ -640,13 +649,19 @@ fn test_background_factory_capabilities_none() {
 
 #[test]
 fn test_extension_attribute_set_carries_pipeline_scope() {
-    use crate::attributes::{ExtensionAttributeSet, ExtensionScopeAttributeSet};
+    use crate::attributes::{
+        ExtensionAttributeSet, ExtensionScopeAttributeSet, PipelineAttributeSet,
+    };
     use otap_df_telemetry::attributes::AttributeSetHandler;
 
     let attrs = ExtensionAttributeSet {
         extension_id: "ext1".into(),
         extension_variant: "local".into(),
-        extension_scope: ExtensionScopeAttributeSet::pipeline("grp", "pipeline_a", 7, 3),
+        extension_scope: ExtensionScopeAttributeSet::pipeline(PipelineAttributeSet {
+            pipeline_group_id: "grp".into(),
+            pipeline_id: "pipeline_a".into(),
+            ..PipelineAttributeSet::default()
+        }),
     };
     assert_eq!(attrs.schema_name(), "extension.attrs");
     let attr_map: std::collections::HashMap<&'static str, String> = attrs
@@ -661,9 +676,18 @@ fn test_extension_attribute_set_carries_pipeline_scope() {
         "extension.attrs must carry scope.kind; got: {attr_map:?}"
     );
     assert_eq!(
-        attr_map.get("scope.id").map(String::as_str),
-        Some("grp/pipeline_a/core/7/gen/3"),
-        "extension.attrs must carry the formed scope.id; got: {attr_map:?}"
+        attr_map.get("pipeline.group.id").map(String::as_str),
+        Some("grp"),
+        "extension.attrs must carry the composed pipeline.group.id; got: {attr_map:?}"
+    );
+    assert_eq!(
+        attr_map.get("pipeline.id").map(String::as_str),
+        Some("pipeline_a"),
+        "extension.attrs must carry the composed pipeline.id; got: {attr_map:?}"
+    );
+    assert!(
+        !attr_map.contains_key("scope.id"),
+        "scope.id was replaced by typed composed pipeline attributes; got: {attr_map:?}"
     );
 }
 
@@ -671,6 +695,7 @@ fn test_extension_attribute_set_carries_pipeline_scope() {
 fn test_extension_channel_attribute_set_shape() {
     use crate::attributes::{
         ExtensionAttributeSet, ExtensionChannelAttributeSet, ExtensionScopeAttributeSet,
+        PipelineAttributeSet,
     };
     use otap_df_telemetry::attributes::AttributeSetHandler;
 
@@ -679,7 +704,11 @@ fn test_extension_channel_attribute_set_shape() {
         extension_attrs: ExtensionAttributeSet {
             extension_id: "ext1".into(),
             extension_variant: "shared".into(),
-            extension_scope: ExtensionScopeAttributeSet::pipeline("grp", "pipeline_a", 0, 0),
+            extension_scope: ExtensionScopeAttributeSet::pipeline(PipelineAttributeSet {
+                pipeline_group_id: "grp".into(),
+                pipeline_id: "pipeline_a".into(),
+                ..PipelineAttributeSet::default()
+            }),
         },
         channel_mode: "local".into(),
         channel_impl: "internal".into(),
@@ -696,7 +725,12 @@ fn test_extension_channel_attribute_set_shape() {
     assert!(!keys.contains(&"channel.type"));
     assert!(!keys.contains(&"node.port"));
     assert!(keys.contains(&"scope.kind"));
-    assert!(keys.contains(&"scope.id"));
+    assert!(keys.contains(&"pipeline.id"));
+    assert!(keys.contains(&"pipeline.group.id"));
+    assert!(
+        !keys.contains(&"scope.id"),
+        "scope.id was replaced by typed composed pipeline attributes; got keys: {keys:?}"
+    );
 }
 
 #[test]
@@ -1265,9 +1299,28 @@ fn extension_attribute_set_carries_pipeline_scope_from_pipeline_context() {
         "pipeline-hosted extensions must report scope.kind = \"pipeline\""
     );
     assert_eq!(
-        attr_map.get("scope.id").map(String::as_str),
-        Some("grp/pipeline_a/core/7/gen/0"),
-        "scope.id must encode the full pipeline coordinates; got: {attr_map:?}"
+        attr_map.get("pipeline.group.id").map(String::as_str),
+        Some("grp"),
+        "extension.attrs minted from a PipelineContext must carry the composed pipeline.group.id; got: {attr_map:?}"
+    );
+    assert_eq!(
+        attr_map.get("pipeline.id").map(String::as_str),
+        Some("pipeline_a"),
+        "extension.attrs minted from a PipelineContext must carry the composed pipeline.id; got: {attr_map:?}"
+    );
+    assert_eq!(
+        attr_map.get("core.id").map(String::as_str),
+        Some("7"),
+        "extension.attrs minted from a PipelineContext must carry the composed core.id; got: {attr_map:?}"
+    );
+    assert_eq!(
+        attr_map.get("deployment.generation").map(String::as_str),
+        Some("0"),
+        "extension.attrs minted from a PipelineContext must carry the composed deployment.generation; got: {attr_map:?}"
+    );
+    assert!(
+        !attr_map.contains_key("scope.id"),
+        "scope.id was replaced by typed composed pipeline attributes; got: {attr_map:?}"
     );
     assert_eq!(
         attr_map.get("extension.id").map(String::as_str),
@@ -1718,4 +1771,43 @@ fn wire_telemetry_dual_returns_distinct_keys_and_releases_all_entities_per_cycle
             "cycle {cycle}: dropping the wired bundle must release every entity it registered"
         );
     }
+}
+
+/// `Shutdown` must preempt any backlog on the FIFO control channel —
+/// it rides a dedicated oneshot the wrapper checks via biased select.
+#[tokio::test(flavor = "current_thread")]
+async fn shutdown_preempts_queued_collect_telemetry_on_control_channel() {
+    use crate::control::ShutdownPayload;
+    use crate::extension::wrapper::ControlChannel;
+    use crate::local::message::LocalReceiver;
+    use otap_df_channel::mpsc;
+
+    let (tx, rx) = mpsc::Channel::<ExtensionControlMsg>::new(8);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<ShutdownPayload>();
+    let mut control = ControlChannel::new(LocalReceiver::mpsc(rx), shutdown_rx);
+
+    tx.send_async(ExtensionControlMsg::CollectTelemetry {
+        metrics_reporter: test_metrics_reporter(),
+    })
+    .await
+    .expect("queue CollectTelemetry");
+
+    let deadline = Instant::now() + std::time::Duration::from_secs(1);
+    shutdown_tx
+        .send(ShutdownPayload {
+            deadline,
+            reason: "test".into(),
+        })
+        .expect("fire dedicated shutdown");
+
+    let first = control.recv().await.expect("recv returns a message");
+    assert!(
+        matches!(first, ExtensionControlMsg::Shutdown { .. }),
+        "Shutdown must be delivered before queued CollectTelemetry — \
+         the dedicated shutdown channel must preempt the FIFO control channel"
+    );
+    assert!(
+        control.recv().await.is_err(),
+        "after Shutdown the regular control channel must be closed"
+    );
 }

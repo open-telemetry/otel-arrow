@@ -17,7 +17,7 @@ use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_extension_control_channel_metrics};
 use crate::config::ExtensionConfig;
 use crate::context::ExtensionContext;
-use crate::control::ExtensionControlMsg;
+use crate::control::{ExtensionControlMsg, ShutdownPayload};
 use crate::entity_context::{EntityTelemetryGuard, EntityTelemetryHandle};
 use crate::error::Error;
 use crate::local::extension as local_ext;
@@ -41,13 +41,15 @@ use std::sync::Arc;
 /// Generic over the receiver type `R` to support both local (!Send) and
 /// shared (Send) channels.
 ///
-/// `Shutdown` is delivered immediately and the `deadline` field is the
-/// extension's cooperative cleanup budget. After `Shutdown` is returned,
-/// further [`recv`](Self::recv) calls yield [`RecvError::Closed`] so the
-/// event loop exits cleanly.
+/// `Shutdown` is delivered immediately via a dedicated priority
+/// oneshot channel (`shutdown_rx`) that is checked ahead of the regular
+/// control channel via a biased select. After `Shutdown` is returned
+/// the regular channel is closed and subsequent [`recv`](Self::recv)
+/// calls yield [`RecvError::Closed`] so the event loop exits cleanly.
 #[doc(hidden)]
 pub struct ControlChannel<R> {
     control_rx: Option<R>,
+    shutdown_rx: Option<tokio::sync::oneshot::Receiver<ShutdownPayload>>,
 }
 
 /// Trait abstracting over local and shared receivers for control messages.
@@ -69,31 +71,61 @@ impl ControlReceiver for SharedReceiver<ExtensionControlMsg> {
     }
 }
 
-impl<R: ControlReceiver> ControlChannel<R> {
-    /// Creates a new `ControlChannel` with the given control receiver.
+impl<R: ControlReceiver + Unpin> ControlChannel<R> {
+    /// Creates a new `ControlChannel`. The `shutdown_rx` is a dedicated
+    /// priority oneshot path; if it fires it preempts any pending
+    /// messages on `control_rx`.
     #[must_use]
-    pub fn new(control_rx: R) -> Self {
+    pub fn new(
+        control_rx: R,
+        shutdown_rx: tokio::sync::oneshot::Receiver<ShutdownPayload>,
+    ) -> Self {
         ControlChannel {
             control_rx: Some(control_rx),
+            shutdown_rx: Some(shutdown_rx),
         }
     }
 
-    /// Asynchronously receives the next control message. After `Shutdown`
-    /// is delivered the channel is closed and subsequent calls return
-    /// [`RecvError::Closed`].
+    /// Asynchronously receives the next control message. The priority
+    /// shutdown channel is checked ahead of the regular control channel
+    /// (biased select). After `Shutdown` is delivered the regular
+    /// channel is closed and subsequent calls return [`RecvError::Closed`].
     ///
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
     pub async fn recv(&mut self) -> Result<ExtensionControlMsg, RecvError> {
-        let rx = self.control_rx.as_mut().ok_or(RecvError::Closed)?;
-        match rx.recv().await {
-            Ok(ExtensionControlMsg::Shutdown { deadline, reason }) => {
-                // Close so subsequent recv() returns Closed past Shutdown.
-                let _ = self.control_rx.take();
-                Ok(ExtensionControlMsg::Shutdown { deadline, reason })
+        loop {
+            let control_rx = self.control_rx.as_mut().ok_or(RecvError::Closed)?;
+            match self.shutdown_rx.as_mut() {
+                Some(shutdown_rx) => {
+                    tokio::select! {
+                        biased;
+                        res = shutdown_rx => {
+                            // Receiver is consumed regardless of outcome.
+                            self.shutdown_rx = None;
+                            match res {
+                                Ok(payload) => {
+                                    // Close the regular channel; post-Shutdown semantics.
+                                    let _ = self.control_rx.take();
+                                    return Ok(ExtensionControlMsg::Shutdown {
+                                        deadline: payload.deadline,
+                                        reason: payload.reason,
+                                    });
+                                }
+                                Err(_) => {
+                                    // Sender was dropped without sending; no
+                                    // shutdown will ever arrive. Fall through
+                                    // to control-only path on the next loop.
+                                    continue;
+                                }
+                            }
+                        }
+                        msg = control_rx.recv() => return msg,
+                    }
+                }
+                None => return control_rx.recv().await,
             }
-            other => other,
         }
     }
 }
@@ -168,6 +200,14 @@ pub enum ExtensionLifecycle<E, R> {
         control_sender: Sender<ExtensionControlMsg>,
         /// Control channel receiver.
         control_receiver: R,
+        /// Owned sender for the dedicated priority shutdown oneshot.
+        /// `Some` until [`ExtensionWrapper::take_shutdown_sender`] takes
+        /// it out at lifecycle-spawn time.
+        shutdown_sender: Option<tokio::sync::oneshot::Sender<ShutdownPayload>>,
+        /// Owned receiver for the dedicated priority shutdown oneshot.
+        /// `Some` until [`ExtensionWrapper::start`] takes it out and
+        /// hands it to the extension's [`ControlChannel`].
+        shutdown_receiver: Option<tokio::sync::oneshot::Receiver<ShutdownPayload>>,
     },
     /// Passive extension — capabilities only, no task spawned.
     Passive,
@@ -332,6 +372,8 @@ impl ExtensionWrapper {
                         extension,
                         control_sender,
                         control_receiver,
+                        shutdown_sender,
+                        shutdown_receiver,
                     } => {
                         let capacity = runtime_config.control_channel.capacity as u64;
                         let (local_sender, local_receiver) = match control_sender {
@@ -356,6 +398,8 @@ impl ExtensionWrapper {
                             extension,
                             control_sender: Sender::Local(s),
                             control_receiver: r,
+                            shutdown_sender,
+                            shutdown_receiver,
                         }
                     }
                 };
@@ -382,6 +426,8 @@ impl ExtensionWrapper {
                         extension,
                         control_sender,
                         control_receiver,
+                        shutdown_sender,
+                        shutdown_receiver,
                     } => {
                         let capacity = runtime_config.control_channel.capacity as u64;
                         let shared_sender = match control_sender {
@@ -406,6 +452,8 @@ impl ExtensionWrapper {
                             extension,
                             control_sender: Sender::Shared(s),
                             control_receiver: r,
+                            shutdown_sender,
+                            shutdown_receiver,
                         }
                     }
                 };
@@ -427,22 +475,51 @@ impl ExtensionWrapper {
     pub(crate) fn extension_control_sender(
         &self,
     ) -> Option<crate::control::ExtensionControlSender> {
-        let (name, sender) = match self {
+        let sender = match self {
             ExtensionWrapper::Local {
-                name,
                 lifecycle: ExtensionLifecycle::Active { control_sender, .. },
                 ..
             }
             | ExtensionWrapper::Shared {
-                name,
                 lifecycle: ExtensionLifecycle::Active { control_sender, .. },
                 ..
-            } => (name, control_sender),
+            } => control_sender,
             _ => return None,
         };
         Some(crate::control::ExtensionControlSender {
-            name: name.clone(),
             sender: sender.clone(),
+        })
+    }
+
+    /// Takes the owning sender half of the extension's dedicated
+    /// shutdown oneshot. Returns `None` for passive extensions and on
+    /// subsequent calls (single-use by construction).
+    pub(crate) fn take_shutdown_sender(
+        &mut self,
+    ) -> Option<crate::control::ExtensionShutdownChannel> {
+        let (name, sender_slot) = match self {
+            ExtensionWrapper::Local {
+                name,
+                lifecycle:
+                    ExtensionLifecycle::Active {
+                        shutdown_sender, ..
+                    },
+                ..
+            }
+            | ExtensionWrapper::Shared {
+                name,
+                lifecycle:
+                    ExtensionLifecycle::Active {
+                        shutdown_sender, ..
+                    },
+                ..
+            } => (name, shutdown_sender),
+            _ => return None,
+        };
+        let sender = sender_slot.take()?;
+        Some(crate::control::ExtensionShutdownChannel {
+            name: name.clone(),
+            sender,
         })
     }
 
@@ -459,15 +536,19 @@ impl ExtensionWrapper {
                     ExtensionLifecycle::Active {
                         extension,
                         control_receiver,
+                        shutdown_receiver,
                         ..
                     },
                 ..
             } => {
                 otel_debug!("extension.start.local", name = name.as_ref());
                 let effect_handler = EffectHandler::new(name, metrics_reporter);
+                let shutdown_rx = shutdown_receiver.expect(
+                    "shutdown_receiver must be present when an active extension is started",
+                );
                 extension
                     .start(
-                        local_ext::ControlChannel::new(control_receiver),
+                        local_ext::ControlChannel::new(control_receiver, shutdown_rx),
                         effect_handler,
                     )
                     .await
@@ -478,15 +559,19 @@ impl ExtensionWrapper {
                     ExtensionLifecycle::Active {
                         extension,
                         control_receiver,
+                        shutdown_receiver,
                         ..
                     },
                 ..
             } => {
                 otel_debug!("extension.start.shared", name = name.as_ref());
                 let effect_handler = EffectHandler::new(name, metrics_reporter);
+                let shutdown_rx = shutdown_receiver.expect(
+                    "shutdown_receiver must be present when an active extension is started",
+                );
                 extension
                     .start(
-                        shared_ext::ControlChannel::new(control_receiver),
+                        shared_ext::ControlChannel::new(control_receiver, shutdown_rx),
                         effect_handler,
                     )
                     .await

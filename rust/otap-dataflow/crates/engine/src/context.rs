@@ -458,12 +458,7 @@ impl PipelineContext {
     pub fn extension_context(&self) -> ExtensionContext {
         ExtensionContext::new(
             self.controller_context.clone(),
-            ExtensionScopeAttributeSet::pipeline(
-                self.pipeline_context_params.pipeline_group_id.clone(),
-                self.pipeline_context_params.pipeline_id.clone(),
-                self.pipeline_context_params.core_id,
-                self.deployment_generation,
-            ),
+            ExtensionScopeAttributeSet::pipeline(self.pipeline_attribute_set()),
         )
     }
 

@@ -332,6 +332,14 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             ext_monitor,
         );
 
+        if let Err(barrier_err) =
+            rt.block_on(local_tasks.run_until(extension_lifecycle.wait_all_spawned()))
+        {
+            extension_lifecycle.initiate_shutdown(Some("spawn barrier failed"));
+            rt.block_on(local_tasks.run_until(extension_lifecycle.drain_until_deadline()));
+            return Err(barrier_err);
+        }
+
         let mut control_senders = ControlSenders::default();
         let mut node_metric_entries: Vec<(usize, NodeMetricHandles)> = Vec::new();
 
@@ -659,8 +667,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                             // `drain_until_deadline` below.
                             if futures.is_empty() {
                                 extension_lifecycle
-                                    .broadcast_shutdown(Some("pipeline data-path drained"))
-                                    .await;
+                                    .initiate_shutdown(Some("pipeline data-path drained"));
                                 break;
                             }
                         }
@@ -668,11 +675,10 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     }
                     .await;
 
-                    // Unconditional cleanup. `broadcast_shutdown` is
+                    // Unconditional cleanup. `initiate_shutdown` is
                     // idempotent (no-op on the happy path).
                     extension_lifecycle
-                        .broadcast_shutdown(Some("pipeline data-path drained"))
-                        .await;
+                        .initiate_shutdown(Some("pipeline data-path drained"));
                     extension_lifecycle.drain_until_deadline().await;
                     // Final monitor flush so per-extension counters reflect
                     // any terminal `ShutdownTimeout` entries on the way out.

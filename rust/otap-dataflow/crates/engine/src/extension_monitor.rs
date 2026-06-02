@@ -107,6 +107,9 @@ struct ExtensionMonitorEntry {
 }
 
 impl Drop for ExtensionMonitorEntry {
+    // TODO(engine-telemetry-teardown): same drain-then-unregister race exists
+    // in EngineMetricsMonitor / PipelineMetricsMonitor / PipelineCtrl /
+    // ControlPlaneMetricsMonitor / EntityContext — needs a cross-cutting fix.
     fn drop(&mut self) {
         let _ = self
             .registry
@@ -405,10 +408,9 @@ mod tests {
         (monitor, ctx)
     }
 
-    fn make_sender(id: &str) -> ExtensionControlSender {
+    fn make_sender() -> ExtensionControlSender {
         let (tx, _rx) = mpsc::Channel::new(8);
         ExtensionControlSender {
-            name: id.to_string().into(),
             sender: Sender::new_local_mpsc_sender(tx),
         }
     }
@@ -443,7 +445,7 @@ mod tests {
         let (mut monitor, ctx) = fresh_monitor();
         let ext_key = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
         let key = ExtensionKey::local("ext1");
-        monitor.register(&ctx, key.clone(), ext_key, Some(make_sender("ext1")));
+        monitor.register(&ctx, key.clone(), ext_key, Some(make_sender()));
 
         monitor.apply_event(ExtensionLifecycleEvent::Spawned { key: key.clone() });
         monitor.refresh_state_gauges();
@@ -795,12 +797,10 @@ mod tests {
         let (mut monitor, ctx) = fresh_monitor();
         let (tx_spawned, rx_spawned) = mpsc::Channel::new(8);
         let sender_spawned = ExtensionControlSender {
-            name: "spawned".into(),
             sender: Sender::new_local_mpsc_sender(tx_spawned),
         };
         let (tx_done, rx_done) = mpsc::Channel::new(8);
         let sender_done = ExtensionControlSender {
-            name: "done".into(),
             sender: Sender::new_local_mpsc_sender(tx_done),
         };
 
@@ -821,7 +821,7 @@ mod tests {
             &ctx,
             ExtensionKey::local("pending"),
             e_pending,
-            Some(make_sender("pending")),
+            Some(make_sender()),
         );
 
         // Spawned but no sender — wrong sender, right state.
@@ -869,7 +869,6 @@ mod tests {
         );
         let (tx, rx) = mpsc::Channel::new(8);
         let sender = ExtensionControlSender {
-            name: "ext1".into(),
             sender: Sender::new_local_mpsc_sender(tx),
         };
         let ent = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
@@ -928,7 +927,6 @@ mod tests {
         // CollectTelemetry try_send hits "channel full".
         let (tx, rx) = mpsc::Channel::new(1);
         let sender = ExtensionControlSender {
-            name: "ext1".into(),
             sender: Sender::new_local_mpsc_sender(tx),
         };
         // Pre-fill so the next try_send fails.

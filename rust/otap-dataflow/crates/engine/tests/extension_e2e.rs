@@ -213,6 +213,7 @@ const PASSIVE_EXTENSION_URN: &str = "urn:test:extension:passive_extension";
 const DUAL_EXTENSION_URN: &str = "urn:test:extension:dual_extension";
 const ACTIVE_EXTENSION_URN: &str = "urn:test:extension:active_extension";
 const FAILING_EXTENSION_URN: &str = "urn:test:extension:failing_extension";
+const IMMEDIATE_OK_EXTENSION_URN: &str = "urn:test:extension:immediate_ok_extension";
 const SHUTDOWN_RECORDING_EXTENSION_URN: &str = "urn:test:extension:shutdown_recording_extension";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -889,6 +890,66 @@ const FAILING_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
         shared: FailingExtImpl => [NoOpStateless]
     )),
     create: failing_extension_create,
+    validate_config: otap_df_config::validation::no_config,
+};
+
+// ─────────────────────────────────────────────────────────────────────
+// Immediate-Ok extension — start() returns Ok(TerminalState::default())
+// without waiting for Shutdown. Used to pin the contract that an
+// active extension self-terminating mid-run is a pipeline error.
+// ─────────────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct ImmediateOkExtImpl;
+
+#[async_trait]
+impl SharedNoOpStateless for ImmediateOkExtImpl {
+    fn name(&self) -> &str {
+        "immediate-ok"
+    }
+    fn echo(&self, value: u64) -> u64 {
+        value
+    }
+    async fn ping(&self) -> u64 {
+        0
+    }
+    async fn echo_async(&self, value: String) -> String {
+        value
+    }
+}
+
+#[async_trait]
+impl otap_df_engine::shared::extension::Extension for ImmediateOkExtImpl {
+    async fn start(
+        self: Box<Self>,
+        _ctrl: otap_df_engine::shared::extension::ControlChannel,
+        _eh: EffectHandler,
+    ) -> Result<TerminalState, EngineError> {
+        Ok(TerminalState::default())
+    }
+}
+
+fn immediate_ok_extension_create(
+    name: otap_df_config::ExtensionId,
+    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    extension_config: &ExtensionConfig,
+) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+    let bundle = ExtensionWrapper::builder(name, user_config, extension_config)
+        .active()
+        .shared::<ImmediateOkExtImpl>(ImmediateOkExtImpl)
+        .build()
+        .expect("immediate-ok extension bundle builds");
+    Ok(bundle)
+}
+
+const IMMEDIATE_OK_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
+    name: IMMEDIATE_OK_EXTENSION_URN,
+    description: "active extension whose start() returns Ok immediately, before Shutdown",
+    documentation_url: "",
+    capabilities: Some(extension_capabilities!(
+        shared: ImmediateOkExtImpl => [NoOpStateless]
+    )),
+    create: immediate_ok_extension_create,
     validate_config: otap_df_config::validation::no_config,
 };
 
@@ -1759,6 +1820,7 @@ const EXTENSION_FACTORIES: &[ExtensionFactory] = &[
     ACTIVE_EXTENSION_FACTORY,
     ACTIVE_SHARED_COUNTER_EXTENSION_FACTORY,
     FAILING_EXTENSION_FACTORY,
+    IMMEDIATE_OK_EXTENSION_FACTORY,
     SHUTDOWN_RECORDING_EXTENSION_FACTORY,
     DUAL_ACTIVE_EXTENSION_FACTORY,
     BACKGROUND_EXTENSION_FACTORY,
@@ -2228,12 +2290,64 @@ connections:
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Error-path shutdown hygiene — when one active extension errors out,
-// any *other* already-started extensions must still receive `Shutdown`
-// before the pipeline returns, so they can release sockets, files, or
-// background work cleanly. Regression test for review feedback on
-// PR #2860 (discussion_r3228775534).
-// ─────────────────────────────────────────────────────────────────────
+// An active extension self-terminating mid-run (returning `Ok(())`
+// before any `Shutdown` is broadcast) breaks the active-extension
+// contract — operators lose a declared long-lived service with zero
+// visibility. The pipeline must surface this as an error.
+
+#[test]
+fn test_active_extension_self_terminating_is_pipeline_error() {
+    let receiver_key = "self-term-recv";
+    let _probe = make_probe(receiver_key, CallSequence::Local);
+
+    let yaml = format!(
+        r#"
+nodes:
+  receiver:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{receiver_key}"
+    capabilities:
+      no_op_stateless: "selfterm-ext"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  selfterm-ext:
+    type: "{IMMEDIATE_OK_EXTENSION_URN}"
+
+connections:
+  - from: receiver
+    to: exporter
+"#
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_test_runtime_pipeline(&yaml);
+
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        Duration::from_secs(2),
+    );
+
+    assert!(
+        result.is_err(),
+        "an active extension returning Ok before Shutdown must fail the pipeline, got Ok"
+    );
+    let msg = format!("{}", result.err().unwrap());
+    assert!(
+        msg.to_lowercase().contains("extension")
+            && (msg.to_lowercase().contains("exit")
+                || msg.to_lowercase().contains("terminat")
+                || msg.to_lowercase().contains("shutdown")),
+        "error must call out the active extension's early termination, got: {msg}"
+    );
+}
+
+// When one active extension errors out, other already-started extensions
+// must still receive `Shutdown` before the pipeline returns so they can
+// release sockets, files, or background work cleanly.
 
 #[test]
 fn test_other_extensions_receive_shutdown_when_pipeline_errors() {
