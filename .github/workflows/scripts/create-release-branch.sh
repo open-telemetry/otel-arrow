@@ -39,6 +39,9 @@ if [ -z "$(git config user.name)" ] || [ -z "$(git config user.email)" ]; then
     echo "  git config user.email 'your.email@example.com'"
 fi
 
+# Ensure origin/main is up to date so resets and new branches use the latest tip
+git fetch origin main
+
 # Check if branch already exists
 if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
     echo -e "${YELLOW}Branch $BRANCH_NAME already exists locally, resetting it${NC}"
@@ -47,7 +50,7 @@ if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
 else
     # Create and switch to release branch
     echo "Creating branch: $BRANCH_NAME"
-    git checkout -b "$BRANCH_NAME"
+    git checkout -b "$BRANCH_NAME" origin/main
 fi
 
 # Check if there are any changes to commit
@@ -74,6 +77,8 @@ echo -e "${GREEN}✓ Committed changes to branch $BRANCH_NAME${NC}"
 # Push branch if requested
 if [ "$PUSH_BRANCH" = true ]; then
     echo "Pushing branch to origin..."
+    # Fetch the remote ref so --force-with-lease has a valid comparison
+    git fetch origin "$BRANCH_NAME" 2>/dev/null || true
     git push --force-with-lease origin "$BRANCH_NAME"
     echo -e "${GREEN}✓ Pushed branch to origin${NC}"
 fi

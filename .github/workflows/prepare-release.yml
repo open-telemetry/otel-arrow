@@ -248,7 +248,9 @@ jobs:
             echo "Updating existing PR #$EXISTING_PR"
             gh pr edit "$EXISTING_PR" \
               --title "$TITLE" \
-              --body-file /tmp/pr_body.md
+              --body-file /tmp/pr_body.md \
+              --base main \
+              --add-label release
           else
             gh pr create \
               --title "$TITLE" \
