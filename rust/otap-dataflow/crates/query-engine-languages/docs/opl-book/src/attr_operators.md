@@ -1,9 +1,11 @@
 # Attribute Operators
 
-These operators work directly on attributes -- renaming keys, removing
-attributes, or treating the attribute set as a stream for bulk filtering and
-transformation. They work on log, span, and metric attributes as well as
-resource and instrumentation scope attributes.
+These special operators are available for processing attributes -- renaming
+keys, removing attributes, or treating the attribute set as a stream for
+filtering and transformation.
+
+Currently support exists for log, span, and metric attributes as well as resource
+and instrumentation scope attributes.
 
 ## Rename Attributes (`rename`)
 
@@ -17,7 +19,9 @@ logs | rename attributes["http.request.method"] = attributes["http.method"]
 ```
 
 Only records that have the source key are affected. If a record does not
-contain the source attribute, it is left unchanged.
+contain the source attribute, it is left unchanged. If the destination attribute
+already exists, its value will be replaced with the source attribute's value
+(e.g. duplicate attributes will not be created by rename operations).
 
 ### Renaming resource and scope attributes
 
@@ -81,13 +85,13 @@ rename
     attributes["http.request.method"] = attributes["method"]
 ```
 
-## Remove Attributes (`exclude`)
+## Remove Attributes (`remove`)
 
-The `exclude` operator removes attributes by key:
+The `remove` operator removes attributes by key:
 
 ```
 // remove a deprecated attribute
-logs | exclude attributes["http.method"]
+logs | remove attributes["http.method"]
 ```
 
 Only records that have the specified key are affected. Records without the
@@ -95,14 +99,14 @@ key are left unchanged.
 
 ### Removing resource and scope attributes
 
-Like `rename`, `exclude` works on resource and instrumentation scope attributes:
+Like `rename`, `remove` works on resource and instrumentation scope attributes:
 
 ```
-logs | exclude resource.attributes["internal.tag"]
+logs | remove resource.attributes["internal.tag"]
 ```
 
 ```
-logs | exclude instrumentation_scope.attributes["debug.flag"]
+logs | remove instrumentation_scope.attributes["debug.flag"]
 ```
 
 ### Removing multiple attributes
@@ -112,26 +116,15 @@ commas. Removals can span different attribute scopes:
 
 ```
 logs |
-exclude
+remove
     attributes["http.method"],
     resource.attributes["internal.tag"],
     instrumentation_scope.attributes["debug.flag"]
 ```
 
-### Removing all attributes
-
-If every attribute key is removed from a record, the attribute set for that
-record is removed entirely:
-
-```
-// if a log only has "http.method" and "http.target", both are removed
-// and the log will have no attributes at all
-logs | exclude attributes["http.method"], attributes["http.target"]
-```
-
 ### Alias
 
-`project-away` is an alias for `exclude`. The following is equivalent to the
+`project-away` is an alias for `remove`. The following is equivalent to the
 first example above:
 
 ```
@@ -158,7 +151,7 @@ logs | apply attributes {
 
 ### Filtering attributes by key
 
-Attributes can also be filtered by key. This is an alternative to `exclude`
+Attributes can also be filtered by key. This is an alternative to `remove`
 when you need pattern-based removal rather than exact key matching:
 
 ```
@@ -216,6 +209,8 @@ logs | apply attributes {
 }
 ```
 
+Note that the `key` of an attribute cannot be the target of the assignment.
+
 ### Conditional processing
 
 `if` blocks work inside `apply`, enabling per-attribute conditional logic
@@ -261,9 +256,9 @@ logs | apply instrumentation_scope.attributes {
 ### Supported operators
 
 The operators `where`, `set`, and `if` are supported inside `apply` blocks.
-Operators like `rename` and `exclude` are not supported inside `apply` -- they
+Operators like `rename` and `remove` are not supported inside `apply` -- they
 operate on the outer pipeline level by targeting specific attribute keys.
-Using an unsupported operator inside `apply` will produce a planning error.
+Using an unsupported operator inside `apply` will produce an error.
 
 ### Constraints
 
@@ -273,6 +268,4 @@ type. Mixing types (for example, some integer and some float attributes) will
 produce an error. If the expression does not reference `value` (e.g.,
 `set value = "redacted"`), this restriction does not apply.
 
-If all attributes are filtered out by a `where` inside `apply`, the attribute
-set is removed from the record entirely -- the same behaviour as `exclude` when
-removing all keys.
+<!-- TODO Once supported, add note about using "if (value is <Type>){..." -->

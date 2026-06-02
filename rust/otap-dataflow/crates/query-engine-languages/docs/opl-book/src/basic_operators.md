@@ -1,5 +1,8 @@
 # Basic Operators
 
+These operators handle the most common pipeline tasks -- filtering records and
+assigning values to fields and attributes.
+
 ## Filter (`where`)
 
 The `where` operator filters telemetry data. Records that match the logical
@@ -28,7 +31,7 @@ logs | where severity_number >= 17
 ```
 
 ```
-logs | where time_unix_nano < date_time"2026-06-01T00:00:00.0"
+logs | where time_unix_nano < timestamp"2026-06-01T00:00:00.0"
 ```
 
 The `=~` comparison operator performs case-insensitive equality:
@@ -60,26 +63,6 @@ logs | where not(
 )
 ```
 
-### Value type checks (`is`)
-
-Attribute values can hold different types (strings, integers, floats, booleans,
-etc.). The `is` operator tests the type of a value, which is useful for
-guarding function calls that only accept specific types:
-
-```
-// lower_case only accepts strings -- guard with a type check
-logs | where attributes["http.target"] is String and
-    contains(lower_case(attributes["http.target"]), "/api/")
-```
-
-Without the type guard, `lower_case` may fail on non-string attribute values.
-
-The `is` check works with any attribute scope:
-
-```
-logs | where resource.attributes["service.version"] is String
-```
-
 ### String functions
 
 Various string functions are available for filtering, including `contains`,
@@ -93,6 +76,29 @@ logs | where contains(body, "error")
 ```
 // discard logs where the kubernetes pod name contains "testing"
 logs | where not(matches(resource.attributes["k8s.pod.name"], r".*testing.*"))
+```
+
+### Value type checks (`is`)
+
+Attribute values can hold different types (strings, integers, floats, booleans,
+etc.). The `is` operator tests the type of a value, which is useful for
+guarding function calls that only accept specific types:
+
+```
+// lower_case only accepts strings -- guard with a type check
+logs |
+where
+    attributes["http.target"] is String and
+    contains(lower_case(attributes["http.target"]), "/api/")
+```
+
+Without the type guard, `lower_case` may fail if
+`attributes["http.target"]` is not a string.
+
+The `is` check works with any attribute scope:
+
+```
+logs | where resource.attributes["service.version"] is String
 ```
 
 ## Assign (`set`)

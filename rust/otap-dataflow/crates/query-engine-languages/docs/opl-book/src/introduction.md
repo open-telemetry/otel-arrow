@@ -16,13 +16,17 @@ logs | where severity_number >= 17 | set attributes["critical"] = true
 ```
 
 Operators are applied sequentially, left to right. Each operator receives the
-output of the previous one. Pipelines can be written across multiple lines for
-readability:
+output of the previous one. Pipelines and operator arguments can be written
+across multiple lines for readability:
 
 ```
 logs |
-where severity_number >= 17 |
-set attributes["critical"] = true
+where
+  severity_number >= 17 or
+  severity_text == "ERROR" |
+set
+  attributes["critical"] = true,
+  body = concat("ERROR: ", body)
 ```
 
 ## Comments
@@ -34,6 +38,26 @@ Line comments start with `//`:
 logs |
 where severity_number >= 17 |
 set attributes["critical"] = true
+```
+
+Block comments start with `/*` and end with `*/`, and can span multiple lines:
+
+```
+/*
+Inject kubernetes attributes for:
+- namespace
+- cluster
+
+As well as service:
+- criticality
+- version
+*/
+signals |
+  set
+    resource.attributes["k8s.namespace.name"] = "test-app",
+    resource.attributes["k8s.cluster.name"] = "testing-ca-central1",
+    resource.attributes["service.criticality"] = "low",
+    resource.attributes["service.version"] = "0.1.23"
 ```
 
 ## Available Sources
@@ -54,7 +78,7 @@ This guide covers the currently implemented OPL operators and functions:
 - [Basic Operators](./basic_operators.md) -- filtering with `where` and
   assigning values with `set`/`extend`
 - [Attribute Operators](./attr_operators.md) -- renaming and removing
-  attributes with `rename` and `exclude`, and bulk-processing attributes
+  attributes with `rename` and `remove`, and bulk-processing attributes
   with `apply`
 - [Flow Control](./flow_control.md) -- conditional branching with
   `if`/`else if`/`else`, signal type checks with `is`, and routing

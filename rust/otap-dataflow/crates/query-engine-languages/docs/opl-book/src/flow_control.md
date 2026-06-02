@@ -10,6 +10,12 @@ condition. Records that match the condition are processed by the operators
 inside the block; records that do not match are either passed through unchanged
 or handled by subsequent `else if`/`else` branches.
 
+The `else if`/`else` branches are optional, and if not provided, no changes
+will be applied to the telemetry signals that do not match any condition.
+
+The output of this operator is the result of each nested branch unioned
+together.
+
 ### Basic usage
 
 ```
@@ -58,7 +64,7 @@ skipped for that record.
 ### Operators inside branches
 
 The body of each branch can contain any operators chained with `|`, just like a
-top-level pipeline. This includes `where`, `set`, `rename`, `exclude`,
+top-level pipeline. This includes `where`, `set`, `rename`, `remove`,
 `route_to`, and even nested `if` blocks:
 
 ```
@@ -67,15 +73,31 @@ if (severity_text == "ERROR") {
     rename attributes["http.request.method"] = attributes["http.method"] |
     set attributes["error.flagged"] = true
 } else {
-    exclude attributes["debug.detail"]
+    remove attributes["debug.detail"]
 }
 ```
+
+A `where` filter inside a branch drops records that don't match, while
+records in other branches are unaffected:
+
+```
+logs |
+if (severity_text == "ERROR") {
+    // among ERROR logs, only keep those from the payments service
+    where resource.attributes["service.name"] == "payments" |
+    set attributes["error.escalate"] = true
+}
+```
+
+In this example, ERROR logs from the payments service are kept and tagged.
+ERROR logs from other services are dropped. All non-ERROR logs pass through
+unchanged.
 
 ### Row ordering
 
 The order of records in the output may not match their original order. Records
-from different branches are concatenated together after processing. If your
-downstream consumers depend on record ordering, be aware of this behaviour.
+from different branches are unioned together after processing, however the
+resulting row order is not specified.
 
 ## Signal Type Checks (`is`)
 
@@ -159,4 +181,5 @@ if (severity_text == "ERROR") {
     set attributes["error.routed"] = true |
     route_to "error_sink"
 }
+// all non-routed log records continue to next pipeline operator
 ```

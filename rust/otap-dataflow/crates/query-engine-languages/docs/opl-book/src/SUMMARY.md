@@ -6,3 +6,4 @@
 - [Attribute Operators](./attr_operators.md)
 - [Flow Control](./flow_control.md)
 - [Function Reference](./functions.md)
+- [OTTL Comparison](./ottl_comparison.md)

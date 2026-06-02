@@ -86,13 +86,19 @@ logs | set body = concat_ws(" - ", severity_text, event_name)
 logs | set body = join(" - ", severity_text, event_name)
 ```
 
-### `substring(string, start, length)`
+### `substring(string, start [, length])`
 
-Extracts a substring starting at position `start` (0-indexed) with the given
-`length`:
+Extracts a substring starting at position `start` (0-indexed). If `length` is
+provided, at most that many characters are returned; otherwise the rest of the
+string from `start` is returned:
 
 ```
 logs | set attributes["prefix"] = substring(attributes["trace.id"], 0, 8)
+```
+
+```
+// extract everything after the first 4 characters
+logs | set attributes["suffix"] = substring(attributes["code"], 4)
 ```
 
 ### `replace(string, from, to)`
@@ -133,13 +139,28 @@ logs | set attributes["url.domain"] = regexp_capture(
 )
 ```
 
-### `regexp_substr(string, pattern)`
+### `regexp_substr(string, pattern [, start [, occurrence [, flags [, group]]]])`
 
-Extracts the first substring matching a regular expression pattern:
+Extracts a substring matching a regular expression pattern. All parameters
+after `pattern` are optional:
+
+- `start` (integer, default `1`) -- 1-based character position to begin
+  searching
+- `occurrence` (integer, default `1`) -- which occurrence of the pattern to
+  return
+- `flags` (string) -- regex modifier flags: `i` (case-insensitive),
+  `m` (multi-line), `s` (dot-all)
+- `group` (integer, default `0`) -- which capture group to return; `0` returns
+  the full match
 
 ```
 // extract the first numeric sequence from a string
 logs | set attributes["error.code"] = regexp_substr(attributes["error.message"], r"\d+")
+```
+
+```
+// extract the second word, case-insensitively
+logs | set attributes["second.word"] = regexp_substr(body, r"\w+", 1, 2, "i")
 ```
 
 ## Hashing Functions
@@ -248,10 +269,10 @@ logs | set attributes["date"] = format_datetime(time_unix_nano, "%Y-%m-%d")
 
 ### Date/time literals
 
-Timestamp literals use the `date_time` prefix:
+Timestamp literals use the `timestamp` prefix:
 
 ```
-logs | where time_unix_nano < date_time"2026-06-01T00:00:00.0"
+logs | where time_unix_nano < timestamp"2026-06-01T00:00:00.0"
 ```
 
 ## UUID Functions
