@@ -45,7 +45,7 @@ docker run -it -p 8123:8123 -p 9000:9000 -e CLICKHOUSE_PASSWORD=TODO-TEST \
 ### 2. Run the data plane with the ClickHouse exporter
 
 ```bash
-cargo run -p data-plane --features clickhouse-exporter -- --config configs/fake-clickhouse.yaml
+cargo run --features clickhouse-exporter -- --config configs/fake-clickhouse.yaml
 ```
 
 ### 3. Query ClickHouse
@@ -193,8 +193,8 @@ DDL snapshot coverage currently lives in `table_snapshots/` and covers:
 The recommended validation loop for intentional DDL changes is:
 
 ```bash
-cargo test -p gateway-exporters --features clickhouse-exporter
-INSTA_UPDATE=always cargo test -p gateway-exporters --features clickhouse-exporter
+cargo test -p otap-df-contrib-nodes --features clickhouse-exporter
+INSTA_UPDATE=always cargo test -p otap-df-contrib-nodes --features clickhouse-exporter
 ```
 
 ## Important Files
