@@ -8,7 +8,8 @@ use arrow::array::{
 };
 use arrow::compute::kernels::cast;
 use arrow::datatypes::{
-    ArrowNativeType, Float64Type, GenericBinaryType, Int64Type, UInt8Type, UInt16Type, UInt64Type,
+    ArrowNativeType, DurationNanosecondType, Float64Type, GenericBinaryType, Int64Type,
+    TimestampNanosecondType, UInt8Type, UInt16Type, UInt64Type,
 };
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder};
 use itertools::Either;
@@ -668,6 +669,9 @@ pub fn estimate_cardinality<'a>(info: &FieldInfo<'a>) -> Cardinality {
     match info.value_type {
         DataType::UInt64 => estimate_cardinality_primitive_type::<UInt64Type, 8>(info),
         DataType::Int64 => estimate_cardinality_primitive_type::<Int64Type, 8>(info),
+        // Duration and Timestamp are i64-backed 8-byte types.
+        DataType::Duration(_) => estimate_cardinality_primitive_type::<DurationNanosecondType, 8>(info),
+        DataType::Timestamp(_, _) => estimate_cardinality_primitive_type::<TimestampNanosecondType, 8>(info),
         DataType::Float64 => estimate_cardinality_primitive_type::<Float64Type, 8>(info),
         DataType::FixedSizeBinary(8) => estimate_cardinality_fixed_size_type::<8>(info),
         DataType::FixedSizeBinary(16) => estimate_cardinality_fixed_size_type::<16>(info),
@@ -1097,6 +1101,24 @@ mod schema_tests {
     #[test]
     fn test_cardinality_mixed_batch_sizes() {
         test_cardinality_helper(&[250, 10], Some(DataType::UInt16));
+    }
+
+    #[test]
+    fn test_cardinality_duration_nanosecond() {
+        test_cardinality_for_type(
+            &[250],
+            &DataType::Duration(arrow_schema::TimeUnit::Nanosecond),
+            Some(DataType::UInt8),
+        );
+    }
+
+    #[test]
+    fn test_cardinality_timestamp_nanosecond() {
+        test_cardinality_for_type(
+            &[250],
+            &DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
+            Some(DataType::UInt8),
+        );
     }
 
     /// Create a Dict(u8, Utf8) batch with low cardinality for a given column name.
@@ -1596,6 +1618,36 @@ mod schema_tests {
             DataType::Float64 => Arc::new(Float64Array::from(
                 (start..end).map(|i| i as f64 + 0.5).collect::<Vec<_>>(),
             )),
+            DataType::Duration(unit) => {
+                let values = (start..end).map(|i| i as i64).collect::<Vec<_>>();
+                match unit {
+                    arrow_schema::TimeUnit::Second => Arc::new(DurationSecondArray::from(values)),
+                    arrow_schema::TimeUnit::Millisecond => {
+                        Arc::new(DurationMillisecondArray::from(values))
+                    }
+                    arrow_schema::TimeUnit::Microsecond => {
+                        Arc::new(DurationMicrosecondArray::from(values))
+                    }
+                    arrow_schema::TimeUnit::Nanosecond => {
+                        Arc::new(DurationNanosecondArray::from(values))
+                    }
+                }
+            }
+            DataType::Timestamp(unit, _) => {
+                let values = (start..end).map(|i| i as i64).collect::<Vec<_>>();
+                match unit {
+                    arrow_schema::TimeUnit::Second => Arc::new(TimestampSecondArray::from(values)),
+                    arrow_schema::TimeUnit::Millisecond => {
+                        Arc::new(TimestampMillisecondArray::from(values))
+                    }
+                    arrow_schema::TimeUnit::Microsecond => {
+                        Arc::new(TimestampMicrosecondArray::from(values))
+                    }
+                    arrow_schema::TimeUnit::Nanosecond => {
+                        Arc::new(TimestampNanosecondArray::from(values))
+                    }
+                }
+            }
             DataType::FixedSizeBinary(8) => {
                 use arrow::buffer::Buffer;
                 let values: Vec<u8> = (start..end)
