@@ -113,6 +113,7 @@ chlog-update:
 	# chloggen's indent function leaves trailing whitespace on blank sub-text
 	# lines and the template emits consecutive blank lines; fix both so the
 	# sanity check and markdownlint pass.
-	sed -i 's/[[:space:]]*$$//' $(CHANGELOG_GO) $(CHANGELOG_RUST)
-	cat -s $(CHANGELOG_GO) > $(CHANGELOG_GO).tmp && mv $(CHANGELOG_GO).tmp $(CHANGELOG_GO)
-	cat -s $(CHANGELOG_RUST) > $(CHANGELOG_RUST).tmp && mv $(CHANGELOG_RUST).tmp $(CHANGELOG_RUST)
+	for f in $(CHANGELOG_GO) $(CHANGELOG_RUST); do \
+		sed -i.bak 's/[[:space:]]*$$//' $$f && rm -f $$f.bak; \
+		cat -s $$f > $$f.tmp && mv $$f.tmp $$f; \
+	done
