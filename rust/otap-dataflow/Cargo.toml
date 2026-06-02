@@ -98,11 +98,13 @@ futures = "0.3.32"
 futures-core = "0.3.32"
 futures-channel = "0.3.32"
 futures-timer = "3.0.3"
+futures-util = "0.3.32"
 async-channel = { version = "2.5.0" }
 hashbrown = { version = "0.17", features = ["equivalent"] }
 http = "1.4"
 humantime = "2.3.0"
 humantime-serde = "1.1.1"
+insta = { version = "1.44", features = ["redactions"] }
 itoa = "1"
 itertools = "0.14.0"
 k8s-openapi = { version = "0.27.0", features = ["latest"] }
@@ -161,6 +163,7 @@ schemars = { version = "1.0.0" }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
 serde_json = { version = "1.0.149" }
+serde-transcode = "1.1.1"
 serde_yaml = "0.9.34-deprecated"        # Deprecated, but no good alternative yet
 crc32fast = "1.4.2"
 replace_with = "0.1.8"
@@ -208,6 +211,10 @@ weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=4.6.1"
 byte-unit = { version = "5.2.0", features = ["serde"] }
+# clickhouse-arrow: ClickHouse native protocol client with Arrow support.
+# TODO(clhain): Replace with official ClickHouse Rust client when available.
+# The upstream crate pins arrow ^57; this fork loosens to ^58 for compatibility.
+clickhouse-arrow = { git = "https://github.com/daviddahl/clickhouse-arrow.git", rev = "f1514cfb5195f14b425ce3b4921fad0ef28cd739" }
 cpu-time = "1.0.0"
 
 azure_core = {version = "0.33.0", default-features = false }
@@ -263,6 +270,7 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
 geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
 azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
+clickhouse-exporter = ["otap-df-contrib-nodes/clickhouse-exporter"]
 # Contrib processors (opt-in) - now in contrib-nodes
 contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
 condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]

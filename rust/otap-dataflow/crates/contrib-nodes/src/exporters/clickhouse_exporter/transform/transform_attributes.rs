@@ -39,13 +39,13 @@ use arrow_array::MapArray;
 use base64::Engine;
 use otap_df_pdata::{otlp::attributes::AttributeValueType, schema::consts};
 
-use crate::clickhouse_exporter::arrays::{
+use crate::exporters::clickhouse_exporter::arrays::{
     ByteArrayAccessor, Int64ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
     get_array_op, get_binary_array_opt, get_bool_array_opt, get_f64_array_opt, get_u8_array,
 };
 
-use crate::clickhouse_exporter::error::ClickhouseExporterError;
-use crate::clickhouse_exporter::transform::transform_column::append_cbor_as_json;
+use crate::exporters::clickhouse_exporter::error::ClickhouseExporterError;
+use crate::exporters::clickhouse_exporter::transform::transform_column::append_cbor_as_json;
 use serde::ser::Serializer;
 
 /// Iterate through the ID column and group rows by the parent ID (so we can convert to map or json representation).

@@ -60,15 +60,15 @@ use otap_df_pdata::proto::opentelemetry::trace::v1::{
 };
 use otap_df_pdata::{otlp::attributes::AttributeValueType, schema::consts};
 
-use crate::clickhouse_exporter::arrays::{NullableArrayAccessor, StructColumnAccessor};
+use crate::exporters::clickhouse_exporter::arrays::{NullableArrayAccessor, StructColumnAccessor};
 
-use crate::clickhouse_exporter::config::AttributeRepresentation;
-use crate::clickhouse_exporter::consts as ch_consts;
-use crate::clickhouse_exporter::error::ClickhouseExporterError;
-use crate::clickhouse_exporter::transform::transform_batch::{
+use crate::exporters::clickhouse_exporter::config::AttributeRepresentation;
+use crate::exporters::clickhouse_exporter::consts as ch_consts;
+use crate::exporters::clickhouse_exporter::error::ClickhouseExporterError;
+use crate::exporters::clickhouse_exporter::transform::transform_batch::{
     MultiColumnOpResult, append_list_value,
 };
-use crate::clickhouse_exporter::transform::transform_plan::{
+use crate::exporters::clickhouse_exporter::transform::transform_plan::{
     CoerceStructStringSpec, ColumnTransformOp, EnumStringMapper, FlattenStructSpec,
 };
 use serde_cbor::Deserializer as CborDeserializer;
@@ -1970,5 +1970,117 @@ mod tests {
             .unwrap();
         assert_eq!(out.value(0), "SPAN_KIND_SERVER");
         assert_eq!(out.value(1), "SPAN_KIND_UNSPECIFIED");
+    }
+
+    #[test]
+    fn noop_leaves_column_unchanged() {
+        let mut columns: HashMap<String, ArrayRef> = HashMap::new();
+        columns.insert("col".into(), Arc::new(UInt32Array::from(vec![1, 2, 3])));
+
+        let multi: HashMap<ArrowPayloadType, MultiColumnOpResult> = HashMap::new();
+        let mut ctx = ctx_with(&mut columns, &multi);
+
+        let mut current = "col".to_string();
+        let r = apply_one_op(&mut ctx, &mut current, &ColumnTransformOp::NoOp).unwrap();
+        assert!(matches!(r, ControlFlow::Continue(())));
+        assert!(ctx.columns.contains_key("col"));
+        assert_eq!(current, "col");
+    }
+
+    #[test]
+    fn drop_removes_column_and_returns_break() {
+        let mut columns: HashMap<String, ArrayRef> = HashMap::new();
+        columns.insert("col".into(), Arc::new(UInt32Array::from(vec![1, 2, 3])));
+
+        let multi: HashMap<ArrowPayloadType, MultiColumnOpResult> = HashMap::new();
+        let mut ctx = ctx_with(&mut columns, &multi);
+
+        let mut current = "col".to_string();
+        let r = apply_one_op(&mut ctx, &mut current, &ColumnTransformOp::Drop).unwrap();
+        assert!(matches!(r, ControlFlow::Break(())));
+        assert!(!ctx.columns.contains_key("col"));
+    }
+
+    #[test]
+    fn flatten_struct_keeps_struct_col_when_remove_is_false() {
+        let mut columns: HashMap<String, ArrayRef> = HashMap::new();
+        columns.insert("s".into(), struct_body_array());
+
+        let multi: HashMap<ArrowPayloadType, MultiColumnOpResult> = HashMap::new();
+        let mut ctx = ctx_with(&mut columns, &multi);
+
+        let spec = FlattenStructSpec {
+            field_mapping: vec![("a".to_string(), "a_out".to_string())]
+                .into_iter()
+                .collect(),
+            remove_struct_col: false,
+        };
+
+        flatten_struct(&mut ctx, "s", &spec).unwrap();
+
+        // struct is NOT removed
+        assert!(ctx.columns.contains_key("s"));
+        // child is also present
+        assert!(ctx.columns.contains_key("a_out"));
+    }
+
+    #[test]
+    fn append_cbor_as_json_simple_map() {
+        let cbor_bytes = serde_cbor::to_vec(&serde_json::json!({"key": "value"})).unwrap();
+        let mut buf = Vec::new();
+        append_cbor_as_json(&mut buf, &cbor_bytes).unwrap();
+        let json_str = String::from_utf8(buf).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed, serde_json::json!({"key": "value"}));
+    }
+
+    #[test]
+    fn append_cbor_as_json_nested_structure() {
+        let cbor_bytes =
+            serde_cbor::to_vec(&serde_json::json!({"a": [1, 2, 3], "b": true})).unwrap();
+        let mut buf = Vec::new();
+        append_cbor_as_json(&mut buf, &cbor_bytes).unwrap();
+        let json_str = String::from_utf8(buf).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed["a"], serde_json::json!([1, 2, 3]));
+        assert_eq!(parsed["b"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn append_cbor_as_json_empty_object() {
+        let cbor_bytes = serde_cbor::to_vec(&serde_json::json!({})).unwrap();
+        let mut buf = Vec::new();
+        append_cbor_as_json(&mut buf, &cbor_bytes).unwrap();
+        let json_str = String::from_utf8(buf).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed, serde_json::json!({}));
+    }
+
+    #[test]
+    fn append_cbor_as_json_invalid_cbor_errors() {
+        let mut buf = Vec::new();
+        let result = append_cbor_as_json(&mut buf, &[0xFF, 0xFE, 0xFD]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn inline_attribute_missing_child_payload_is_noop() {
+        let mut parent_cols: HashMap<String, ArrayRef> = HashMap::new();
+        parent_cols.insert("attr_id".into(), u16_array(&[10, 11]));
+
+        let multi: HashMap<ArrowPayloadType, MultiColumnOpResult> = HashMap::new();
+        let mut ctx = ctx_with(&mut parent_cols, &multi);
+
+        let mut current = "attr_id".to_string();
+        inline_attribute(
+            &mut ctx,
+            &mut current,
+            ArrowPayloadType::ResourceAttrs,
+            &AttributeRepresentation::StringMap,
+        )
+        .unwrap();
+
+        // The id column should still be present (put back)
+        assert!(ctx.columns.contains_key("attr_id"));
     }
 }
