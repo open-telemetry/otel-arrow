@@ -1170,6 +1170,17 @@ mod schema_tests {
         );
     }
 
+    #[test]
+    fn test_generate_timestamp_values_preserves_timezone_datatype() {
+        let value_type = DataType::Timestamp(
+            arrow_schema::TimeUnit::Nanosecond,
+            Some(Arc::<str>::from("UTC")),
+        );
+
+        let values = generate_values_for_type(0, 3, &value_type);
+        assert_eq!(values.data_type(), &value_type);
+    }
+
     /// Create a Dict(u8, Utf8) batch with low cardinality for a given column name.
     fn create_low_cardinality_u8_utf8_batch(col_name: &str, n_values: usize) -> RecordBatch {
         assert!(n_values <= 255);
