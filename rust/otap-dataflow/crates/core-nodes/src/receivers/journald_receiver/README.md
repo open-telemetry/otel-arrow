@@ -178,6 +178,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 - Linux only.
 - Requires `libsystemd.so.0` and permission to read the selected journal.
+- Many `unsafe` regions, everywhere Rust calls the C library.
   Startup fails clearly when journal files are present but fully unreadable;
   failing closed on partially readable journal trees is planned for production
   hardening.
