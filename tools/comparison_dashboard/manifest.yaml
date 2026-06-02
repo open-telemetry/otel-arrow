@@ -15,6 +15,7 @@
 variables:
   df_engine_image: df_engine:latest
   otelcol_image: otel/opentelemetry-collector-contrib:latest
+  fluent_bit_image: fluent/fluent-bit:5.0
 
 # Allowed values for every meta key a suite may declare. Validation rejects
 # any meta key not listed here, and any value (or list element) outside the
@@ -25,6 +26,7 @@ meta:
   binary:
     - { value: dfe, description: "Dataflow Engine - the OTAP-native pipeline engine developed as a part of OTel Arrow." }
     - { value: otc, description: "OpenTelemetry Collector (contrib distribution)." }
+    - { value: fbit, description: "Fluent Bit - lightweight, performance-focused observability pipeline engine with native OTLP ingest/delivery (no OTAP support; benchmarked on logs only)." }
   protocols:
     - { value: otap, description: "OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches." }
     - { value: otlp, description: "OpenTelemetry Protocol over gRPC (row-oriented protobuf)." }
@@ -46,6 +48,8 @@ glossary:
     definition: Dataflow Engine - the OTAP-native Rust pipeline being benchmarked in this repo.
   - term: OTC
     definition: OpenTelemetry Collector (contrib distribution) - the reference Go implementation.
+  - term: FB
+    definition: Fluent Bit - a lightweight, perf-focused observability pipeline engine with native OTLP ingest/delivery (no OTAP support).
   - term: OTAP
     definition: OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches.
   - term: OTLP
@@ -170,6 +174,22 @@ suites:
   - suites/otc/otc-logs-otlp-none-transform-rename-multi-transform.yaml
   - suites/otc/otc-logs-otap-none-attr-insert-multi-transform.yaml
   - suites/otc/otc-logs-otap-none-attr-rename-multi-transform.yaml
+  # Fluent Bit baselines (OTLP gRPC + OTLP/HTTP x none/gzip/zstd). Logs only:
+  # FB's OTLP input cannot decode the loadgen's OTLP metrics, and FB saturates a
+  # single core on traces, so only logs are benchmarked.
+  - suites/fbit/fbit-logs-otlp-none-baseline.yaml
+  - suites/fbit/fbit-logs-otlp-gzip-baseline.yaml
+  - suites/fbit/fbit-logs-otlp-zstd-baseline.yaml
+  - suites/fbit/fbit-logs-otlphttp-none-baseline.yaml
+  - suites/fbit/fbit-logs-otlphttp-gzip-baseline.yaml
+  - suites/fbit/fbit-logs-otlphttp-zstd-baseline.yaml
+  # Fluent Bit enrichment (content_modifier processor; logs over OTLP gRPC)
+  - suites/fbit/fbit-logs-otlp-none-attr-insert.yaml
+  - suites/fbit/fbit-logs-otlp-none-attr-rename.yaml
+  - suites/fbit/fbit-logs-otlp-none-attr-insert-multi-batch.yaml
+  - suites/fbit/fbit-logs-otlp-none-attr-rename-multi-batch.yaml
+  - suites/fbit/fbit-logs-otlp-none-attr-insert-multi-transform.yaml
+  - suites/fbit/fbit-logs-otlp-none-attr-rename-multi-transform.yaml
 
 # Comparison definitions, listed by path. Each entry must point at an
 # existing YAML file with `slug` and `suites` (a list of suite refs).

@@ -1,0 +1,32 @@
+# DFE inspection backend: receive OTLP/gRPC on :1235 and print every record
+# (including attributes) to stdout via the console exporter. Used to prove the
+# Fluent Bit `modify` filter actually inserts/renames attributes end to end.
+version: otel_dataflow/v1
+policies:
+  resources:
+    core_allocation:
+      type: core_set
+      set:
+        - start: 1
+          end: 1
+
+engine: {}
+
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:otel:receiver:otlp"
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "0.0.0.0:1235"
+          console:
+            type: "urn:otel:exporter:console"
+            config:
+              color: false
+        connections:
+          - from: receiver
+            to: console
