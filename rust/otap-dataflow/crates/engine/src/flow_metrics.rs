@@ -990,10 +990,7 @@ mod tests {
         // Flow metric: a->e. End is reachable via a long forward path.
         let (ctx, _) = test_pipeline_ctx();
         let (names, procs) = test_maps(&["a", "b", "c", "d", "e"], &[]);
-        let edges = test_edges(
-            &[("a", "b"), ("b", "c"), ("c", "d"), ("d", "e")],
-            &names,
-        );
+        let edges = test_edges(&[("a", "b"), ("b", "c"), ("c", "d"), ("d", "e")], &names);
         let policy = policy_with(vec![sw("sw1", "a", "e")]);
 
         let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
