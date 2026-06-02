@@ -41,13 +41,14 @@ fi
 
 # Check if branch already exists
 if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
-    echo -e "${RED}Error: Branch $BRANCH_NAME already exists${NC}"
-    exit 1
+    echo -e "${YELLOW}Branch $BRANCH_NAME already exists locally, resetting it${NC}"
+    git checkout "$BRANCH_NAME"
+    git reset --hard origin/main
+else
+    # Create and switch to release branch
+    echo "Creating branch: $BRANCH_NAME"
+    git checkout -b "$BRANCH_NAME"
 fi
-
-# Create and switch to release branch
-echo "Creating branch: $BRANCH_NAME"
-git checkout -b "$BRANCH_NAME"
 
 # Check if there are any changes to commit
 if [ -z "$(git status --porcelain)" ]; then
@@ -73,7 +74,7 @@ echo -e "${GREEN}✓ Committed changes to branch $BRANCH_NAME${NC}"
 # Push branch if requested
 if [ "$PUSH_BRANCH" = true ]; then
     echo "Pushing branch to origin..."
-    git push origin "$BRANCH_NAME"
+    git push --force-with-lease origin "$BRANCH_NAME"
     echo -e "${GREEN}✓ Pushed branch to origin${NC}"
 fi
 

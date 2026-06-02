@@ -204,7 +204,7 @@ jobs:
           # Use script to create branch and commit
           ./.github/workflows/scripts/create-release-branch.sh "${{ inputs.version }}" --push
 
-      - name: Create pull request
+      - name: Create or update pull request
         if: "!inputs.dry_run"
         env:
           # not using secrets.GITHUB_TOKEN since pull requests from that token do not trigger workflows
@@ -238,13 +238,25 @@ jobs:
           After merging this PR, run the **Push Release** workflow to create git tags and publish the GitHub release.
           EOF
 
-          # Create the pull request using GitHub CLI
-          gh pr create \
-            --title "chore(release) Prepare Release v${{ inputs.version }}" \
-            --body-file /tmp/pr_body.md \
-            --head "otelbot/release-v${{ inputs.version }}" \
-            --base main \
-            --label release
+          BRANCH="otelbot/release-v${{ inputs.version }}"
+          TITLE="chore(release) Prepare Release v${{ inputs.version }}"
+
+          # Check if a PR already exists for this branch
+          EXISTING_PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "Updating existing PR #$EXISTING_PR"
+            gh pr edit "$EXISTING_PR" \
+              --title "$TITLE" \
+              --body-file /tmp/pr_body.md
+          else
+            gh pr create \
+              --title "$TITLE" \
+              --body-file /tmp/pr_body.md \
+              --head "$BRANCH" \
+              --base main \
+              --label release
+          fi
 
       - name: Summary
         run: |
