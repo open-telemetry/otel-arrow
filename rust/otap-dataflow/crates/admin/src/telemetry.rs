@@ -1784,7 +1784,10 @@ where
         let final_key = if prefix.is_empty() {
             sanitized
         } else {
-            format!("{prefix}{sanitized}")
+            let mut key = String::with_capacity(prefix.len() + sanitized.len());
+            key.push_str(prefix);
+            key.push_str(&sanitized);
+            key
         };
         // Skip keys that collide with separately-emitted scope/reserved
         // labels. Comparison is on the final label key after prefixing.
