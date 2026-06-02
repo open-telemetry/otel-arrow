@@ -12,7 +12,7 @@ each operator transforms the stream for the next.
 
 OTTL processes telemetry with a list of statements, each acting independently:
 
-```
+```text
 set(severity_text, "ERROR")
 set(attributes["tier"], "critical") where severity_number >= 17
 delete_key(attributes, "internal.debug")
@@ -20,7 +20,7 @@ delete_key(attributes, "internal.debug")
 
 OPL expresses the same logic as a single pipeline:
 
-```
+```text
 logs |
 set severity_text = "ERROR" |
 if (severity_number >= 17) {
@@ -48,7 +48,7 @@ function-call syntax:
 
 Multiple assignments in OPL can be combined into a single `set` invocation:
 
-```
+```text
 logs |
 set
     severity_text = "ERROR",
@@ -79,13 +79,13 @@ block:
 
 OTTL:
 
-```
+```text
 delete_key(attributes, "http.method")
 ```
 
 OPL:
 
-```
+```text
 logs | remove attributes["http.method"]
 ```
 
@@ -96,13 +96,13 @@ OTTL's `delete_matching_keys` removes keys matching a regex. In OPL, use
 
 OTTL:
 
-```
+```text
 delete_matching_keys(attributes, "internal\\..*")
 ```
 
 OPL:
 
-```
+```text
 logs | apply attributes {
     where not(matches(key, r"internal\..*"))
 }
@@ -115,13 +115,13 @@ OTTL's `keep_keys` retains only named keys. In OPL, use `apply` with a
 
 OTTL:
 
-```
+```text
 keep_keys(attributes, "http.method", "url.path")
 ```
 
 OPL:
 
-```
+```text
 logs | apply attributes {
     where key == "http.method" or key == "url.path"
 }
@@ -131,13 +131,13 @@ OTTL's `keep_matching_keys` retains keys matching a pattern:
 
 OTTL:
 
-```
+```text
 keep_matching_keys(attributes, "http\\..*")
 ```
 
 OPL:
 
-```
+```text
 logs | apply attributes {
     where matches(key, r"http\..*")
 }
@@ -147,19 +147,19 @@ logs | apply attributes {
 
 OTTL:
 
-```
+```text
 rename_key(attributes, "http.method", "http.request.method")
 ```
 
 OPL:
 
-```
+```text
 logs | rename attributes["http.request.method"] = attributes["http.method"]
 ```
 
 OPL supports renaming multiple keys in a single invocation:
 
-```
+```text
 logs |
 rename
     attributes["http.request.method"] = attributes["http.method"],
@@ -189,13 +189,13 @@ an OPL pipeline operator:
 
 OTTL:
 
-```
+```text
 set(attributes["hash"], SHA256(attributes["secret"]))
 ```
 
 OPL:
 
-```
+```text
 logs | set attributes["hash"] = encode(sha256(attributes["secret"]), "hex")
 ```
 
@@ -229,7 +229,7 @@ individual statements. In OPL, they are used as standalone expressions in
 
 OTTL applies conditions per-statement using `where` clauses:
 
-```
+```text
 set(attributes["tier"], "critical") where severity_text == "ERROR"
 set(attributes["tier"], "warning") where severity_text == "WARN"
 set(attributes["tier"], "info") where severity_text == "INFO"
@@ -239,7 +239,7 @@ OPL uses `if`/`else if`/`else` blocks, which are more expressive -- each
 record is handled by exactly one branch, avoiding the need to write mutually
 exclusive conditions:
 
-```
+```text
 logs |
 if (severity_text == "ERROR") {
     set attributes["tier"] = "critical"
@@ -252,7 +252,7 @@ if (severity_text == "ERROR") {
 
 OPL branches can also contain multiple chained operators:
 
-```
+```text
 logs |
 if (severity_text == "ERROR") {
     set attributes["tier"] = "critical" |
@@ -265,13 +265,13 @@ operators in both `where` filters and `if` conditions:
 
 OTTL:
 
-```
+```text
 set(attributes["tier"], "critical") where severity_number >= 17 and resource.attributes["service.name"] == "payments"
 ```
 
 OPL:
 
-```
+```text
 logs |
 if (severity_number >= 17 and resource.attributes["service.name"] == "payments") {
     set attributes["tier"] = "critical"
@@ -285,7 +285,7 @@ direct OTTL equivalent -- routing in the OpenTelemetry Collector is typically
 handled by connector components or separate pipelines rather than within the
 transformation language itself:
 
-```
+```text
 logs |
 if (severity_text == "ERROR") {
     route_to "error_sink"
@@ -301,14 +301,14 @@ enabling bulk operations that have no single OTTL equivalent. Instead of
 writing multiple OTTL statements for each attribute, `apply` handles them
 all at once:
 
-```
+```text
 // hash all attribute values in one operation
 logs | apply attributes {
     set value = encode(sha256(value), "hex")
 }
 ```
 
-```
+```text
 // conditionally transform specific attributes
 logs | apply attributes {
     if (key == "user.email" or key == "user.ip") {
@@ -324,7 +324,7 @@ lists (`log_statements`, `trace_statements`, `metric_statements`). In OPL,
 the signal type is part of the pipeline source, and the `signals` keyword
 with `is` checks can handle multiple signal types in a single pipeline:
 
-```
+```text
 signals |
 if (is Log) {
     set attributes["signal.type"] = "log"

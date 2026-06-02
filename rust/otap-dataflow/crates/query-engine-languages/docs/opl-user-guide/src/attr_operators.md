@@ -13,7 +13,7 @@ The `rename` operator changes the key of an attribute. The syntax follows the
 assignment pattern `new_key = old_key`: the destination key is on the left and
 the source key is on the right.
 
-```
+```text
 // rename "http.method" to the newer semantic convention "http.request.method"
 logs | rename attributes["http.request.method"] = attributes["http.method"]
 ```
@@ -28,11 +28,11 @@ already exists, its value will be replaced with the source attribute's value
 Resource and instrumentation scope attributes can be renamed using their
 qualified paths:
 
-```
+```text
 logs | rename resource.attributes["service.namespace"] = resource.attributes["svc.namespace"]
 ```
 
-```
+```text
 logs |
 rename
     instrumentation_scope.attributes["otel.scope.name"] =
@@ -44,7 +44,7 @@ rename
 Multiple renames can be performed in a single operator invocation by separating
 each assignment with a comma. Renames can span different attribute scopes:
 
-```
+```text
 logs |
 rename
     attributes["http.request.method"] = attributes["http.method"],
@@ -59,7 +59,7 @@ rename
 `project-rename` is an alias for `rename`. The following is equivalent to the
 first example above:
 
-```
+```text
 logs | project-rename attributes["http.request.method"] = attributes["http.method"]
 ```
 
@@ -70,14 +70,14 @@ The following rename patterns are not allowed and will produce a
 
 Renaming an attribute to its own key (a no-op rename):
 
-```
+```text
 // error: source and destination keys are the same
 logs | rename attributes["http.method"] = attributes["http.method"]
 ```
 
 Multiple renames targeting the same destination key:
 
-```
+```text
 // error: two different sources both rename to the same destination
 logs |
 rename
@@ -89,7 +89,7 @@ rename
 
 The `remove` operator removes attributes by key:
 
-```
+```text
 // remove a deprecated attribute
 logs | remove attributes["http.method"]
 ```
@@ -101,11 +101,11 @@ key are left unchanged.
 
 Like `rename`, `remove` works on resource and instrumentation scope attributes:
 
-```
+```text
 logs | remove resource.attributes["internal.tag"]
 ```
 
-```
+```text
 logs | remove instrumentation_scope.attributes["debug.flag"]
 ```
 
@@ -114,7 +114,7 @@ logs | remove instrumentation_scope.attributes["debug.flag"]
 Multiple keys can be removed in a single invocation by separating them with
 commas. Removals can span different attribute scopes:
 
-```
+```text
 logs |
 remove
     attributes["http.method"],
@@ -127,7 +127,7 @@ remove
 `project-away` is an alias for `remove`. The following is equivalent to the
 first example above:
 
-```
+```text
 logs | project-away attributes["http.method"]
 ```
 
@@ -142,7 +142,7 @@ their keys or values -- rather than targeting a single attribute by name.
 
 Use `where` inside `apply` to keep or remove attributes based on their values:
 
-```
+```text
 // remove any attribute whose value matches a sensitive pattern
 logs | apply attributes {
     where not(matches(value, ".*password.*"))
@@ -154,7 +154,7 @@ logs | apply attributes {
 Attributes can also be filtered by key. This is an alternative to `remove`
 when you need pattern-based removal rather than exact key matching:
 
-```
+```text
 // remove all attributes with keys starting with "internal."
 logs | apply attributes {
     where not(starts_with(key, "internal."))
@@ -163,7 +163,7 @@ logs | apply attributes {
 
 Multiple filters can be chained with `|` inside the `apply` block:
 
-```
+```text
 logs | apply attributes {
     where key != "http.method" |
     where not(matches(key, "debug\\..*"))
@@ -174,7 +174,7 @@ logs | apply attributes {
 
 Key and value conditions can be combined with `and` and `or`:
 
-```
+```text
 // keep only attributes with specific keys that have non-empty values
 logs | apply attributes {
     where (key == "http.request.method" or key == "url.path") and value != ""
@@ -185,7 +185,7 @@ logs | apply attributes {
 
 Use `set value = ...` to transform attribute values in bulk:
 
-```
+```text
 // hash all attribute values
 logs | apply attributes {
     set value = encode(sha256(value), "hex")
@@ -194,7 +194,7 @@ logs | apply attributes {
 
 Arithmetic on values:
 
-```
+```text
 // increment all integer attribute values by 1
 logs | apply attributes {
     set value = value + 1
@@ -203,7 +203,7 @@ logs | apply attributes {
 
 Set all values to a static literal:
 
-```
+```text
 logs | apply attributes {
     set value = "redacted"
 }
@@ -216,7 +216,7 @@ Note that the `key` of an attribute cannot be the target of the assignment.
 `if` blocks work inside `apply`, enabling per-attribute conditional logic
 based on `key` or `value`:
 
-```
+```text
 // hash only sensitive attributes, leave others unchanged
 logs | apply attributes {
     if (key == "user.email" or key == "user.ip") {
@@ -225,7 +225,7 @@ logs | apply attributes {
 }
 ```
 
-```
+```text
 // set different values depending on the attribute key
 logs | apply attributes {
     if (key == "log.level") {
@@ -241,13 +241,13 @@ logs | apply attributes {
 `apply` works on resource and instrumentation scope attributes by specifying
 the qualified path:
 
-```
+```text
 logs | apply resource.attributes {
     where not(starts_with(key, "internal."))
 }
 ```
 
-```
+```text
 logs | apply instrumentation_scope.attributes {
     where key != "debug.flag"
 }

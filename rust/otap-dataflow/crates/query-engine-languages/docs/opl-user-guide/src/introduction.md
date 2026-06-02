@@ -11,7 +11,7 @@ makes it natural to chain processing steps together.
 An OPL pipeline starts with a source that identifies the signal type, followed
 by one or more operators separated by `|`:
 
-```
+```text
 logs | where severity_number >= 17 | set attributes["critical"] = true
 ```
 
@@ -19,7 +19,7 @@ Operators are applied sequentially, left to right. Each operator receives the
 output of the previous one. Pipelines and operator arguments can be written
 across multiple lines for readability:
 
-```
+```text
 logs |
 where
   severity_number >= 17 or
@@ -33,7 +33,7 @@ set
 
 Line comments start with `//`:
 
-```
+```text
 // keep only critical logs and tag them
 logs |
 where severity_number >= 17 |
@@ -42,7 +42,7 @@ set attributes["critical"] = true
 
 Block comments start with `/*` and end with `*/`, and can span multiple lines:
 
-```
+```text
 /*
 Inject kubernetes attributes for:
 - namespace

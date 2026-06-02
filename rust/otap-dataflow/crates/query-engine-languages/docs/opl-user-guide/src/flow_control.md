@@ -18,7 +18,7 @@ together.
 
 ### Basic usage
 
-```
+```text
 // rename an attribute only for logs with ERROR severity
 logs | if (severity_text == "ERROR") {
     rename attributes["http.request.method"] = attributes["http.method"]
@@ -32,7 +32,7 @@ above, non-ERROR logs keep their original `http.method` attribute.
 
 An `else` block handles all records that did not match the `if` condition:
 
-```
+```text
 logs | if (severity_text == "ERROR") {
     set attributes["error.priority"] = "high"
 } else {
@@ -46,7 +46,7 @@ Multiple conditions can be chained with `else if`. Each record is processed by
 the first branch whose condition it matches. If no condition matches, the
 `else` branch runs (if present), otherwise the record passes through unchanged:
 
-```
+```text
 logs |
 if (severity_text == "ERROR") {
     set attributes["log.tier"] = "critical"
@@ -67,7 +67,7 @@ The body of each branch can contain any operators chained with `|`, just like a
 top-level pipeline. This includes `where`, `set`, `rename`, `remove`,
 `route_to`, and even nested `if` blocks:
 
-```
+```text
 logs |
 if (severity_text == "ERROR") {
     rename attributes["http.request.method"] = attributes["http.method"] |
@@ -80,7 +80,7 @@ if (severity_text == "ERROR") {
 A `where` filter inside a branch drops records that don't match, while
 records in other branches are unaffected:
 
-```
+```text
 logs |
 if (severity_text == "ERROR") {
     // among ERROR logs, only keep those from the payments service
@@ -111,7 +111,7 @@ operator can test what kind of record is being processed:
 This is most useful inside `if` conditions to apply signal-specific
 transformations within a single pipeline:
 
-```
+```text
 signals |
 if (is Log) {
     set attributes["signal.source"] = "logs"
@@ -124,7 +124,7 @@ if (is Log) {
 
 The `is` check can also be used in `where` filters:
 
-```
+```text
 // process only logs, drop metrics and spans
 signals | where is Log
 ```
@@ -137,7 +137,7 @@ telemetry to different downstream destinations.
 
 ### Basic usage
 
-```
+```text
 logs | route_to "error_sink"
 ```
 
@@ -161,7 +161,7 @@ engine knows where to deliver the routed data.
 `route_to` is most powerful when combined with `if` to route different records
 to different destinations based on conditions:
 
-```
+```text
 logs |
 if (severity_text == "ERROR") {
     route_to "error_sink"
@@ -175,7 +175,7 @@ In this example, ERROR logs are sent to `error_sink`, WARN logs to
 
 You can also apply transformations before routing:
 
-```
+```text
 logs |
 if (severity_text == "ERROR") {
     set attributes["error.routed"] = true |

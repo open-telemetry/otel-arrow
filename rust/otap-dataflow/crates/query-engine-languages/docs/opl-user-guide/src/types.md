@@ -13,7 +13,7 @@ the pipeline operates on:
 - `traces` -- trace spans
 - `metrics` -- metric data points
 
-```
+```text
 logs | where severity_text == "ERROR"
 traces | where attributes["http.status_code"] > 499
 metrics | where name == "http.server.request.duration"
@@ -26,7 +26,7 @@ signal-specific fields, use the `is` operator to narrow to a concrete signal
 type within an `if` block -- see
 [Signal Type Checks](./flow_control.md#signal-type-checks-is).
 
-```
+```text
 // tag all telemetry with the processing environment
 signals | set resource.attributes["deployment.environment.name"] = "production"
 ```
@@ -124,7 +124,7 @@ of a value (see [Value Types](#value-types) below).
 Attribute values and expressions have types. The `is` operator tests the type
 of a value at runtime:
 
-```
+```text
 logs | where attributes["http.target"] is String
 ```
 
@@ -148,7 +148,7 @@ expressions. This means you can test whether an attribute is an `Array` or
 Type checks are commonly used to guard function calls that only accept
 specific types:
 
-```
+```text
 // lower_case only accepts strings -- guard with a type check
 logs | where attributes["http.target"] is String and
     contains(lower_case(attributes["http.target"]), "/api/")
@@ -158,7 +158,7 @@ logs | where attributes["http.target"] is String and
 
 An attribute can be compared to `null` to test whether it exists:
 
-```
+```text
 // keep only logs that have the "error.type" attribute
 logs | where not(attributes["error.type"] == null)
 ```

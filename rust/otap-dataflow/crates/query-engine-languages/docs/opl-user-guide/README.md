@@ -2,7 +2,7 @@
 
 ## Development
 
-**Get started**
+### Get started
 
 Install [mdbook](https://rust-lang.github.io/mdBook/index.html):
 
