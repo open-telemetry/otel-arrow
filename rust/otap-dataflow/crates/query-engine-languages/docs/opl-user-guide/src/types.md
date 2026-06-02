@@ -58,7 +58,7 @@ type.
 ### Log fields
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `time_unix_nano` | Timestamp | Time the event occurred |
 | `observed_time_unix_nano` | Timestamp | Time the event was observed |
 | `severity_number` | Integer | Numeric severity level |
@@ -74,7 +74,7 @@ type.
 ### Span fields
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `name` | String | Span name |
 | `trace_id` | Bytes | Trace identifier |
 | `span_id` | Bytes | Span identifier |
@@ -93,7 +93,7 @@ type.
 ### Metric fields
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `name` | String | Metric name |
 | `description` | String | Metric description |
 | `unit` | String | Unit of measurement |
@@ -131,7 +131,7 @@ logs | where attributes["http.target"] is String
 The following type names are available for `is` checks:
 
 | Type Name | Description |
-|-----------|-------------|
+| ----------- | ------------- |
 | `String` | Text string |
 | `Integer` | 64-bit signed integer |
 | `Double` | Double-precision floating point |
@@ -168,7 +168,7 @@ logs | where not(attributes["error.type"] == null)
 OPL supports the following literal types in expressions:
 
 | Literal | Syntax | Example |
-|---------|--------|---------|
+| --------- | -------- | --------- |
 | String | `"..."` | `"hello"` |
 | Integer | digits | `42` |
 | Float | digits with decimal | `3.14` |
@@ -184,7 +184,7 @@ produce an error before the pipeline runs. Timestamp values must be in ISO
 ## Comparison Operators
 
 | Operator | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | `==` | Equal to |
 | `!=` | Not equal to |
 | `>` | Greater than |
@@ -196,7 +196,7 @@ produce an error before the pipeline runs. Timestamp values must be in ISO
 ## Logical Operators
 
 | Operator | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | `and` | Logical AND |
 | `or` | Logical OR |
 | `not(...)` | Logical negation |

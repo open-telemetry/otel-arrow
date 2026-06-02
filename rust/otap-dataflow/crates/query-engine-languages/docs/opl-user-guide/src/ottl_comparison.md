@@ -40,7 +40,7 @@ syntactic difference is that OPL uses `=` assignment syntax instead of
 function-call syntax:
 
 | OTTL | OPL |
-|------|-----|
+| ------ | ----- |
 | `set(severity_text, "ERROR")` | `set severity_text = "ERROR"` |
 | `set(event_name, "request")` | `set event_name = "request"` |
 | `set(attributes["k"], "v")` | `set attributes["k"] = "v"` |
@@ -62,7 +62,7 @@ them. OPL uses `where` as a standalone pipeline operator that drops
 non-matching records entirely:
 
 | OTTL | OPL |
-|------|-----|
+| ------ | ----- |
 | (drop records) `where severity_number < 9` | `where severity_number >= 9` |
 | (no direct equivalent) | `where contains(body, "error")` |
 
@@ -173,7 +173,7 @@ functions. In OTTL, converters are used as arguments to editors. In OPL,
 functions are used directly in expressions:
 
 | OTTL Converter | OPL Function |
-|----------------|--------------|
+| ---------------- | -------------- |
 | `Concat(values, delim)` | `concat_ws(delim, ...)` |
 | `ConvertCase(v, "lower")` / `ToLowerCase(v)` | `lower_case(v)` |
 | `ConvertCase(v, "upper")` / `ToUpperCase(v)` | `upper_case(v)` |
@@ -206,7 +206,7 @@ individual statements. In OPL, they are used as standalone expressions in
 `where` filters or `if` conditions.
 
 | OTTL Predicate | OPL Predicate |
-|----------------|---------------|
+| ---------------- | --------------- |
 | `IsMatch(body, ".*error.*")` | `matches(body, r".*error.*")` |
 | `Index(body, "error") >= 0` | `contains(body, "error")` |
 | `HasPrefix(a["url.path"], "/api/")` | `starts_with(attributes["url.path"], "/api/")` |
@@ -215,7 +215,7 @@ individual statements. In OPL, they are used as standalone expressions in
 ### Hashing functions
 
 | OTTL | OPL |
-|------|-----|
+| ------ | ----- |
 | `SHA1(value)` | `sha1(value)` |
 | `SHA256(value)` | `sha256(value)` |
 | `SHA512(value)` | `sha512(value)` |
@@ -344,7 +344,7 @@ but are planned for future releases.
 ### Editor functions
 
 | OTTL Editor | Description |
-|-------------|-------------|
+| ------------- | ------------- |
 | `append(target, value)` | Append values to an array |
 | `flatten(target)` | Flatten nested maps |
 | `merge_maps(target, source, strategy)` | Merge two maps |
@@ -358,7 +358,7 @@ but are planned for future releases.
 ### Converter functions
 
 | OTTL Converter | Description |
-|----------------|-------------|
+| ---------------- | ------------- |
 | `ParseJSON(value)` | Parse a JSON string into a structured value |
 | `ParseKeyValue(value, ...)` | Parse key-value pair strings |
 | `ParseCSV(value, ...)` | Parse CSV strings |

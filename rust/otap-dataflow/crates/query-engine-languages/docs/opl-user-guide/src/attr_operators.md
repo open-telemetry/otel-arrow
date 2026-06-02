@@ -54,7 +54,7 @@ rename
         instrumentation_scope.attributes["scope.name"]
 ```
 
-### Alias
+### Rename alias
 
 `project-rename` is an alias for `rename`. The following is equivalent to the
 first example above:
@@ -122,7 +122,7 @@ remove
     instrumentation_scope.attributes["debug.flag"]
 ```
 
-### Alias
+### Remove alias
 
 `project-away` is an alias for `remove`. The following is equivalent to the
 first example above:

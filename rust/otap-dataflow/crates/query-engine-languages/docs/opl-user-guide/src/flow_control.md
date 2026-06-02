@@ -135,7 +135,7 @@ The `route_to` operator sends the current batch to a named output port instead
 of the default output. This is useful for directing different subsets of
 telemetry to different downstream destinations.
 
-### Basic usage
+### Routing a batch
 
 ```text
 logs | route_to "error_sink"
