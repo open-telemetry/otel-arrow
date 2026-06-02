@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/400k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 95.79717254638672
+  },
+  {
+    "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/400k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.11352413285483
+  },
+  {
+    "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/400k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.4845514950166
+  },
+  {
+    "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/400k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 6151.933463541666
+  },
+  {
+    "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/400k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 11562.9140625
+  },
+  {
+    "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/400k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 381992.83307249687
+  },
+  {
+    "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/400k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 16054.4800997688
+  },
+  {
+    "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/400k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000586
+  },
+  {
+    "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/400k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 515672.6674652802
+  },
+  {
+    "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/400k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 134140443.60035044
+  },
+  {
+    "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/400k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 32.120172329511085
+  }
+]

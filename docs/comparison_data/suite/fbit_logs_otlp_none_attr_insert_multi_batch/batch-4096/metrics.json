@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-4096 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 41.23881149291992
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-4096 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.1056245900581
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-4096 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.31860203869358
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-4096 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 81.53580729166667
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-4096 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 95.421875
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-4096 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 187506.48999894617
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-4096 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 109993.8243495669
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-4096 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000616
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-4096 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 40662172.20671762
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-4096 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 39725152.178543635
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Batch (Logs)/batch-4096 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 369.6768654710179
+  }
+]

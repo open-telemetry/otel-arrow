@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "FB OTLP Attr Rename (Logs)/600k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 3.2192866802215576
+  },
+  {
+    "extra": "FB OTLP Attr Rename (Logs)/600k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.10851236857646
+  },
+  {
+    "extra": "FB OTLP Attr Rename (Logs)/600k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.34367041198502
+  },
+  {
+    "extra": "FB OTLP Attr Rename (Logs)/600k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 93.52877604166666
+  },
+  {
+    "extra": "FB OTLP Attr Rename (Logs)/600k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 101.5859375
+  },
+  {
+    "extra": "FB OTLP Attr Rename (Logs)/600k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 116417.53253081816
+  },
+  {
+    "extra": "FB OTLP Attr Rename (Logs)/600k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 112468.21187655594
+  },
+  {
+    "extra": "FB OTLP Attr Rename (Logs)/600k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000593
+  },
+  {
+    "extra": "FB OTLP Attr Rename (Logs)/600k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 37505666.91040097
+  },
+  {
+    "extra": "FB OTLP Attr Rename (Logs)/600k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 40330578.319767565
+  },
+  {
+    "extra": "FB OTLP Attr Rename (Logs)/600k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 333.47793376111326
+  }
+]

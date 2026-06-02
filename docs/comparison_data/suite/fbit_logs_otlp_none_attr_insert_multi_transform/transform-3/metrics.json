@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-3 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -1.6911994218826294
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-3 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.01018778280273
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-3 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.25065778517902
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-3 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 108.92421875
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-3 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 115.28125
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-3 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 54193.819161827836
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-3 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 54455.407436213754
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-3 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000518
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-3 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 52416345.31742919
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-3 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 46519395.88576296
+  },
+  {
+    "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-3 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 962.5553785237396
+  }
+]

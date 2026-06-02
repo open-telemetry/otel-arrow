@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "FB OTLP Attr Insert (Logs)/1000k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -1.293579339981079
+  },
+  {
+    "extra": "FB OTLP Attr Insert (Logs)/1000k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.12364211056854
+  },
+  {
+    "extra": "FB OTLP Attr Insert (Logs)/1000k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.35556295525497
+  },
+  {
+    "extra": "FB OTLP Attr Insert (Logs)/1000k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 112.45208333333333
+  },
+  {
+    "extra": "FB OTLP Attr Insert (Logs)/1000k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 115.6484375
+  },
+  {
+    "extra": "FB OTLP Attr Insert (Logs)/1000k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 107731.71794106146
+  },
+  {
+    "extra": "FB OTLP Attr Insert (Logs)/1000k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 107447.43237701883
+  },
+  {
+    "extra": "FB OTLP Attr Insert (Logs)/1000k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000634
+  },
+  {
+    "extra": "FB OTLP Attr Insert (Logs)/1000k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 39728184.632940985
+  },
+  {
+    "extra": "FB OTLP Attr Insert (Logs)/1000k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 38622411.93813246
+  },
+  {
+    "extra": "FB OTLP Attr Insert (Logs)/1000k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 369.7453140949896
+  }
+]
