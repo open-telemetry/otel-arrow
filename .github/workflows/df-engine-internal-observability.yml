@@ -41,11 +41,6 @@ concurrency:
 jobs:
   weaver-live-check:
     runs-on: ubuntu-latest
-    # Bound the job. The old monolithic step had `timeout-minutes: 5`;
-    # this gives the equivalent ceiling across the now-split steps so a
-    # hung trigger, df_engine startup, or `/stop` request can't block
-    # indefinitely.
-    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
