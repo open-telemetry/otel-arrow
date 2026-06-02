@@ -1146,6 +1146,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn rejects_unknown_config_field() {
         let json = serde_json::json!({
