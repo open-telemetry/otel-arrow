@@ -92,7 +92,7 @@ Do not duplicate information:
 ### How the layers are rendered
 
 The self-telemetry pipeline emits each category on its correct OpenTelemetry
-layer for **every exported signal** — both metrics and logs (see issue #3161).
+layer for **every exported signal** - both metrics and logs (see issue #3161).
 The mapping is signal-independent:
 
 | Category | OTLP export (metrics + logs) | Admin Prometheus endpoint (metrics only) |
@@ -109,7 +109,7 @@ Notes:
   auto-detected values, and empty values are omitted.
 - The **same** resolved resource map feeds every consumer: the SDK metrics
   `Resource`, the pre-encoded OTLP log `Resource` bytes
-  (`ResourceLogs.resource`), and the admin `target_info` gauge — so resource
+  (`ResourceLogs.resource`), and the admin `target_info` gauge - so resource
   identity is consistent across metrics, logs, and the admin endpoint.
 - Entity identity is resolved from the telemetry registry once per entity and
   attached as `InstrumentationScope.attributes` for both metrics and logs
