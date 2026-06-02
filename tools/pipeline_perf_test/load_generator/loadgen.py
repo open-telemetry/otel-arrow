@@ -194,8 +194,10 @@ def _generate_message_pool(
         elif header_type == "rfc5424":
             timestamp = dt.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             header = f"{pri}1 {timestamp} {hostname} {tag} - - - "
-        else:
+        elif header_type.lower() == "none":
             header = ""
+        else:
+            raise ValueError(f"Unknown header_type: {header_type!r}")
 
         syslog_message = f"{header}{msg}\n"
 
@@ -552,7 +554,6 @@ class LoadGenerator:
                 batch = [random.choice(pool) for _ in range(batch_size)]
                 batch_buffers.append(b''.join(batch))
 
-        batch_total_size = len(batch_buffers[0])
         batch_idx = 0
 
         # Accumulate metrics locally between flushes to keep lock contention low
@@ -562,10 +563,11 @@ class LoadGenerator:
         next_send_time = time.perf_counter()
         while not self.stop_event.is_set():
             try:
-                sock.sendall(batch_buffers[batch_idx])
+                buf = batch_buffers[batch_idx]
+                sock.sendall(buf)
                 batch_idx = (batch_idx + 1) % len(batch_buffers)
                 acc.sent += args["batch_size"]
-                acc.bytes_sent += batch_total_size
+                acc.bytes_sent += len(buf)
             except Exception as e:
                 print(f"Thread {thread_id}: Failed to send syslog batch: {e}")
                 acc.failed += args["batch_size"]
