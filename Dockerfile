@@ -7,7 +7,8 @@
 # Rather than building a bespoke collector in this repository, we use the
 # upstream OpenTelemetry Collector Contrib distribution, which already ships
 # the `otelarrow` receiver and exporter alongside the OTLP components and the
-# other accessories previously listed in otelarrowcol-build.yaml.
+# other accessories exercised by the examples (see collector/BUILDING.md and
+# collector/examples/).
 #
 # This image is consumed in two ways:
 #   * directly, as the `otelarrowcol` image used by the pipeline perf tests; and

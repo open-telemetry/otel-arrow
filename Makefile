@@ -49,10 +49,10 @@ docker-otelarrowcol:
 .PHONY: otelarrowcol
 otelarrowcol: docker-otelarrowcol
 	mkdir -p bin
-	docker rm -f otelarrowcol-extract >/dev/null 2>&1 || true
-	docker create --name otelarrowcol-extract $(OTELARROWCOL_IMAGE)
-	docker cp otelarrowcol-extract:/otelcol-contrib bin/otelarrowcol
-	docker rm -f otelarrowcol-extract
+	cid=$$(docker create $(OTELARROWCOL_IMAGE)) || exit 1; \
+	docker cp $$cid:/otelcol-contrib bin/otelarrowcol; status=$$?; \
+	docker rm -f $$cid >/dev/null 2>&1 || true; \
+	exit $$status
 
 # Install chloggen at a pinned version. Used by both contributors (via
 # `make chlog-new-{go,rust}`) and the release workflows (via

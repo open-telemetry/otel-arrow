@@ -17,23 +17,24 @@ methods document in [BUILDING](../BUILDING.md).
   stream lifetimes to exercise gRPC stream failure modes.
 
 For each example directory, change your working directory to the example.
-Set a `COLLECTOR` in your shell according to the method used in
-[BUILDING](../BUILDING.md).
+Define a `collector` shell function according to the method used in
+[BUILDING](../BUILDING.md). Each example then invokes it as `collector
+--config <file>`, which forwards arguments safely via `"$@"`.
 
 If you ran the Collector Contrib distribution image directly,
 
 ```shell
-COLLECTOR="docker run --rm -v `pwd`:/config -w /config otel/opentelemetry-collector-contrib:latest"
+collector() { docker run --rm -v "$(pwd)":/config -w /config otel/opentelemetry-collector-contrib:latest "$@"; }
 ```
 
 if you built the `otelarrowcol` image from this repository,
 
 ```shell
-COLLECTOR="docker run --rm -v `pwd`:/config -w /config otelarrowcol"
+collector() { docker run --rm -v "$(pwd)":/config -w /config otelarrowcol "$@"; }
 ```
 
 and if you extracted the collector binary with `make otelarrowcol`,
 
 ```shell
-COLLECTOR=../../../bin/otelarrowcol
+collector() { ../../../bin/otelarrowcol "$@"; }
 ```

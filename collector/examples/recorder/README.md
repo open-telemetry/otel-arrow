@@ -4,11 +4,11 @@ First, obtain a collector that includes the OTAP components -- see
 [BUILDING](../../BUILDING.md) (for example, run `make otelarrowcol` in the
 top-level directory to extract a `./bin/otelarrowcol` binary).
 
-To execute the data recorder, with `$COLLECTOR` set as described in the
-[examples README](../README.md):
+To execute the data recorder, with the `collector` function defined as
+described in the [examples README](../README.md):
 
 ```shell
-$COLLECTOR --config target.yaml
+collector --config target.yaml
 ```
 
 During this phase, data received is copied through a "loopback" Arrow pipeline
@@ -34,7 +34,7 @@ Then, to re-exercise the same data though an Arrow pipeline using data recorded
 in the first step, run:
 
 ```shell
-$COLLECTOR --config replay.yaml
+collector --config replay.yaml
 ```
 
 Note that this example only supports traces and metrics.  Logs are not supported
