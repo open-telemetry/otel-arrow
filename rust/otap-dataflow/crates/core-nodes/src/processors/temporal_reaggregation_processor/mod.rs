@@ -34,7 +34,7 @@ use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
 use otap_df_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
 use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::views::otap::DecodedOtapArrowRecords;
+use otap_df_pdata::views::otap::{DecodedOtapArrowRecords, otap_metrics_have_aggregatable_metrics};
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
 use otap_df_pdata_views::views::common::InstrumentationScopeView;
@@ -605,13 +605,9 @@ impl TemporalReaggregationProcessor {
 
     /// Parse and process a metrics pdata payload.
     ///
-    /// # Returns
-    ///
-    /// - `Ok(ProcessResult::FullPassthrough)` if nothing in the batch is aggregatable
-    ///   and the original pdata should be sent downstream as-is.
-    /// - `Ok(ProcessResult::Passthrough(records))` if some metrics were non-aggregatable
-    ///   and need to be sent downstream immediately.
-    /// - `Ok(ProcessResult::AllAggregated)` if all metrics were aggregatable.
+    /// OTAP Arrow records first run a root metrics batch preflight. If no metrics
+    /// are aggregatable, the original pdata is forwarded unchanged without
+    /// decoding child IDs or building a full metrics view.
     async fn process_metric_pdata(
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
@@ -619,6 +615,25 @@ impl TemporalReaggregationProcessor {
     ) -> Result<(), Error> {
         let result = match pdata.payload_ref() {
             OtapPayload::OtapArrowRecords(records) => {
+                let has_aggregatable_metrics = match otap_metrics_have_aggregatable_metrics(records)
+                {
+                    Ok(has_aggregatable_metrics) => has_aggregatable_metrics,
+                    Err(e) => {
+                        otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
+                        self.metrics.batches_rejected.inc();
+                        let msg = format!("Failed to create view: {:#}", e);
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(msg, pdata))
+                            .await?;
+
+                        return Ok(());
+                    }
+                };
+
+                if !has_aggregatable_metrics {
+                    return Ok(effect_handler.send_message_with_source_node(pdata).await?);
+                }
+
                 let decoded_records = match DecodedOtapArrowRecords::clone_and_decode(records) {
                     Ok(decoded_records) => decoded_records,
                     Err(e) => {
