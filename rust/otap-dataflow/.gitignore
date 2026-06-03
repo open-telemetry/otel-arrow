@@ -35,3 +35,7 @@ resolved-schema.yaml
 
 # Ignore the temporary repo dir created by `cargo xtask history` command
 history-temp-repo/
+
+# ETW receiver Parquet/durable-buffer output
+etw_output/
+etw_buffer/
