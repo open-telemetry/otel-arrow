@@ -30,12 +30,13 @@ jobs:
           exempt-issue-labels: "do-not-stale"
           # Pull request settings
           stale-pr-message: >
-            This pull request has been marked as stale due to lack of recent activity.
-            It will be closed in 7 days if no further activity occurs.
-            If this PR is still relevant, please comment or push new commits to keep it active.
-            If your PR was closed, you can reopen it to continue working on it.
+            Thank you for your contribution! This PR has been automatically marked as stale because it has not had activity in the last 14 days. This may be due to a delay in review on our side or awaiting a response from you; either is fine, and we appreciate your patience.
+
+            It will be closed in 7 days if no further activity occurs. Pushing a new commit, updating from main branch, or commenting will remove the stale label and keep the PR open.
+          close-pr-message: >
+            This PR has been closed due to inactivity. Thank you again for the contribution; please feel free to reopen this PR (or open a new one) if you'd like to continue the work.
           stale-pr-label: "stale"
-          days-before-pr-stale: 7
+          days-before-pr-stale: 14
           days-before-pr-close: 7
           exempt-pr-labels: "do-not-stale"
           # General settings
