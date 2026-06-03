@@ -27,11 +27,6 @@ groups:
               database: "otap"
               username: "default"
               password: "TODO-TEST"
-              attributes:
-                trace:
-                  representation: string_map       # otap_array | json | string_map
-                log:
-                  representation: string_map       # otap_array | json | string_map
 
         connections:
           - from: receiver

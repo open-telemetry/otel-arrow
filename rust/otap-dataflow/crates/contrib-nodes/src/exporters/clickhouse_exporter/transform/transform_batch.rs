@@ -7,8 +7,7 @@
 //!
 //! Key components:
 //!
-//! - [`BatchTransformer`]: the main orchestrator. It holds per-payload [`TransformationPlan`]s (built
-//!   from exporter [`Config`]).
+//! - [`BatchTransformer`]: the main orchestrator. It holds per-payload [`TransformationPlan`]s.
 //!
 //! - [`MultiColumnOpResult`]: the intermediate representation produced by the multi-column stage,
 //!   containing the current column map plus an optional `old_id -> new_id` remap table used later to
@@ -19,7 +18,7 @@
 //! - **Multi-column stage** (`run_multi_column_stage`): runs `MultiColumnTransformOp`s that may:
 //!   - drop all columns,
 //!   - extract/group fields by an ID into list-typed columns (`build_list_arrays`),
-//!   - normalize/dedupe OTLP attributes into either a string map or a JSON/dictionary form while
+//!   - normalize/dedupe OTLP attributes into a string map while
 //!     producing an ID remap for downstream joins.
 //!
 //! - **Single-column stage** (`apply_column_ops`): applies `ColumnTransformOp`s to each original
@@ -60,11 +59,10 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
 use crate::exporters::clickhouse_exporter::arrays::get_u16_array_opt;
-use crate::exporters::clickhouse_exporter::config::Config;
 use crate::exporters::clickhouse_exporter::error::ClickhouseExporterError;
 use crate::exporters::clickhouse_exporter::transform::build_payload_transform_map;
 use crate::exporters::clickhouse_exporter::transform::transform_attributes::{
-    group_attributes_to_json_ser, group_attributes_to_map_str, group_rows_by_id,
+    group_attributes_to_map_str, group_rows_by_id,
 };
 use crate::exporters::clickhouse_exporter::transform::transform_column::{
     ColumnOpCtx, apply_one_op,
@@ -85,10 +83,15 @@ pub(crate) struct MultiColumnOpResult {
 pub struct BatchTransformer {
     payload_transform_plans: HashMap<ArrowPayloadType, TransformationPlan>,
 }
+impl Default for BatchTransformer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl BatchTransformer {
     /// Create a new batch transformer from static payload transformation plans.
-    pub fn new_from_config(config: &Config) -> Self {
-        let payload_transform_plans = build_payload_transform_map(config);
+    pub fn new() -> Self {
+        let payload_transform_plans = build_payload_transform_map();
         Self {
             payload_transform_plans,
         }
@@ -505,25 +508,6 @@ fn run_multi_column_stage(
                     _ = columns.insert(consts::ATTRIBUTES.into(), Arc::new(attr_col));
                 }
             }
-            // This transforms an `Attribute` payload OTAP representation into a DictionaryArray of Uint32Type to generic bytes. It's used when json is
-            // used for one of the primary attributes columns (both inline or lookup storage).
-            MultiColumnTransformOp::AttributesToJSONString => {
-                if let Some((deduped_parent_id_col, attr_col)) =
-                    group_attributes_to_json_ser(batch)?
-                {
-                    columns.clear();
-                    // Build lookup table for more efficient inlining.
-                    let mut old_to_new_map: HashMap<u32, u32> =
-                        HashMap::with_capacity(deduped_parent_id_col.len());
-                    for i in 0..deduped_parent_id_col.len() {
-                        _ = old_to_new_map.insert(deduped_parent_id_col.value(i), i as u32);
-                    }
-                    remapped_ids = Some(old_to_new_map);
-                    // deduped_parent_id_col is not necessarily in the same order as the original parent IDs, but the lookup table and inline method don't care.
-                    _ = columns.insert(consts::PARENT_ID.into(), Arc::new(deduped_parent_id_col));
-                    _ = columns.insert(consts::ATTRIBUTES.into(), Arc::new(attr_col));
-                }
-            }
         }
     }
 
@@ -846,7 +830,6 @@ mod apply_column_ops_tests {
             ch_consts::RESOURCE_ID.into(),
             vec![ColumnTransformOp::InlineAttribute(
                 ArrowPayloadType::ResourceAttrs,
-                crate::exporters::clickhouse_exporter::config::AttributeRepresentation::StringMap,
             )],
         )]);
 
@@ -936,14 +919,12 @@ mod apply_column_ops_tests {
                 ch_consts::RESOURCE_ID.into(),
                 vec![ColumnTransformOp::InlineAttribute(
                     ArrowPayloadType::ResourceAttrs,
-                    crate::exporters::clickhouse_exporter::config::AttributeRepresentation::StringMap,
                 )],
             ),
             (
                 ch_consts::SCOPE_ID.into(),
                 vec![ColumnTransformOp::InlineAttribute(
                     ArrowPayloadType::ScopeAttrs,
-                    crate::exporters::clickhouse_exporter::config::AttributeRepresentation::StringMap,
                 )],
             ),
         ]);
@@ -1128,7 +1109,6 @@ mod realistic_otap_tests {
     use prost::Message;
 
     use super::BatchTransformer;
-    use crate::exporters::clickhouse_exporter::config::{Config, ConfigPatch};
     use crate::exporters::clickhouse_exporter::consts as ch_consts;
     use crate::exporters::clickhouse_exporter::transform::transform_batch::{
         MultiColumnOpResult, apply_column_ops, run_multi_column_stage,
@@ -1136,33 +1116,6 @@ mod realistic_otap_tests {
     use crate::exporters::clickhouse_exporter::transform::transform_plan::{
         MultiColumnTransformOp, TransformationPlan,
     };
-
-    fn test_config() -> Config {
-        let json = serde_json::json!({
-            "endpoint": "http://localhost:8123",
-            "database": "otap",
-            "username": "user",
-            "password": "pass"
-        });
-        let patch: ConfigPatch =
-            serde_json::from_value(json).expect("valid clickhouse config patch");
-        Config::from_patch(patch)
-    }
-
-    fn test_config_with_resource_json() -> Config {
-        let json = serde_json::json!({
-            "endpoint": "http://localhost:8123",
-            "database": "otap",
-            "username": "user",
-            "password": "pass",
-            "attributes": {
-                "resource": { "representation": "json" }
-            }
-        });
-        let patch: ConfigPatch =
-            serde_json::from_value(json).expect("valid clickhouse config patch");
-        Config::from_patch(patch)
-    }
 
     fn logs_to_arrow_records(request: ExportLogsServiceRequest) -> OtapArrowRecords {
         let mut buf = Vec::new();
@@ -1463,7 +1416,7 @@ mod realistic_otap_tests {
 
     #[test]
     fn apply_plan_logs_fixture_produces_clickhouse_ready_logs_batch() {
-        let mut transformer = BatchTransformer::new_from_config(&test_config());
+        let mut transformer = BatchTransformer::new();
         let arrow_records = logs_to_arrow_records(ExportLogsServiceRequest {
             resource_logs: fixtures::logs_with_full_resource_and_scope().resource_logs,
         });
@@ -1500,7 +1453,7 @@ mod realistic_otap_tests {
 
     #[test]
     fn apply_plan_logs_preserves_resource_and_log_shaping_with_realistic_fixture() {
-        let mut transformer = BatchTransformer::new_from_config(&test_config());
+        let mut transformer = BatchTransformer::new();
         let arrow_records = logs_to_arrow_records(build_logs_with_service_name());
 
         let results = transformer
@@ -1536,7 +1489,7 @@ mod realistic_otap_tests {
 
     #[test]
     fn apply_plan_logs_inlines_resource_and_scope_attribute_values() {
-        let mut transformer = BatchTransformer::new_from_config(&test_config());
+        let mut transformer = BatchTransformer::new();
         let arrow_records = logs_to_arrow_records(build_logs_with_service_name());
 
         let results = transformer
@@ -1613,7 +1566,7 @@ mod realistic_otap_tests {
             .get(ArrowPayloadType::LogAttrs)
             .expect("log attrs payload must exist");
 
-        let plan = TransformationPlan::from_config(&ArrowPayloadType::Logs, &test_config());
+        let plan = TransformationPlan::from_config(&ArrowPayloadType::Logs);
         let mut multi: HashMap<ArrowPayloadType, MultiColumnOpResult> = HashMap::new();
         multi.insert(
             ArrowPayloadType::Logs,
@@ -1668,7 +1621,7 @@ mod realistic_otap_tests {
 
     #[test]
     fn apply_plan_spans_fixture_inlines_child_payloads_and_core_columns() {
-        let mut transformer = BatchTransformer::new_from_config(&test_config());
+        let mut transformer = BatchTransformer::new();
         let arrow_records = traces_to_arrow_records(build_traces_with_children());
 
         let results = transformer
@@ -1729,22 +1682,5 @@ mod realistic_otap_tests {
                 "intermediate column {unwanted} must not appear in the final spans batch"
             );
         }
-    }
-
-    #[test]
-    fn apply_plan_logs_json_attribute_mode_keeps_realistic_batch_transformable() {
-        let mut transformer = BatchTransformer::new_from_config(&test_config_with_resource_json());
-        let arrow_records = logs_to_arrow_records(build_logs_with_service_name());
-
-        let results = transformer
-            .apply_plan(arrow_records)
-            .expect("transform logs in json mode");
-        let batch = results
-            .get(&ArrowPayloadType::Logs)
-            .expect("logs batch must exist");
-
-        let names = column_names(batch);
-        assert!(names.iter().any(|name| name == ch_consts::CH_BODY));
-        assert!(names.iter().any(|name| name == ch_consts::CH_EVENT_NAME));
     }
 }

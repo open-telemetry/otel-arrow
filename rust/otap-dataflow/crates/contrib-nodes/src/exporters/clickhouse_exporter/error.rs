@@ -29,9 +29,6 @@ pub enum ClickhouseExporterError {
     #[error("Coercion Error: {error}")]
     CoercionError { error: String },
 
-    #[error("Serialization Error: {error}")]
-    SerializationError { error: String },
-
     #[error("Unsupported Payload Type: {error}")]
     UnsupportedPayload { error: String },
 

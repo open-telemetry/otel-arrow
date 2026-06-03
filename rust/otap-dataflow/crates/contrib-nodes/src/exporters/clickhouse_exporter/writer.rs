@@ -15,7 +15,7 @@
 //!
 //! - **Client initialization**
 //!   - `init_client_for_db` builds a ClickHouse client with endpoint/auth configuration and applies
-//!     required settings for JSON column support and optional async inserts.
+//!     optional async inserts.
 //!
 //! - **Database/schema initialization**
 //!   - `ensure_db` creates the configured database if missing.
@@ -29,7 +29,7 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_telemetry::metrics::MetricSet;
 
 use crate::exporters::clickhouse_exporter::{
-    config::{AttributeRepresentation, Config},
+    config::Config,
     error::ClickhouseExporterError,
     metrics::ClickhouseExporterMetrics,
     tables::{build_payload_destination_table_map, init_table, validate_identifier},
@@ -120,11 +120,6 @@ pub async fn init_client_for_db(
         .with_database(database)
         .with_username(config.username.clone())
         .with_password(config.password.clone());
-    if has_json_column(config) {
-        ch_builder = ch_builder
-            .with_setting("input_format_binary_read_json_as_string", 1)
-            .with_setting("allow_experimental_json_type", 1);
-    }
     if config.async_insert {
         ch_builder = ch_builder.with_setting("async_insert", 1);
     }
@@ -134,14 +129,6 @@ pub async fn init_client_for_db(
         .map_err(|e| ClickhouseExporterError::ClientConnectionError {
             error: format!("{e}"),
         })
-}
-
-fn has_json_column(config: &Config) -> bool {
-    config.attributes.log.representation == AttributeRepresentation::Json
-        || config.attributes.scope.representation == AttributeRepresentation::Json
-        || config.attributes.resource.representation == AttributeRepresentation::Json
-        || config.attributes.metric.representation == AttributeRepresentation::Json
-        || config.attributes.trace.representation == AttributeRepresentation::Json
 }
 
 /// Ensure db and all tables are initialized if required.

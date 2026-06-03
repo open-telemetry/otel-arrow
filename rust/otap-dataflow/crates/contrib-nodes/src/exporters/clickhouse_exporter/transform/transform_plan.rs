@@ -28,8 +28,8 @@
 //!
 //! ### Core Methods in `TransformationPlan`
 //!
-//! - **`from_config`**: Constructs a `TransformationPlan` based on a given `ArrowPayloadType` and configuration.
-//!   Handles both column-level and multi-column transformations depending on the data type and configuration.
+//! - **`from_config`**: Constructs a `TransformationPlan` based on a given `ArrowPayloadType`.
+//!   Handles both column-level and multi-column transformations depending on the data type.
 //!
 //! - **`merge_from`**: Merges another `TransformationPlan` into the current one, combining column-level and multi-column-level transformations.
 //!
@@ -55,13 +55,12 @@
 //! - To add new column-level transformations, extend the `ColumnTransformOp` enum and add any necessary
 //!   business logic in the respective handling functions.
 //! - To add new multi-column transformations, extend the `MultiColumnTransformOp` enum and define the application logic.
-//! - New payload types can be added by extending the logic in `from_config` to account for their specific attribute handling.
+//! - New payload types can be added by extending the logic in `from_config`.
 //!
 use std::collections::HashMap;
 
 use arrow::datatypes::DataType;
 
-use crate::exporters::clickhouse_exporter::config::{AttributeRepresentation, Config};
 use crate::exporters::clickhouse_exporter::consts as ch_consts;
 use otap_df_pdata::{proto::opentelemetry::arrow::v1::ArrowPayloadType, schema::consts};
 
@@ -124,7 +123,7 @@ pub enum ColumnTransformOp {
     CoerceBodyToString(CoerceStructStringSpec),
 
     /// Inline the attribute into the corresponding payload.
-    InlineAttribute(ArrowPayloadType, AttributeRepresentation),
+    InlineAttribute(ArrowPayloadType),
 
     /// Inline ListArray values containing 'child' records to the main signal batch (e.g. spanEvents).
     InlineChildLists(ArrowPayloadType),
@@ -161,8 +160,6 @@ pub struct ExtractGroupedFieldSpec {
 /// Describes the operations that should be applied across multiple columns.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MultiColumnTransformOp {
-    /// Group attribute keys and values with the same ID into a single JSON string
-    AttributesToJSONString,
     /// Group attribute keys and values with the same ID into a single map(string,string)
     AttributesToStringMap,
     /// Extract fields from one payload type, grouped by an id field (e.g. parent id).
@@ -188,14 +185,14 @@ pub enum MultiColumnTransformOp {
 /// - `column_operations`: Stores the per-column transformations. This encapsulates
 ///   all transformations applied to individual columns in the dataset.
 /// - `multi_column_ops`: A list of transformations that apply to multiple columns,
-///   such as flattening nested fields or converting attributes into JSON.
+///   such as flattening nested fields or converting attributes into a string map.
 pub struct TransformationPlan {
     /// Encapsulates operations applied to individual columns, such as renaming,
     /// type casting, or re-indexing attributes.
     pub column_ops: ColumnOperations,
 
     /// Stores transformations that affect multiple columns. Examples include
-    /// dropping all attributes, converting key-value pairs into JSON, and
+    /// dropping all attributes, converting key-value pairs into a string map, and
     /// extracting grouped fields from nested attributes.
     pub multi_column_ops: Vec<MultiColumnTransformOp>,
 
@@ -237,10 +234,10 @@ impl TransformationPlan {
     ///
     /// The `from_config` method is a key entry point for generating a transformation plan tailored
     /// to a specific `ArrowPayloadType`. It applies logic based on the given payload type (e.g., `Logs`,
-    /// `Spans`, etc.) and the configuration specified.
+    /// `Spans`, etc.).
     ///
     /// This method initializes a plan and defines transformations applicable to each column according
-    /// to the provided `payload_type` and `Config`. This includes flattening struct fields, reindexing,
+    /// to the provided `payload_type`. This includes flattening struct fields, reindexing,
     /// inlining attributes, renaming columns, and applying any other column-based or multi-column-based
     /// operations.
     ///
@@ -249,38 +246,27 @@ impl TransformationPlan {
     /// * `payload_type` - The type of payload for which the transformation plan is being created,
     ///   represented as an `ArrowPayloadType` enum. Examples include `ArrowPayloadType::Logs`,
     ///   `ArrowPayloadType::Spans`, etc.
-    /// * `config` - The configuration specifying how various attributes such as `resource`,
-    ///   `scope`, and `log` are to be handled. This typically includes information about storage,
-    ///   type representation, and other parameters.
     ///
     /// # Returns
     ///
     /// Returns a fully constructed `TransformationPlan` that contains both column-level and
     /// multi-column-level transformations.
-    pub fn from_config(payload_type: &ArrowPayloadType, config: &Config) -> Self {
+    pub fn from_config(payload_type: &ArrowPayloadType) -> Self {
         let mut tp = TransformationPlan::new();
 
         match payload_type {
-            ArrowPayloadType::Logs => tp.configure_for_logs(config),
-            ArrowPayloadType::Spans => tp.configure_for_spans(config),
+            ArrowPayloadType::Logs => tp.configure_for_logs(),
+            ArrowPayloadType::Spans => tp.configure_for_spans(),
             // Handling for these types includes conversion to inline ListArrays (e.g. each span row will get Links.SpanId: [])
             ArrowPayloadType::SpanLinks => tp.configure_for_span_links(),
             ArrowPayloadType::SpanEvents => tp.configure_for_span_events(),
             ArrowPayloadType::SpanLinkAttrs => tp.configure_for_inline_attributes(),
             ArrowPayloadType::SpanEventAttrs => tp.configure_for_inline_attributes(),
-            // Attributes are converted to the desired format (json, map[string, string]) for insertion.
-            ArrowPayloadType::ResourceAttrs => {
-                tp.configure_for_attributes(&config.attributes.resource.representation)
-            }
-            ArrowPayloadType::ScopeAttrs => {
-                tp.configure_for_attributes(&config.attributes.scope.representation)
-            }
-            ArrowPayloadType::LogAttrs => {
-                tp.configure_for_attributes(&config.attributes.log.representation)
-            }
-            ArrowPayloadType::SpanAttrs => {
-                tp.configure_for_attributes(&config.attributes.trace.representation)
-            }
+            // Attributes are converted to a map(string, string) for insertion.
+            ArrowPayloadType::ResourceAttrs
+            | ArrowPayloadType::ScopeAttrs
+            | ArrowPayloadType::LogAttrs
+            | ArrowPayloadType::SpanAttrs => tp.configure_for_attributes(),
             // TODO: [support_new_signal] add payload names & config methods here
             _ => unimplemented!("Unsupported payload type: {:?}", payload_type),
         }
@@ -289,16 +275,13 @@ impl TransformationPlan {
     }
 
     /// Handle transformation logic for attribute payload types
-    fn configure_for_attributes(&mut self, repr: &AttributeRepresentation) {
-        match repr {
-            AttributeRepresentation::StringMap => self.attributes_to_string_map(),
-            AttributeRepresentation::Json => self.attributes_to_json(),
-        }
+    fn configure_for_attributes(&mut self) {
+        self.attributes_to_string_map();
         self.clear_single_column_ops();
     }
 
     /// Handle transformation logic for Logs
-    fn configure_for_logs(&mut self, config: &Config) {
+    fn configure_for_logs(&mut self) {
         // log tables are always rebuilt / sent to clickhouse
         self.recreate_batch();
         self.apply_flattening(
@@ -313,11 +296,8 @@ impl TransformationPlan {
             true,
         );
 
-        self.column_ops.inline_attributes(
-            ch_consts::RESOURCE_ID,
-            ArrowPayloadType::ResourceAttrs,
-            config.attributes.resource.representation.clone(),
-        );
+        self.column_ops
+            .inline_attributes(ch_consts::RESOURCE_ID, ArrowPayloadType::ResourceAttrs);
         self.column_ops.extract_map_value(
             ch_consts::CH_RESOURCE_ATTRIBUTES,
             "service.name",
@@ -339,16 +319,10 @@ impl TransformationPlan {
             true,
         );
 
-        self.column_ops.inline_attributes(
-            ch_consts::SCOPE_ID,
-            ArrowPayloadType::ScopeAttrs,
-            config.attributes.scope.representation.clone(),
-        );
-        self.column_ops.inline_attributes(
-            consts::ID,
-            ArrowPayloadType::LogAttrs,
-            config.attributes.log.representation.clone(),
-        );
+        self.column_ops
+            .inline_attributes(ch_consts::SCOPE_ID, ArrowPayloadType::ScopeAttrs);
+        self.column_ops
+            .inline_attributes(consts::ID, ArrowPayloadType::LogAttrs);
         self.column_ops
             .rename_column(consts::TIME_UNIX_NANO, ch_consts::CH_TIMESTAMP);
         self.column_ops
@@ -370,7 +344,7 @@ impl TransformationPlan {
     }
 
     /// Handle transformation logic for Spans
-    fn configure_for_spans(&mut self, config: &Config) {
+    fn configure_for_spans(&mut self) {
         // span tables are always rebuilt / sent to clickhouse
         self.recreate_batch();
         self.apply_flattening(
@@ -385,11 +359,8 @@ impl TransformationPlan {
             true,
         );
 
-        self.column_ops.inline_attributes(
-            ch_consts::RESOURCE_ID,
-            ArrowPayloadType::ResourceAttrs,
-            config.attributes.resource.representation.clone(),
-        );
+        self.column_ops
+            .inline_attributes(ch_consts::RESOURCE_ID, ArrowPayloadType::ResourceAttrs);
         self.apply_flattening(
             consts::SCOPE,
             HashMap::from([
@@ -401,7 +372,7 @@ impl TransformationPlan {
         );
 
         // Add the ListArray values returned by multi-column op "ExtractChildFields" inline in the main signal batch.
-        // Must come before inline_attributes against the main ID column since it might be dropped depending on representation.
+        // Must come before inline_attributes against the main ID column since it might be dropped.
         self.column_ops
             .inline_child_rb_arrays(consts::ID, ArrowPayloadType::SpanEvents);
         self.column_ops
@@ -420,11 +391,8 @@ impl TransformationPlan {
             ch_consts::CH_LINKS_ATTRIBUTES,
         );
 
-        self.column_ops.inline_attributes(
-            consts::ID,
-            ArrowPayloadType::SpanAttrs,
-            config.attributes.trace.representation.clone(),
-        );
+        self.column_ops
+            .inline_attributes(consts::ID, ArrowPayloadType::SpanAttrs);
 
         self.column_ops
             .rename_column(consts::START_TIME_UNIX_NANO, ch_consts::CH_TIMESTAMP);
@@ -511,13 +479,6 @@ impl TransformationPlan {
     /// Clears all single-column operations.
     pub fn clear_single_column_ops(&mut self) {
         self.column_ops.clear();
-    }
-
-    /// Transform attribute key-value pairs into JSON strings.
-    pub fn attributes_to_json(&mut self) {
-        self.multi_column_ops
-            .push(MultiColumnTransformOp::AttributesToJSONString);
-        self.column_ops.noop_column(consts::ATTRIBUTES);
     }
 
     /// Transform attribute key-value pairs into a `HashMap<String, String>`.
@@ -617,16 +578,8 @@ impl ColumnOperations {
     }
 
     /// Inline attributes for a column.
-    pub fn inline_attributes(
-        &mut self,
-        column: &str,
-        payload_type: ArrowPayloadType,
-        representation: AttributeRepresentation,
-    ) {
-        self.add_op(
-            column,
-            ColumnTransformOp::InlineAttribute(payload_type, representation),
-        );
+    pub fn inline_attributes(&mut self, column: &str, payload_type: ArrowPayloadType) {
+        self.add_op(column, ColumnTransformOp::InlineAttribute(payload_type));
     }
 
     /// Inline child record batch arrays for a column.
@@ -692,8 +645,6 @@ impl ColumnOperations {
 
 #[cfg(test)]
 mod tests {
-    use crate::exporters::clickhouse_exporter::config::ConfigPatch;
-
     use super::*;
 
     #[test]
@@ -745,14 +696,14 @@ mod tests {
         };
 
         // Add multiple transformations
-        plan.attributes_to_json();
+        plan.attributes_to_string_map();
         plan.attributes_to_string_map();
 
         // Check that multi-column transformations are added correctly
         assert_eq!(plan.multi_column_ops.len(), 2);
         assert!(matches!(
             plan.multi_column_ops[0],
-            MultiColumnTransformOp::AttributesToJSONString
+            MultiColumnTransformOp::AttributesToStringMap
         ));
         assert!(matches!(
             plan.multi_column_ops[1],
@@ -760,20 +711,9 @@ mod tests {
         ));
     }
 
-    fn test_config() -> Config {
-        let json = serde_json::json!({
-            "endpoint": "http://localhost:8123",
-            "database": "otap",
-            "username": "user",
-            "password": "pass"
-        });
-        let patch: ConfigPatch = serde_json::from_value(json).unwrap();
-        Config::from_patch(patch)
-    }
-
     #[test]
     fn test_logs_plan_has_trace_flags_and_scope_schema_url() {
-        let plan = TransformationPlan::from_config(&ArrowPayloadType::Logs, &test_config());
+        let plan = TransformationPlan::from_config(&ArrowPayloadType::Logs);
 
         let scope_ops = plan
             .column_ops
@@ -826,7 +766,7 @@ mod tests {
 
     #[test]
     fn test_spans_plan_does_not_inline_scope_attributes() {
-        let plan = TransformationPlan::from_config(&ArrowPayloadType::Spans, &test_config());
+        let plan = TransformationPlan::from_config(&ArrowPayloadType::Spans);
 
         assert!(
             !plan
@@ -836,7 +776,7 @@ mod tests {
                 .flatten()
                 .any(|op| matches!(
                     op,
-                    ColumnTransformOp::InlineAttribute(ArrowPayloadType::ScopeAttrs, _)
+                    ColumnTransformOp::InlineAttribute(ArrowPayloadType::ScopeAttrs)
                 )),
             "spans plan should not inline ScopeAttrs for traces"
         );
@@ -912,7 +852,7 @@ mod tests {
 
     #[test]
     fn test_spans_plan_converts_kind_to_string() {
-        let plan = TransformationPlan::from_config(&ArrowPayloadType::Spans, &test_config());
+        let plan = TransformationPlan::from_config(&ArrowPayloadType::Spans);
 
         assert!(
             plan.column_ops
@@ -930,7 +870,7 @@ mod tests {
 
     #[test]
     fn test_spans_plan_converts_status_code_to_string() {
-        let plan = TransformationPlan::from_config(&ArrowPayloadType::Spans, &test_config());
+        let plan = TransformationPlan::from_config(&ArrowPayloadType::Spans);
 
         // status.code is extracted by flattening the status struct into CH_STATUS_CODE,
         // then a second-pass EnumToString op converts the Int32 to a proto string.
@@ -950,7 +890,7 @@ mod tests {
 
     #[test]
     fn test_logs_plan_casts_severity_number_to_uint8() {
-        let plan = TransformationPlan::from_config(&ArrowPayloadType::Logs, &test_config());
+        let plan = TransformationPlan::from_config(&ArrowPayloadType::Logs);
 
         assert!(
             plan.column_ops

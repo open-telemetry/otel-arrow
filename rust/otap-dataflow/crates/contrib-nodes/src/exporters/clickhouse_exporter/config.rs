@@ -11,13 +11,6 @@
 //!   - [`Config`] is the normalized runtime configuration produced by [`Config::from_patch`],
 //!     including defaulting (e.g. `async_insert`) and table config expansion.
 //!
-//! - Attribute configuration primitives:
-//!   - [`AttributeRepresentation`] selects how attribute values are encoded in ClickHouse
-//!     (string map or JSON).
-//!   - [`AttributeConfig`] holds the chosen representation for an attribute group.
-//!   - [`AttributesConfig`] groups attribute configs for resource, scope, log, metric, and trace
-//!     attributes.
-//!
 //! - Table configuration primitives:
 //!   - [`TableEngine`] describes the ClickHouse engine name and optional parameters.
 //!   - [`DefaultTableConfig`] provides global defaults (TTL interval, engine, schema creation).
@@ -43,9 +36,6 @@ pub struct ConfigPatch {
     pub async_insert: Option<bool>,
 
     #[serde(default)]
-    pub attributes: AttributesConfig,
-
-    #[serde(default)]
     pub table_defaults: DefaultTableConfig,
 
     #[serde(default)]
@@ -65,8 +55,6 @@ pub struct Config {
     pub password: String,
     /// Use anync insert
     pub async_insert: bool,
-    /// Attribute configurations
-    pub attributes: AttributesConfig,
     pub table_defaults: DefaultTableConfig,
     pub tables: TablesConfig,
 }
@@ -83,38 +71,10 @@ impl Config {
             username: p.username,
             password: p.password,
             async_insert,
-            attributes: p.attributes,
             table_defaults: p.table_defaults,
             tables,
         }
     }
-}
-
-/// How attribute values are represented in ClickHouse
-#[derive(Debug, Deserialize, Clone, PartialEq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum AttributeRepresentation {
-    #[default]
-    StringMap,
-    Json,
-}
-
-/// All attribute groups
-#[derive(Debug, Deserialize, Clone, Default)]
-#[serde(default, deny_unknown_fields)]
-pub struct AttributesConfig {
-    pub resource: AttributeConfig,
-    pub scope: AttributeConfig,
-    pub log: AttributeConfig,
-    pub metric: AttributeConfig,
-    pub trace: AttributeConfig,
-}
-
-/// Configuration for a single attribute group
-#[derive(Debug, Deserialize, Clone, Default)]
-#[serde(default)]
-pub struct AttributeConfig {
-    pub representation: AttributeRepresentation,
 }
 
 /// Configuration for a ClickHouse table engine
@@ -327,17 +287,6 @@ mod tests {
             "username": "clickhouse",
             "password": "secret",
             "async_insert": false,
-            "attributes": {
-                "resource": {
-                    "representation": "json"
-                },
-                "scope": {
-                    "representation": "json"
-                },
-                "log": {
-                    "representation": "string_map"
-                }
-            },
             "table_defaults": {
                 "ttl_interval": "48 HOUR",
                 "engine": {
@@ -365,34 +314,6 @@ mod tests {
         assert_eq!(config.username, "clickhouse");
         assert_eq!(config.password, "secret");
         assert!(!config.async_insert);
-
-        // --- Attributes defaults & overrides ---
-        assert_eq!(
-            config.attributes.resource.representation,
-            AttributeRepresentation::Json
-        );
-
-        // Overridden log attributes
-        assert_eq!(
-            config.attributes.log.representation,
-            AttributeRepresentation::StringMap
-        );
-
-        // Defaulted attribute groups
-        assert_eq!(
-            config.attributes.scope.representation,
-            AttributeRepresentation::Json
-        );
-
-        // Unspecified attributes default to StringMap
-        assert_eq!(
-            config.attributes.metric.representation,
-            AttributeRepresentation::StringMap
-        );
-        assert_eq!(
-            config.attributes.trace.representation,
-            AttributeRepresentation::StringMap
-        );
 
         // --- Table defaults ---
         assert_eq!(
@@ -432,27 +353,6 @@ mod tests {
     }
 
     #[test]
-    fn test_attributes_config_rejects_unknown_fields() {
-        let json = serde_json::json!({
-            "resource": { "representation": "json" },
-            "unknown_group": { "representation": "json" }
-        });
-
-        let err = serde_json::from_value::<AttributesConfig>(json).unwrap_err();
-        assert!(err.to_string().contains("unknown field `unknown_group`"));
-    }
-
-    #[test]
-    fn test_attribute_representation_rejects_unknown_value() {
-        let json = serde_json::json!({
-            "representation": "yaml"
-        });
-
-        let err = serde_json::from_value::<AttributeConfig>(json).unwrap_err();
-        assert!(err.to_string().contains("unknown variant `yaml`"));
-    }
-
-    #[test]
     fn test_config_defaults_match_spec() {
         let json = serde_json::json!({
             "endpoint": "http://localhost:8123",
@@ -467,25 +367,5 @@ mod tests {
         assert!(config.async_insert);
         assert!(config.table_defaults.create_schema);
         assert_eq!(config.table_defaults.engine.name, "MergeTree");
-        assert_eq!(
-            config.attributes.resource.representation,
-            AttributeRepresentation::StringMap
-        );
-        assert_eq!(
-            config.attributes.scope.representation,
-            AttributeRepresentation::StringMap
-        );
-        assert_eq!(
-            config.attributes.log.representation,
-            AttributeRepresentation::StringMap
-        );
-        assert_eq!(
-            config.attributes.metric.representation,
-            AttributeRepresentation::StringMap
-        );
-        assert_eq!(
-            config.attributes.trace.representation,
-            AttributeRepresentation::StringMap
-        );
     }
 }

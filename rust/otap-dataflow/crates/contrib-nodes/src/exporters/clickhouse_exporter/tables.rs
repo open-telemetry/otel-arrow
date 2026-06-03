@@ -2,8 +2,8 @@
 //!
 //! This module is responsible for translating the exporter [`Config`] into concrete ClickHouse
 //! DDL (CREATE TABLE) for the OTAP (Arrow) payload types that are stored in ClickHouse.
-//! Attributes are always stored inline on the signal tables (logs/spans) using either JSON or
-//! a `Map(String, String)` representation.
+//! Attributes are always stored inline on the signal tables (logs/spans) using a
+//! `Map(LowCardinality(String), String)` representation.
 //!
 //! Key responsibilities:
 //!
@@ -13,7 +13,7 @@
 //!   effective engine/TTL/schema-creation behavior.
 //! - Produce a runtime lookup map of which destination table each signal payload should be inserted
 //!   into (`build_payload_destination_table_map`).
-//! - Create base tables according to representation rules (`init_table`, `build_table_sql`).
+//! - Create base tables (`init_table`, `build_table_sql`).
 //!
 //! The module also defines [`TableKind`] and [`TableEntry`] plus iterators over configured tables
 //! (via [`TablesConfig::iter_tables`] and [`MetricsTableConfig::iter`]) to drive initialization.
@@ -23,8 +23,7 @@ use clickhouse_arrow::{ArrowClient, Qid};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use crate::exporters::clickhouse_exporter::config::{
-    AttributeRepresentation, Config, DefaultTableConfig, MetricsTableConfig, TableConfig,
-    TableEngine, TablesConfig,
+    Config, DefaultTableConfig, MetricsTableConfig, TableConfig, TableEngine, TablesConfig,
 };
 use crate::exporters::clickhouse_exporter::consts as ch_consts;
 use crate::exporters::clickhouse_exporter::error::ClickhouseExporterError;
@@ -187,17 +186,6 @@ pub(crate) fn build_payload_destination_table_map(
     dst_tables
 }
 
-/// Clone an inline attribute column definition, overriding its ColumnType based on the
-/// configured attribute representation.
-fn attribute_column(base_col: &schema::Column, repr: &AttributeRepresentation) -> schema::Column {
-    let mut col = base_col.clone();
-    col.ch_type = match repr {
-        AttributeRepresentation::Json => schema::ColumnType::Json,
-        AttributeRepresentation::StringMap => schema::ColumnType::MapLCStringString,
-    };
-    col
-}
-
 fn build_table_sql(
     entry: &TableEntry<'_>,
     config: &Config,
@@ -236,10 +224,9 @@ fn build_table_sql(
                 schema::BODY_COLUMN.clone(),
                 schema::RESOURCE_SCHEMA_URL_COLUMN.clone(),
             ]);
-            builder.columns.push(attribute_column(
-                schema::INLINE_RESOURCE_ATTR_COLUMN,
-                &config.attributes.resource.representation,
-            ));
+            builder
+                .columns
+                .push(schema::INLINE_RESOURCE_ATTR_COLUMN.clone());
             builder
                 .columns
                 .push(schema::SCOPE_SCHEMA_URL_COLUMN.clone());
@@ -247,62 +234,20 @@ fn build_table_sql(
                 schema::SCOPE_NAME_COLUMN.clone(),
                 schema::SCOPE_VERSION_COLUMN.clone(),
             ]);
-            builder.columns.push(attribute_column(
-                schema::INLINE_SCOPE_ATTR_COLUMN,
-                &config.attributes.scope.representation,
-            ));
-            builder.columns.push(attribute_column(
-                schema::INLINE_LOG_ATTR_COLUMN,
-                &config.attributes.log.representation,
-            ));
+            builder
+                .columns
+                .push(schema::INLINE_SCOPE_ATTR_COLUMN.clone());
+            builder.columns.push(schema::INLINE_LOG_ATTR_COLUMN.clone());
             builder.columns.push(schema::EVENT_NAME_COLUMN.clone());
-
-            // JSON mode: add companion *Keys columns after their attribute columns
-            if config.attributes.resource.representation == AttributeRepresentation::Json {
-                builder
-                    .columns
-                    .push(schema::RESOURCE_ATTRIBUTES_KEYS_COLUMN.clone());
-            }
-            if config.attributes.scope.representation == AttributeRepresentation::Json {
-                builder
-                    .columns
-                    .push(schema::SCOPE_ATTRIBUTES_KEYS_COLUMN.clone());
-            }
-            if config.attributes.log.representation == AttributeRepresentation::Json {
-                builder
-                    .columns
-                    .push(schema::LOG_ATTRIBUTES_KEYS_COLUMN.clone());
-            }
 
             // Indexes
             builder.indexes.push(schema::IDX_TRACE_ID);
-            match config.attributes.resource.representation {
-                AttributeRepresentation::StringMap => {
-                    builder.indexes.push(schema::IDX_RES_ATTR_KEY);
-                    builder.indexes.push(schema::IDX_RES_ATTR_VALUE);
-                }
-                AttributeRepresentation::Json => {
-                    builder.indexes.push(schema::IDX_RES_ATTR_KEYS);
-                }
-            }
-            match config.attributes.scope.representation {
-                AttributeRepresentation::StringMap => {
-                    builder.indexes.push(schema::IDX_SCOPE_ATTR_KEY);
-                    builder.indexes.push(schema::IDX_SCOPE_ATTR_VALUE);
-                }
-                AttributeRepresentation::Json => {
-                    builder.indexes.push(schema::IDX_SCOPE_ATTR_KEYS);
-                }
-            }
-            match config.attributes.log.representation {
-                AttributeRepresentation::StringMap => {
-                    builder.indexes.push(schema::IDX_LOG_ATTR_KEY);
-                    builder.indexes.push(schema::IDX_LOG_ATTR_VALUE);
-                }
-                AttributeRepresentation::Json => {
-                    builder.indexes.push(schema::IDX_LOG_ATTR_KEYS);
-                }
-            }
+            builder.indexes.push(schema::IDX_RES_ATTR_KEY);
+            builder.indexes.push(schema::IDX_RES_ATTR_VALUE);
+            builder.indexes.push(schema::IDX_SCOPE_ATTR_KEY);
+            builder.indexes.push(schema::IDX_SCOPE_ATTR_VALUE);
+            builder.indexes.push(schema::IDX_LOG_ATTR_KEY);
+            builder.indexes.push(schema::IDX_LOG_ATTR_VALUE);
             builder.indexes.push(schema::IDX_LOWER_BODY);
 
             // Table properties matching Go exporter
@@ -332,31 +277,17 @@ fn build_table_sql(
                 schema::SPAN_KIND_COLUMN.clone(),
                 schema::SERVICE_NAME_COLUMN.clone(),
             ]);
-            builder.columns.push(attribute_column(
-                schema::INLINE_RESOURCE_ATTR_COLUMN,
-                &config.attributes.resource.representation,
-            ));
+            builder
+                .columns
+                .push(schema::INLINE_RESOURCE_ATTR_COLUMN.clone());
             builder.columns.extend_from_slice(&[
                 schema::SCOPE_NAME_COLUMN.clone(),
                 schema::SCOPE_VERSION_COLUMN.clone(),
             ]);
             // No ScopeAttributes for traces (matches Go exporter)
-            builder.columns.push(attribute_column(
-                schema::INLINE_SPAN_ATTR_COLUMN,
-                &config.attributes.trace.representation,
-            ));
-
-            // JSON mode: add companion *Keys columns
-            if config.attributes.resource.representation == AttributeRepresentation::Json {
-                builder
-                    .columns
-                    .push(schema::RESOURCE_ATTRIBUTES_KEYS_COLUMN.clone());
-            }
-            if config.attributes.trace.representation == AttributeRepresentation::Json {
-                builder
-                    .columns
-                    .push(schema::SPAN_ATTRIBUTES_KEYS_COLUMN.clone());
-            }
+            builder
+                .columns
+                .push(schema::INLINE_SPAN_ATTR_COLUMN.clone());
 
             builder.columns.extend_from_slice(&[
                 schema::DURATION_COLUMN.clone(),
@@ -369,15 +300,9 @@ fn build_table_sql(
                 .columns
                 .push(schema::EVENTS_TIMESTAMP_COLUMN.clone());
             builder.columns.push(schema::EVENTS_NAME_COLUMN.clone());
-            if config.attributes.trace.representation == AttributeRepresentation::Json {
-                builder
-                    .columns
-                    .push(schema::EVENTS_ATTRIBUTES_JSON_COLUMN.clone());
-            } else {
-                builder
-                    .columns
-                    .push(schema::EVENTS_ATTRIBUTES_COLUMN.clone());
-            }
+            builder
+                .columns
+                .push(schema::EVENTS_ATTRIBUTES_COLUMN.clone());
 
             // Links Nested columns
             builder.columns.push(schema::LINKS_TRACE_ID_COLUMN.clone());
@@ -385,36 +310,16 @@ fn build_table_sql(
             builder
                 .columns
                 .push(schema::LINKS_TRACE_STATE_COLUMN.clone());
-            if config.attributes.trace.representation == AttributeRepresentation::Json {
-                builder
-                    .columns
-                    .push(schema::LINKS_ATTRIBUTES_JSON_COLUMN.clone());
-            } else {
-                builder
-                    .columns
-                    .push(schema::LINKS_ATTRIBUTES_COLUMN.clone());
-            }
+            builder
+                .columns
+                .push(schema::LINKS_ATTRIBUTES_COLUMN.clone());
 
             // Indexes
             builder.indexes.push(schema::IDX_TRACE_ID);
-            match config.attributes.resource.representation {
-                AttributeRepresentation::StringMap => {
-                    builder.indexes.push(schema::IDX_RES_ATTR_KEY);
-                    builder.indexes.push(schema::IDX_RES_ATTR_VALUE);
-                }
-                AttributeRepresentation::Json => {
-                    builder.indexes.push(schema::IDX_RES_ATTR_KEYS);
-                }
-            }
-            match config.attributes.trace.representation {
-                AttributeRepresentation::StringMap => {
-                    builder.indexes.push(schema::IDX_SPAN_ATTR_KEY);
-                    builder.indexes.push(schema::IDX_SPAN_ATTR_VALUE);
-                }
-                AttributeRepresentation::Json => {
-                    builder.indexes.push(schema::IDX_SPAN_ATTR_KEYS);
-                }
-            }
+            builder.indexes.push(schema::IDX_RES_ATTR_KEY);
+            builder.indexes.push(schema::IDX_RES_ATTR_VALUE);
+            builder.indexes.push(schema::IDX_SPAN_ATTR_KEY);
+            builder.indexes.push(schema::IDX_SPAN_ATTR_VALUE);
             builder.indexes.push(schema::IDX_DURATION);
 
             // Table properties matching Go exporter
@@ -532,13 +437,12 @@ mod tests {
 
     use super::*;
 
-    fn base_config(attributes: serde_json::Value) -> Config {
+    fn base_config() -> Config {
         let json = serde_json::json!({
             "endpoint": "http://localhost:8123",
             "database": "otap",
             "username": "foo",
             "password": "bar",
-            "attributes": attributes,
         });
 
         let patch: ConfigPatch = serde_json::from_value(json).unwrap();
@@ -557,54 +461,30 @@ mod tests {
 
     #[test]
     fn snapshot_signal_tables() {
-        let cases = [
-            (
-                "map_attrs",
-                serde_json::json!({
-                    "resource": { "representation": "string_map" },
-                    "scope":    { "representation": "string_map" },
-                    "log":      { "representation": "string_map" },
-                    "trace":    { "representation": "string_map" },
-                }),
-            ),
-            (
-                "json_attrs",
-                serde_json::json!({
-                    "resource": { "representation": "json" },
-                    "scope":    { "representation": "json" },
-                    "log":      { "representation": "json" },
-                    "trace":    { "representation": "json" },
-                }),
-            ),
-        ];
-
         let signal_types = [TableKind::Logs, TableKind::Traces];
 
         for signal_type in signal_types {
-            for (name, attributes) in cases.clone() {
-                let config = base_config(attributes);
+            let config = base_config();
 
-                let entry = TableEntry {
-                    kind: signal_type,
-                    config: get_table_config(signal_type, &config),
-                };
+            let entry = TableEntry {
+                kind: signal_type,
+                config: get_table_config(signal_type, &config),
+            };
 
-                let sql = build_table_sql(&entry, &config)
-                    .expect("sql generation failed")
-                    .expect("signal table should always be created");
+            let sql = build_table_sql(&entry, &config)
+                .expect("sql generation failed")
+                .expect("signal table should always be created");
 
-                insta::with_settings!({
-                    prepend_module_to_snapshot => false,
-                    snapshot_path => "table_snapshots"
-                }, {
-                    insta::assert_snapshot!(format!(
-                        "{}_table_{}",
-                        signal_type.as_str(),
-                        name,
-                    ),
-                    sql);
-                });
-            }
+            insta::with_settings!({
+                prepend_module_to_snapshot => false,
+                snapshot_path => "table_snapshots"
+            }, {
+                insta::assert_snapshot!(format!(
+                    "{}_table_map_attrs",
+                    signal_type.as_str(),
+                ),
+                sql);
+            });
         }
     }
 
@@ -724,7 +604,7 @@ mod tests {
 
     #[test]
     fn test_payload_destination_table_map_default() {
-        let config = base_config(serde_json::json!({}));
+        let config = base_config();
         let map = build_payload_destination_table_map(&config);
         assert_eq!(map.len(), 2);
         assert_eq!(map[&ArrowPayloadType::Logs], "otel_logs");
@@ -735,7 +615,7 @@ mod tests {
 
     #[test]
     fn test_gauge_table_produces_stub() {
-        let config = base_config(serde_json::json!({}));
+        let config = base_config();
         let entry = TableEntry {
             kind: TableKind::Gauge,
             config: get_table_config(TableKind::Gauge, &config),
