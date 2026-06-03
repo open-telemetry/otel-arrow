@@ -170,6 +170,10 @@ pub enum ExtensionVariant {
     /// `!Send` variant scheduled onto the host `LocalSet`.
     Local,
     /// `Send` variant runnable on multi-threaded executors.
+    /// Whether an extension is shared between pipelines or not
+    /// is a separate concern that will be handled by the scope
+    /// that the extension is declared in. Currently only pipeline
+    /// scope is supported.
     Shared,
 }
 
