@@ -1143,6 +1143,22 @@ mod schema_tests {
     }
 
     #[test]
+    fn test_cardinality_duration_all_time_units_above_u8_boundary() {
+        for unit in [
+            arrow_schema::TimeUnit::Second,
+            arrow_schema::TimeUnit::Millisecond,
+            arrow_schema::TimeUnit::Microsecond,
+            arrow_schema::TimeUnit::Nanosecond,
+        ] {
+            test_cardinality_for_type(
+                &[250, 10],
+                &DataType::Duration(unit),
+                Some(DataType::UInt16),
+            );
+        }
+    }
+
+    #[test]
     fn test_cardinality_timestamp_all_time_units() {
         for unit in [
             arrow_schema::TimeUnit::Second,
@@ -1159,6 +1175,22 @@ mod schema_tests {
     }
 
     #[test]
+    fn test_cardinality_timestamp_all_time_units_above_u8_boundary() {
+        for unit in [
+            arrow_schema::TimeUnit::Second,
+            arrow_schema::TimeUnit::Millisecond,
+            arrow_schema::TimeUnit::Microsecond,
+            arrow_schema::TimeUnit::Nanosecond,
+        ] {
+            test_cardinality_for_type(
+                &[250, 10],
+                &DataType::Timestamp(unit, None),
+                Some(DataType::UInt16),
+            );
+        }
+    }
+
+    #[test]
     fn test_cardinality_timestamp_with_timezone() {
         test_cardinality_for_type(
             &[250],
@@ -1167,6 +1199,18 @@ mod schema_tests {
                 Some(Arc::<str>::from("UTC")),
             ),
             Some(DataType::UInt8),
+        );
+    }
+
+    #[test]
+    fn test_cardinality_timestamp_with_timezone_above_u8_boundary() {
+        test_cardinality_for_type(
+            &[250, 10],
+            &DataType::Timestamp(
+                arrow_schema::TimeUnit::Microsecond,
+                Some(Arc::<str>::from("UTC")),
+            ),
+            Some(DataType::UInt16),
         );
     }
 
