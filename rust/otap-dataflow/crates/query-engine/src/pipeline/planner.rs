@@ -6,16 +6,16 @@
 use std::collections::HashSet;
 
 use data_engine_expressions::{
-    BooleanScalarExpression, BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression,
-    IntegerValue, LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
-    OutputExpression, PipelineExpression, PipelineFunction, PipelineFunctionExpression,
+    BooleanScalarExpression, BooleanValue, DataExpression, Expression, LogicalExpression,
+    MapSelector, MoveTransformExpression, MutableValueExpression, OutputExpression,
+    PipelineExpression, PipelineFunction, PipelineFunctionExpression,
     PipelineFunctionImplementation, ReduceMapTransformExpression, RenameMapKeysTransformExpression,
     ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
     StringValue, TransformExpression, ValueAccessor,
 };
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
-use datafusion::prelude::{SessionContext, lit_timestamp_nano};
+use datafusion::logical_expr::Expr;
+use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::transform::{AttributesTransform, DeleteTransform, RenameTransform};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -27,13 +27,9 @@ use crate::pipeline::apply_attrs::ApplyToAttributesPipelineStage;
 use crate::pipeline::assign::{AssignPipelineStage, Assignment};
 use crate::pipeline::attributes::AttributeTransformPipelineStage;
 use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipelineStageBranch};
-use crate::pipeline::expr::{
-    DataScope, ExprLogicalPlanner, LogicalExprDataSource, ScopedLogicalExpr,
-};
-use crate::pipeline::filter::optimize::{
-    AttrValueColumnSelectionOptimizer, AttrsFilterCombineOptimizerRule, CompositeToBaseFilterPlan,
-};
-use crate::pipeline::filter::{Composite, FilterExec, FilterPipelineStage, FilterPlan};
+use crate::pipeline::expr::planner::ExprPlanner;
+use crate::pipeline::expr::{DataScope, ScopedExpr};
+use crate::pipeline::filter::FilterPipelineStage;
 use crate::pipeline::routing::RouteToPipelineStage;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
@@ -242,14 +238,17 @@ impl PipelinePlanner {
             },
 
             DataExpression::Conditional(conditional_expr) => {
+                let expr_planner = if self.plan_for_attributes {
+                    ExprPlanner::for_attributes(self.filter_attribute_keys_case_sensitive)
+                } else {
+                    ExprPlanner::with_attr_key_case_sensitive(
+                        self.filter_attribute_keys_case_sensitive,
+                    )
+                };
+
                 let mut pipeline_branches = vec![];
                 for branch in conditional_expr.get_branches() {
-                    let predicate = self.plan_filter_exec(
-                        branch.get_condition(),
-                        functions,
-                        session_ctx,
-                        otap_batch,
-                    )?;
+                    let predicate = expr_planner.plan_logical(branch.get_condition(), functions)?;
 
                     let pipeline_stages = self.plan_data_exprs(
                         branch.get_expressions(),
@@ -293,48 +292,19 @@ impl PipelinePlanner {
         &self,
         logical_expr: &LogicalExpression,
         functions: &[PipelineFunction],
-        session_ctx: &SessionContext,
-        otap_batch: &OtapArrowRecords,
+        _session_ctx: &SessionContext,
+        _otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
-        let filter_exec =
-            self.plan_filter_exec(logical_expr, functions, session_ctx, otap_batch)?;
-        let filter_stage = FilterPipelineStage::new(filter_exec);
-
-        Ok(vec![Box::new(filter_stage)])
-    }
-
-    /// plan a [`FilterExec`] from a [`LogicalExpression`]
-    fn plan_filter_exec(
-        &self,
-        logical_expr: &LogicalExpression,
-        functions: &[PipelineFunction],
-        session_ctx: &SessionContext,
-        otap_batch: &OtapArrowRecords,
-    ) -> Result<Composite<FilterExec>> {
-        let filter_plan = Composite::<FilterPlan>::try_from(
-            logical_expr,
-            self.filter_attribute_keys_case_sensitive,
-            functions,
-        )?;
-
-        // optimize the to the plan
-        let filter_plan = if self.plan_for_attributes {
-            // Currently using a two step transformation of the FilterPlan to turn this into
-            // something that can be applied directly to the attributes record batch.
-            // First, we combine all the filter expressions in some Composite<FilterPlan> into
-            // a single Composite::Base containing a single expression.
-            // Next, we look for any places we are doing a binary expression like `value == "x"`,
-            // and determining the _actual_ values column (str, int, bool, etc.) to use in this
-            // expression, as "value" is just being treated as a logical column to make it easier
-            // to write the expressions
-            CompositeToBaseFilterPlan::optimize(filter_plan)
-                .and_then(AttrValueColumnSelectionOptimizer::optimize)?
+        let planner = if self.plan_for_attributes {
+            ExprPlanner::for_attributes(self.filter_attribute_keys_case_sensitive)
         } else {
-            AttrsFilterCombineOptimizerRule::optimize(filter_plan)
+            ExprPlanner::with_attr_key_case_sensitive(self.filter_attribute_keys_case_sensitive)
         };
 
-        // transform logical plan into executable plan
-        filter_plan.to_exec(session_ctx, otap_batch)
+        let scoped_op = planner.plan_logical(logical_expr, functions)?;
+        let filter_stage = FilterPipelineStage::new(scoped_op);
+
+        Ok(vec![Box::new(filter_stage)])
     }
 
     fn plan_move(
@@ -585,7 +555,8 @@ impl PipelinePlanner {
 
         // list of combined assignments for the next assignment pipeline stage.
         let mut assignments = Vec::new();
-        let logical_planner = ExprLogicalPlanner::default();
+        let scoped_planner =
+            ExprPlanner::with_attr_key_case_sensitive(self.filter_attribute_keys_case_sensitive);
 
         // TODO - currently the logic for coalescing multiple assignments isn't as intelligent
         // as it could be. The strategy currently employed is just to look at adjacent set
@@ -649,51 +620,82 @@ impl PipelinePlanner {
             }
 
             // ensure that if the source is an attribute
-            if source_references_col_or_key(&next.source, cols_or_keys_referenced) {
+            if source_references_col_or_key(&next.source.expr, cols_or_keys_referenced) {
                 return false;
             }
 
             true
         }
 
-        // recursively descends the source plan to find any cases where the source references
-        // an attribute key or column whose value is in the `referenced` set (which is the set
-        // of destinations that may have been reassigned a new value).
+        // recursively descends the source ScopedExpr tree to find any cases where the source
+        // references an attribute key or column whose value is in the `referenced` set (which
+        // is the set of destinations that may have been reassigned a new value).
         fn source_references_col_or_key(
-            source_expr: &ScopedLogicalExpr,
+            source_op: &ScopedExpr,
             referenced: &HashSet<String>,
         ) -> bool {
-            match &source_expr.source {
-                LogicalExprDataSource::DataSource(data_scope) => match &data_scope {
-                    DataScope::Attributes(_, key) => referenced.contains(key),
+            use crate::pipeline::expr::LeafEval;
+
+            match source_op {
+                ScopedExpr::Eval { scope, eval } => match scope {
+                    DataScope::Attribute(_, key) => referenced.contains(key),
+                    DataScope::AttributesAll(_) => {
+                        // Fused attribute expressions embed key and value comparisons
+                        // directly in the DataFusion expression. Conservatively assume
+                        // they may reference any reassigned attribute.
+                        // TODO: extract key literals from the fused expression for
+                        // more precise dependency tracking.
+                        true
+                    }
                     DataScope::StaticScalar => false,
-
-                    // visit the expression applied to the root and search for any column exprs
-                    DataScope::Root => {
-                        let mut source_contains_refed_column = false;
-                        _ = source_expr.logical_expr.apply(|expr| {
+                    DataScope::Root | DataScope::RootParent(_) => {
+                        // walk the DataFusion Expr tree looking for column references
+                        if let LeafEval::DatafusionExpr { logical_expr, .. } = eval {
+                            let mut found = false;
+                            _ = logical_expr.apply(|expr| {
+                                if let Expr::Column(column) = expr {
+                                    found = referenced.contains(column.name());
+                                }
+                                Ok(if found {
+                                    TreeNodeRecursion::Stop
+                                } else {
+                                    TreeNodeRecursion::Continue
+                                })
+                            });
+                            found
+                        } else {
+                            false
+                        }
+                    }
+                },
+                ScopedExpr::JoinAndEval { children, eval } => {
+                    let children_ref = children
+                        .iter()
+                        .any(|child| source_references_col_or_key(child, referenced));
+                    // also check the eval expression itself for column references
+                    let eval_ref = if let LeafEval::DatafusionExpr { logical_expr, .. } = eval {
+                        let mut found = false;
+                        _ = logical_expr.apply(|expr| {
                             if let Expr::Column(column) = expr {
-                                source_contains_refed_column = referenced.contains(column.name());
+                                found = referenced.contains(column.name());
                             }
-
-                            Ok(if source_contains_refed_column {
+                            Ok(if found {
                                 TreeNodeRecursion::Stop
                             } else {
                                 TreeNodeRecursion::Continue
                             })
                         });
-
-                        source_contains_refed_column
-                    }
-                },
-                LogicalExprDataSource::Join(left, right) => {
-                    let left = source_references_col_or_key(left.as_ref(), referenced);
-                    let right = source_references_col_or_key(right.as_ref(), referenced);
-                    left | right
+                        found
+                    } else {
+                        false
+                    };
+                    children_ref || eval_ref
                 }
-                LogicalExprDataSource::MultiJoin(children) => children
-                    .iter()
-                    .any(|child| source_references_col_or_key(child, referenced)),
+                ScopedExpr::BitmapAnd(left, right) | ScopedExpr::BitmapOr(left, right) => {
+                    source_references_col_or_key(left, referenced)
+                        || source_references_col_or_key(right, referenced)
+                }
+                ScopedExpr::BitmapNot(child) => source_references_col_or_key(child, referenced),
             }
         }
 
@@ -787,7 +789,7 @@ impl PipelinePlanner {
             // create new assignment argument
             let assignment = Assignment {
                 dest_column: ColumnAccessor::try_from(dest.get_value_accessor())?,
-                source: logical_planner.plan_scalar_expr(set_expr.get_source(), functions)?,
+                source: scoped_planner.plan_scalar(set_expr.get_source(), functions)?,
                 dest_query_location: Some(dest.get_query_location()),
             };
 
@@ -856,39 +858,6 @@ impl PipelinePlanner {
             },
             _ => None,
         }
-    }
-}
-
-#[derive(Debug)]
-pub enum BinaryArg {
-    Column(ColumnAccessor),
-    Literal(StaticScalarExpression),
-    Null,
-}
-
-impl TryFrom<&ScalarExpression> for BinaryArg {
-    type Error = Error;
-
-    fn try_from(scalar_expr: &ScalarExpression) -> Result<Self> {
-        let binary_arg = match scalar_expr {
-            ScalarExpression::Source(source) => {
-                BinaryArg::Column(ColumnAccessor::try_from(source.get_value_accessor())?)
-            }
-            ScalarExpression::Static(static_expr) => match static_expr {
-                StaticScalarExpression::Null(_) => BinaryArg::Null,
-                static_expr => BinaryArg::Literal(static_expr.clone()),
-            },
-            expr => {
-                return Err(Error::NotYetSupportedError {
-                    message: format!(
-                        "expression type not yet supported as argument to binary operation. received {:?}",
-                        expr,
-                    ),
-                });
-            }
-        };
-
-        Ok(binary_arg)
     }
 }
 
@@ -996,115 +965,6 @@ pub enum AttributesIdentifier {
 
     /// Attributes for something that isn't the root record type. E.g. ScopeAttrs, ResourceAttrs
     NonRoot(ArrowPayloadType),
-}
-
-pub fn try_static_scalar_to_literal_for_column(
-    column_name: &str,
-    static_scalar: &StaticScalarExpression,
-) -> Result<Expr> {
-    Ok(match static_scalar {
-        // for integers, we need to choose the correct type of literal for the field
-        // note: this currently contains fields only on the root record batches as we don't
-        // yet support traversing into the OTAP batch to filter by nested fields like span
-        // events/links, metrics data points, etc.
-        StaticScalarExpression::Integer(int_val) => {
-            let val = int_val.get_value();
-            match column_name {
-                consts::AGGREGATION_TEMPORALITY
-                | consts::SEVERITY_NUMBER
-                | consts::KIND
-                | consts::EXP_HISTOGRAM_OFFSET => lit(val as i32),
-
-                consts::METRIC_TYPE => lit(val as u8),
-
-                consts::DROPPED_ATTRIBUTES_COUNT
-                | consts::FLAGS
-                | consts::DROPPED_EVENTS_COUNT
-                | consts::DROPPED_LINKS_COUNT => lit(val as u32),
-
-                // other columns for which filtering is currently supported are i64
-                _ => lit(val),
-            }
-        }
-        StaticScalarExpression::String(str_val) => lit(str_val.get_value()),
-        StaticScalarExpression::Boolean(bool_val) => lit(bool_val.get_value()),
-        StaticScalarExpression::Double(float_val) => lit(float_val.get_value()),
-        StaticScalarExpression::DateTime(dt_val) => {
-            let val =
-                dt_val
-                    .get_value()
-                    .timestamp_nanos_opt()
-                    .ok_or_else(|| Error::ExecutionError {
-                        cause: format!("failed to convert {dt_val:?} to nanosecond timestamp"),
-                    })?;
-            lit_timestamp_nano(val)
-        }
-        _ => {
-            return Err(Error::NotYetSupportedError {
-                message: format!(
-                    "literal from scalar expression. received {:?}",
-                    static_scalar
-                ),
-            });
-        }
-    })
-}
-
-pub fn try_static_scalar_to_attr_literal(static_scalar: &StaticScalarExpression) -> Result<Expr> {
-    let lit_expr = match static_scalar {
-        StaticScalarExpression::String(str_val) => lit(str_val.get_value()),
-        StaticScalarExpression::Boolean(bool_val) => lit(bool_val.get_value()),
-        StaticScalarExpression::Integer(int_val) => lit(int_val.get_value()),
-        StaticScalarExpression::Double(float_val) => lit(float_val.get_value()),
-        _ => {
-            return Err(Error::NotYetSupportedError {
-                message: format!(
-                    "literal from scalar expression. received {:?}",
-                    static_scalar
-                ),
-            });
-        }
-    };
-
-    Ok(lit_expr)
-}
-
-/// try to get the column from an OTAP batch containing an AnyValue based on the value of some
-/// defined static scalar.
-pub fn try_static_scalar_to_any_val_column(
-    static_scalar: &StaticScalarExpression,
-) -> Result<&'static str> {
-    let col_name = match static_scalar {
-        StaticScalarExpression::Boolean(_) => consts::ATTRIBUTE_BOOL,
-        StaticScalarExpression::Double(_) => consts::ATTRIBUTE_DOUBLE,
-        StaticScalarExpression::Integer(_) => consts::ATTRIBUTE_INT,
-        StaticScalarExpression::String(_) => consts::ATTRIBUTE_STR,
-        _ => {
-            return Err(Error::NotYetSupportedError {
-                message: format!(
-                    "AnyValues values column from scalar literal. received {:?}",
-                    static_scalar
-                ),
-            });
-        }
-    };
-
-    Ok(col_name)
-}
-
-/// Create the BinaryExpr that would be used to filter for the value of an attribute in an OTAP
-/// attributes record batch. This considers the type of the scalar literal to select the correct
-/// column e.g. string literals should filter by the "str" column and also creates a datafusion
-/// literal expr with the correct type to compare against.
-pub fn try_attrs_value_filter_from_literal(
-    scalar_lit: &StaticScalarExpression,
-    binary_op: Operator,
-) -> Result<BinaryExpr> {
-    Ok(BinaryExpr::new(
-        Box::new(col(try_static_scalar_to_any_val_column(scalar_lit)?)),
-        binary_op,
-        Box::new(try_static_scalar_to_attr_literal(scalar_lit)?),
-    ))
 }
 
 #[cfg(test)]

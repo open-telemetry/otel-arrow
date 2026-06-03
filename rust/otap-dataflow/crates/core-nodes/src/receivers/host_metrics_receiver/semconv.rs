@@ -26,6 +26,9 @@ const _: () = {
 pub(crate) mod metric {
     pub(crate) const CPU_FREQUENCY: &str = "system.cpu.frequency";
     pub(crate) const CPU_LOGICAL_COUNT: &str = "system.cpu.logical.count";
+    pub(crate) const CPU_LOAD_AVERAGE_1M: &str = "system.cpu.load_average.1m";
+    pub(crate) const CPU_LOAD_AVERAGE_5M: &str = "system.cpu.load_average.5m";
+    pub(crate) const CPU_LOAD_AVERAGE_15M: &str = "system.cpu.load_average.15m";
     pub(crate) const CPU_PHYSICAL_COUNT: &str = "system.cpu.physical.count";
     pub(crate) const CPU_TIME: &str = "system.cpu.time";
     pub(crate) const CPU_UTILIZATION: &str = "system.cpu.utilization";

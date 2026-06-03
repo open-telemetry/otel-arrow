@@ -34,6 +34,13 @@ Demonstrates the filter processor:
 
 - Generates fake data -> filter processor -> debug processor -> noop exporter
 
+### `fake-metric-filter-debug-noop.yaml`
+
+Demonstrates metric-name filtering:
+
+- Generates fake metrics -> filter processor by metric name -> debug processor
+  -> noop exporter
+
 ### `fake-transform-debug-noop.yaml`
 
 Demonstrate using the transform processor to transform data
@@ -72,7 +79,7 @@ Generates fake data with performance metrics:
 
 Generates mixed-tenant traffic using weighted resource attribute rotation:
 
-- Uses `data_source: static` with two resource attribute sets (`tenant.id:
+- Uses `data_source: synthetic` with two resource attribute sets (`tenant.id:
   prod` and `tenant.id: ppe`) weighted 3:1, producing a 75% / 25% batch split
   per  pipeline.
 - Generates fake data -> performance exporter
@@ -80,13 +87,12 @@ Generates mixed-tenant traffic using weighted resource attribute rotation:
 
 The `resource_attributes` field accepts three forms:
 
-| Form | Description |
-| ---- | ----------- |
-| Single map | All batches carry the same attributes (weight 1) |
-| List of maps | Equal round-robin rotation across entries (weight 1 each) |
-| List of weighted entries (`attrs` + `weight`) | Each entry receives batches proportional to its weight |
+- Single map: all batches carry the same attributes (weight 1).
+- List of maps: equal round-robin rotation across entries (weight 1 each).
+- List of weighted entries (`attrs` + `weight`): each entry receives batches
+  proportional to its weight.
 
-> **Note:** `resource_attributes` only applies to `data_source: static`.
+> **Note:** `resource_attributes` only applies to `data_source: synthetic`.
 > With `generation_strategy: pre_generated`, only the first attribute set is used.
 
 ### `otap-otap.yaml`
@@ -163,14 +169,21 @@ Syslog/CEF receiver with performance metrics:
 To send a quick test message (UDP):
 
 ```bash
-echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message" | nc -u -w1 127.0.0.1 5140
+echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message" \
+  | nc -u -w1 127.0.0.1 5140
 ```
 
-For sustained load testing, see the [load generator](../../tools/pipeline_perf_test/load_generator/readme.md):
+For sustained load testing, see the
+[load generator](../../tools/pipeline_perf_test/load_generator/readme.md):
 
 ```bash
 cd tools/pipeline_perf_test/load_generator
-python loadgen.py --load-type syslog --syslog-server 127.0.0.1 --syslog-port 5140 --syslog-transport udp --duration 15
+python loadgen.py \
+  --load-type syslog \
+  --syslog-server 127.0.0.1 \
+  --syslog-port 5140 \
+  --syslog-transport udp \
+  --duration 15
 ```
 
 > **Note:** The default `syslog-perf.yaml` config only enables UDP.

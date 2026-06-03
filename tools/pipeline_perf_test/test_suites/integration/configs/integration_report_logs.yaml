@@ -95,6 +95,7 @@ queries:
             FROM metrics
             WHERE metric_name IN (
               'logs_produced',
+              'logs_bytes_produced',
               'failed',
               'bytes_sent',
               'sent',
@@ -326,7 +327,7 @@ queries:
 
           UNION ALL
 
-          SELECT 'network_tx_mb_per_sec' AS name, 'MB/s' AS unit, average_rate / 1048576.0 AS value,
+          SELECT 'network_tx_bytes_rate_avg' AS name, 'bytes/sec' AS unit, average_rate AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
@@ -334,7 +335,7 @@ queries:
 
           UNION ALL
 
-          SELECT 'network_rx_mb_per_sec' AS name, 'MB/s' AS unit, average_rate / 1048576.0 AS value,
+          SELECT 'network_rx_bytes_rate_avg' AS name, 'bytes/sec' AS unit, average_rate AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
@@ -353,7 +354,21 @@ queries:
           CROSS JOIN metadata_row
           WHERE cnr.metric_name = 'container.network.tx'
             AND cnr.component_name IN ('go-collector', 'df-engine')
-            AND ltr.metric_name = 'logs';
+            AND ltr.metric_name = 'logs'
+
+          UNION ALL
+
+          SELECT 'uncompressed_bytes_per_log' AS name, 'bytes/log' AS unit,
+                CASE WHEN logs.total_increase > 0
+                  THEN bytes.total_increase / logs.total_increase
+                  ELSE NULL
+                END AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Uncompressed Bytes Per Log' AS extra
+          FROM aggregate_send_receive_rates bytes
+          JOIN aggregate_send_receive_rates logs ON logs.metric_name = 'logs_produced'
+            AND logs.component_name = bytes.component_name
+          CROSS JOIN metadata_row
+          WHERE bytes.metric_name = 'logs_bytes_produced';
 
 result_tables:
   - name: metadata_filtered

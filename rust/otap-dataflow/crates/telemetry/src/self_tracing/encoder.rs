@@ -81,13 +81,17 @@ impl<'buf, B: BoundedBuf> DirectLogRecordEncoder<'buf, B> {
 }
 
 /// Encode the event name from callsite metadata.
-/// Format: "target::name (file:line)" or "target::name" if no file/line.
+///
+/// Emits the bare `callsite.name()` (the first argument to `otel_info!` /
+/// `otel_warn!` / …). The crate name (`callsite.target()`) is **not**
+/// prefixed here; it is conveyed separately through
+/// `InstrumentationScope.name` by [`encode_export_logs_request`] so that
+/// `event.name` on the wire matches the value declared in the
+/// `rust/otap-dataflow/semconv/` registry and validated by
+/// `weaver registry live-check`.
 fn encode_event_name<B: BoundedBuf>(buf: &mut B, callsite: SavedCallsite) -> EncodeResult {
     buf.encode_len_delimited(LOG_RECORD_EVENT_NAME, |buf| {
-        buf.try_extend(callsite.target().as_bytes())?;
-        buf.try_extend(b"::")?;
-        buf.try_extend(callsite.name().as_bytes())?;
-        Ok(())
+        buf.try_extend(callsite.name().as_bytes())
     })
 }
 
@@ -607,6 +611,13 @@ pub fn encode_export_logs_request(
         buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |buf| {
             // ScopeLogs.scope (field 1, InstrumentationScope message)
             buf.encode_len_delimited(SCOPE_LOG_SCOPE, |buf| {
+                // InstrumentationScope.name (field 1, string) — the crate
+                // that emitted the event (i.e. the tracing target,
+                // `env!("CARGO_PKG_NAME")` at the call site). Pairing
+                // scope.name with the bare `event.name` encoded below
+                // keeps `event.name` aligned with the
+                // `rust/otap-dataflow/semconv/` registry.
+                buf.encode_string(INSTRUMENTATION_SCOPE_NAME, event.record.callsite().target())?;
                 for entity_key in event.record.context.iter() {
                     let scope_bytes = scope_cache.get_or_encode(*entity_key);
                     buf.extend_from_slice(&scope_bytes)?;
@@ -725,11 +736,14 @@ mod tests {
         encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
 
         let decoded = ExportLogsServiceRequest::decode(buf.into_bytes().as_ref()).unwrap();
-        let event_name = &decoded
-            .resource_logs
+        let scope_logs = &decoded.resource_logs.first().unwrap().scope_logs;
+        let scope = scope_logs
             .first()
             .unwrap()
-            .scope_logs
+            .scope
+            .as_ref()
+            .expect("scope present");
+        let event_name = &scope_logs
             .first()
             .unwrap()
             .log_records
@@ -737,13 +751,17 @@ mod tests {
             .unwrap()
             .event_name;
 
-        // Test for the event name prefix to avoid a hard-coded line number.
-        assert!(event_name.starts_with("otap-df-telemetry::test.scope.encoding"));
+        // event_name is the bare semconv identifier; the emitting crate
+        // is conveyed via InstrumentationScope.name. See
+        // encode_event_name + encode_export_logs_request.
+        assert_eq!(event_name, "test.scope.encoding");
+        assert_eq!(scope.name, "otap-df-telemetry");
 
         let expected = ExportLogsServiceRequest::new([ResourceLogs::new(
             Resource::build().finish(),
             [ScopeLogs::new(
                 InstrumentationScope::build()
+                    .name("otap-df-telemetry")
                     .attributes([
                         KeyValue::new("pipeline.name", AnyValue::new_string("my-pipeline")),
                         KeyValue::new("cpu.id", AnyValue::new_int(3)),
@@ -757,10 +775,14 @@ mod tests {
             )],
         )]);
 
-        // Inspect the printed format. Entity name is appended.
+        // Inspect the printed format. Console output still uses the
+        // `target::name` style for human readability; only OTLP changes.
         assert_eq!(
             format_log_record_to_string(None, &log_event.record),
-            format!("INFO  {event_name} entity={:?}\n", entity_key),
+            format!(
+                "INFO  otap-df-telemetry::{event_name} entity={:?}\n",
+                entity_key
+            ),
         );
         assert_eq!(expected, decoded);
     }
@@ -829,14 +851,20 @@ mod tests {
         encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
 
         let decoded = ExportLogsServiceRequest::decode(buf.into_bytes().as_ref()).unwrap();
+        let scope = decoded.resource_logs[0].scope_logs[0]
+            .scope
+            .as_ref()
+            .expect("scope present");
         let event_name = &decoded.resource_logs[0].scope_logs[0].log_records[0].event_name;
-        assert!(event_name.starts_with("otap-df-telemetry::test.map.encoding"));
+        assert_eq!(event_name, "test.map.encoding");
+        assert_eq!(scope.name, "otap-df-telemetry");
 
         // BTreeMap iterates in sorted key order: "priority" before "region".
         let expected = ExportLogsServiceRequest::new([ResourceLogs::new(
             Resource::build().finish(),
             [ScopeLogs::new(
                 InstrumentationScope::build()
+                    .name("otap-df-telemetry")
                     .attributes([KeyValue::new(
                         "custom",
                         AnyValue::new_kvlist(vec![

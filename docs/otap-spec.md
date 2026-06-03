@@ -444,8 +444,8 @@ properties for the `resource` column's `id` field.
 | resource.dropped_attributes_count | UInt32                | -                   | No       | -                            | -        | Number of dropped resource attributes |
 | scope                             | Struct                | -                   | No       | -                            | -        | Instrumentation scope                 |
 | scope.id                          | UInt16                | -                   | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to SCOPE_ATTRS            |
-| scope.name                        | Utf8                  | -                   | No       | -                            | -        | Instrumentation scope name            |
-| scope.version                     | Utf8                  | -                   | No       | -                            | -        | Instrumentation scope version         |
+| scope.name                        | Utf8                  | Dict(u8), Dict(u16) | No       | -                            | -        | Instrumentation scope name            |
+| scope.version                     | Utf8                  | Dict(u8), Dict(u16) | No       | -                            | -        | Instrumentation scope version         |
 | scope.dropped_attributes_count    | UInt32                | -                   | No       | -                            | -        | Number of dropped scope attributes    |
 | schema_url                        | Utf8                  | -                   | No       | -                            | -        | Span schema URL                       |
 | start_time_unix_nano              | Timestamp(Nanosecond) | -                   | Yes      | -                            | -        | Span start time in Unix nanoseconds   |
@@ -495,12 +495,12 @@ properties for the `resource` column's `id` field.
 | id                                | UInt16      | -                   | Yes      | [DELTA](#642-delta-encoding) | encoding | Metric identifier (primary key)                |
 | resource                          | Struct      | -                   | No       | -                            | -        | Resource information                           |
 | resource.id                       | UInt16      | -                   | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS                  |
-| resource.schema_url               | Utf8        | -                   | No       | -                            | -        | Resource schema URL                            |
+| resource.schema_url               | Utf8        | Dict(u8), Dict(u16) | No       | -                            | -        | Resource schema URL                            |
 | resource.dropped_attributes_count | UInt32      | -                   | No       | -                            | -        | Number of dropped resource attributes          |
 | scope                             | Struct      | -                   | No       | -                            | -        | Instrumentation scope information              |
 | scope.id                          | UInt16      | -                   | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to SCOPE_ATTRS                     |
-| scope.name                        | Utf8        | -                   | No       | -                            | -        | Instrumentation scope name                     |
-| scope.version                     | Utf8        | -                   | No       | -                            | -        | Instrumentation scope version                  |
+| scope.name                        | Utf8        | Dict(u8), Dict(u16) | No       | -                            | -        | Instrumentation scope name                     |
+| scope.version                     | Utf8        | Dict(u8), Dict(u16) | No       | -                            | -        | Instrumentation scope version                  |
 | scope.dropped_attributes_count    | UInt32      | -                   | No       | -                            | -        | Number of dropped scope attributes             |
 | schema_url                        | Utf8        | -                   | No       | -                            | -        | Metric schema URL                              |
 | metric_type                       | UInt8       | -                   | Yes      | -                            | -        | Metric type enum (Gauge, Sum, Histogram, etc.) |

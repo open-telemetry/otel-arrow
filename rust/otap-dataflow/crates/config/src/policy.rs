@@ -280,8 +280,8 @@ pub struct TelemetryPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct FlowMetricConfig {
-    /// User-facing name for this flow metric, used as a metric attribute.
-    pub name: String,
+    /// User-facing identifier for this flow metric, used as a metric attribute.
+    pub id: String,
     /// Processor node bounds for this flow metric.
     pub bounds: FlowBounds,
     /// Metrics to enable. Omitted means all metrics are enabled.
@@ -865,7 +865,7 @@ mod tests {
     fn flow_metrics_omitted_metrics_enable_all() {
         let yaml = r#"
             flow_metrics:
-              - name: flow1
+              - id: flow1
                 bounds: { start_node: a, end_node: b }
         "#;
         let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
@@ -880,7 +880,7 @@ mod tests {
     fn flow_metrics_explicit_subset_is_honored() {
         let yaml = r#"
             flow_metrics:
-              - name: flow1
+              - id: flow1
                 bounds: { start_node: a, end_node: b }
                 metrics: [compute_duration]
         "#;
@@ -896,7 +896,7 @@ mod tests {
         let policies = Policies {
             telemetry: Some(super::TelemetryPolicy {
                 flow_metrics: vec![super::FlowMetricConfig {
-                    name: "flow1".to_string(),
+                    id: "flow1".to_string(),
                     bounds: super::FlowBounds {
                         start_node: "a".to_string(),
                         end_node: "b".to_string(),
@@ -920,7 +920,7 @@ mod tests {
         let policies = Policies {
             telemetry: Some(super::TelemetryPolicy {
                 flow_metrics: vec![super::FlowMetricConfig {
-                    name: "flow1".to_string(),
+                    id: "flow1".to_string(),
                     bounds: super::FlowBounds {
                         start_node: "a".to_string(),
                         end_node: "b".to_string(),

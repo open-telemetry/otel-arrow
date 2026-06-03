@@ -79,7 +79,8 @@ pub static CONSOLE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     create: |_pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
+             exporter_config: &ExporterConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         let config: ConsoleExporterConfig = serde_json::from_value(node_config.config.clone())
             .map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("Failed to parse console exporter config: {}", e),

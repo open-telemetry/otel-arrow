@@ -89,10 +89,10 @@ pub trait ExtensionCapability: private::Sealed + 'static {
     /// Authors normally don't implement this by hand; the macro handles
     /// it. If you are hand-rolling an `ExtensionCapability` impl (only
     /// needed inside the engine crate for testing), return
-    /// `Rc::new(YourAdapter(shared))`.
+    /// `Box::new(YourAdapter(shared))`.
     ///
     /// [`Capabilities::require_shared`]: registry::Capabilities::require_shared
-    fn wrap_shared_as_local(shared: Box<Self::Shared>) -> std::rc::Rc<Self::Local>;
+    fn wrap_shared_as_local(shared: Box<Self::Shared>) -> Box<Self::Local>;
 }
 
 /// Re-export for use by the `#[capability]` proc macro's generated code.
