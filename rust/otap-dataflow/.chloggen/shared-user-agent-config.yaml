@@ -5,7 +5,7 @@ change_type: enhancement
 
 # The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
 # Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
-component: otap
+component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
 note: "Add optional `user_agent` config field to `HttpClientSettings` and `GrpcClientSettings` for custom User-Agent headers"
