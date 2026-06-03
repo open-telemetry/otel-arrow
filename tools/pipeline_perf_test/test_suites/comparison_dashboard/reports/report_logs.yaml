@@ -351,7 +351,7 @@ queries:
           CROSS JOIN metadata_row
           WHERE cnr.metric_name = 'container.network.tx'
             AND cnr.component_name IN ('df-engine', 'go-collector', 'fluent-bit')
-            AND ltr.metric_name = 'logs';
+            AND ltr.metric_name = 'logs'
 
           UNION ALL
 
