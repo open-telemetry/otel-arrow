@@ -1,7 +1,0 @@
-change_type: enhancement
-
-component: pipeline
-
-note: Hardens flow metric config to throw an error if the user attempts to configure a flow metric with an unreachable end node.
-
-issues: [3009]
