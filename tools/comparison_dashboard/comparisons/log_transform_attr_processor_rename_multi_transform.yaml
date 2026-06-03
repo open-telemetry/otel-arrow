@@ -14,15 +14,19 @@ tests:
   - name: transform-1
     label: "1"
     loadgen_rate: 200000
+    description: 1 rename action @ 200k logs/sec
   - name: transform-2
     label: "2"
     loadgen_rate: 200000
+    description: 2 rename actions @ 200k logs/sec
   - name: transform-3
     label: "3"
     loadgen_rate: 200000
+    description: 3 rename actions @ 200k logs/sec
   - name: transform-4
     label: "4"
     loadgen_rate: 200000
+    description: 4 rename actions @ 200k logs/sec
 
 suites:
   # DFE OTAP

@@ -56,26 +56,63 @@ h1 { margin: 0; font-size: 34px; line-height: 1.1; letter-spacing: -.03em; }
 .filter-reset:hover {
   background: #f1f5f9;
 }
-.colorblind-toggle {
-  appearance: none;
-  border: 1px solid #d8e0ee;
-  background: #fff;
-  color: #475569;
-  border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 700;
+/* Controls bar (top-of-page display switches) */
+.controls-bar {
+  position: sticky;
+  top: 48px;
+  z-index: 99;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  align-items: center;
+  padding: 8px 18px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 13px;
+  color: #1e293b;
+}
+.controls-bar:empty { display: none; }
+.switch-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   cursor: pointer;
-  margin-bottom: 8px;
+  user-select: none;
 }
-.colorblind-toggle:hover {
-  background: #f1f5f9;
+.switch-label {
+  font-weight: 600;
+  color: #334155;
 }
-.colorblind-toggle.active {
-  background: #eef2ff;
-  border-color: #818cf8;
-  color: #4338ca;
+.switch {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  display: inline-block;
 }
+.switch-track {
+  position: relative;
+  display: inline-block;
+  width: 32px;
+  height: 18px;
+  background: #cbd5e1;
+  border-radius: 999px;
+  transition: background 140ms ease;
+}
+.switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: left 140ms ease;
+}
+.switch.on .switch-track { background: #2563eb; }
+.switch.on .switch-thumb { left: 16px; }
 .page-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -1352,6 +1389,53 @@ a.scenario-section-title:hover {
 }
 .wip-banner .wip-link:hover {
   color: #92400e;
+}
+
+/* ── Glossary legend banner ────────────────────────────────────────────── */
+.legend-banner {
+  position: sticky;
+  /* Sits below WIP banner + controls bar. Approximate stacked height. */
+  top: 84px;
+  z-index: 98;
+  width: 100%;
+  margin: 0;
+  padding: 10px 18px;
+  background: #eff6ff;
+  border-bottom: 1px solid #bfdbfe;
+  color: #1e3a8a;
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: 0 2px 6px rgba(30, 64, 175, 0.08);
+}
+.legend-banner.collapsed { display: none; }
+.legend-banner-body {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 24px;
+  margin: 0;
+  padding: 0;
+}
+.legend-item {
+  display: block;
+  min-width: 0;
+}
+.legend-term {
+  display: inline;
+  font-weight: 700;
+  color: #1e3a8a;
+  margin: 0;
+}
+.legend-term::after { content: ": "; }
+.legend-def {
+  display: inline;
+  color: #1e3a8a;
+  margin: 0;
+}
+@media (max-width: 900px) {
+  .legend-banner-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .legend-banner-body { grid-template-columns: 1fr; }
 }
 
 /* ── Environment summary (comparison header) ─────────────────────────────── */
