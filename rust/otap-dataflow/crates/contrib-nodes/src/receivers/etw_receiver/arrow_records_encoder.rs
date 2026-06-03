@@ -213,13 +213,21 @@ impl EtwArrowRecordsBuilder {
 
         self.logs.append_id(Some(self.curr_log_id));
 
-        // Event name: use "etw.<event_id>" as the event name
-        let event_name = format!("etw.{}", event.event_id);
-        self.logs.append_event_name(Some(event_name.as_bytes()));
+        // Event name: prefer the TDH event name (e.g. "AppStarted") over
+        // the numeric event ID.  Fall back to "etw.<event_id>" for
+        // manifest-based events where TDH doesn't provide a name.
+        if event.event_name.is_empty() {
+            let fallback = format!("etw.{}", event.event_id);
+            self.logs.append_event_name(Some(fallback.as_bytes()));
+        } else {
+            self.logs
+                .append_event_name(Some(event.event_name.as_bytes()));
+        }
 
         // Attributes: ETW header metadata
         self.append_attr("etw.event_id", AttrValue::Int(i64::from(event.event_id)));
         self.append_attr("etw.opcode", AttrValue::Int(i64::from(event.opcode)));
+        self.append_attr("etw.version", AttrValue::Int(i64::from(event.version)));
         self.append_attr(
             "etw.keywords",
             AttrValue::Int(event.keywords.min(i64::MAX as u64) as i64),
@@ -229,6 +237,54 @@ impl EtwArrowRecordsBuilder {
             AttrValue::Int(i64::from(event.process_id)),
         );
         self.append_attr("etw.thread_id", AttrValue::Int(i64::from(event.thread_id)));
+
+        // Provider GUID as hex string (e.g. "d2387720-2907-5677-8625-c1bdc4155197")
+        let guid = &event.provider_id;
+        let provider_guid = format!(
+            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            guid[0],
+            guid[1],
+            guid[2],
+            guid[3],
+            guid[4],
+            guid[5],
+            guid[6],
+            guid[7],
+            guid[8],
+            guid[9],
+            guid[10],
+            guid[11],
+            guid[12],
+            guid[13],
+            guid[14],
+            guid[15],
+        );
+        self.append_attr("etw.provider_id", AttrValue::Str(Cow::Owned(provider_guid)));
+
+        // Activity ID — only emit when non-zero (provider set a correlation ID)
+        if event.activity_id != [0u8; 16] {
+            let aid = &event.activity_id;
+            let activity = format!(
+                "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                aid[0],
+                aid[1],
+                aid[2],
+                aid[3],
+                aid[4],
+                aid[5],
+                aid[6],
+                aid[7],
+                aid[8],
+                aid[9],
+                aid[10],
+                aid[11],
+                aid[12],
+                aid[13],
+                aid[14],
+                aid[15],
+            );
+            self.append_attr("etw.activity_id", AttrValue::Str(Cow::Owned(activity)));
+        }
 
         // Attributes: TDH-decoded fields
         for field in &event.decoded_fields {
@@ -326,6 +382,8 @@ mod tests {
             version: 1,
             level: 4, // Information
             keywords: 0xFF,
+            event_name: "TestEvent".to_string(),
+            activity_id: [0u8; 16],
             decoded_fields: vec![
                 DecodedField {
                     name: "ProcessId".to_string(),
@@ -356,8 +414,10 @@ mod tests {
             .expect("attrs batch present");
 
         assert_eq!(logs_rb.num_rows(), 1);
-        // 5 header attrs + 2 decoded fields = 7 attribute rows
-        assert_eq!(attrs_rb.num_rows(), 7);
+        // 7 header attrs (event_id, opcode, version, keywords, process_id,
+        // thread_id, provider_id) + 2 decoded fields = 9 attribute rows.
+        // (activity_id is all zeros so it's omitted.)
+        assert_eq!(attrs_rb.num_rows(), 9);
     }
 
     #[test]
@@ -399,8 +459,9 @@ mod tests {
         let attrs_rb = batch
             .get(ArrowPayloadType::LogAttrs)
             .expect("attrs batch present");
-        // Only 5 header attributes (event_id, opcode, keywords, process_id, thread_id)
-        assert_eq!(attrs_rb.num_rows(), 5);
+        // 7 header attributes (event_id, opcode, version, keywords,
+        // process_id, thread_id, provider_id); activity_id is zero → omitted
+        assert_eq!(attrs_rb.num_rows(), 7);
     }
 
     #[test]
@@ -418,7 +479,7 @@ mod tests {
         let attrs_rb = batch
             .get(ArrowPayloadType::LogAttrs)
             .expect("attrs batch present");
-        // Only 5 header attributes; the empty-named field is skipped
-        assert_eq!(attrs_rb.num_rows(), 5);
+        // 7 header attributes; the empty-named field is skipped
+        assert_eq!(attrs_rb.num_rows(), 7);
     }
 }

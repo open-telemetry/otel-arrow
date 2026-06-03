@@ -162,8 +162,7 @@ pub struct DecodedField {
 /// it across the channel to the async world.
 #[derive(Debug, Clone)]
 pub struct EtwEventData {
-    /// Provider GUID that produced the event.
-    #[expect(dead_code, reason = "captured for future use")]
+    /// Provider GUID that produced the event (16 raw bytes).
     pub provider_id: [u8; 16],
     /// ETW event timestamp converted to Unix epoch nanoseconds.
     ///
@@ -180,12 +179,19 @@ pub struct EtwEventData {
     /// Opcode from the event descriptor.
     pub opcode: u8,
     /// Version from the event descriptor.
-    #[expect(dead_code, reason = "captured for future use")]
     pub version: u8,
     /// ETW level from the event descriptor.
     pub level: u8,
     /// Keywords from the event descriptor.
     pub keywords: u64,
+    /// TraceLogging event name discovered via TDH (e.g. `"AppStarted"`).
+    ///
+    /// Empty for manifest-based events or when TDH decoding fails.
+    pub event_name: String,
+    /// Activity ID from the event header for correlating related events.
+    ///
+    /// All zeros when the provider does not set an activity ID.
+    pub activity_id: [u8; 16],
     /// TDH-decoded event payload fields.
     ///
     /// Populated for TraceLogging / TraceLoggingDynamic events whose schema
@@ -479,7 +485,8 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                     // For manifest-based events (NotFound) we proceed with
                     // empty decoded_fields — future work will add manifest
                     // decoding with a (Provider, Id, Version) cache key.
-                    let (decoded_fields, user_data) = if let Some(record) = anc.record() {
+                    let (decoded_fields, event_name, user_data) = if let Some(record) = anc.record()
+                    {
                         let ud = if record.UserData.is_null() || record.UserDataLength == 0 {
                             Vec::new()
                         } else {
@@ -492,27 +499,52 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                             .to_vec()
                         };
 
-                        let fields = match decoder.borrow_mut().decode(record) {
-                            Ok(result) => extract_decoded_fields(
-                                result.event_data.format(),
-                                result.event_data.event_data(),
-                            ),
-                            Err(TdhDecodeError::NotFound) => {
-                                // Manifest-based event — no TL schema available.
-                                // This is expected and not an error.
-                                Vec::new()
+                        let (fields, name) = match decoder.borrow_mut().decode(record) {
+                            Ok(result) => {
+                                let name = result
+                                    .event_data
+                                    .format()
+                                    .fields()
+                                    .first()
+                                    .map(|_| {
+                                        // Use the TDH event name from the decoder's
+                                        // schema cache (populated during decode).
+                                        String::new()
+                                    })
+                                    .unwrap_or_default();
+                                let fields = extract_decoded_fields(
+                                    result.event_data.format(),
+                                    result.event_data.event_data(),
+                                );
+                                (fields, name)
                             }
-                            Err(_e) => {
-                                // TDH decoding failed — log but continue.
-                                // The event still carries header metadata and
-                                // raw user_data for downstream consumers.
-                                Vec::new()
-                            }
+                            Err(TdhDecodeError::NotFound) => (Vec::new(), String::new()),
+                            Err(_e) => (Vec::new(), String::new()),
                         };
-                        (fields, ud)
+                        // Retrieve the event name from the decoder's cache
+                        // (available after decode, even on cache hit).
+                        let tdh_name = decoder.borrow().event_name(record).unwrap_or("").to_owned();
+                        let _ = name; // shadowed by tdh_name
+                        (fields, tdh_name, ud)
                     } else {
-                        (Vec::new(), Vec::new())
+                        (Vec::new(), String::new(), Vec::new())
                     };
+
+                    // Extract Activity ID from the EVENT_RECORD header.
+                    // The GUID is {data1: u32, data2: u16, data3: u16, data4: [u8;8]}
+                    // which we flatten to 16 bytes in standard GUID byte order.
+                    let activity_id = anc
+                        .record()
+                        .map(|r| {
+                            let g = &r.EventHeader.ActivityId;
+                            let mut bytes = [0u8; 16];
+                            bytes[0..4].copy_from_slice(&g.data1.to_ne_bytes());
+                            bytes[4..6].copy_from_slice(&g.data2.to_ne_bytes());
+                            bytes[6..8].copy_from_slice(&g.data3.to_ne_bytes());
+                            bytes[8..16].copy_from_slice(&g.data4);
+                            bytes
+                        })
+                        .unwrap_or([0u8; 16]);
 
                     // Build EtwEventData with all available metadata.
                     // Convert QPC ticks to Unix epoch nanoseconds.
@@ -528,6 +560,8 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                         version,
                         level,
                         keywords,
+                        event_name,
+                        activity_id,
                         decoded_fields,
                         user_data,
                     };
