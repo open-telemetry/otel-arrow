@@ -7,7 +7,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.48.0"
 authors = ["OpenTelemetry"]
 edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
@@ -17,7 +17,7 @@ rust-version = "1.87.0"
 
 [package]
 name = "otap-df"
-version = "0.1.0"
+version = "0.48.0"
 description = "OpenTelemetry Rust Dataflow Engine supporting natively OTLP and OTAP Data Formats"
 edition.workspace = true
 repository.workspace = true
@@ -213,7 +213,7 @@ weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git",
 weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
 sha1 = { version = "0.11" }
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }

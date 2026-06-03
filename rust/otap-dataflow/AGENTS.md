@@ -13,7 +13,7 @@ directories).
   Node.js/npx to be installed):
 
 ```bash
-npx markdownlint-cli <file1.md> <file2.md>
+npx markdownlint-cli2 <file1.md> <file2.md>
 ```
 
 ## Sanity checks

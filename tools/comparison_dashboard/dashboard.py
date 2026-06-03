@@ -75,6 +75,8 @@ class Manifest:
     comparison_files: list[Path]  # absolute paths to comparison YAMLs
     variables: dict               # template variables passed to Jinja at top level
     meta: dict                    # allowed values per meta key (key -> [values])
+    meta_descriptions: dict       # per-value descriptions: key -> {value: description}
+    glossary: list                # ordered list of {term, definition} for the legend banner
     metrics: list                 # ordered list of {name, label} for dashboard metrics
 
 def load_manifest(manifest_path: Path) -> Manifest:
@@ -94,7 +96,7 @@ def load_manifest(manifest_path: Path) -> Manifest:
         print(f"ERROR: manifest must be a mapping at top level: {manifest_path}")
         sys.exit(1)
 
-    for key in ("suites", "comparisons", "variables", "meta", "metrics"):
+    for key in ("suites", "comparisons", "variables", "meta", "glossary", "metrics"):
         if key not in data:
             print(f"ERROR: manifest missing required key '{key}': {manifest_path}")
             sys.exit(1)
@@ -104,14 +106,65 @@ def load_manifest(manifest_path: Path) -> Manifest:
         print(f"ERROR: manifest 'variables' must be a mapping: {manifest_path}")
         sys.exit(1)
 
-    meta = data["meta"] or {}
-    if not isinstance(meta, dict):
+    raw_meta = data["meta"] or {}
+    if not isinstance(raw_meta, dict):
         print(f"ERROR: manifest 'meta' must be a mapping: {manifest_path}")
         sys.exit(1)
-    for key, allowed in meta.items():
-        if not isinstance(allowed, list):
-            print(f"ERROR: manifest meta.{key} must be a list of allowed values: {manifest_path}")
+    # `meta` is normalized to {key: [values]} for downstream allowed-value
+    # checks; `meta_descriptions` carries the per-value tooltip text.
+    meta: dict[str, list[str]] = {}
+    meta_descriptions: dict[str, dict[str, str]] = {}
+    for key, entries in raw_meta.items():
+        if not isinstance(entries, list) or not entries:
+            print(f"ERROR: manifest meta.{key} must be a non-empty list of {{value, description}} objects: {manifest_path}")
             sys.exit(1)
+        values: list[str] = []
+        descs: dict[str, str] = {}
+        seen: set[str] = set()
+        for i, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                print(f"ERROR: manifest meta.{key}[{i}] must be a mapping with 'value' and 'description': {manifest_path}")
+                sys.exit(1)
+            value = entry.get("value")
+            description = entry.get("description")
+            if not isinstance(value, str) or not value:
+                print(f"ERROR: manifest meta.{key}[{i}] missing non-empty string 'value': {manifest_path}")
+                sys.exit(1)
+            if not isinstance(description, str) or not description:
+                print(f"ERROR: manifest meta.{key}[{i}] missing non-empty string 'description': {manifest_path}")
+                sys.exit(1)
+            if value in seen:
+                print(f"ERROR: duplicate manifest meta.{key} value '{value}': {manifest_path}")
+                sys.exit(1)
+            seen.add(value)
+            values.append(value)
+            descs[value] = description
+        meta[key] = values
+        meta_descriptions[key] = descs
+
+    glossary_raw = data["glossary"] or []
+    if not isinstance(glossary_raw, list):
+        print(f"ERROR: manifest 'glossary' must be a list: {manifest_path}")
+        sys.exit(1)
+    glossary: list[dict[str, str]] = []
+    glossary_terms: set[str] = set()
+    for i, entry in enumerate(glossary_raw):
+        if not isinstance(entry, dict):
+            print(f"ERROR: manifest glossary[{i}] must be a mapping: {manifest_path}")
+            sys.exit(1)
+        term = entry.get("term")
+        definition = entry.get("definition")
+        if not isinstance(term, str) or not term:
+            print(f"ERROR: manifest glossary[{i}] missing non-empty 'term': {manifest_path}")
+            sys.exit(1)
+        if not isinstance(definition, str) or not definition:
+            print(f"ERROR: manifest glossary[{i}] missing non-empty 'definition': {manifest_path}")
+            sys.exit(1)
+        if term in glossary_terms:
+            print(f"ERROR: duplicate manifest glossary term '{term}': {manifest_path}")
+            sys.exit(1)
+        glossary_terms.add(term)
+        glossary.append({"term": term, "definition": definition})
 
     metrics_raw = data["metrics"]
     if not isinstance(metrics_raw, list) or not metrics_raw:
@@ -148,6 +201,8 @@ def load_manifest(manifest_path: Path) -> Manifest:
         comparison_files=comparison_files,
         variables=variables,
         meta=meta,
+        meta_descriptions=meta_descriptions,
+        glossary=glossary,
         metrics=metrics,
     )
 
@@ -1495,6 +1550,8 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths, mani
     comparisons_json = json.dumps(comparisons_public, indent=2)
     metrics_meta = {m["name"]: {"label": m["label"]} for m in manifest.metrics}
     metrics_meta_json = json.dumps(metrics_meta)
+    meta_descriptions_json = json.dumps(manifest.meta_descriptions)
+    glossary_json = json.dumps(manifest.glossary)
 
     lines = [
         '<!DOCTYPE html>',
@@ -1511,6 +1568,8 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths, mani
         f'   <span class="wip-text">{BANNER_TEXT} <a class="wip-link" href="{ISSUE_URL}" target="_blank" rel="noopener">{BANNER_LINK_TEXT}</a></span>',
         '    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>',
         '  </div>',
+        '  <div class="controls-bar" id="controls-bar" aria-label="Display controls"></div>',
+        '  <div class="legend-banner" id="legend-banner" aria-label="Glossary"></div>',
         '  <div class="wrap">',
         '    <h1>Telemetry Engine Benchmark Dashboard</h1>',
         '    <div class="sub">Compare telemetry engines across a variety of use-cases and protocols.</div>',
@@ -1532,6 +1591,8 @@ def generate_index_html(comparisons: list, suites: dict, paths: BuildPaths, mani
         data_script_tags,
         f'  <script>window.DATA_PATH = "{data_rel}/suite";</script>',
         f'  <script>window.METRICS_META = {metrics_meta_json};</script>',
+        f'  <script>window.META_DESCRIPTIONS = {meta_descriptions_json};</script>',
+        f'  <script>window.GLOSSARY = {glossary_json};</script>',
         f'  <script>window.COMPARISONS = {comparisons_json};</script>',
         f'  <script type="module" src="{shared_rel}/app.js"></script>',
         '</body>',
@@ -1558,6 +1619,8 @@ def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths, m
     data_rel = _url_relpath(paths.data_dir, sample_stub)
     metrics_meta = {m["name"]: {"label": m["label"]} for m in manifest.metrics}
     metrics_meta_json = json.dumps(metrics_meta)
+    meta_descriptions_json = json.dumps(manifest.meta_descriptions)
+    glossary_json = json.dumps(manifest.glossary)
 
     for comp in comparisons:
         comp_slug = comp["slug"]
@@ -1598,6 +1661,8 @@ def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths, m
             f'   <span class="wip-text">{BANNER_TEXT} <a class="wip-link" href="{ISSUE_URL}" target="_blank" rel="noopener">{BANNER_LINK_TEXT}</a></span>',
             '    <span class="wip-icon" aria-hidden="true">&#9888;&#65039;</span>',
             '  </div>',
+            '  <div class="controls-bar" id="controls-bar" aria-label="Display controls"></div>',
+            '  <div class="legend-banner" id="legend-banner" aria-label="Glossary"></div>',
             '  <div class="wrap">',
             '    <div id="app"></div>',
             '  </div>',
@@ -1615,6 +1680,8 @@ def generate_compare_stubs(comparisons: list, suites: dict, paths: BuildPaths, m
             '  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>',
             f'  <script>window.DATA_PATH = "{data_rel}/suite";</script>',
             f'  <script>window.METRICS_META = {metrics_meta_json};</script>',
+            f'  <script>window.META_DESCRIPTIONS = {meta_descriptions_json};</script>',
+            f'  <script>window.GLOSSARY = {glossary_json};</script>',
             f'  <script>window.COMPARISON_SLUG = "{comp_slug}";</script>',
             suite_scripts,
             f'  <script>window.COMPARISON = {comp_json};</script>',
