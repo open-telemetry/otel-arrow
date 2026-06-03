@@ -317,16 +317,16 @@ fn test_local_start_shutdown() {
 
 #[tokio::test]
 async fn test_ctrl_immediate_shutdown() {
-    let (tx, rx) = tokio::sync::mpsc::channel(8);
-    let mut ch =
-        shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
-    SharedSender::mpsc(tx)
-        .send(ExtensionControlMsg::Shutdown {
+    let (_tx, rx) = tokio::sync::mpsc::channel::<ExtensionControlMsg>(8);
+    let (shutdown_tx, shutdown_rx) =
+        tokio::sync::oneshot::channel::<crate::control::ShutdownPayload>();
+    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), shutdown_rx);
+    shutdown_tx
+        .send(crate::control::ShutdownPayload {
             deadline: Instant::now(),
             reason: "i".into(),
         })
-        .await
-        .unwrap();
+        .expect("dedicated shutdown sender alive");
     assert!(ch.recv().await.unwrap().is_shutdown());
     assert!(ch.recv().await.is_err());
 }
@@ -335,20 +335,21 @@ async fn test_ctrl_immediate_shutdown() {
 async fn test_ctrl_config_then_shutdown() {
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     let s = SharedSender::mpsc(tx);
-    let mut ch =
-        shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
+    let (shutdown_tx, shutdown_rx) =
+        tokio::sync::oneshot::channel::<crate::control::ShutdownPayload>();
+    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), shutdown_rx);
     s.send(ExtensionControlMsg::Config {
         config: Value::String("h".into()),
     })
     .await
     .unwrap();
-    s.send(ExtensionControlMsg::Shutdown {
-        deadline: Instant::now(),
-        reason: "d".into(),
-    })
-    .await
-    .unwrap();
     assert!(!ch.recv().await.unwrap().is_shutdown());
+    shutdown_tx
+        .send(crate::control::ShutdownPayload {
+            deadline: Instant::now(),
+            reason: "d".into(),
+        })
+        .expect("dedicated shutdown sender alive");
     assert!(ch.recv().await.unwrap().is_shutdown());
     assert!(ch.recv().await.is_err());
 }
@@ -358,18 +359,17 @@ async fn test_ctrl_delayed_shutdown() {
     // Shutdown is delivered immediately regardless of how far in the
     // future its deadline is — the deadline is the extension's
     // cooperative cleanup budget, not a wait time before delivery.
-    let (tx, rx) = tokio::sync::mpsc::channel(8);
-    let mut ch =
-        shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
+    let (_tx, rx) = tokio::sync::mpsc::channel::<ExtensionControlMsg>(8);
+    let (shutdown_tx, shutdown_rx) =
+        tokio::sync::oneshot::channel::<crate::control::ShutdownPayload>();
+    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), shutdown_rx);
     let dl = Instant::now() + std::time::Duration::from_secs(60);
-    let sender = SharedSender::mpsc(tx);
-    sender
-        .send(ExtensionControlMsg::Shutdown {
+    shutdown_tx
+        .send(crate::control::ShutdownPayload {
             deadline: dl,
             reason: "dl".into(),
         })
-        .await
-        .unwrap();
+        .expect("dedicated shutdown sender alive");
     let before = Instant::now();
     assert!(ch.recv().await.unwrap().is_shutdown());
     assert!(
@@ -378,7 +378,6 @@ async fn test_ctrl_delayed_shutdown() {
     );
     // After Shutdown the channel is closed.
     assert!(ch.recv().await.is_err());
-    drop(sender);
 }
 
 #[tokio::test]
@@ -387,15 +386,16 @@ async fn test_ctrl_shutdown_closes_channel() {
     // is delivered the channel is closed and the extension's event
     // loop terminates.
     let (tx, rx) = tokio::sync::mpsc::channel(8);
-    let mut ch =
-        shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
+    let (shutdown_tx, shutdown_rx) =
+        tokio::sync::oneshot::channel::<crate::control::ShutdownPayload>();
+    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), shutdown_rx);
     let s = SharedSender::mpsc(tx);
-    s.send(ExtensionControlMsg::Shutdown {
-        deadline: Instant::now() + std::time::Duration::from_secs(1),
-        reason: "d".into(),
-    })
-    .await
-    .unwrap();
+    shutdown_tx
+        .send(crate::control::ShutdownPayload {
+            deadline: Instant::now() + std::time::Duration::from_secs(1),
+            reason: "d".into(),
+        })
+        .expect("dedicated shutdown sender alive");
     s.send(ExtensionControlMsg::Config {
         config: Value::Null,
     })
