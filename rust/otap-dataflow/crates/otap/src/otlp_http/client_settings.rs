@@ -65,9 +65,9 @@ pub struct HttpClientSettings {
     )]
     pub compression: Option<CompressionMethod>,
 
-    /// Custom User-Agent header for outbound HTTP requests. When set, reqwest
-    /// **replaces** its default User-Agent with this value. When not set, the
-    /// default reqwest User-Agent is used.
+    /// Custom User-Agent header for outbound HTTP requests. When set, this
+    /// value is sent as the User-Agent header. When not set, no User-Agent
+    /// header is sent (reqwest does not add one by default).
     #[serde(default)]
     pub user_agent: Option<String>,
 }
@@ -249,38 +249,42 @@ impl Default for HttpClientSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_user_agent_deserialization() {
-        let settings: HttpClientSettings = serde_json::from_str(
-            r#"{
-                "user_agent": "otap-custom-agent/1.0"
-            }"#,
-        )
-        .unwrap();
-
-        assert_eq!(
-            settings.user_agent.as_deref(),
-            Some("otap-custom-agent/1.0")
-        );
-    }
+    use wiremock::matchers;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
-    async fn test_user_agent_applied_to_client_builder() {
+    async fn test_user_agent_sent_on_wire() {
         crate::crypto::ensure_crypto_provider();
-        let settings = HttpClientSettings {
-            user_agent: Some("otap-custom-agent/1.0".to_string()),
-            ..HttpClientSettings::default()
-        };
 
-        let builder = settings.client_builder().await;
-        assert!(builder.is_ok());
-    }
+        // Verify default has no user_agent
+        let defaults = HttpClientSettings::default();
+        assert_eq!(defaults.user_agent, None);
 
-    #[test]
-    fn test_default_has_no_user_agent() {
-        let settings = HttpClientSettings::default();
+        // Verify deserialization
+        let settings: HttpClientSettings = serde_json::from_str(
+            r#"{ "user_agent": "otap-custom-agent/1.0" }"#,
+        )
+        .unwrap();
+        assert_eq!(settings.user_agent.as_deref(), Some("otap-custom-agent/1.0"));
 
-        assert_eq!(settings.user_agent, None);
+        // Verify the header actually arrives on the wire
+        let mock_server = MockServer::start().await;
+
+        Mock::given(matchers::method("POST"))
+            .and(matchers::header("User-Agent", "otap-custom-agent/1.0"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = settings.client_builder().await.unwrap().build().unwrap();
+        let _ = client
+            .post(format!("{}/v1/logs", mock_server.uri()))
+            .body("")
+            .send()
+            .await
+            .unwrap();
+
+        // wiremock asserts the expectation on drop
     }
 }

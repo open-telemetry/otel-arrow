@@ -611,23 +611,6 @@ mod tests {
     }
 
     #[test]
-    fn test_user_agent_deserialization() {
-        let settings: GrpcClientSettings = serde_json::from_str(
-            r#"{ "grpc_endpoint": "http://localhost:4317", "user_agent": "my-app/1.0" }"#,
-        )
-        .unwrap();
-
-        assert_eq!(settings.user_agent.as_deref(), Some("my-app/1.0"));
-    }
-
-    #[test]
-    fn test_default_has_no_user_agent() {
-        let settings = GrpcClientSettings::default();
-
-        assert_eq!(settings.user_agent, None);
-    }
-
-    #[test]
     fn effective_concurrency_limit_clamps_to_one() {
         let settings: GrpcClientSettings = serde_json::from_str(
             r#"{ "grpc_endpoint": "http://localhost:4317", "concurrency_limit": 0 }"#,
@@ -635,18 +618,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(settings.effective_concurrency_limit(), 1);
-    }
-
-    #[test]
-    fn test_user_agent_applied_to_endpoint() {
-        let settings = GrpcClientSettings {
-            grpc_endpoint: "http://localhost:4317".to_string(),
-            user_agent: Some("my-app/1.0".to_string()),
-            ..GrpcClientSettings::default()
-        };
-
-        let endpoint = settings.build_endpoint().unwrap();
-        let _ = endpoint;
     }
 
     #[tokio::test]
@@ -1318,5 +1289,100 @@ mod tests {
         };
         // localhost should resolve regardless of port.
         settings.run_startup_check().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_user_agent_sent_on_grpc_wire() {
+        use bytes::Bytes;
+        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
+        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::{
+            LogsService, LogsServiceServer,
+        };
+        use prost::Message;
+        use tokio::sync::mpsc;
+        use tonic::transport::Server;
+        use tonic::{Request, Response, Status};
+
+        use crate::otap_grpc::otlp::client::LogsServiceClient;
+
+        // Verify default has no user_agent
+        let defaults = GrpcClientSettings::default();
+        assert_eq!(defaults.user_agent, None);
+
+        // Verify deserialization
+        let deserialized: GrpcClientSettings = serde_json::from_str(
+            r#"{ "grpc_endpoint": "http://localhost:4317", "user_agent": "my-app/1.0" }"#,
+        )
+        .unwrap();
+        assert_eq!(deserialized.user_agent.as_deref(), Some("my-app/1.0"));
+
+        // Verify the header actually arrives on the wire
+        struct UserAgentCapture {
+            sender: mpsc::Sender<String>,
+        }
+
+        #[tonic::async_trait]
+        impl LogsService for UserAgentCapture {
+            async fn export(
+                &self,
+                request: Request<ExportLogsServiceRequest>,
+            ) -> Result<Response<ExportLogsServiceResponse>, Status> {
+                let ua = request
+                    .metadata()
+                    .get("user-agent")
+                    .map(|v| v.to_str().unwrap().to_string())
+                    .unwrap_or_default();
+                let _ = self.sender.send(ua).await;
+                Ok(Response::new(ExportLogsServiceResponse {
+                    partial_success: None,
+                }))
+            }
+        }
+
+        let (tx, mut rx) = mpsc::channel::<String>(1);
+        let service = LogsServiceServer::new(UserAgentCapture { sender: tx });
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+        let server_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(service)
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+
+        let settings = GrpcClientSettings {
+            grpc_endpoint: format!("http://127.0.0.1:{}", addr.port()),
+            user_agent: Some("my-app/1.0".to_string()),
+            ..GrpcClientSettings::default()
+        };
+
+        let endpoint = settings.build_endpoint().unwrap();
+        let channel = endpoint.connect().await.unwrap();
+
+        let mut client = LogsServiceClient::new(channel);
+        let req = ExportLogsServiceRequest {
+            resource_logs: Vec::new(),
+        };
+        let mut buf = Vec::new();
+        req.encode(&mut buf).unwrap();
+        let _ = client.export(Bytes::from(buf)).await.unwrap();
+
+        let observed_ua = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Tonic prepends custom user-agent before its default
+        assert!(
+            observed_ua.contains("my-app/1.0"),
+            "Expected user-agent to contain 'my-app/1.0', got: {observed_ua}"
+        );
+
+        server_handle.abort();
     }
 }
