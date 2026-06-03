@@ -11,15 +11,15 @@ use crate::otlp::attributes::Attribute16Arrays;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use crate::views::otap::common::{
-    OtapAttributeIter, OtapAttributeView, RowGroup, build_attribute_index,
-    ensure_plain_encoded_columns, group_by_resource_id,
+    OtapAttributeIter, OtapAttributeView, build_attribute_index, distinct_resource_ids,
+    ensure_plain_encoded_columns,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 
 /// Resource-only view over OTAP logs Arrow RecordBatches.
 pub struct OtapLogsResourcesView<'a> {
     resource_attrs: Option<Attribute16Arrays<'a>>,
-    resource_groups: Vec<(u16, RowGroup)>,
+    resource_ids: Vec<u16>,
     resource_attrs_map: BTreeMap<u16, Vec<usize>>,
 }
 
@@ -37,7 +37,7 @@ impl<'a> OtapLogsResourcesView<'a> {
             )?;
         }
 
-        let resource_groups = group_by_resource_id(logs_batch);
+        let resource_ids = distinct_resource_ids(logs_batch);
         let resource_attrs_map = resource_attrs
             .map(build_attribute_index)
             .unwrap_or_default();
@@ -46,7 +46,7 @@ impl<'a> OtapLogsResourcesView<'a> {
             resource_attrs: resource_attrs
                 .map(Attribute16Arrays::try_from)
                 .transpose()?,
-            resource_groups,
+            resource_ids,
             resource_attrs_map,
         })
     }
@@ -56,7 +56,7 @@ impl<'a> OtapLogsResourcesView<'a> {
     pub fn resources(&self) -> OtapLogsResourcesIter<'_> {
         OtapLogsResourcesIter {
             view: self,
-            resource_groups: self.resource_groups.iter(),
+            resource_ids: self.resource_ids.iter(),
         }
     }
 }
@@ -64,7 +64,7 @@ impl<'a> OtapLogsResourcesView<'a> {
 /// Iterator over resource-level log groups.
 pub struct OtapLogsResourcesIter<'a> {
     view: &'a OtapLogsResourcesView<'a>,
-    resource_groups: std::slice::Iter<'a, (u16, RowGroup)>,
+    resource_ids: std::slice::Iter<'a, u16>,
 }
 
 impl<'a> Iterator for OtapLogsResourcesIter<'a> {
@@ -72,7 +72,7 @@ impl<'a> Iterator for OtapLogsResourcesIter<'a> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        let (resource_id, _) = self.resource_groups.next()?;
+        let resource_id = self.resource_ids.next()?;
         Some(OtapLogsResource {
             view: self.view,
             resource_id: *resource_id,

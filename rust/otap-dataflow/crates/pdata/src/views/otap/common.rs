@@ -6,7 +6,7 @@
 //! This module contains types that are used by multiple view implementations to avoid
 //! code duplication across signal-specific modules.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use arrow::array::{Array, RecordBatch, StructArray, UInt16Array};
@@ -430,6 +430,25 @@ pub(crate) fn group_by_resource_id(batch: &RecordBatch) -> Vec<(u16, RowGroup)> 
     }
 }
 
+/// Collect distinct resource IDs from the resource struct.
+pub(crate) fn distinct_resource_ids(batch: &RecordBatch) -> Vec<u16> {
+    let num_rows = batch.num_rows();
+    if num_rows == 0 {
+        return Vec::new();
+    }
+
+    let resource_struct = batch
+        .column_by_name(consts::RESOURCE)
+        .and_then(|c| c.as_any().downcast_ref::<StructArray>());
+
+    let id_col = resource_struct.and_then(|s| s.column_by_name(consts::ID));
+
+    match id_col {
+        Some(col) => distinct_ids(col, 0..num_rows),
+        None => Vec::new(),
+    }
+}
+
 /// Group rows by scope ID within a set of rows.
 pub(crate) fn group_by_scope_id(
     batch: &RecordBatch,
@@ -509,6 +528,30 @@ fn group_by_id_column(
             (id, group)
         })
         .collect()
+}
+
+/// Core distinct logic for any ID column.
+fn distinct_ids(id_col: &dyn Array, indices: impl Iterator<Item = usize>) -> Vec<u16> {
+    let mut ids = BTreeSet::new();
+
+    // Convert to ArrayRef to handle dictionary cases
+    let id_col_arc: arrow::array::ArrayRef =
+        std::sync::Arc::new(arrow::array::make_array(id_col.to_data()));
+    if let Ok(accessor) = MaybeDictArrayAccessor::<UInt16Array>::try_new(&id_col_arc) {
+        for i in indices {
+            if let Some(id) = accessor.value_at(i) {
+                let _ = ids.insert(id);
+            }
+        }
+    } else if let Some(id_array) = id_col.as_any().downcast_ref::<UInt16Array>() {
+        for i in indices {
+            if id_array.is_valid(i) {
+                let _ = ids.insert(id_array.value(i));
+            }
+        }
+    }
+
+    ids.into_iter().collect()
 }
 
 // ===== Shared Helpers =====
