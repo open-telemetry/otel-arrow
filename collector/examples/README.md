@@ -16,23 +16,24 @@ methods document in [BUILDING](../BUILDING.md).
 - [`shutdown`](./shutdown/README.md): Sets up two OTAP bridges with different
   stream lifetimes to exercise gRPC stream failure modes.
 
-For each example directory, change your the working directory to the example.
-Set a `COLLECTOR` in your shell according to the build method used.
+For each example directory, change your working directory to the example.
+Set a `COLLECTOR` in your shell according to the method used in
+[BUILDING](../BUILDING.md).
 
-If you used docker,
+If you ran the Collector Contrib distribution image directly,
 
 ```shell
-COLLECTOR=`docker run -v `pwd`:/config -w /config otelarrowcol`
+COLLECTOR="docker run --rm -v `pwd`:/config -w /config otel/opentelemetry-collector-contrib:latest"
 ```
 
-if you used an installed Golang toolchain and local sources,
+if you built the `otelarrowcol` image from this repository,
+
+```shell
+COLLECTOR="docker run --rm -v `pwd`:/config -w /config otelarrowcol"
+```
+
+and if you extracted the collector binary with `make otelarrowcol`,
 
 ```shell
 COLLECTOR=../../../bin/otelarrowcol
-```
-
-and if you used the `go install` method,
-
-```shell
-COLLECTOR=${GOPATH}/bin/otelarrowcol
 ```

@@ -1,8 +1,11 @@
 # Example: record and replay OpenTelemetry Protocol data
 
-First, run `make otelarrowcol` in the top-level directory.
+First, obtain a collector that includes the OTAP components -- see
+[BUILDING](../../BUILDING.md) (for example, run `make otelarrowcol` in the
+top-level directory to extract a `./bin/otelarrowcol` binary).
 
-To execute the data recorder, for example, where GOOS=darwin and GOARCH=arm64:
+To execute the data recorder, with `$COLLECTOR` set as described in the
+[examples README](../README.md):
 
 ```shell
 $COLLECTOR --config target.yaml
