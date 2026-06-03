@@ -171,7 +171,7 @@ jobs:
         if: always()
         working-directory: ${{ github.workspace }}
         env:
-          REPORT_PATH: ${{ steps.weaver-stop.outputs.report-path }}
+          REPORT_PATH: ${{ steps.weaver-stop.outputs['report-path'] }}
         run: |
           set -euo pipefail
           REPORT="${REPORT_PATH:-}"
@@ -238,7 +238,7 @@ jobs:
       - name: Bundle live-check artifacts
         if: always()
         env:
-          REPORT_PATH: ${{ steps.weaver-stop.outputs.report-path }}
+          REPORT_PATH: ${{ steps.weaver-stop.outputs['report-path'] }}
           WEAVER_STATE_DIR: ${{ runner.temp }}/weaver-live-check-df-engine
         run: |
           set -euo pipefail
