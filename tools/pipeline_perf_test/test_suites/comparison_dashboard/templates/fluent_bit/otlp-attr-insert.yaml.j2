@@ -1,9 +1,3 @@
-# Fluent Bit OTLP/gRPC passthrough with a content_modifier processor inserting
-# log-record attributes. content_modifier with context=otel_log_attributes is
-# Fluent Bit's native equivalent of the attributes-processor insert action -- it
-# targets the OTLP log-record attributes directly (the `modify` filter only sees
-# the flat record body, and the generic `attributes` context is a different
-# group than the OTLP log attributes).
 service:
   flush: 1
   log_level: info

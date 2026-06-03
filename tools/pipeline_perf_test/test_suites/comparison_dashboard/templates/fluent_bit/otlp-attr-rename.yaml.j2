@@ -1,10 +1,3 @@
-# Fluent Bit OTLP/gRPC passthrough with a content_modifier processor renaming
-# log-record attributes. content_modifier with context=otel_log_attributes and
-# action=rename is the native equivalent of the attributes-processor rename
-# (from_attribute + delete): `key` is the existing attribute, `value` is the new
-# name. The `modify` filter cannot do this because it only sees the flat record
-# body; the generic `attributes` context is a different group than the OTLP log
-# attributes.
 service:
   flush: 1
   log_level: info
