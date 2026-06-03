@@ -5,10 +5,12 @@
 
 use std::collections::BTreeMap;
 
-#[allow(unused_imports)]
-use arrow::array::Array;
+use arrow::array::{Array, BooleanArray};
 
-use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
+use crate::arrays::{
+    Int32ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor, get_bool_array_opt,
+    get_u8_array,
+};
 use crate::error::Error;
 use crate::otap::OtapArrowRecords;
 use crate::otap::transform::transport_optimize::{RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH};
@@ -134,14 +136,7 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for OtapMetricsView<'a> {
     type Error = Error;
 
     fn try_from(records: &'a OtapArrowRecords) -> Result<Self, Self::Error> {
-        let (metrics_payload_type, metrics_batch) =
-            if let Some(batch) = records.get(ArrowPayloadType::UnivariateMetrics) {
-                (ArrowPayloadType::UnivariateMetrics, batch)
-            } else if let Some(batch) = records.get(ArrowPayloadType::MultivariateMetrics) {
-                (ArrowPayloadType::MultivariateMetrics, batch)
-            } else {
-                return Err(Error::MetricRecordNotFound);
-            };
+        let (metrics_payload_type, metrics_batch) = metrics_root_batch(records)?;
 
         ensure_metrics_transport_ids_decoded(records, metrics_payload_type, metrics_batch)?;
 
@@ -345,6 +340,89 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for OtapMetricsView<'a> {
             exp_hist_exemplar_attrs_index,
         })
     }
+}
+
+fn metrics_root_batch(
+    records: &OtapArrowRecords,
+) -> Result<(ArrowPayloadType, &arrow::array::RecordBatch), Error> {
+    if let Some(batch) = records.get(ArrowPayloadType::UnivariateMetrics) {
+        Ok((ArrowPayloadType::UnivariateMetrics, batch))
+    } else if let Some(batch) = records.get(ArrowPayloadType::MultivariateMetrics) {
+        Ok((ArrowPayloadType::MultivariateMetrics, batch))
+    } else {
+        Err(Error::MetricRecordNotFound)
+    }
+}
+
+/// Return whether OTAP metrics records contain at least one aggregatable metric.
+///
+/// This reads only the root metrics batch columns needed for the decision and
+/// intentionally avoids decoding transport-optimized child IDs or constructing
+/// hierarchy indexes.
+pub fn otap_metrics_have_aggregatable_metrics(records: &OtapArrowRecords) -> Result<bool, Error> {
+    let (_, metrics_batch) = metrics_root_batch(records)?;
+    let metric_type = get_u8_array(metrics_batch, consts::METRIC_TYPE)?;
+    let aggregation_temporality = metrics_batch
+        .column_by_name(consts::AGGREGATION_TEMPORALITY)
+        .map(Int32ArrayAccessor::try_new)
+        .transpose()?;
+    let is_monotonic = get_bool_array_opt(metrics_batch, consts::IS_MONOTONIC)?;
+
+    for row_idx in 0..metric_type.len() {
+        let Some(metric_type_val) = metric_type.value_at(row_idx) else {
+            continue;
+        };
+        let Ok(metric_type) = MetricType::try_from(metric_type_val) else {
+            continue;
+        };
+
+        match metric_type {
+            MetricType::Gauge | MetricType::Summary => return Ok(true),
+            MetricType::Sum => {
+                if aggregation_temporality_from_column(aggregation_temporality.as_ref(), row_idx)
+                    == AggregationTemporality::Cumulative
+                    && is_monotonic_from_column(is_monotonic, row_idx)
+                {
+                    return Ok(true);
+                }
+            }
+            MetricType::Histogram | MetricType::ExponentialHistogram => {
+                if aggregation_temporality_from_column(aggregation_temporality.as_ref(), row_idx)
+                    == AggregationTemporality::Cumulative
+                {
+                    return Ok(true);
+                }
+            }
+            MetricType::Empty => {}
+        }
+    }
+
+    Ok(false)
+}
+
+fn aggregation_temporality_at(
+    metrics_arrays: &MetricsArrays<'_>,
+    row_idx: usize,
+) -> AggregationTemporality {
+    aggregation_temporality_from_column(metrics_arrays.aggregation_temporality.as_ref(), row_idx)
+}
+
+fn aggregation_temporality_from_column(
+    aggregation_temporality: Option<&Int32ArrayAccessor<'_>>,
+    row_idx: usize,
+) -> AggregationTemporality {
+    aggregation_temporality
+        .and_then(|col| col.value_at(row_idx))
+        .map(|v| AggregationTemporality::from(v as u32))
+        .unwrap_or(AggregationTemporality::Unspecified)
+}
+
+fn is_monotonic_at(metrics_arrays: &MetricsArrays<'_>, row_idx: usize) -> bool {
+    is_monotonic_from_column(metrics_arrays.is_monotonic, row_idx)
+}
+
+fn is_monotonic_from_column(is_monotonic: Option<&BooleanArray>, row_idx: usize) -> bool {
+    is_monotonic.value_at(row_idx).unwrap_or(false)
 }
 
 fn ensure_metrics_transport_ids_decoded(
@@ -785,21 +863,10 @@ impl<'a> MetricView for OtapMetricView<'a> {
         let metric_type = MetricType::try_from(metric_type_val).ok()?;
         let metric_id = self.view.metrics_arrays.id.value_at(self.row_idx)?;
 
-        let aggregation_temporality = self
-            .view
-            .metrics_arrays
-            .aggregation_temporality
-            .as_ref()
-            .and_then(|col| col.value_at(self.row_idx))
-            .map(|v| AggregationTemporality::from(v as u32))
-            .unwrap_or(AggregationTemporality::Unspecified);
+        let aggregation_temporality =
+            aggregation_temporality_at(&self.view.metrics_arrays, self.row_idx);
 
-        let is_monotonic = self
-            .view
-            .metrics_arrays
-            .is_monotonic
-            .value_at(self.row_idx)
-            .unwrap_or(false);
+        let is_monotonic = is_monotonic_at(&self.view.metrics_arrays, self.row_idx);
 
         match metric_type {
             MetricType::Empty => None,

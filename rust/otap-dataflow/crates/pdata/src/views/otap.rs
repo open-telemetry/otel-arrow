@@ -19,7 +19,7 @@ use crate::error::Result;
 use crate::otap::OtapArrowRecords;
 
 pub use logs::{DecodedOtapLogsResources, OtapLogsResourcesView, OtapLogsView};
-pub use metrics::OtapMetricsView;
+pub use metrics::{OtapMetricsView, otap_metrics_have_aggregatable_metrics};
 pub use traces::OtapTracesView;
 
 /// Owns OTAP Arrow records after transport-optimized IDs have been decoded.

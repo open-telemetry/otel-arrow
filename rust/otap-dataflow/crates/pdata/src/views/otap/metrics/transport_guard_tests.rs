@@ -68,6 +68,80 @@ fn metrics_records() -> OtapArrowRecords {
     store.into()
 }
 
+fn metrics_records_with_root_types(
+    metric_types: Vec<u8>,
+    aggregation_temporality: Vec<i32>,
+    is_monotonic: Vec<bool>,
+) -> OtapArrowRecords {
+    let len = metric_types.len();
+    let ids: Vec<u16> = (0..len).map(|idx| idx as u16 + 1).collect();
+    let resource_ids: Vec<u16> = vec![1; len];
+    let scope_ids: Vec<u16> = vec![1; len];
+
+    crate::metrics!(
+        (
+            UnivariateMetrics,
+            ("id", UInt16, ids),
+            ("resource.id", UInt16, resource_ids),
+            ("scope.id", UInt16, scope_ids),
+            ("metric_type", UInt8, metric_types),
+            ("aggregation_temporality", Int32, aggregation_temporality),
+            ("is_monotonic", Boolean, is_monotonic)
+        ),
+        (
+            NumberDataPoints,
+            ("id", UInt32, vec![1u32]),
+            ("parent_id", UInt16, vec![1u16])
+        ),
+    )
+    .into()
+}
+
+#[test]
+fn aggregatable_preflight_detects_gauge_without_transport_decode() {
+    let mut records = metrics_records_with_root_types(
+        vec![MetricType::Gauge as u8],
+        vec![AggregationTemporality::Unspecified as i32],
+        vec![false],
+    );
+    set_column_encoding(
+        &mut records,
+        ArrowPayloadType::NumberDataPoints,
+        consts::PARENT_ID,
+        Encoding::Delta,
+    );
+
+    assert!(otap_metrics_have_aggregatable_metrics(&records).unwrap());
+}
+
+#[test]
+fn aggregatable_preflight_skips_delta_sum_without_transport_decode() {
+    let mut records = metrics_records_with_root_types(
+        vec![MetricType::Sum as u8],
+        vec![AggregationTemporality::Delta as i32],
+        vec![true],
+    );
+    set_column_encoding(
+        &mut records,
+        ArrowPayloadType::NumberDataPoints,
+        consts::PARENT_ID,
+        Encoding::Delta,
+    );
+
+    assert!(!otap_metrics_have_aggregatable_metrics(&records).unwrap());
+}
+
+#[test]
+fn aggregatable_preflight_detects_cumulative_monotonic_sum() {
+    let records = metrics_records_with_root_types(
+        vec![MetricType::Sum as u8],
+        vec![AggregationTemporality::Cumulative as i32],
+        vec![true],
+    );
+
+    assert!(otap_metrics_have_aggregatable_metrics(&records).unwrap());
+}
+
 #[test]
 fn rejects_encoded_metrics_root_id_columns() {
     for column in [consts::ID, RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH] {
