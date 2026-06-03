@@ -29,7 +29,7 @@ jobs:
           xl_label: 'size/XL'
           fail_if_xl: 'false'
           message_if_xl: >
-            ⚠️ **This PR is `size/XL` (500+ changed lines).** Large PRs are
+            **This PR is `size/XL` (500+ changed lines).** Large PRs are
             harder to review thoroughly and more likely to introduce subtle
             bugs.
 
