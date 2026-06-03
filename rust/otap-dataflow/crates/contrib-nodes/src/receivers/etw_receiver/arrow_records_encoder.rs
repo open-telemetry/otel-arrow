@@ -110,10 +110,16 @@ fn decode_field_value(field: &DecodedField) -> AttrValue<'_> {
             let trimmed = s.trim_end_matches('\0');
             AttrValue::Str(Cow::Owned(trimmed.to_owned()))
         }
-        // Counted UTF-16 strings from TraceLoggingDynamic (TDH in_type 300/301).
-        // The u16 length prefix has already been consumed by the framework's
-        // StaticLenPrefixArray — `data` contains only the UTF-16 content bytes.
-        ("counted_string", _) if data.len() >= 2 => {
+        // Counted ANSI/UTF-8 strings (TDH_INTYPE_COUNTEDANSISTRING, in_type 301).
+        // The u16 byte-count prefix has already been consumed by the framework's
+        // StaticLenPrefixArray — `data` contains only the UTF-8 content bytes.
+        ("counted_string", _) => {
+            let s = String::from_utf8_lossy(data);
+            let trimmed = s.trim_end_matches('\0');
+            AttrValue::Str(Cow::Owned(trimmed.to_owned()))
+        }
+        // Counted UTF-16 strings (TDH_INTYPE_COUNTEDSTRING, in_type 300).
+        ("counted_wstring", _) if data.len() >= 2 => {
             let u16_iter = data
                 .chunks_exact(2)
                 .map(|c| u16::from_ne_bytes([c[0], c[1]]))
@@ -123,7 +129,7 @@ fn decode_field_value(field: &DecodedField) -> AttrValue<'_> {
                 .collect();
             AttrValue::Str(Cow::Owned(decoded))
         }
-        ("counted_string", _) => AttrValue::Str(Cow::Borrowed("")),
+        ("counted_wstring", _) => AttrValue::Str(Cow::Borrowed("")),
         ("wstring", _) if data.len() >= 2 => {
             // UTF-16LE decoding, trim null terminator
             let u16_iter = data
