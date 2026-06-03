@@ -620,11 +620,9 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         // Drive data-path and extension tasks concurrently. On both the
         // happy and error paths, cleanup unconditionally broadcasts
         // `Shutdown` and bounded-drains extensions (see
-        // `EXTENSION_SHUTDOWN_GRACE`).
-        //
-        // TODO: on internal node/extension failure the orderly drain
-        // protocol is skipped; tasks are force-cancelled by LocalSet drop.
-        // Fix in a follow-up PR by making pipeline shutdown orchestrated.
+        // `EXTENSION_SHUTDOWN_GRACE`). The "extensions stop last"
+        // guarantee applies to the normal drain path only; see the
+        // `extension_lifecycle` module docs.
         rt.block_on(async {
             local_tasks
                 .run_until(async {

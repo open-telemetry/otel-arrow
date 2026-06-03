@@ -5,7 +5,13 @@
 //!
 //! Owns spawned active/background extension tasks, shutdown senders,
 //! and passive extension wrappers. Encapsulates "extensions start
-//! first, shut down last".
+//! first, shut down last" on the normal drain path.
+//!
+//! TODO: on internal node/extension failure the orderly drain
+//! protocol is skipped; remaining data-path tasks are force-cancelled
+//! by `LocalSet` drop, so the stop-last guarantee currently applies
+//! only to the normal drain path. Fix in a follow-up PR by making
+//! pipeline shutdown orchestrated.
 
 use crate::context::ExtensionContext;
 use crate::control::{ExtensionShutdownChannel, ShutdownPayload};
