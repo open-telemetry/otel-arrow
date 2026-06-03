@@ -15,8 +15,9 @@ use otap_df_pdata::testing::round_trip::decode_metrics;
 use projection::{CounterStarts, counter_key, counter_key_joined, counter_key_matches_joined};
 #[cfg(feature = "dev-tools")]
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, ErrorKind};
+use std::io::{self, ErrorKind, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 #[cfg(feature = "dev-tools")]
 use weaver_common::{result::WResult, vdir::VirtualDirectoryPath};
 #[cfg(feature = "dev-tools")]
@@ -33,11 +34,49 @@ use weaver_semconv::{
     registry_repo::RegistryRepo,
 };
 
-fn block_on_scrape(source: &mut ProcfsSource, due: ProcfsFamilies) -> io::Result<HostScrape> {
-    tokio::runtime::Builder::new_current_thread()
-        .build()
-        .expect("runtime")
-        .block_on(source.scrape_due(due))
+fn scrape_blocking(source: &mut ProcfsSource, due: ProcfsFamilies) -> io::Result<HostScrape> {
+    source.scrape_due_blocking(due)
+}
+
+fn memory_only_procfs_config() -> ProcfsConfig {
+    ProcfsConfig {
+        cpu: false,
+        memory: true,
+        paging: false,
+        system: false,
+        disk: false,
+        filesystem: false,
+        network: false,
+        processes: false,
+        load: false,
+        cpu_utilization: false,
+        memory_limit: false,
+        memory_shared: false,
+        memory_hugepages: false,
+        disk_limit: false,
+        filesystem_include_virtual: false,
+        filesystem_include_remote: false,
+        filesystem_limit: false,
+        filesystem_include_devices: None,
+        filesystem_exclude_devices: None,
+        filesystem_include_fs_types: None,
+        filesystem_exclude_fs_types: None,
+        filesystem_include_mount_points: None,
+        filesystem_exclude_mount_points: None,
+        disk_include: None,
+        disk_exclude: None,
+        network_include: None,
+        network_exclude: None,
+        validation: HostViewValidationMode::None,
+    }
+}
+
+fn load_only_procfs_config() -> ProcfsConfig {
+    ProcfsConfig {
+        load: true,
+        memory: false,
+        ..memory_only_procfs_config()
+    }
 }
 
 #[test]
@@ -62,6 +101,12 @@ fn projection_uses_expected_metric_shapes() {
     assert_metric_shape(metrics, metric::CPU_FREQUENCY, "Hz", None);
     assert_first_point_int(metrics, metric::CPU_FREQUENCY, 2_400_000_000);
     assert_first_point_attr_int(metrics, metric::CPU_FREQUENCY, attr::CPU_LOGICAL_NUMBER, 0);
+    assert_metric_shape(metrics, metric::CPU_LOAD_AVERAGE_1M, "{thread}", None);
+    assert_first_point_double(metrics, metric::CPU_LOAD_AVERAGE_1M, 1.25);
+    assert_metric_shape(metrics, metric::CPU_LOAD_AVERAGE_5M, "{thread}", None);
+    assert_first_point_double(metrics, metric::CPU_LOAD_AVERAGE_5M, 0.75);
+    assert_metric_shape(metrics, metric::CPU_LOAD_AVERAGE_15M, "{thread}", None);
+    assert_first_point_double(metrics, metric::CPU_LOAD_AVERAGE_15M, 0.5);
     assert_metric_shape(metrics, metric::MEMORY_USAGE, "By", Some(false));
     assert_first_point_attr(
         metrics,
@@ -224,9 +269,13 @@ fn emitted_phase1_metric_shapes_match_weaver_semconv() {
     let emitted_shapes = emitted_phase1_metric_shapes();
 
     for (name, emitted) in emitted_shapes {
-        let semconv = semconv_shapes
-            .get(&name)
-            .unwrap_or_else(|| panic!("missing semconv metric {name}"));
+        let Some(semconv) = semconv_shapes.get(&name) else {
+            assert!(
+                is_intentional_experimental_metric(&name),
+                "missing semconv metric {name}"
+            );
+            continue;
+        };
 
         assert_eq!(emitted.unit, semconv.unit, "unit mismatch for {name}");
         assert_eq!(
@@ -274,6 +323,14 @@ fn emitted_phase1_metric_shapes_match_weaver_semconv() {
             }
         }
     }
+}
+
+#[cfg(feature = "dev-tools")]
+fn is_intentional_experimental_metric(name: &str) -> bool {
+    matches!(
+        name,
+        metric::CPU_LOAD_AVERAGE_1M | metric::CPU_LOAD_AVERAGE_5M | metric::CPU_LOAD_AVERAGE_15M
+    )
 }
 
 #[test]
@@ -488,6 +545,7 @@ fn scrape_due_emits_successful_families_after_partial_read_error() {
             filesystem: false,
             network: false,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -511,7 +569,7 @@ fn scrape_due_emits_successful_families_after_partial_read_error() {
     )
     .expect("source");
 
-    let scrape = block_on_scrape(
+    let scrape = scrape_blocking(
         &mut source,
         ProcfsFamilies {
             memory: true,
@@ -553,6 +611,7 @@ fn scrape_due_preserves_disk_counter_state_after_diskstats_read_error() {
             filesystem: false,
             network: false,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -576,7 +635,7 @@ fn scrape_due_preserves_disk_counter_state_after_diskstats_read_error() {
     )
     .expect("source");
 
-    let first = block_on_scrape(
+    let first = scrape_blocking(
         &mut source,
         ProcfsFamilies {
             disk: true,
@@ -590,7 +649,7 @@ fn scrape_due_preserves_disk_counter_state_after_diskstats_read_error() {
         .get_joined(metric::DISK_IO, "sda", "read", 0);
 
     std::fs::remove_file(proc.join("diskstats")).expect("remove diskstats");
-    let partial = block_on_scrape(
+    let partial = scrape_blocking(
         &mut source,
         ProcfsFamilies {
             memory: true,
@@ -607,7 +666,7 @@ fn scrape_due_preserves_disk_counter_state_after_diskstats_read_error() {
         "8 0 sda 1 0 50 0 2 0 100 0 0 0 0 0 0 0 0\n",
     )
     .expect("diskstats after reset");
-    let after_error = block_on_scrape(
+    let after_error = scrape_blocking(
         &mut source,
         ProcfsFamilies {
             disk: true,
@@ -647,6 +706,7 @@ fn scrape_due_uses_stable_fallback_start_time_when_stat_is_unavailable() {
             filesystem: false,
             network: false,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -670,7 +730,7 @@ fn scrape_due_uses_stable_fallback_start_time_when_stat_is_unavailable() {
     )
     .expect("source");
 
-    let first = block_on_scrape(
+    let first = scrape_blocking(
         &mut source,
         ProcfsFamilies {
             disk: true,
@@ -679,7 +739,7 @@ fn scrape_due_uses_stable_fallback_start_time_when_stat_is_unavailable() {
     )
     .expect("first disk scrape");
     std::thread::sleep(Duration::from_millis(1));
-    let second = block_on_scrape(
+    let second = scrape_blocking(
         &mut source,
         ProcfsFamilies {
             disk: true,
@@ -718,6 +778,7 @@ fn validation_requires_stat_for_cumulative_families() {
             filesystem: false,
             network: false,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -747,6 +808,160 @@ fn validation_requires_stat_for_cumulative_families() {
 }
 
 #[test]
+fn scrape_worker_preserves_startup_validation_errors() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let proc = root.path().join("proc");
+    std::fs::create_dir(&proc).expect("proc dir");
+    std::fs::write(
+        proc.join("diskstats"),
+        "8 0 sda 1 0 100 0 2 0 200 0 0 0 0 0 0 0 0\n",
+    )
+    .expect("diskstats");
+
+    let err = match ProcfsScrapeWorker::new(
+        Some(root.path().to_path_buf()),
+        ProcfsConfig {
+            cpu: false,
+            memory: false,
+            paging: false,
+            system: false,
+            disk: true,
+            filesystem: false,
+            network: false,
+            processes: false,
+            load: false,
+            cpu_utilization: false,
+            memory_limit: false,
+            memory_shared: false,
+            memory_hugepages: false,
+            disk_limit: false,
+            filesystem_include_virtual: false,
+            filesystem_include_remote: false,
+            filesystem_limit: false,
+            filesystem_include_devices: None,
+            filesystem_exclude_devices: None,
+            filesystem_include_fs_types: None,
+            filesystem_exclude_fs_types: None,
+            filesystem_include_mount_points: None,
+            filesystem_exclude_mount_points: None,
+            disk_include: None,
+            disk_exclude: None,
+            network_include: None,
+            network_exclude: None,
+            validation: HostViewValidationMode::FailSelected,
+        },
+    ) {
+        Ok(_) => panic!("worker should fail before spawning when validation fails"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::NotFound);
+}
+
+#[test]
+fn scrape_worker_accepts_immediate_startup_scrape() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let proc = root.path().join("proc");
+    std::fs::create_dir(&proc).expect("proc dir");
+    std::fs::write(
+        proc.join("meminfo"),
+        "MemTotal: 1000 kB\nMemFree: 100 kB\nMemAvailable: 200 kB\n",
+    )
+    .expect("meminfo");
+
+    let worker =
+        ProcfsScrapeWorker::new(Some(root.path().to_path_buf()), memory_only_procfs_config())
+            .expect("worker");
+    let result = worker
+        .try_start_scrape(ProcfsFamilies {
+            memory: true,
+            ..ProcfsFamilies::default()
+        })
+        .expect("scrape accepted");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("runtime");
+    let scrape = runtime
+        .block_on(result)
+        .expect("worker response")
+        .expect("scrape");
+
+    assert!(scrape.snapshot.memory.is_some());
+}
+
+#[test]
+fn scrape_worker_rejects_second_real_scrape_as_busy() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let proc = root.path().join("proc");
+    std::fs::create_dir(&proc).expect("proc dir");
+    let meminfo = proc.join("meminfo");
+    nix::unistd::mkfifo(
+        &meminfo,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    )
+    .expect("meminfo fifo");
+
+    let worker =
+        ProcfsScrapeWorker::new(Some(root.path().to_path_buf()), memory_only_procfs_config())
+            .expect("worker");
+    let first = worker
+        .try_start_scrape(ProcfsFamilies {
+            memory: true,
+            ..ProcfsFamilies::default()
+        })
+        .expect("first scrape accepted");
+
+    assert!(matches!(
+        worker.try_start_scrape(ProcfsFamilies {
+            memory: true,
+            ..ProcfsFamilies::default()
+        }),
+        Err(StartScrapeError::Busy)
+    ));
+
+    let writer = std::thread::spawn(move || {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(meminfo)
+            .expect("open meminfo fifo writer");
+        file.write_all(b"MemTotal: 1000 kB\nMemFree: 100 kB\nMemAvailable: 200 kB\n")
+            .expect("write meminfo");
+    });
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("runtime");
+    let scrape = runtime
+        .block_on(async { tokio::time::timeout(Duration::from_secs(5), first).await })
+        .expect("worker response timeout")
+        .expect("worker response")
+        .expect("scrape");
+    writer.join().expect("writer thread");
+
+    assert!(scrape.snapshot.memory.is_some());
+}
+
+#[test]
+fn scrape_worker_reports_stopped_when_request_channel_is_disconnected() {
+    let (tx, rx) = mpsc::sync_channel(1);
+    drop(rx);
+    let worker = ProcfsScrapeWorker {
+        tx,
+        accepted: Arc::new(AtomicBool::new(false)),
+    };
+
+    assert!(matches!(
+        worker.try_start_scrape(ProcfsFamilies {
+            memory: true,
+            ..ProcfsFamilies::default()
+        }),
+        Err(StartScrapeError::Stopped)
+    ));
+}
+
+#[test]
 fn filesystem_stat_worker_reports_disconnect_as_broken_pipe() {
     let worker = FilesystemStatWorker::disconnected_for_test();
     match worker.statvfs(PathBuf::from("/"), Duration::from_millis(1)) {
@@ -769,6 +984,7 @@ fn scrape_due_fails_when_all_due_families_fail() {
             filesystem: false,
             network: false,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -793,7 +1009,7 @@ fn scrape_due_fails_when_all_due_families_fail() {
     .expect("source");
 
     assert!(
-        block_on_scrape(
+        scrape_blocking(
             &mut source,
             ProcfsFamilies {
                 memory: true,
@@ -828,6 +1044,7 @@ fn scrape_due_reads_opt_in_disk_limit_from_sysfs() {
             filesystem: false,
             network: false,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -851,7 +1068,7 @@ fn scrape_due_reads_opt_in_disk_limit_from_sysfs() {
     )
     .expect("source");
 
-    let scrape = block_on_scrape(
+    let scrape = scrape_blocking(
         &mut source,
         ProcfsFamilies {
             disk: true,
@@ -904,6 +1121,7 @@ fn scrape_due_uses_boot_time_for_counter_only_family_ticks() {
             filesystem: false,
             network: true,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -928,7 +1146,7 @@ fn scrape_due_uses_boot_time_for_counter_only_family_ticks() {
     .expect("source");
 
     let expected_start = 123 * NANOS_PER_SEC;
-    let disk_scrape = block_on_scrape(
+    let disk_scrape = scrape_blocking(
         &mut source,
         ProcfsFamilies {
             disk: true,
@@ -941,7 +1159,7 @@ fn scrape_due_uses_boot_time_for_counter_only_family_ticks() {
 
     std::fs::remove_file(proc.join("stat")).expect("remove stat after cache");
 
-    let network_scrape = block_on_scrape(
+    let network_scrape = scrape_blocking(
         &mut source,
         ProcfsFamilies {
             network: true,
@@ -952,7 +1170,7 @@ fn scrape_due_uses_boot_time_for_counter_only_family_ticks() {
     assert_eq!(network_scrape.snapshot.start_time_unix_nano, expected_start);
     assert_eq!(network_scrape.snapshot.networks.len(), 1);
 
-    let paging_scrape = block_on_scrape(
+    let paging_scrape = scrape_blocking(
         &mut source,
         ProcfsFamilies {
             paging: true,
@@ -985,6 +1203,7 @@ fn scrape_due_reads_filesystem_usage_from_mountinfo() {
             filesystem: true,
             network: false,
             processes: false,
+            load: false,
             cpu_utilization: false,
             memory_limit: false,
             memory_shared: false,
@@ -1008,7 +1227,7 @@ fn scrape_due_reads_filesystem_usage_from_mountinfo() {
     )
     .expect("source");
 
-    let scrape = block_on_scrape(
+    let scrape = scrape_blocking(
         &mut source,
         ProcfsFamilies {
             filesystem: true,
@@ -1343,6 +1562,45 @@ fn netdev_parser_applies_interface_filters() {
     assert_eq!(interfaces[0].name, "eth0");
     assert_eq!(interfaces[0].rx_errors, 3);
     assert_eq!(interfaces[0].tx_dropped, 6);
+}
+
+#[test]
+fn loadavg_parser_reads_first_three_fields() {
+    let load = parse_loadavg("1.25 0.75 0.50 2/123 456\n").expect("load avg");
+
+    assert_eq!(load.one_minute, 1.25);
+    assert_eq!(load.five_minutes, 0.75);
+    assert_eq!(load.fifteen_minutes, 0.5);
+}
+
+#[test]
+fn loadavg_parser_rejects_missing_or_invalid_fields() {
+    assert!(parse_loadavg("1.25 0.75\n").is_none());
+    assert!(parse_loadavg("1.25 nope 0.50 2/123 456\n").is_none());
+}
+
+#[test]
+fn scrape_due_reads_loadavg_from_host_root() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let proc = root.path().join("proc");
+    std::fs::create_dir(&proc).expect("proc dir");
+    std::fs::write(proc.join("loadavg"), "1.25 0.75 0.50 2/123 456\n").expect("loadavg");
+
+    let mut source =
+        ProcfsSource::new(Some(root.path()), load_only_procfs_config()).expect("source");
+    let scrape = scrape_blocking(
+        &mut source,
+        ProcfsFamilies {
+            load: true,
+            ..ProcfsFamilies::default()
+        },
+    )
+    .expect("load scrape");
+    let load = scrape.snapshot.load.expect("load metrics");
+
+    assert_eq!(load.one_minute, 1.25);
+    assert_eq!(load.five_minutes, 0.75);
+    assert_eq!(load.fifteen_minutes, 0.5);
 }
 
 #[test]
@@ -1703,6 +1961,11 @@ fn projection_fixture_request() -> MetricsData {
                 physical_count: 1,
                 frequencies_hz: vec![2_400_000_000.0],
             },
+            load: Some(LoadAverage {
+                one_minute: 1.25,
+                five_minutes: 0.75,
+                fifteen_minutes: 0.5,
+            }),
             memory: Some(MemoryStats {
                 total: 100,
                 used: 80,
@@ -1883,6 +2146,21 @@ fn assert_first_point_int(metrics: &[Metric], name: &'static str, expected: i64)
         point.value,
         Some(number_data_point::Value::AsInt(expected)),
         "{name} first point should be int"
+    );
+}
+
+fn assert_first_point_double(metrics: &[Metric], name: &'static str, expected: f64) {
+    let metric = metric_by_name(metrics, name);
+    let point = match metric.data.as_ref().expect("metric data") {
+        otlp_metric::Data::Sum(sum) => sum.data_points.first(),
+        otlp_metric::Data::Gauge(gauge) => gauge.data_points.first(),
+        _ => None,
+    }
+    .expect("data point");
+    assert_eq!(
+        point.value,
+        Some(number_data_point::Value::AsDouble(expected)),
+        "{name} first point should be double"
     );
 }
 

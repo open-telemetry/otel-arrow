@@ -75,6 +75,16 @@
       ]
     },
     {
+      // limit Go and Rust git/module digest-only updates to once a week
+      // these trickle in frequently, so consolidate them
+      "groupName": "go and rust digest updates",
+      "matchManagers": ["gomod", "cargo"],
+      "matchUpdateTypes": ["digest"],
+      "schedule": [
+        "before 8am on Monday"
+      ]
+    },
+    {
       // keep pip-compile source + lock updates together in one PR stream
       "groupName": "pipeline perf python dependencies",
       "matchManagers": ["pip-compile"],

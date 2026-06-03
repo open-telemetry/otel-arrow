@@ -1,0 +1,30 @@
+# chloggen configuration for the Rust components of otel-arrow
+# (rust/otap-dataflow workspace).
+#
+# Entries placed in this directory are rendered into ../CHANGELOG.md
+# (i.e. rust/otap-dataflow/CHANGELOG.md) at release time.
+# See ./README.md.
+
+entries_dir: rust/otap-dataflow/.chloggen
+template_yaml: rust/otap-dataflow/.chloggen/TEMPLATE.yaml
+summary_template: rust/otap-dataflow/.chloggen/summary.tmpl
+
+change_logs:
+  rust: rust/otap-dataflow/CHANGELOG.md
+
+default_change_logs:
+  - rust
+
+# Allowed values for an entry's `component:` field.
+#
+# Kept intentionally short — pick the broadest bucket that fits.
+# Finer-grained crate routing happens via PR labels (.github/labeler.yml).
+components:
+  - all
+  - engine # admin, channel, config, controller, state, ...
+  - pipeline # core-nodes, contrib-nodes (receivers/processors/exporters)
+  - otap
+  - pdata
+  - query-engine
+  - observability
+  - dependencies

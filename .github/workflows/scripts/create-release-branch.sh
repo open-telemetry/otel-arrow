@@ -39,15 +39,19 @@ if [ -z "$(git config user.name)" ] || [ -z "$(git config user.email)" ]; then
     echo "  git config user.email 'your.email@example.com'"
 fi
 
+# Ensure origin/main is up to date so resets and new branches use the latest tip
+git fetch origin main
+
 # Check if branch already exists
 if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
-    echo -e "${RED}Error: Branch $BRANCH_NAME already exists${NC}"
-    exit 1
+    echo -e "${YELLOW}Branch $BRANCH_NAME already exists locally, resetting it${NC}"
+    git checkout "$BRANCH_NAME"
+    git reset --hard origin/main
+else
+    # Create and switch to release branch
+    echo "Creating branch: $BRANCH_NAME"
+    git checkout -b "$BRANCH_NAME" origin/main
 fi
-
-# Create and switch to release branch
-echo "Creating branch: $BRANCH_NAME"
-git checkout -b "$BRANCH_NAME"
 
 # Check if there are any changes to commit
 if [ -z "$(git status --porcelain)" ]; then
@@ -61,8 +65,10 @@ git add .
 # Commit changes
 git commit -m "Prepare release v$VERSION
 
-- Update CHANGELOG.md with release notes for v$VERSION
+- Render chloggen entries into go/CHANGELOG.md and rust/otap-dataflow/CHANGELOG.md
+- Bump rust/otap-dataflow/Cargo.toml workspace + root package version to v$VERSION
 - Update collector/otelarrowcol-build.yaml version to v$VERSION
+- Update collector/cmd/otelarrowcol/main.go version to v$VERSION
 
 This commit prepares the repository for release v$VERSION."
 
@@ -71,7 +77,9 @@ echo -e "${GREEN}✓ Committed changes to branch $BRANCH_NAME${NC}"
 # Push branch if requested
 if [ "$PUSH_BRANCH" = true ]; then
     echo "Pushing branch to origin..."
-    git push origin "$BRANCH_NAME"
+    # Fetch the remote ref so --force-with-lease has a valid comparison
+    git fetch origin "$BRANCH_NAME" 2>/dev/null || true
+    git push --force-with-lease origin "$BRANCH_NAME"
     echo -e "${GREEN}✓ Pushed branch to origin${NC}"
 fi
 

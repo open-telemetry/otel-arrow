@@ -59,14 +59,14 @@ pub struct FlowSignalsOutgoingMetrics {
 #[attribute_set(name = "flow.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct FlowAttributeSet {
-    /// User-given flow name.
-    #[attribute(key = "flow.name")]
-    pub flow_name: Cow<'static, str>,
+    /// User-given flow identifier.
+    #[attribute(key = "flow.id")]
+    pub flow_id: Cow<'static, str>,
     /// Name of the processor node where the measurement begins.
-    #[attribute(key = "flow.start_node")]
+    #[attribute(key = "flow.node.start")]
     pub start_node: Cow<'static, str>,
     /// Name of the processor node where the measurement ends.
-    #[attribute(key = "flow.end_node")]
+    #[attribute(key = "flow.node.end")]
     pub end_node: Cow<'static, str>,
     /// Pipeline attributes.
     #[compose]
@@ -249,14 +249,14 @@ pub(crate) fn build_flow_metric_state(
         let (Some(start_idx), Some(end_idx)) = (start_idx, end_idx) else {
             return Err(invalid_flow_metric_config(format!(
                 "flow metric `{}` references unknown node(s): start=`{}`, end=`{}`",
-                flow_config.name, flow_config.bounds.start_node, flow_config.bounds.end_node
+                flow_config.id, flow_config.bounds.start_node, flow_config.bounds.end_node
             )));
         };
 
         if !processor_indices.contains(&start_idx) || !processor_indices.contains(&end_idx) {
             return Err(invalid_flow_metric_config(format!(
                 "flow metric `{}` start/end nodes must be processors: start=`{}`, end=`{}`",
-                flow_config.name, flow_config.bounds.start_node, flow_config.bounds.end_node
+                flow_config.id, flow_config.bounds.start_node, flow_config.bounds.end_node
             )));
         }
 
@@ -267,12 +267,12 @@ pub(crate) fn build_flow_metric_state(
         {
             return Err(invalid_flow_metric_config(format!(
                 "flow metric `{}` overlaps with another flow metric (non-overlapping ranges only): start=`{}`, end=`{}`",
-                flow_config.name, flow_config.bounds.start_node, flow_config.bounds.end_node
+                flow_config.id, flow_config.bounds.start_node, flow_config.bounds.end_node
             )));
         }
 
         let attrs = FlowAttributeSet {
-            flow_name: Cow::Owned(flow_config.name.clone()),
+            flow_id: Cow::Owned(flow_config.id.clone()),
             start_node: Cow::Owned(flow_config.bounds.start_node.clone()),
             end_node: Cow::Owned(flow_config.bounds.end_node.clone()),
             pipeline_attrs: pipeline_attrs.clone(),
@@ -301,13 +301,12 @@ pub(crate) fn build_flow_metric_state(
         signals_outgoing_metrics.push(signals_outgoing_metric);
         let _ = end_nodes.insert(end_idx, id);
         let _ = start_nodes.insert(start_idx, id);
-        resolved_ranges.push((start_idx, end_idx, flow_config.name.clone()));
+        resolved_ranges.push((start_idx, end_idx, flow_config.id.clone()));
     }
 
-    // Validate that flow_metric ranges don't interleave with each other.
-    if resolved_ranges.len() > 1 {
+    if !resolved_ranges.is_empty() {
         let adjacency = build_adjacency(pipeline_connections);
-        detect_interleaved_ranges(&resolved_ranges, &adjacency)?;
+        validate_metric_ranges(&resolved_ranges, &adjacency)?;
     }
 
     Ok(PipelineFlowMetricState {
@@ -332,7 +331,7 @@ fn active_range(
     start: usize,
     end: usize,
     adjacency: &HashMap<usize, Vec<usize>>,
-) -> HashSet<usize> {
+) -> (HashSet<usize>, bool) {
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
     let _ = visited.insert(start);
@@ -353,22 +352,30 @@ fn active_range(
 
     // The end node does not alter the accumulator for this
     // flow metric range.
-    let _ = visited.remove(&end);
-    visited
+    let end_reachable = visited.remove(&end);
+    (visited, end_reachable)
 }
 
-/// Detect interleaved flow metric ranges using graph reachability.
-/// Two flow metrics interleave when one's start node falls inside the
-/// other's active range.
-fn detect_interleaved_ranges(
+/// Validate flow metric ranges. We can fail range validation for one of two reasons:
+/// 1. The ranges interleave, meaning the start node of one range falls within the
+///    other's active range.
+/// 2. The end node of a metric is not reachable from its start node.
+fn validate_metric_ranges(
     ranges: &[(usize, usize, String)],
     adjacency: &HashMap<usize, Vec<usize>>,
 ) -> Result<(), crate::error::Error> {
-    // Pre-compute the active range for each flow metric.
-    let active_ranges: Vec<HashSet<usize>> = ranges
-        .iter()
-        .map(|&(start, end, _)| active_range(start, end, adjacency))
-        .collect();
+    // Pre-compute the active range for each flow metric, rejecting any
+    // whose end node is not reachable from its start node.
+    let mut active_ranges: Vec<HashSet<usize>> = Vec::with_capacity(ranges.len());
+    for &(start, end, ref name) in ranges {
+        let (set, end_reachable) = active_range(start, end, adjacency);
+        if !end_reachable {
+            return Err(invalid_flow_metric_config(format!(
+                "flow metric `{name}` end node is not reachable from its start node"
+            )));
+        }
+        active_ranges.push(set);
+    }
 
     // Pairwise check: does any flow metric's start fall inside another's
     // active range?
@@ -559,7 +566,7 @@ mod tests {
 
     fn sw(name: &str, start: &str, stop: &str) -> FlowMetricConfig {
         FlowMetricConfig {
-            name: name.to_string(),
+            id: name.to_string(),
             bounds: FlowBounds {
                 start_node: start.to_string(),
                 end_node: stop.to_string(),
@@ -627,9 +634,10 @@ mod tests {
         // Shared processors are accepted because the caller in runtime_pipeline
         // includes them in `processor_indices`; this validator is kind-agnostic.
         let (names, procs) = test_maps(&["a", "b", "c"], &[]);
+        let edges = test_edges(&[("a", "b"), ("b", "c")], &names);
         let policy = policy_with(vec![sw("sw1", "a", "c")]);
 
-        let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &[])
+        let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
             .expect("valid config should build");
 
         assert_eq!(state.duration_metrics.len(), 1);
@@ -641,11 +649,12 @@ mod tests {
     fn duration_only_registers_only_duration_metric_set() {
         let (ctx, _) = test_pipeline_ctx();
         let (names, procs) = test_maps(&["a", "b"], &[]);
+        let edges = test_edges(&[("a", "b")], &names);
         let mut flow = sw("duration_only", "a", "b");
         flow.metrics = Some(vec![FlowMetric::ComputeDuration]);
         let policy = policy_with(vec![flow]);
 
-        let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &[])
+        let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
             .expect("duration-only config should build");
 
         assert!(state.duration_metrics[0].is_some());
@@ -881,7 +890,7 @@ mod tests {
     fn active_range_linear() {
         // a(0) -> b(1) -> c(2) -> d(3)
         let adj = build_adjacency(&[(0, 1), (1, 2), (2, 3)]);
-        let range = active_range(0, 2, &adj);
+        let (range, _end_reachable) = active_range(0, 2, &adj);
         // Start=0 included, 1 is between, end=2 excluded.
         assert!(range.contains(&0));
         assert!(range.contains(&1));
@@ -894,7 +903,7 @@ mod tests {
         // a(0) -> b(1) -> d(3)
         // a(0) -> c(2) -> d(3)
         let adj = build_adjacency(&[(0, 1), (0, 2), (1, 3), (2, 3)]);
-        let range = active_range(0, 3, &adj);
+        let (range, _end_reachable) = active_range(0, 3, &adj);
         assert!(range.contains(&0));
         assert!(range.contains(&1));
         assert!(range.contains(&2));
@@ -903,11 +912,104 @@ mod tests {
 
     #[test]
     fn active_range_end_unreachable() {
-        // a(0) -> b(1), end=5 not in graph, so range includes everything reachable.
+        // a(0) -> b(1), end=5 not reachable from start=0.
         let adj = build_adjacency(&[(0, 1), (4, 5)]);
-        let range = active_range(0, 5, &adj);
+        let (range, _end_reachable) = active_range(0, 5, &adj);
         assert!(range.contains(&0));
         assert!(range.contains(&1));
         assert!(!range.contains(&5));
+    }
+
+    #[test]
+    fn unreachable_end_is_rejected() {
+        // Topology: a -> b -> c (no edge to d)
+        // Flow metric: a->d. d is not reachable from a.
+        let (ctx, _) = test_pipeline_ctx();
+        let (names, procs) = test_maps(&["a", "b", "c", "d"], &[]);
+        let edges = test_edges(&[("a", "b"), ("b", "c")], &names);
+        let policy = policy_with(vec![sw("sw1", "a", "d")]);
+
+        let err = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
+            .err()
+            .expect("expected Err for unreachable end node");
+
+        assert_invalid_user_config(&err, "sw1");
+    }
+
+    #[test]
+    fn unreachable_end_on_separate_branch_is_rejected() {
+        // Topology: a -> b, a -> c -> d
+        // Flow metric: b->d. d is reachable from a (via c) but not from b.
+        let (ctx, _) = test_pipeline_ctx();
+        let (names, procs) = test_maps(&["a", "b", "c", "d"], &[]);
+        let edges = test_edges(&[("a", "b"), ("a", "c"), ("c", "d")], &names);
+        let policy = policy_with(vec![sw("sw1", "b", "d")]);
+
+        let err = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
+            .err()
+            .expect("expected Err for unreachable end node on separate branch");
+
+        assert_invalid_user_config(&err, "sw1");
+    }
+
+    #[test]
+    fn reverse_direction_is_rejected() {
+        // Topology: a -> b -> c
+        // Flow metric: c->a. Edges are forward-only; a is not reachable from c.
+        let (ctx, _) = test_pipeline_ctx();
+        let (names, procs) = test_maps(&["a", "b", "c"], &[]);
+        let edges = test_edges(&[("a", "b"), ("b", "c")], &names);
+        let policy = policy_with(vec![sw("sw1", "c", "a")]);
+
+        let err = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
+            .err()
+            .expect("expected Err for reverse-direction flow metric");
+
+        assert_invalid_user_config(&err, "sw1");
+    }
+
+    #[test]
+    fn adjacent_nodes_are_accepted() {
+        // Topology: a -> b
+        // Flow metric: a->b. Minimal reachable range (single direct edge).
+        let (ctx, _) = test_pipeline_ctx();
+        let (names, procs) = test_maps(&["a", "b"], &[]);
+        let edges = test_edges(&[("a", "b")], &names);
+        let policy = policy_with(vec![sw("sw1", "a", "b")]);
+
+        let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
+            .expect("adjacent-node flow metric should build");
+
+        assert_eq!(state.duration_metrics.len(), 1);
+    }
+
+    #[test]
+    fn multi_hop_reachable_end_is_accepted() {
+        // Topology: a -> b -> c -> d -> e
+        // Flow metric: a->e. End is reachable via a long forward path.
+        let (ctx, _) = test_pipeline_ctx();
+        let (names, procs) = test_maps(&["a", "b", "c", "d", "e"], &[]);
+        let edges = test_edges(&[("a", "b"), ("b", "c"), ("c", "d"), ("d", "e")], &names);
+        let policy = policy_with(vec![sw("sw1", "a", "e")]);
+
+        let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
+            .expect("multi-hop reachable flow metric should build");
+
+        assert_eq!(state.duration_metrics.len(), 1);
+    }
+
+    #[test]
+    fn diamond_end_reachable_via_either_branch_is_accepted() {
+        // Topology: a -> b -> d, a -> c -> d
+        // Flow metric: a->d. End is reachable via two parallel paths.
+        let (ctx, _) = test_pipeline_ctx();
+        let (names, procs) = test_maps(&["a", "b", "c", "d"], &[]);
+        let edges = test_edges(&[("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")], &names);
+        let policy = policy_with(vec![sw("sw1", "a", "d")]);
+
+        let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
+            .expect("diamond-reachable flow metric should build");
+
+        assert_eq!(state.duration_metrics.len(), 1);
     }
 }

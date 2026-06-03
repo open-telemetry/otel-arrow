@@ -19,7 +19,7 @@ use crate::error::Result;
 
 pub mod anyval;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ProjectionOptions {
     /// Whether or not to downcast dictionary arrays to the native type. Some types of expressions,
     /// arithmetic operations for example, do not work on dictionary encoded columns.
@@ -52,12 +52,6 @@ impl Projection {
         Ok(Self {
             schema: visitor.into(),
         })
-    }
-
-    /// Project the record batch to the expected schema. If there are some expected columns in
-    /// the passed [`RecordBatch`] which are missing, this will return `None`.
-    pub fn project(&self, record_batch: &RecordBatch) -> Result<Option<RecordBatch>> {
-        self.project_with_options(record_batch, &ProjectionOptions::default())
     }
 
     pub fn project_with_options(

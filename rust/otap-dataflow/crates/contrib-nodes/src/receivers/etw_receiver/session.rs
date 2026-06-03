@@ -419,7 +419,8 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
             // multiple providers would otherwise all start at index 0.
             let next: Rc<Cell<usize>> = Rc::new(Cell::new(0));
             let dropped: Rc<Cell<u64>> = Rc::new(Cell::new(0));
-            let closed_logged: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+            let closed_logged: Rc<Vec<Cell<bool>>> =
+                Rc::new((0..txs.len()).map(|_| Cell::new(false)).collect());
             let txs: Rc<Vec<mpsc::Sender<EtwEventData>>> = Rc::new(txs);
 
             // TDH decoder shared across all provider callbacks.
@@ -563,12 +564,13 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                         }
                         Err(mpsc::error::TrySendError::Closed(_)) => {
                             // The receiver for this core has been dropped
-                            // (shutdown).  This is not a backpressure drop —
-                            // log once and then suppress to avoid log spam
-                            // during process teardown.
-                            if !closed_logged.get() {
-                                closed_logged.set(true);
-                                otel_info!("etw.event.channel_closed", core = i % txs.len(),);
+                            // (shutdown).  Log once per core so we can
+                            // distinguish an early single-core failure from
+                            // a normal full-shutdown sequence.
+                            let core = i % txs.len();
+                            if !closed_logged[core].get() {
+                                closed_logged[core].set(true);
+                                otel_info!("etw.event.channel_closed", core = core);
                             }
                         }
                     }

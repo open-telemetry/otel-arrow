@@ -38,15 +38,84 @@ use arrow::datatypes::{DataType, Field, Fields, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::arrays::get_required_struct_array;
+use otap_df_pdata::arrays::{
+    get_optional_array_from_struct_array_from_record_batch, get_required_struct_array,
+};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
-use crate::pipeline::expr::{
-    DataScope, LEFT_COLUMN_NAME, PhysicalExprEvalResult, RIGHT_COLUMN_NAME, arg_column_name,
-};
+use crate::pipeline::expr::{DataScope, arg_column_name};
 use crate::pipeline::planner::AttributesIdentifier;
+
+/// Input to the join module, representing an evaluated expression result with its scope
+/// and ID columns needed for joining.
+#[derive(Debug)]
+pub(crate) struct JoinInput {
+    /// The computed values.
+    pub values: ColumnarValue,
+    /// Which scope this data belongs to.
+    pub data_scope: Rc<DataScope>,
+    /// ID column from the source batch.
+    pub(crate) ids: Option<ArrayRef>,
+    /// Parent ID column from the source batch.
+    pub(crate) parent_ids: Option<ArrayRef>,
+    /// Scope ID column (from root batch's scope.id struct field).
+    pub(crate) scope_ids: Option<ArrayRef>,
+    /// Resource ID column (from root batch's resource.id struct field).
+    pub(crate) resource_ids: Option<ArrayRef>,
+}
+
+impl JoinInput {
+    pub fn new(values: ColumnarValue, data_scope: Rc<DataScope>, source: &RecordBatch) -> Self {
+        let is_root = *data_scope == DataScope::Root
+            || matches!(data_scope.as_ref(), DataScope::RootParent(_));
+
+        let mut result = Self {
+            values,
+            data_scope,
+            ids: source.column_by_name(consts::ID).cloned(),
+            parent_ids: source.column_by_name(consts::PARENT_ID).cloned(),
+            scope_ids: None,
+            resource_ids: None,
+        };
+
+        if is_root {
+            if let Ok(Some(resource_ids)) = get_optional_array_from_struct_array_from_record_batch(
+                source,
+                consts::RESOURCE,
+                consts::ID,
+            ) {
+                result.resource_ids = Some(Arc::clone(resource_ids))
+            }
+
+            if let Ok(Some(scope_ids)) = get_optional_array_from_struct_array_from_record_batch(
+                source,
+                consts::SCOPE,
+                consts::ID,
+            ) {
+                result.scope_ids = Some(Arc::clone(scope_ids))
+            }
+        }
+
+        result
+    }
+
+    pub fn new_with_parent_ids(
+        values: ColumnarValue,
+        data_scope: Rc<DataScope>,
+        parent_ids: &UInt16Array,
+    ) -> Self {
+        Self {
+            values,
+            data_scope,
+            ids: None,
+            parent_ids: Some(Arc::new(parent_ids.clone())),
+            scope_ids: None,
+            resource_ids: None,
+        }
+    }
+}
 
 /// Join the results of two expression evaluations.
 ///
@@ -56,8 +125,8 @@ use crate::pipeline::planner::AttributesIdentifier;
 /// It preserves the IDs/row order from one of the sides, which will be indicated by the returned
 // DataScope. Normally this will be the left side, except in cases where left:right is one:many.
 pub fn join<'a>(
-    left: &'a PhysicalExprEvalResult,
-    right: &'a PhysicalExprEvalResult,
+    left: &'a JoinInput,
+    right: &'a JoinInput,
     otap_batch: &'a OtapArrowRecords,
 ) -> Result<(RecordBatch, Rc<DataScope>)> {
     // handle special case where both sides have same source/row order
@@ -68,7 +137,21 @@ pub fn join<'a>(
 
     // determine the join strategy from the source of the data
     match (left.data_scope.as_ref(), right.data_scope.as_ref()) {
-        (DataScope::Attributes(left_attrs_id, _), DataScope::Attributes(right_attrs_id, _)) => {
+        (_, DataScope::StaticScalar) => {
+            let join_exec = ScalarJoin {
+                left_is_scalar: false,
+            };
+            let join_result = join_exec.join(left, right, otap_batch)?;
+            Ok((join_result, left.data_scope.clone()))
+        }
+        (DataScope::StaticScalar, _) => {
+            let join_exec = ScalarJoin {
+                left_is_scalar: true,
+            };
+            let join_result = join_exec.join(left, right, otap_batch)?;
+            Ok((join_result, right.data_scope.clone()))
+        }
+        (DataScope::Attribute(left_attrs_id, _), DataScope::Attribute(right_attrs_id, _)) => {
             if left_attrs_id == right_attrs_id {
                 let join_exec = AttributeToSameAttributeJoin::new();
                 let join_result = join_exec.join(left, right, otap_batch)?;
@@ -85,23 +168,25 @@ pub fn join<'a>(
                 Ok((join_result, left.data_scope.clone()))
             }
         }
-        (DataScope::Root, DataScope::Attributes(attr_id, _)) => {
+        (DataScope::Root | DataScope::RootParent(_), DataScope::Attribute(attr_id, _)) => {
             let join_exec = RootToAttributesJoin::new(*attr_id);
             let join_result = join_exec.join(left, right, otap_batch)?;
             Ok((join_result, left.data_scope.clone()))
         }
-        (DataScope::Attributes(attr_id, _), DataScope::Root) => match attr_id {
-            AttributesIdentifier::Root => {
-                let join_exec = RootAttrsToRootJoin::new();
-                let join_result = join_exec.join(left, right, otap_batch)?;
-                Ok((join_result, left.data_scope.clone()))
+        (DataScope::Attribute(attr_id, _), DataScope::Root | DataScope::RootParent(_)) => {
+            match attr_id {
+                AttributesIdentifier::Root => {
+                    let join_exec = RootAttrsToRootJoin::new();
+                    let join_result = join_exec.join(left, right, otap_batch)?;
+                    Ok((join_result, left.data_scope.clone()))
+                }
+                AttributesIdentifier::NonRoot(payload_type) => {
+                    let join_exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
+                    let join_result = join_exec.join(left, right, otap_batch)?;
+                    Ok((join_result, right.data_scope.clone()))
+                }
             }
-            AttributesIdentifier::NonRoot(payload_type) => {
-                let join_exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
-                let join_result = join_exec.join(left, right, otap_batch)?;
-                Ok((join_result, right.data_scope.clone()))
-            }
-        },
+        }
         (left, right) => {
             // Note: with expression trees created by our logical expression planner, we shouldn't
             // end up in this error case, non-handled combinations of data scopes don't end up
@@ -149,8 +234,8 @@ enum JoinAlignment {
 /// Determines the alignment strategy for joining two expression results, returning which side's
 /// row order is preserved and the take-indices for reordering the other side.
 fn compute_join_alignment(
-    left: &PhysicalExprEvalResult,
-    right: &PhysicalExprEvalResult,
+    left: &JoinInput,
+    right: &JoinInput,
     otap_batch: &OtapArrowRecords,
 ) -> Result<(JoinAlignment, Rc<DataScope>)> {
     if left.data_scope == right.data_scope {
@@ -166,7 +251,7 @@ fn compute_join_alignment(
     }
 
     match (left.data_scope.as_ref(), right.data_scope.as_ref()) {
-        (DataScope::Attributes(left_attrs_id, _), DataScope::Attributes(right_attrs_id, _)) => {
+        (DataScope::Attribute(left_attrs_id, _), DataScope::Attribute(right_attrs_id, _)) => {
             if left_attrs_id == right_attrs_id {
                 let exec = AttributeToSameAttributeJoin::new();
                 let indices = exec.rows_to_take(left, right, otap_batch)?;
@@ -191,7 +276,7 @@ fn compute_join_alignment(
                 ))
             }
         }
-        (DataScope::Root, DataScope::Attributes(attr_id, _)) => {
+        (DataScope::Root | DataScope::RootParent(_), DataScope::Attribute(attr_id, _)) => {
             let exec = RootToAttributesJoin::new(*attr_id);
             let indices = exec.rows_to_take(left, right, otap_batch)?;
             Ok((
@@ -199,24 +284,26 @@ fn compute_join_alignment(
                 left.data_scope.clone(),
             ))
         }
-        (DataScope::Attributes(attr_id, _), DataScope::Root) => match attr_id {
-            AttributesIdentifier::Root => {
-                let exec = RootAttrsToRootJoin::new();
-                let indices = exec.rows_to_take(left, right, otap_batch)?;
-                Ok((
-                    JoinAlignment::LeftPreserved(indices),
-                    left.data_scope.clone(),
-                ))
+        (DataScope::Attribute(attr_id, _), DataScope::Root | DataScope::RootParent(_)) => {
+            match attr_id {
+                AttributesIdentifier::Root => {
+                    let exec = RootAttrsToRootJoin::new();
+                    let indices = exec.rows_to_take(left, right, otap_batch)?;
+                    Ok((
+                        JoinAlignment::LeftPreserved(indices),
+                        left.data_scope.clone(),
+                    ))
+                }
+                AttributesIdentifier::NonRoot(payload_type) => {
+                    let exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
+                    let indices = exec.rows_to_take(left, right, otap_batch)?;
+                    Ok((
+                        JoinAlignment::RightPreserved(indices),
+                        right.data_scope.clone(),
+                    ))
+                }
             }
-            AttributesIdentifier::NonRoot(payload_type) => {
-                let exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
-                let indices = exec.rows_to_take(left, right, otap_batch)?;
-                Ok((
-                    JoinAlignment::RightPreserved(indices),
-                    right.data_scope.clone(),
-                ))
-            }
-        },
+        }
         (left, right) => Err(Error::ExecutionError {
             cause: format!("invalid data scopes for join: left {left:?} right {right:?}"),
         }),
@@ -234,7 +321,7 @@ fn compute_join_alignment(
 /// keep their order and only the new argument needs reordering. When a reverse join preserves
 /// the right (new) side, all previously accumulated value arrays are reordered.
 pub fn multi_join(
-    results: &[PhysicalExprEvalResult],
+    results: &[JoinInput],
     otap_batch: &OtapArrowRecords,
 ) -> Result<(RecordBatch, Rc<DataScope>)> {
     if results.is_empty() {
@@ -283,10 +370,10 @@ pub fn multi_join(
     let mut accum_scope_ids = first.scope_ids.clone();
 
     for result in results.iter().skip(1) {
-        // Build a temporary PhysicalExprEvalResult for the accumulator to pass to
+        // Build a temporary JoinInput for the accumulator to pass to
         // compute_join_alignment. We use the first accumulated value as the "values" field
         // (the alignment only depends on the data scope and ID columns, not the actual values).
-        let accum_result = PhysicalExprEvalResult {
+        let accum_result = JoinInput {
             values: ColumnarValue::Array(accumulated_values[0].clone()),
             data_scope: accum_scope.clone(),
             ids: accum_ids.clone(),
@@ -547,21 +634,21 @@ fn get_attrs_id_values<'a>(
 }
 
 /// Produce a record batch from the result of a join
-fn to_join_result(left: &PhysicalExprEvalResult, right_col: ArrayRef) -> Result<RecordBatch> {
+fn to_join_result(left: &JoinInput, right_col: ArrayRef) -> Result<RecordBatch> {
     // pre-allocate with enough capacity for left/right plus Id columns
     let mut columns = Vec::with_capacity(5);
     let mut fields = Vec::with_capacity(5);
 
     let left_values = left.values.to_array(right_col.len())?;
     fields.push(Field::new(
-        LEFT_COLUMN_NAME,
+        arg_column_name(0),
         left_values.data_type().clone(),
         true,
     ));
     columns.push(left_values.clone());
 
     fields.push(Field::new(
-        RIGHT_COLUMN_NAME,
+        arg_column_name(1),
         right_col.data_type().clone(),
         true,
     ));
@@ -619,15 +706,15 @@ pub trait JoinExec {
     /// produce the rows that should be taken
     fn rows_to_take(
         &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
+        left: &JoinInput,
+        right: &JoinInput,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array>;
 
     fn join(
         &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
+        left: &JoinInput,
+        right: &JoinInput,
         otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch>;
 }
@@ -643,8 +730,8 @@ struct EqualScopeJoin {}
 impl JoinExec for EqualScopeJoin {
     fn rows_to_take(
         &self,
-        _left: &PhysicalExprEvalResult,
-        _right: &PhysicalExprEvalResult,
+        _left: &JoinInput,
+        _right: &JoinInput,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array> {
         // Not implemented - if joining two results with the same row order, can just append
@@ -656,8 +743,8 @@ impl JoinExec for EqualScopeJoin {
 
     fn join(
         &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
+        left: &JoinInput,
+        right: &JoinInput,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
         let right_values = match &right.values {
@@ -677,6 +764,67 @@ impl JoinExec for EqualScopeJoin {
     }
 }
 
+/// Broadcasts the scalar
+struct ScalarJoin {
+    left_is_scalar: bool,
+}
+
+impl JoinExec for ScalarJoin {
+    fn rows_to_take(
+        &self,
+        _left: &JoinInput,
+        _right: &JoinInput,
+        _otap_batch: &OtapArrowRecords,
+    ) -> Result<Int32Array> {
+        // Not implemented - should not need to compute rows to take. instead, we just broadcast
+        // the scalar value
+        Err(Error::ExecutionError {
+            cause: "rows_to_take not implemented for ScalarJoin".into(),
+        })
+    }
+
+    fn join(
+        &self,
+        left: &JoinInput,
+        right: &JoinInput,
+        _otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        let (scalar_col, array_col) = if self.left_is_scalar {
+            (&left.values, &right.values)
+        } else {
+            (&right.values, &left.values)
+        };
+
+        let rows = match array_col {
+            ColumnarValue::Array(a) => a.len(),
+            ColumnarValue::Scalar(_) => 1,
+        };
+
+        if self.left_is_scalar {
+            // join left to right, then switch the field names
+            let (schema, columns, _) =
+                to_join_result(right, scalar_col.to_array(rows)?)?.into_parts();
+            let fields = schema.fields.clone();
+            let (left_field_idx, left_field) = fields
+                .find(&arg_column_name(0))
+                .expect("left column present");
+            let (right_field_idx, right_field) = fields
+                .find(&arg_column_name(1))
+                .expect("right_column present");
+
+            let left_field_name_fixed = left_field.as_ref().clone().with_name(arg_column_name(1));
+            let right_field_name_fixed = right_field.as_ref().clone().with_name(arg_column_name(0));
+
+            let mut fields = fields.to_vec();
+            fields[left_field_idx] = Arc::new(left_field_name_fixed);
+            fields[right_field_idx] = Arc::new(right_field_name_fixed);
+            Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("valid schema"))
+        } else {
+            to_join_result(left, scalar_col.to_array(rows)?)
+        }
+    }
+}
+
 /// Joins root record batch (logs/metrics/traces) to a child attributes record batch
 /// on root.id == attributes.parent_id
 pub struct RootToAttributesJoin {
@@ -692,8 +840,8 @@ impl RootToAttributesJoin {
 impl JoinExec for RootToAttributesJoin {
     fn rows_to_take(
         &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
+        left: &JoinInput,
+        right: &JoinInput,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array> {
         // build the lookup for the right side of the join by parent ID
@@ -722,8 +870,8 @@ impl JoinExec for RootToAttributesJoin {
 
     fn join(
         &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
+        left: &JoinInput,
+        right: &JoinInput,
         otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
         let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
@@ -748,8 +896,8 @@ impl RootAttrsToRootJoin {
 impl JoinExec for RootAttrsToRootJoin {
     fn rows_to_take(
         &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
+        left: &JoinInput,
+        right: &JoinInput,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array> {
         // build the lookup for the right side of the join by ID column
@@ -765,8 +913,8 @@ impl JoinExec for RootAttrsToRootJoin {
 
     fn join(
         &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
+        left: &JoinInput,
+        right: &JoinInput,
         otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
         let right_ids = extract_u16_array(right.ids.as_ref(), consts::ID)?;
@@ -801,8 +949,8 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
     /// produce the rows that should be taken
     fn rows_to_take(
         &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
+        left: &JoinInput,
+        right: &JoinInput,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array> {
         // build a lookup of ID to index for the left side
@@ -835,8 +983,8 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
 
     fn join(
         &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
+        left: &JoinInput,
+        right: &JoinInput,
         otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
         // pre-allocate with enough space for right/left + ID columns
@@ -881,7 +1029,7 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
         let left_values = left.values.to_array(left_parent_ids.len())?;
         let joined_vals = take(&left_values, &to_take, None)?;
         fields.push(Field::new(
-            LEFT_COLUMN_NAME,
+            arg_column_name(0),
             joined_vals.data_type().clone(),
             true,
         ));
@@ -906,7 +1054,7 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
             .ok_or_else(|| invalid_column_type_error(right_ids.data_type()))?;
         let child_col = right.values.to_array(right_ids.len())?;
         fields.push(Field::new(
-            RIGHT_COLUMN_NAME,
+            arg_column_name(1),
             child_col.data_type().clone(),
             true,
         ));
@@ -934,8 +1082,8 @@ impl AttributeToSameAttributeJoin {
 impl JoinExec for AttributeToSameAttributeJoin {
     fn rows_to_take(
         &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
+        left: &JoinInput,
+        right: &JoinInput,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array> {
         // build a mapping of right-side parent_ids to right-side indices
@@ -950,8 +1098,8 @@ impl JoinExec for AttributeToSameAttributeJoin {
 
     fn join(
         &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
+        left: &JoinInput,
+        right: &JoinInput,
         otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
         let to_take = self.rows_to_take(left, right, otap_batch)?;
@@ -987,8 +1135,8 @@ impl AttributeToDifferentAttributeJoin {
 impl JoinExec for AttributeToDifferentAttributeJoin {
     fn rows_to_take(
         &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
+        left: &JoinInput,
+        right: &JoinInput,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array> {
         // build mapping of the right side parent_id to right side index
@@ -1021,8 +1169,8 @@ impl JoinExec for AttributeToDifferentAttributeJoin {
 
     fn join(
         &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
+        left: &JoinInput,
+        right: &JoinInput,
         otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
         let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
@@ -1056,8 +1204,8 @@ impl AttributeToDifferentAttributeReverseJoin {
 impl JoinExec for AttributeToDifferentAttributeReverseJoin {
     fn rows_to_take(
         &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
+        left: &JoinInput,
+        right: &JoinInput,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Int32Array> {
         // build mapping of the left side parent_id to left side index
@@ -1090,8 +1238,8 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
 
     fn join(
         &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
+        left: &JoinInput,
+        right: &JoinInput,
         otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
         let mut fields = Vec::with_capacity(3);
@@ -1111,7 +1259,7 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
         let to_take = self.rows_to_take(left, right, otap_batch)?;
         let joined_vals = take(&left_values, &to_take, None)?;
         fields.push(Field::new(
-            LEFT_COLUMN_NAME,
+            arg_column_name(0),
             joined_vals.data_type().clone(),
             true,
         ));
@@ -1120,7 +1268,7 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
         let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
         let child_col = right.values.to_array(right_parent_ids.len())?;
         fields.push(Field::new(
-            RIGHT_COLUMN_NAME,
+            arg_column_name(1),
             child_col.data_type().clone(),
             true,
         ));
@@ -1240,9 +1388,9 @@ mod test {
         OtapArrowRecords::Logs(Logs::default())
     }
 
-    /// Helper to build a minimal PhysicalExprEvalResult with the given values and scope.
-    fn make_result(values: ArrayRef, scope: DataScope) -> PhysicalExprEvalResult {
-        PhysicalExprEvalResult {
+    /// Helper to build a minimal JoinInput with the given values and scope.
+    fn make_result(values: ArrayRef, scope: DataScope) -> JoinInput {
+        JoinInput {
             values: ColumnarValue::Array(values),
             data_scope: Rc::new(scope),
             ids: None,

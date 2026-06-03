@@ -13,12 +13,12 @@
 //!
 //! Windows allows only one real-time ETW session per session name. The engine
 //! may instantiate the receiver once per allocated core.  To reconcile these
-//! two models the ETW session is a **process-global singleton** with N consumer
+//! two models, one session is created **per `session_name`** with N consumer
 //! channels (one per core).  The `ProcessTrace` callback round-robins events
 //! across all channels so each core receives an even share of the event stream.
 //!
 //! ```text
-//! ProcessTrace OS thread  (singleton, lazily spawned)
+//! ProcessTrace OS thread  (one per session_name, lazily spawned)
 //! callback: txs[next].try_send(data); next = (next+1) % N
 //!       |          |          |
 //!     tx[0]      tx[1]      tx[2]
@@ -242,22 +242,22 @@ const fn default_batch_max_duration() -> Duration {
 /// events into OTAP Arrow log records.
 ///
 /// Each per-core instance holds its own `event_rx` obtained from the
-/// process-global singleton session at factory time.
+/// per-session-name ETW session at factory time.
 struct EtwReceiver {
     config: Config,
     batching: BatchConfig,
     metrics: Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
-    /// Per-core consumer channel from the singleton ETW session.
+    /// Per-core consumer channel from the per-session-name ETW session.
     event_rx: tokio::sync::mpsc::Receiver<EtwEventData>,
 }
 
 impl EtwReceiver {
     /// Create a new receiver, acquiring one consumer channel from the
-    /// process-global ETW session.
+    /// per-session-name ETW session.
     ///
     /// Called at **factory time** (once per allocated core).  The first call
-    /// lazily initializes the singleton session and spawns the `ProcessTrace`
-    /// thread.
+    /// for a given `session_name` lazily initializes the session and spawns
+    /// the `ProcessTrace` thread.
     fn from_config(
         pipeline: PipelineContext,
         config: &Value,
@@ -273,9 +273,9 @@ impl EtwReceiver {
         let metrics = pipeline.register_metrics::<EtwReceiverMetrics>();
         let batching = cfg.batching.clone().unwrap_or_default();
 
-        // Acquire this core's consumer channel from the singleton session.
-        // The first call initializes the session; subsequent calls pop from
-        // the pre-allocated pool.
+        // Acquire this core's consumer channel from the per-session-name
+        // session.  The first call initializes the session; subsequent calls
+        // pop from the pre-allocated pool.
         let event_rx = session::subscribe(&cfg, num_cores).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: format!("ETW session initialization failed: {e}"),
@@ -406,7 +406,7 @@ impl EtwReceiver {
                     flush_batch(effect_handler, &self.metrics, &mut builder).await?;
                 }
 
-                // Receive event data from the singleton ETW session.
+                // Receive event data from the ETW session.
                 // Only poll when the channel is still alive to avoid
                 // spinning on a closed channel.
                 event_data = self.event_rx.recv(), if channel_alive => {
