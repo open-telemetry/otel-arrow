@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780427545173,
+  "lastUpdate": 1780455989254,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "pritishnahar@gmail.com",
-            "name": "Pritish Nahar",
-            "username": "pritishnahar95"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "99b02d6115ecd7cea6b1a59fc55711aaf8a0efe0",
-          "message": "fix(admin): apply OTel→Prometheus name & unit suffix rules (#2748) (#2900)\n\n# Change Summary\n\nApply the OpenTelemetry → Prometheus name & unit suffix rules in the\nadmin\nHTTP server's Prometheus text exposition.\n\nPer the OpenTelemetry spec for Prometheus exposition:\n\n- Counter metric names must end in `_total`.\n- Unit suffix derived from UCUM (e.g. `By` → `_bytes`, `By/s` →\n  `_bytes_per_second`) is inserted between the base name and `_total`.\n- A base name that already ends in `_total` must not push the unit\nsuffix\n  after it (`errors_total` + `By` → `errors_bytes_total`, not\n  `errors_total_bytes_total`).\n\nThis PR introduces `build_prom_metric_name` and the supporting UCUM\nlookup\ntables/helpers, and routes both `format_prometheus_text` and\n`agg_prometheus_text` through it. `sanitize_prom_metric_name` also now\ncollapses consecutive `_` per spec §Metric Names.\n\nThis PR is the first of two carved out of the original PR #2748. It is\nintentionally focused on metric-name and unit-suffix rules so reviewers\ncan\nevaluate that surface in isolation. Scope-label rename (`set=` →\n`otel_scope_name=`), `target_info` rendering and caching, and label-key\ncollision merging are split into a follow-up PR.\n\n## What issue does this PR close?\n\nPartially addresses #2748. The remainder (scope label, `target_info`,\nlabel\ncollision handling) will be addressed in a follow-up PR.\n\n* Refs #2748\n\n## How are these changes tested?\n\n- 11 new unit tests covering:\n  - `build_prom_metric_name` for counters with units, gauges with units,\n`_total` suffix preservation, the `<base>_<unit>_total` ordering fix,\n    and the `subtotal` (not a real `_total` suffix) edge case.\n  - `has_total_suffix` case-insensitivity.\n  - `ucum_to_prometheus_unit` for simple units, bracketed annotations\n(`{packet}/s`), compound rate units (`By/s`, `KiBy/s`, `m/s`), and the\n    intentional `By/m` rejection (UCUM `m` is meters, not minutes).\n  - `strip_curly_braces` including unbalanced-brace handling.\n  - `sanitize_prom_metric_name` underscore collapsing.\n- The existing `test_agg_prometheus_mmsc_metrics` was updated to assert\nthe\n  new `_milliseconds` unit suffix on its sub-metrics, exercising the new\n  path through `agg_prometheus_text`.\n- Full crate test suite: 33/33 telemetry lib tests pass.\n- `cargo fmt --all -- --check` clean.\n- `cargo clippy -p otap-df-admin --all-targets --all-features` clean.\n\n## Are there any user-facing changes?\n\nYes — the Prometheus text exposed at `/metrics` and\n`/metrics/aggregate` changes shape:\n\n- Counters now end in `_total` (and only one `_total`, even when the\n  source metric name already ended in `_total`).\n- Metric names gain a unit suffix derived from the metric's declared\nUCUM\n  unit, e.g. a metric named `request_duration` with unit `ms` is now\n  exposed as `request_duration_milliseconds` (or\n  `request_duration_milliseconds_total` for counters). MMSC sub-metrics\n  pick up the unit suffix as well, so `request_duration_min` becomes\n  `request_duration_milliseconds_min`.\n- Metrics whose unit is empty or `1` (dimensionless) are unchanged.\n\nDownstream Prometheus scrape consumers that hard-coded the previous\nunit-less metric names will need to update their queries. This is the\nspec-compliant naming and aligns the admin endpoint with what other\nOpenTelemetry → Prometheus exporters produce.",
-          "timestamp": "2026-05-08T00:04:08Z",
-          "tree_id": "14ac0aaed759e8dff4c13978297b961f45d5bfeb",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/99b02d6115ecd7cea6b1a59fc55711aaf8a0efe0"
-        },
-        "date": 1778227211649,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1112.0689697265625,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 5.851233195048831,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 6.456565281324974,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 16.460026041666666,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 17.625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 494.8863686169516,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 5998.364088581327,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.005694,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 213900.33036078254,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 176136.65815211998,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10912,6 +10828,160 @@ window.BENCHMARK_DATA = {
             "value": 28.7913345463951,
             "unit": "bytes/log",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cijo Thomas",
+            "username": "cijothomas",
+            "email": "cijo.thomas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9fb01d6d441d84fcdb5a0a75d377f041fa0cdfca",
+          "message": "Add uncompressed bytes-per-log metric to traffic generator benchmarks (#3026)\n\nCloses #2987\n\nAdds a `logs_bytes_produced` counter metric to the traffic generator\nreceiver that tracks the total protobuf-encoded (uncompressed) bytes of\nlog payloads produced. The benchmark report SQL then computes\n`uncompressed_bytes_per_log` from this counter, enabling direct\ncomparison of uncompressed payload size against the egress (compressed)\nbytes per log.\n\n### Changes\n- **metrics.rs**: Added `logs_bytes_produced: Counter<u64>` with unit\n`By`\n- **mod.rs**: Record payload bytes in `export_pdata()` for log signals\n(captured before ownership move)\n- **integration_report_logs.yaml** & **report_logs.yaml**: Added\n`logs_bytes_produced` to metric filter and `uncompressed_bytes_per_log`\ncomputed metric to report SQL",
+          "timestamp": "2026-06-02T22:17:51Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9fb01d6d441d84fcdb5a0a75d377f041fa0cdfca"
+        },
+        "date": 1780455988077,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.9887781739234924,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 100.17625386046123,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.43904119152897,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 23.054427083333334,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 23.5703125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 543633.6781220911,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 538258.347082039,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.007467,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 15746759.073704187,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 15727122.13575142,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 29.255020677466863,
+            "unit": "bytes/log",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.4104715883731842,
+            "unit": "%",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 100.19721822858456,
+            "unit": "%",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.68086654845425,
+            "unit": "%",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 40.495052083333334,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 41.1875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 1870843.867487981,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 1878523.1499870196,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.005606,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 20620581.980094668,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 20556534.57103334,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 10.977017760061756,
+            "unit": "bytes/log",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Egress Bytes Per Log"
           }
         ]
       }
