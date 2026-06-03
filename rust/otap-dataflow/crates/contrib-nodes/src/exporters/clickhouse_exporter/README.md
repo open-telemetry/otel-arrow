@@ -6,8 +6,7 @@ The current architecture is intentionally simple:
 
 - one flat table for logs
 - one flat table for traces
-- attributes always inlined on the signal tables
-- two attribute representations: `string_map` and `json`
+- attributes always inlined on the signal tables as `Map(LowCardinality(String), String)`
 - no lookup attribute tables
 - no views
 - no ID generation layer
@@ -23,7 +22,7 @@ Implemented:
 - `TraceFlags` passthrough for logs
 - `Duration` decode/cast into traces
 - `ServiceName` extraction from inlined resource attributes
-- map and JSON attribute representations
+- string-map attribute columns
 - span events and links inlined into traces
 - snapshot and unit coverage for the current schema/transform behavior
 
@@ -100,22 +99,11 @@ Top-level config fields:
 - `username`
 - `password`
 - `async_insert`
-- `attributes`
 - `table_defaults`
 - `tables`
 
-Attribute config is per group and only controls representation:
-
-- `resource.representation`
-- `scope.representation`
-- `log.representation`
-- `metric.representation`
-- `trace.representation`
-
-Supported values:
-
-- `string_map` (default)
-- `json`
+Inline attributes are always stored as `Map(LowCardinality(String), String)`; there is no
+per-group representation configuration.
 
 Table config supports:
 
@@ -132,9 +120,7 @@ defined [here](https://github.com/open-telemetry/opentelemetry-collector-contrib
 Snapshots of the current structure are generated in the [table_snapshots](./table_snapshots/) directory.
 There is currently no automated testing to ensure schema drift relative to the go collector.
 
-## Attribute Representations
-
-### `string_map`
+## Attribute Representation
 
 Inline attributes are stored as:
 
@@ -142,13 +128,8 @@ Inline attributes are stored as:
 Map(LowCardinality(String), String)
 ```
 
-This is the default mode.
-
-### `json`
-
-Inline attributes are stored as ClickHouse `JSON` columns, with companion `*Keys` columns added to support indexing.
-
-When any attribute group uses `json`, the client enables the ClickHouse settings required for JSON binary input.
+Nested attribute values (Map/Slice) are transcoded from CBOR into a JSON string stored as the
+map value.
 
 ## Transform Pipeline
 
@@ -160,7 +141,7 @@ The transform pipeline has two stages per payload:
 Key operations:
 
 - flattening OTAP structs such as `resource`, `scope`, and `status`
-- grouping attribute rows by `parent_id` into compact map or JSON columns
+- grouping attribute rows by `parent_id` into compact map columns
 - grouping span events and links into list columns
 - inlining compact child payloads back into parent signal rows
 - renaming OTAP columns to ClickHouse column names
@@ -186,9 +167,7 @@ There is no longer any special write ordering for attribute tables because attri
 DDL snapshot coverage currently lives in `table_snapshots/` and covers:
 
 - `log_table_map_attrs.snap`
-- `log_table_json_attrs.snap`
 - `trace_table_map_attrs.snap`
-- `trace_table_json_attrs.snap`
 
 The recommended validation loop for intentional DDL changes is:
 

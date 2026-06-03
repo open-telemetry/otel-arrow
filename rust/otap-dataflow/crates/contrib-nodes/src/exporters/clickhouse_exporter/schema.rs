@@ -7,7 +7,7 @@
 //!
 //! - A lightweight [`Column`] model with rendering logic (`render`) that produces ClickHouse column
 //!   declarations, including optional `Array(...)` wrapping, `NULL`, `DEFAULT`, and `CODEC(...)`.
-//! - [`ColumnType`], an enum of ClickHouse types used by the exporter (including JSON, low-cardinality
+//! - [`ColumnType`], an enum of ClickHouse types used by the exporter (low-cardinality
 //!   strings, map types, and high-precision timestamps), with a `render` method to convert to SQL.
 //! - [`ColumnOpts`], a small set of reusable column option presets (notably ZSTD compression and
 //!   "ZSTD + Array" variants) used across the schema constants.
@@ -94,31 +94,27 @@ impl ColumnOpts {
 pub enum ColumnType {
     UInt8,
     UInt64,
-    Json,
     MapLCStringString,
     LowCardinalityString,
     String,
     DateTime64(u32),
-    Dynamic, // placeholder for override
 }
 impl ColumnType {
     pub fn render(&self) -> String {
         match self {
             ColumnType::UInt64 => "UInt64".into(),
             ColumnType::UInt8 => "UInt8".into(),
-            ColumnType::Json => "JSON".into(),
             ColumnType::MapLCStringString => "Map(LowCardinality(String), String)".into(),
             ColumnType::LowCardinalityString => "LowCardinality(String)".into(),
             ColumnType::String => "String".into(),
             ColumnType::DateTime64(n) => format!("DateTime64({})", n),
-            ColumnType::Dynamic => "<dynamic>".into(),
         }
     }
 }
 
 pub const INLINE_RESOURCE_ATTR_COLUMN: &Column = &Column::new(
     ch_consts::CH_RESOURCE_ATTRIBUTES,
-    ColumnType::Dynamic, // placeholder
+    ColumnType::MapLCStringString,
     ColumnOpts::ZSTD,
 );
 
@@ -131,7 +127,7 @@ pub const RESOURCE_SCHEMA_URL_COLUMN: &Column = &Column::new(
 
 pub const INLINE_SCOPE_ATTR_COLUMN: &Column = &Column::new(
     ch_consts::CH_SCOPE_ATTRIBUTES,
-    ColumnType::Dynamic, // placeholder
+    ColumnType::MapLCStringString,
     ColumnOpts::ZSTD,
 );
 
@@ -153,13 +149,13 @@ pub const SCOPE_VERSION_COLUMN: &Column = &Column::new(
 
 pub const INLINE_LOG_ATTR_COLUMN: &Column = &Column::new(
     ch_consts::CH_LOG_ATTRIBUTES,
-    ColumnType::Dynamic, // placeholder
+    ColumnType::MapLCStringString,
     ColumnOpts::ZSTD,
 );
 
 pub const INLINE_SPAN_ATTR_COLUMN: &Column = &Column::new(
     ch_consts::CH_SPAN_ATTRIBUTES,
-    ColumnType::Dynamic, // placeholder
+    ColumnType::MapLCStringString,
     ColumnOpts::ZSTD,
 );
 
@@ -367,46 +363,6 @@ impl Index {
     }
 }
 
-// --- Companion *AttributesKeys columns for JSON attribute mode ---
-
-pub const RESOURCE_ATTRIBUTES_KEYS_COLUMN: &Column = &Column::new(
-    "ResourceAttributesKeys",
-    ColumnType::LowCardinalityString,
-    ColumnOpts::ZSTD_ARRAY,
-);
-
-pub const SCOPE_ATTRIBUTES_KEYS_COLUMN: &Column = &Column::new(
-    "ScopeAttributesKeys",
-    ColumnType::LowCardinalityString,
-    ColumnOpts::ZSTD_ARRAY,
-);
-
-pub const LOG_ATTRIBUTES_KEYS_COLUMN: &Column = &Column::new(
-    "LogAttributesKeys",
-    ColumnType::LowCardinalityString,
-    ColumnOpts::ZSTD_ARRAY,
-);
-
-pub const SPAN_ATTRIBUTES_KEYS_COLUMN: &Column = &Column::new(
-    "SpanAttributesKeys",
-    ColumnType::LowCardinalityString,
-    ColumnOpts::ZSTD_ARRAY,
-);
-
-// --- JSON variants of Events/Links Attributes ---
-
-pub const EVENTS_ATTRIBUTES_JSON_COLUMN: &Column = &Column::new(
-    ch_consts::CH_EVENTS_ATTRIBUTES,
-    ColumnType::Json,
-    ColumnOpts::ZSTD_ARRAY,
-);
-
-pub const LINKS_ATTRIBUTES_JSON_COLUMN: &Column = &Column::new(
-    ch_consts::CH_LINKS_ATTRIBUTES,
-    ColumnType::Json,
-    ColumnOpts::ZSTD_ARRAY,
-);
-
 // --- Index constants matching Go OTel Collector ClickHouse exporter ---
 
 pub const IDX_TRACE_ID: Index = Index::new("idx_trace_id", "TraceId", "bloom_filter(0.001)", 1);
@@ -475,36 +431,6 @@ pub const IDX_SPAN_ATTR_VALUE: Index = Index::new(
 );
 
 pub const IDX_DURATION: Index = Index::new("idx_duration", "Duration", "minmax", 1);
-
-// --- JSON mode index constants (on companion Keys columns) ---
-
-pub const IDX_RES_ATTR_KEYS: Index = Index::new(
-    "idx_res_attr_keys",
-    "ResourceAttributesKeys",
-    "bloom_filter(0.01)",
-    1,
-);
-
-pub const IDX_SCOPE_ATTR_KEYS: Index = Index::new(
-    "idx_scope_attr_keys",
-    "ScopeAttributesKeys",
-    "bloom_filter(0.01)",
-    1,
-);
-
-pub const IDX_LOG_ATTR_KEYS: Index = Index::new(
-    "idx_log_attr_keys",
-    "LogAttributesKeys",
-    "bloom_filter(0.01)",
-    1,
-);
-
-pub const IDX_SPAN_ATTR_KEYS: Index = Index::new(
-    "idx_span_attr_keys",
-    "SpanAttributesKeys",
-    "bloom_filter(0.01)",
-    1,
-);
 
 // TODO: [support_new_signal] add support here
 
@@ -641,7 +567,6 @@ mod tests {
     fn test_column_type_render_all_variants() {
         assert_eq!(ColumnType::UInt8.render(), "UInt8");
         assert_eq!(ColumnType::UInt64.render(), "UInt64");
-        assert_eq!(ColumnType::Json.render(), "JSON");
         assert_eq!(
             ColumnType::MapLCStringString.render(),
             "Map(LowCardinality(String), String)"
@@ -652,7 +577,6 @@ mod tests {
         );
         assert_eq!(ColumnType::String.render(), "String");
         assert_eq!(ColumnType::DateTime64(9).render(), "DateTime64(9)");
-        assert_eq!(ColumnType::Dynamic.render(), "<dynamic>");
     }
 
     // --- Task 1.6: Column constants render correct DDL ---
@@ -794,10 +718,6 @@ mod tests {
             &IDX_SPAN_ATTR_KEY,
             &IDX_SPAN_ATTR_VALUE,
             &IDX_DURATION,
-            &IDX_RES_ATTR_KEYS,
-            &IDX_SCOPE_ATTR_KEYS,
-            &IDX_LOG_ATTR_KEYS,
-            &IDX_SPAN_ATTR_KEYS,
         ];
         for idx in indexes {
             let rendered = idx.render();

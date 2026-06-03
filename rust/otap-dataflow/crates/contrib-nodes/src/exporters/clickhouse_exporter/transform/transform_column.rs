@@ -25,8 +25,8 @@
 //!
 //! - Parent/child inlining and remapping:
 //!   - `reindex_attribute` rewrites parent-side foreign keys using a child payload’s remap table.
-//!   - `inline_attribute` inlines attributes into the parent batch as either JSON (dictionary-encoded
-//!     binary) or `Map(LowCardinality(String), String)`, depending on [`AttributeRepresentation`].
+//!   - `inline_attribute` inlines attributes into the parent batch as a
+//!     `Map(LowCardinality(String), String)` column.
 //!   - `inline_child_lists` and `inline_child_map` expand compact child arrays (indexed by ID) into
 //!     parent-sized arrays, driven by parent IDs and a remap table.
 //!
@@ -37,22 +37,19 @@
 //!     IDs (including handling of null IDs by appending a synthetic null/default entry).
 //!
 //! The output of these operations is a set of Arrow columns shaped and typed to match the
-//! ClickHouse schema chosen by configuration (inline vs lookup attributes, JSON vs map encoding,
-//! etc.).
+//! ClickHouse schema.
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use std::ops::ControlFlow;
 
 use arrow::array::{
-    Array, ArrayBuilder, ArrayRef, BinaryArray, BinaryDictionaryBuilder, Int32Array, ListBuilder,
-    MapBuilder, PrimitiveBuilder, StringBuilder, UInt8Array, make_builder,
+    Array, ArrayBuilder, ArrayRef, BinaryDictionaryBuilder, Int32Array, ListBuilder, MapBuilder,
+    StringBuilder, UInt8Array, make_builder,
 };
 use arrow::compute::{cast, max};
 use arrow::datatypes::{DataType, Float64Type, UInt8Type, UInt16Type, UInt32Type};
-use arrow_array::{
-    DictionaryArray, ListArray, MapArray, PrimitiveArray, StringArray, StructArray, UInt16Array,
-};
+use arrow_array::{ListArray, MapArray, PrimitiveArray, StringArray, StructArray, UInt16Array};
 use base64::Engine;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::proto::opentelemetry::trace::v1::{
@@ -62,7 +59,6 @@ use otap_df_pdata::{otlp::attributes::AttributeValueType, schema::consts};
 
 use crate::exporters::clickhouse_exporter::arrays::{NullableArrayAccessor, StructColumnAccessor};
 
-use crate::exporters::clickhouse_exporter::config::AttributeRepresentation;
 use crate::exporters::clickhouse_exporter::consts as ch_consts;
 use crate::exporters::clickhouse_exporter::error::ClickhouseExporterError;
 use crate::exporters::clickhouse_exporter::transform::transform_batch::{
@@ -212,8 +208,8 @@ pub(crate) fn apply_one_op(
             Ok(ControlFlow::Continue(()))
         }
 
-        ColumnTransformOp::InlineAttribute(child_pt, repr) => {
-            inline_attribute(ctx, current_name, *child_pt, repr)?;
+        ColumnTransformOp::InlineAttribute(child_pt) => {
+            inline_attribute(ctx, current_name, *child_pt)?;
             Ok(ControlFlow::Continue(()))
         }
 
@@ -399,13 +395,10 @@ fn extract_map_value(
 
     let output = match arr.data_type() {
         DataType::Map(_, _) => extract_map_value_from_map_array(arr, key, default_value)?,
-        DataType::Dictionary(_, value_type) if **value_type == DataType::Binary => {
-            extract_map_value_from_json_dict(arr, key, default_value)?
-        }
         _ => {
             return Err(ClickhouseExporterError::InvalidColumnType {
                 name: current_name.to_string(),
-                expected: "MapArray or Dictionary<*, Binary>".into(),
+                expected: "MapArray".into(),
                 found: format!("{:?}", arr.data_type()),
             });
         }
@@ -466,46 +459,6 @@ fn extract_map_value_from_map_array(
         }
 
         builder.append_value(found.unwrap_or(default_value));
-    }
-
-    Ok(Arc::new(builder.finish()))
-}
-
-fn extract_map_value_from_json_dict(
-    arr: &ArrayRef,
-    key: &str,
-    default_value: &str,
-) -> Result<ArrayRef, ClickhouseExporterError> {
-    let dict = arr
-        .as_any()
-        .downcast_ref::<DictionaryArray<UInt32Type>>()
-        .ok_or_else(|| ClickhouseExporterError::CoercionError {
-            error: "Failed to downcast attributes to DictionaryArray<UInt32Type>".into(),
-        })?;
-    let values = dict
-        .values()
-        .as_any()
-        .downcast_ref::<BinaryArray>()
-        .ok_or_else(|| ClickhouseExporterError::CoercionError {
-            error: "Failed to downcast dictionary values to BinaryArray".into(),
-        })?;
-
-    let mut builder = StringBuilder::with_capacity(dict.len(), dict.len() * default_value.len());
-
-    for row in 0..dict.len() {
-        if dict.is_null(row) {
-            builder.append_value(default_value);
-            continue;
-        }
-
-        let dict_key = dict.keys().value(row) as usize;
-        let bytes = values.value(dict_key);
-        let extracted = serde_json::from_slice::<serde_json::Value>(bytes)
-            .ok()
-            .and_then(|json| json.get(key).cloned())
-            .and_then(|value| value.as_str().map(ToOwned::to_owned))
-            .unwrap_or_else(|| default_value.to_string());
-        builder.append_value(extracted);
     }
 
     Ok(Arc::new(builder.finish()))
@@ -874,72 +827,6 @@ fn remap_map_array_to_parent_order(
     Ok(map_builder.finish())
 }
 
-/// Remap/reorder a compact `DictionaryArray<UInt32Type>` into parent row order.
-///
-/// Given:
-/// - `parent_ids`: the per-parent-row id array (length = number of parent rows),
-/// - `old_to_new`: a mapping from parent id (`u32`) -> row index in the compact child result,
-/// - `compact`: a dictionary-encoded child column whose rows are in “compact” (deduplicated) order,
-///
-/// this function produces a new dictionary array whose **length matches `parent_ids.len()`** and
-/// whose keys are reordered/expanded so that each parent row points at the dictionary key from the
-/// corresponding compact row.
-///
-/// For each parent row `i`:
-/// - if `parent_ids[i]` is null, the output row is null
-/// - else if `old_to_new` contains no entry for `parent_ids[i]`, the output row is null
-/// - else let `j = old_to_new[parent_ids[i]]`; the output key is `compact.keys()[j]` (or null if
-///   `j` is out of bounds or `compact.keys()[j]` is null)
-///
-/// The returned array reuses `compact.values()` (dictionary values) and only rebuilds the key array.
-///
-/// # Errors
-/// Returns an error if constructing the output `DictionaryArray` fails (e.g. due to Arrow
-/// invariants/type mismatches).
-pub(crate) fn remap_dict_array_to_parent_order(
-    parent_ids: &PrimitiveArray<UInt16Type>,
-    old_to_new: &HashMap<u32, u32>,
-    compact: &DictionaryArray<UInt32Type>,
-) -> Result<ArrayRef, ClickhouseExporterError> {
-    // Keep the same dictionary values; only expand/remap the keys to parent size.
-    let values = compact.values().clone();
-
-    // DictArray key type is assumed to be u32 based on old_to_new signature.
-    let compact_keys = compact.keys();
-
-    // Build new keys of length == parent_ids.len(), inserting nulls when mapping missing or input null.
-    let mut key_builder = PrimitiveBuilder::<UInt32Type>::with_capacity(parent_ids.len());
-
-    for i in 0..parent_ids.len() {
-        if parent_ids.is_null(i) {
-            key_builder.append_null();
-            continue;
-        }
-
-        let pid = parent_ids.value(i) as u32;
-
-        match old_to_new.get(&pid) {
-            None => key_builder.append_null(),
-            Some(&new_row) => {
-                // new_row refers to a row in `compact`; pick the compact key for that row.
-                if (new_row as usize) >= compact_keys.len()
-                    || compact_keys.is_null(new_row as usize)
-                {
-                    key_builder.append_null();
-                } else {
-                    key_builder.append_value(compact_keys.value(new_row as usize));
-                }
-            }
-        }
-    }
-
-    let new_keys = key_builder.finish();
-
-    // Recreate a dict array with expanded keys and same values.
-    let expanded = DictionaryArray::try_new(new_keys, values)?;
-    Ok(Arc::new(expanded))
-}
-
 /// Take body struct and transform to a single string column.
 pub fn struct_column_to_string(
     type_arr: &UInt8Array,
@@ -1108,8 +995,7 @@ fn attr_output_name(pt: ArrowPayloadType) -> Result<&'static str, ClickhouseExpo
 /// Returns an error if:
 /// - The id column is present but not a `UInt16Array`.
 /// - The child payload exists but is missing `remapped_ids` or the `ATTRIBUTES` column.
-/// - The requested representation cannot be inlined (OTAP array), or if underlying coercion/expansion
-///   fails.
+/// - The attributes cannot be inlined, or if underlying coercion/expansion fails.
 ///
 /// # Side effects
 /// - On success, removes the parent id column and inserts the inlined attribute column.
@@ -1119,7 +1005,6 @@ fn inline_attribute(
     ctx: &mut ColumnOpCtx<'_>,
     current_name: &mut String,
     child_payload_type: ArrowPayloadType,
-    representation: &AttributeRepresentation,
 ) -> Result<(), ClickhouseExporterError> {
     // Take parent IDs (u16).
     let id_arr = ctx.take(current_name)?;
@@ -1162,34 +1047,12 @@ fn inline_attribute(
         }
     })?;
 
-    let new_column: ArrayRef = match representation {
-        AttributeRepresentation::Json => inline_attr_json(id_arr_u16, remap, values_arr)?,
-        AttributeRepresentation::StringMap => {
-            inline_attr_string_map(id_arr_u16, remap, values_arr)?
-        }
-    };
+    let new_column: ArrayRef = inline_attr_string_map(id_arr_u16, remap, values_arr)?;
 
     ctx.put(new_name.clone(), new_column);
     *current_name = new_name;
 
     Ok(())
-}
-
-/// Build a new column of DictArray<UInt32Type> with the same values as the input dict, but
-/// with keys array re-mapped to the ordering of the parent ID column with nulls inserted for
-/// empty attribute values.
-fn inline_attr_json(
-    parent_ids: &UInt16Array,
-    remap: &HashMap<u32, u32>,
-    values_arr: &ArrayRef,
-) -> Result<ArrayRef, ClickhouseExporterError> {
-    let values = values_arr
-        .as_any()
-        .downcast_ref::<DictionaryArray<UInt32Type>>()
-        .ok_or_else(|| ClickhouseExporterError::CoercionError {
-            error: "Failed to downcast attributes to binary array".into(),
-        })?;
-    remap_dict_array_to_parent_order(parent_ids, remap, values)
 }
 
 /// Build a new column of MapArray<String, String> with the order updated to match the parent_id column.
@@ -1219,7 +1082,7 @@ mod tests {
 
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::*;
-    use arrow_array::{DurationNanosecondArray, UInt32Array, UInt64Array};
+    use arrow_array::{DictionaryArray, DurationNanosecondArray, UInt32Array, UInt64Array};
 
     fn ctx_with<'a>(
         columns: &'a mut HashMap<String, ArrayRef>,
@@ -1254,17 +1117,6 @@ mod tests {
         b.append(true).unwrap();
 
         b.finish()
-    }
-
-    fn make_json_attr_dict(rows: &[Option<&[u8]>]) -> ArrayRef {
-        let mut builder = BinaryDictionaryBuilder::<UInt32Type>::new();
-        for row in rows {
-            match row {
-                Some(bytes) => builder.append_value(*bytes),
-                None => builder.append_null(),
-            }
-        }
-        Arc::new(builder.finish())
     }
 
     fn struct_body_array() -> ArrayRef {
@@ -1419,13 +1271,7 @@ mod tests {
 
         // Apply
         let mut current = "attr_id".to_string();
-        inline_attribute(
-            &mut ctx,
-            &mut current,
-            ArrowPayloadType::ResourceAttrs,
-            &AttributeRepresentation::StringMap,
-        )
-        .unwrap();
+        inline_attribute(&mut ctx, &mut current, ArrowPayloadType::ResourceAttrs).unwrap();
 
         // Output column name for ResourceAttrs
         assert_eq!(current, ch_consts::CH_RESOURCE_ATTRIBUTES);
@@ -1484,13 +1330,7 @@ mod tests {
 
         let mut ctx = ctx_with(&mut parent_cols, &multi);
         let mut current = "attr_id".to_string();
-        inline_attribute(
-            &mut ctx,
-            &mut current,
-            ArrowPayloadType::ResourceAttrs,
-            &AttributeRepresentation::StringMap,
-        )
-        .unwrap();
+        inline_attribute(&mut ctx, &mut current, ArrowPayloadType::ResourceAttrs).unwrap();
 
         assert_eq!(current, ch_consts::CH_RESOURCE_ATTRIBUTES);
 
@@ -1597,21 +1437,6 @@ mod tests {
         let out = out.as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(out.value(0), "checkout");
         assert_eq!(out.value(1), "");
-    }
-
-    #[test]
-    fn extract_service_name_from_json_dict_and_null_row() {
-        let arr = make_json_attr_dict(&[
-            Some(br#"{"service.name":"payments","k":"v"}"#),
-            Some(br#"{"other":"value"}"#),
-            None,
-        ]);
-
-        let out = extract_map_value_from_json_dict(&arr, "service.name", "").unwrap();
-        let out = out.as_any().downcast_ref::<StringArray>().unwrap();
-        assert_eq!(out.value(0), "payments");
-        assert_eq!(out.value(1), "");
-        assert_eq!(out.value(2), "");
     }
 
     // --- FixedSizeBinary -> hex string cast tests ---
@@ -2072,13 +1897,7 @@ mod tests {
         let mut ctx = ctx_with(&mut parent_cols, &multi);
 
         let mut current = "attr_id".to_string();
-        inline_attribute(
-            &mut ctx,
-            &mut current,
-            ArrowPayloadType::ResourceAttrs,
-            &AttributeRepresentation::StringMap,
-        )
-        .unwrap();
+        inline_attribute(&mut ctx, &mut current, ArrowPayloadType::ResourceAttrs).unwrap();
 
         // The id column should still be present (put back)
         assert!(ctx.columns.contains_key("attr_id"));

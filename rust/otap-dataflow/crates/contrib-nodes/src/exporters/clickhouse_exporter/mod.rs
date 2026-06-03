@@ -175,7 +175,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
             username = self.config.username
         );
 
-        let mut batch_transformer = BatchTransformer::new_from_config(&self.config);
+        let mut batch_transformer = BatchTransformer::new();
         let clickhouse_writer =
             ClickHouseWriter::new(&self.config)
                 .await
