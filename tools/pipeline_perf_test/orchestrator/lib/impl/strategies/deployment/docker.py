@@ -143,6 +143,10 @@ class DockerDeploymentConfig(DeploymentStrategyConfig):
     ports: Optional[List[Union[str, DockerPortMapping]]] = None
     volumes: Optional[List[Union[str, DockerVolumeMapping]]] = None
     network: Optional[str] = None
+    cpuset_cpus: Optional[str] = Field(
+        None,
+        description="CPUs the container may run on (docker --cpuset-cpus), e.g. '0' or '0-2'",
+    )
 
 
 @deployment_registry.register_class(STRATEGY_NAME)
@@ -237,6 +241,7 @@ components:
                 volumes=build_volume_bindings(self.config.volumes),
                 environment=self.config.environment,
                 command=self.config.command,
+                cpuset_cpus=self.config.cpuset_cpus,
             )
         except DockerException as e:
             logger.error(f"Error launching Docker container: {e}")

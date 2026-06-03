@@ -28,8 +28,12 @@ components:
       docker:
         image: {{rotel_image}}
         network: testbed
+        # Pin rotel to a single core (cpuset) to match the single-core
+        # methodology. rotel has no worker-thread cap, so we let it spawn
+        # however many tokio workers it wants -- they all multiplex onto the
+        # one pinned core.
+        cpuset_cpus: "{{ rotel_cpuset | default('0') }}"
         environment:
-          - TOKIO_WORKER_THREADS=1
           - RUST_LOG=info
         # rotel image ENTRYPOINT is `/rotel start --otlp-grpc-endpoint 0.0.0.0:4317
         # --otlp-http-endpoint 0.0.0.0:4318`, so receivers are already bound.
