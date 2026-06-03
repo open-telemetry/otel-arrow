@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780455981611,
+  "lastUpdate": 1780514074270,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2204,6 +2204,82 @@ window.BENCHMARK_DATA = {
             "value": 39.82,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=40.1 MiB, error=0.6%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "albertlockett",
+            "username": "albertlockett",
+            "email": "a.lockett@f5.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "a7a04541634b883904108e499e52bbeb94ccfb6e",
+          "message": "feat: added comment support in OPL (#3152)\n\n# Change Summary\n\n<!--\nReplace with a brief summary of the change in this PR\n-->\n\nAdds support for comments in OPL programs. Both inline comments (`//`)\nand block comments (`/* ... */`) are supported\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Closes https://github.com/open-telemetry/otel-arrow/issues/3151\n\n## How are these changes tested?\n\nUnit\n\n## Are there any user-facing changes?\n\nYes - this comment syntax is now available for OPL programs written in\nthe transform processor config.\n\n <!-- If yes, provide further info below -->\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry, OR this PR is a `chore`\n(indicated in title).",
+          "timestamp": "2026-06-03T18:14:18Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/a7a04541634b883904108e499e52bbeb94ccfb6e"
+        },
+        "date": 1780514073488,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 15.38,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.77,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9989,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 16.31,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=16.2 MiB, error=0.9%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 16.42,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=16.9 MiB, error=3.1%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 18.62,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.5 MiB, error=0.7%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 21.62,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=21.6 MiB, error=0.2%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 28.15,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=27.8 MiB, error=1.3%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 39.98,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=40.2 MiB, error=0.5%"
           }
         ]
       }
