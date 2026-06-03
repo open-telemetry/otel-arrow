@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "Rotel OTLP Baseline (Traces)/1000k - Dropped Spans %",
+    "name": "dropped_spans_percentage",
+    "unit": "%",
+    "value": 1.1265305280685425
+  },
+  {
+    "extra": "Rotel OTLP Baseline (Traces)/1000k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.02581244791608
+  },
+  {
+    "extra": "Rotel OTLP Baseline (Traces)/1000k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.31270455965023
+  },
+  {
+    "extra": "Rotel OTLP Baseline (Traces)/1000k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 1683.8059895833333
+  },
+  {
+    "extra": "Rotel OTLP Baseline (Traces)/1000k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 1730.41796875
+  },
+  {
+    "extra": "Rotel OTLP Baseline (Traces)/1000k - Span Throughput",
+    "name": "spans_produced_rate",
+    "unit": "spans/sec",
+    "value": 105607.38330312584
+  },
+  {
+    "extra": "Rotel OTLP Baseline (Traces)/1000k - Span Throughput",
+    "name": "spans_received_rate",
+    "unit": "spans/sec",
+    "value": 104952.79653985373
+  },
+  {
+    "extra": "Rotel OTLP Baseline (Traces)/1000k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000533
+  },
+  {
+    "extra": "Rotel OTLP Baseline (Traces)/1000k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 13723773.166798968
+  },
+  {
+    "extra": "Rotel OTLP Baseline (Traces)/1000k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 90102604.47253458
+  }
+]

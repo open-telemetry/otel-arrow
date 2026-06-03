@@ -1,0 +1,26 @@
+[
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Metrics)/600k - Dropped Metrics %",
+    "name": "dropped_metrics_percentage",
+    "unit": "%",
+    "value": 100.0
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Metrics)/600k - Metric Throughput",
+    "name": "metrics_produced_rate",
+    "unit": "metrics/sec",
+    "value": 601014.2763173364
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Metrics)/600k - Metric Throughput",
+    "name": "metrics_received_rate",
+    "unit": "metrics/sec",
+    "value": 0.0
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Metrics)/600k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000482
+  }
+]

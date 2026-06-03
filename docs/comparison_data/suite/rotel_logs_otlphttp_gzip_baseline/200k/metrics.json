@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/200k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": -0.01066666655242443
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 42.41659077768702
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/200k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 44.361411177021544
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/200k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 34.705078125
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/200k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 37.70703125
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/200k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 200973.7984429756
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/200k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 201688.6869856878
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/200k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000508
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/200k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 3606676.5873949607
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/200k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 71612416.6691717
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/200k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 17.882394105976292
+  }
+]

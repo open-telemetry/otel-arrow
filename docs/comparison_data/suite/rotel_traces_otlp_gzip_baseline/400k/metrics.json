@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - Dropped Spans %",
+    "name": "dropped_spans_percentage",
+    "unit": "%",
+    "value": 13.619455337524414
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.06683903632765
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.41275217932753
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 1075.505859375
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 2470.51171875
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - Span Throughput",
+    "name": "spans_produced_rate",
+    "unit": "spans/sec",
+    "value": 105055.44448160139
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - Span Throughput",
+    "name": "spans_received_rate",
+    "unit": "spans/sec",
+    "value": 90438.99460647764
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000491
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 11674440.401015973
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Traces)/400k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 15209426.571427677
+  }
+]
