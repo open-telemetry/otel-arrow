@@ -44,7 +44,7 @@ jobs:
             If the size is unavoidable (e.g., a large refactor or generated
             code update), please explain the reasoning in the PR description.
             See
-            [CONTRIBUTING.md](https://github.com/open-telemetry/otel-arrow/blob/main/CONTRIBUTING.md)
+            [CONTRIBUTING.md](https://github.com/open-telemetry/otel-arrow/blob/main/CONTRIBUTING.md#keep-pull-requests-small-and-incremental)
             for guidelines on keeping PRs small.
           files_to_ignore: |
             "go.sum"
