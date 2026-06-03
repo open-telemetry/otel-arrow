@@ -40,9 +40,9 @@ select:hover,button:hover{border-color:var(--accent)}
 .primary:disabled{opacity:.5;cursor:not-allowed}
 
 /* query bar */
-.qbar{display:flex;align-items:center;gap:.5rem;padding:.5rem 1rem;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
-.qbar label{font-size:.75rem;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
-#qry{flex:1;font-family:var(--mono);font-size:.875rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:.4rem .6rem;outline:none}
+.qbar{display:flex;align-items:flex-start;gap:.5rem;padding:.5rem 1rem;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+.qbar label{font-size:.75rem;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;padding-top:.45rem}
+#qry{flex:1;font-family:var(--mono);font-size:.875rem;line-height:1.5;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:.4rem .6rem;outline:none;resize:vertical;min-height:2.4rem;max-height:40vh;tab-size:2;field-sizing:content}
 #qry:focus{border-color:var(--accent)}
 
 /* panels */
@@ -86,8 +86,8 @@ pre.r{font-family:var(--mono);font-size:.8125rem;line-height:1.5;white-space:pre
 
 <div class="qbar">
   <label for="qry">OPL</label>
-  <input id="qry" type="text" spellcheck="false"
-         placeholder='logs | where severity_text == "Error"'>
+  <textarea id="qry" rows="1" spellcheck="false"
+            placeholder='logs | where severity_text == "Error"'></textarea>
 </div>
 
 <div class="panels">
