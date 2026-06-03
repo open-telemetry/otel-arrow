@@ -8,6 +8,19 @@
     // keep pip-compile refreshes aligned with CI/runtime interpreter
     "python": "==3.14"
   },
+  // Cross-reference dependencies against the OSV database (https://osv.dev)
+  // and surface resolved CVE/GHSA/RUSTSEC advisories in PR bodies.
+  "osvVulnerabilityAlerts": true,
+  // Config applied only to vulnerability-motivated fix PRs. This path
+  // activates once osvVulnerabilityAlerts (above) and/or GitHub Dependabot
+  // alerts are in effect.
+  "vulnerabilityAlerts": {
+    "addLabels": ["area:security"],
+  },
+  // List unresolved CVEs (from osv.dev) on the Dependency Dashboard issue.
+  // The dashboard itself is already enabled via the config:recommended
+  // preset (which extends :dependencyDashboard).
+  "dependencyDashboardOSVVulnerabilitySummary": "unresolved",
   "extends": [
     "config:recommended",
     "docker:pinDigests",
