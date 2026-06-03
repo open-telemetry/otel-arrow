@@ -26,7 +26,7 @@ meta:
   binary:
     - { value: dfe, description: "Dataflow Engine - the OTAP-native pipeline engine developed as a part of OTel Arrow." }
     - { value: otc, description: "OpenTelemetry Collector (contrib distribution)." }
-    - { value: fb, description: "Fluent Bit - An observability pipeline engine in the fluentd family." }
+    - { value: fbit, description: "Fluent Bit - A lightweight telemetry agent engine under the fluentd project umbrella." }
   protocols:
     - { value: otap, description: "OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches." }
     - { value: otlp, description: "OpenTelemetry Protocol over gRPC (row-oriented protobuf)." }
@@ -48,7 +48,7 @@ glossary:
     definition: Dataflow Engine - the OTAP-native Rust pipeline being benchmarked in this repo.
   - term: OTC
     definition: OpenTelemetry Collector (contrib distribution) - the reference Go implementation.
-  - term: FB
+  - term: FBIT
     definition: Fluent Bit - An observability pipeline engine in the fluentd family.
   - term: OTAP
     definition: OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches.
