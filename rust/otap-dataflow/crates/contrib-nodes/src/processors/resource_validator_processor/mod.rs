@@ -383,11 +383,14 @@ impl ResourceValidatorProcessor {
         arrow_records: &OtapArrowRecords,
         allowed_values: &HashSet<String>,
     ) -> Result<(), (ValidationFailure, String)> {
-        let decoded_resources =
-            DecodedOtapLogsResources::clone_and_decode(arrow_records).map_err(|_| {
-                let failure = ValidationFailure::ConversionError;
-                (failure, self.format_error_message(failure))
-            })?;
+        let decoded_resources = DecodedOtapLogsResources::clone_and_decode_keyed(
+            arrow_records,
+            self.required_attribute_key.as_bytes(),
+        )
+        .map_err(|_| {
+            let failure = ValidationFailure::ConversionError;
+            (failure, self.format_error_message(failure))
+        })?;
         let logs_resources = decoded_resources.resources_view().map_err(|_| {
             let failure = ValidationFailure::ConversionError;
             (failure, self.format_error_message(failure))

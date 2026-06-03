@@ -356,12 +356,16 @@ impl ContentRouter {
         router
     }
 
+    fn resource_attr_key(&self) -> &[u8] {
+        match &self.routing_key {
+            RoutingKeyExpr::ResourceAttribute(key) => key.as_bytes(),
+        }
+    }
+
     /// Extracts the routing key value from a resource's attributes using zero-copy views.
     /// Returns the resolved port name or None if the key is missing/not a route match.
     fn extract_route_from_resource<R: ResourceView>(&self, resource: &R) -> RouteResolution {
-        let key_bytes = match &self.routing_key {
-            RoutingKeyExpr::ResourceAttribute(key) => key.as_bytes(),
-        };
+        let key_bytes = self.resource_attr_key();
 
         for attr in resource.attributes() {
             if attr.key() == key_bytes {
@@ -456,7 +460,10 @@ impl ContentRouter {
         &self,
         arrow_records: &otap_df_pdata::OtapArrowRecords,
     ) -> RouteResolution {
-        let decoded_resources = match DecodedOtapLogsResources::clone_and_decode(arrow_records) {
+        let decoded_resources = match DecodedOtapLogsResources::clone_and_decode_keyed(
+            arrow_records,
+            self.resource_attr_key(),
+        ) {
             Ok(decoded_resources) => decoded_resources,
             Err(_) => return RouteResolution::ConversionError,
         };

@@ -53,7 +53,69 @@ fn logs_batch_with_id_encodings(
     .unwrap()
 }
 
-fn attrs_batch_with_parent_encoding(encoding: &str) -> RecordBatch {
+fn logs_batch_with_plain_resource_ids(resource_ids: &[u16]) -> RecordBatch {
+    let log_id_field = encoded_field(
+        consts::ID,
+        DataType::UInt16,
+        false,
+        consts::metadata::encodings::PLAIN,
+    );
+    let resource_id_field = encoded_field(
+        consts::ID,
+        DataType::UInt16,
+        false,
+        consts::metadata::encodings::PLAIN,
+    );
+    let scope_id_field = encoded_field(
+        consts::ID,
+        DataType::UInt16,
+        false,
+        consts::metadata::encodings::PLAIN,
+    );
+
+    let schema = Arc::new(Schema::new(vec![
+        log_id_field,
+        Field::new(
+            consts::RESOURCE,
+            DataType::Struct(vec![resource_id_field.clone()].into()),
+            false,
+        ),
+        Field::new(
+            consts::SCOPE,
+            DataType::Struct(vec![scope_id_field.clone()].into()),
+            false,
+        ),
+    ]));
+
+    let resource_struct = StructArray::from(vec![(
+        Arc::new(resource_id_field),
+        Arc::new(UInt16Array::from_iter_values(resource_ids.iter().copied())) as ArrayRef,
+    )]);
+    let scope_struct = StructArray::from(vec![(
+        Arc::new(scope_id_field),
+        Arc::new(UInt16Array::from_iter_values(std::iter::repeat_n(
+            1,
+            resource_ids.len(),
+        ))) as ArrayRef,
+    )]);
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(UInt16Array::from_iter_values(
+                (1..=resource_ids.len()).map(|idx| u16::try_from(idx).unwrap()),
+            )),
+            Arc::new(resource_struct),
+            Arc::new(scope_struct),
+        ],
+    )
+    .unwrap()
+}
+
+fn attrs_batch_with_parent_encoding_and_values(
+    encoding: &str,
+    attrs: &[(u16, &str, &str)],
+) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
         encoded_field(consts::PARENT_ID, DataType::UInt16, false, encoding),
         Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
@@ -64,13 +126,28 @@ fn attrs_batch_with_parent_encoding(encoding: &str) -> RecordBatch {
     RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(UInt16Array::from(vec![1])),
-            Arc::new(StringArray::from(vec!["service.name"])),
-            Arc::new(UInt8Array::from(vec![AttributeValueType::Str as u8])),
-            Arc::new(StringArray::from(vec![Some("test-service")])),
+            Arc::new(UInt16Array::from_iter_values(
+                attrs.iter().map(|(parent_id, _, _)| *parent_id),
+            )),
+            Arc::new(StringArray::from(
+                attrs.iter().map(|(_, key, _)| *key).collect::<Vec<_>>(),
+            )),
+            Arc::new(UInt8Array::from_iter_values(
+                attrs.iter().map(|_| AttributeValueType::Str as u8),
+            )),
+            Arc::new(StringArray::from(
+                attrs
+                    .iter()
+                    .map(|(_, _, value)| Some(*value))
+                    .collect::<Vec<_>>(),
+            )),
         ],
     )
     .unwrap()
+}
+
+fn attrs_batch_with_parent_encoding(encoding: &str) -> RecordBatch {
+    attrs_batch_with_parent_encoding_and_values(encoding, &[(1, "service.name", "test-service")])
 }
 
 fn empty_attrs_batch_with_parent_encoding(encoding: &str) -> RecordBatch {
@@ -278,5 +355,93 @@ fn resource_only_view_decodes_only_resource_batches() {
     let value = attr.value().expect("attribute should have a value");
     assert_eq!(value.as_string(), Some("test-service".as_bytes()));
     assert!(attrs.next().is_none());
+    assert!(resources.next().is_none());
+}
+
+#[test]
+fn resource_only_view_keyed_decode_keeps_only_requested_resource_attr() {
+    let mut otap_records = OtapArrowRecords::Logs(Default::default());
+    otap_records
+        .set(
+            ArrowPayloadType::Logs,
+            logs_batch_with_plain_resource_ids(&[1, 2]),
+        )
+        .unwrap();
+    otap_records
+        .set(
+            ArrowPayloadType::ResourceAttrs,
+            attrs_batch_with_parent_encoding_and_values(
+                consts::metadata::encodings::PLAIN,
+                &[
+                    (1, "deployment.environment", "prod"),
+                    (2, "deployment.environment", "prod"),
+                    (1, "service.name", "shared-service"),
+                    (2, "service.name", "shared-service"),
+                ],
+            ),
+        )
+        .unwrap();
+
+    otap_records.encode_transport_optimized().unwrap();
+
+    let decoded_resources =
+        DecodedOtapLogsResources::clone_and_decode_keyed(&otap_records, b"service.name")
+            .expect("keyed resource-only decode should decode matching resource attrs");
+    let resources_view = decoded_resources
+        .resources_view()
+        .expect("keyed resource-only view should decode parent IDs for matching attrs");
+
+    let mut resources = resources_view.resources();
+    for _ in 0..2 {
+        let resource_logs = resources.next().expect("expected resource");
+        let resource = resource_logs.resource();
+        let mut attrs = resource.attributes();
+        let attr = attrs.next().expect("expected requested resource attribute");
+
+        assert_eq!(attr.key(), b"service.name");
+        let value = attr.value().expect("attribute should have a value");
+        assert_eq!(value.as_string(), Some("shared-service".as_bytes()));
+        assert!(attrs.next().is_none());
+    }
+    assert!(resources.next().is_none());
+}
+
+#[test]
+fn resource_only_view_keyed_decode_allows_missing_requested_resource_attr() {
+    let mut otap_records = OtapArrowRecords::Logs(Default::default());
+    otap_records
+        .set(
+            ArrowPayloadType::Logs,
+            logs_batch_with_plain_resource_ids(&[1, 2]),
+        )
+        .unwrap();
+    otap_records
+        .set(
+            ArrowPayloadType::ResourceAttrs,
+            attrs_batch_with_parent_encoding_and_values(
+                consts::metadata::encodings::PLAIN,
+                &[
+                    (1, "deployment.environment", "prod"),
+                    (2, "deployment.environment", "prod"),
+                ],
+            ),
+        )
+        .unwrap();
+
+    otap_records.encode_transport_optimized().unwrap();
+
+    let decoded_resources =
+        DecodedOtapLogsResources::clone_and_decode_keyed(&otap_records, b"service.name")
+            .expect("keyed resource-only decode should allow missing requested attrs");
+    let resources_view = decoded_resources
+        .resources_view()
+        .expect("keyed resource-only view should allow an empty filtered attr batch");
+
+    let mut resources = resources_view.resources();
+    for _ in 0..2 {
+        let resource_logs = resources.next().expect("expected resource");
+        let resource = resource_logs.resource();
+        assert!(resource.attributes().next().is_none());
+    }
     assert!(resources.next().is_none());
 }
