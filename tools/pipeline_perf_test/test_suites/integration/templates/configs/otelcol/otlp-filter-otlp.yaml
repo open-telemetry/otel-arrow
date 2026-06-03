@@ -6,7 +6,7 @@ receivers:
         endpoint: 0.0.0.0:4317
     admission:
       # memory limits applies to OTAP and OTLP data.
-      request_limit_mib: 256
+      request_limit_mib: 128
       waiting_limit_mib: 32
 
 exporters:

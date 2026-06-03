@@ -3,6 +3,9 @@ receivers:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
+    admission:
+      request_limit_mib: {{ admission_request_mib | default(128) }}
+      waiting_limit_mib: {{ admission_waiting_mib | default(32) }}
 
 processors:
   attributes:
@@ -22,12 +25,16 @@ exporters:
     arrow:
       payload_compression: {{ payload_compression | default("none") }}
       disabled: false
+      num_streams: {{ num_streams | default(5) }}
     sending_queue:
       enabled: {{ sending_queue_enabled | default(true) }}
       wait_for_result: {{ wait_for_result | default(true) }}
       block_on_overflow: {{ block_on_overflow | default(true) }}
       sizer: {{ sending_queue_sizer | default("requests") }}
       queue_size: {{ sending_queue_size | default(100) }}
+      num_consumers: {{ sending_queue_otap_consumers | default(100) }}
+      batch:
+        enabled: {{ sending_queue_batch_enabled | default(false) }}
 
 service:
   telemetry:

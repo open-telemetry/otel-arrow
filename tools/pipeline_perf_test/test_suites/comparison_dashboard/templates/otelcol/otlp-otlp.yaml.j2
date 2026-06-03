@@ -1,8 +1,11 @@
 receivers:
-  otlp:
+  otelarrow:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
+    admission:
+      request_limit_mib: {{ admission_request_mib | default(128) }}
+      waiting_limit_mib: {{ admission_waiting_mib | default(32) }}
 
 exporters:
   otlp:
@@ -16,6 +19,9 @@ exporters:
       block_on_overflow: {{ block_on_overflow | default(true) }}
       sizer: {{ sending_queue_sizer | default("requests") }}
       queue_size: {{ sending_queue_size | default(100) }}
+      num_consumers: {{ sending_queue_otlp_consumers | default(5) }}
+      batch:
+        enabled: {{ sending_queue_batch_enabled | default(false) }}
 
 service:
   telemetry:
@@ -28,11 +34,11 @@ service:
                 port: 8086
   pipelines:
     logs:
-      receivers: [otlp]
+      receivers: [otelarrow]
       exporters: [otlp]
     metrics:
-      receivers: [otlp]
+      receivers: [otelarrow]
       exporters: [otlp]
     traces:
-      receivers: [otlp]
+      receivers: [otelarrow]
       exporters: [otlp]
