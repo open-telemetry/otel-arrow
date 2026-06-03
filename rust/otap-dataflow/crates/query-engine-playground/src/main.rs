@@ -95,14 +95,24 @@ struct ExecuteResponse {
     error: Option<String>,
 }
 
+/// Default port when `--port` / `OPL_PLAYGROUND_PORT` is not set.
+const DEFAULT_PORT: u16 = 3000;
+
 #[tokio::main]
 async fn main() {
+    let port = std::env::args()
+        .skip_while(|a| a != "--port")
+        .nth(1)
+        .or_else(|| std::env::var("OPL_PLAYGROUND_PORT").ok())
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_PORT);
+
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/proto/{*path}", get(serve_proto))
         .route("/api/execute", post(handle_execute));
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
     println!("OPL Playground listening on http://{addr}");
 
     let listener = tokio::net::TcpListener::bind(addr)

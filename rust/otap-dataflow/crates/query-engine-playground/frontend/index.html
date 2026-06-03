@@ -61,7 +61,7 @@ textarea{flex:1;font-family:var(--mono);font-size:.8125rem;line-height:1.5;backg
 .rc{flex:1;overflow:auto;padding:.75rem}
 .rp{display:none}
 .rp.on{display:block}
-pre.r{font-family:var(--mono);font-size:.8125rem;line-height:1.5;white-space:pre-wrap;word-break:break-all}
+pre.r{font-family:var(--mono);font-size:.8125rem;line-height:1.5;white-space:pre;word-break:normal}
 .e{color:var(--err)}
 .st{font-size:.75rem;color:var(--dim);margin-left:auto;white-space:nowrap}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:sp .6s linear infinite;vertical-align:middle;margin-right:.4rem}
@@ -188,7 +188,44 @@ function loadExample(){
 
 exBtn.addEventListener("click", loadExample);
 sig.addEventListener("change", loadExample);
-loadExample();
+
+// --- Persist state in localStorage ---
+var STORAGE_KEY = "opl-playground-state";
+
+function saveState(){
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      signal: sig.value,
+      query: qry.value,
+      data: inp.value
+    }));
+  } catch(e) { /* quota exceeded or private mode — ignore */ }
+}
+
+function restoreState(){
+  try {
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    var s = JSON.parse(raw);
+    if (s.signal) sig.value = s.signal;
+    if (s.query != null) qry.value = s.query;
+    if (s.data != null) inp.value = s.data;
+    return true;
+  } catch(e) { return false; }
+}
+
+// Restore previous session, or fall back to default example.
+if (!restoreState()) loadExample();
+
+// Auto-save on edits (debounced).
+var saveTimer;
+function debounceSave(){
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveState, 400);
+}
+qry.addEventListener("input", debounceSave);
+inp.addEventListener("input", debounceSave);
+sig.addEventListener("change", debounceSave);
 
 // --- Helpers ---
 function u8ToB64(u8){
