@@ -33,8 +33,7 @@ fn test_metrics_reporter() -> MetricsReporter {
 /// receiver resolves to `Err(_)` and the `ControlChannel` falls
 /// through to the regular control path. Used by control-channel
 /// unit tests that don't care about the dedicated shutdown channel.
-fn never_firing_shutdown_rx()
--> tokio::sync::oneshot::Receiver<crate::control::ShutdownPayload> {
+fn never_firing_shutdown_rx() -> tokio::sync::oneshot::Receiver<crate::control::ShutdownPayload> {
     tokio::sync::oneshot::channel().1
 }
 
@@ -319,7 +318,8 @@ fn test_local_start_shutdown() {
 #[tokio::test]
 async fn test_ctrl_immediate_shutdown() {
     let (tx, rx) = tokio::sync::mpsc::channel(8);
-    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
+    let mut ch =
+        shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
     SharedSender::mpsc(tx)
         .send(ExtensionControlMsg::Shutdown {
             deadline: Instant::now(),
@@ -335,7 +335,8 @@ async fn test_ctrl_immediate_shutdown() {
 async fn test_ctrl_config_then_shutdown() {
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     let s = SharedSender::mpsc(tx);
-    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
+    let mut ch =
+        shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
     s.send(ExtensionControlMsg::Config {
         config: Value::String("h".into()),
     })
@@ -358,7 +359,8 @@ async fn test_ctrl_delayed_shutdown() {
     // future its deadline is — the deadline is the extension's
     // cooperative cleanup budget, not a wait time before delivery.
     let (tx, rx) = tokio::sync::mpsc::channel(8);
-    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
+    let mut ch =
+        shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
     let dl = Instant::now() + std::time::Duration::from_secs(60);
     let sender = SharedSender::mpsc(tx);
     sender
@@ -385,7 +387,8 @@ async fn test_ctrl_shutdown_closes_channel() {
     // is delivered the channel is closed and the extension's event
     // loop terminates.
     let (tx, rx) = tokio::sync::mpsc::channel(8);
-    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
+    let mut ch =
+        shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
     let s = SharedSender::mpsc(tx);
     s.send(ExtensionControlMsg::Shutdown {
         deadline: Instant::now() + std::time::Duration::from_secs(1),
@@ -405,7 +408,8 @@ async fn test_ctrl_shutdown_closes_channel() {
 #[tokio::test]
 async fn test_ctrl_collect_telemetry() {
     let (tx, rx) = tokio::sync::mpsc::channel(8);
-    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
+    let mut ch =
+        shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
     SharedSender::mpsc(tx)
         .send(ExtensionControlMsg::CollectTelemetry {
             metrics_reporter: test_metrics_reporter(),
@@ -421,7 +425,8 @@ async fn test_ctrl_collect_telemetry() {
 #[tokio::test]
 async fn test_ctrl_closed() {
     let (tx, rx) = tokio::sync::mpsc::channel::<ExtensionControlMsg>(8);
-    let mut ch = shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
+    let mut ch =
+        shared_ext::ControlChannel::new(SharedReceiver::mpsc(rx), never_firing_shutdown_rx());
     drop(tx);
     assert!(ch.recv().await.is_err());
 }

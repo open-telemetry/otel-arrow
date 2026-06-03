@@ -389,7 +389,6 @@ impl ExtensionLifecycle {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,9 +587,13 @@ mod tests {
                  so the second call is a structural no-op"
             );
 
-            let payload_a = rx_a.try_recv().expect("a must receive exactly one Shutdown");
+            let payload_a = rx_a
+                .try_recv()
+                .expect("a must receive exactly one Shutdown");
             assert_eq!(payload_a.reason, "first");
-            let payload_b = rx_b.try_recv().expect("b must receive exactly one Shutdown");
+            let payload_b = rx_b
+                .try_recv()
+                .expect("b must receive exactly one Shutdown");
             assert_eq!(payload_b.reason, "first");
         }));
     }
@@ -931,11 +934,8 @@ mod tests {
                 pending_spawn_signals: 2,
             };
 
-            let outcome = tokio::time::timeout(
-                Duration::from_secs(1),
-                lifecycle.wait_all_spawned(),
-            )
-            .await;
+            let outcome =
+                tokio::time::timeout(Duration::from_secs(1), lifecycle.wait_all_spawned()).await;
 
             assert!(outcome.is_ok(), "wait_all_spawned must not hang");
             assert!(outcome.unwrap().is_ok());
@@ -977,11 +977,8 @@ mod tests {
             let prev_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(|_| {}));
 
-            let outcome = tokio::time::timeout(
-                Duration::from_secs(1),
-                lifecycle.wait_all_spawned(),
-            )
-            .await;
+            let outcome =
+                tokio::time::timeout(Duration::from_secs(1), lifecycle.wait_all_spawned()).await;
 
             std::panic::set_hook(prev_hook);
 
