@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780427539125,
+  "lastUpdate": 1780455981611,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2128,6 +2128,82 @@ window.BENCHMARK_DATA = {
             "value": 41.22,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=41.1 MiB, error=0.3%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cijo Thomas",
+            "username": "cijothomas",
+            "email": "cijo.thomas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9fb01d6d441d84fcdb5a0a75d377f041fa0cdfca",
+          "message": "Add uncompressed bytes-per-log metric to traffic generator benchmarks (#3026)\n\nCloses #2987\n\nAdds a `logs_bytes_produced` counter metric to the traffic generator\nreceiver that tracks the total protobuf-encoded (uncompressed) bytes of\nlog payloads produced. The benchmark report SQL then computes\n`uncompressed_bytes_per_log` from this counter, enabling direct\ncomparison of uncompressed payload size against the egress (compressed)\nbytes per log.\n\n### Changes\n- **metrics.rs**: Added `logs_bytes_produced: Counter<u64>` with unit\n`By`\n- **mod.rs**: Record payload bytes in `export_pdata()` for log signals\n(captured before ownership move)\n- **integration_report_logs.yaml** & **report_logs.yaml**: Added\n`logs_bytes_produced` to metric filter and `uncompressed_bytes_per_log`\ncomputed metric to report SQL",
+          "timestamp": "2026-06-02T22:17:51Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9fb01d6d441d84fcdb5a0a75d377f041fa0cdfca"
+        },
+        "date": 1780455980466,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 15.12,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.78,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9966,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 16.46,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=15.9 MiB, error=3.4%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 16.39,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=16.7 MiB, error=1.8%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 17.48,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.2 MiB, error=4.3%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 21.44,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=21.4 MiB, error=0.4%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 28.23,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=27.6 MiB, error=2.3%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 39.82,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=40.1 MiB, error=0.6%"
           }
         ]
       }
