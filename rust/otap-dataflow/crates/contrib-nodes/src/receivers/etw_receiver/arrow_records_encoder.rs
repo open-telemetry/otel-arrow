@@ -212,15 +212,10 @@ impl EtwArrowRecordsBuilder {
         }
 
         self.logs.append_id(Some(self.curr_log_id));
-        self.logs.append_flags(None);
 
         // Event name: use "etw.<event_id>" as the event name
         let event_name = format!("etw.{}", event.event_id);
         self.logs.append_event_name(Some(event_name.as_bytes()));
-
-        // No trace/span context from ETW
-        _ = self.logs.append_trace_id(None::<&[u8; 16]>);
-        _ = self.logs.append_span_id(None::<&[u8; 8]>);
 
         // Attributes: ETW header metadata
         self.append_attr("etw.event_id", AttrValue::Int(i64::from(event.event_id)));
@@ -276,6 +271,11 @@ impl EtwArrowRecordsBuilder {
             .as_nanos() as i64;
         self.logs
             .append_observed_time_unix_nano_n(observed_time, log_record_count);
+
+        // Batch-fill fields that are uniform across all records in the batch.
+        self.logs.append_flags_n(None, log_record_count);
+        _ = self.logs.append_trace_id_n(None, log_record_count);
+        _ = self.logs.append_span_id_n(None, log_record_count);
 
         // All logs belong to the same resource and scope.  Fill in the
         // required row-aligned placeholder arrays.
