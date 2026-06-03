@@ -697,6 +697,7 @@ mod tests {
                 },
                 azure_monitor_source_resourceid: None,
                 gzip_compression_level: 6,
+                user_agent: None,
             },
             auth: AuthConfig::default(),
             heartbeat: HeartbeatConfig::default(),

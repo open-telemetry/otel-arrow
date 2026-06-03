@@ -65,3 +65,55 @@ otelarrowcol:
 .PHONY: docker-otelarrowcol
 docker-otelarrowcol:
 	docker build . -t otelarrowcol
+
+# Install chloggen at a pinned version. Used by both contributors (via
+# `make chlog-new-{go,rust}`) and the release workflows (via
+# `make chlog-update`).
+CHLOGGEN_VERSION = v0.30.0
+CHLOGGEN = chloggen
+CHLOGGEN_GO_CONFIG = go/.chloggen/config.yaml
+CHLOGGEN_RUST_CONFIG = rust/otap-dataflow/.chloggen/config.yaml
+CHANGELOG_GO = go/CHANGELOG.md
+CHANGELOG_RUST = rust/otap-dataflow/CHANGELOG.md
+
+.PHONY: chlog-install
+chlog-install:
+	$(GOCMD) install go.opentelemetry.io/build-tools/chloggen@$(CHLOGGEN_VERSION)
+
+# Generate a new changelog entry. FILENAME defaults to the current git
+# branch name so the entry tracks the PR.
+FILENAME ?= $(shell git branch --show-current)
+
+.PHONY: chlog-new-go
+chlog-new-go:
+	$(CHLOGGEN) new --config $(CHLOGGEN_GO_CONFIG) --filename $(FILENAME)
+
+.PHONY: chlog-new-rust
+chlog-new-rust:
+	$(CHLOGGEN) new --config $(CHLOGGEN_RUST_CONFIG) --filename $(FILENAME)
+
+.PHONY: chlog-validate
+chlog-validate:
+	$(CHLOGGEN) validate --config $(CHLOGGEN_GO_CONFIG)
+	$(CHLOGGEN) validate --config $(CHLOGGEN_RUST_CONFIG)
+
+.PHONY: chlog-preview
+chlog-preview:
+	@echo "=== $(CHANGELOG_GO) ==="
+	$(CHLOGGEN) update --config $(CHLOGGEN_GO_CONFIG) --dry
+	@echo "=== $(CHANGELOG_RUST) ==="
+	$(CHLOGGEN) update --config $(CHLOGGEN_RUST_CONFIG) --dry
+
+# Render pending entries into the configured CHANGELOG files for VERSION
+# and delete the consumed entry files. Invoked by the release workflow.
+.PHONY: chlog-update
+chlog-update:
+	$(CHLOGGEN) update --config $(CHLOGGEN_GO_CONFIG) --version $(VERSION)
+	$(CHLOGGEN) update --config $(CHLOGGEN_RUST_CONFIG) --version $(VERSION)
+	# chloggen's indent function leaves trailing whitespace on blank sub-text
+	# lines and the template emits consecutive blank lines; fix both so the
+	# sanity check and markdownlint pass.
+	for f in $(CHANGELOG_GO) $(CHANGELOG_RUST); do \
+		sed -i.bak 's/[[:space:]]*$$//' $$f && rm -f $$f.bak; \
+		cat -s $$f > $$f.tmp && mv $$f.tmp $$f; \
+	done

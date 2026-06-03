@@ -7,9 +7,17 @@ use std::ops::Deref;
 use serde::{Deserialize, Serialize};
 
 /// A string wrapper that redacts its value in Debug/Display output.
-#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct OpaqueString(String);
+
+impl OpaqueString {
+    /// Returns the underlying string, consuming the wrapper.
+    #[must_use]
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
 
 impl Deref for OpaqueString {
     type Target = str;
