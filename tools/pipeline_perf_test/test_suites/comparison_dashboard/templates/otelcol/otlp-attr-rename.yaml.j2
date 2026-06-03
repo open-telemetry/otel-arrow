@@ -33,6 +33,7 @@ exporters:
       num_consumers: {{ sending_queue_otlp_consumers | default(5) }}
       batch:
         enabled: {{ sending_queue_batch_enabled | default(false) }}
+        sizer: {{ sending_queue_sizer | default("requests") }}
 
 service:
   telemetry:

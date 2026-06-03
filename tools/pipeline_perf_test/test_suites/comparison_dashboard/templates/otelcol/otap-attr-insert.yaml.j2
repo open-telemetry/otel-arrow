@@ -35,6 +35,7 @@ exporters:
       num_consumers: {{ sending_queue_otap_consumers | default(100) }}
       batch:
         enabled: {{ sending_queue_batch_enabled | default(false) }}
+        sizer: {{ sending_queue_sizer | default("requests") }}
 
 service:
   telemetry:

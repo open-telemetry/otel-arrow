@@ -26,6 +26,8 @@ exporters:
       num_consumers: {{ sending_queue_otap_consumers | default(100) }}
       batch:
         enabled: {{ sending_queue_batch_enabled | default(false) }}
+        # batch.sizer set to work around upstream nil-deref when sending_queue.sizer is set and batch.enabled=false.
+        sizer: {{ sending_queue_sizer | default("requests") }}
 
 service:
   telemetry:
