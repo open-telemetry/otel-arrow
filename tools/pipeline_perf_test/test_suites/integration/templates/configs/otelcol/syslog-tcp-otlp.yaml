@@ -9,8 +9,15 @@ exporters:
     endpoint: '{{backend_hostname}}:1235'
     tls:
       insecure: true
+    # 100 standing requests, 5 at a time, asynchronous, no batching.
     sending_queue:
-      enabled: false
+      enabled: true
+      sizer: requests
+      queue_size: 100
+      num_consumers: 5
+      block_on_overflow: true
+      batch:
+        enabled: false
 
 service:
   telemetry:
