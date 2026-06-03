@@ -3,66 +3,66 @@
     "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-2 - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -1.2910797595977783
+    "value": -0.8047209978103638
   },
   {
     "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-2 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 99.87844528215194
+    "value": 99.91250799992596
   },
   {
     "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-2 - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.18387016229713
+    "value": 100.36631316281972
   },
   {
     "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-2 - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 90.01549479166667
+    "value": 75.431640625
   },
   {
     "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-2 - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 100.75
+    "value": 94.0390625
   },
   {
     "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-2 - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 57832.7326003487
+    "value": 63264.324422713886
   },
   {
     "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-2 - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 58084.077846865635
+    "value": 63220.01932735918
   },
   {
     "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-2 - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000533
+    "value": 60.005567
   },
   {
     "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-2 - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 53058786.242997915
+    "value": 57823477.18129137
   },
   {
     "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-2 - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 49503967.552810125
+    "value": 53878342.042866364
   },
   {
     "extra": "FB OTLP Attr Insert Multi Transform (Logs)/transform-2 - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 913.4824587020813
+    "value": 914.6387140737176
   }
 ]

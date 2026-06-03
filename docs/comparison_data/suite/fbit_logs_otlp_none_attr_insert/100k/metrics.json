@@ -9,60 +9,60 @@
     "extra": "FB OTLP Attr Insert (Logs)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 94.38158078604032
+    "value": 85.28855662244968
   },
   {
     "extra": "FB OTLP Attr Insert (Logs)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 95.25552647975077
+    "value": 86.67441424554826
   },
   {
     "extra": "FB OTLP Attr Insert (Logs)/100k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 71.25716145833333
+    "value": 75.811328125
   },
   {
     "extra": "FB OTLP Attr Insert (Logs)/100k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 83.0234375
+    "value": 85.71484375
   },
   {
     "extra": "FB OTLP Attr Insert (Logs)/100k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 99093.33295353154
+    "value": 99159.44554811147
   },
   {
     "extra": "FB OTLP Attr Insert (Logs)/100k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 100772.8809696931
+    "value": 100840.11411672353
   },
   {
     "extra": "FB OTLP Attr Insert (Logs)/100k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.001201
+    "value": 60.000518
   },
   {
     "extra": "FB OTLP Attr Insert (Logs)/100k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 37072082.936948486
+    "value": 37097376.25259392
   },
   {
     "extra": "FB OTLP Attr Insert (Logs)/100k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 36126883.71542896
+    "value": 36161121.33587727
   },
   {
     "extra": "FB OTLP Attr Insert (Logs)/100k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 367.8775736112746
+    "value": 367.88312446427125
   }
 ]

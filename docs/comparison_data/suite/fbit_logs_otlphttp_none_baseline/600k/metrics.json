@@ -3,66 +3,66 @@
     "extra": "FB OTLP/HTTP Baseline (Logs, None)/600k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 96.68939208984375
+    "value": 98.97673797607422
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, None)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 99.96440510572998
+    "value": 100.08611310316266
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, None)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.3244962531224
+    "value": 100.40780000000001
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, None)/600k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 6740.514583333334
+    "value": 8156.078645833333
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, None)/600k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 12377.77734375
+    "value": 15037.4609375
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, None)/600k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 463193.16580973356
+    "value": 544394.5068101886
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, None)/600k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 15308.45796662129
+    "value": 5561.05576085824
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, None)/600k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000574
+    "value": 60.000553
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, None)/600k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 5351598.931238326
+    "value": 2182799.8914854084
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, None)/600k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 140755672.4672355
+    "value": 166769611.7914371
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, None)/600k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 349.58445474436445
+    "value": 392.51537574018784
   }
 ]

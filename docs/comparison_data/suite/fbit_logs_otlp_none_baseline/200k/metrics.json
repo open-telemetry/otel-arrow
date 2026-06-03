@@ -3,43 +3,43 @@
     "extra": "FB OTLP Baseline (Logs, None)/200k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": -1.6949152946472168
+    "value": -2.538461685180664
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 95.61735667640625
+    "value": 86.40390786972574
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/200k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 96.43523057748234
+    "value": 87.41809107922644
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/200k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 127.56184895833333
+    "value": 125.37239583333333
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/200k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 144.91015625
+    "value": 136.8984375
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/200k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 200148.25218503375
+    "value": 198484.1443570771
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/200k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 201803.7522077961
+    "value": 201789.72024261393
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/200k - Test Duration",
@@ -51,18 +51,18 @@
     "extra": "FB OTLP Baseline (Logs, None)/200k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 67570260.23246077
+    "value": 67261458.65724732
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/200k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 71826681.2762255
+    "value": 72136961.2756364
   },
   {
     "extra": "FB OTLP Baseline (Logs, None)/200k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 334.83153555482005
+    "value": 333.324505214528
   }
 ]

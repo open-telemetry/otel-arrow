@@ -9,60 +9,60 @@
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 65.72760779006094
+    "value": 55.139192977021686
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 66.70197136335338
+    "value": 55.96104868913858
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 101.40677083333334
+    "value": 74.99895833333333
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 106.890625
+    "value": 82.29296875
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 98907.93071449161
+    "value": 99232.46714097656
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 100754.46792749353
+    "value": 101085.37728246991
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000522
+    "value": 60.000475
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 1786634.6029605004
+    "value": 1775897.029731329
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 35825180.445766434
+    "value": 35810512.13682435
   },
   {
     "extra": "FB OTLP/HTTP Baseline (Logs, Gzip)/100k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": 17.73255955503855
+    "value": 17.568288089471302
   }
 ]
