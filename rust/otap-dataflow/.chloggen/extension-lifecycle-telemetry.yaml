@@ -1,7 +1,7 @@
 # Use this changelog template to create an entry for release notes.
 
 # One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
-change_type: enhancement
+change_type: breaking
 
 # The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
 # Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
@@ -24,3 +24,11 @@ subtext: |
   extension variants are each registered as distinct telemetry entities and
   driven by a dedicated ExtensionMetricsMonitor that owns its own collection
   interval and shutdown fan-out per scope.
+
+  Breaking changes to the public API of `otap-df-engine`:
+  - `ExtensionFactory::create` no longer receives `PipelineContext`; it now
+    receives `ExtensionContext`. Out-of-tree extensions need to be updated.
+  - `PipelineContext::register_channel_entity` and `channel_attribute_set`
+    are renamed to `register_node_channel_entity` and
+    `node_channel_attribute_set`. The `ChannelAttributeSet` struct is split
+    into `NodeChannelAttributeSet` and `ExtensionChannelAttributeSet`.
