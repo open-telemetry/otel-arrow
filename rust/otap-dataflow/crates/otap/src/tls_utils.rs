@@ -405,7 +405,7 @@ where
                             Ok(Ok(stream)) => Some(Ok::<_, io::Error>(stream)),
                             Ok(Err(e)) => {
                                 // TLS handshake failed - log and continue
-                                otel_warn!("tls.handshake.failed", error = ?e, message = "TLS handshake failed");
+                                otel_warn!("tls_handshake_failed", error = ?e, message = "TLS handshake failed");
                                 None
                             }
                             Err(_) => {
