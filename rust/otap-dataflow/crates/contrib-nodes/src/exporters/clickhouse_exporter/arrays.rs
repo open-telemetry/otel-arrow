@@ -834,9 +834,9 @@ mod tests {
         use arrow::array::FixedSizeBinaryBuilder;
 
         let mut builder = FixedSizeBinaryBuilder::with_capacity(3, 4);
-        builder.append_value(&[1u8, 2, 3, 4]).unwrap();
+        builder.append_value([1u8, 2, 3, 4]).unwrap();
         builder.append_null();
-        builder.append_value(&[5u8, 6, 7, 8]).unwrap();
+        builder.append_value([5u8, 6, 7, 8]).unwrap();
         let arr = builder.finish();
         assert_eq!(arr.value_at(0), Some(vec![1, 2, 3, 4]));
         assert_eq!(arr.value_at(1), None);
@@ -962,8 +962,8 @@ mod tests {
     fn get_bool_array_success() {
         let rb = sample_record_batch();
         let arr = get_bool_array(&rb, "bools").unwrap();
-        assert_eq!(arr.value(0), true);
-        assert_eq!(arr.value(1), false);
+        assert!(arr.value(0));
+        assert!(!arr.value(1));
     }
 
     #[test]
@@ -1182,9 +1182,9 @@ mod tests {
         use arrow::array::FixedSizeBinaryBuilder;
 
         let mut builder = FixedSizeBinaryBuilder::with_capacity(3, 2);
-        builder.append_value(&[1u8, 2]).unwrap();
+        builder.append_value([1u8, 2]).unwrap();
         builder.append_null();
-        builder.append_value(&[3u8, 4]).unwrap();
+        builder.append_value([3u8, 4]).unwrap();
         let arr: ArrayRef = Arc::new(builder.finish());
         let accessor = ByteArrayAccessor::try_new(&arr).unwrap();
         assert_eq!(accessor.value_at(0), Some(vec![1, 2]));
@@ -1224,8 +1224,8 @@ mod tests {
 
         // Build a FixedSizeBinaryArray with 2-byte values as the dictionary values
         let mut fsb_builder = FixedSizeBinaryBuilder::with_capacity(2, 2);
-        fsb_builder.append_value(&[0xAA, 0xBB]).unwrap();
-        fsb_builder.append_value(&[0xCC, 0xDD]).unwrap();
+        fsb_builder.append_value([0xAA, 0xBB]).unwrap();
+        fsb_builder.append_value([0xCC, 0xDD]).unwrap();
         let values = fsb_builder.finish();
 
         // Keys: row 0 -> value 0, row 1 -> value 1, row 2 -> value 0 (repeat)
@@ -1407,8 +1407,8 @@ mod tests {
         let sa = test_struct_array();
         let acc = StructColumnAccessor::new(&sa);
         let col = acc.bool_column_op("flag").unwrap().unwrap();
-        assert_eq!(col.value(0), true);
-        assert_eq!(col.value(1), false);
+        assert!(col.value(0));
+        assert!(!col.value(1));
     }
 
     #[test]
@@ -1572,9 +1572,9 @@ mod tests {
 
     #[test]
     fn nullable_f64_direct() {
-        let arr = Float64Array::from(vec![Some(3.14), None]);
+        let arr = Float64Array::from(vec![Some(2.5), None]);
         let r: &Float64Array = &arr;
-        assert_eq!(r.f64_at(0).unwrap(), Some(3.14));
+        assert_eq!(r.f64_at(0).unwrap(), Some(2.5));
         assert_eq!(r.f64_at(1).unwrap(), None);
     }
 

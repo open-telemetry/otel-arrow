@@ -270,7 +270,7 @@ mod tests {
         }
         assert_eq!(stat_map.get(&ArrowPayloadType::Logs), Some(&5));
         assert_eq!(stat_map.get(&ArrowPayloadType::Spans), Some(&2));
-        assert!(stat_map.get(&ArrowPayloadType::ResourceAttrs).is_none());
+        assert!(!stat_map.contains_key(&ArrowPayloadType::ResourceAttrs));
     }
 
     #[tokio::test]

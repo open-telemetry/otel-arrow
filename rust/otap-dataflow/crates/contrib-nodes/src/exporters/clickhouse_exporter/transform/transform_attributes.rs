@@ -36,8 +36,98 @@ use crate::exporters::clickhouse_exporter::arrays::{
 use crate::exporters::clickhouse_exporter::error::ClickhouseExporterError;
 use crate::exporters::clickhouse_exporter::transform::transform_column::append_cbor_as_json;
 
-/// Iterate through the ID column and group rows by the parent ID (so we can convert to a map representation).
-pub(crate) fn group_rows_by_id(ids: &UInt16Array) -> HashMap<u16, Vec<u16>> {
+/// The set of row indices belonging to a single parent-id group.
+///
+/// The fast path produces a contiguous [`RowRun::Range`] (no per-group allocation); the unsorted
+/// fallback produces an explicit [`RowRun::Indices`] list. Both iterate as `usize` row indices via
+/// [`RowRun::iter`].
+pub(crate) enum RowRun {
+    /// Contiguous `start..end` range of row indices (sorted/grouped fast path).
+    Range(std::ops::Range<usize>),
+    /// Explicit list of row indices (unsorted fallback).
+    Indices(Vec<u16>),
+}
+
+impl RowRun {
+    pub(crate) fn iter(&self) -> RowRunIter<'_> {
+        match self {
+            RowRun::Range(r) => RowRunIter::Range(r.clone()),
+            RowRun::Indices(v) => RowRunIter::Indices(v.iter()),
+        }
+    }
+}
+
+pub(crate) enum RowRunIter<'a> {
+    Range(std::ops::Range<usize>),
+    Indices(std::slice::Iter<'a, u16>),
+}
+
+impl Iterator for RowRunIter<'_> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        match self {
+            RowRunIter::Range(r) => r.next(),
+            RowRunIter::Indices(it) => it.next().map(|&x| x as usize),
+        }
+    }
+}
+
+/// Group row indices by their parent ID (so we can convert to a map representation).
+///
+/// OTAP attribute rows arrive sorted ascending by `parent_id`, so equal ids are contiguous. The
+/// fast path is a single linear pass that emits `(id, start..end)` runs — no hashing and no
+/// per-group `Vec` allocations, with deterministic ordering. If the "sorted & contiguous" invariant
+/// is violated (a previously-seen id reappears, or ids are out of order — e.g. when nulls split a
+/// group), it falls back to the order-independent `HashMap` grouping.
+pub(crate) fn group_rows_by_id(ids: &UInt16Array) -> Vec<(u16, RowRun)> {
+    let len = ids.len();
+    let mut runs: Vec<(u16, RowRun)> = Vec::new();
+    // Start index of the run currently being accumulated.
+    let mut cur: Option<(u16, usize)> = None;
+    // Largest id finalized into a run so far; ids must strictly increase across runs.
+    let mut max_finalized: Option<u16> = None;
+
+    for i in 0..len {
+        if ids.is_null(i) {
+            // A null splits any in-progress contiguous run.
+            if let Some((id, start)) = cur.take() {
+                runs.push((id, RowRun::Range(start..i)));
+                max_finalized = Some(id);
+            }
+            continue;
+        }
+
+        let id = ids.value(i);
+        match cur {
+            Some((cur_id, _)) if cur_id == id => {} // extend current run
+            Some((cur_id, start)) => {
+                runs.push((cur_id, RowRun::Range(start..i)));
+                max_finalized = Some(cur_id);
+                if max_finalized.is_some_and(|m| id <= m) {
+                    return group_rows_by_id_unsorted(ids);
+                }
+                cur = Some((id, i));
+            }
+            None => {
+                if max_finalized.is_some_and(|m| id <= m) {
+                    // id resumed after a null-split run, or is otherwise out of order.
+                    return group_rows_by_id_unsorted(ids);
+                }
+                cur = Some((id, i));
+            }
+        }
+    }
+
+    if let Some((id, start)) = cur.take() {
+        runs.push((id, RowRun::Range(start..len)));
+    }
+
+    runs
+}
+
+/// Order-independent fallback grouping for the rare case where parent ids are not sorted/contiguous.
+fn group_rows_by_id_unsorted(ids: &UInt16Array) -> Vec<(u16, RowRun)> {
     let mut groups: HashMap<u16, Vec<u16>> = HashMap::with_capacity(ids.len() / 4);
 
     for i in 0..ids.len() {
@@ -49,6 +139,9 @@ pub(crate) fn group_rows_by_id(ids: &UInt16Array) -> HashMap<u16, Vec<u16>> {
     }
 
     groups
+        .into_iter()
+        .map(|(id, rows)| (id, RowRun::Indices(rows)))
+        .collect()
 }
 
 fn parent_ids_as_u16(batch: &RecordBatch) -> Result<Option<UInt16Array>, ClickhouseExporterError> {
@@ -95,14 +188,31 @@ pub(crate) fn group_attributes_to_map_str(
     let types = get_u8_array(batch, consts::ATTRIBUTE_TYPE)?;
     let key_accessor = StringArrayAccessor::try_new_for_column(batch, consts::ATTRIBUTE_KEY)?;
 
+    // Build all value accessors once up front rather than per row. The accessors borrow the batch
+    // columns, so they are valid for the whole grouping loop below.
+    let str_accessor = match get_array_op(batch, consts::ATTRIBUTE_STR) {
+        Some(col) => Some(StringArrayAccessor::try_new(col)?),
+        None => None,
+    };
+    let int_accessor = match get_array_op(batch, consts::ATTRIBUTE_INT) {
+        Some(col) => Some(Int64ArrayAccessor::try_new(col)?),
+        None => None,
+    };
+    let double_col = get_f64_array_opt(batch, consts::ATTRIBUTE_DOUBLE)?;
+    let bool_col = get_bool_array_opt(batch, consts::ATTRIBUTE_BOOL)?;
+    let bytes_col = get_binary_array_opt(batch, consts::ATTRIBUTE_BYTES)?;
+    let ser_accessor = match get_array_op(batch, consts::ATTRIBUTE_SER) {
+        Some(col) => Some(ByteArrayAccessor::try_new(col)?),
+        None => None,
+    };
+
     let keys_builder = StringBuilder::new();
     let values_builder = StringBuilder::new();
     let mut map_builder = MapBuilder::new(None, keys_builder, values_builder);
     let mut id_builder = UInt32Builder::with_capacity(groups.len());
 
     for (id, rows) in groups {
-        for row_u16 in rows {
-            let row = row_u16 as usize;
+        for row in rows.iter() {
             let Some(key) = key_accessor.str_at(row) else {
                 // No key, skip it
                 continue;
@@ -117,13 +227,7 @@ pub(crate) fn group_attributes_to_map_str(
                 }
 
                 t if t == AttributeValueType::Str as u8 => {
-                    if let Some(col) = get_array_op(batch, consts::ATTRIBUTE_STR) {
-                        // TODO: [Optimization] per @a.lockett:
-                        // Rather than pulling out the columnand creating a new StringArrayAccessor for each element, it might be faster to create all the accessors up front.
-                        // We have a type that can be used for this in otel-arrow, but unfortunately it's not public 😠 !
-                        // For now, you could maybe copy it into arrays.rs, and we'll add exposing this to the list of improvements that can be made to the OSS crate
-                        // https://github.com/open-telemetry/otel-arrow/blob/cbc03d838832e2dedba932c899b95cdf95b07594/rust/otap-dataflow/crates/pdata/src/otlp/common.rs#L283-L296
-                        let str_accessor = StringArrayAccessor::try_new(col)?;
+                    if let Some(str_accessor) = &str_accessor {
                         if let Some(v) = str_accessor.str_at(row) {
                             map_builder.values().append_value(v);
                             continue;
@@ -133,8 +237,7 @@ pub(crate) fn group_attributes_to_map_str(
                 }
 
                 t if t == AttributeValueType::Int as u8 => {
-                    if let Some(col) = get_array_op(batch, consts::ATTRIBUTE_INT) {
-                        let int_accessor = Int64ArrayAccessor::try_new(col)?;
+                    if let Some(int_accessor) = &int_accessor {
                         if let Some(v) = int_accessor.value_at(row) {
                             let mut itoa_buf = itoa::Buffer::new();
                             map_builder.values().append_value(itoa_buf.format(v));
@@ -145,7 +248,7 @@ pub(crate) fn group_attributes_to_map_str(
                 }
 
                 t if t == AttributeValueType::Double as u8 => {
-                    if let Some(col) = get_f64_array_opt(batch, consts::ATTRIBUTE_DOUBLE)? {
+                    if let Some(col) = double_col {
                         if !col.is_null(row) {
                             let mut r_buf = ryu::Buffer::new();
                             map_builder
@@ -158,7 +261,7 @@ pub(crate) fn group_attributes_to_map_str(
                 }
 
                 t if t == AttributeValueType::Bool as u8 => {
-                    if let Some(col) = get_bool_array_opt(batch, consts::ATTRIBUTE_BOOL)? {
+                    if let Some(col) = bool_col {
                         if !col.is_null(row) {
                             if col.value(row) {
                                 map_builder.values().append_value("true");
@@ -173,7 +276,7 @@ pub(crate) fn group_attributes_to_map_str(
                 }
 
                 t if t == AttributeValueType::Bytes as u8 => {
-                    if let Some(col) = get_binary_array_opt(batch, consts::ATTRIBUTE_BYTES)? {
+                    if let Some(col) = bytes_col {
                         if !col.is_null(row) {
                             let bytes = col.value(row);
                             let v = base64::engine::general_purpose::STANDARD.encode(bytes);
@@ -185,8 +288,7 @@ pub(crate) fn group_attributes_to_map_str(
                 }
 
                 t if t == AttributeValueType::Map as u8 || t == AttributeValueType::Slice as u8 => {
-                    if let Some(col) = get_array_op(batch, consts::ATTRIBUTE_SER) {
-                        let byte_accessor = ByteArrayAccessor::try_new(col)?;
+                    if let Some(byte_accessor) = &ser_accessor {
                         if let Some(v) = byte_accessor.slice_at(row) {
                             let mut buf = Vec::with_capacity(v.len() * 2);
                             if append_cbor_as_json(&mut buf, v).is_ok() {
