@@ -889,6 +889,65 @@ mod apply_column_ops_tests {
         assert_eq!(attrs.len(), 2);
     }
 
+    /// Regression: when an attribute group's child payload is absent (e.g. every scope had empty
+    /// attributes), the foreign-key id column (`scope_id`) must be DROPPED, not leaked into the
+    /// output — otherwise the bind-by-name INSERT references a column the table lacks and
+    /// ClickHouse rejects it with NO_SUCH_COLUMN_IN_TABLE.
+    #[test]
+    fn apply_column_ops_drops_id_column_when_child_attr_payload_missing() {
+        let payload_type = ArrowPayloadType::Logs;
+
+        let mut columns: HashMap<String, ArrayRef> = HashMap::new();
+        columns.insert(
+            ch_consts::SCOPE_ID.into(),
+            Arc::new(UInt16Array::from(vec![10u16, 11u16])),
+        );
+        // A surviving column so the recreated batch is non-empty.
+        columns.insert(
+            ch_consts::CH_TIMESTAMP.into(),
+            Arc::new(UInt32Array::from(vec![1u32, 2u32])),
+        );
+
+        let result = MultiColumnOpResult {
+            columns,
+            remapped_ids: None,
+        };
+
+        // Note: NO ScopeAttrs entry in `multi` => the child payload is missing.
+        let mut multi: HashMap<ArrowPayloadType, MultiColumnOpResult> = HashMap::new();
+        multi.insert(payload_type, result);
+
+        let ops = col_ops(vec![
+            (
+                ch_consts::SCOPE_ID,
+                vec![ColumnTransformOp::InlineAttribute(
+                    ArrowPayloadType::ScopeAttrs,
+                )],
+            ),
+            (ch_consts::CH_TIMESTAMP, vec![ColumnTransformOp::NoOp]),
+        ]);
+
+        let out = apply_column_ops(&mut multi, payload_type, &ops, true)
+            .unwrap()
+            .expect("batch should be produced");
+
+        let schema = out.schema();
+        let names: Vec<&str> = schema
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect();
+        assert!(
+            !names.contains(&ch_consts::SCOPE_ID),
+            "scope_id must be dropped when ScopeAttrs payload is absent, got {names:?}"
+        );
+        assert!(
+            !names.contains(&ch_consts::CH_SCOPE_ATTRIBUTES),
+            "no ScopeAttributes column should be emitted when the payload is absent (server defaults it)"
+        );
+        assert!(names.contains(&ch_consts::CH_TIMESTAMP));
+    }
+
     #[test]
     fn apply_column_ops_inlines_resource_and_scope_attributes_for_logs_parent_batch() {
         let payload_type = ArrowPayloadType::Logs;
