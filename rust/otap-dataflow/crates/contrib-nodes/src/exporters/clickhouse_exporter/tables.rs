@@ -124,22 +124,30 @@ impl CHTableBuilder {
         Ok(format!("{}\n;", clauses.join("\n")))
     }
 
-    /// Validate the user-supplied inputs to the table construction for basic SQL validity/safety
+    /// Validate the user-supplied inputs to the table construction for basic SQL validity/safety.
+    ///
+    /// Database/table/engine NAMES are strict identifiers (`validate_identifier`). The `ttl` and
+    /// `engine_params` clauses are richer expressions, so they get purpose-built validators that
+    /// permit their legitimate syntax (spaces, interval units, replicated-engine macros) while
+    /// still rejecting statement terminators and comment sequences.
     pub fn validate(self) -> Result<(), ClickhouseExporterError> {
         validate_identifier(&self.database, "database")?;
         validate_identifier(&self.table, "table")?;
         validate_identifier(&self.engine, "engine")?;
-        if self.engine_params.is_some() {
-            validate_identifier(&self.engine_params.unwrap_or_default(), "engine_params")?;
+        if let Some(params) = &self.engine_params {
+            validate_engine_params(params)?;
         }
-        if self.ttl.is_some() {
-            validate_identifier(&self.ttl.unwrap_or_default(), "ttl")?;
+        if let Some(ttl) = &self.ttl {
+            validate_ttl(ttl)?;
         }
         Ok(())
     }
 }
 
 /// Validate user supplied identifiers for basic sql validity.
+///
+/// Use for database/table/engine NAMES only. For `ttl`/`engine_params` use the dedicated
+/// validators ([`validate_ttl`]/[`validate_engine_params`]) which permit richer syntax.
 pub fn validate_identifier(name: &str, section: &str) -> Result<(), ClickhouseExporterError> {
     if name.is_empty() {
         return Err(ClickhouseExporterError::TableCreationError {
@@ -149,6 +157,81 @@ pub fn validate_identifier(name: &str, section: &str) -> Result<(), ClickhouseEx
     if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(ClickhouseExporterError::TableCreationError {
             error: format!("Invalid identifier: {}", name),
+        });
+    }
+    Ok(())
+}
+
+/// Reject SQL statement terminators and comment sequences that could enable injection when the
+/// value is interpolated directly into DDL.
+fn reject_injection(value: &str, section: &str) -> Result<(), ClickhouseExporterError> {
+    if value.contains(';') || value.contains("--") || value.contains("/*") || value.contains("*/") {
+        return Err(ClickhouseExporterError::TableCreationError {
+            error: format!("Unsafe sequence in {}: {}", section, value),
+        });
+    }
+    Ok(())
+}
+
+/// Time-unit keywords accepted in a TTL interval expression.
+const TTL_UNITS: [&str; 8] = [
+    "SECOND", "MINUTE", "HOUR", "DAY", "WEEK", "MONTH", "QUARTER", "YEAR",
+];
+
+/// Validate a TTL interval expression, e.g. `"72 HOUR"` or `"toIntervalDay(30)"`.
+///
+/// Permits digits, whitespace, a time-unit keyword, and an optional column/function reference,
+/// while rejecting statement terminators and comment sequences.
+fn validate_ttl(ttl: &str) -> Result<(), ClickhouseExporterError> {
+    let trimmed = ttl.trim();
+    if trimmed.is_empty() {
+        return Err(ClickhouseExporterError::TableCreationError {
+            error: "TTL cannot be empty".into(),
+        });
+    }
+    reject_injection(trimmed, "ttl")?;
+
+    // Allowed charset: identifiers/units, whitespace, digits, and the punctuation that appears in
+    // interval / column expressions.
+    if !trimmed.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || c.is_ascii_whitespace()
+            || matches!(c, '_' | '+' | '(' | ')' | '.')
+    }) {
+        return Err(ClickhouseExporterError::TableCreationError {
+            error: format!("Invalid TTL expression: {}", ttl),
+        });
+    }
+
+    // Must reference a recognised time unit so a bare/garbage value can't slip through.
+    let upper = trimmed.to_ascii_uppercase();
+    if !TTL_UNITS.iter().any(|unit| upper.contains(unit)) {
+        return Err(ClickhouseExporterError::TableCreationError {
+            error: format!("TTL must contain a time unit (e.g. HOUR, DAY): {}", ttl),
+        });
+    }
+    Ok(())
+}
+
+/// Punctuation permitted in `engine_params` in addition to alphanumerics — covers replicated-engine
+/// paths and macros, e.g. `"('/clickhouse/tables/{shard}/{db}/{table}', '{replica}')"`.
+const ENGINE_PARAM_PUNCT: &str = "/{}'(),. -_";
+
+/// Validate engine parameters, which are interpolated directly into DDL.
+///
+/// Permits a documented safe charset (alphanumerics plus [`ENGINE_PARAM_PUNCT`]) so replicated
+/// engines and ClickHouse macros work, while rejecting statement terminators and comment sequences.
+fn validate_engine_params(params: &str) -> Result<(), ClickhouseExporterError> {
+    if params.is_empty() {
+        return Ok(());
+    }
+    reject_injection(params, "engine_params")?;
+    if !params
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || ENGINE_PARAM_PUNCT.contains(c))
+    {
+        return Err(ClickhouseExporterError::TableCreationError {
+            error: format!("Invalid engine_params: {}", params),
         });
     }
     Ok(())
@@ -168,7 +251,8 @@ struct FinalTableConfig {
 fn finalize_table_config(t: &TableConfig, d: &DefaultTableConfig) -> FinalTableConfig {
     FinalTableConfig {
         name: t.name.clone(),
-        ttl: t.ttl.clone(),
+        // Fall back to the global `ttl_interval` default when a table has no explicit `ttl`.
+        ttl: t.ttl.clone().or(d.ttl_interval.clone()),
         engine: t.engine.clone().unwrap_or(d.engine.clone()),
         create_schema: t.create_schema.unwrap_or(d.create_schema),
     }
@@ -212,7 +296,7 @@ fn build_table_sql(
     };
     let maybe_sql = match entry.kind {
         TableKind::Logs => {
-            // Column order matches Go OTel Collector ClickHouse exporter logs schema
+            // Logs table columns
             builder.columns.extend_from_slice(&[
                 schema::TIMESTAMP_COLUMN.clone(),
                 schema::TRACE_ID_COLUMN.clone(),
@@ -250,7 +334,6 @@ fn build_table_sql(
             builder.indexes.push(schema::IDX_LOG_ATTR_VALUE);
             builder.indexes.push(schema::IDX_LOWER_BODY);
 
-            // Table properties matching Go exporter
             builder.order_by.extend(vec![
                 format!("toStartOfFiveMinutes({})", ch_consts::CH_TIMESTAMP),
                 ch_consts::CH_SERVICE_NAME.into(),
@@ -266,7 +349,7 @@ fn build_table_sql(
             Some(builder.build()?)
         }
         TableKind::Traces => {
-            // Column order matches Go OTel Collector ClickHouse exporter traces schema
+            // Traces table columns
             builder.columns.extend_from_slice(&[
                 schema::TIMESTAMP_COLUMN.clone(),
                 schema::TRACE_ID_COLUMN.clone(),
@@ -284,7 +367,7 @@ fn build_table_sql(
                 schema::SCOPE_NAME_COLUMN.clone(),
                 schema::SCOPE_VERSION_COLUMN.clone(),
             ]);
-            // No ScopeAttributes for traces (matches Go exporter)
+            // Traces have no ScopeAttributes column
             builder
                 .columns
                 .push(schema::INLINE_SPAN_ATTR_COLUMN.clone());
@@ -322,7 +405,6 @@ fn build_table_sql(
             builder.indexes.push(schema::IDX_SPAN_ATTR_VALUE);
             builder.indexes.push(schema::IDX_DURATION);
 
-            // Table properties matching Go exporter
             builder.order_by.extend(vec![
                 ch_consts::CH_SERVICE_NAME.into(),
                 ch_consts::CH_SPAN_NAME.into(),
@@ -360,7 +442,7 @@ pub async fn init_table(
     Ok(())
 }
 
-/// Default SETTINGS matching the Go OTel Collector ClickHouse exporter.
+/// Default table SETTINGS.
 fn default_table_settings() -> Vec<(String, String)> {
     vec![
         ("index_granularity".into(), "8192".into()),
@@ -678,5 +760,150 @@ mod tests {
             ..Default::default()
         };
         assert!(builder.validate().is_err());
+    }
+
+    // --- Bug 1: global ttl_interval is honored ---
+
+    #[test]
+    fn test_global_ttl_interval_applied_to_ddl() {
+        // No per-table `ttl`, but a global `ttl_interval` default — it should appear in the DDL.
+        let json = serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "foo",
+            "password": "bar",
+            "table_defaults": { "ttl_interval": "48 HOUR" },
+        });
+        let patch: ConfigPatch = serde_json::from_value(json).unwrap();
+        let config = Config::from_patch(patch);
+        let entry = TableEntry {
+            kind: TableKind::Logs,
+            config: &config.tables.logs,
+        };
+        let sql = build_table_sql(&entry, &config).unwrap().unwrap();
+        assert!(
+            sql.contains("TTL Timestamp + INTERVAL 48 HOUR"),
+            "global ttl_interval should appear in DDL, got:\n{sql}"
+        );
+    }
+
+    #[test]
+    fn test_per_table_ttl_overrides_global_interval() {
+        // An explicit per-table `ttl` wins over the global `ttl_interval`.
+        let json = serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "foo",
+            "password": "bar",
+            "table_defaults": { "ttl_interval": "48 HOUR" },
+            "tables": { "logs": { "ttl": "12 HOUR" } },
+        });
+        let patch: ConfigPatch = serde_json::from_value(json).unwrap();
+        let config = Config::from_patch(patch);
+        let entry = TableEntry {
+            kind: TableKind::Logs,
+            config: &config.tables.logs,
+        };
+        let sql = build_table_sql(&entry, &config).unwrap().unwrap();
+        assert!(sql.contains("TTL Timestamp + INTERVAL 12 HOUR"), "{sql}");
+        assert!(!sql.contains("48 HOUR"), "{sql}");
+    }
+
+    // --- Bug 2: ttl / engine_params validation ---
+
+    #[test]
+    fn test_validate_ttl_accepts_interval_with_space() {
+        let builder = CHTableBuilder {
+            database: "otap".into(),
+            table: "otel_logs".into(),
+            engine: "MergeTree".into(),
+            ttl: Some("72 HOUR".into()),
+            timestamp_field: "Timestamp".into(),
+            ..Default::default()
+        };
+        assert!(
+            builder.clone().validate().is_ok(),
+            "'72 HOUR' should pass validation"
+        );
+        let sql = builder.build().unwrap();
+        assert!(sql.contains("TTL Timestamp + INTERVAL 72 HOUR"), "{sql}");
+    }
+
+    #[test]
+    fn test_validate_ttl_rejects_injection() {
+        for bad in [
+            "72 HOUR; DROP TABLE x",
+            "72 HOUR -- comment",
+            "1 DAY /* x */",
+        ] {
+            let builder = CHTableBuilder {
+                database: "otap".into(),
+                table: "otel_logs".into(),
+                engine: "MergeTree".into(),
+                ttl: Some(bad.into()),
+                ..Default::default()
+            };
+            assert!(
+                builder.validate().is_err(),
+                "ttl '{bad}' should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_ttl_rejects_missing_unit() {
+        let builder = CHTableBuilder {
+            database: "otap".into(),
+            table: "otel_logs".into(),
+            engine: "MergeTree".into(),
+            ttl: Some("72".into()),
+            ..Default::default()
+        };
+        assert!(
+            builder.validate().is_err(),
+            "ttl without a unit should fail"
+        );
+    }
+
+    #[test]
+    fn test_validate_engine_params_accepts_replicated() {
+        let params = "('/clickhouse/tables/{shard}/{db}/{table}', '{replica}')";
+        let builder = CHTableBuilder {
+            database: "otap".into(),
+            table: "otel_logs".into(),
+            engine: "ReplicatedMergeTree".into(),
+            engine_params: Some(params.into()),
+            ..Default::default()
+        };
+        assert!(
+            builder.clone().validate().is_ok(),
+            "replicated-engine params should pass validation"
+        );
+        let sql = builder.build().unwrap();
+        assert!(
+            sql.contains(params),
+            "engine params should appear in DDL:\n{sql}"
+        );
+    }
+
+    #[test]
+    fn test_validate_engine_params_rejects_injection() {
+        for bad in [
+            "('/path'); DROP TABLE x --",
+            "('{shard}') -- comment",
+            "('{shard}') /* x */",
+        ] {
+            let builder = CHTableBuilder {
+                database: "otap".into(),
+                table: "otel_logs".into(),
+                engine: "ReplicatedMergeTree".into(),
+                engine_params: Some(bad.into()),
+                ..Default::default()
+            };
+            assert!(
+                builder.validate().is_err(),
+                "engine_params '{bad}' should be rejected"
+            );
+        }
     }
 }

@@ -164,11 +164,8 @@ impl BatchTransformer {
     ) -> Result<HashMap<ArrowPayloadType, RecordBatch>, ClickhouseExporterError> {
         let mut writable_batches: HashMap<ArrowPayloadType, RecordBatch> = HashMap::new();
         let mut multi_col_results: HashMap<ArrowPayloadType, MultiColumnOpResult> = HashMap::new();
-        let mut payload_order: Vec<ArrowPayloadType> = arrow_records
-            .allowed_payload_types()
-            .iter()
-            .copied()
-            .collect();
+        let mut payload_order: Vec<ArrowPayloadType> =
+            arrow_records.allowed_payload_types().to_vec();
 
         payload_order.sort_by_key(|pt| match pt {
             // In the single-column stage, `apply_column_ops` removes each payload's entry
@@ -378,13 +375,18 @@ fn build_list_arrays(
         })
         .collect();
 
-    // TODO: [Optimization] per @a.lockett:
-    // As a future optimization, if we know the target arrays are already in order as the list array,
-    // we could probably significantly improve how quickly these can be constructed.
-    // Much more detail: https://gitlab.com/f5/observabilityhub/o11y-gateway/observability-gateway/-/merge_requests/90#note_3083164311
+    // TODO(optimization): when the target arrays are already in list-array order, these could be
+    // constructed significantly faster.
+    //
+    // The precondition for that optimization is now met: `group_rows_by_id` emits contiguous
+    // `(id, start..end)` runs on the sorted fast path, so each group's elements are the slice
+    // `values[start..end]` and could be built with `arrow::compute` `take`/slice instead of
+    // `append_list_value` per element. It is still avoided here because a byte-identical rewrite
+    // must replicate that helper's full per-type matrix (Utf8, Dict<Utf8>/Dict<FSB>, Timestamp,
+    // FixedSizeBinary, UInt32, and the nested `Map<Utf8,Utf8>` for `Array(Map)`) with
+    // element-level null preservation.
     for (i, (id, rows)) in groups.into_iter().enumerate() {
-        for row_u16 in rows {
-            let row = row_u16 as usize;
+        for row in rows.iter() {
             // Append values for each column
             for (name, target) in targets {
                 let builder = builders.get_mut(name).expect("builder must exist");
@@ -583,8 +585,8 @@ fn apply_column_ops(
         return Ok(None);
     }
 
-    // Snapshot of starting names.
-    let original_names: Vec<String> = these_results.columns.keys().cloned().collect();
+    // Snapshot of starting names. A set so the second pass can test membership in O(1).
+    let original_names: HashSet<String> = these_results.columns.keys().cloned().collect();
 
     {
         // Make a context for op application.
@@ -616,15 +618,24 @@ fn apply_column_ops(
         // Second pass: process ops for columns created during the first pass (for example,
         // flattened struct fields or columns produced by InlineAttribute / EnumToString).
         // We iterate until no new planned columns appear so chained synthetic-column ops run.
-        let mut processed_second_pass: HashSet<String> = HashSet::new();
+        //
+        // The set of "synthetic" candidates (ops planned for columns that were not in the original
+        // batch) is fixed up front, so each loop iteration only re-checks which candidates have
+        // since appeared in `ctx` and have not yet been processed — no full rescan of `column_ops`
+        // and no per-iteration cloning of the op vectors.
+        let synthetic_candidates: Vec<(&String, &Vec<ColumnTransformOp>)> = ops
+            .column_ops
+            .iter()
+            .filter(|(col_name, _)| !original_names.contains(col_name.as_str()))
+            .collect();
+
+        let mut processed_second_pass: HashSet<&str> = HashSet::new();
         loop {
-            let pending: Vec<(String, Vec<ColumnTransformOp>)> = ops
-                .column_ops
+            let pending: Vec<(&String, &Vec<ColumnTransformOp>)> = synthetic_candidates
                 .iter()
-                .filter(|(col_name, _)| !original_names.contains(*col_name))
+                .copied()
                 .filter(|(col_name, _)| ctx.contains(col_name))
-                .filter(|(col_name, _)| !processed_second_pass.contains(*col_name))
-                .map(|(col_name, col_ops)| (col_name.clone(), col_ops.clone()))
+                .filter(|(col_name, _)| !processed_second_pass.contains(col_name.as_str()))
                 .collect();
 
             if pending.is_empty() {
@@ -632,9 +643,9 @@ fn apply_column_ops(
             }
 
             for (col_name, col_ops) in pending {
-                _ = processed_second_pass.insert(col_name.clone());
-                let mut current_name = col_name;
-                for op in &col_ops {
+                _ = processed_second_pass.insert(col_name.as_str());
+                let mut current_name = col_name.clone();
+                for op in col_ops {
                     if let ControlFlow::Break(()) = apply_one_op(&mut ctx, &mut current_name, op)? {
                         break;
                     }
@@ -827,7 +838,7 @@ mod apply_column_ops_tests {
         multi.insert(ArrowPayloadType::ResourceAttrs, child_result);
 
         let ops = col_ops(vec![(
-            ch_consts::RESOURCE_ID.into(),
+            ch_consts::RESOURCE_ID,
             vec![ColumnTransformOp::InlineAttribute(
                 ArrowPayloadType::ResourceAttrs,
             )],
@@ -916,13 +927,13 @@ mod apply_column_ops_tests {
 
         let ops = col_ops(vec![
             (
-                ch_consts::RESOURCE_ID.into(),
+                ch_consts::RESOURCE_ID,
                 vec![ColumnTransformOp::InlineAttribute(
                     ArrowPayloadType::ResourceAttrs,
                 )],
             ),
             (
-                ch_consts::SCOPE_ID.into(),
+                ch_consts::SCOPE_ID,
                 vec![ColumnTransformOp::InlineAttribute(
                     ArrowPayloadType::ScopeAttrs,
                 )],
@@ -1680,6 +1691,450 @@ mod realistic_otap_tests {
             assert!(
                 !names.iter().any(|name| name == unwanted),
                 "intermediate column {unwanted} must not appear in the final spans batch"
+            );
+        }
+    }
+
+    // =======================================================================
+    // Live insert validation against a running ClickHouse.
+    //
+    // These tests are `#[ignore]`d so they never run in normal CI; they require
+    // a live ClickHouse reachable over HTTP. Start one and run them with:
+    //
+    //   docker run -d --name ch-otel -p 8123:8123 -p 9000:9000 \
+    //     -e CLICKHOUSE_PASSWORD=test clickhouse/clickhouse-server
+    //
+    //   CLICKHOUSE_URL=http://localhost:8123 cargo test -p otap-df-contrib-nodes \
+    //     --features clickhouse-exporter,otap-df-otap/crypto-ring -- --ignored e2e
+    //
+    // They prove the one thing reading code cannot: that each Arrow column type
+    // the exporter emits coerces into the corresponding ClickHouse column type
+    // over `FORMAT ArrowStream`. We drive the real fixtures through
+    // `BatchTransformer::apply_plan` → `ClickHouseWriter::write_batches` against
+    // the Go-exporter-shaped tables, then read every row back and assert the
+    // values round-tripped. A type that does not coerce surfaces as a failed
+    // INSERT (on `end()`); a value mismatch surfaces in the read-back asserts.
+    // =======================================================================
+    #[cfg(test)]
+    mod e2e_live {
+        use super::*;
+
+        use std::sync::Arc;
+
+        use arrow::array::RecordBatch;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use clickhouse_ext_arrow::ArrowClientExt;
+
+        use crate::exporters::clickhouse_exporter::config::Config;
+        use crate::exporters::clickhouse_exporter::metrics::ClickhouseExporterMetrics;
+        use crate::exporters::clickhouse_exporter::transform::transform_batch::BatchTransformer;
+        use crate::exporters::clickhouse_exporter::writer::{ClickHouseWriter, build_client};
+
+        /// Build an exporter `Config` aimed at the live ClickHouse for `database`.
+        ///
+        /// Honors `CLICKHOUSE_URL` / `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD`, defaulting to the
+        /// container started in the module docs. `async_insert` is disabled so reads are immediately
+        /// consistent (we don't want to race a server-side async-insert buffer in assertions).
+        fn e2e_config(database: &str) -> Config {
+            let endpoint =
+                std::env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://localhost:8123".into());
+            let username = std::env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".into());
+            let password = std::env::var("CLICKHOUSE_PASSWORD").unwrap_or_else(|_| "test".into());
+
+            let patch = serde_json::from_value(serde_json::json!({
+                "endpoint": endpoint,
+                "database": database,
+                "username": username,
+                "password": password,
+                "async_insert": false,
+            }))
+            .expect("valid config patch");
+            Config::from_patch(patch)
+        }
+
+        /// Drop `database` if present so each run starts from a clean, deterministic schema.
+        async fn reset_database(config: &Config) {
+            build_client(config, "default")
+                .query(&format!("DROP DATABASE IF EXISTS {}", config.database))
+                .execute()
+                .await
+                .expect("drop pre-existing test database");
+        }
+
+        /// Register a throwaway metric set so we can call the real `write_batches` path.
+        fn fresh_metrics() -> otap_df_telemetry::metrics::MetricSet<ClickhouseExporterMetrics> {
+            let (pipeline_ctx, _registry) = otap_df_engine::testing::test_pipeline_ctx();
+            pipeline_ctx.register_metrics::<ClickhouseExporterMetrics>()
+        }
+
+        /// Return a copy of `batch` with the field named `from` renamed to `to` (arrays untouched).
+        fn rename_field(batch: &RecordBatch, from: &str, to: &str) -> RecordBatch {
+            let fields: Vec<Field> = batch
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| {
+                    if f.name() == from {
+                        Field::new(to, f.data_type().clone(), f.is_nullable())
+                    } else {
+                        f.as_ref().clone()
+                    }
+                })
+                .collect();
+            RecordBatch::try_new(Arc::new(Schema::new(fields)), batch.columns().to_vec())
+                .expect("rebuild batch with renamed field")
+        }
+
+        /// Return a copy of `batch` with the named columns removed (order otherwise preserved).
+        fn drop_fields(batch: &RecordBatch, drop: &[&str]) -> RecordBatch {
+            let mut fields = Vec::new();
+            let mut columns = Vec::new();
+            for (idx, field) in batch.schema().fields().iter().enumerate() {
+                if drop.contains(&field.name().as_str()) {
+                    continue;
+                }
+                fields.push(field.as_ref().clone());
+                columns.push(batch.column(idx).clone());
+            }
+            RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+                .expect("rebuild batch without dropped fields")
+        }
+
+        /// One read-back row of the `otel_logs` table, projected to plain scalar types so the
+        /// RowBinary decoder doesn't have to reason about `LowCardinality`/`Map` shapes. The map
+        /// lookups confirm `Map(LowCardinality(String), String)` accepted our `Map<Utf8,Utf8>`.
+        #[derive(clickhouse::Row, serde::Deserialize, Debug)]
+        struct LogRow {
+            timestamp_nanos: i64,
+            service_name: String,
+            body: String,
+            event_name: String,
+            severity_number: u8,
+            res_service: String,
+            res_env: String,
+            scope_attr: String,
+            log_http_method: String,
+            trace_id: String,
+            span_id: String,
+        }
+
+        #[tokio::test]
+        #[ignore = "requires a live ClickHouse; run with --ignored e2e"]
+        async fn e2e_logs_insert_roundtrips_through_clickhouse_schema() {
+            otap_df_otap::crypto::ensure_crypto_provider();
+            let config = e2e_config("otap_e2e_logs");
+            reset_database(&config).await;
+
+            // Shape the batch first so we can compare read-back values against exactly what we sent.
+            let mut transformer = BatchTransformer::new();
+            let arrow_records = logs_to_arrow_records(build_logs_with_service_name());
+            let batches = transformer
+                .apply_plan(arrow_records)
+                .expect("transform logs fixture");
+            let logs_batch = batches
+                .get(&ArrowPayloadType::Logs)
+                .expect("logs batch must exist")
+                .clone();
+
+            // `new()` bootstraps the database + Go-exporter-shaped tables, then we insert. A type
+            // that doesn't coerce into its ClickHouse column fails here, on `end()`.
+            let writer = ClickHouseWriter::new(&config)
+                .await
+                .expect("writer init creates db + tables");
+            let mut metrics = fresh_metrics();
+            writer
+                .write_batches(&batches, &mut metrics)
+                .await
+                .expect("insert logs batch over FORMAT ArrowStream");
+
+            let rows = build_client(&config, &config.database)
+                .query(
+                    "SELECT \
+                       toInt64(toUnixTimestamp64Nano(Timestamp)) AS timestamp_nanos, \
+                       CAST(ServiceName AS String)               AS service_name, \
+                       Body                                      AS body, \
+                       EventName                                 AS event_name, \
+                       SeverityNumber                            AS severity_number, \
+                       ResourceAttributes['service.name']        AS res_service, \
+                       ResourceAttributes['deployment.environment'] AS res_env, \
+                       ScopeAttributes['scope.attr']             AS scope_attr, \
+                       LogAttributes['http.method']              AS log_http_method, \
+                       TraceId                                   AS trace_id, \
+                       SpanId                                    AS span_id \
+                     FROM otap_e2e_logs.otel_logs ORDER BY Timestamp",
+                )
+                .fetch_all::<LogRow>()
+                .await
+                .expect("read logs back");
+
+            assert_eq!(rows.len(), 2, "both fixture log records must land");
+
+            // Timestamp: Arrow nanos coerced into DateTime64(9) without loss.
+            assert_eq!(rows[0].timestamp_nanos, 1_736_937_000_000_000_000);
+            assert_eq!(rows[1].timestamp_nanos, 1_736_937_001_000_000_000);
+
+            // Dictionary<_,Utf8> -> LowCardinality(String).
+            assert_eq!(rows[0].service_name, "checkout");
+            // SeverityNumber: Int -> UInt8 passthrough (Info=9, Warn=13).
+            assert_eq!(rows[0].severity_number, 9);
+            assert_eq!(rows[1].severity_number, 13);
+            // Body / EventName plain String.
+            assert_eq!(rows[0].body, "request completed");
+            assert_eq!(rows[1].body, "cache miss");
+            assert_eq!(rows[0].event_name, "http.request");
+            assert_eq!(rows[1].event_name, "cache.miss");
+            // Map(LowCardinality(String), String): resource, scope, and log attributes.
+            assert_eq!(rows[0].res_service, "checkout");
+            assert_eq!(rows[0].res_env, "prod");
+            assert_eq!(rows[0].scope_attr, "scope-value");
+            assert_eq!(rows[0].log_http_method, "GET");
+            // Second record had no http.method attribute -> server default (empty string).
+            assert_eq!(rows[1].log_http_method, "");
+            // The logs fixture sets no trace/span ids -> columns omitted -> defaulted empty.
+            assert_eq!(rows[0].trace_id, "");
+            assert_eq!(rows[0].span_id, "");
+
+            // Round-trip cross-check against the Arrow batch we sent (encoding-agnostic).
+            assert_eq!(
+                string_values(&logs_batch, ch_consts::CH_SERVICE_NAME),
+                vec![Some("checkout".to_string()), Some("checkout".to_string())]
+            );
+            assert_eq!(
+                map_value_at(
+                    &logs_batch,
+                    ch_consts::CH_RESOURCE_ATTRIBUTES,
+                    0,
+                    "service.name"
+                ),
+                Some(rows[0].res_service.clone())
+            );
+        }
+
+        /// One read-back row of the `otel_traces` table. Nested (`Events.*` / `Links.*`) columns are
+        /// projected to lengths / concatenations / element lookups to confirm `List<...> -> Array(...)`
+        /// coercion without wrestling the RowBinary decoder. The `*.Attributes` arrays are excluded
+        /// (see the KNOWN ISSUE note in the test body).
+        #[derive(clickhouse::Row, serde::Deserialize, Debug)]
+        struct SpanRow {
+            timestamp_nanos: i64,
+            trace_id: String,
+            span_id: String,
+            parent_span_id: String,
+            trace_state: String,
+            span_name: String,
+            span_kind: String,
+            service_name: String,
+            duration: u64,
+            status_code: String,
+            status_message: String,
+            span_http_route: String,
+            res_service: String,
+            res_region: String,
+            events_count: u64,
+            events_names: String,
+            events_ts: Vec<i64>,
+            links_count: u64,
+            link0_trace_id: String,
+            link0_trace_state: String,
+        }
+
+        #[tokio::test]
+        #[ignore = "requires a live ClickHouse; run with --ignored e2e"]
+        async fn e2e_traces_insert_roundtrips_through_clickhouse_schema() {
+            otap_df_otap::crypto::ensure_crypto_provider();
+            let config = e2e_config("otap_e2e_traces");
+            reset_database(&config).await;
+
+            let mut transformer = BatchTransformer::new();
+            let arrow_records = traces_to_arrow_records(build_traces_with_children());
+            let batches = transformer
+                .apply_plan(arrow_records)
+                .expect("transform traces fixture");
+            let spans_batch = batches
+                .get(&ArrowPayloadType::Spans)
+                .expect("spans batch must exist")
+                .clone();
+
+            // KNOWN LIMITATION: event/link attributes are emitted as a flat `Map<Utf8,Utf8>`
+            // joined on the *span* id, but the traces schema needs
+            // `Array(Map(LowCardinality(String), String))` grouped *per event/link* (a two-level
+            // span -> event -> event-attrs join). Inserting the current shape fails server-side with
+            //   "CAST AS Map can only be performed from tuples of array ...
+            //    from type Map(...) to type Array(Map(...))" (TYPE_MISMATCH).
+            // Pin the current shape here, then drop these two columns and validate that every other
+            // trace column coerces and round-trips.
+            for attr_col in [
+                ch_consts::CH_EVENTS_ATTRIBUTES,
+                ch_consts::CH_LINKS_ATTRIBUTES,
+            ] {
+                let dt = spans_batch
+                    .column(
+                        spans_batch
+                            .schema()
+                            .index_of(attr_col)
+                            .expect("attr column"),
+                    )
+                    .data_type()
+                    .clone();
+                assert!(
+                    matches!(dt, DataType::Map(_, _)),
+                    "{attr_col} is currently {dt:?}; it must become Array(Map(..)) \
+                     grouped per event/link before it can be inserted"
+                );
+            }
+            let landable = drop_fields(
+                &spans_batch,
+                &[
+                    ch_consts::CH_EVENTS_ATTRIBUTES,
+                    ch_consts::CH_LINKS_ATTRIBUTES,
+                ],
+            );
+
+            let writer = ClickHouseWriter::new(&config)
+                .await
+                .expect("writer init creates db + tables");
+            let mut metrics = fresh_metrics();
+            let mut write_batches = HashMap::new();
+            _ = write_batches.insert(ArrowPayloadType::Spans, landable);
+            writer
+                .write_batches(&write_batches, &mut metrics)
+                .await
+                .expect("insert spans batch over FORMAT ArrowStream");
+
+            let rows = build_client(&config, &config.database)
+                .query(
+                    "SELECT \
+                       toInt64(toUnixTimestamp64Nano(Timestamp)) AS timestamp_nanos, \
+                       TraceId                                   AS trace_id, \
+                       SpanId                                    AS span_id, \
+                       ParentSpanId                              AS parent_span_id, \
+                       TraceState                                AS trace_state, \
+                       CAST(SpanName AS String)                  AS span_name, \
+                       CAST(SpanKind AS String)                  AS span_kind, \
+                       CAST(ServiceName AS String)               AS service_name, \
+                       Duration                                  AS duration, \
+                       CAST(StatusCode AS String)                AS status_code, \
+                       StatusMessage                             AS status_message, \
+                       SpanAttributes['http.route']              AS span_http_route, \
+                       ResourceAttributes['service.name']        AS res_service, \
+                       ResourceAttributes['cloud.region']        AS res_region, \
+                       toUInt64(length(`Events.Name`))           AS events_count, \
+                       arrayStringConcat(`Events.Name`, ',')     AS events_names, \
+                       arrayMap(x -> toInt64(toUnixTimestamp64Nano(x)), `Events.Timestamp`) AS events_ts, \
+                       toUInt64(length(`Links.SpanId`))          AS links_count, \
+                       `Links.TraceId`[1]                        AS link0_trace_id, \
+                       `Links.TraceState`[1]                     AS link0_trace_state \
+                     FROM otap_e2e_traces.otel_traces",
+                )
+                .fetch_all::<SpanRow>()
+                .await
+                .expect("read spans back");
+
+            assert_eq!(rows.len(), 1, "single fixture span must land");
+            let row = &rows[0];
+
+            // Timestamp: span start time (ns) -> DateTime64(9).
+            assert_eq!(row.timestamp_nanos, 2_000);
+            // Duration: end-start (ns) cast to UInt64.
+            assert_eq!(row.duration, 5_000);
+            // LowCardinality / plain string scalars.
+            assert_eq!(row.span_name, "POST /charge");
+            assert_eq!(row.service_name, "payments");
+            assert_eq!(row.trace_state, "vendor=test");
+            assert_eq!(row.status_message, "ok");
+            // Map(LowCardinality(String), String): span + resource attributes.
+            assert_eq!(row.span_http_route, "/charge");
+            assert_eq!(row.res_service, "payments");
+            assert_eq!(row.res_region, "us-east-1");
+            // List<Utf8> -> Array(LowCardinality(String)): Events.Name.
+            // List<Timestamp(ns)> -> Array(DateTime64(9)): Events.Timestamp.
+            assert_eq!(row.events_count, 2);
+            assert_eq!(row.events_names, "db.query.start,db.query.end");
+            assert_eq!(row.events_ts, vec![3_000, 4_000]);
+            // List<...> -> Array(String): Links.TraceState round-trips cleanly.
+            assert_eq!(row.links_count, 1);
+            assert_eq!(row.link0_trace_state, "linked=true");
+
+            // KNOWN LIMITATION: unlike the top-level TraceId (hex Utf8 -> String), Links/Events
+            // trace & span ids flow through the list-extraction path, which keeps them as
+            // `FixedSizeBinary` instead of hex-encoding. ClickHouse coerces Array(FixedSizeBinary)
+            // -> Array(String) as RAW BYTES, so the value lands un-hex-encoded (the fixture's 0x44
+            // bytes read back as "DDDD..." rather than the expected hex "4444...").
+            assert!(
+                matches!(
+                    links_trace_id_inner_type(&spans_batch),
+                    DataType::FixedSizeBinary(_)
+                ),
+                "Links.TraceId inner should be hex-encoded Utf8 like the top-level \
+                 TraceId, but is {:?}",
+                links_trace_id_inner_type(&spans_batch)
+            );
+            assert_eq!(row.link0_trace_id, "DDDDDDDDDDDDDDDD"); // 16 raw 0x44 bytes, not hex "4444.."
+
+            // Encoding-dependent fields: cross-check against exactly what the transform emitted.
+            let expect = |name: &str| string_values(&spans_batch, name)[0].clone();
+            assert_eq!(Some(row.trace_id.clone()), expect(ch_consts::CH_TRACE_ID));
+            assert_eq!(Some(row.span_id.clone()), expect(ch_consts::CH_SPAN_ID));
+            assert_eq!(
+                Some(row.parent_span_id.clone()),
+                expect(ch_consts::CH_PARENT_SPAN_ID)
+            );
+            assert_eq!(Some(row.span_kind.clone()), expect(ch_consts::CH_SPAN_KIND));
+            assert_eq!(
+                Some(row.status_code.clone()),
+                expect(ch_consts::CH_STATUS_CODE)
+            );
+        }
+
+        /// Return the element type of the `Links.TraceId` list column in the spans batch.
+        fn links_trace_id_inner_type(batch: &RecordBatch) -> DataType {
+            use arrow::array::ListArray;
+            let col = batch
+                .column(
+                    batch
+                        .schema()
+                        .index_of(ch_consts::CH_LINKS_TRACE_ID)
+                        .expect("Links.TraceId column"),
+                )
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .expect("Links.TraceId is a ListArray");
+            col.values().data_type().clone()
+        }
+
+        #[tokio::test]
+        #[ignore = "requires a live ClickHouse; run with --ignored e2e"]
+        async fn e2e_unknown_column_errors_on_insert_end() {
+            otap_df_otap::crypto::ensure_crypto_provider();
+            let config = e2e_config("otap_e2e_errors");
+            reset_database(&config).await;
+
+            // Bootstrap the schema, but don't write through it yet.
+            let _writer = ClickHouseWriter::new(&config)
+                .await
+                .expect("writer init creates db + tables");
+
+            let mut transformer = BatchTransformer::new();
+            let arrow_records = logs_to_arrow_records(build_logs_with_service_name());
+            let batches = transformer
+                .apply_plan(arrow_records)
+                .expect("transform logs fixture");
+            let logs_batch = batches
+                .get(&ArrowPayloadType::Logs)
+                .expect("logs batch must exist");
+
+            // Bind-by-name: a column that doesn't exist in the table must error on `end()` rather
+            // than silently defaulting the intended column (guards against typos causing data loss).
+            let bogus = rename_field(logs_batch, ch_consts::CH_SERVICE_NAME, "NotARealColumn");
+            let client = build_client(&config, &config.database);
+            let mut insert = client
+                .insert_arrow("otel_logs")
+                .expect("build arrow insert");
+            insert.write(&bogus).await.expect("buffer batch locally");
+            let result = insert.end().await;
+            assert!(
+                result.is_err(),
+                "inserting an unknown column must error on end(), got: {result:?}"
             );
         }
     }

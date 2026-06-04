@@ -347,15 +347,12 @@ impl TransformationPlan {
     fn configure_for_spans(&mut self) {
         // span tables are always rebuilt / sent to clickhouse
         self.recreate_batch();
+        // The traces schema has no ResourceSchemaUrl column (unlike logs), so flatten only the
+        // resource id used to join ResourceAttrs and drop schema_url. Emitting it would make the
+        // bind-by-name insert fail with NO_SUCH_COLUMN_IN_TABLE.
         self.apply_flattening(
             consts::RESOURCE,
-            HashMap::from([
-                (consts::ID.into(), ch_consts::RESOURCE_ID.into()),
-                (
-                    consts::SCHEMA_URL.into(),
-                    ch_consts::CH_RESOURCE_SCHEMA_URL.into(),
-                ),
-            ]),
+            HashMap::from([(consts::ID.into(), ch_consts::RESOURCE_ID.into())]),
             true,
         );
 

@@ -123,6 +123,30 @@ defined [here](https://github.com/open-telemetry/opentelemetry-collector-contrib
 Snapshots of the current structure are generated in the [table_snapshots](./table_snapshots/) directory.
 There is currently no automated testing to ensure schema drift relative to the go collector.
 
+## Verified Arrow → ClickHouse Type Mapping
+
+Inserts go out as `FORMAT ArrowStream` (Arrow IPC over HTTP); ClickHouse performs the
+Arrow → column coercion server-side. The mappings below were validated end-to-end against a live
+ClickHouse by the `e2e_*` integration tests in `transform/transform_batch.rs` (inserting the
+realistic fixtures and reading every column back). Columns bind **by name**, so column order is
+irrelevant, missing columns are server-defaulted, and an unknown column name errors on `end()`.
+
+| Emitted Arrow type | ClickHouse column type | Example columns | Status |
+|---|---|---|---|
+| `Map<Utf8, Utf8>` | `Map(LowCardinality(String), String)` | ResourceAttributes, ScopeAttributes, LogAttributes, SpanAttributes | ✅ verified |
+| `Dictionary<_, Utf8>` | `LowCardinality(String)` | ServiceName, SpanName, SpanKind, StatusCode | ✅ verified |
+| `Timestamp(Nanosecond)` | `DateTime64(9)` | Timestamp, Events.Timestamp (as `Array(DateTime64(9))`) | ✅ verified |
+| `Int*` → `UInt8` | `UInt8` | SeverityNumber | ✅ verified |
+| `*` → `UInt64` | `UInt64` | Duration | ✅ verified |
+| hex `Utf8` | `String` | TraceId, SpanId, ParentSpanId (top-level) | ✅ verified |
+| `Utf8` | `String` | Body, EventName, StatusMessage, TraceState | ✅ verified |
+| `List<Utf8>` | `Array(LowCardinality(String))` / `Array(String)` | Events.Name, Links.TraceState | ✅ verified |
+| `List<Timestamp(ns)>` | `Array(DateTime64(9))` | Events.Timestamp | ✅ verified |
+| `List<Map<Utf8,Utf8>>` | `Array(Map(LowCardinality(String), String))` | Events.Attributes, Links.Attributes | ❌ not yet emitted — see Known Gaps |
+
+No special `input_format_arrow_*` settings were required for a clean insert. `async_insert` is left
+as the server-side safety net; the e2e tests disable it so reads are immediately consistent.
+
 ## Attribute Representation
 
 Inline attributes are stored as:
@@ -195,5 +219,30 @@ INSTA_UPDATE=always cargo test -p otap-df-contrib-nodes --features clickhouse-ex
 ## Known Gaps
 
 - metrics remain stubbed in DDL generation
-- end-to-end live ClickHouse validation is still limited compared to unit/snapshot coverage
 - unit testing against realistic otap payloads is currently limited
+- **Event/Link attributes are not yet insertable.** `Events.Attributes` and `Links.Attributes`
+  are emitted as a flat `Map<Utf8,Utf8>` joined on the *span* id, but the traces schema needs
+  `Array(Map(LowCardinality(String), String))` grouped *per event/link*. This requires a two-level
+  `span -> event -> event-attrs` join that the current single-level `inline_child_map` does not
+  perform. Inserting the current shape fails with `CAST AS Map ... to type Array(Map(...))`
+  (`TYPE_MISMATCH`). The traces e2e test drops these two columns and pins the current Arrow shape.
+- **Event/Link trace & span ids are not hex-encoded.** Unlike the top-level `TraceId` (hex `Utf8`
+  → `String`), `Links.TraceId`/`Links.SpanId` (and the event equivalents) flow through the
+  list-extraction path which keeps them as `FixedSizeBinary`. ClickHouse coerces
+  `Array(FixedSizeBinary)` → `Array(String)` as **raw bytes**, so they land un-hex-encoded. They
+  should be hex-encoded like the top-level ids.
+
+## E2E (live ClickHouse) validation
+
+The `e2e_*` tests are `#[ignore]`d (they need a live server). To run them:
+
+```bash
+docker run -d --name ch-otel -p 8123:8123 -p 9000:9000 \
+  -e CLICKHOUSE_PASSWORD=test clickhouse/clickhouse-server
+
+CLICKHOUSE_URL=http://localhost:8123 cargo test -p otap-df-contrib-nodes \
+  --features clickhouse-exporter,otap-df-otap/crypto-ring -- --ignored e2e
+```
+
+Honors `CLICKHOUSE_URL` / `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD` (defaults target the container
+above). Each test resets its own database, so it is safe to re-run.

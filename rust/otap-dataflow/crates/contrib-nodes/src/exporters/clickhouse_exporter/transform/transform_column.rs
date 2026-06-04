@@ -485,8 +485,7 @@ fn flatten_struct(
 
     // Add requested child fields as new top-level columns.
     for (field_name, new_name) in &spec.field_mapping {
-        // TODO: [Correctness] per @alockett:
-        // In practice, what would happen here is that if a log/span had a resource/scope that was null,
+        // TODO(correctness): if a log/span had a resource/scope that was null,
         // we'd flatten up the name/version/schema_id fields into the log/span which would most likely have
         // just default values in those positions. e.g. "" for text columns or 0 for numeric columns (although
         // we're not guaranteed to have these values in these columns; the arrow spec allows anything to be in
@@ -550,7 +549,7 @@ fn inline_child_map(
     to_col: &str,
 ) -> Result<(), ClickhouseExporterError> {
     let Some((parent_ids, remap, child)) =
-        parent_ids_and_child_remap_owned(ctx, parent_id_col, child_payload)?
+        parent_ids_and_child_remap(ctx, parent_id_col, child_payload)?
     else {
         return Ok(());
     };
@@ -569,7 +568,7 @@ fn inline_child_map(
             error: "Failed to downcast child map column to MapArray".into(),
         })?;
 
-    let new_map_array = remap_map_array_to_parent_order(&parent_ids, &remap, values)?;
+    let new_map_array = remap_map_array_to_parent_order(&parent_ids, remap, values)?;
     ctx.put(to_col.to_string(), Arc::new(new_map_array));
     Ok(())
 }
@@ -583,7 +582,7 @@ fn inline_child_lists(
     child_payload: ArrowPayloadType,
 ) -> Result<(), ClickhouseExporterError> {
     let Some((parent_ids, remap, child)) =
-        parent_ids_and_child_remap_owned(ctx, parent_id_col, child_payload)?
+        parent_ids_and_child_remap(ctx, parent_id_col, child_payload)?
     else {
         return Ok(());
     };
@@ -596,19 +595,30 @@ fn inline_child_lists(
                 error: format!("Expected ListArray for {}", name),
             })?;
 
-        let expanded = remap_list_array_to_parent_order(&parent_ids, &remap, compact_list)?;
+        let expanded = remap_list_array_to_parent_order(&parent_ids, remap, compact_list)?;
         ctx.put(name.clone(), expanded);
     }
     Ok(())
 }
-type Remap = Arc<HashMap<u32, u32>>;
-
-fn parent_ids_and_child_remap_owned(
-    ctx: &ColumnOpCtx<'_>,
+/// Resolve the parent id column and the child payload's remap table for an inline op.
+///
+/// Returns:
+/// - `parent_ids`: an owned `UInt16` array (only a cheap Arc/buffer-sharing clone, plus a dictionary
+///   cast when needed) so the caller does not borrow `ctx.columns`.
+/// - `remap` and `child`: borrows into `ctx.multi`'s underlying data (`'b`), NOT into the `&ctx`
+///   borrow. We copy the `multi` shared reference out of `ctx` first, so these borrows are
+///   independent of `ctx` and the caller can still mutate `ctx.columns` (e.g. `ctx.put`) while
+///   holding them — without deep-copying the `HashMap` remap or the whole `MultiColumnOpResult`.
+fn parent_ids_and_child_remap<'b>(
+    ctx: &ColumnOpCtx<'b>,
     parent_id_col: &str,
     child_payload: ArrowPayloadType,
 ) -> Result<
-    Option<(Arc<PrimitiveArray<UInt16Type>>, Remap, MultiColumnOpResult)>,
+    Option<(
+        Arc<PrimitiveArray<UInt16Type>>,
+        &'b HashMap<u32, u32>,
+        &'b MultiColumnOpResult,
+    )>,
     ClickhouseExporterError,
 > {
     // Own the parent_ids Arc so we can return it safely.
@@ -630,7 +640,10 @@ fn parent_ids_and_child_remap_owned(
         })?;
     let parent_ids = Arc::new(parent_ids.clone()); // cheap-ish clone of the array struct; buffers are shared
 
-    let Some(child) = ctx.child(child_payload) else {
+    // Copy the `multi` shared reference out of `ctx` so the returned borrows are tied to `'b`
+    // (the underlying data) rather than to this `&ctx` borrow.
+    let multi: &'b HashMap<ArrowPayloadType, MultiColumnOpResult> = ctx.multi;
+    let Some(child) = multi.get(&child_payload) else {
         return Ok(None);
     };
 
@@ -641,10 +654,8 @@ fn parent_ids_and_child_remap_owned(
             .ok_or_else(|| ClickhouseExporterError::CoercionError {
                 error: "Failed to find child batch inline key map".into(),
             })?;
-    let remap = Arc::new(remap.clone()); // clone the HashMap so we can release the borrow
 
-    // Also clone the child result you need so we can drop the immutable borrow of ctx.multi.
-    Ok(Some((parent_ids, remap, child.clone())))
+    Ok(Some((parent_ids, remap, child)))
 }
 
 /// Switch cbor encoded field to JSON
@@ -853,11 +864,14 @@ pub fn struct_column_to_string(
         return Ok(string_col);
     }
 
-    // TODO: [Optimization] per @a.lockett:
-    // As a future optimization: most of the time the str, int, bytes, and ser column will likely be dictionary encoded.
-    // When this is the case, we could basically just map the dictionary array's values to a stringified representation,
-    // and then append them all to create new dictionary values. Then for each of these columns, we could just adjust the keys.
-    // more details: https://gitlab.com/f5/observabilityhub/o11y-gateway/observability-gateway/-/merge_requests/90#note_3083198934
+    // TODO(optimization): the str/int/bytes/ser columns are usually dictionary-encoded. When so, we
+    // could stringify the dictionary values once, build new dictionary values from those, and then
+    // only remap each column's keys instead of going row-by-row.
+    //
+    // A kernel-based (take/cast) rewrite is avoided here: this slow path is a per-row *union*
+    // dispatch (Empty/Str/Int/Double/Bool/Bytes/Map/Slice), not a single sorted-dictionary column.
+    // It would have to stringify each variant column independently and then merge them by the
+    // per-row `type_arr` selector while preserving the exact null/empty semantics below.
     // SLOW PATH: build string column row-by-row
     let mut builder = BinaryDictionaryBuilder::<UInt32Type>::new();
     let string_accessor = struct_accessor.string_column_op(consts::ATTRIBUTE_STR)?;
@@ -1124,7 +1138,7 @@ mod tests {
         let a: ArrayRef = Arc::new(StringArray::from(vec![Some("x"), None, Some("z")]));
         let b: ArrayRef = Arc::new(UInt32Array::from(vec![1, 2, 3]));
 
-        let fields = vec![
+        let fields = [
             Field::new("a", DataType::Utf8, true),
             Field::new("b", DataType::UInt32, false),
         ];

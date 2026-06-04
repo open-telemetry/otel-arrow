@@ -363,7 +363,7 @@ impl Index {
     }
 }
 
-// --- Index constants matching Go OTel Collector ClickHouse exporter ---
+// --- Index constants ---
 
 pub const IDX_TRACE_ID: Index = Index::new("idx_trace_id", "TraceId", "bloom_filter(0.001)", 1);
 
