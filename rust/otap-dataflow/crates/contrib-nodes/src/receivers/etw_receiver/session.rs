@@ -499,19 +499,9 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                             .to_vec()
                         };
 
-                        let (fields, name) = match decoder.borrow_mut().decode(record) {
+                        let (fields, tdh_name) = match decoder.borrow_mut().decode(record) {
                             Ok(result) => {
-                                let name = result
-                                    .event_data
-                                    .format()
-                                    .fields()
-                                    .first()
-                                    .map(|_| {
-                                        // Use the TDH event name from the decoder's
-                                        // schema cache (populated during decode).
-                                        String::new()
-                                    })
-                                    .unwrap_or_default();
+                                let name = result.event_name.unwrap_or("").to_owned();
                                 let fields = extract_decoded_fields(
                                     result.event_data.format(),
                                     result.event_data.event_data(),
@@ -521,10 +511,6 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                             Err(TdhDecodeError::NotFound) => (Vec::new(), String::new()),
                             Err(_e) => (Vec::new(), String::new()),
                         };
-                        // Retrieve the event name from the decoder's cache
-                        // (available after decode, even on cache hit).
-                        let tdh_name = decoder.borrow().event_name(record).unwrap_or("").to_owned();
-                        let _ = name; // shadowed by tdh_name
                         (fields, tdh_name, ud)
                     } else {
                         (Vec::new(), String::new(), Vec::new())
