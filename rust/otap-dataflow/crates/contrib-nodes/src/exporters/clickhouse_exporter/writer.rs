@@ -10,11 +10,11 @@
 //!     precomputed map from `ArrowPayloadType` to destination table name.
 //!   - `write_batches` accepts a set of per-payload `RecordBatch`es and dispatches inserts,
 //!     updating metrics inline.
-//!   - `write_batch` performs a single `INSERT ... FORMAT Native` using the Arrow-capable client
-//!     and drains the response stream to surface any server-side errors.
+//!   - `write_batch` performs a single `INSERT ... FORMAT ArrowStream` over HTTP using the official
+//!     client's Arrow extension, surfacing any server-side errors on `end()`.
 //!
 //! - **Client initialization**
-//!   - `init_client_for_db` builds a ClickHouse client with endpoint/auth configuration and applies
+//!   - `build_client` builds a ClickHouse HTTP client with endpoint/auth configuration and applies
 //!     optional async inserts.
 //!
 //! - **Database/schema initialization**
@@ -23,8 +23,8 @@
 use std::collections::HashMap;
 
 use arrow_array::RecordBatch;
-use clickhouse_arrow::{ArrowClient, ArrowFormat, Client, Qid, Result};
-use futures_util::StreamExt;
+use clickhouse::Client;
+use clickhouse_ext_arrow::ArrowClientExt;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_telemetry::metrics::MetricSet;
 
@@ -36,8 +36,7 @@ use crate::exporters::clickhouse_exporter::{
 };
 
 pub struct ClickHouseWriter {
-    client: Client<ArrowFormat>,
-    target_database: String,
+    client: Client,
     payload_destination_tables: HashMap<ArrowPayloadType, String>,
 }
 
@@ -50,13 +49,18 @@ impl ClickHouseWriter {
             logs = payload_destination_tables.get(&ArrowPayloadType::Logs),
             spans = payload_destination_tables.get(&ArrowPayloadType::Spans),
         );
-        // Connect to default since the configured db may not exist yet.
-        let client = init_client_for_db(config, "default").await?;
-        init_db(&client, config).await?;
+        // Bootstrap DB/schema with a client bound to the `default` database, since the configured
+        // database may not exist yet. DDL is fully qualified (`db.table`) so the bound database is
+        // irrelevant for it.
+        let bootstrap_client = build_client(config, "default");
+        init_db(&bootstrap_client, config).await?;
+        // Inserts use `insert_arrow(table)`, which binds the table's database from the client (the
+        // generated `INSERT INTO \`table\` FORMAT ArrowStream` is unqualified), so the runtime
+        // client must point at the configured database.
+        let client = build_client(config, &config.database);
         Ok(Self {
             client,
             payload_destination_tables,
-            target_database: config.database.clone(),
         })
     }
 
@@ -65,26 +69,23 @@ impl ClickHouseWriter {
         table_name: &str,
         batch: &RecordBatch,
     ) -> Result<(), ClickhouseExporterError> {
-        let mut response_stream = self
-            .client
-            .insert(
-                format!(
-                    "INSERT INTO {}.{} FORMAT Native",
-                    self.target_database, table_name
-                ),
-                batch.clone(),
-                Some(Qid::new()),
-            )
+        let mut insert = self.client.insert_arrow(table_name).map_err(|e| {
+            ClickhouseExporterError::InsertRequestError {
+                error: format!("{e}"),
+            }
+        })?;
+        insert
+            .write(batch)
             .await
             .map_err(|e| ClickhouseExporterError::InsertRequestError {
                 error: format!("{e}"),
             })?;
-
-        while let Some(result) = response_stream.next().await {
-            result.map_err(|e| ClickhouseExporterError::InsertResponseError {
+        insert
+            .end()
+            .await
+            .map_err(|e| ClickhouseExporterError::InsertResponseError {
                 error: format!("{e}"),
             })?;
-        }
         otap_df_telemetry::otel_debug!(
             "clickhouse.exporter.batch.written",
             message = "Record batch successfully written.",
@@ -111,34 +112,31 @@ impl ClickHouseWriter {
     }
 }
 
-pub async fn init_client_for_db(
-    config: &Config,
-    database: &str,
-) -> Result<Client<ArrowFormat>, ClickhouseExporterError> {
-    let mut ch_builder = Client::<ArrowFormat>::builder()
-        .with_endpoint(config.endpoint.clone())
+/// Build a ClickHouse HTTP client bound to `database` from the exporter config.
+///
+/// `Client` is cheap to clone (it is `Arc`-backed internally), so callers can build one per
+/// target database without concern.
+pub fn build_client(config: &Config, database: &str) -> Client {
+    let mut client = Client::default()
+        .with_url(config.endpoint.clone())
         .with_database(database)
-        .with_username(config.username.clone())
+        .with_user(config.username.clone())
         .with_password(config.password.clone());
     if config.async_insert {
-        ch_builder = ch_builder.with_setting("async_insert", 1);
+        client = client.with_setting("async_insert", "1");
     }
-    ch_builder
-        .build()
-        .await
-        .map_err(|e| ClickhouseExporterError::ClientConnectionError {
-            error: format!("{e}"),
-        })
+    client
 }
 
 /// Ensure db and all tables are initialized if required.
-async fn ensure_db(client: &ArrowClient, config: &Config) -> Result<(), ClickhouseExporterError> {
+async fn ensure_db(client: &Client, config: &Config) -> Result<(), ClickhouseExporterError> {
     validate_identifier(&config.database, "database")?;
     client
-        .execute(
-            format!("CREATE DATABASE IF NOT EXISTS {};", config.database.clone()),
-            Some(Qid::new()),
-        )
+        .query(&format!(
+            "CREATE DATABASE IF NOT EXISTS {};",
+            config.database
+        ))
+        .execute()
         .await
         .map_err(|e| ClickhouseExporterError::TableCreationError {
             error: format!("{e}"),
@@ -147,7 +145,7 @@ async fn ensure_db(client: &ArrowClient, config: &Config) -> Result<(), Clickhou
 }
 
 /// Initialize tables.
-async fn init_db(client: &ArrowClient, config: &Config) -> Result<(), ClickhouseExporterError> {
+async fn init_db(client: &Client, config: &Config) -> Result<(), ClickhouseExporterError> {
     ensure_db(client, config).await?;
     for entry in config.tables.iter_tables() {
         init_table(client, &entry, config).await?;

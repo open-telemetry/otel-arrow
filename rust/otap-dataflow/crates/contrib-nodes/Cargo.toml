@@ -53,10 +53,10 @@ rand = { workspace = true, optional = true }
 ryu = { workspace = true, optional = true }
 
 # ClickHouse exporter dependencies (optional, behind feature flag)
-clickhouse-arrow = { workspace = true, optional = true }
+clickhouse = { workspace = true, optional = true }
+clickhouse-ext-arrow = { workspace = true, optional = true }
 serde-transcode = { workspace = true, optional = true }
 serde_cbor = { workspace = true, optional = true }
-futures-util = { workspace = true, optional = true }
 arrow-array = { workspace = true, optional = true }
 arrow-schema = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
@@ -94,10 +94,10 @@ contrib-exporters = [
     "clickhouse-exporter",
 ]
 clickhouse-exporter = [
-    "dep:clickhouse-arrow",
+    "dep:clickhouse",
+    "dep:clickhouse-ext-arrow",
     "dep:serde-transcode",
     "dep:serde_cbor",
-    "dep:futures-util",
     "dep:arrow-array",
     "dep:arrow-schema",
     "dep:base64",

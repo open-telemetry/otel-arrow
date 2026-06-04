@@ -13,9 +13,6 @@ pub enum ClickhouseExporterError {
     #[error("Table creation error: {error}")]
     TableCreationError { error: String },
 
-    #[error("Clickhouse client connection error: {error}")]
-    ClientConnectionError { error: String },
-
     #[error("Clickhouse data insertion request error: {error}")]
     InsertRequestError { error: String },
 

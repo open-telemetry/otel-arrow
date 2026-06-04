@@ -1,6 +1,9 @@
 # ClickHouse Exporter
 
-This exporter accepts OTAP Arrow payloads, reshapes them into ClickHouse-compatible Arrow `RecordBatch`es, and inserts them into ClickHouse using `clickhouse-arrow`.
+This exporter accepts OTAP Arrow payloads, reshapes them into
+ClickHouse-compatible Arrow `RecordBatch`es, and inserts them into ClickHouse
+over HTTP using the official ClickHouse Rust client (`clickhouse` +
+`clickhouse-ext-arrow`, `FORMAT ArrowStream`).
 
 The current architecture is intentionally simple:
 
