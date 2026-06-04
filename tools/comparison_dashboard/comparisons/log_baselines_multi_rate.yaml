@@ -85,3 +85,19 @@ suites:
   - name: OTC Logs OTLP/HTTP Baseline (None)
     slug: otc_logs_otlphttp_none_baseline
     short: OTC OTLP-HTTP/None
+
+  # Fluent Bit OTLP
+  - name: FB Logs OTLP Baseline (None)
+    slug: fbit_logs_otlp_none_baseline
+    short: FB OTLP/None
+
+  # Fluent Bit OTLP/HTTP
+  - name: FB Logs OTLP/HTTP Baseline (None)
+    slug: fbit_logs_otlphttp_none_baseline
+    short: FB OTLP-HTTP/None
+  - name: FB Logs OTLP/HTTP Baseline (Gzip)
+    slug: fbit_logs_otlphttp_gzip_baseline
+    short: FB OTLP-HTTP/Gzip
+  - name: FB Logs OTLP/HTTP Baseline (Zstd)
+    slug: fbit_logs_otlphttp_zstd_baseline
+    short: FB OTLP-HTTP/Zstd
