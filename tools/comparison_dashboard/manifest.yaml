@@ -184,8 +184,6 @@ suites:
 
   # Fluent Bit
   - suites/fbit/fbit-logs-otlp-none-baseline.yaml
-  - suites/fbit/fbit-logs-otlp-gzip-baseline.yaml
-  - suites/fbit/fbit-logs-otlp-zstd-baseline.yaml
   - suites/fbit/fbit-logs-otlphttp-none-baseline.yaml
   - suites/fbit/fbit-logs-otlphttp-gzip-baseline.yaml
   - suites/fbit/fbit-logs-otlphttp-zstd-baseline.yaml
