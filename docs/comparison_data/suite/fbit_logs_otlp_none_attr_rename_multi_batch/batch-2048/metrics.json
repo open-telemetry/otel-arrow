@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-2048 - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 18.422523498535156
+  },
+  {
+    "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-2048 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.15251171908399
+  },
+  {
+    "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-2048 - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.46679999999999
+  },
+  {
+    "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-2048 - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 105.074609375
+  },
+  {
+    "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-2048 - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 115.5859375
+  },
+  {
+    "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-2048 - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 155784.01677246092
+  },
+  {
+    "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-2048 - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 126868.69457875025
+  },
+  {
+    "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-2048 - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000525
+  },
+  {
+    "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-2048 - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 42966964.43793413
+  },
+  {
+    "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-2048 - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 45622257.6182359
+  },
+  {
+    "extra": "FB OTLP Attr Rename Multi Batch (Logs)/batch-2048 - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 338.6727086662311
+  }
+]

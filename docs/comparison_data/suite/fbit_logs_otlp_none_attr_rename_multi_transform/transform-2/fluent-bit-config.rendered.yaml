@@ -1,0 +1,43 @@
+# Fluent Bit OTLP/gRPC passthrough with a content_modifier processor renaming
+# log-record attributes. content_modifier with context=otel_log_attributes and
+# action=rename is the native equivalent of the attributes-processor rename
+# (from_attribute + delete): `key` is the existing attribute, `value` is the new
+# name. The `modify` filter cannot do this because it only sees the flat record
+# body; the generic `attributes` context is a different group than the OTLP log
+# attributes.
+service:
+  flush: 1
+  log_level: info
+  http_server: on
+  http_listen: 0.0.0.0
+  http_port: 2020
+
+pipeline:
+  inputs:
+    - name: opentelemetry
+      listen: 0.0.0.0
+      port: 4317
+      http2: on
+      threaded: off
+      processors:
+        logs:
+          - name: content_modifier
+            context: otel_log_attributes
+            action: rename
+            key: exception.type
+            value: exception.kind
+          - name: content_modifier
+            context: otel_log_attributes
+            action: rename
+            key: exception.message
+            value: exception.msg
+
+  outputs:
+    - name: opentelemetry
+      match: '*'
+      host: backend-service
+      port: 1235
+      grpc: on
+      tls: off
+      workers: 0
+      retry_limit: false
