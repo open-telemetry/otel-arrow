@@ -19,7 +19,7 @@
 //! (via [`TablesConfig::iter_tables`] and [`MetricsTableConfig::iter`]) to drive initialization.
 use std::collections::HashMap;
 
-use clickhouse_arrow::{ArrowClient, Qid};
+use clickhouse::Client;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use crate::exporters::clickhouse_exporter::config::{
@@ -344,7 +344,7 @@ fn build_table_sql(
 }
 
 pub async fn init_table(
-    client: &ArrowClient,
+    client: &Client,
     entry: &TableEntry<'_>,
     config: &Config,
 ) -> Result<(), ClickhouseExporterError> {
@@ -352,7 +352,7 @@ pub async fn init_table(
         return Ok(());
     };
 
-    client.execute(sql, Some(Qid::new())).await.map_err(|e| {
+    client.query(&sql).execute().await.map_err(|e| {
         ClickhouseExporterError::TableCreationError {
             error: format!("{e}"),
         }

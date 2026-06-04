@@ -3,7 +3,8 @@
 
 //! Clickhouse Exporter for OTAP records
 //!
-//! This exporter sends OTAP records to clickhouse instances.
+//! This exporter sends OTAP records to ClickHouse instances over HTTP using the official
+//! ClickHouse Rust client (`FORMAT ArrowStream`).
 //! It implements the `Exporter<OtapPdata>` trait
 //! for integration with the OTAP dataflow engine.
 //!
@@ -17,9 +18,10 @@
 //!   - id: clickhouse-exporter
 //!     urn: "urn:otel:exporter:clickhouse"
 //!     config:
-//!       endpoint: "https://clickhouse.example.db"
+//!       # `endpoint` is an HTTP(S) URL pointing at the ClickHouse HTTP interface (default port 8123).
+//!       endpoint: "https://clickhouse.example.db:8123"
 //!       database: "otap"
-//!       user: "default"
+//!       username: "default"
 //!       password: ""
 //!       # ... additional config
 //! ```
