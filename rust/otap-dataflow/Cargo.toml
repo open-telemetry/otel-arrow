@@ -220,12 +220,8 @@ sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
-# Official ClickHouse Rust client (HTTP transport) + its Arrow extension subcrate.
-# Arrow support (FORMAT ArrowStream over HTTP) lives in `clickhouse-ext-arrow`, which tracks
-# arrow 58 to match this workspace. Neither is on crates.io yet, so pin by local path for now;
-# switch to a git rev once published. `rustls-tls-ring` unifies rustls/ring with otap's crypto.
-clickhouse = { version = "0.15.1", path = "../../../clickhouse-rs", features = ["rustls-tls-ring", "rustls-tls-native-roots"] }
-clickhouse-ext-arrow = { version = "0.1.0", path = "../../../clickhouse-rs/ext-arrow" }
+clickhouse = { version = "0.15.1", features = ["rustls-tls-ring", "rustls-tls-native-roots"] }
+clickhouse-ext-arrow = "0.1.0"
 cpu-time = "1.0.0"
 
 one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "5a9f381edf38e24bf583f25f7fce9def0c013173" }
