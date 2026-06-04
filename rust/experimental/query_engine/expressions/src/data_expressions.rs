@@ -796,10 +796,6 @@ mod test {
                 ))],
             ));
 
-        // println!("{}", )
-        let output = format!("{}", DisplayWrapper(&expr, ""));
-        println!("{}", output);
-
         let constants = Vec::new();
         let functions = Vec::new();
         let scope = PipelineResolutionScope::new_for_test(&constants, &functions);
