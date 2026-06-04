@@ -224,8 +224,15 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
 
                     let mut arrow_records: OtapArrowRecords = match payload.try_into() {
                         Ok(arrow_records) => arrow_records,
-                        Err(_) => {
+                        Err(e) => {
                             self.pdata_metrics.inc_failed(signal_type);
+                            otap_df_telemetry::otel_warn!(
+                                "clickhouse.exporter.convert.error",
+                                message = format!(
+                                    "Failed to convert payload to OtapArrowRecords: {e:?}"
+                                ),
+                                signal_type = format!("{:?}", signal_type),
+                            );
                             continue;
                         }
                     };
