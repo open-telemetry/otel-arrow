@@ -57,7 +57,7 @@ pub(crate) struct ExtensionLifecycle {
     phase: LifecyclePhase,
     monitor: ExtensionMetricsMonitor,
     started_rx: mpsc::UnboundedReceiver<ExtensionKey>,
-    pending_spawn_signals: usize,
+    outstanding_spawn_signals: usize,
 }
 
 impl ExtensionLifecycle {
@@ -131,7 +131,7 @@ impl ExtensionLifecycle {
             phase: LifecyclePhase::Running,
             monitor,
             started_rx,
-            pending_spawn_signals: spawned_count,
+            outstanding_spawn_signals: spawned_count,
         }
     }
 
@@ -140,8 +140,9 @@ impl ExtensionLifecycle {
         self.futures.is_empty()
     }
 
-    /// Yields the next extension completion or monitor tick. `Spawned` signals
-    /// are absorbed internally.
+    /// Yields the next extension completion or monitor tick. Spawn-handshake
+    /// signals on `started_rx` are drained silently — they only exist to
+    /// power `wait_all_spawned`.
     pub async fn next_event(&mut self) -> LifecycleEvent {
         loop {
             let shutdown_initiated = matches!(self.phase, LifecyclePhase::ShuttingDown { .. });
@@ -151,15 +152,14 @@ impl ExtensionLifecycle {
                 shutdown_channels,
                 monitor,
                 started_rx,
-                pending_spawn_signals,
+                outstanding_spawn_signals,
                 ..
             } = self;
             if futures.is_empty() {
                 tokio::select! {
                     biased;
-                    Some(key) = started_rx.recv() => {
-                        monitor.apply_event(ExtensionLifecycleEvent::Spawned { key });
-                        *pending_spawn_signals = pending_spawn_signals.saturating_sub(1);
+                    Some(_key) = started_rx.recv() => {
+                        *outstanding_spawn_signals = outstanding_spawn_signals.saturating_sub(1);
                         continue;
                     }
                     now = monitor.next_tick() => return LifecycleEvent::MonitorTick(now),
@@ -167,13 +167,12 @@ impl ExtensionLifecycle {
             }
             tokio::select! {
                 biased;
-                Some(key) = started_rx.recv() => {
-                    monitor.apply_event(ExtensionLifecycleEvent::Spawned { key });
-                    *pending_spawn_signals = pending_spawn_signals.saturating_sub(1);
+                Some(_key) = started_rx.recv() => {
+                    *outstanding_spawn_signals = outstanding_spawn_signals.saturating_sub(1);
                     continue;
                 }
                 Some(joined) = futures.next() => {
-                    *pending_spawn_signals = pending_spawn_signals.saturating_sub(1);
+                    *outstanding_spawn_signals = outstanding_spawn_signals.saturating_sub(1);
                     return LifecycleEvent::Completion(
                         Self::route_joined(monitor, task_id_to_key, shutdown_channels, shutdown_initiated, joined)
                     );
@@ -184,9 +183,9 @@ impl ExtensionLifecycle {
     }
 
     /// Returns once every non-passive extension has been polled at least once
-    /// and signalled `Spawned`. Tasks that complete or panic before signalling
-    /// are routed through the normal completion path; the first surfaced error
-    /// is returned.
+    /// (its task body sent the spawn handshake). Tasks that complete or panic
+    /// before signalling are routed through the normal completion path; the
+    /// first surfaced error is returned.
     pub async fn wait_all_spawned(&mut self) -> Result<(), Error> {
         loop {
             let Self {
@@ -195,20 +194,19 @@ impl ExtensionLifecycle {
                 shutdown_channels,
                 monitor,
                 started_rx,
-                pending_spawn_signals,
+                outstanding_spawn_signals,
                 ..
             } = self;
-            if *pending_spawn_signals == 0 {
+            if *outstanding_spawn_signals == 0 {
                 return Ok(());
             }
             tokio::select! {
                 biased;
-                Some(key) = started_rx.recv() => {
-                    monitor.apply_event(ExtensionLifecycleEvent::Spawned { key });
-                    *pending_spawn_signals -= 1;
+                Some(_key) = started_rx.recv() => {
+                    *outstanding_spawn_signals -= 1;
                 }
                 Some(joined) = futures.next(), if !futures.is_empty() => {
-                    *pending_spawn_signals = pending_spawn_signals.saturating_sub(1);
+                    *outstanding_spawn_signals = outstanding_spawn_signals.saturating_sub(1);
                     match Self::route_joined(monitor, task_id_to_key, shutdown_channels, false, joined) {
                         Ok(Ok(())) => {}
                         Ok(Err(e)) => return Err(e),
@@ -390,7 +388,7 @@ impl ExtensionLifecycle {
                 grace_secs = EXTENSION_SHUTDOWN_GRACE.as_secs(),
                 remaining = self.futures.len()
             );
-            self.monitor.mark_pending_as_timeout();
+            self.monitor.mark_stragglers_as_timeout();
         }
     }
 }
@@ -451,7 +449,7 @@ mod tests {
                 },
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
-                pending_spawn_signals: 0,
+                outstanding_spawn_signals: 0,
             };
 
             let start = Instant::now();
@@ -491,7 +489,6 @@ mod tests {
                 Duration::from_millis(50),
             );
             monitor.register(&ext_ctx, key.clone(), entity_key, None);
-            monitor.apply_event(ExtensionLifecycleEvent::Spawned { key: key.clone() });
 
             let futures: FuturesUnordered<JoinHandle<(ExtensionKey, Result<(), Error>)>> =
                 FuturesUnordered::new();
@@ -523,7 +520,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor,
                 started_rx,
-                pending_spawn_signals: 0,
+                outstanding_spawn_signals: 0,
             };
 
             let prev_hook = std::panic::take_hook();
@@ -577,7 +574,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx: mpsc::unbounded_channel().1,
-                pending_spawn_signals: 0,
+                outstanding_spawn_signals: 0,
             };
 
             lifecycle.initiate_shutdown(Some("first"));
@@ -709,7 +706,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor: ExtensionMetricsMonitor::disabled(ctx_a),
                 started_rx: mpsc::unbounded_channel().1,
-                pending_spawn_signals: 0,
+                outstanding_spawn_signals: 0,
             };
             let life_b = ExtensionLifecycle {
                 futures: FuturesUnordered::new(),
@@ -719,7 +716,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor: ExtensionMetricsMonitor::disabled(ctx_b),
                 started_rx: mpsc::unbounded_channel().1,
-                pending_spawn_signals: 0,
+                outstanding_spawn_signals: 0,
             };
 
             life_a.initiate_shutdown(Some("a-only"));
@@ -777,8 +774,6 @@ mod tests {
             let ent_b = ctx_b.register_extension_entity("b".into(), ExtensionVariant::Local);
             monitor_a.register(&ctx_a, key_a.clone(), ent_a, Some(sender_a));
             monitor_b.register(&ctx_b, key_b.clone(), ent_b, Some(sender_b));
-            monitor_a.apply_event(ExtensionLifecycleEvent::Spawned { key: key_a });
-            monitor_b.apply_event(ExtensionLifecycleEvent::Spawned { key: key_b });
 
             let (rep_tx, _rep_rx) = flume::bounded(8);
             let mut reporter = MetricsReporter::new(rep_tx);
@@ -827,7 +822,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
-                pending_spawn_signals: 0,
+                outstanding_spawn_signals: 0,
             };
 
             match lifecycle.next_event().await {
@@ -887,7 +882,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
-                pending_spawn_signals: 0,
+                outstanding_spawn_signals: 0,
             };
 
             let _ = lifecycle.next_event().await;
@@ -937,7 +932,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
-                pending_spawn_signals: 2,
+                outstanding_spawn_signals: 2,
             };
 
             let outcome =
@@ -945,7 +940,7 @@ mod tests {
 
             assert!(outcome.is_ok(), "wait_all_spawned must not hang");
             assert!(outcome.unwrap().is_ok());
-            assert_eq!(lifecycle.pending_spawn_signals, 0);
+            assert_eq!(lifecycle.outstanding_spawn_signals, 0);
         }));
     }
 
@@ -977,7 +972,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
-                pending_spawn_signals: 1,
+                outstanding_spawn_signals: 1,
             };
 
             let prev_hook = std::panic::take_hook();
@@ -993,7 +988,7 @@ mod tests {
                 Err(Error::JoinTaskError { is_panic, .. }) => assert!(is_panic),
                 other => panic!("expected JoinTaskError(is_panic), got {other:?}"),
             }
-            assert_eq!(lifecycle.pending_spawn_signals, 0);
+            assert_eq!(lifecycle.outstanding_spawn_signals, 0);
         }));
     }
 }
