@@ -1,0 +1,10 @@
+name: FB OTLP/HTTP Baseline (Logs, None)
+slug: fbit_logs_otlphttp_none_baseline
+description: Fluent Bit baseline passthrough for OTLP/HTTP logs with none compression
+meta:
+  binary: fbit
+  protocols:
+  - otlphttp
+  signals:
+  - logs
+  compression: none

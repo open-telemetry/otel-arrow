@@ -1,0 +1,18 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["fbit_logs_otlphttp_gzip_baseline"] = {
+  "name": "FB OTLP/HTTP Baseline (Logs, Gzip)",
+  "slug": "fbit_logs_otlphttp_gzip_baseline",
+  "description": "Fluent Bit baseline passthrough for OTLP/HTTP logs with gzip compression",
+  "meta": {
+    "binary": "fbit",
+    "protocols": [
+      "otlphttp"
+    ],
+    "signals": [
+      "logs"
+    ],
+    "compression": "gzip"
+  },
+  "env": null,
+  "tests": []
+};

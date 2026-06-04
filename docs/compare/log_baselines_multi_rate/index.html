@@ -31,8 +31,8 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.js"></script>
   <script>window.DATA_PATH = "../../comparison_data/suite";</script>
   <script>window.METRICS_META = {"cpu_percentage_normalized_avg": {"label": "CPU Average"}, "cpu_percentage_normalized_max": {"label": "CPU Max"}, "ram_mib_avg": {"label": "Memory Average"}, "ram_mib_max": {"label": "Memory Max"}, "network_tx_bytes_rate_avg": {"label": "Network TX Rate"}, "network_rx_bytes_rate_avg": {"label": "Network RX Rate"}, "dropped_logs_percentage": {"label": "Dropped Logs"}, "logs_delivery_deviation_percentage": {"label": "Logs Delivery Deviation"}, "logs_produced_rate": {"label": "Offered Load Rate"}, "loadgen_logs_sent_rate": {"label": "Loadgen Sent Rate"}, "logs_received_rate": {"label": "Collector Received Rate"}, "collector_logs_sent_rate": {"label": "Collector Sent Rate"}, "backend_logs_received_rate": {"label": "Backend Received Rate"}, "uncompressed_bytes_per_log": {"label": "Uncompressed Bytes Per Log"}, "egress_bytes_per_log": {"label": "Egress Bytes Per Log"}, "test_duration": {"label": "Test Duration"}};</script>
-  <script>window.META_DESCRIPTIONS = {"binary": {"dfe": "Dataflow Engine - the OTAP-native pipeline engine developed as a part of OTel Arrow.", "otc": "OpenTelemetry Collector (contrib distribution)."}, "protocols": {"otap": "OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches.", "otlp": "OpenTelemetry Protocol over gRPC (row-oriented protobuf).", "otlphttp": "OpenTelemetry Protocol over HTTP/protobuf."}, "signals": {"logs": "OpenTelemetry Logs signal.", "metrics": "OpenTelemetry Metrics signal.", "traces": "OpenTelemetry Traces signal."}, "compression": {"none": "No payload compression on the wire.", "gzip": "gzip payload compression.", "zstd": "zstd payload compression."}};</script>
-  <script>window.GLOSSARY = [{"term": "DFE", "definition": "Dataflow Engine - the OTAP-native Rust pipeline being benchmarked in this repo."}, {"term": "OTC", "definition": "OpenTelemetry Collector (contrib distribution) - the reference Go implementation."}, {"term": "OTAP", "definition": "OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches."}, {"term": "OTLP", "definition": "OpenTelemetry Protocol - the standard row-oriented gRPC/HTTP protobuf protocol."}, {"term": "OTLP HTTP", "definition": "OpenTelemetry Protocol over pure HTTP."}];</script>
+  <script>window.META_DESCRIPTIONS = {"binary": {"dfe": "Dataflow Engine - the OTAP-native pipeline engine developed as a part of OTel Arrow.", "otc": "OpenTelemetry Collector (contrib distribution).", "fbit": "Fluent Bit - A lightweight telemetry agent engine under the fluentd project umbrella."}, "protocols": {"otap": "OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches.", "otlp": "OpenTelemetry Protocol over gRPC (row-oriented protobuf).", "otlphttp": "OpenTelemetry Protocol over HTTP/protobuf."}, "signals": {"logs": "OpenTelemetry Logs signal.", "metrics": "OpenTelemetry Metrics signal.", "traces": "OpenTelemetry Traces signal."}, "compression": {"none": "No payload compression on the wire.", "gzip": "gzip payload compression.", "zstd": "zstd payload compression."}};</script>
+  <script>window.GLOSSARY = [{"term": "DFE", "definition": "Dataflow Engine - the OTAP-native Rust pipeline being benchmarked in this repo."}, {"term": "OTC", "definition": "OpenTelemetry Collector (contrib distribution) - the reference Go implementation."}, {"term": "FBIT", "definition": "Fluent Bit - An observability pipeline engine in the fluentd family."}, {"term": "OTAP", "definition": "OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches."}, {"term": "OTLP", "definition": "OpenTelemetry Protocol - the standard row-oriented gRPC/HTTP protobuf protocol."}, {"term": "OTLP HTTP", "definition": "OpenTelemetry Protocol over pure HTTP."}];</script>
   <script>window.COMPARISON_SLUG = "log_baselines_multi_rate";</script>
   <script src="../../comparison_data/suite/dfe_logs_otap_none_baseline/data.js"></script>
   <script src="../../comparison_data/suite/dfe_logs_otap_gzip_baseline/data.js"></script>
@@ -50,6 +50,12 @@
   <script src="../../comparison_data/suite/otc_logs_otlp_gzip_baseline/data.js"></script>
   <script src="../../comparison_data/suite/otc_logs_otlp_zstd_baseline/data.js"></script>
   <script src="../../comparison_data/suite/otc_logs_otlphttp_none_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/fbit_logs_otlp_none_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/fbit_logs_otlp_gzip_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/fbit_logs_otlp_zstd_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/fbit_logs_otlphttp_none_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/fbit_logs_otlphttp_gzip_baseline/data.js"></script>
+  <script src="../../comparison_data/suite/fbit_logs_otlphttp_zstd_baseline/data.js"></script>
   <script>window.COMPARISON = {
   "slug": "log_baselines_multi_rate",
   "name": "Log Baselines",
@@ -179,6 +185,36 @@
       "name": "OTC Logs OTLP/HTTP Baseline (None)",
       "slug": "otc_logs_otlphttp_none_baseline",
       "short": "OTC OTLP-HTTP/None"
+    },
+    {
+      "name": "FB Logs OTLP Baseline (None)",
+      "slug": "fbit_logs_otlp_none_baseline",
+      "short": "FB OTLP/None"
+    },
+    {
+      "name": "FB Logs OTLP Baseline (Gzip)",
+      "slug": "fbit_logs_otlp_gzip_baseline",
+      "short": "FB OTLP/Gzip"
+    },
+    {
+      "name": "FB Logs OTLP Baseline (Zstd)",
+      "slug": "fbit_logs_otlp_zstd_baseline",
+      "short": "FB OTLP/Zstd"
+    },
+    {
+      "name": "FB Logs OTLP/HTTP Baseline (None)",
+      "slug": "fbit_logs_otlphttp_none_baseline",
+      "short": "FB OTLP-HTTP/None"
+    },
+    {
+      "name": "FB Logs OTLP/HTTP Baseline (Gzip)",
+      "slug": "fbit_logs_otlphttp_gzip_baseline",
+      "short": "FB OTLP-HTTP/Gzip"
+    },
+    {
+      "name": "FB Logs OTLP/HTTP Baseline (Zstd)",
+      "slug": "fbit_logs_otlphttp_zstd_baseline",
+      "short": "FB OTLP-HTTP/Zstd"
     }
   ]
 };</script>

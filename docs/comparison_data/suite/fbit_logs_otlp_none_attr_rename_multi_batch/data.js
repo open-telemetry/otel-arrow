@@ -1,0 +1,18 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["fbit_logs_otlp_none_attr_rename_multi_batch"] = {
+  "name": "FB OTLP Attr Rename Multi Batch (Logs)",
+  "slug": "fbit_logs_otlp_none_attr_rename_multi_batch",
+  "description": "Fluent Bit OTLP logs, modify filter rename, swept across loadgen batch sizes at 400k signals/sec",
+  "meta": {
+    "binary": "fbit",
+    "protocols": [
+      "otlp"
+    ],
+    "signals": [
+      "logs"
+    ],
+    "compression": "none"
+  },
+  "env": null,
+  "tests": []
+};

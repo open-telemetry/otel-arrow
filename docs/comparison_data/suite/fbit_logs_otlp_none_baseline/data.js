@@ -1,0 +1,18 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["fbit_logs_otlp_none_baseline"] = {
+  "name": "FB OTLP Baseline (Logs, None)",
+  "slug": "fbit_logs_otlp_none_baseline",
+  "description": "Fluent Bit baseline passthrough for OTLP logs with none compression",
+  "meta": {
+    "binary": "fbit",
+    "protocols": [
+      "otlp"
+    ],
+    "signals": [
+      "logs"
+    ],
+    "compression": "none"
+  },
+  "env": null,
+  "tests": []
+};

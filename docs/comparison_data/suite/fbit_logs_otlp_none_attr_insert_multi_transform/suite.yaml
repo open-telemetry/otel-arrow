@@ -1,0 +1,11 @@
+name: FB OTLP Attr Insert Multi Transform (Logs)
+slug: fbit_logs_otlp_none_attr_insert_multi_transform
+description: Fluent Bit OTLP logs, modify filter insert sweep over 1-4 add actions
+  at 200k signals/sec
+meta:
+  binary: fbit
+  protocols:
+  - otlp
+  signals:
+  - logs
+  compression: none

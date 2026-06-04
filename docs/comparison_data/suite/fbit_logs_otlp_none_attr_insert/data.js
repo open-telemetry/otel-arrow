@@ -1,0 +1,18 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["fbit_logs_otlp_none_attr_insert"] = {
+  "name": "FB OTLP Attr Insert (Logs)",
+  "slug": "fbit_logs_otlp_none_attr_insert",
+  "description": "Fluent Bit OTLP logs, modify filter inserting processing.engine=benchmark",
+  "meta": {
+    "binary": "fbit",
+    "protocols": [
+      "otlp"
+    ],
+    "signals": [
+      "logs"
+    ],
+    "compression": "none"
+  },
+  "env": null,
+  "tests": []
+};
