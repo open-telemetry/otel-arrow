@@ -118,21 +118,6 @@ impl PipelineStage for ForkPipelineStage {
             },
         }
     }
-
-    fn supports_exec_on_attributes(&self) -> bool {
-        true
-    }
-
-    async fn execute_on_attributes(
-        &mut self,
-        attrs_record_batch: RecordBatch,
-        session_ctx: &SessionContext,
-        config_options: &ConfigOptions,
-        task_context: Arc<TaskContext>,
-        exec_options: &mut ExecutionState,
-    ) -> Result<RecordBatch> {
-        todo!()
-    }
 }
 
 #[cfg(test)]

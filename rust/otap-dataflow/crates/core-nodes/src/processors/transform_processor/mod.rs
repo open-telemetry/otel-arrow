@@ -585,7 +585,7 @@ mod test {
             },
         },
         schema::consts,
-        testing::round_trip::{otap_to_otlp, otlp_to_otap, to_otap_logs},
+        testing::round_trip::{otap_to_otlp, otlp_to_otap, to_logs_data, to_otap_logs},
     };
 
     use otap_df_otap::{
@@ -1456,6 +1456,110 @@ mod test {
                     }
                     _ => panic!("unexpected payload type"),
                 }
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_fork_with_route_to() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs |
+        fork {
+            where severity_text == "ERROR" |
+            route_to "errors_only_port"
+        }
+        {
+            set attributes["x"] = "foo" |
+            route_to "decorated_everything"
+        }
+        "#;
+
+        let mut processor = try_create_with_opl_query(query, &runtime).unwrap();
+        let error_port = set_pdata_sender("errors_only_port", &mut processor);
+        let everything_port = set_pdata_sender("decorated_everything", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let log_records = vec![
+                    LogRecord::build()
+                        .severity_text("ERROR")
+                        .event_name("event1")
+                        .finish(),
+                    LogRecord::build()
+                        .severity_text("WARN")
+                        .event_name("event1")
+                        .finish(),
+                ];
+                let pdata = OtapPdata::new_default(
+                    otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records))).into(),
+                );
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let mut out = ctx.drain_pdata().await.into_iter().collect::<Vec<_>>();
+                assert_eq!(out.len(), 1);
+                let default_out: OtapArrowRecords = out
+                    .pop()
+                    .unwrap()
+                    .payload()
+                    .try_into_with_default()
+                    .unwrap();
+                assert_eq!(default_out, OtapArrowRecords::Logs(Logs::default()));
+
+                // assert on what came out of hte error out port
+                let mut routed = Vec::new();
+                while let Ok(msg) = error_port.try_recv() {
+                    routed.push(msg);
+                }
+                assert_eq!(routed.len(), 1);
+                let (_, r) = routed.pop().unwrap().into_parts();
+                let OtlpProtoMessage::Logs(logs_data) =
+                    otap_to_otlp(&r.try_into_with_default().unwrap())
+                else {
+                    panic!("unexpected signal type from result")
+                };
+                assert_eq!(logs_data.resource_logs.len(), 1);
+                assert_eq!(logs_data.resource_logs[0].scope_logs.len(), 1);
+                assert_eq!(
+                    &logs_data.resource_logs[0].scope_logs[0].log_records,
+                    &[LogRecord::build()
+                        .severity_text("ERROR")
+                        .event_name("event1")
+                        .finish()]
+                );
+
+                // assert on what came out of the everything out port
+                let mut routed = Vec::new();
+                while let Ok(msg) = everything_port.try_recv() {
+                    routed.push(msg);
+                }
+                assert_eq!(routed.len(), 1);
+                let (_, r) = routed.pop().unwrap().into_parts();
+                let OtlpProtoMessage::Logs(logs_data) =
+                    otap_to_otlp(&r.try_into_with_default().unwrap())
+                else {
+                    panic!("unexpected signal type from result")
+                };
+                assert_eq!(logs_data.resource_logs.len(), 1);
+                assert_eq!(logs_data.resource_logs[0].scope_logs.len(), 1);
+                assert_eq!(
+                    &logs_data.resource_logs[0].scope_logs[0].log_records,
+                    &[
+                        LogRecord::build()
+                            .severity_text("ERROR")
+                            .event_name("event1")
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("foo"))])
+                            .finish(),
+                        LogRecord::build()
+                            .severity_text("WARN")
+                            .event_name("event1")
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("foo"))])
+                            .finish(),
+                    ]
+                );
             })
             .validate(|_ctx| async move {})
     }
