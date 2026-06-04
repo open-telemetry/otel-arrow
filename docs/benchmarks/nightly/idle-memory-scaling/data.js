@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780543780766,
+  "lastUpdate": 1780600549408,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2356,6 +2356,82 @@ window.BENCHMARK_DATA = {
             "value": 39.18,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=39.5 MiB, error=0.9%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Jake Dern",
+            "username": "JakeDern",
+            "email": "33842784+JakeDern@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c6ed105cab28e537bf5c2c81a97e9b63677d3cff",
+          "message": "fix(comparison_dashboard): Remove fluent bit otlpgrpc gzip/zstd suites (#3200)\n\n# Change Summary\n\nFluent bit seems to ignore compression settings on the otlp grpc path,\nso removing those suites.",
+          "timestamp": "2026-06-04T03:45:28Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c6ed105cab28e537bf5c2c81a97e9b63677d3cff"
+        },
+        "date": 1780600548024,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 15.51,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.76,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9928,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 16.73,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=16.3 MiB, error=2.8%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 16.07,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=17.0 MiB, error=6.0%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 18.53,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.6 MiB, error=0.1%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 21.4,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=21.6 MiB, error=0.9%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 28.92,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=27.7 MiB, error=4.2%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 39.36,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=39.9 MiB, error=1.3%"
           }
         ]
       }
