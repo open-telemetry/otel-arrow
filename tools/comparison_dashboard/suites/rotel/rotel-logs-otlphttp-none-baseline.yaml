@@ -1,0 +1,19 @@
+name: Rotel OTLP/HTTP Baseline (Logs)
+slug: rotel_logs_otlphttp_none_baseline
+description: rotel-dev/rotel baseline for OTLP/HTTP logs with no compression
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/rotel-single-core-multi-rate.yaml
+
+meta:
+  binary: rotel
+  protocols: [otlphttp]
+  signals: [logs]
+  compression: none
+
+variables:
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_logs.yaml
+  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otlp-http.yaml.j2
+  backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/backend/otlp-http.yaml.j2
+  protocol: otlphttp
+  signal: logs
+  loadgen_max_batch_size: 1000
+  compression_method: none

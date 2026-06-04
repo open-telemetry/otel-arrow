@@ -85,3 +85,19 @@ suites:
   - name: OTC Metrics OTLP/HTTP Baseline (None)
     slug: otc_metrics_otlphttp_none_baseline
     short: OTC OTLP-HTTP/None
+
+  # Rotel OTLP
+  - name: Rotel Metrics OTLP Baseline (None)
+    slug: rotel_metrics_otlp_none_baseline
+    short: Rotel OTLP/None
+  - name: Rotel Metrics OTLP Baseline (Gzip)
+    slug: rotel_metrics_otlp_gzip_baseline
+    short: Rotel OTLP/Gzip
+
+  # Rotel OTLP/HTTP
+  - name: Rotel Metrics OTLP/HTTP Baseline (None)
+    slug: rotel_metrics_otlphttp_none_baseline
+    short: Rotel OTLP-HTTP/None
+  - name: Rotel Metrics OTLP/HTTP Baseline (Gzip)
+    slug: rotel_metrics_otlphttp_gzip_baseline
+    short: Rotel OTLP-HTTP/Gzip

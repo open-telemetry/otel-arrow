@@ -16,6 +16,7 @@ variables:
   df_engine_image: df_engine:latest
   otelcol_image: otel/opentelemetry-collector-contrib:latest
   fluent_bit_image: fluent/fluent-bit:5.0
+  rotel_image: streamfold/rotel:latest
 
 # Allowed values for every meta key a suite may declare. Validation rejects
 # any meta key not listed here, and any value (or list element) outside the
@@ -27,6 +28,7 @@ meta:
     - { value: dfe, description: "Dataflow Engine - the OTAP-native pipeline engine developed as a part of OTel Arrow." }
     - { value: otc, description: "OpenTelemetry Collector (contrib distribution)." }
     - { value: fbit, description: "Fluent Bit - A lightweight telemetry agent engine under the fluentd project umbrella." }
+    - { value: rotel, description: "rotel-dev/rotel - Rust-based telemetry collector." }
   protocols:
     - { value: otap, description: "OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches." }
     - { value: otlp, description: "OpenTelemetry Protocol over gRPC (row-oriented protobuf)." }
@@ -50,6 +52,8 @@ glossary:
     definition: OpenTelemetry Collector (contrib distribution) - the reference Go implementation.
   - term: FBIT
     definition: Fluent Bit - An observability pipeline engine in the fluentd family.
+  - term: Rotel
+    definition: rotel-dev/rotel - Rust-based telemetry collector.
   - term: OTAP
     definition: OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches.
   - term: OTLP
@@ -181,6 +185,16 @@ suites:
   - suites/otc/otc-logs-otlp-none-transform-rename-multi-transform.yaml
   - suites/otc/otc-logs-otap-none-attr-insert-multi-transform.yaml
   - suites/otc/otc-logs-otap-none-attr-rename-multi-transform.yaml
+  - suites/rotel/rotel-logs-otlp-none-baseline.yaml
+  - suites/rotel/rotel-logs-otlp-gzip-baseline.yaml
+  - suites/rotel/rotel-logs-otlphttp-none-baseline.yaml
+  - suites/rotel/rotel-logs-otlphttp-gzip-baseline.yaml
+  - suites/rotel/rotel-metrics-otlp-none-baseline.yaml
+  - suites/rotel/rotel-metrics-otlp-gzip-baseline.yaml
+  - suites/rotel/rotel-metrics-otlphttp-none-baseline.yaml
+  - suites/rotel/rotel-metrics-otlphttp-gzip-baseline.yaml
+  - suites/rotel/rotel-traces-otlp-none-baseline.yaml
+  - suites/rotel/rotel-traces-otlp-gzip-baseline.yaml
 
   # Fluent Bit
   - suites/fbit/fbit-logs-otlp-none-baseline.yaml
