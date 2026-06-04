@@ -932,11 +932,7 @@ mod apply_column_ops_tests {
             .expect("batch should be produced");
 
         let schema = out.schema();
-        let names: Vec<&str> = schema
-            .fields()
-            .iter()
-            .map(|f| f.name().as_str())
-            .collect();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
         assert!(
             !names.contains(&ch_consts::SCOPE_ID),
             "scope_id must be dropped when ScopeAttrs payload is absent, got {names:?}"
