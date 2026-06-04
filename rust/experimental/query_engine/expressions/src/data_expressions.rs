@@ -169,10 +169,6 @@ pub struct BranchDataExpression {
 
     /// Branches which will conditionally process
     branches: Vec<DataExpressionBranch>,
-
-    /// If `Some`, data that does not match the condition in any of the other branches
-    /// will be handled by this branch
-    default_branch: Option<Vec<DataExpression>>,
 }
 
 impl BranchDataExpression {
@@ -181,7 +177,6 @@ impl BranchDataExpression {
             query_location,
             branches_consume_records,
             branches: Vec::new(),
-            default_branch: None,
         }
     }
 
@@ -190,17 +185,8 @@ impl BranchDataExpression {
         self
     }
 
-    pub fn with_default_branch(mut self, expressions: Vec<DataExpression>) -> Self {
-        self.default_branch = Some(expressions);
-        self
-    }
-
     pub fn get_branches(&self) -> &[DataExpressionBranch] {
         &self.branches
-    }
-
-    pub fn get_default_branch(&self) -> Option<&[DataExpression]> {
-        self.default_branch.as_deref()
     }
 
     pub fn branches_consume_records(&self) -> bool {
@@ -229,10 +215,6 @@ impl BranchDataExpression {
                     // here everything will pass the filter. That means we can drop the test of the
                     // branches because all remaining rows will be evaluated by this branch
                     _ = self.branches.split_off(i + 1);
-
-                    // drop the default branch - no need to keep it as there will be now rows for
-                    // for it to evaluate
-                    self.default_branch = None;
                 } else {
                     // here nothing will pass the filter, so we can basically discard this branch
                     self.branches.remove(i);
@@ -246,13 +228,6 @@ impl BranchDataExpression {
             }
 
             i += 1;
-        }
-
-        if let Some(default_branch) = self.default_branch.as_mut() {
-            // optimize the expressions inside the branch
-            for expression in default_branch {
-                expression.try_fold(scope)?;
-            }
         }
 
         Ok(())
@@ -527,15 +502,20 @@ mod test {
                         "out2",
                     )),
                 ))],
+                // this should also get removed
             ))
             // this should also get removed
-            .with_default_branch(vec![DataExpression::Output(OutputDataExpression::new(
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
-                OutputExpression::NamedSink(StringScalarExpression::new(
+                None,
+                vec![DataExpression::Output(OutputDataExpression::new(
                     QueryLocation::new_fake(),
-                    "out2",
-                )),
-            ))]);
+                    OutputExpression::NamedSink(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "out2",
+                    )),
+                ))],
+            ));
 
         let constants = Vec::new();
         let functions = Vec::new();
@@ -653,13 +633,17 @@ mod test {
                 ))],
             ))
             // this should also get removed
-            .with_default_branch(vec![DataExpression::Output(OutputDataExpression::new(
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
-                OutputExpression::NamedSink(StringScalarExpression::new(
+                None,
+                vec![DataExpression::Output(OutputDataExpression::new(
                     QueryLocation::new_fake(),
-                    "out2",
-                )),
-            ))]);
+                    OutputExpression::NamedSink(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "out2",
+                    )),
+                ))],
+            ));
 
         let constants = Vec::new();
         let functions = Vec::new();
@@ -809,14 +793,18 @@ mod test {
                     ),
                 )],
             ))
-            // this should be kept
-            .with_default_branch(vec![DataExpression::Output(OutputDataExpression::new(
+            // this should also be kept
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
-                OutputExpression::NamedSink(StringScalarExpression::new(
+                None,
+                vec![DataExpression::Output(OutputDataExpression::new(
                     QueryLocation::new_fake(),
-                    "out2",
-                )),
-            ))]);
+                    OutputExpression::NamedSink(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "out2",
+                    )),
+                ))],
+            ));
 
         let constants = Vec::new();
         let functions = Vec::new();
@@ -883,13 +871,17 @@ mod test {
                 )],
             ))
             // this should be kept because
-            .with_default_branch(vec![DataExpression::Output(OutputDataExpression::new(
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
-                OutputExpression::NamedSink(StringScalarExpression::new(
+                None,
+                vec![DataExpression::Output(OutputDataExpression::new(
                     QueryLocation::new_fake(),
-                    "out2",
-                )),
-            ))]);
+                    OutputExpression::NamedSink(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "out2",
+                    )),
+                ))],
+            ));
 
         assert_eq!(expr, expected);
     }

@@ -246,7 +246,7 @@ impl PipelinePlanner {
                     // that some branch consumes all records, leaving none for the subsequent
                     // branches, which is non-sensible. Hence, we plan this into a the
                     // "conditional" pipeline stage, while treating non-terminal branch as invalid
-                    // if a condition is missing.
+                    // when a condition is missing and it's not the final branch.
 
                     let expr_planner = if self.plan_for_attributes {
                         ExprPlanner::for_attributes(self.filter_attribute_keys_case_sensitive)
@@ -256,15 +256,9 @@ impl PipelinePlanner {
                         )
                     };
 
+                    let mut default_branch = None;
                     let mut pipeline_branches = vec![];
-                    for branch in branch_expr.get_branches() {
-                        let predicate = match branch.get_condition() {
-                            Some(condition) => expr_planner.plan_logical(condition, functions)?,
-                            None => {
-                                todo!("return invalid")
-                            }
-                        };
-
+                    for (i, branch) in branch_expr.get_branches().iter().enumerate() {
                         let pipeline_stages = self.plan_data_exprs(
                             branch.get_expressions(),
                             functions,
@@ -272,18 +266,24 @@ impl PipelinePlanner {
                             otap_batch,
                         )?;
 
-                        pipeline_branches.push(ConditionalPipelineStageBranch::new(
-                            predicate,
-                            pipeline_stages,
-                        ));
+                        match branch.get_condition() {
+                            Some(condition) => {
+                                let predicate = expr_planner.plan_logical(condition, functions)?;
+                                pipeline_branches.push(ConditionalPipelineStageBranch::new(
+                                    predicate,
+                                    pipeline_stages,
+                                ))
+                            }
+                            None => {
+                                let is_final_branch = i == branch_expr.get_branches().len() - 1;
+                                if !is_final_branch {
+                                    todo!("return invalid")
+                                } else {
+                                    default_branch = Some(pipeline_stages)
+                                }
+                            }
+                        };
                     }
-
-                    let default_branch = branch_expr
-                        .get_default_branch()
-                        .map(|data_exprs| {
-                            self.plan_data_exprs(data_exprs, functions, session_ctx, otap_batch)
-                        })
-                        .transpose()?;
 
                     let pipeline_stage =
                         ConditionalPipelineStage::new(pipeline_branches, default_branch);
