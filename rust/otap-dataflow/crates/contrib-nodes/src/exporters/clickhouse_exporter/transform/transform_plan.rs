@@ -128,8 +128,10 @@ pub enum ColumnTransformOp {
     /// Inline ListArray values containing 'child' records to the main signal batch (e.g. spanEvents).
     InlineChildLists(ArrowPayloadType),
 
-    // Inline MapArray values containing 'child' records to the main signal batch (e.g. spanAttrs)
-    InlineChildMap(ArrowPayloadType, String, String),
+    /// Build an `Array(Map)` of child-record attributes (span events/links) from a per-parent
+    /// `List<UInt32>` of child ids: join each child id to its attribute map, then drop the id-list
+    /// column. The second field is the output column name.
+    InlineChildAttrList(ArrowPayloadType, String),
 
     /// Extract a single key from an inlined attribute column into a companion string column.
     ExtractMapValue {
@@ -374,17 +376,20 @@ impl TransformationPlan {
             .inline_child_rb_arrays(consts::ID, ArrowPayloadType::SpanEvents);
         self.column_ops
             .inline_child_rb_arrays(consts::ID, ArrowPayloadType::SpanLinks);
-        // Add the MapArray vlaues for child record batches (attribute types) to the batch.
-        self.column_ops.inline_child_rb_map(
-            consts::ID,
+        // Build per-event / per-link attribute maps as `Array(Map(...))` aligned with the event/link
+        // lists above. `inline_child_rb_arrays` expands each child's own id into a per-span
+        // `List<UInt32>` (`EVENTS_ID_INTERNAL` / `LINKS_ID_INTERNAL`); these ops walk that list, join
+        // each child id to its attribute map, emit one map per event/link, and drop the id-list
+        // column. They run in the second pass of `apply_column_ops` since the id-list columns are
+        // synthetic (produced by the inlining above).
+        self.column_ops.inline_child_attr_list(
+            ch_consts::EVENTS_ID_INTERNAL,
             ArrowPayloadType::SpanEventAttrs,
-            consts::ATTRIBUTES,
             ch_consts::CH_EVENTS_ATTRIBUTES,
         );
-        self.column_ops.inline_child_rb_map(
-            consts::ID,
+        self.column_ops.inline_child_attr_list(
+            ch_consts::LINKS_ID_INTERNAL,
             ArrowPayloadType::SpanLinkAttrs,
-            consts::ATTRIBUTES,
             ch_consts::CH_LINKS_ATTRIBUTES,
         );
 
@@ -450,6 +455,8 @@ impl TransformationPlan {
                     consts::TRACE_STATE.into(),
                     ch_consts::CH_LINKS_TRACE_STATE.into(),
                 ),
+                // The link's own id, grouped per span, to join per-link attributes below.
+                (consts::ID.into(), ch_consts::LINKS_ID_INTERNAL.into()),
             ]),
         });
     }
@@ -462,6 +469,8 @@ impl TransformationPlan {
                     ch_consts::CH_EVENTS_TIMESTAMP.into(),
                 ),
                 (consts::NAME.into(), ch_consts::CH_EVENTS_NAME.into()),
+                // The event's own id, grouped per span, to join per-event attributes below.
+                (consts::ID.into(), ch_consts::EVENTS_ID_INTERNAL.into()),
             ]),
         });
     }
@@ -584,21 +593,17 @@ impl ColumnOperations {
         self.add_op(column, ColumnTransformOp::InlineChildLists(payload_type));
     }
 
-    /// Inline a map of child record batches into a column.
-    pub fn inline_child_rb_map(
+    /// Build an `Array(Map)` attribute column for child records (span events/links) from a
+    /// per-parent `List<UInt32>` of child ids, then drop that id-list column.
+    pub fn inline_child_attr_list(
         &mut self,
         column: &str,
         payload_type: ArrowPayloadType,
-        from_col: &str,
         to_col: &str,
     ) {
         self.add_op(
             column,
-            ColumnTransformOp::InlineChildMap(
-                payload_type,
-                from_col.to_string(),
-                to_col.to_string(),
-            ),
+            ColumnTransformOp::InlineChildAttrList(payload_type, to_col.to_string()),
         );
     }
 
@@ -800,30 +805,24 @@ mod tests {
 
         assert!(
             plan.column_ops
-                .get_ops(consts::ID)
+                .get_ops(ch_consts::EVENTS_ID_INTERNAL)
                 .is_some_and(|ops| ops.iter().any(|op| matches!(
                     op,
-                    ColumnTransformOp::InlineChildMap(
-                        ArrowPayloadType::SpanEventAttrs,
-                        from,
-                        to
-                    ) if from == consts::ATTRIBUTES && to == ch_consts::CH_EVENTS_ATTRIBUTES
+                    ColumnTransformOp::InlineChildAttrList(ArrowPayloadType::SpanEventAttrs, to)
+                        if to == ch_consts::CH_EVENTS_ATTRIBUTES
                 ))),
-            "spans plan should inline span event attributes"
+            "spans plan should build per-event attribute maps"
         );
 
         assert!(
             plan.column_ops
-                .get_ops(consts::ID)
+                .get_ops(ch_consts::LINKS_ID_INTERNAL)
                 .is_some_and(|ops| ops.iter().any(|op| matches!(
                     op,
-                    ColumnTransformOp::InlineChildMap(
-                        ArrowPayloadType::SpanLinkAttrs,
-                        from,
-                        to
-                    ) if from == consts::ATTRIBUTES && to == ch_consts::CH_LINKS_ATTRIBUTES
+                    ColumnTransformOp::InlineChildAttrList(ArrowPayloadType::SpanLinkAttrs, to)
+                        if to == ch_consts::CH_LINKS_ATTRIBUTES
                 ))),
-            "spans plan should inline span link attributes"
+            "spans plan should build per-link attribute maps"
         );
 
         assert!(

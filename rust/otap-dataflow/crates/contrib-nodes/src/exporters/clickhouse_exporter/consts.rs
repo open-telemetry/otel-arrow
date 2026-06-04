@@ -38,3 +38,9 @@ pub const CH_LINKS_TRACE_ID: &str = "Links.TraceId";
 pub const CH_LINKS_SPAN_ID: &str = "Links.SpanId";
 pub const CH_LINKS_TRACE_STATE: &str = "Links.TraceState";
 pub const CH_LINKS_ATTRIBUTES: &str = "Links.Attributes";
+
+// Internal, never-persisted column names: the span event/link's own `id`, grouped per span into a
+// `List<UInt32>`. Used only to join per-event/link attributes into `Array(Map)`; dropped before the
+// batch is written.
+pub const EVENTS_ID_INTERNAL: &str = "events_id_internal";
+pub const LINKS_ID_INTERNAL: &str = "links_id_internal";

@@ -65,7 +65,7 @@ use crate::exporters::clickhouse_exporter::transform::transform_attributes::{
     group_attributes_to_map_str, group_rows_by_id,
 };
 use crate::exporters::clickhouse_exporter::transform::transform_column::{
-    ColumnOpCtx, apply_one_op,
+    ColumnOpCtx, apply_one_op, fixed_binary_to_hex_string,
 };
 use crate::exporters::clickhouse_exporter::transform::transform_plan::{
     ColumnOperations, ColumnTransformOp, MultiColumnTransformOp, TransformationPlan,
@@ -351,6 +351,28 @@ fn build_list_arrays(
     id_col: &PrimitiveArray<UInt16Type>,
     targets: &HashMap<String, ArrayRef>,
 ) -> Result<(HashMap<u32, u32>, HashMap<String, ArrayRef>), ClickhouseExporterError> {
+    // Trace/span id columns arrive as FixedSizeBinary (possibly dictionary-encoded). Hex-encode
+    // them to Utf8 up front so the grouped list becomes `Array(String)` of hex — matching the
+    // top-level TraceId/SpanId — rather than `Array(FixedSizeBinary)`, which ClickHouse would
+    // otherwise coerce to `Array(String)` as raw bytes.
+    let targets: HashMap<String, ArrayRef> = targets
+        .iter()
+        .map(|(name, array)| {
+            let needs_hex = matches!(array.data_type(), DataType::FixedSizeBinary(_))
+                || matches!(
+                    array.data_type(),
+                    DataType::Dictionary(_, v) if matches!(**v, DataType::FixedSizeBinary(_))
+                );
+            let array = if needs_hex {
+                fixed_binary_to_hex_string(array)?
+            } else {
+                array.clone()
+            };
+            Ok((name.clone(), array))
+        })
+        .collect::<Result<HashMap<_, _>, ClickhouseExporterError>>()?;
+    let targets = &targets;
+
     let groups = group_rows_by_id(id_col);
 
     let mut old_to_new_map: HashMap<u32, u32> = HashMap::with_capacity(groups.len());
@@ -1785,21 +1807,6 @@ mod realistic_otap_tests {
                 .expect("rebuild batch with renamed field")
         }
 
-        /// Return a copy of `batch` with the named columns removed (order otherwise preserved).
-        fn drop_fields(batch: &RecordBatch, drop: &[&str]) -> RecordBatch {
-            let mut fields = Vec::new();
-            let mut columns = Vec::new();
-            for (idx, field) in batch.schema().fields().iter().enumerate() {
-                if drop.contains(&field.name().as_str()) {
-                    continue;
-                }
-                fields.push(field.as_ref().clone());
-                columns.push(batch.column(idx).clone());
-            }
-            RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-                .expect("rebuild batch without dropped fields")
-        }
-
         /// One read-back row of the `otel_logs` table, projected to plain scalar types so the
         /// RowBinary decoder doesn't have to reason about `LowCardinality`/`Map` shapes. The map
         /// lookups confirm `Map(LowCardinality(String), String)` accepted our `Map<Utf8,Utf8>`.
@@ -1912,8 +1919,8 @@ mod realistic_otap_tests {
 
         /// One read-back row of the `otel_traces` table. Nested (`Events.*` / `Links.*`) columns are
         /// projected to lengths / concatenations / element lookups to confirm `List<...> -> Array(...)`
-        /// coercion without wrestling the RowBinary decoder. The `*.Attributes` arrays are excluded
-        /// (see the KNOWN ISSUE note in the test body).
+        /// coercion without wrestling the RowBinary decoder, including the per-event/link
+        /// `Array(Map(..))` attribute columns.
         #[derive(clickhouse::Row, serde::Deserialize, Debug)]
         struct SpanRow {
             timestamp_nanos: i64,
@@ -1936,6 +1943,9 @@ mod realistic_otap_tests {
             links_count: u64,
             link0_trace_id: String,
             link0_trace_state: String,
+            event0_db_system: String,
+            event1_db_statement: String,
+            link0_kind: String,
         }
 
         #[tokio::test]
@@ -1955,14 +1965,8 @@ mod realistic_otap_tests {
                 .expect("spans batch must exist")
                 .clone();
 
-            // KNOWN LIMITATION: event/link attributes are emitted as a flat `Map<Utf8,Utf8>`
-            // joined on the *span* id, but the traces schema needs
-            // `Array(Map(LowCardinality(String), String))` grouped *per event/link* (a two-level
-            // span -> event -> event-attrs join). Inserting the current shape fails server-side with
-            //   "CAST AS Map can only be performed from tuples of array ...
-            //    from type Map(...) to type Array(Map(...))" (TYPE_MISMATCH).
-            // Pin the current shape here, then drop these two columns and validate that every other
-            // trace column coerces and round-trips.
+            // Event/link attributes are emitted as `Array(Map(LowCardinality(String), String))`
+            // grouped per event/link, matching the traces schema, so the full batch inserts directly.
             for attr_col in [
                 ch_consts::CH_EVENTS_ATTRIBUTES,
                 ch_consts::CH_LINKS_ATTRIBUTES,
@@ -1977,25 +1981,17 @@ mod realistic_otap_tests {
                     .data_type()
                     .clone();
                 assert!(
-                    matches!(dt, DataType::Map(_, _)),
-                    "{attr_col} is currently {dt:?}; it must become Array(Map(..)) \
-                     grouped per event/link before it can be inserted"
+                    matches!(dt, DataType::List(_)),
+                    "{attr_col} should be Array(Map(..)) grouped per event/link, but is {dt:?}"
                 );
             }
-            let landable = drop_fields(
-                &spans_batch,
-                &[
-                    ch_consts::CH_EVENTS_ATTRIBUTES,
-                    ch_consts::CH_LINKS_ATTRIBUTES,
-                ],
-            );
 
             let writer = ClickHouseWriter::new(&config)
                 .await
                 .expect("writer init creates db + tables");
             let mut metrics = fresh_metrics();
             let mut write_batches = HashMap::new();
-            _ = write_batches.insert(ArrowPayloadType::Spans, landable);
+            _ = write_batches.insert(ArrowPayloadType::Spans, spans_batch.clone());
             writer
                 .write_batches(&write_batches, &mut metrics)
                 .await
@@ -2023,7 +2019,10 @@ mod realistic_otap_tests {
                        arrayMap(x -> toInt64(toUnixTimestamp64Nano(x)), `Events.Timestamp`) AS events_ts, \
                        toUInt64(length(`Links.SpanId`))          AS links_count, \
                        `Links.TraceId`[1]                        AS link0_trace_id, \
-                       `Links.TraceState`[1]                     AS link0_trace_state \
+                       `Links.TraceState`[1]                     AS link0_trace_state, \
+                       `Events.Attributes`[1]['db.system']       AS event0_db_system, \
+                       `Events.Attributes`[2]['db.statement']    AS event1_db_statement, \
+                       `Links.Attributes`[1]['link.kind']        AS link0_kind \
                      FROM otap_e2e_traces.otel_traces",
                 )
                 .fetch_all::<SpanRow>()
@@ -2055,21 +2054,20 @@ mod realistic_otap_tests {
             assert_eq!(row.links_count, 1);
             assert_eq!(row.link0_trace_state, "linked=true");
 
-            // KNOWN LIMITATION: unlike the top-level TraceId (hex Utf8 -> String), Links/Events
-            // trace & span ids flow through the list-extraction path, which keeps them as
-            // `FixedSizeBinary` instead of hex-encoding. ClickHouse coerces Array(FixedSizeBinary)
-            // -> Array(String) as RAW BYTES, so the value lands un-hex-encoded (the fixture's 0x44
-            // bytes read back as "DDDD..." rather than the expected hex "4444...").
+            // Event/link ids are hex-encoded like the top-level TraceId: the list-extraction path
+            // hex-encodes FixedSizeBinary to Utf8 before grouping, so `Array(String)` round-trips
+            // as hex.
             assert!(
-                matches!(
-                    links_trace_id_inner_type(&spans_batch),
-                    DataType::FixedSizeBinary(_)
-                ),
-                "Links.TraceId inner should be hex-encoded Utf8 like the top-level \
-                 TraceId, but is {:?}",
+                matches!(links_trace_id_inner_type(&spans_batch), DataType::Utf8),
+                "Links.TraceId inner should be hex-encoded Utf8, but is {:?}",
                 links_trace_id_inner_type(&spans_batch)
             );
-            assert_eq!(row.link0_trace_id, "DDDDDDDDDDDDDDDD"); // 16 raw 0x44 bytes, not hex "4444.."
+            assert_eq!(row.link0_trace_id, "44".repeat(16)); // 16 bytes of 0x44, hex-encoded
+
+            // Array(Map(..)): per-event / per-link attributes land aligned with event/link order.
+            assert_eq!(row.event0_db_system, "clickhouse");
+            assert_eq!(row.event1_db_statement, "INSERT INTO traces");
+            assert_eq!(row.link0_kind, "causal");
 
             // Encoding-dependent fields: cross-check against exactly what the transform emitted.
             let expect = |name: &str| string_values(&spans_batch, name)[0].clone();
