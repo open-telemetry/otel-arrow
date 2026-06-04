@@ -392,7 +392,7 @@ pub(crate) fn parse_if_else_operator_call(
                     // under normal invocation of this function this shouldn't happen as this
                     // missing expression should be caught by the parser
                     ParserError::SyntaxError(
-                        else_query_location,
+                        else_query_location.clone(),
                         "expected else_expression to contain one inner if_else_branch_expression"
                             .to_string(),
                     )
@@ -409,7 +409,11 @@ pub(crate) fn parse_if_else_operator_call(
                 }
                 let (else_branch_data_exprs, parent) = else_branch_exprs.into_parts();
                 pipeline_builder = parent;
-                branch_expr = branch_expr.with_default_branch(else_branch_data_exprs);
+                branch_expr = branch_expr.with_branch(DataExpressionBranch::new(
+                    else_query_location,
+                    None,
+                    else_branch_data_exprs,
+                ));
             }
             _ => {
                 return Err(ParserError::SyntaxError(
@@ -784,7 +788,11 @@ mod tests {
                     Some(equals_logical_expr("severity_text", "INFO")),
                     vec![assign_attribute_expression("important", "rarely")],
                 ))
-                .with_default_branch(vec![assign_attribute_expression("important", "no")]),
+                .with_branch(DataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    None,
+                    vec![assign_attribute_expression("important", "no")],
+                )),
         );
         assert_eq!(expressions[0], expected);
     }
@@ -852,7 +860,11 @@ mod tests {
                         assign_attribute_expression("triggers_alarm", "true"),
                     ],
                 ))
-                .with_default_branch(vec![assign_attribute_expression("important", "no")]),
+                .with_branch(DataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    None,
+                    vec![assign_attribute_expression("important", "no")],
+                )),
         );
         assert_eq!(expressions[0], expected);
     }
@@ -1281,26 +1293,30 @@ mod tests {
                         ),
                     ))],
                 ))
-                .with_default_branch(vec![DataExpression::Transform(TransformExpression::Set(
-                    SetTransformExpression::new(
-                        QueryLocation::new_fake(),
-                        ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                .with_branch(DataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    None,
+                    vec![DataExpression::Transform(TransformExpression::Set(
+                        SetTransformExpression::new(
                             QueryLocation::new_fake(),
-                            None,
-                            1,
-                            Vec::new(),
-                        )),
-                        MutableValueExpression::Source(SourceScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                                StaticScalarExpression::String(StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "attributes",
-                                )),
-                            )]),
-                        )),
-                    ),
-                ))]),
+                            ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                None,
+                                1,
+                                Vec::new(),
+                            )),
+                            MutableValueExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "attributes",
+                                    )),
+                                )]),
+                            )),
+                        ),
+                    ))],
+                )),
         );
         assert_eq!(&expressions[0], &expected);
 
