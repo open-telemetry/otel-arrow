@@ -3,60 +3,60 @@
     "extra": "Rotel OTLP/HTTP Baseline (Metrics)/300k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": -1.6826214790344238
+    "value": -1.157393217086792
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline (Metrics)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 92.2899391721471
+    "value": 92.22232923577184
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline (Metrics)/300k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 95.59228223540431
+    "value": 93.4138816199377
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline (Metrics)/300k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 61.93697916666667
+    "value": 43.381510416666664
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline (Metrics)/300k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 78.3828125
+    "value": 44.859375
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline (Metrics)/300k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 299153.6133015663
+    "value": 301658.42992278084
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline (Metrics)/300k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 302106.60062713164
+    "value": 303079.3854863043
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline (Metrics)/300k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000485
+    "value": 60.000488
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline (Metrics)/300k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 12951866.689057356
+    "value": 12951962.119688774
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline (Metrics)/300k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": 58999777.11856792
+    "value": 58966610.37811823
   }
 ]

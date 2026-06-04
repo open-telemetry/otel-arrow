@@ -3,24 +3,66 @@
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/800k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 100.0
+    "value": 20.11486053466797
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/800k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 99.91487377357906
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/800k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.41574097135741
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/800k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 10528.125130208333
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/800k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 11218.7109375
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/800k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 801914.904833853
+    "value": 414126.3042419376
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/800k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 0.0
+    "value": 330825.3776666921
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/800k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000487
+    "value": 60.00064
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/800k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 6114812.710850984
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/800k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 152773269.14874068
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/800k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 18.48350557015515
   }
 ]

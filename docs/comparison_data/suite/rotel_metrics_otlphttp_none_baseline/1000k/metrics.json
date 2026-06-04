@@ -3,24 +3,60 @@
     "extra": "Rotel OTLP/HTTP Baseline (Metrics)/1000k - Dropped Metrics %",
     "name": "dropped_metrics_percentage",
     "unit": "%",
-    "value": 100.0
+    "value": 21.95364761352539
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Metrics)/1000k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 100.22473801675278
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Metrics)/1000k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.6152959599123
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Metrics)/1000k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 11456.814973958333
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Metrics)/1000k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 12153.5859375
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline (Metrics)/1000k - Metric Throughput",
     "name": "metrics_produced_rate",
     "unit": "metrics/sec",
-    "value": 1000358.5379788743
+    "value": 339802.89982110535
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline (Metrics)/1000k - Metric Throughput",
     "name": "metrics_received_rate",
     "unit": "metrics/sec",
-    "value": 0.0
+    "value": 266587.06630332733
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline (Metrics)/1000k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.000486
+    "value": 60.000555
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Metrics)/1000k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 11544811.8968351
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Metrics)/1000k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 71879424.76209678
   }
 ]

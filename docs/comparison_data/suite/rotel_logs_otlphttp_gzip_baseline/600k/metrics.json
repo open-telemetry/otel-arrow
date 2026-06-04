@@ -3,66 +3,66 @@
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/600k - Dropped Logs %",
     "name": "dropped_logs_percentage",
     "unit": "%",
-    "value": 82.12743377685547
+    "value": 24.223573684692383
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_avg",
     "unit": "%",
-    "value": 99.84699589441306
+    "value": 100.03450935194525
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/600k - CPU % (Normalized)",
     "name": "cpu_percentage_normalized_max",
     "unit": "%",
-    "value": 100.28975945017183
+    "value": 100.75806068188926
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/600k - RAM (MiB)",
     "name": "ram_mib_avg",
     "unit": "MiB",
-    "value": 5764.874289772727
+    "value": 9276.672265625
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/600k - RAM (MiB)",
     "name": "ram_mib_max",
     "unit": "MiB",
-    "value": 8682.28515625
+    "value": 10380.92578125
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/600k - Log Throughput",
     "name": "logs_produced_rate",
     "unit": "logs/sec",
-    "value": 601316.2915540133
+    "value": 442903.0015287781
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/600k - Log Throughput",
     "name": "logs_received_rate",
     "unit": "logs/sec",
-    "value": 106920.85946965402
+    "value": 334468.34965526854
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/600k - Test Duration",
     "name": "test_duration",
     "unit": "seconds",
-    "value": 60.00052
+    "value": 60.000579
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/600k - Network Utilization",
     "name": "network_tx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": -1845743.8403325223
+    "value": 6175773.163109428
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/600k - Network Utilization",
     "name": "network_rx_bytes_rate_avg",
     "unit": "bytes/sec",
-    "value": -76702306.0520163
+    "value": 156605939.84178066
   },
   {
     "extra": "Rotel OTLP/HTTP Baseline w/ Gzip (Logs)/600k - Egress Bytes Per Log",
     "name": "egress_bytes_per_log",
     "unit": "bytes/log",
-    "value": -17.26271047097574
+    "value": 18.46444714268093
   }
 ]
