@@ -14,8 +14,8 @@ pub enum DataExpression {
     /// Transform data expression.
     Transform(TransformExpression),
 
-    /// Conditional data expression.
-    Conditional(ConditionalDataExpression),
+    /// Branch data expression.
+    Branch(BranchDataExpression),
 
     /// Output data expression.
     Output(OutputDataExpression),
@@ -30,7 +30,7 @@ impl DataExpression {
             DataExpression::Discard(d) => d.try_fold(scope),
             DataExpression::Summary(s) => s.try_fold(scope),
             DataExpression::Transform(t) => t.try_fold(scope),
-            DataExpression::Conditional(c) => c.try_fold(scope),
+            DataExpression::Branch(b) => b.try_fold(scope),
             DataExpression::Output(o) => o.try_fold(scope),
         }
     }
@@ -42,7 +42,7 @@ impl Expression for DataExpression {
             DataExpression::Discard(d) => d.get_query_location(),
             DataExpression::Summary(s) => s.get_query_location(),
             DataExpression::Transform(t) => t.get_query_location(),
-            DataExpression::Conditional(c) => c.get_query_location(),
+            DataExpression::Branch(b) => b.get_query_location(),
             DataExpression::Output(o) => o.get_query_location(),
         }
     }
@@ -52,7 +52,7 @@ impl Expression for DataExpression {
             DataExpression::Discard(_) => "DataExpression(Discard)",
             DataExpression::Summary(_) => "DataExpression(Summary)",
             DataExpression::Transform(_) => "DataExpression(Transform)",
-            DataExpression::Conditional(_) => "DataExpression(Conditional)",
+            DataExpression::Branch(_) => "DataExpression(Conditional)",
             DataExpression::Output(_) => "DataExpression(Output)",
         }
     }
@@ -62,7 +62,7 @@ impl Expression for DataExpression {
             DataExpression::Discard(d) => d.fmt_with_indent(f, indent),
             DataExpression::Summary(s) => s.fmt_with_indent(f, indent),
             DataExpression::Transform(t) => t.fmt_with_indent(f, indent),
-            DataExpression::Conditional(c) => c.fmt_with_indent(f, indent),
+            DataExpression::Branch(b) => b.fmt_with_indent(f, indent),
             DataExpression::Output(o) => o.fmt_with_indent(f, indent),
         }
     }
@@ -161,27 +161,31 @@ impl Expression for DiscardDataExpression {
 /// forms a "branch". The "default branch" defines how to optionally handle data that matches no
 /// other branch's condition.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ConditionalDataExpression {
+pub struct BranchDataExpression {
     query_location: QueryLocation,
 
+    /// Whether each branch consumes the records, or receive a copy
+    branches_consume_records: bool,
+
     /// Branches which will conditionally process
-    branches: Vec<ConditionalDataExpressionBranch>,
+    branches: Vec<DataExpressionBranch>,
 
     /// If `Some`, data that does not match the condition in any of the other branches
     /// will be handled by this branch
     default_branch: Option<Vec<DataExpression>>,
 }
 
-impl ConditionalDataExpression {
-    pub fn new(query_location: QueryLocation) -> Self {
+impl BranchDataExpression {
+    pub fn new(query_location: QueryLocation, branches_consume_records: bool) -> Self {
         Self {
             query_location,
+            branches_consume_records,
             branches: Vec::new(),
             default_branch: None,
         }
     }
 
-    pub fn with_branch(mut self, branch: ConditionalDataExpressionBranch) -> Self {
+    pub fn with_branch(mut self, branch: DataExpressionBranch) -> Self {
         self.branches.push(branch);
         self
     }
@@ -191,12 +195,16 @@ impl ConditionalDataExpression {
         self
     }
 
-    pub fn get_branches(&self) -> &[ConditionalDataExpressionBranch] {
+    pub fn get_branches(&self) -> &[DataExpressionBranch] {
         &self.branches
     }
 
     pub fn get_default_branch(&self) -> Option<&[DataExpression]> {
         self.default_branch.as_deref()
+    }
+
+    pub fn branches_consume_records(&self) -> bool {
+        self.branches_consume_records
     }
 
     /// The try_fold implementation for this type of expression will recursively call the relevant
@@ -210,7 +218,10 @@ impl ConditionalDataExpression {
         while i < self.branches.len() {
             let static_logical_expr = {
                 let branch = &mut self.branches[i];
-                branch.condition.try_resolve_static(scope)?
+                match &mut branch.condition {
+                    Some(c) => c.try_resolve_static(scope)?,
+                    None => None,
+                }
             };
 
             if let Some(static_logical_expr) = static_logical_expr {
@@ -248,7 +259,7 @@ impl ConditionalDataExpression {
     }
 }
 
-impl Expression for ConditionalDataExpression {
+impl Expression for BranchDataExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
@@ -258,6 +269,7 @@ impl Expression for ConditionalDataExpression {
     }
 
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        /* TODO logic needs reworking
         writeln!(f, "Conditional:")?;
         if self.branches.is_empty() {
             writeln!(f, "{indent}├── Branches: []")?;
@@ -315,24 +327,26 @@ impl Expression for ConditionalDataExpression {
         }
 
         Ok(())
+        */
+        todo!()
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct ConditionalDataExpressionBranch {
+pub struct DataExpressionBranch {
     query_location: QueryLocation,
 
     /// The condition that data must match to be handled by this branch
-    condition: LogicalExpression,
+    condition: Option<LogicalExpression>,
 
     /// The expressions to apply to the data handled by this branch
     expressions: Vec<DataExpression>,
 }
 
-impl ConditionalDataExpressionBranch {
+impl DataExpressionBranch {
     pub fn new(
         query_location: QueryLocation,
-        condition: LogicalExpression,
+        condition: Option<LogicalExpression>,
         expressions: Vec<DataExpression>,
     ) -> Self {
         Self {
@@ -342,8 +356,8 @@ impl ConditionalDataExpressionBranch {
         }
     }
 
-    pub fn get_condition(&self) -> &LogicalExpression {
-        &self.condition
+    pub fn get_condition(&self) -> Option<&LogicalExpression> {
+        self.condition.as_ref()
     }
 
     pub fn get_expressions(&self) -> &[DataExpression] {
@@ -437,10 +451,10 @@ mod test {
 
     #[test]
     fn test_fold_conditional_expr_removes_everything_after_all_true_condition() {
-        let mut expr = ConditionalDataExpression::new(QueryLocation::new_fake())
-            .with_branch(ConditionalDataExpressionBranch::new(
+        let mut expr = BranchDataExpression::new(QueryLocation::new_fake(), true)
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -455,7 +469,7 @@ mod test {
                         BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                     )),
                     false,
-                )),
+                ))),
                 vec![DataExpression::Discard(
                     // this should get folded into a static false
                     DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
@@ -472,10 +486,10 @@ mod test {
                     ),
                 )],
             ))
-            .with_branch(ConditionalDataExpressionBranch::new(
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
                 // this should also get folded to static true, meaning this branch will get the rest of the rows
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::String(
                         StringScalarExpression::new(QueryLocation::new_fake(), "a"),
@@ -484,7 +498,7 @@ mod test {
                         StringScalarExpression::new(QueryLocation::new_fake(), "a"),
                     )),
                     false,
-                )),
+                ))),
                 vec![DataExpression::Output(OutputDataExpression::new(
                     QueryLocation::new_fake(),
                     OutputExpression::NamedSink(StringScalarExpression::new(
@@ -494,9 +508,9 @@ mod test {
                 ))],
             ))
             // this should get removed
-            .with_branch(ConditionalDataExpressionBranch::new(
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::String(
                         StringScalarExpression::new(QueryLocation::new_fake(), "b"),
@@ -505,7 +519,7 @@ mod test {
                         StringScalarExpression::new(QueryLocation::new_fake(), "a"),
                     )),
                     false,
-                )),
+                ))),
                 vec![DataExpression::Output(OutputDataExpression::new(
                     QueryLocation::new_fake(),
                     OutputExpression::NamedSink(StringScalarExpression::new(
@@ -528,10 +542,10 @@ mod test {
         let scope = PipelineResolutionScope::new_for_test(&constants, &functions);
         expr.try_fold(&scope).unwrap();
 
-        let expected = ConditionalDataExpression::new(QueryLocation::new_fake())
-            .with_branch(ConditionalDataExpressionBranch::new(
+        let expected = BranchDataExpression::new(QueryLocation::new_fake(), true)
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -546,7 +560,7 @@ mod test {
                         BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                     )),
                     false,
-                )),
+                ))),
                 vec![DataExpression::Discard(
                     DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
                         LogicalExpression::Scalar(ScalarExpression::Static(
@@ -558,14 +572,14 @@ mod test {
                     ),
                 )],
             ))
-            .with_branch(ConditionalDataExpressionBranch::new(
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::Scalar(ScalarExpression::Static(
+                Some(LogicalExpression::Scalar(ScalarExpression::Static(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                         QueryLocation::new_fake(),
                         true,
                     )),
-                )),
+                ))),
                 vec![DataExpression::Output(OutputDataExpression::new(
                     QueryLocation::new_fake(),
                     OutputExpression::NamedSink(StringScalarExpression::new(
@@ -582,10 +596,10 @@ mod test {
     fn test_fold_conditional_expr_removes_everything_all_true_condition_is_last() {
         // test to ensure we don't go out of bounds when trying to remove branches following
         // the branch chose condition always evaluates to always true
-        let mut expr = ConditionalDataExpression::new(QueryLocation::new_fake())
-            .with_branch(ConditionalDataExpressionBranch::new(
+        let mut expr = BranchDataExpression::new(QueryLocation::new_fake(), true)
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -600,7 +614,7 @@ mod test {
                         BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                     )),
                     false,
-                )),
+                ))),
                 vec![DataExpression::Discard(
                     // this should get folded into a static false
                     DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
@@ -617,10 +631,10 @@ mod test {
                     ),
                 )],
             ))
-            .with_branch(ConditionalDataExpressionBranch::new(
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
                 // this should also get folded to static true, meaning this branch will get the rest of the rows
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::String(
                         StringScalarExpression::new(QueryLocation::new_fake(), "a"),
@@ -629,7 +643,7 @@ mod test {
                         StringScalarExpression::new(QueryLocation::new_fake(), "a"),
                     )),
                     false,
-                )),
+                ))),
                 vec![DataExpression::Output(OutputDataExpression::new(
                     QueryLocation::new_fake(),
                     OutputExpression::NamedSink(StringScalarExpression::new(
@@ -652,10 +666,10 @@ mod test {
         let scope = PipelineResolutionScope::new_for_test(&constants, &functions);
         expr.try_fold(&scope).unwrap();
 
-        let expected = ConditionalDataExpression::new(QueryLocation::new_fake())
-            .with_branch(ConditionalDataExpressionBranch::new(
+        let expected = BranchDataExpression::new(QueryLocation::new_fake(), true)
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -670,7 +684,7 @@ mod test {
                         BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                     )),
                     false,
-                )),
+                ))),
                 vec![DataExpression::Discard(
                     DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
                         LogicalExpression::Scalar(ScalarExpression::Static(
@@ -682,14 +696,14 @@ mod test {
                     ),
                 )],
             ))
-            .with_branch(ConditionalDataExpressionBranch::new(
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::Scalar(ScalarExpression::Static(
+                Some(LogicalExpression::Scalar(ScalarExpression::Static(
                     StaticScalarExpression::Boolean(BooleanScalarExpression::new(
                         QueryLocation::new_fake(),
                         true,
                     )),
-                )),
+                ))),
                 vec![DataExpression::Output(OutputDataExpression::new(
                     QueryLocation::new_fake(),
                     OutputExpression::NamedSink(StringScalarExpression::new(
@@ -704,10 +718,10 @@ mod test {
 
     #[test]
     fn test_fold_conditional_expr_removes_branch_for_all_false_condition() {
-        let mut expr = ConditionalDataExpression::new(QueryLocation::new_fake())
-            .with_branch(ConditionalDataExpressionBranch::new(
+        let mut expr = BranchDataExpression::new(QueryLocation::new_fake(), true)
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -722,7 +736,7 @@ mod test {
                         BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                     )),
                     false,
-                )),
+                ))),
                 vec![DataExpression::Discard(
                     // this should get folded into a static false
                     DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
@@ -739,10 +753,10 @@ mod test {
                     ),
                 )],
             ))
-            .with_branch(ConditionalDataExpressionBranch::new(
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
                 // this will evaluate to all false, which means this branch should get removed
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Static(StaticScalarExpression::String(
                         StringScalarExpression::new(QueryLocation::new_fake(), "a"),
@@ -751,7 +765,7 @@ mod test {
                         StringScalarExpression::new(QueryLocation::new_fake(), "b"),
                     )),
                     false,
-                )),
+                ))),
                 vec![DataExpression::Output(OutputDataExpression::new(
                     QueryLocation::new_fake(),
                     OutputExpression::NamedSink(StringScalarExpression::new(
@@ -761,9 +775,9 @@ mod test {
                 ))],
             ))
             // this should be kept
-            .with_branch(ConditionalDataExpressionBranch::new(
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -778,7 +792,7 @@ mod test {
                         BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                     )),
                     false,
-                )),
+                ))),
                 vec![DataExpression::Discard(
                     // this should get folded into a static false as well
                     DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
@@ -809,10 +823,10 @@ mod test {
         let scope = PipelineResolutionScope::new_for_test(&constants, &functions);
         expr.try_fold(&scope).unwrap();
 
-        let expected = ConditionalDataExpression::new(QueryLocation::new_fake())
-            .with_branch(ConditionalDataExpressionBranch::new(
+        let expected = BranchDataExpression::new(QueryLocation::new_fake(), true)
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -827,7 +841,7 @@ mod test {
                         BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                     )),
                     false,
-                )),
+                ))),
                 vec![DataExpression::Discard(
                     DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
                         LogicalExpression::Scalar(ScalarExpression::Static(
@@ -839,9 +853,9 @@ mod test {
                     ),
                 )],
             ))
-            .with_branch(ConditionalDataExpressionBranch::new(
+            .with_branch(DataExpressionBranch::new(
                 QueryLocation::new_fake(),
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     QueryLocation::new_fake(),
                     ScalarExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -856,7 +870,7 @@ mod test {
                         BooleanScalarExpression::new(QueryLocation::new_fake(), true),
                     )),
                     false,
-                )),
+                ))),
                 vec![DataExpression::Discard(
                     DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
                         LogicalExpression::Scalar(ScalarExpression::Static(
