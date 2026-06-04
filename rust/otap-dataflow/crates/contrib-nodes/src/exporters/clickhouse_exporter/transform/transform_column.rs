@@ -27,7 +27,7 @@
 //!   - `reindex_attribute` rewrites parent-side foreign keys using a child payload’s remap table.
 //!   - `inline_attribute` inlines attributes into the parent batch as a
 //!     `Map(LowCardinality(String), String)` column.
-//!   - `inline_child_lists` and `inline_child_map` expand compact child arrays (indexed by ID) into
+//!   - `inline_child_lists` and `build_child_attr_list` expand compact child arrays (indexed by ID) into
 //!     parent-sized arrays, driven by parent IDs and a remap table.
 //!
 //! - Array expansion helpers:
@@ -49,7 +49,9 @@ use arrow::array::{
 };
 use arrow::compute::{cast, max};
 use arrow::datatypes::{DataType, Float64Type, UInt8Type, UInt16Type, UInt32Type};
-use arrow_array::{ListArray, MapArray, PrimitiveArray, StringArray, StructArray, UInt16Array};
+use arrow_array::{
+    ListArray, MapArray, PrimitiveArray, StringArray, StructArray, UInt16Array, UInt32Array,
+};
 use base64::Engine;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::proto::opentelemetry::trace::v1::{
@@ -218,8 +220,8 @@ pub(crate) fn apply_one_op(
             Ok(ControlFlow::Continue(()))
         }
 
-        ColumnTransformOp::InlineChildMap(child_pt, from, to) => {
-            inline_child_map(ctx, current_name, *child_pt, from, to)?;
+        ColumnTransformOp::InlineChildAttrList(child_pt, to_col) => {
+            build_child_attr_list(ctx, current_name, *child_pt, to_col)?;
             Ok(ControlFlow::Continue(()))
         }
 
@@ -275,7 +277,9 @@ fn cast_array(arr: &ArrayRef, target: &DataType) -> Result<ArrayRef, ClickhouseE
 ///
 /// Dictionary-encoded arrays are first unpacked to a plain `FixedSizeBinary`
 /// array via Arrow's [`cast`] before conversion.
-fn fixed_binary_to_hex_string(arr: &ArrayRef) -> Result<ArrayRef, ClickhouseExporterError> {
+pub(crate) fn fixed_binary_to_hex_string(
+    arr: &ArrayRef,
+) -> Result<ArrayRef, ClickhouseExporterError> {
     use arrow::array::FixedSizeBinaryArray;
 
     // Unpack dictionary encoding if present.
@@ -538,38 +542,119 @@ fn coerce_body_to_string(
     Ok(())
 }
 
-/// Take a compact MapArray which may contain values for a given row in the parent batch,
-/// expand it to the same size as the parent batch, and re-order the entries to match the parent row order.
-/// This is used primarily for inlining SpanEventAttributes and SpanLinkAttributes to the Span signal batch.
-fn inline_child_map(
+/// Build an `Array(Map(Utf8, Utf8))` column from a per-parent `List<UInt32>` of child ids and a
+/// child attribute payload's compact map.
+///
+/// For each parent (span) row, the output array holds one map per child id, in list order — keeping
+/// it index-aligned with the sibling `Events.*` / `Links.*` list columns. A child id with no
+/// attributes (or a null id) yields an empty map. The id-list column named by `current_name` is
+/// consumed; the result is stored under `to_col`. Child ids are looked up in the same u16 id-space
+/// the attribute grouping uses (see `group_attributes_to_map_str`).
+fn build_child_attr_list(
     ctx: &mut ColumnOpCtx<'_>,
-    parent_id_col: &str,
+    current_name: &mut String,
     child_payload: ArrowPayloadType,
-    from_col: &str,
     to_col: &str,
 ) -> Result<(), ClickhouseExporterError> {
-    let Some((parent_ids, remap, child)) =
-        parent_ids_and_child_remap(ctx, parent_id_col, child_payload)?
-    else {
-        return Ok(());
-    };
+    // Copy the shared `multi` reference out of `ctx` so the child borrow is independent of the
+    // mutable `take`/`put` below.
+    let multi = ctx.multi;
+    let child = multi.get(&child_payload);
 
-    let values_arr =
-        child
-            .columns
-            .get(from_col)
-            .ok_or_else(|| ClickhouseExporterError::MissingColumn {
-                name: from_col.to_string(),
-            })?;
-    let values = values_arr
+    // Compact map (one row per unique child id) + its key/value string arrays, if the child
+    // attribute payload is present. Absent payload => every map is empty.
+    let compact: Option<(&MapArray, &StringArray, &StringArray)> = match child {
+        Some(c) => {
+            let map = c
+                .columns
+                .get(consts::ATTRIBUTES)
+                .ok_or_else(|| ClickhouseExporterError::MissingColumn {
+                    name: consts::ATTRIBUTES.into(),
+                })?
+                .as_any()
+                .downcast_ref::<MapArray>()
+                .ok_or_else(|| ClickhouseExporterError::CoercionError {
+                    error: "child attributes column is not a MapArray".into(),
+                })?;
+            let keys = map
+                .keys()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| ClickhouseExporterError::CoercionError {
+                    error: "child map keys are not Utf8".into(),
+                })?;
+            let vals = map
+                .values()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| ClickhouseExporterError::CoercionError {
+                    error: "child map values are not Utf8".into(),
+                })?;
+            Some((map, keys, vals))
+        }
+        None => None,
+    };
+    let remap = child.and_then(|c| c.remapped_ids.as_ref());
+
+    // The id-list column: List<UInt32> of child ids per parent row.
+    let id_list_arr = ctx.take(current_name)?;
+    let id_lists = id_list_arr
         .as_any()
-        .downcast_ref::<MapArray>()
+        .downcast_ref::<ListArray>()
         .ok_or_else(|| ClickhouseExporterError::CoercionError {
-            error: "Failed to downcast child map column to MapArray".into(),
+            error: format!("expected ListArray of child ids for {current_name}"),
         })?;
 
-    let new_map_array = remap_map_array_to_parent_order(&parent_ids, remap, values)?;
-    ctx.put(to_col.to_string(), Arc::new(new_map_array));
+    let mut out = ListBuilder::new(MapBuilder::new(
+        None,
+        StringBuilder::new(),
+        StringBuilder::new(),
+    ));
+
+    for i in 0..id_lists.len() {
+        if id_lists.is_null(i) {
+            out.append_null();
+            continue;
+        }
+
+        let sub = id_lists.value(i);
+        let ids = sub.as_any().downcast_ref::<UInt32Array>().ok_or_else(|| {
+            ClickhouseExporterError::CoercionError {
+                error: "child id list values are not UInt32".into(),
+            }
+        })?;
+
+        for j in 0..ids.len() {
+            // Copy this child's attribute entries; leave the map empty if the id is null, has no
+            // remap entry, or the compact row is null.
+            if !ids.is_null(j) {
+                if let (Some((map, keys, vals)), Some(remap)) = (compact, remap) {
+                    if let Some(&src) = remap.get(&ids.value(j)) {
+                        let src = src as usize;
+                        if src < map.len() && !map.is_null(src) {
+                            let offsets = map.offsets();
+                            let start = offsets[src] as usize;
+                            let end = offsets[src + 1] as usize;
+                            for k in start..end {
+                                out.values().keys().append_value(keys.value(k));
+                                if vals.is_null(k) {
+                                    out.values().values().append_null();
+                                } else {
+                                    out.values().values().append_value(vals.value(k));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            out.values().append(true)?; // close this (possibly empty) map element
+        }
+
+        out.append(true); // close the array for this parent row
+    }
+
+    ctx.put(to_col.to_string(), Arc::new(out.finish()));
+    *current_name = to_col.to_string();
     Ok(())
 }
 
