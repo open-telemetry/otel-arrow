@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780514074270,
+  "lastUpdate": 1780543780766,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2280,6 +2280,82 @@ window.BENCHMARK_DATA = {
             "value": 39.98,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=40.2 MiB, error=0.5%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Jake Dern",
+            "username": "JakeDern",
+            "email": "33842784+JakeDern@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "ee0b8953fa04dee164e3f9149751559be8b05f2e",
+          "message": "task(comparison_dashboard): Add comparisons to fluent bit (#3190)\n\n# Change Summary\n\nThis PR adds comparisons to fluent bit for logs across all comparisons.\nMetrics and traces are not included though we may want to add them in\nthe future as I think there is some support there.\n\n## What issue does this PR close?\n\n* Closes #3169\n\n## How are these changes tested?\n\n<img width=\"2335\" height=\"1572\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/17be789e-6aca-40da-aefb-b0fac929da7d\"\n/>\n\n## Are there any user-facing changes?\n\nYes new comparisons on the dashboard.\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry, OR this PR is a `chore`\n(indicated in title).",
+          "timestamp": "2026-06-04T01:18:21Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ee0b8953fa04dee164e3f9149751559be8b05f2e"
+        },
+        "date": 1780543779934,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 15.24,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.76,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9978,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 15.61,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=16.0 MiB, error=2.5%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 16.61,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=16.8 MiB, error=0.9%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 18.45,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.3 MiB, error=0.9%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 21.33,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=21.3 MiB, error=0.1%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 28.13,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=27.4 MiB, error=2.6%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 39.18,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=39.5 MiB, error=0.9%"
           }
         ]
       }
