@@ -30,6 +30,7 @@ use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipeline
 use crate::pipeline::expr::planner::ExprPlanner;
 use crate::pipeline::expr::{DataScope, ScopedExpr};
 use crate::pipeline::filter::FilterPipelineStage;
+use crate::pipeline::fork::{ForkPipelineStage, ForkPipelineStageBranch};
 use crate::pipeline::routing::RouteToPipelineStage;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
@@ -291,15 +292,29 @@ impl PipelinePlanner {
                 }
             }
 
+            DataExpression::Fork(fork_expr) => {
+                let mut branches = Vec::with_capacity(fork_expr.get_branches().len());
+                for branch in fork_expr.get_branches() {
+                    let pipeline_stages = self.plan_data_exprs(
+                        branch.get_expressions(),
+                        functions,
+                        session_ctx,
+                        otap_batch,
+                    )?;
+                    branches.push(ForkPipelineStageBranch::new(pipeline_stages));
+                }
+
+                Ok(vec![Box::new(ForkPipelineStage::new(branches))])
+            }
+
             DataExpression::Output(output_expr) => match output_expr.get_output() {
                 OutputExpression::NamedSink(name) => {
                     Ok(vec![Box::new(RouteToPipelineStage::new(name.get_value()))])
                 }
             },
 
-            // TODO support other DataExpressions
-            other => Err(Error::NotYetSupportedError {
-                message: format!("data expression not yet supported {}", other.get_name()),
+            DataExpression::Summary(_) => Err(Error::NotYetSupportedError {
+                message: format!("data expression not yet supported {}", data_expr.get_name()),
             }),
         }
     }

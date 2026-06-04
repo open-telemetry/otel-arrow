@@ -32,6 +32,7 @@ pub(crate) fn parse_operator_call(
 ) -> Result<(), ParserError> {
     for rule in rule.into_inner() {
         match rule.as_rule() {
+            Rule::fork_operator_call => parse_fork_operator_call(rule, pipeline_builder)?,
             Rule::if_else_operator_call => parse_if_else_operator_call(rule, pipeline_builder)?,
             Rule::remove_map_keys_operator_call => {
                 parse_remove_map_keys_operator_call(rule, pipeline_builder)?
@@ -299,6 +300,44 @@ pub(crate) fn parse_set_operator_call(
             }
         }
     }
+
+    Ok(())
+}
+
+pub(crate) fn parse_fork_operator_call(
+    operator_call_rule: Pair<'_, Rule>,
+    mut pipeline_builder: &mut dyn PipelineBuilder,
+) -> Result<(), ParserError> {
+    let query_location = to_query_location(&operator_call_rule);
+    let mut fork_expr = ForkDataExpression::new(query_location);
+
+    for rule in operator_call_rule.into_inner() {
+        match rule.as_rule() {
+            Rule::fork_branch => {
+                let branch_query_location = to_query_location(&rule);
+                let mut next_branch = InnerPipelineBuilder::new(pipeline_builder);
+                for rule in rule.into_inner() {
+                    parse_pipeline_stage(rule, &mut next_branch)?;
+                }
+
+                let (curr_branch_data_exprs, parent) = next_branch.into_parts();
+                pipeline_builder = parent;
+
+                fork_expr = fork_expr.with_branch(ForkDataExpressionBranch::new(
+                    branch_query_location,
+                    curr_branch_data_exprs,
+                ));
+            }
+            _ => {
+                return Err(ParserError::SyntaxError(
+                    fork_expr.get_query_location().clone(),
+                    format!("invalid rule found in fork operator call {rule}"),
+                ));
+            }
+        }
+    }
+
+    pipeline_builder.push_data_expression(DataExpression::Fork(fork_expr));
 
     Ok(())
 }
