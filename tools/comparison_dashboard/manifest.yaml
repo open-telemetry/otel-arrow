@@ -185,6 +185,8 @@ suites:
   - suites/otc/otc-logs-otlp-none-transform-rename-multi-transform.yaml
   - suites/otc/otc-logs-otap-none-attr-insert-multi-transform.yaml
   - suites/otc/otc-logs-otap-none-attr-rename-multi-transform.yaml
+  
+  # Rotel
   - suites/rotel/rotel-logs-otlp-none-baseline.yaml
   - suites/rotel/rotel-logs-otlp-gzip-baseline.yaml
   - suites/rotel/rotel-logs-otlphttp-none-baseline.yaml

@@ -93,7 +93,3 @@ suites:
   - name: Rotel Traces OTLP Baseline (Gzip)
     slug: rotel_traces_otlp_gzip_baseline
     short: Rotel OTLP/Gzip
-
-  # Rotel does not currently interoperate with the df-engine OTLP/HTTP
-  # receiver for traces (backend returns HTTP 400). Omit the rotel
-  # traces OTLP/HTTP variants until that incompatibility is resolved.
