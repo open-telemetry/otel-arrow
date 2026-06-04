@@ -309,7 +309,7 @@ pub(crate) fn parse_fork_operator_call(
     mut pipeline_builder: &mut dyn PipelineBuilder,
 ) -> Result<(), ParserError> {
     let query_location = to_query_location(&operator_call_rule);
-    let mut fork_expr = ForkDataExpression::new(query_location);
+    let mut fork_expr = BranchDataExpression::new(query_location, false);
 
     for rule in operator_call_rule.into_inner() {
         match rule.as_rule() {
@@ -323,8 +323,9 @@ pub(crate) fn parse_fork_operator_call(
                 let (curr_branch_data_exprs, parent) = next_branch.into_parts();
                 pipeline_builder = parent;
 
-                fork_expr = fork_expr.with_branch(ForkDataExpressionBranch::new(
+                fork_expr = fork_expr.with_branch(DataExpressionBranch::new(
                     branch_query_location,
+                    None,
                     curr_branch_data_exprs,
                 ));
             }
@@ -337,7 +338,7 @@ pub(crate) fn parse_fork_operator_call(
         }
     }
 
-    pipeline_builder.push_data_expression(DataExpression::Fork(fork_expr));
+    pipeline_builder.push_data_expression(DataExpression::Branch(fork_expr));
 
     Ok(())
 }
@@ -957,18 +958,21 @@ mod tests {
         let expressions = pipeline.get_expressions();
         assert_eq!(expressions.len(), 1);
 
-        let expected = DataExpression::Fork(
-            ForkDataExpression::new(QueryLocation::new_fake())
-                .with_branch(ForkDataExpressionBranch::new(
+        let expected = DataExpression::Branch(
+            BranchDataExpression::new(QueryLocation::new_fake(), false)
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
+                    None,
                     vec![assign_attribute_expression("triggers_alarm", "true")],
                 ))
-                .with_branch(ForkDataExpressionBranch::new(
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
+                    None,
                     vec![assign_attribute_expression("is_duplicate", "true")],
                 ))
-                .with_branch(ForkDataExpressionBranch::new(
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
+                    None,
                     vec![assign_attribute_expression("is_duplicate_again", "true")],
                 )),
         );

@@ -240,7 +240,26 @@ impl PipelinePlanner {
 
             DataExpression::Branch(branch_expr) => {
                 if !branch_expr.branches_consume_records() {
-                    todo!()
+                    // when branches get a copy of the record, we consider this to be a "fork"
+                    let mut branches = Vec::with_capacity(branch_expr.get_branches().len());
+                    for branch in branch_expr.get_branches() {
+                        if branch.get_condition().is_some() {
+                            // forking with filter not yet supported. This should be composed by
+                            // caller into a fork containing either a conditional data or a filter
+                            return Err(Error::NotYetSupportedError { 
+                                message:  "copying data branch expression with condition not yet supported".into()
+                            })
+                        }
+
+                        let pipeline_stages = self.plan_data_exprs(
+                            branch.get_expressions(),
+                            functions,
+                            session_ctx,
+                            otap_batch,
+                        )?;
+                        branches.push(ForkPipelineStageBranch::new(pipeline_stages));
+                    }
+                    Ok(vec![Box::new(ForkPipelineStage::new(branches))])
                 } else {
                     // If branches consume the records, we assume that each branch, except for
                     // the last, must have a condition. If this were not the case, it would mean
@@ -278,7 +297,11 @@ impl PipelinePlanner {
                             None => {
                                 let is_final_branch = i == branch_expr.get_branches().len() - 1;
                                 if !is_final_branch {
-                                    todo!("return invalid")
+                                    return Err(Error::InvalidPipelineError { 
+                                        cause: "default branch found in non consuming Branch data expression 
+                                            found in invalid location".into(), 
+                                        query_location: Some(branch_expr.get_query_location().clone())
+                                    })
                                 } else {
                                     default_branch = Some(pipeline_stages)
                                 }
@@ -290,21 +313,6 @@ impl PipelinePlanner {
                         ConditionalPipelineStage::new(pipeline_branches, default_branch);
                     Ok(vec![Box::new(pipeline_stage)])
                 }
-            }
-
-            DataExpression::Fork(fork_expr) => {
-                let mut branches = Vec::with_capacity(fork_expr.get_branches().len());
-                for branch in fork_expr.get_branches() {
-                    let pipeline_stages = self.plan_data_exprs(
-                        branch.get_expressions(),
-                        functions,
-                        session_ctx,
-                        otap_batch,
-                    )?;
-                    branches.push(ForkPipelineStageBranch::new(pipeline_stages));
-                }
-
-                Ok(vec![Box::new(ForkPipelineStage::new(branches))])
             }
 
             DataExpression::Output(output_expr) => match output_expr.get_output() {

@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use arrow::array::RecordBatch;
 use async_trait::async_trait;
 use datafusion::{
     config::ConfigOptions,
