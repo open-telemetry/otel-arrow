@@ -205,8 +205,11 @@ impl BranchDataExpression {
             let static_logical_expr = {
                 let branch = &mut self.branches[i];
                 match &mut branch.condition {
-                    Some(c) => c.try_resolve_static(scope)?,
-                    None => None,
+                    // note: we only do the "remove branch if can fold to static" optimization
+                    // below if the branch consumes the records -- otherwise all branches must be
+                    // kept because each branch must evaluate because each receives a copy
+                    Some(c) if self.branches_consume_records => c.try_resolve_static(scope)?,
+                    _ => None,
                 }
             };
 
