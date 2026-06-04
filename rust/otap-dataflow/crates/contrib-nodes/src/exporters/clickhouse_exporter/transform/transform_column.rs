@@ -1124,10 +1124,13 @@ fn inline_attribute(
             found: format!("{:?}", id_arr.data_type()),
         })?;
 
-    // Find child payload results; if missing, just no-op.
+    // No attribute payload for this group in this batch (e.g. every scope/resource/log had empty
+    // attributes). Drop the foreign-key id column entirely — it is NOT a ClickHouse column, and
+    // since inserts bind by column name, leaking it (`scope_id`/`resource_id`/`id`) makes the
+    // INSERT reference a column the table doesn't have (NO_SUCH_COLUMN_IN_TABLE). The attribute
+    // column is simply omitted; ClickHouse fills its default (empty map). `id_arr` was already
+    // taken above, so returning here leaves the column dropped.
     let Some(result) = ctx.child(child_payload_type) else {
-        // removed the id column; put it back to preserve semantics
-        ctx.put(current_name.clone(), id_arr);
         return Ok(());
     };
 
@@ -1988,7 +1991,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_attribute_missing_child_payload_is_noop() {
+    fn inline_attribute_missing_child_payload_drops_id_column() {
         let mut parent_cols: HashMap<String, ArrayRef> = HashMap::new();
         parent_cols.insert("attr_id".into(), u16_array(&[10, 11]));
 
@@ -1998,7 +2001,10 @@ mod tests {
         let mut current = "attr_id".to_string();
         inline_attribute(&mut ctx, &mut current, ArrowPayloadType::ResourceAttrs).unwrap();
 
-        // The id column should still be present (put back)
-        assert!(ctx.columns.contains_key("attr_id"));
+        // The foreign-key id column must be DROPPED when the child attribute payload is absent —
+        // it is not a ClickHouse column, and leaking it breaks the bind-by-name INSERT.
+        assert!(!ctx.columns.contains_key("attr_id"));
+        // No attribute column is emitted either; ClickHouse fills the default empty map.
+        assert!(!ctx.columns.contains_key(ch_consts::CH_RESOURCE_ATTRIBUTES));
     }
 }

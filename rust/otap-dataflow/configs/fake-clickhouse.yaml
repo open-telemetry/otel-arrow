@@ -23,10 +23,10 @@ groups:
           exporter:
             type: "exporter:clickhouse"
             config:
-              endpoint: "127.0.0.1:9000"
+              endpoint: "http://127.0.0.1:8123"
               database: "otap"
               username: "default"
-              password: "TODO-TEST"
+              password: "test"
 
         connections:
           - from: receiver

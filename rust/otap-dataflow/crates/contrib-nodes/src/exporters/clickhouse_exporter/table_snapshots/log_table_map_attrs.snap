@@ -1,5 +1,5 @@
 ---
-source: data-plane/crates/gateway-exporters/src/clickhouse_exporter/tables.rs
+source: crates/contrib-nodes/src/exporters/clickhouse_exporter/tables.rs
 expression: sql
 ---
 CREATE TABLE IF NOT EXISTS otap.otel_logs (
