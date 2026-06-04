@@ -2328,7 +2328,8 @@ connections:
         ctx,
         entity_key,
         ts,
-        Duration::from_secs(2),
+        // Short backstop: the pipeline is expected to fail on its own well before this.
+        Duration::from_millis(100),
     );
 
     assert!(

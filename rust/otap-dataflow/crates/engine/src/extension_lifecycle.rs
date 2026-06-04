@@ -203,7 +203,7 @@ impl ExtensionLifecycle {
             tokio::select! {
                 biased;
                 Some(_key) = started_rx.recv() => {
-                    *outstanding_spawn_signals -= 1;
+                    *outstanding_spawn_signals = outstanding_spawn_signals.saturating_sub(1);
                 }
                 Some(joined) = futures.next(), if !futures.is_empty() => {
                     *outstanding_spawn_signals = outstanding_spawn_signals.saturating_sub(1);

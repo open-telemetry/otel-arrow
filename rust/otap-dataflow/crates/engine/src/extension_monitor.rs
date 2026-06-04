@@ -467,11 +467,12 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn local_and_shared_same_id_tracked_independently() {
         let (mut monitor, ctx) = fresh_monitor();
-        let ext_key = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
+        let local_key = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
+        let shared_key = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Shared);
         let local = ExtensionKey::new("ext1".into(), ExtensionVariant::Local);
         let shared = ExtensionKey::new("ext1".into(), ExtensionVariant::Shared);
-        monitor.register(&ctx, local.clone(), ext_key, None);
-        monitor.register(&ctx, shared.clone(), ext_key, None);
+        monitor.register(&ctx, local.clone(), local_key, None);
+        monitor.register(&ctx, shared.clone(), shared_key, None);
         assert_eq!(monitor.entries.len(), 2);
 
         monitor.apply_event(ExtensionLifecycleEvent::ShutdownSent { key: local.clone() });

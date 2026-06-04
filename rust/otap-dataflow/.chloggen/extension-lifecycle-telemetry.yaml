@@ -26,8 +26,10 @@ subtext: |
   interval and shutdown fan-out per scope.
 
   Breaking changes to the public API of `otap-df-engine`:
-  - `ExtensionFactory::create` no longer receives `PipelineContext`; it now
-    receives `ExtensionContext`. Out-of-tree extensions need to be updated.
+  - `ExtensionFactory::create` no longer receives `PipelineContext`. Its
+    signature is now `(ExtensionId, Arc<ExtensionUserConfig>, &ExtensionConfig)
+    -> Result<ExtensionBundle, Error>`. Out-of-tree extensions need to be
+    updated to drop the `PipelineContext` parameter.
   - `PipelineContext::register_channel_entity` and `channel_attribute_set`
     are renamed to `register_node_channel_entity` and
     `node_channel_attribute_set`. The `ChannelAttributeSet` struct is split
