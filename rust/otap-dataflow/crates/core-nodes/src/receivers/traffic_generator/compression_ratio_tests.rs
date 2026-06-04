@@ -57,7 +57,7 @@
 #![cfg(test)]
 
 use super::semconv_signal::semconv_otlp_logs;
-use super::static_signal::static_otlp_logs_with_config;
+use super::synthetic_signal::static_otlp_logs_with_config;
 use prost::Message;
 use weaver_common::{result::WResult, vdir::VirtualDirectoryPath};
 use weaver_forge::registry::ResolvedRegistry;
@@ -161,8 +161,10 @@ fn measure(bytes: &[u8]) -> (usize, usize, f64) {
 
 /// Concatenate `NUM_BATCHES` independently-generated `static` batches.
 fn static_fresh_stream() -> Vec<u8> {
-    let mut concatenated = Vec::new();
-    for _ in 0..NUM_BATCHES {
+    let first = static_batch_bytes();
+    let mut concatenated = Vec::with_capacity(first.len() * NUM_BATCHES);
+    concatenated.extend_from_slice(&first);
+    for _ in 1..NUM_BATCHES {
         concatenated.extend_from_slice(&static_batch_bytes());
     }
     concatenated
@@ -171,8 +173,10 @@ fn static_fresh_stream() -> Vec<u8> {
 /// Concatenate `NUM_BATCHES` independently-generated `static` batches with
 /// trace context enabled.
 fn static_with_trace_ctx_fresh_stream() -> Vec<u8> {
-    let mut concatenated = Vec::new();
-    for _ in 0..NUM_BATCHES {
+    let first = static_with_trace_ctx_batch_bytes();
+    let mut concatenated = Vec::with_capacity(first.len() * NUM_BATCHES);
+    concatenated.extend_from_slice(&first);
+    for _ in 1..NUM_BATCHES {
         concatenated.extend_from_slice(&static_with_trace_ctx_batch_bytes());
     }
     concatenated
@@ -180,8 +184,10 @@ fn static_with_trace_ctx_fresh_stream() -> Vec<u8> {
 
 /// Concatenate `NUM_BATCHES` independently-generated `semconv` batches.
 fn semconv_fresh_stream(registry: &ResolvedRegistry) -> Vec<u8> {
-    let mut concatenated = Vec::new();
-    for _ in 0..NUM_BATCHES {
+    let first = semconv_batch_bytes(registry);
+    let mut concatenated = Vec::with_capacity(first.len() * NUM_BATCHES);
+    concatenated.extend_from_slice(&first);
+    for _ in 1..NUM_BATCHES {
         concatenated.extend_from_slice(&semconv_batch_bytes(registry));
     }
     concatenated
@@ -228,15 +234,6 @@ fn print_ratio(label: &str, raw: usize, compressed: usize, ratio: f64) {
 }
 
 /// Print compression ratios for all six (source × strategy) combinations.
-/// Numbers are informational — run with `--nocapture` to inspect them. The
-/// asserts enforce only loose, order-of-magnitude bounds:
-///
-/// - `fresh` ratios land within [`FRESH_RATIO_RANGE`].
-/// - `pre_generated` ratios stay above [`PRE_GENERATED_RATIO_FLOOR`] (i.e.
-///   replay remains trivially compressible, as expected when batches are
-///   byte-identical).
-/// - For each source, `pre_generated >= fresh` (replay can never compress
-///   worse than fresh batches).
 #[test]
 fn test_compression_ratios_across_source_and_strategy() {
     let registry = load_semconv_registry();
@@ -306,7 +303,7 @@ fn test_compression_ratios_across_source_and_strategy() {
         ("semconv/pre_generated", cp_ratio),
     ] {
         assert!(
-            ratio > PRE_GENERATED_RATIO_FLOOR,
+            ratio >= PRE_GENERATED_RATIO_FLOOR,
             "{label} compression ratio {ratio:.1}:1 is below expected floor \
              {PRE_GENERATED_RATIO_FLOOR}:1 (replayed identical batches should compress trivially)",
         );
@@ -322,5 +319,11 @@ fn test_compression_ratios_across_source_and_strategy() {
     assert!(
         cp_ratio >= cf_ratio,
         "semconv: pre_generated ratio {cp_ratio:.1}:1 should be >= fresh ratio {cf_ratio:.1}:1",
+    );
+    // Trace context adds 24 random bytes/record, so it should compress worse.
+    assert!(
+        sf_ratio > tf_ratio,
+        "static+tc/fresh ratio {tf_ratio:.1}:1 should be worse (lower) than \
+         static/fresh ratio {sf_ratio:.1}:1 (trace context adds incompressible entropy)",
     );
 }

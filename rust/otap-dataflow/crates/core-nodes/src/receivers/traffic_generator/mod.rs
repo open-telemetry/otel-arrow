@@ -41,7 +41,7 @@ use self::producer::{GenerateError, TrafficProducer};
 
 pub mod attributes;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "dev-tools"))]
 mod compression_ratio_tests;
 /// allows the user to configure their traffic generator receiver
 pub mod config;
