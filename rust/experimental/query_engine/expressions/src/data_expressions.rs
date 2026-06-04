@@ -240,70 +240,60 @@ impl Expression for BranchDataExpression {
     }
 
     fn get_name(&self) -> &'static str {
-        "ConditionalExpression"
+        "BranchDataExpression"
     }
 
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
-        /* TODO logic needs reworking
-        writeln!(f, "Conditional:")?;
+        writeln!(f, "Branch:")?;
+        writeln!(
+            f,
+            "{indent}├── BranchesConsumeRecords: {}",
+            self.branches_consume_records
+        )?;
+
         if self.branches.is_empty() {
-            writeln!(f, "{indent}├── Branches: []")?;
+            writeln!(f, "{indent}└── Branches: []")?;
         } else {
-            writeln!(f, "{indent}├── Branches:")?;
+            writeln!(f, "{indent}└── Branches:")?;
             let last_idx = self.branches.len() - 1;
             for (i, branch) in self.branches.iter().enumerate() {
-                writeln!(f, "{indent}│   ├── Condition:")?;
-                write!(f, "{indent}│   │   └── ")?;
-                branch
-                    .condition
-                    .fmt_with_indent(f, &format!("{indent}│   │       "))?;
-                if i == last_idx {
-                    writeln!(f, "{indent}│   └── Expressions:")?;
-                    let last_idx = branch.expressions.len() - 1;
-                    for (i, expr) in branch.expressions.iter().enumerate() {
-                        if i == last_idx {
-                            write!(f, "{indent}│       └── ")?;
-                            expr.fmt_with_indent(f, &format!("{indent}│           "))?;
-                        } else {
-                            write!(f, "{indent}│       ├── ")?;
-                            expr.fmt_with_indent(f, &format!("{indent}│       │   "))?;
-                        }
-                    }
+                if let Some(condition) = &branch.condition {
+                    writeln!(f, "{indent}    ├── Condition:")?;
+                    write!(f, "{indent}    │   └── ")?;
+                    condition.fmt_with_indent(f, &format!("{indent}    │       "))?;
                 } else {
-                    writeln!(f, "{indent}│   ├── Expressions:")?;
-                    let last_idx = branch.expressions.len() - 1;
-                    for (i, expr) in branch.expressions.iter().enumerate() {
-                        if i == last_idx {
-                            write!(f, "{indent}│   │   └── ")?;
-                            expr.fmt_with_indent(f, &format!("{indent}│   │       "))?;
-                        } else {
-                            write!(f, "{indent}│   │   ├── ")?;
-                            expr.fmt_with_indent(f, &format!("{indent}│   │   │   "))?;
-                        }
-                    }
+                    writeln!(f, "{indent}    ├── Condition: None")?;
                 }
-            }
-        }
 
-        if let Some(default_branch) = self.default_branch.as_ref() {
-            writeln!(f, "{indent}└── Default Branch:")?;
-            let last_idx = default_branch.len() - 1;
-            for (i, expr) in default_branch.iter().enumerate() {
                 if i == last_idx {
-                    write!(f, "{indent}    └── ")?;
-                    expr.fmt_with_indent(f, &format!("{indent}        "))?
+                    writeln!(f, "{indent}    └── Expressions:")?;
+                    let last_idx = branch.expressions.len() - 1;
+                    for (i, expr) in branch.expressions.iter().enumerate() {
+                        if i == last_idx {
+                            write!(f, "{indent}        └── ")?;
+                            expr.fmt_with_indent(f, &format!("{indent}            "))?;
+                        } else {
+                            write!(f, "{indent}        ├── ")?;
+                            expr.fmt_with_indent(f, &format!("{indent}        │   "))?;
+                        }
+                    }
                 } else {
-                    write!(f, "{indent}    ├── ")?;
-                    expr.fmt_with_indent(f, &format!("{indent}    │   "))?;
+                    writeln!(f, "{indent}    ├── Expressions:")?;
+                    let last_idx = branch.expressions.len() - 1;
+                    for (i, expr) in branch.expressions.iter().enumerate() {
+                        if i == last_idx {
+                            write!(f, "{indent}    │   └── ")?;
+                            expr.fmt_with_indent(f, &format!("{indent}    │       "))?;
+                        } else {
+                            write!(f, "{indent}    │   ├── ")?;
+                            expr.fmt_with_indent(f, &format!("{indent}    │   │   "))?;
+                        }
+                    }
                 }
             }
-        } else {
-            writeln!(f, "{indent}└── Default Branch: None")?;
         }
 
         Ok(())
-        */
-        todo!()
     }
 }
 
@@ -805,6 +795,10 @@ mod test {
                     )),
                 ))],
             ));
+
+        // println!("{}", )
+        let output = format!("{}", DisplayWrapper(&expr, ""));
+        println!("{}", output);
 
         let constants = Vec::new();
         let functions = Vec::new();
