@@ -936,6 +936,46 @@ mod tests {
     }
 
     #[test]
+    pub fn test_fork_operator_call() {
+        let query = r#"
+               logs | 
+               fork
+               {
+                   extend attributes["triggers_alarm"] = "true"
+               }
+               {
+                   extend attributes["is_duplicate"] = "true"
+               }
+               {
+                   extend attributes["is_duplicate_again"] = "true"
+               }
+           "#;
+        let result = OplParser::parse(query);
+        assert!(result.is_ok());
+
+        let pipeline = result.unwrap().pipeline;
+        let expressions = pipeline.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        let expected = DataExpression::Fork(
+            ForkDataExpression::new(QueryLocation::new_fake())
+                .with_branch(ForkDataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    vec![assign_attribute_expression("triggers_alarm", "true")],
+                ))
+                .with_branch(ForkDataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    vec![assign_attribute_expression("is_duplicate", "true")],
+                ))
+                .with_branch(ForkDataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    vec![assign_attribute_expression("is_duplicate_again", "true")],
+                )),
+        );
+        assert_eq!(expressions[0], expected);
+    }
+
+    #[test]
     pub fn test_remove_map_keys_operator_call() {
         let query = r#"remove
             attributes["x"],
