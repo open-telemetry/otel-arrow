@@ -4,15 +4,14 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use data_engine_expressions::{
-    ArgumentScalarExpression, ConditionalDataExpression, ConditionalDataExpressionBranch,
-    DataExpression, DiscardDataExpression, Expression, InvokeFunctionScalarExpression,
-    LogicalExpression, MapKeyRenameSelector, MapSelectionExpression, MapSelector,
-    MutableValueExpression, NotLogicalExpression, OutputDataExpression, OutputExpression,
-    PipelineFunction, PipelineFunctionExpression, PipelineFunctionParameter,
-    PipelineFunctionParameterType, QueryLocation, ReduceMapTransformExpression,
-    RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
-    SourceScalarExpression, StaticScalarExpression, StringScalarExpression, TransformExpression,
-    ValueAccessor, ValueType,
+    ArgumentScalarExpression, BranchDataExpression, DataExpression, DataExpressionBranch,
+    DiscardDataExpression, Expression, InvokeFunctionScalarExpression, LogicalExpression,
+    MapKeyRenameSelector, MapSelectionExpression, MapSelector, MutableValueExpression,
+    NotLogicalExpression, OutputDataExpression, OutputExpression, PipelineFunction,
+    PipelineFunctionExpression, PipelineFunctionParameter, PipelineFunctionParameterType,
+    QueryLocation, ReduceMapTransformExpression, RenameMapKeysTransformExpression,
+    ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
+    StringScalarExpression, TransformExpression, ValueAccessor, ValueType,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_string_literal, to_query_location,
@@ -309,7 +308,7 @@ pub(crate) fn parse_if_else_operator_call(
     mut pipeline_builder: &mut dyn PipelineBuilder,
 ) -> Result<(), ParserError> {
     let query_location = to_query_location(&operator_call_rule);
-    let mut conditional_expr = ConditionalDataExpression::new(query_location);
+    let mut branch_expr = BranchDataExpression::new(query_location, true);
 
     // keep track of the location of the current branch (to fill in query location)
     let mut branch_location_start = 0;
@@ -379,12 +378,11 @@ pub(crate) fn parse_if_else_operator_call(
                     )
                 })?;
 
-                conditional_expr =
-                    conditional_expr.with_branch(ConditionalDataExpressionBranch::new(
-                        query_location,
-                        condition,
-                        curr_branch_data_exprs,
-                    ));
+                branch_expr = branch_expr.with_branch(DataExpressionBranch::new(
+                    query_location,
+                    Some(condition),
+                    curr_branch_data_exprs,
+                ));
             }
 
             // parse the data expressions for the else branch
@@ -411,18 +409,18 @@ pub(crate) fn parse_if_else_operator_call(
                 }
                 let (else_branch_data_exprs, parent) = else_branch_exprs.into_parts();
                 pipeline_builder = parent;
-                conditional_expr = conditional_expr.with_default_branch(else_branch_data_exprs);
+                branch_expr = branch_expr.with_default_branch(else_branch_data_exprs);
             }
             _ => {
                 return Err(ParserError::SyntaxError(
-                    conditional_expr.get_query_location().clone(),
+                    branch_expr.get_query_location().clone(),
                     format!("invalid rule found in if_else_expression {rule}"),
                 ));
             }
         }
     }
 
-    pipeline_builder.push_data_expression(DataExpression::Conditional(conditional_expr));
+    pipeline_builder.push_data_expression(DataExpression::Branch(branch_expr));
 
     Ok(())
 }
@@ -527,7 +525,7 @@ pub(crate) fn parse_apply_operator_call(
                     ValueAccessor::new(),
                 )),
             )),
-            DataExpression::Conditional(c) => PipelineFunctionExpression::Conditional(c),
+            DataExpression::Branch(b) => PipelineFunctionExpression::Branch(b),
             DataExpression::Transform(t) => PipelineFunctionExpression::Transform(t),
             other => {
                 return Err(ParserError::SyntaxNotSupported(
@@ -575,15 +573,15 @@ pub(crate) fn parse_apply_operator_call(
 #[cfg(test)]
 mod tests {
     use data_engine_expressions::{
-        ArgumentScalarExpression, ConditionalDataExpression, ConditionalDataExpressionBranch,
-        DataExpression, DiscardDataExpression, EqualToLogicalExpression,
-        InvokeFunctionScalarExpression, LogicalExpression, MapKeyRenameSelector,
-        MapSelectionExpression, MapSelector, MutableValueExpression, NotLogicalExpression,
-        OutputDataExpression, OutputExpression, PipelineFunction, PipelineFunctionExpression,
-        PipelineFunctionParameter, PipelineFunctionParameterType, QueryLocation,
-        ReduceMapTransformExpression, RenameMapKeysTransformExpression, ScalarExpression,
-        SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
-        StringScalarExpression, TransformExpression, ValueAccessor, ValueType,
+        ArgumentScalarExpression, BranchDataExpression, DataExpression, DataExpressionBranch,
+        DiscardDataExpression, EqualToLogicalExpression, InvokeFunctionScalarExpression,
+        LogicalExpression, MapKeyRenameSelector, MapSelectionExpression, MapSelector,
+        MutableValueExpression, NotLogicalExpression, OutputDataExpression, OutputExpression,
+        PipelineFunction, PipelineFunctionExpression, PipelineFunctionParameter,
+        PipelineFunctionParameterType, QueryLocation, ReduceMapTransformExpression,
+        RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
+        SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
+        TransformExpression, ValueAccessor, ValueType,
     };
     use data_engine_parser_abstractions::{Parser, ParserOptions, ParserState};
     use pest::Parser as _;
@@ -766,24 +764,24 @@ mod tests {
         let expressions = pipeline.get_expressions();
         assert_eq!(expressions.len(), 1);
 
-        let expected = DataExpression::Conditional(
-            ConditionalDataExpression::new(QueryLocation::new_fake())
-                .with_branch(ConditionalDataExpressionBranch::new(
+        let expected = DataExpression::Branch(
+            BranchDataExpression::new(QueryLocation::new_fake(), true)
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    equals_logical_expr("severity_text", "ERROR"),
+                    Some(equals_logical_expr("severity_text", "ERROR")),
                     vec![
                         assign_attribute_expression("important", "very"),
                         assign_attribute_expression("triggers_alarm", "true"),
                     ],
                 ))
-                .with_branch(ConditionalDataExpressionBranch::new(
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    equals_logical_expr("severity_text", "WARN"),
+                    Some(equals_logical_expr("severity_text", "WARN")),
                     vec![assign_attribute_expression("important", "somewhat")],
                 ))
-                .with_branch(ConditionalDataExpressionBranch::new(
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    equals_logical_expr("severity_text", "INFO"),
+                    Some(equals_logical_expr("severity_text", "INFO")),
                     vec![assign_attribute_expression("important", "rarely")],
                 ))
                 .with_default_branch(vec![assign_attribute_expression("important", "no")]),
@@ -808,19 +806,19 @@ mod tests {
         let expressions = pipeline.get_expressions();
         assert_eq!(expressions.len(), 1);
 
-        let expected = DataExpression::Conditional(
-            ConditionalDataExpression::new(QueryLocation::new_fake())
-                .with_branch(ConditionalDataExpressionBranch::new(
+        let expected = DataExpression::Branch(
+            BranchDataExpression::new(QueryLocation::new_fake(), true)
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    equals_logical_expr("severity_text", "ERROR"),
+                    Some(equals_logical_expr("severity_text", "ERROR")),
                     vec![
                         assign_attribute_expression("important", "very"),
                         assign_attribute_expression("triggers_alarm", "true"),
                     ],
                 ))
-                .with_branch(ConditionalDataExpressionBranch::new(
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    equals_logical_expr("severity_text", "WARN"),
+                    Some(equals_logical_expr("severity_text", "WARN")),
                     vec![assign_attribute_expression("important", "somewhat")],
                 )),
         );
@@ -844,11 +842,11 @@ mod tests {
         let expressions = pipeline.get_expressions();
         assert_eq!(expressions.len(), 1);
 
-        let expected = DataExpression::Conditional(
-            ConditionalDataExpression::new(QueryLocation::new_fake())
-                .with_branch(ConditionalDataExpressionBranch::new(
+        let expected = DataExpression::Branch(
+            BranchDataExpression::new(QueryLocation::new_fake(), true)
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    equals_logical_expr("severity_text", "ERROR"),
+                    Some(equals_logical_expr("severity_text", "ERROR")),
                     vec![
                         assign_attribute_expression("important", "very"),
                         assign_attribute_expression("triggers_alarm", "true"),
@@ -874,11 +872,11 @@ mod tests {
         let expressions = pipeline.get_expressions();
         assert_eq!(expressions.len(), 1);
 
-        let expected = DataExpression::Conditional(
-            ConditionalDataExpression::new(QueryLocation::new_fake()).with_branch(
-                ConditionalDataExpressionBranch::new(
+        let expected = DataExpression::Branch(
+            BranchDataExpression::new(QueryLocation::new_fake(), true).with_branch(
+                DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    equals_logical_expr("severity_text", "ERROR"),
+                    Some(equals_logical_expr("severity_text", "ERROR")),
                     vec![assign_attribute_expression("triggers_alarm", "true")],
                 ),
             ),
@@ -1242,11 +1240,11 @@ mod tests {
         let expressions = result.get_expressions();
         assert_eq!(expressions.len(), 1);
 
-        let expected = DataExpression::Conditional(
-            ConditionalDataExpression::new(QueryLocation::new_fake())
-                .with_branch(ConditionalDataExpressionBranch::new(
+        let expected = DataExpression::Branch(
+            BranchDataExpression::new(QueryLocation::new_fake(), true)
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                         QueryLocation::new_fake(),
                         ScalarExpression::Source(SourceScalarExpression::new(
                             QueryLocation::new_fake(),
@@ -1261,7 +1259,7 @@ mod tests {
                             StringScalarExpression::new(QueryLocation::new_fake(), "ERROR"),
                         )),
                         false,
-                    )),
+                    ))),
                     vec![DataExpression::Transform(TransformExpression::Set(
                         SetTransformExpression::new(
                             QueryLocation::new_fake(),
