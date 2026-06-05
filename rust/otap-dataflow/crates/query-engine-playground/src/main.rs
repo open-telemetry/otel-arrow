@@ -152,10 +152,7 @@ async fn serve_proto(Path(path): Path<String>) -> impl IntoResponse {
                     header::CONTENT_TYPE,
                     HeaderValue::from_static("text/plain; charset=utf-8"),
                 ),
-                (
-                    header::CACHE_CONTROL,
-                    HeaderValue::from_static("no-store"),
-                ),
+                (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
             ],
             body,
         )
@@ -170,10 +167,7 @@ async fn serve_proto(Path(path): Path<String>) -> impl IntoResponse {
 /// `Rc`-based internals that are not `Send`.
 async fn handle_execute(Json(req): Json<ExecuteRequest>) -> Json<ExecuteResponse> {
     let handle = tokio::runtime::Handle::current();
-    let result = tokio::task::spawn_blocking(move || {
-        handle.block_on(execute_pipeline(req))
-    })
-    .await;
+    let result = tokio::task::spawn_blocking(move || handle.block_on(execute_pipeline(req))).await;
 
     let resp = match result {
         Ok(Ok(resp)) => resp,
@@ -264,8 +258,7 @@ fn build_arrow_tables(result: &OtapArrowRecords) -> HashMap<String, String> {
                     Ok(formatted) => formatted.to_string(),
                     Err(e) => format!("(formatting error: {e})"),
                 };
-                let _: Option<String> =
-                    tables.insert(payload_type.as_str_name().to_string(), text);
+                let _: Option<String> = tables.insert(payload_type.as_str_name().to_string(), text);
             }
         }
     }
