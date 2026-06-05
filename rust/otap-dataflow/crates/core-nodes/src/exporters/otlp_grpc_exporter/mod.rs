@@ -143,21 +143,17 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
         let exporter_id = effect_handler.exporter_id();
 
-        // Run the optional startup check (dns resolution or eager connect)
-        // before creating the lazy channels used for normal runtime traffic.
-        self.config
-            .grpc
-            .run_startup_check()
-            .await
-            .map_err(|e| {
-                let source_detail = format_error_sources(&e);
-                Error::ExporterError {
-                    exporter: exporter_id.clone(),
-                    kind: ExporterErrorKind::Connect,
-                    error: format!("startup check failed: {e}"),
-                    source_detail,
-                }
-            })?;
+        // Run the optional startup check (dns resolution or eager connect) before creating the
+        // lazy channels used for normal runtime traffic.
+        self.config.grpc.run_startup_check().await.map_err(|e| {
+            let source_detail = format_error_sources(&e);
+            Error::ExporterError {
+                exporter: exporter_id.clone(),
+                kind: ExporterErrorKind::Connect,
+                error: format!("startup check failed: {e}"),
+                source_detail,
+            }
+        })?;
 
         let num_connections = self.config.num_connections.max(1);
         let mut channels = Vec::with_capacity(num_connections);
@@ -1747,5 +1743,4 @@ mod tests {
             "should return None when policy drops all headers"
         );
     }
-
 }

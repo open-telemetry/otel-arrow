@@ -21,28 +21,27 @@ use tower::service_fn;
 
 /// Controls optional startup-time endpoint validation.
 ///
-/// When an exporter starts, it can optionally perform a check to detect
-/// configuration problems early rather than waiting for the first export RPC
-/// to fail.
+/// When a client is being created, it can optionally perform a check to detect configuration
+/// problems early rather than waiting for the first export RPC to fail.
 ///
-/// The default is [`StartupCheck::None`], which preserves the existing
-/// lazy-connection behavior.
+/// The default is [`StartupCheck::None`], which preserves the existing lazy-connection
+/// behaviour.
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StartupCheck {
     /// No startup check; connections are fully lazy (existing behavior).
     #[default]
     None,
+
     /// Verify that the endpoint hostname resolves via DNS at startup.
     ///
-    /// When a proxy is configured and would handle the target endpoint,
-    /// this check is skipped because the proxy is expected to perform
-    /// name resolution.
+    /// Note: When a proxy is configured and would handle the target endpoint, this check is
+    /// skipped because the proxy is expected to perform name resolution.
     Dns,
+
     /// Perform one eager gRPC connection attempt at startup.
     ///
-    /// This validates the entire connection path including proxy tunneling
-    /// and TLS handshake.
+    /// This validates the entire connection path including proxy tunneling and TLS handshake.
     Connect,
 }
 
@@ -163,7 +162,7 @@ pub enum GrpcEndpointError {
     #[error("proxy error: {0}")]
     Proxy(#[from] crate::otap_grpc::proxy::ProxyError),
 
-    /// Invalid gRPC endpoint syntax.
+    /// Invalid gRPC endpoint.
     #[error("invalid grpc_endpoint: {0}")]
     InvalidEndpoint(String),
 
@@ -179,15 +178,12 @@ pub enum GrpcEndpointError {
 
 /// Validates that a gRPC endpoint string is a well-formed URI.
 ///
-/// When no scheme is present the endpoint is validated as if `http://` were
-/// prepended.  Unsupported schemes (anything other than `http` / `https`)
-/// are rejected.
+/// When no scheme is present the endpoint is validated as if `http://` were prepended.
+/// Unsupported schemes (anything other than `http` / `https`) are rejected.
 fn validate_grpc_endpoint(endpoint: &str) -> Result<(), String> {
     let trimmed = endpoint.trim();
     if trimmed.is_empty() {
-        return Err(
-            "grpc_endpoint is empty; expected a URI like \"http://host:port\"".to_string(),
-        );
+        return Err("grpc_endpoint is empty; expected a URI like \"http://host:port\"".to_string());
     }
 
     let uri: http::Uri = trimmed
@@ -222,8 +218,8 @@ impl GrpcClientSettings {
     ///
     /// # Errors
     ///
-    /// Returns an error if the startup check fails (DNS resolution failure
-    /// for `dns` mode, or connection failure for `connect` mode).
+    /// Returns an error if the startup check fails (DNS resolution failure for `dns` mode, or
+    /// connection failure for `connect` mode).
     pub async fn run_startup_check(&self) -> Result<(), GrpcEndpointError> {
         match self.startup_check {
             StartupCheck::None => Ok(()),
@@ -234,8 +230,8 @@ impl GrpcClientSettings {
 
     /// Resolves the endpoint hostname via DNS.
     ///
-    /// Skipped when a proxy is configured and would handle the target,
-    /// since the proxy is expected to perform name resolution.
+    /// Skipped when a proxy is configured and would handle the target, since the proxy is expected
+    /// to perform name resolution.
     async fn run_dns_check(&self) -> Result<(), GrpcEndpointError> {
         let endpoint = self.grpc_endpoint.trim();
 
@@ -261,8 +257,8 @@ impl GrpcClientSettings {
             }
         });
 
-        // If a proxy is configured and the endpoint is not bypassed, the
-        // proxy performs DNS resolution -- skip the local check.
+        // If a proxy is configured and the endpoint is not bypassed, the proxy performs DNS
+        // resolution -- skip the local check.
         let proxy = self.effective_proxy_config();
         if proxy.has_proxy() && !proxy.should_bypass(&host, port) {
             return Ok(());
@@ -553,12 +549,8 @@ const fn default_keep_alive_while_idle() -> bool {
     true
 }
 
-/// Deserializes `grpc_endpoint` while validating that the value is a
-/// well-formed URI with an `http` or `https` scheme.
-///
-/// This runs at deserialization time so that `validate_typed_config::<Config>`
-/// (and therefore `--validate-and-exit`) rejects invalid endpoint syntax
-/// without requiring any exporter-specific validation function.
+/// Deserializes `grpc_endpoint` while validating that the value is a well-formed URI with an
+/// `http` or `https` scheme.
 fn deserialize_grpc_endpoint<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -1070,13 +1062,19 @@ mod tests {
     #[test]
     fn validate_rejects_empty_endpoint() {
         let err = validate_grpc_endpoint("").unwrap_err();
-        assert!(err.contains("empty"), "expected 'empty' in error, got: {err}");
+        assert!(
+            err.contains("empty"),
+            "expected 'empty' in error, got: {err}"
+        );
     }
 
     #[test]
     fn validate_rejects_whitespace_only_endpoint() {
         let err = validate_grpc_endpoint("   ").unwrap_err();
-        assert!(err.contains("empty"), "expected 'empty' in error, got: {err}");
+        assert!(
+            err.contains("empty"),
+            "expected 'empty' in error, got: {err}"
+        );
     }
 
     #[test]

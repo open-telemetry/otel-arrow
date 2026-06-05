@@ -375,21 +375,17 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
 
         let exporter_id = effect_handler.exporter_id();
 
-        // Run the optional startup check (dns resolution or eager connect)
-        // before creating the lazy channel used for normal runtime traffic.
-        self.config
-            .grpc
-            .run_startup_check()
-            .await
-            .map_err(|e| {
-                let source_detail = format_error_sources(&e);
-                Error::ExporterError {
-                    exporter: exporter_id.clone(),
-                    kind: ExporterErrorKind::Connect,
-                    error: format!("startup check failed: {e}"),
-                    source_detail,
-                }
-            })?;
+        // Run the optional startup check (dns resolution or eager connect) before creating the
+        // lazy channel used for normal runtime traffic.
+        self.config.grpc.run_startup_check().await.map_err(|e| {
+            let source_detail = format_error_sources(&e);
+            Error::ExporterError {
+                exporter: exporter_id.clone(),
+                kind: ExporterErrorKind::Connect,
+                error: format!("startup check failed: {e}"),
+                source_detail,
+            }
+        })?;
 
         let channel = self
             .config
@@ -2364,5 +2360,4 @@ mod tests {
             .block_on(server_handle)
             .expect("server shutdown success");
     }
-
 }
