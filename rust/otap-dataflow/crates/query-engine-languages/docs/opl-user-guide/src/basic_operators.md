@@ -135,7 +135,6 @@ logs | set body = concat("[", severity_text, "]: ", event_name)
 logs | set attributes["sensitive"] = encode(sha256(attributes["sensitive"]), "hex")
 ```
 
-
 ### Multiple assignments
 
 Multiple assignments can be made in a single invocation of the `set` operator

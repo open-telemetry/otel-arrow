@@ -145,6 +145,8 @@ currently no support for indexing into them or using their contents in
 expressions. This means you can test whether an attribute is an `Array` or
 `Map`, but you cannot access individual elements within them.
 
+A type for binary data (bytes) is not yet supported, but will be added soon.
+
 Type checks are commonly used to guard function calls that only accept
 specific types:
 
