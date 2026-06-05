@@ -34,7 +34,6 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::server::{TcpConnectInfo, TlsConnectInfo};
 use tonic::{Request, Response, Status, Streaming};
 
 pub mod client_settings;
@@ -45,6 +44,7 @@ pub mod proxy;
 pub mod server_settings;
 
 use crate::memory_pressure_layer::{ReceiverRejectionMetrics, grpc_memory_pressure_status};
+use crate::otap_grpc::common::peer_addr_from_extensions;
 use crate::otap_grpc::otlp::server::SharedState;
 pub use client_settings::GrpcClientSettings;
 pub use server_settings::GrpcServerSettings;
@@ -176,7 +176,7 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
         // Provide client a stream to listen to
         let output = ReceiverStream::new(rx);
 
-        let peer_addr = extract_peer_addr(&request);
+        let peer_addr = peer_addr_from_extensions(request.extensions());
         spawn_stream_handler::<Logs, _>(
             request.into_inner(),
             OtapArrowRecords::Logs,
@@ -204,7 +204,7 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
         // Provide client a stream to listen to
         let output = ReceiverStream::new(rx);
 
-        let peer_addr = extract_peer_addr(&request);
+        let peer_addr = peer_addr_from_extensions(request.extensions());
         spawn_stream_handler::<Metrics, _>(
             request.into_inner(),
             OtapArrowRecords::Metrics,
@@ -232,7 +232,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
         // create a stream to output result to
         let output = ReceiverStream::new(rx);
 
-        let peer_addr = extract_peer_addr(&request);
+        let peer_addr = peer_addr_from_extensions(request.extensions());
         spawn_stream_handler::<Traces, _>(
             request.into_inner(),
             OtapArrowRecords::Traces,
@@ -245,19 +245,6 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
 
         Ok(Response::new(Box::pin(output) as Self::ArrowTracesStream))
     }
-}
-
-/// Extracts the peer socket address from a tonic request's connection info
-/// extensions. Returns `None` for connections without TCP-backed transport
-/// (e.g. UDS) or when tonic was unable to record the remote address.
-fn extract_peer_addr<T>(request: &Request<T>) -> Option<SocketAddr> {
-    let exts = request.extensions();
-    exts.get::<TcpConnectInfo>()
-        .and_then(|info| info.remote_addr())
-        .or_else(|| {
-            exts.get::<TlsConnectInfo<TcpConnectInfo>>()
-                .and_then(|info| info.get_ref().remote_addr())
-        })
 }
 
 type PendingResponseFuture = BoxFuture<'static, PendingResponse>;
