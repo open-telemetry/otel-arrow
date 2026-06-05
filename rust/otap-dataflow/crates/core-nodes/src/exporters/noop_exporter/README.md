@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:exporter:noop`
-- Type shortcut: `exporter:noop`
+- Type: `exporter:noop` (`urn:otel:exporter:noop`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,11 +14,19 @@ The noop exporter acknowledges every received message without processing or
 exporting it. It is useful for validating pipeline wiring, measuring upstream
 cost, and terminating test pipelines.
 
+## Getting Started
+
+Use an empty config object when the pipeline only needs a terminal ACKing
+exporter:
+
+```yaml
+type: exporter:noop
+config: {}
+```
+
 ## Configuration
 
 This exporter has no node-specific configuration.
-
-## Examples
 
 ```yaml
 type: exporter:noop

@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:exporter:otlp_http`
-- Type shortcut: `exporter:otlp_http`
+- Type: `exporter:otlp_http` (`urn:otel:exporter:otlp_http`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,23 +14,9 @@ The OTLP HTTP exporter sends logs, metrics, and traces to OTLP/HTTP endpoints.
 It uses `/v1/logs`, `/v1/metrics`, and `/v1/traces` paths derived from
 `endpoint` unless a signal-specific endpoint override is provided.
 
-## Configuration
+## Getting Started
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `http` | object | Required | Shared HTTP client settings. |
-| `endpoint` | string | Required | Base OTLP/HTTP endpoint without signal path. |
-| `traces_endpoint` | string | unset | Full override URL for traces. |
-| `metrics_endpoint` | string | unset | Full override URL for metrics. |
-| `logs_endpoint` | string | unset | Full override URL for logs. |
-| `max_response_body_length` | integer | `10485760` | Maximum response body size in bytes. |
-| `client_pool_size` | non-zero integer | Required | Number of HTTP clients in the pool. |
-| `max_in_flight` | integer | `5` | Maximum concurrent export requests. |
-
-Shared HTTP client fields include concurrency limit, connect timeout, request
-timeout, TCP keepalive, TLS, and request-body compression.
-
-## Examples
+Point the exporter at an OTLP/HTTP base endpoint:
 
 ```yaml
 type: exporter:otlp_http
@@ -42,6 +27,38 @@ config:
     compression: gzip
   max_in_flight: 8
 ```
+
+## Configuration
+
+```yaml
+type: exporter:otlp_http
+config:
+  # Base OTLP/HTTP endpoint without the signal path (required).
+  endpoint: "http://127.0.0.1:4318"
+
+  # Full signal-specific endpoint overrides (optional).
+  traces_endpoint: "http://traces.example.test:4318/v1/traces"
+  metrics_endpoint: "http://metrics.example.test:4318/v1/metrics"
+  logs_endpoint: "http://logs.example.test:4318/v1/logs"
+
+  # Maximum response body size in bytes (default: 10485760).
+  max_response_body_length: 10485760
+
+  # Number of HTTP clients in the pool (required, must be non-zero).
+  client_pool_size: 1
+
+  # Maximum concurrent export requests (default: 5).
+  max_in_flight: 8
+
+  # Shared HTTP client settings (required).
+  http:
+    compression: gzip
+```
+
+Shared HTTP client fields include concurrency limit, connect timeout, request
+timeout, TCP keepalive, TLS, and request-body compression.
+
+## Examples
 
 With one signal-specific URL:
 

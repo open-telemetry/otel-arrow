@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:processor:filter`
-- Type shortcut: `processor:filter`
+- Type: `processor:filter` (`urn:otel:processor:filter`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -17,9 +16,28 @@ exclude rules. Metrics currently pass through unchanged.
 For reference, compare the Go Collector
 [filter processor](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/processor/filterprocessor/README.md).
 
-## Example Config
+## Getting Started
+
+Start with a signal-specific include or exclude rule:
 
 ```yaml
+type: processor:filter
+config:
+  logs:
+    include:
+      match_type: strict
+      severity_texts:
+        - WARN
+        - ERROR
+```
+
+## Configuration
+
+The node-level config can define independent filter rules for metrics, logs,
+and traces:
+
+```yaml
+type: processor:filter
 config:
   metrics:
     include:
@@ -126,15 +144,6 @@ You can filter based on `resource_attributes` (all the attributes must match,
 for each of the remaining fields only one entry has to match),
 `span_attributes`, `span_names`, `event_names`, `event_attributes` and
 `link_attributes`.
-
-## Configuration
-
-The top-level fields are `logs` and `traces`. Each signal can define include
-and exclude filter rules. Omitted filters default to empty filters.
-
-## Examples
-
-See [Example Config](#example-config).
 
 ## Telemetry
 

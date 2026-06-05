@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:processor:batch`
-- Type shortcut: `processor:batch`
+- Type: `processor:batch` (`urn:otel:processor:batch`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,26 +14,9 @@ The batch processor combines OTAP and OTLP payloads before forwarding them
 downstream. It can preserve the inbound payload format or force output to OTAP
 or OTLP, and it tracks ACK/NACK-sensitive request state across batch flushes.
 
-## Configuration
+## Getting Started
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `otap` | object | OTAP defaults | Batch sizing for OTAP records. |
-| `otlp` | object | OTLP defaults | Batch sizing for OTLP bytes. |
-| `max_batch_duration` | duration | `200ms` | Maximum time before flushing pending data. |
-| `inbound_request_limit` | non-zero integer | `1024` | Pending inbound request tracking limit. |
-| `outbound_request_limit` | non-zero integer | `512` | Pending outbound request tracking limit. |
-| `format` | enum | `preserve` | Output format: `otap`, `otlp`, or `preserve`. |
-
-Each format object contains:
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `min_size` | non-zero integer or null | Flush threshold. |
-| `max_size` | non-zero integer or null | Optional upper bound. |
-| `sizer` | enum | `requests`, `items`, or `bytes`. |
-
-## Examples
+Configure format-specific sizing and the maximum time to hold pending data:
 
 ```yaml
 type: processor:batch
@@ -50,6 +32,42 @@ config:
     max_size: null
     sizer: bytes
 ```
+
+## Configuration
+
+```yaml
+type: processor:batch
+config:
+  # Batch sizing for OTAP records (defaults are format-specific).
+  otap:
+    min_size: 8192      # Flush threshold; null disables size flushing.
+    max_size: null     # Optional upper bound.
+    sizer: items       # "requests", "items", or "bytes".
+
+  # Batch sizing for OTLP bytes (defaults are format-specific).
+  otlp:
+    min_size: 1048576
+    max_size: null
+    sizer: bytes
+
+  # Maximum time before flushing pending data (default: 200ms).
+  max_batch_duration: 500ms
+
+  # Pending request tracking limits.
+  inbound_request_limit: 1024
+  outbound_request_limit: 512
+
+  # Output format: "otap", "otlp", or "preserve" (default: preserve).
+  format: preserve
+```
+
+Each format object contains:
+
+- `min_size`: non-zero flush threshold, or `null` to disable size flushing.
+- `max_size`: optional non-zero upper bound, or `null`.
+- `sizer`: one of `requests`, `items`, or `bytes`.
+
+## Examples
 
 Flush every incoming message:
 

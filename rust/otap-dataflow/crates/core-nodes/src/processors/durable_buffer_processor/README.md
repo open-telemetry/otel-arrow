@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:processor:durable_buffer`
-- Type shortcut: `processor:durable_buffer`
+- Type: `processor:durable_buffer` (`urn:otel:processor:durable_buffer`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -14,6 +13,19 @@
 The Durable Buffer provides crash-resilient buffering using a
 write-ahead log (WAL) and segment storage. Data is persisted before forwarding
 downstream, enabling recovery after crashes or network outages.
+
+## Getting Started
+
+Set a persistent storage path before placing the durable buffer ahead of an
+exporter:
+
+```yaml
+type: processor:durable_buffer
+config:
+  path: /var/lib/otap/buffer
+  retention_size_cap: 10 GiB
+  size_cap_policy: backpressure
+```
 
 ## Configuration
 
@@ -84,10 +96,6 @@ Each processor instance (one per CPU core) has its own isolated storage engine:
 3. **Forward**: Timer tick polls for finalized bundles, sends downstream
 4. **ACK/NACK**: On ACK, bundle marked complete; on NACK, deferred for retry
 5. **Cleanup**: Fully-consumed segments are deleted to reclaim disk space
-
-## Examples
-
-See the configuration example above.
 
 ## Telemetry
 

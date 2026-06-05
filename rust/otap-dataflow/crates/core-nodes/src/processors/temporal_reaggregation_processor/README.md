@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:processor:temporal_reaggregation`
-- Type shortcut: `processor:temporal_reaggregation`
+- Type: `processor:temporal_reaggregation` (`urn:otel:processor:temporal_reaggregation`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -18,6 +17,45 @@ specification][metrics-data-model].
 
 This processor is partially modeled after the [Go interval
 processor][go-interval].
+
+## Getting Started
+
+Set the aggregation period and request tracking limits:
+
+```yaml
+type: processor:temporal_reaggregation
+config:
+  period: 60s
+  inbound_request_limit: 1024
+  outbound_request_limit: 2048
+  max_stream_cardinality: 16384
+```
+
+## Configuration
+
+```yaml
+type: processor:temporal_reaggregation
+config:
+  # Interval at which aggregated metrics are emitted (default: 60s,
+  # minimum: 100ms).
+  period: 60s
+
+  # Maximum number of inbound request contexts buffered for ack/nack tracking
+  # (default: 1024).
+  inbound_request_limit: 1024
+
+  # Maximum number of outbound request contexts buffered for ack/nack tracking
+  # (default: 2048, minimum: 3).
+  #
+  # Set this higher than inbound_request_limit when batches usually contain a
+  # mix of aggregable and non-aggregable metrics.
+  outbound_request_limit: 2048
+
+  # Maximum number of individual metric streams tracked while aggregating a
+  # single batch (default: 16383). When this limit is hit, data is flushed
+  # early.
+  max_stream_cardinality: 16384
+```
 
 [metrics-data-model]:
   https://opentelemetry.io/docs/specs/otel/metrics/data-model/#events--data-stream--timeseries
@@ -72,35 +110,6 @@ This processor has the following limitations:
   time until either a stream/id limit is reached or the shutdown message is
   received by the processor.
 
-## Configuration
-
-```yaml
-temporal-reaggregation:
-  type: urn:otel:processor:temporal_reaggregation
-  config:
-    # The interval at which aggregated metrics are emitted.
-    period: 60s
-
-    # The maximum number of inbound request contexts that this processor can
-    # buffer for ack/nack tracking.
-    inbound_request_limit: 1024
-
-    # The maximum number of outbound request contexts that this processor can
-    # buffer for ack/nack tracking.
-    #
-    # It's recommended to set this to higher than inbound_request_limit if your
-    # batches mostly contain a mix of aggregable and non-aggregable metrics.
-    #
-    # It's recommended to set this closer to inbound_request_limit if your batches contain
-    # either aggregable metrics OR non-aggregable metrics, but not both.
-    outbound_request_limit: 2048
-
-    # The maximum number of individual metric streams that this processor will
-    # track while aggregating a single batch. When this limit is hit, data will
-    # be flushed early.
-    max_stream_cardinality: 16384
-```
-
 ## Pipeline placement
 
 It is recommended to place this processor:
@@ -115,10 +124,6 @@ It is recommended to place this processor:
 A typical pipeline ordering with batch, temporal_reaggregation, and retry
 processors would be:
 `receivers -> temporal_reaggregation -> batch -> retry -> exporters`
-
-## Examples
-
-See the configuration example above.
 
 ## Related Docs
 

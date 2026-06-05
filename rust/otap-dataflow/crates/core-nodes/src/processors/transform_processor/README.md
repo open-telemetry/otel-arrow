@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:processor:transform`
-- Type shortcut: `processor:transform`
+- Type: `processor:transform` (`urn:otel:processor:transform`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -17,27 +16,42 @@ multiple output batches depending on the transformation.
 
 This processor and its query engine integration are under active development.
 
-## Configuration
+## Getting Started
 
-Exactly one query form is selected by the flattened query enum.
-
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `kql_query` | string | unset | KQL transformation query. |
-| `opl_query` | string | unset | OPL transformation query. |
-| `ottl.log_statements` | array | unset | OTTL statements for logs. |
-| `inbound_request_limit` | non-zero integer | `1024` | Pending inbound request tracking limit. |
-| `outbound_request_limit` | non-zero integer | `512` | Pending outbound request tracking limit. |
-| `skip_sanitize_result` | bool | `false` | Skips result sanitization when `true`. |
-| `filter_attribute_keys_case_sensitive` | bool | `true` | Controls filter attribute key matching. |
-
-## Examples
+Choose exactly one query form for the transform:
 
 ```yaml
 type: processor:transform
 config:
   kql_query: "logs | where body != ''"
 ```
+
+## Configuration
+
+Exactly one query form is selected by the flattened query enum.
+
+```yaml
+type: processor:transform
+config:
+  # Select exactly one query form.
+  kql_query: "logs | where body != ''"
+  # opl_query: "..."
+  # ottl:
+  #   log_statements:
+  #     - set(attributes["processed"], true)
+
+  # Pending request tracking limits.
+  inbound_request_limit: 1024
+  outbound_request_limit: 512
+
+  # Skips result sanitization when true (default: false).
+  skip_sanitize_result: false
+
+  # Controls filter attribute key matching (default: true).
+  filter_attribute_keys_case_sensitive: true
+```
+
+## Examples
 
 OTTL log statements:
 

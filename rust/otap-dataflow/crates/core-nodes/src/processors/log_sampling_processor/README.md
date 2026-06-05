@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:processor:log_sampling`
-- Type shortcut: `processor:log_sampling`
+- Type: `processor:log_sampling` (`urn:otel:processor:log_sampling`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -14,6 +13,19 @@
 The Log Sampling processor reduces log volume by discarding a portion of
 incoming log records according to a configurable sampling strategy. Non-log
 signals (metrics and traces) pass through unchanged.
+
+## Getting Started
+
+Choose a sampling policy. For example, keep one out of every ten log records:
+
+```yaml
+type: processor:log_sampling
+config:
+  policy:
+    ratio:
+      emit: 1
+      out_of: 10
+```
 
 ## Architecture
 
@@ -47,6 +59,7 @@ field. Exactly one policy must be specified.
 ### Zip Sampling
 
 ```yaml
+type: processor:log_sampling
 config:
   policy:
     zip:
@@ -57,6 +70,7 @@ config:
 ### Ratio Sampling
 
 ```yaml
+type: processor:log_sampling
 config:
   policy:
     ratio:
@@ -99,10 +113,6 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | Event | Severity | Description |
 | --- | --- | --- |
 | *None* | N/A | No node-specific events are emitted. |
-
-## Examples
-
-See [Zip Sampling](#zip-sampling) and [Ratio Sampling](#ratio-sampling).
 
 ## Limits
 

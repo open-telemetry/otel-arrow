@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:processor:fanout`
-- Type shortcut: `processor:fanout`
+- Type: `processor:fanout` (`urn:otel:processor:fanout`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -16,6 +15,28 @@ with configurable delivery modes, ack policies, and fallback routing.
 
 Fallback settings on a per-port basis supports configuring alternative
 destinations after failures, supporting a broad range of failover policies.
+
+## Getting Started
+
+Declare each output port and list the destinations that should receive each
+incoming message:
+
+```yaml
+type: processor:fanout
+outputs:
+  - primary_export
+  - backup_export
+config:
+  mode: parallel
+  await_ack: all
+  destinations:
+    - port: primary_export
+      primary: true
+      timeout: 5s
+    - port: backup_export
+      fallback_for: primary_export
+      timeout: 10s
+```
 
 ## Configuration
 
@@ -368,12 +389,8 @@ Eligible when: `mode: parallel`, `await_ack: primary`, no `fallback_for`, no `ti
 Required for: `sequential` mode, `await_ack: all`, any fallback, any timeout
 
 - Tracks per-endpoint status, timeouts, and fallback chains
-- Coordinates ordering (sequential) or completion (await_all)
+- Coordinates ordering (sequential) or completion (`await_ack: all`)
 - Handles failover to backup destinations
-
-## Examples
-
-See the configuration example above.
 
 ## Telemetry
 

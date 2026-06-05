@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:exporter:perf`
-- Type shortcut: `exporter:perf`
+- Type: `exporter:perf` (`urn:otel:exporter:perf`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,19 +14,9 @@ The perf exporter reports pipeline throughput and optional process or host usage
 statistics. It is mainly intended for local benchmarks and performance
 experiments.
 
-## Configuration
+## Getting Started
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `frequency` | integer | `1000` | Report interval in milliseconds. |
-| `smoothing_factor` | number | `0.3` | Exponential moving average smoothing. |
-| `self_usage` | bool | `true` | Reports process usage. |
-| `cpu_usage` | bool | `true` | Reports CPU usage. |
-| `mem_usage` | bool | `true` | Reports memory usage. |
-| `disk_usage` | bool | `true` | Reports disk usage. |
-| `io_usage` | bool | `true` | Reports network and I/O usage. |
-
-## Examples
+Use the perf exporter at the end of a benchmark pipeline:
 
 ```yaml
 type: exporter:perf
@@ -38,6 +27,33 @@ config:
   cpu_usage: true
   mem_usage: true
   disk_usage: true
+  io_usage: true
+```
+
+## Configuration
+
+```yaml
+type: exporter:perf
+config:
+  # Report interval in milliseconds (default: 1000).
+  frequency: 1000
+
+  # Exponential moving average smoothing (default: 0.3).
+  smoothing_factor: 0.3
+
+  # Report process usage (default: true).
+  self_usage: true
+
+  # Report CPU usage (default: true).
+  cpu_usage: true
+
+  # Report memory usage (default: true).
+  mem_usage: true
+
+  # Report disk usage (default: true).
+  disk_usage: true
+
+  # Report network and I/O usage (default: true).
   io_usage: true
 ```
 

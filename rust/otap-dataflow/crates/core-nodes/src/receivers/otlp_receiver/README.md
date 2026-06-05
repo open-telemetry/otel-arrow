@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:receiver:otlp`
-- Type shortcut: `receiver:otlp`
+- Type: `receiver:otlp` (`urn:otel:receiver:otlp`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,14 +14,36 @@ The OTLP receiver accepts OTLP/gRPC, OTLP/HTTP, or both. It forwards received
 logs, metrics, and traces into the pipeline as pdata and can wait for immediate
 downstream ACK/NACK outcomes before responding to clients.
 
+## Getting Started
+
+Enable at least one OTLP protocol. For gRPC only:
+
+```yaml
+type: receiver:otlp
+config:
+  protocols:
+    grpc:
+      listening_addr: "127.0.0.1:4317"
+```
+
 ## Configuration
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `protocols.grpc` | object | unset | Enables and configures OTLP/gRPC. |
-| `protocols.http` | object | unset | Enables and configures OTLP/HTTP. |
-
-At least one protocol must be configured.
+```yaml
+type: receiver:otlp
+config:
+  # At least one protocol must be configured.
+  protocols:
+    grpc:
+      # Enables and configures OTLP/gRPC.
+      listening_addr: "127.0.0.1:4317"
+      wait_for_result: true
+      timeout: 30s
+    http:
+      # Enables and configures OTLP/HTTP.
+      listening_addr: "127.0.0.1:4318"
+      wait_for_result: true
+      timeout: 30s
+```
 
 Common gRPC protocol fields include:
 
@@ -47,16 +68,6 @@ Common HTTP protocol fields include:
 - `tls`
 
 ## Examples
-
-gRPC only:
-
-```yaml
-type: receiver:otlp
-config:
-  protocols:
-    grpc:
-      listening_addr: "127.0.0.1:4317"
-```
 
 gRPC and HTTP:
 

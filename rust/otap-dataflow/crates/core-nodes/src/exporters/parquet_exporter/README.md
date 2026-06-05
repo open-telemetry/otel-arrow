@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:exporter:parquet`
-- Type shortcut: `exporter:parquet`
+- Type: `exporter:parquet` (`urn:otel:exporter:parquet`)
 - Feature gate: Default; cloud backends require crate features
 - Stability: Experimental
 
@@ -15,19 +14,9 @@ The Parquet exporter writes OTAP batches as Parquet files through the shared
 object-store abstraction. It can partition output using schema metadata and can
 flush files by approximate row count or age.
 
-## Configuration
+## Getting Started
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `storage` | object | Required | Object-store backend and base URI. |
-| `partitioning_strategies` | array | unset | Optional partition strategies. |
-| `writer_options.target_rows_per_file` | integer | `100000000` | Approximate row-count flush target. |
-| `writer_options.flush_when_older_than` | duration | unset | Flush files older than this interval. |
-
-The default build supports local file storage. Azure and S3 storage variants
-are compiled only when the corresponding crate features are enabled.
-
-## Examples
+Write Parquet files to a local directory with a file storage backend:
 
 ```yaml
 type: exporter:parquet
@@ -39,6 +28,33 @@ config:
     flush_when_older_than: 300s
     target_rows_per_file: 1000000
 ```
+
+## Configuration
+
+```yaml
+type: exporter:parquet
+config:
+  # Object-store backend and base URI (required).
+  storage:
+    file:
+      base_uri: "/tmp/otap-parquet"
+
+  # Optional partition strategies.
+  partitioning_strategies:
+    - schema_metadata: ["_part_id"]
+
+  writer_options:
+    # Approximate row-count flush target (default: 100000000).
+    target_rows_per_file: 1000000
+
+    # Flush files older than this interval (optional).
+    flush_when_older_than: 300s
+```
+
+The default build supports local file storage. Azure and S3 storage variants
+are compiled only when the corresponding crate features are enabled.
+
+## Examples
 
 Partition by schema metadata:
 

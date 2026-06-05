@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:processor:attribute`
-- Type shortcut: `processor:attribute`
+- Type: `processor:attribute` (`urn:otel:processor:attribute`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -18,30 +17,9 @@ updating, renaming, and hashing attributes.
 The processor can apply actions to signal attributes, resource attributes,
 scope attributes, or any combination of those domains.
 
-## Configuration
+## Getting Started
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `actions` | array | `[]` | Ordered list of attribute actions. |
-| `apply_to` | array | `["signal"]` | Attribute domains to mutate. |
-
-Supported `apply_to` values are `signal`, `resource`, and `scope`.
-
-Supported actions:
-
-| Action | Required fields | Description |
-| --- | --- | --- |
-| `delete` | `key` | Deletes an attribute. |
-| `insert` | `key`, `value` | Inserts a value only when the key is absent. |
-| `upsert` | `key`, `value` | Inserts or replaces a value. |
-| `update` | `key`, `value` | Replaces a value only when the key exists. |
-| `rename` | `source_key`, `destination_key` | Renames an attribute key. |
-| `hash` | `key` | Replaces a scalar value with a salted hash. |
-
-`hash.algorithm` defaults to `sha256`; `hash.salt` defaults to an empty string.
-Unsupported action variants are accepted for forward compatibility and ignored.
-
-## Examples
+Start with an ordered action list and the attribute domains to mutate:
 
 ```yaml
 type: processor:attribute
@@ -56,6 +34,59 @@ config:
       key: user.email
       salt: "tenant-specific-salt"
 ```
+
+## Configuration
+
+```yaml
+type: processor:attribute
+config:
+  # Attribute domains to mutate (default: ["signal"]).
+  # Supported values are "signal", "resource", and "scope".
+  apply_to: ["resource", "signal"]
+
+  # Ordered list of attribute actions (default: []).
+  actions:
+    - action: delete
+      key: temporary.attribute
+    - action: insert
+      key: deployment.environment
+      value:
+        string: prod
+    - action: upsert
+      key: service.namespace
+      value:
+        string: checkout
+    - action: update
+      key: service.version
+      value:
+        string: "1.2.3"
+    - action: rename
+      source_key: service
+      destination_key: service.name
+    - action: hash
+      key: user.email
+      algorithm: sha256
+      salt: "tenant-specific-salt"
+```
+
+Supported `apply_to` values are `signal`, `resource`, and `scope`.
+
+Supported actions:
+
+- `delete` requires `key` and deletes an attribute.
+- `insert` requires `key` and `value`, and inserts a value only when the key is
+  absent.
+- `upsert` requires `key` and `value`, and inserts or replaces a value.
+- `update` requires `key` and `value`, and replaces a value only when the key
+  exists.
+- `rename` requires `source_key` and `destination_key`, and renames an
+  attribute key.
+- `hash` requires `key` and replaces a scalar value with a salted hash.
+
+`hash.algorithm` defaults to `sha256`; `hash.salt` defaults to an empty string.
+Unsupported action variants are accepted for forward compatibility and ignored.
+
+## Examples
 
 Rename a resource attribute:
 

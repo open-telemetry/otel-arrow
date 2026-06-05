@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:processor:content_router`
-- Type shortcut: `processor:content_router`
+- Type: `processor:content_router` (`urn:otel:processor:content_router`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -18,6 +17,26 @@ selects at most one downstream output route.
 This processor is useful when one pipeline needs to split traffic by a content
 dimension such as namespace, service, environment, or any other resource
 attribute.
+
+## Getting Started
+
+Declare the output ports and route values from a resource attribute to those
+ports:
+
+```yaml
+type: processor:content_router
+outputs:
+  - frontend_pipeline
+  - backend_pipeline
+  - fallback
+config:
+  routing_key:
+    resource_attribute: service.namespace
+  routes:
+    frontend: frontend_pipeline
+    backend: backend_pipeline
+  default_output: fallback
+```
 
 ## Configuration
 
@@ -143,11 +162,6 @@ Selected-route NACKs include a machine-readable `NackCause`:
 - `RouteFull`
 - `RouteClosed`
 - `NodeShutdown`
-
-## Examples
-
-See the configuration example above and the multi-output examples in the
-runtime [configuration model](../../../../../docs/configuration-model.md).
 
 ## Telemetry
 

@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:processor:debug`
-- Type shortcut: `processor:debug`
+- Type: `processor:debug` (`urn:otel:processor:debug`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,41 +14,64 @@ The debug processor observes pdata passing through a pipeline and emits
 human-readable output. It supports configurable verbosity, display mode, signal
 selection, filtering, sampling, and output target.
 
-## Example Config
+## Getting Started
+
+Start with console output and the signal types you want to inspect:
 
 ```yaml
+type: processor:debug
 config:
-   verbosity: basic
-   mode: batch
-   signals:
-   - metrics
-   - spans
-   - logs
-   filters:
-   - predicate:
-      field: attribute
-      value:
-      - key: service.name
-        value: service_name
-   sampling:
-      type: no_sampling
-   mode: exclude
+  verbosity: basic
+  mode: batch
+  signals:
+    - metrics
+    - spans
+    - logs
+  filters:
+    - predicate:
+        field: attribute
+        value:
+          - key: service.name
+            value: service_name
+      mode: exclude
+  sampling:
+    type: no_sampling
 ```
 
 ## Configuration
 
-The main config fields are:
+```yaml
+type: processor:debug
+config:
+  # Output detail: "basic", "normal", or "detailed" (default: normal).
+  verbosity: normal
 
-- `verbosity`: `basic`, `normal`, or `detailed`; default is `normal`.
-- `mode`: display mode; default is `batch`.
-- `signals`: set of active signals; defaults to metrics, spans, and logs.
-- `output`: output target; default is console.
-- `filters`: optional filter rules.
-- `sampling`: optional sampling policy; default is no sampling.
+  # Display mode: "batch" or "signal" (default: batch).
+  mode: batch
 
-## Examples
+  # Active signals (default: metrics, logs, and spans).
+  signals:
+    - metrics
+    - logs
+    - spans
 
-See [Example Config](#example-config) and the output examples below.
+  # Output target. Omit for console output, set a string for file output, or
+  # set a list of output ports for pipeline-node output.
+  output: debug-output.txt
+
+  # Optional filter rules.
+  filters:
+    - predicate:
+        field: attribute
+        value:
+          - key: service.name
+            value: service_name
+      mode: exclude
+
+  # Optional sampling policy (default: no_sampling).
+  sampling:
+    type: no_sampling
+```
 
 ## Telemetry
 
@@ -118,13 +140,13 @@ signals will be displayed `metrics`, `logs`, and `spans`
 
 You can filter the signals that get displayed, you can select the filter
 mode `include` or `exclude` and then define the predicate to match the
-signals against, currently we support the following fields `attribute`
-Multiple filter rules can be definied and will be applied in order
+signals against, currently the supported field is `attribute`.
+Multiple filter rules can be defined and are applied in order
 (top to bottom).
 
 ### Output
 
-The DebugProcessor is a pass-through processor which allows the normal
+The debug processor is a pass-through processor which allows the normal
 flow of signals, this processor outputs various debug information on the
 signals/batches passing through. You can configure how the debug information
 is received.
@@ -132,9 +154,10 @@ is received.
 #### Output to file
 
 ```yaml
+type: processor:debug
 config:
-   verbosity: normal
-   output: file_name.txt
+  verbosity: normal
+  output: file_name.txt
 ```
 
 In this config the debug-processor will write to a file named `file_name.txt`
@@ -164,11 +187,13 @@ The default mode is `no_sampling`.
 Below is how you would configure `zap_sampling` if you were to enable it
 
 ```yaml
-   sampling:
-      type: zap_sampling
-      sampling_initial: 2
-      sampling_thereafter: 5
-      sampling_interval: 2
+type: processor:debug
+config:
+  sampling:
+    type: zap_sampling
+    sampling_initial: 2
+    sampling_thereafter: 5
+    sampling_interval: 2
 ```
 
 The `sampling_initial` value is the number of values that is sent before

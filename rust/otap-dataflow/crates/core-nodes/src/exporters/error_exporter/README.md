@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:exporter:error`
-- Type shortcut: `exporter:error`
+- Type: `exporter:error` (`urn:otel:exporter:error`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,17 +14,23 @@ The error exporter rejects every received message by returning a NACK with a
 configured message. It is useful for tests, retry-path validation, and pipeline
 experiments that need deterministic downstream failures.
 
-## Configuration
+## Getting Started
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `message` | string | Required | Error message used in every NACK. |
-
-## Examples
+Configure the exporter with the NACK message that upstream nodes should
+observe:
 
 ```yaml
 type: exporter:error
 config:
+  message: "forced exporter failure"
+```
+
+## Configuration
+
+```yaml
+type: exporter:error
+config:
+  # Error message used in every NACK (required).
   message: "forced exporter failure"
 ```
 

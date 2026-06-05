@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:exporter:otap`
-- Type shortcut: `exporter:otap`
+- Type: `exporter:otap` (`urn:otel:exporter:otap`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,24 +14,9 @@ The OTAP exporter sends OTAP Arrow payloads over gRPC streams to an
 OTAP-compatible receiver. It maintains independent per-signal stream tasks and
 correlates stream responses back to upstream ACK/NACK handling.
 
-## Configuration
+## Getting Started
 
-The config embeds shared gRPC client settings and adds OTAP stream options.
-
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `grpc_endpoint` | string | Required | gRPC endpoint to connect to. |
-| `compression` | enum | unset | gRPC request compression from shared client settings. |
-| `compression_method` | enum or `none` | `zstd` | Legacy OTAP gRPC compression field. |
-| `arrow.payload_compression` | enum or `none` | `zstd` | Arrow IPC payload compression. |
-| `stream_queue_capacity` | positive integer | `64` | Per-signal queue capacity feeding stream tasks. |
-| `streams_per_signal` | positive integer | `1` | Number of streams opened for each signal type. |
-| `timeout` | duration | unset | Optional RPC timeout. |
-
-Shared gRPC client fields include connection timeout, TCP keepalive, HTTP/2
-window settings, TLS, proxy, and transport buffer settings.
-
-## Examples
+Point the exporter at an OTAP-compatible gRPC receiver:
 
 ```yaml
 type: exporter:otap
@@ -42,6 +26,41 @@ config:
   stream_queue_capacity: 64
   streams_per_signal: 1
 ```
+
+## Configuration
+
+The config embeds shared gRPC client settings and adds OTAP stream options.
+
+```yaml
+type: exporter:otap
+config:
+  # gRPC endpoint to connect to (required).
+  grpc_endpoint: "http://127.0.0.1:4317"
+
+  # gRPC request compression from shared client settings (optional).
+  compression: gzip
+
+  # Legacy OTAP gRPC compression field (default: zstd; use "none" to disable).
+  compression_method: zstd
+
+  arrow:
+    # Arrow IPC payload compression (default: zstd; use "none" to disable).
+    payload_compression: zstd
+
+  # Per-signal queue capacity feeding stream tasks (default: 64).
+  stream_queue_capacity: 64
+
+  # Number of streams opened for each signal type (default: 1).
+  streams_per_signal: 1
+
+  # Optional RPC timeout.
+  timeout: 30s
+```
+
+Shared gRPC client fields include connection timeout, TCP keepalive, HTTP/2
+window settings, TLS, proxy, and transport buffer settings.
+
+## Examples
 
 Disable OTAP and Arrow payload compression:
 

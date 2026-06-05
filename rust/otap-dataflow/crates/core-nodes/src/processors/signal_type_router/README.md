@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:processor:type_router`
-- Type shortcut: `processor:type_router`
+- Type: `processor:type_router` (`urn:otel:processor:type_router`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -19,6 +18,19 @@ The router recognizes the well-known named output ports `logs`, `metrics`, and
 `traces`. It is useful when one pipeline needs to split telemetry by signal
 type before sending each signal to specialized downstream processing or
 exporters.
+
+## Getting Started
+
+Declare the well-known output ports for the signal types you want to split:
+
+```yaml
+type: processor:type_router
+outputs:
+  - logs
+  - metrics
+  - traces
+config: {}
+```
 
 ## Configuration
 
@@ -136,11 +148,6 @@ Selected-route NACKs include a machine-readable `NackCause`:
 - `RouteFull`
 - `RouteClosed`
 - `NodeShutdown`
-
-## Examples
-
-See the configuration example above and the multi-output example in the
-runtime [configuration model](../../../../../docs/configuration-model.md).
 
 ## Telemetry
 

@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:receiver:host_metrics`
-- Type shortcut: `receiver:host_metrics`
+- Type: `receiver:host_metrics` (`urn:otel:receiver:host_metrics`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,14 +14,52 @@ Linux host metrics receiver backed by procfs and sysfs. It emits OpenTelemetry
 `system.*` metrics for CPU, memory, paging, system uptime, disk, filesystem,
 network, and aggregate process counts.
 
-## Configuration
+## Getting Started
 
-Minimal configuration:
+Start with the default Linux host metric families and a scrape interval:
 
 ```yaml
 type: receiver:host_metrics
 config:
   collection_interval: 10s
+```
+
+## Configuration
+
+```yaml
+type: receiver:host_metrics
+config:
+  # Default scrape interval (default: 10s).
+  collection_interval: 10s
+
+  # Delay before the first scrape (default: 0s).
+  initial_delay: 0s
+
+  # Host filesystem view. Use root_path: /host when reading from a mounted host
+  # root inside a container.
+  host_view:
+    root_path: /
+    validation: fail_selected # "fail_selected", "warn_selected", or "none".
+
+  # Metric family controls. All families default to enabled except "load",
+  # which defaults to disabled.
+  families:
+    cpu:
+      enabled: true
+      interval: 10s
+      utilization: false
+    memory:
+      limit: false
+      shared: false
+      hugepages: false
+    disk:
+      limit: false
+    filesystem:
+      limit: false
+      include_virtual_filesystems: false
+      include_remote_filesystems: false
+    load:
+      enabled: false
 ```
 
 Collect from a host root mounted into a container:
@@ -53,26 +90,6 @@ config:
       limit: true
 ```
 
-## Configuration Options
-
-| Field | Type | Default | Description |
-| ----- | ---- | ------- | ----------- |
-| `collection_interval` | duration | `10s` | Default scrape interval. |
-| `initial_delay` | duration | `0s` | Delay before the first scrape. |
-| `host_view.root_path` | path | `/` | Host filesystem root to read procfs/sysfs from. |
-| `host_view.validation` | enum | `fail_selected` | One of `fail_selected`, `warn_selected`, or `none`. |
-| `families.<name>.enabled` | bool | varies | Enables or disables a metric family. All families default to `true` except `load`, which defaults to `false`. |
-| `families.<name>.interval` | duration | unset | Per-family interval; falls back to `collection_interval`. |
-| `families.cpu.utilization` | bool | `false` | Emits derived CPU utilization gauges. |
-| `families.load.enabled` | bool | `false` | Emits development-stability Linux load averages from `/proc/loadavg`. |
-| `families.memory.limit` | bool | `false` | Emits `system.memory.limit`. |
-| `families.memory.shared` | bool | `false` | Emits Linux shared memory. |
-| `families.memory.hugepages` | bool | `false` | Emits Linux hugepage metrics. |
-| `families.disk.limit` | bool | `false` | Emits disk capacity from sysfs. |
-| `families.filesystem.limit` | bool | `false` | Emits filesystem capacity. |
-| `families.filesystem.include_virtual_filesystems` | bool | `false` | Includes virtual filesystems such as tmpfs. |
-| `families.filesystem.include_remote_filesystems` | bool | `false` | Includes remote and userspace filesystems such as NFS, CIFS, 9p, and FUSE. |
-
 Families are `cpu`, `memory`, `paging`, `system`, `disk`, `filesystem`,
 `network`, `processes`, and `load`.
 
@@ -102,10 +119,6 @@ config:
         match_type: strict
         fs_types: ["tmpfs", "proc", "sysfs"]
 ```
-
-## Examples
-
-See the minimal, mounted-host, opt-in family, and filter examples above.
 
 ## Telemetry
 

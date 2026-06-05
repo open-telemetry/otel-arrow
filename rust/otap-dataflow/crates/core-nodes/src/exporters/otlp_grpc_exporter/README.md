@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:exporter:otlp_grpc`
-- Type shortcut: `exporter:otlp_grpc`
+- Type: `exporter:otlp_grpc` (`urn:otel:exporter:otlp_grpc`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,22 +14,9 @@ The OTLP gRPC exporter sends logs, metrics, and traces as unary OTLP export
 requests. It converts OTAP records to OTLP protobuf bytes when needed and
 propagates request success or failure back into the dataflow ACK/NACK path.
 
-## Configuration
+## Getting Started
 
-The config embeds shared gRPC client settings and adds exporter concurrency
-settings.
-
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `grpc_endpoint` | string | Required | gRPC endpoint to connect to. |
-| `compression` | enum | unset | Optional outbound request compression. |
-| `max_in_flight` | integer | `5` | Maximum concurrent export RPCs. |
-| `num_connections` | integer | `1` | Number of gRPC channels to open. |
-
-Shared gRPC client fields include connect timeout, request timeout, TCP
-keepalive, HTTP/2 settings, TLS, proxy, and transport buffer settings.
-
-## Examples
+Point the exporter at an OTLP/gRPC endpoint:
 
 ```yaml
 type: exporter:otlp_grpc
@@ -39,6 +25,32 @@ config:
   max_in_flight: 8
   num_connections: 1
 ```
+
+## Configuration
+
+The config embeds shared gRPC client settings and adds exporter concurrency
+settings.
+
+```yaml
+type: exporter:otlp_grpc
+config:
+  # gRPC endpoint to connect to (required).
+  grpc_endpoint: "http://127.0.0.1:4317"
+
+  # Optional outbound request compression.
+  compression: gzip
+
+  # Maximum concurrent export RPCs (default: 5).
+  max_in_flight: 8
+
+  # Number of gRPC channels to open (default: 1).
+  num_connections: 1
+```
+
+Shared gRPC client fields include connect timeout, request timeout, TCP
+keepalive, HTTP/2 settings, TLS, proxy, and transport buffer settings.
+
+## Examples
 
 With request compression:
 

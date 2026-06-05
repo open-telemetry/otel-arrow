@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:receiver:traffic_generator`
-- Type shortcut: `receiver:traffic_generator`
+- Type: `receiver:traffic_generator` (`urn:otel:receiver:traffic_generator`)
 - Feature gate: `dev-tools`
 - Stability: Experimental
 
@@ -15,29 +14,50 @@ The traffic generator receiver emits synthetic or semantic-convention-derived
 telemetry for tests, demos, and benchmark scenarios. It is compiled only when
 the `dev-tools` feature is enabled.
 
-## Configuration
+## Getting Started
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `traffic_config` | object | Required | Signal rate, batch size, and signal weights. |
-| `data_source` | enum | `semantic_conventions` | Source of generated telemetry shape. |
-| `registry_path` | path | Built-in default | Semantic convention registry path. |
-| `generation_strategy` | enum | `fresh` | `fresh` or `pre_generated` batches. |
-| `enable_ack_nack` | bool | `false` | Enables generated pdata ACK/NACK interests. |
-| `resource_attributes` | map or array | `[]` | Resource attributes rotated across batches. |
-| `transport_headers` | map | `{}` | Fixed or generated transport headers. |
-
-Important `traffic_config` fields include `production_mode`,
-`signals_per_second`, `max_signal_count`, `max_batch_size`, `metric_weight`,
-`trace_weight`, `log_weight`, and synthetic payload sizing fields.
-
-## Examples
+Generate synthetic logs with pregenerated payloads:
 
 ```yaml
 type: receiver:traffic_generator
 config:
   data_source: synthetic
   generation_strategy: pre_generated
+  traffic_config:
+    production_mode: open
+    max_batch_size: 1000
+    metric_weight: 0
+    trace_weight: 0
+    log_weight: 1
+    log_body_size_bytes: 1024
+```
+
+## Configuration
+
+```yaml
+type: receiver:traffic_generator
+config:
+  # Source of generated telemetry shape (default: semantic_conventions).
+  data_source: synthetic
+
+  # Semantic convention registry path when data_source is semantic_conventions.
+  registry_path: ./semantic-conventions
+
+  # Batch generation strategy: "fresh" or "pre_generated" (default: fresh).
+  generation_strategy: pre_generated
+
+  # Enables generated pdata ACK/NACK interests (default: false).
+  enable_ack_nack: false
+
+  # Resource attributes rotated across batches (default: []).
+  resource_attributes:
+    - service.name: load-generator
+
+  # Fixed or generated transport headers (default: {}).
+  transport_headers:
+    x-tenant-id: demo
+
+  # Signal rate, batch size, and signal weights (required).
   traffic_config:
     production_mode: open
     signals_per_second: null

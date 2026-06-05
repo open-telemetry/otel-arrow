@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:receiver:journald`
-- Type shortcut: `receiver:journald`
+- Type: `receiver:journald` (`urn:otel:receiver:journald`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -21,15 +20,65 @@ handles lifecycle, drain, shutdown, and telemetry control messages. The blocking
 `sd-journal` worker, batch handoff, ACK/NACK tracking, and checkpoint
 persistence are follow-up work.
 
-## Configuration
+## Getting Started
 
-Minimal configuration:
+Start at the end of the default system journal:
 
 ```yaml
 type: receiver:journald
 config:
   source_id: system
   start_at: end
+```
+
+## Configuration
+
+```yaml
+type: receiver:journald
+config:
+  # Stable source identifier used in telemetry and checkpoint paths
+  # (default: system). Only ASCII alphanumerics, "_", "-", and "." are allowed.
+  source_id: system
+
+  # Journal source. Named namespaces are reserved and rejected in v1.
+  journal:
+    root_path: /
+    # namespace: default
+
+  # Exact source filters. Empty entries are rejected and duplicates are removed.
+  units: []
+  identifiers: []
+
+  # Priority filters. Use either priorities or max_priority, not both.
+  priorities: [0, 1, 2, 3, 4, 5, 6, 7]
+  # max_priority: warning
+
+  # Where to start when no checkpoint exists: "end" or "beginning"
+  # (default: end).
+  start_at: end
+
+  batch:
+    # Maximum records per emitted batch (default: 1024).
+    max_records: 1024
+    # Maximum time to hold a partial batch before flushing (default: 200ms).
+    max_flush_period: 200ms
+
+  checkpoint:
+    # Root directory for cursor checkpoint files (default:
+    # ${engine.state_dir}/journald).
+    directory: "${engine.state_dir}/journald"
+    # Maximum unacknowledged batches. Must be 1 in v1.
+    max_in_flight_batches: 1
+    # Behavior on downstream NACK: "rewind" or "fail" (default: rewind).
+    on_nack: rewind
+    # Maximum consecutive checkpoint commit failures (default: 5).
+    max_consecutive_failures: 5
+
+  # sd_journal_wait timeout (default: 1s, max: 5s).
+  wait_timeout: 1s
+
+  # Drain deadline budget (default: 5s, must be greater than wait_timeout).
+  drain_timeout: 5s
 ```
 
 Read a host journal mounted into a container and keep only warning-or-higher
@@ -49,31 +98,6 @@ config:
     directory: "${engine.state_dir}/journald"
     on_nack: rewind
 ```
-
-## Configuration Options
-
-| Field | Type | Default | Description |
-| ----- | ---- | ------- | ----------- |
-| `source_id` | string | `system` | Stable source identifier used in telemetry and checkpoint paths. Must contain only ASCII alphanumerics, `_`, `-`, or `.`. |
-| `journal.root_path` | path | `/` | Absolute UTF-8 filesystem root used for local or mounted host journal access. `..` path components are rejected. |
-| `journal.namespace` | string | unset | Reserved for named systemd journal namespaces. Named namespaces are rejected in v1; omit this field to read the default namespace. |
-| `units` | list of strings | `[]` | Exact `_SYSTEMD_UNIT` matches. Empty entries are rejected and duplicate entries are removed. |
-| `identifiers` | list of strings | `[]` | Exact `SYSLOG_IDENTIFIER` matches. Empty entries are rejected and duplicate entries are removed. |
-| `priorities` | list of integers | `[0, 1, 2, 3, 4, 5, 6, 7]` | Exact journald `PRIORITY` values to include. Entries must be in the range `0..=7`. |
-| `max_priority` | enum | unset | Shorthand for all priorities from emergency through the named level. One of `emergency`, `alert`, `critical`, `error`, `warning`, `notice`, `info`, or `debug`. Mutually exclusive with `priorities`. |
-| `start_at` | enum | `end` | Where to start when no checkpoint exists. One of `end` or `beginning`. |
-| `batch.max_records` | integer | `1024` | Maximum records per emitted batch. Must be greater than zero. |
-| `batch.max_flush_period` | duration | `200ms` | Maximum time to hold a partial batch before flushing. Must be greater than zero. |
-| `checkpoint.directory` | path | `${engine.state_dir}/journald` | Root directory for cursor checkpoint files. The receiver appends pipeline and source path components. |
-| `checkpoint.max_in_flight_batches` | integer | `1` | Maximum unacknowledged batches. Must be `1` in v1. |
-| `checkpoint.on_nack` | enum | `rewind` | Behavior on downstream NACK. One of `rewind` or `fail`. |
-| `checkpoint.max_consecutive_failures` | integer | `5` | Maximum consecutive checkpoint commit failures before failing the receiver. Must be greater than zero. |
-| `wait_timeout` | duration | `1s` | `sd_journal_wait` timeout. Must be greater than zero and no more than `5s`. |
-| `drain_timeout` | duration | `5s` | Drain deadline budget. Must be greater than `wait_timeout`. |
-
-## Examples
-
-See the minimal and mounted-host examples above.
 
 ## Telemetry
 

@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:processor:delay`
-- Type shortcut: `processor:delay`
+- Type: `processor:delay` (`urn:otel:processor:delay`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,19 +14,23 @@ The delay processor sleeps for a configured duration before forwarding each
 message. It is intended for tests, timeout validation, and simple rate-shaping
 experiments.
 
-## Configuration
+## Getting Started
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `delay` | duration | Required | Sleep duration before forwarding each message. |
-
-Durations use humantime syntax such as `100ms`, `1s`, or `2m`.
-
-## Examples
+Set the sleep duration applied to each incoming message:
 
 ```yaml
 type: processor:delay
 config:
+  delay: 250ms
+```
+
+## Configuration
+
+```yaml
+type: processor:delay
+config:
+  # Sleep duration before forwarding each message (required).
+  # Durations use humantime syntax such as "100ms", "1s", or "2m".
   delay: 250ms
 ```
 

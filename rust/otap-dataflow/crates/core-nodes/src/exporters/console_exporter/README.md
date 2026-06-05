@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:exporter:console`
-- Type shortcut: `exporter:console`
+- Type: `exporter:console` (`urn:otel:exporter:console`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -17,14 +16,10 @@ text formatter. It ACKs each message after writing the formatted view.
 This node is intended for local inspection, demos, and debugging pipelines. It
 is not a durable export path.
 
-## Configuration
+## Getting Started
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `color` | bool | `true` | Enables ANSI color output. |
-| `unicode` | bool | `true` | Enables Unicode box-drawing output. |
-
-## Examples
+Use the console exporter when you want to inspect pdata directly from the
+engine process:
 
 ```yaml
 type: exporter:console
@@ -32,6 +27,20 @@ config:
   color: true
   unicode: true
 ```
+
+## Configuration
+
+```yaml
+type: exporter:console
+config:
+  # Enables ANSI color output (default: true).
+  color: true
+
+  # Enables Unicode box-drawing output (default: true).
+  unicode: true
+```
+
+## Examples
 
 ASCII-only output:
 

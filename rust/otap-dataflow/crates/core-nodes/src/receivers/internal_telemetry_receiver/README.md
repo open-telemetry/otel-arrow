@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:receiver:internal_telemetry`
-- Type shortcut: `receiver:internal_telemetry`
+- Type: `receiver:internal_telemetry` (`urn:otel:receiver:internal_telemetry`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,11 +14,18 @@ The internal telemetry receiver consumes internal engine log events from the
 pipeline context and emits them as OTLP log pdata. It is intended for the engine
 observability pipeline rather than normal user ingest.
 
+## Getting Started
+
+Declare it with an empty config inside `engine.observability.pipeline`:
+
+```yaml
+type: receiver:internal_telemetry
+config: {}
+```
+
 ## Configuration
 
 This receiver has no node-specific configuration.
-
-## Examples
 
 ```yaml
 type: receiver:internal_telemetry

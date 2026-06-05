@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:processor:retry`
-- Type shortcut: `processor:retry`
+- Type: `processor:retry` (`urn:otel:processor:retry`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -18,16 +17,9 @@ elapsed-time limit.
 Retry state is held in processor memory and call data, not in durable storage.
 Use `processor:durable_buffer` when retries must survive process restarts.
 
-## Configuration
+## Getting Started
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `initial_interval` | duration | `5s` | Delay before the first retry. |
-| `max_interval` | duration | `30s` | Maximum delay between retry attempts. |
-| `max_elapsed_time` | duration | `300s` | Maximum total retry window. |
-| `multiplier` | number | `1.5` | Exponential backoff multiplier. |
-
-## Examples
+Tune the retry backoff window around the downstream exporter or processor:
 
 ```yaml
 type: processor:retry
@@ -35,6 +27,24 @@ config:
   initial_interval: 1s
   max_interval: 30s
   max_elapsed_time: 5m
+  multiplier: 2.0
+```
+
+## Configuration
+
+```yaml
+type: processor:retry
+config:
+  # Delay before the first retry (default: 5s).
+  initial_interval: 1s
+
+  # Maximum delay between retry attempts (default: 30s).
+  max_interval: 30s
+
+  # Maximum total retry window (default: 300s).
+  max_elapsed_time: 5m
+
+  # Exponential backoff multiplier (default: 1.5).
   multiplier: 2.0
 ```
 

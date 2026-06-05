@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:receiver:syslog_cef`
-- Type shortcut: `receiver:syslog_cef`
+- Type: `receiver:syslog_cef` (`urn:otel:receiver:syslog_cef`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,6 +14,18 @@ A high-performance receiver for ingesting syslog messages (RFC 3164 and RFC 5424
 and Common Event Format (CEF) security logs. The receiver automatically detects
 the message format and converts them into `OtapPdata` using the efficient
 Apache Arrow columnar format for downstream processing.
+
+## Getting Started
+
+Start with a TCP listener:
+
+```yaml
+type: receiver:syslog_cef
+config:
+  protocol:
+    tcp:
+      listening_addr: "0.0.0.0:514"
+```
 
 ## Supported Formats
 
@@ -69,17 +80,10 @@ config:
     max_size: 25                 # Flush after 25 messages (default: 100)
 ```
 
-### Configuration Options
-
-| Field | Type | Required | Description |
-| ----- | ---- | -------- | ----------- |
-| `protocol` | `object` | Yes | Exactly one of `tcp` or `udp` |
-| `protocol.tcp.listening_addr` | `string` | Yes | Socket address (e.g., `"0.0.0.0:514"`) |
-| `protocol.tcp.tls` | `object` | No | TLS config for secure TCP (RFC 5425) |
-| `protocol.udp.listening_addr` | `string` | Yes | Socket address (e.g., `"0.0.0.0:514"`) |
-| `batch` | `object` | No | Batching configuration (see below) |
-| `batch.max_batch_duration_ms` | `integer` | No | Max ms before flushing a batch (default: `100`) |
-| `batch.max_size` | `integer` | No | Max messages per batch (default: `100`) |
+Exactly one of `protocol.tcp` or `protocol.udp` must be configured.
+`protocol.*.listening_addr` is required for the selected transport.
+`protocol.tcp.tls` enables secure TCP (RFC 5425). `batch.max_batch_duration_ms`
+defaults to `100`, and `batch.max_size` defaults to `100`.
 
 ## Transport Protocols
 

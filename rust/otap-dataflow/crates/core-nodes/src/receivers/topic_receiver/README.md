@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:receiver:topic`
-- Type shortcut: `receiver:topic`
+- Type: `receiver:topic` (`urn:otel:receiver:topic`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,23 +14,9 @@ The topic receiver subscribes to a named in-process topic and forwards received
 pdata into its pipeline. It supports broadcast subscriptions and balanced
 consumer groups.
 
-## Configuration
+## Getting Started
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `topic` | string | Required | Topic name to subscribe to. |
-| `subscription` | object | `{mode: broadcast}` | Subscription mode and options. |
-
-Subscription modes:
-
-| Mode | Fields | Description |
-| --- | --- | --- |
-| `broadcast` | none | Each subscriber receives each message. |
-| `balanced` | `group` | Subscribers in the same group share the stream. |
-
-## Examples
-
-Broadcast subscription:
+Subscribe to a declared topic with the default broadcast mode:
 
 ```yaml
 type: receiver:topic
@@ -40,6 +25,35 @@ config:
   subscription:
     mode: broadcast
 ```
+
+The `raw_signals` topic must be declared in the surrounding runtime
+configuration.
+
+## Configuration
+
+```yaml
+type: receiver:topic
+config:
+  # Topic name to subscribe to (required).
+  topic: raw_signals
+
+  # Subscription mode and options (default: broadcast).
+  subscription:
+    # "broadcast" gives each subscriber every message.
+    mode: broadcast
+
+    # Use "balanced" with a group to share messages across subscribers in the
+    # same group.
+    # mode: balanced
+    # group: workers
+```
+
+Subscription modes:
+
+- `broadcast`: each subscriber receives each message.
+- `balanced`: subscribers in the same `group` share the stream.
+
+## Examples
 
 Balanced subscription:
 
@@ -51,9 +65,6 @@ config:
     mode: balanced
     group: workers
 ```
-
-The `raw_signals` topic must be declared in the surrounding runtime
-configuration.
 
 ## Telemetry
 

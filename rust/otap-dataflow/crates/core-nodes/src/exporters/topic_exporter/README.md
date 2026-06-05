@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:exporter:topic`
-- Type shortcut: `exporter:topic`
+- Type: `exporter:topic` (`urn:otel:exporter:topic`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,17 +14,9 @@ The topic exporter publishes pdata to a named in-process topic declared in the
 runtime configuration. It can bridge end-to-end ACK/NACK outcomes when the
 topic declaration enables ack propagation.
 
-## Configuration
+## Getting Started
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `topic` | string | Required | Topic name to publish to. |
-| `queue_on_full` | enum | Topic policy | Optional local full-queue behavior. |
-
-`queue_on_full` accepts the topic queue policies supported by the topic model,
-such as `block` and `drop_newest`.
-
-## Examples
+Publish to a topic by naming the topic in the node-level config:
 
 ```yaml
 type: exporter:topic
@@ -36,6 +27,19 @@ config:
 
 The `raw_signals` topic must be declared in the surrounding runtime
 configuration.
+
+## Configuration
+
+```yaml
+type: exporter:topic
+config:
+  # Topic name to publish to (required).
+  topic: raw_signals
+
+  # Optional local full-queue behavior. When omitted, the topic policy applies.
+  # Supported values include "block" and "drop_newest".
+  queue_on_full: drop_newest
+```
 
 ## Telemetry
 

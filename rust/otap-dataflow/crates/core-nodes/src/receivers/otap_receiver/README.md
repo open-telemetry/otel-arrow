@@ -4,8 +4,7 @@
 
 ## Metadata
 
-- Full URN: `urn:otel:receiver:otap`
-- Type shortcut: `receiver:otap`
+- Type: `receiver:otap` (`urn:otel:receiver:otap`)
 - Feature gate: Default
 - Stability: Experimental
 
@@ -15,20 +14,9 @@ The OTAP receiver accepts OTAP Arrow streams over gRPC and forwards received
 payloads into the pipeline as `OtapPdata`. It can wait for immediate downstream
 ACK/NACK outcomes before responding to the client.
 
-## Configuration
+## Getting Started
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `listening_addr` | socket address | Required | Address for the OTAP gRPC server. |
-| `compression_method` | enum | unset | Accepted or preferred OTAP compression setting. |
-| `response_stream_channel_size` | integer | Required | Response stream channel capacity. |
-| `max_concurrent_requests` | integer | `1000` | Global in-flight request limit. |
-| `max_concurrent_requests_per_stream` | non-zero integer | `16` | Per-stream in-flight request limit. |
-| `wait_for_result` | bool | `true` | Wait for immediate downstream outcome. |
-| `timeout` | duration | unset | Optional RPC timeout. |
-| `tls` | object | unset | Server TLS or mTLS settings. |
-
-## Examples
+Listen for OTAP Arrow stream clients on a gRPC address:
 
 ```yaml
 type: receiver:otap
@@ -37,6 +25,38 @@ config:
   response_stream_channel_size: 128
   max_concurrent_requests: 1000
   wait_for_result: true
+```
+
+## Configuration
+
+```yaml
+type: receiver:otap
+config:
+  # Address for the OTAP gRPC server (required).
+  listening_addr: "127.0.0.1:4317"
+
+  # Accepted or preferred OTAP compression setting (optional).
+  compression_method: zstd
+
+  # Response stream channel capacity (required).
+  response_stream_channel_size: 128
+
+  # Global in-flight request limit (default: 1000).
+  max_concurrent_requests: 1000
+
+  # Per-stream in-flight request limit (default: 16).
+  max_concurrent_requests_per_stream: 16
+
+  # Wait for immediate downstream outcome (default: true).
+  wait_for_result: true
+
+  # Optional RPC timeout.
+  timeout: 30s
+
+  # Optional server TLS or mTLS settings.
+  # tls:
+  #   cert_file: /path/to/server.crt
+  #   key_file: /path/to/server.key
 ```
 
 ## Telemetry
