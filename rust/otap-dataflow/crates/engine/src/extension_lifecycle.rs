@@ -20,11 +20,12 @@ use crate::extension::ExtensionWrapper;
 use crate::extension_monitor::{
     ExtensionKey, ExtensionLifecycleEvent, ExtensionMetricsMonitor, ExtensionOutcome,
 };
+use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::registry::EntityKey;
 use otap_df_telemetry::reporter::MetricsReporter;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::{self, JoinError, JoinHandle, LocalSet};
@@ -57,7 +58,10 @@ pub(crate) struct ExtensionLifecycle {
     phase: LifecyclePhase,
     monitor: ExtensionMetricsMonitor,
     started_rx: mpsc::UnboundedReceiver<ExtensionKey>,
-    outstanding_spawn_signals: usize,
+    // Keys we have not yet seen a spawn signal for. Each event (start signal
+    // or task completion) calls `remove`, which is idempotent — so a task
+    // that signals and then completes can never under-count its slot.
+    pending_starts: HashSet<ExtensionKey>,
 }
 
 impl ExtensionLifecycle {
@@ -75,7 +79,7 @@ impl ExtensionLifecycle {
         let mut task_id_to_key: HashMap<task::Id, ExtensionKey> = HashMap::new();
         let mut shutdown_channels: Vec<(ExtensionKey, ExtensionShutdownChannel)> = Vec::new();
         let mut passive = Vec::new();
-        let mut spawned_count: usize = 0;
+        let mut pending_starts: HashSet<ExtensionKey> = HashSet::new();
         let (started_tx, started_rx) = mpsc::unbounded_channel::<ExtensionKey>();
 
         for (mut ext_wrapper, entity_key) in extensions {
@@ -116,9 +120,9 @@ impl ExtensionLifecycle {
                 (task_key, res)
             };
             let handle = local_tasks.spawn_local(fut);
-            let _ = task_id_to_key.insert(handle.id(), key);
+            let _ = task_id_to_key.insert(handle.id(), key.clone());
             futures.push(handle);
-            spawned_count += 1;
+            let _ = pending_starts.insert(key);
         }
         // Drop the seed so `started_rx.recv()` returns None once all clones drop.
         drop(started_tx);
@@ -131,7 +135,7 @@ impl ExtensionLifecycle {
             phase: LifecyclePhase::Running,
             monitor,
             started_rx,
-            outstanding_spawn_signals: spawned_count,
+            pending_starts,
         }
     }
 
@@ -152,14 +156,14 @@ impl ExtensionLifecycle {
                 shutdown_channels,
                 monitor,
                 started_rx,
-                outstanding_spawn_signals,
+                pending_starts,
                 ..
             } = self;
             if futures.is_empty() {
                 tokio::select! {
                     biased;
-                    Some(_key) = started_rx.recv() => {
-                        *outstanding_spawn_signals = outstanding_spawn_signals.saturating_sub(1);
+                    Some(key) = started_rx.recv() => {
+                        let _ = pending_starts.remove(&key);
                         continue;
                     }
                     now = monitor.next_tick() => return LifecycleEvent::MonitorTick(now),
@@ -167,12 +171,14 @@ impl ExtensionLifecycle {
             }
             tokio::select! {
                 biased;
-                Some(_key) = started_rx.recv() => {
-                    *outstanding_spawn_signals = outstanding_spawn_signals.saturating_sub(1);
+                Some(key) = started_rx.recv() => {
+                    let _ = pending_starts.remove(&key);
                     continue;
                 }
                 Some(joined) = futures.next() => {
-                    *outstanding_spawn_signals = outstanding_spawn_signals.saturating_sub(1);
+                    if let Some(k) = Self::pending_key_for(&joined, task_id_to_key) {
+                        let _ = pending_starts.remove(&k);
+                    }
                     return LifecycleEvent::Completion(
                         Self::route_joined(monitor, task_id_to_key, shutdown_channels, shutdown_initiated, joined)
                     );
@@ -185,7 +191,10 @@ impl ExtensionLifecycle {
     /// Returns once every non-passive extension has been polled at least once
     /// (its task body sent the spawn handshake). Tasks that complete or panic
     /// before signalling are routed through the normal completion path; the
-    /// first surfaced error is returned.
+    /// first surfaced error is returned. A task that signals and then
+    /// completes (success or failure) before the barrier observes the
+    /// completion is also surfaced as an error — `Ok(())` upgrades to
+    /// `ExtensionExitedBeforeShutdown` via `route_joined`.
     pub async fn wait_all_spawned(&mut self) -> Result<(), Error> {
         loop {
             let Self {
@@ -194,21 +203,50 @@ impl ExtensionLifecycle {
                 shutdown_channels,
                 monitor,
                 started_rx,
-                outstanding_spawn_signals,
+                pending_starts,
                 ..
             } = self;
-            if *outstanding_spawn_signals == 0 {
+
+            // Surface any ready completion before considering the barrier
+            // satisfied. During the barrier every completion is an error,
+            // so a task that signaled and then died must not be masked by
+            // pending_starts having already been cleared by the signal.
+            if let Some(Some(joined)) = futures.next().now_or_never() {
+                if let Some(k) = Self::pending_key_for(&joined, task_id_to_key) {
+                    let _ = pending_starts.remove(&k);
+                }
+                match Self::route_joined(monitor, task_id_to_key, shutdown_channels, false, joined)
+                {
+                    Ok(Ok(())) => unreachable!(
+                        "route_joined(shutdown_initiated=false) must upgrade Ok(()) to ExtensionExitedBeforeShutdown",
+                    ),
+                    Ok(Err(e)) => return Err(e),
+                    Err(e) => {
+                        return Err(Error::JoinTaskError {
+                            is_canceled: e.is_cancelled(),
+                            is_panic: e.is_panic(),
+                            error: e.to_string(),
+                        });
+                    }
+                }
+            }
+
+            if pending_starts.is_empty() {
                 return Ok(());
             }
             tokio::select! {
                 biased;
-                Some(_key) = started_rx.recv() => {
-                    *outstanding_spawn_signals = outstanding_spawn_signals.saturating_sub(1);
+                Some(key) = started_rx.recv() => {
+                    let _ = pending_starts.remove(&key);
                 }
                 Some(joined) = futures.next(), if !futures.is_empty() => {
-                    *outstanding_spawn_signals = outstanding_spawn_signals.saturating_sub(1);
+                    if let Some(k) = Self::pending_key_for(&joined, task_id_to_key) {
+                        let _ = pending_starts.remove(&k);
+                    }
                     match Self::route_joined(monitor, task_id_to_key, shutdown_channels, false, joined) {
-                        Ok(Ok(())) => {}
+                        Ok(Ok(())) => unreachable!(
+                            "route_joined(shutdown_initiated=false) must upgrade Ok(()) to ExtensionExitedBeforeShutdown",
+                        ),
                         Ok(Err(e)) => return Err(e),
                         Err(e) => {
                             return Err(Error::JoinTaskError {
@@ -221,6 +259,20 @@ impl ExtensionLifecycle {
                 }
                 else => return Ok(()),
             }
+        }
+    }
+
+    /// Returns the `ExtensionKey` associated with a `joined` outcome so the
+    /// caller can prune `pending_starts`. Falls back to `task_id_to_key`
+    /// when the task panicked before signalling (and thus before its body
+    /// could embed the key in the `Ok` payload).
+    fn pending_key_for(
+        joined: &Result<(ExtensionKey, Result<(), Error>), JoinError>,
+        task_id_to_key: &HashMap<task::Id, ExtensionKey>,
+    ) -> Option<ExtensionKey> {
+        match joined {
+            Ok((k, _)) => Some(k.clone()),
+            Err(e) => task_id_to_key.get(&e.id()).cloned(),
         }
     }
 
@@ -449,7 +501,7 @@ mod tests {
                 },
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
-                outstanding_spawn_signals: 0,
+                pending_starts: HashSet::new(),
             };
 
             let start = Instant::now();
@@ -520,7 +572,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor,
                 started_rx,
-                outstanding_spawn_signals: 0,
+                pending_starts: HashSet::new(),
             };
 
             let prev_hook = std::panic::take_hook();
@@ -574,7 +626,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx: mpsc::unbounded_channel().1,
-                outstanding_spawn_signals: 0,
+                pending_starts: HashSet::new(),
             };
 
             lifecycle.initiate_shutdown(Some("first"));
@@ -706,7 +758,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor: ExtensionMetricsMonitor::disabled(ctx_a),
                 started_rx: mpsc::unbounded_channel().1,
-                outstanding_spawn_signals: 0,
+                pending_starts: HashSet::new(),
             };
             let life_b = ExtensionLifecycle {
                 futures: FuturesUnordered::new(),
@@ -716,7 +768,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor: ExtensionMetricsMonitor::disabled(ctx_b),
                 started_rx: mpsc::unbounded_channel().1,
-                outstanding_spawn_signals: 0,
+                pending_starts: HashSet::new(),
             };
 
             life_a.initiate_shutdown(Some("a-only"));
@@ -822,7 +874,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
-                outstanding_spawn_signals: 0,
+                pending_starts: HashSet::new(),
             };
 
             match lifecycle.next_event().await {
@@ -882,7 +934,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
-                outstanding_spawn_signals: 0,
+                pending_starts: HashSet::new(),
             };
 
             let _ = lifecycle.next_event().await;
@@ -909,6 +961,7 @@ mod tests {
             let futures: FuturesUnordered<JoinHandle<(ExtensionKey, Result<(), Error>)>> =
                 FuturesUnordered::new();
             let mut task_id_to_key = HashMap::new();
+            let mut pending_starts: HashSet<ExtensionKey> = HashSet::new();
 
             for name in ["x", "y"] {
                 let key = ExtensionKey::local(name);
@@ -919,8 +972,9 @@ mod tests {
                     std::future::pending::<()>().await;
                     (task_key, Ok::<(), Error>(()))
                 });
-                let _ = task_id_to_key.insert(handle.id(), key);
+                let _ = task_id_to_key.insert(handle.id(), key.clone());
                 futures.push(handle);
+                let _ = pending_starts.insert(key);
             }
             drop(started_tx);
 
@@ -932,7 +986,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
-                outstanding_spawn_signals: 2,
+                pending_starts,
             };
 
             let outcome =
@@ -940,7 +994,83 @@ mod tests {
 
             assert!(outcome.is_ok(), "wait_all_spawned must not hang");
             assert!(outcome.unwrap().is_ok());
-            assert_eq!(lifecycle.outstanding_spawn_signals, 0);
+            assert!(lifecycle.pending_starts.is_empty());
+        }));
+    }
+
+    #[test]
+    fn wait_all_spawned_surfaces_completion_when_outstanding_signals_reach_zero() {
+        // When several tasks signal before the barrier observes them and one
+        // of those tasks has *also* already completed with an error, the
+        // barrier must surface that error rather than returning Ok just
+        // because pending_starts emptied. Otherwise the caller starts node
+        // tasks against an already-dead extension.
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+
+            let (started_tx, started_rx) = mpsc::unbounded_channel::<ExtensionKey>();
+            let futures: FuturesUnordered<JoinHandle<(ExtensionKey, Result<(), Error>)>> =
+                FuturesUnordered::new();
+            let mut task_id_to_key = HashMap::new();
+            let mut pending_starts: HashSet<ExtensionKey> = HashSet::new();
+
+            // A: signals, then fails immediately.
+            let a_key = ExtensionKey::local("a-fast-fail");
+            {
+                let started_tx = started_tx.clone();
+                let task_key = a_key.clone();
+                let handle = local_tasks.spawn_local(async move {
+                    let _ = started_tx.send(task_key.clone());
+                    (
+                        task_key,
+                        Err::<(), Error>(Error::ExtensionExitedBeforeShutdown {
+                            extension: "a-fast-fail".into(),
+                        }),
+                    )
+                });
+                let _ = task_id_to_key.insert(handle.id(), a_key.clone());
+                futures.push(handle);
+                let _ = pending_starts.insert(a_key);
+            }
+
+            // B: signals, then parks forever.
+            let b_key = ExtensionKey::local("b-pending");
+            {
+                let started_tx = started_tx.clone();
+                let task_key = b_key.clone();
+                let handle = local_tasks.spawn_local(async move {
+                    let _ = started_tx.send(task_key.clone());
+                    std::future::pending::<()>().await;
+                    (task_key, Ok::<(), Error>(()))
+                });
+                let _ = task_id_to_key.insert(handle.id(), b_key.clone());
+                futures.push(handle);
+                let _ = pending_starts.insert(b_key);
+            }
+
+            drop(started_tx);
+
+            let mut lifecycle = ExtensionLifecycle {
+                futures,
+                task_id_to_key,
+                shutdown_channels: Vec::new(),
+                _passive: Vec::new(),
+                phase: LifecyclePhase::Running,
+                monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
+                started_rx,
+                pending_starts,
+            };
+
+            let outcome =
+                tokio::time::timeout(Duration::from_millis(200), lifecycle.wait_all_spawned())
+                    .await;
+
+            let res = outcome.expect("barrier must not hang");
+            assert!(
+                res.is_err(),
+                "barrier must surface a completed-with-error task even when all signals have already been consumed; got Ok",
+            );
         }));
     }
 
@@ -961,7 +1091,7 @@ mod tests {
                 #[allow(unreachable_code)]
                 (ExtensionKey::local("paniker"), Ok::<(), Error>(()))
             });
-            let _ = task_id_to_key.insert(handle.id(), key);
+            let _ = task_id_to_key.insert(handle.id(), key.clone());
             futures.push(handle);
 
             let mut lifecycle = ExtensionLifecycle {
@@ -972,7 +1102,7 @@ mod tests {
                 phase: LifecyclePhase::Running,
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
-                outstanding_spawn_signals: 1,
+                pending_starts: HashSet::from([key]),
             };
 
             let prev_hook = std::panic::take_hook();
@@ -988,7 +1118,7 @@ mod tests {
                 Err(Error::JoinTaskError { is_panic, .. }) => assert!(is_panic),
                 other => panic!("expected JoinTaskError(is_panic), got {other:?}"),
             }
-            assert_eq!(lifecycle.outstanding_spawn_signals, 0);
+            assert!(lifecycle.pending_starts.is_empty());
         }));
     }
 }
