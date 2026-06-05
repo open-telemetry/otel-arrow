@@ -54,15 +54,6 @@ rename
         instrumentation_scope.attributes["scope.name"]
 ```
 
-### Rename alias
-
-`project-rename` is an alias for `rename`. The following is equivalent to the
-first example above:
-
-```text
-logs | project-rename attributes["http.request.method"] = attributes["http.method"]
-```
-
 ### Errors
 
 The following rename patterns are not allowed and will produce a
@@ -120,15 +111,6 @@ remove
     attributes["http.method"],
     resource.attributes["internal.tag"],
     instrumentation_scope.attributes["debug.flag"]
-```
-
-### Remove alias
-
-`project-away` is an alias for `remove`. The following is equivalent to the
-first example above:
-
-```text
-logs | project-away attributes["http.method"]
 ```
 
 ## Apply to Attributes (`apply`)

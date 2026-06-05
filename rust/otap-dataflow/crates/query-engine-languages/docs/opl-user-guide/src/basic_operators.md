@@ -135,14 +135,6 @@ logs | set body = concat("[", severity_text, "]: ", event_name)
 logs | set attributes["sensitive"] = encode(sha256(attributes["sensitive"]), "hex")
 ```
 
-### Set alias
-
-`extend` serves as an alias for `set`. The following expression also assigns
-value `"bar"` to `attributes["foo"]`:
-
-```text
-logs | extend attributes["foo"] = "bar"
-```
 
 ### Multiple assignments
 
