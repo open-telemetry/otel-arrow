@@ -19,11 +19,40 @@ use tonic::transport::Channel;
 use tonic::transport::Endpoint;
 use tower::service_fn;
 
+/// Controls optional startup-time endpoint validation.
+///
+/// When a client is being created, it can optionally perform a check to detect configuration
+/// problems early rather than waiting for the first export RPC to fail.
+///
+/// The default is [`StartupCheck::None`], which preserves the existing lazy-connection
+/// behaviour.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StartupCheck {
+    /// No startup check; connections are fully lazy (existing behavior).
+    #[default]
+    None,
+
+    /// Verify that the endpoint hostname resolves via DNS at startup.
+    ///
+    /// Note: When a proxy is configured and would handle the target endpoint, this check is
+    /// skipped because the proxy is expected to perform name resolution.
+    Dns,
+
+    /// Perform one eager gRPC connection attempt at startup.
+    ///
+    /// This validates the entire connection path including proxy tunneling and TLS handshake.
+    Connect,
+}
+
 /// Common configuration shared across gRPC clients.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct GrpcClientSettings {
-    /// The gRPC endpoint to connect to.
+    /// The gRPC endpoint to connect to (e.g. `"http://localhost:4317"`).
+    ///
+    /// If no scheme is provided, `http://` is assumed.
+    #[serde(deserialize_with = "deserialize_grpc_endpoint")]
     pub grpc_endpoint: String,
 
     /// Compression method to use for outbound requests. Defaults to no compression.
@@ -99,6 +128,14 @@ pub struct GrpcClientSettings {
     #[serde(default)]
     pub buffer_size: Option<usize>,
 
+    /// Optional startup-time endpoint check.
+    ///
+    /// - `none` (default): no check is performed.
+    /// - `dns`: verify the endpoint host resolves at startup.
+    /// - `connect`: perform one eager connection attempt at startup.
+    #[serde(default)]
+    pub startup_check: StartupCheck,
+
     /// HTTP/HTTPS proxy configuration.
     /// If not specified, proxy settings are read from environment variables:
     /// - `HTTP_PROXY` / `http_proxy`: Proxy for HTTP connections
@@ -124,9 +161,136 @@ pub enum GrpcEndpointError {
     /// Proxy configuration or connection error.
     #[error("proxy error: {0}")]
     Proxy(#[from] crate::otap_grpc::proxy::ProxyError),
+
+    /// Invalid gRPC endpoint.
+    #[error("invalid grpc_endpoint: {0}")]
+    InvalidEndpoint(String),
+
+    /// DNS resolution failed during a `startup_check: dns` check.
+    #[error("startup dns check failed for \"{host}\": {source}")]
+    DnsCheckFailed {
+        /// The hostname that could not be resolved.
+        host: String,
+        /// The underlying resolution error.
+        source: io::Error,
+    },
+}
+
+/// Validates that a gRPC endpoint string is a well-formed URI.
+///
+/// When no scheme is present the endpoint is validated as if `http://` were prepended.
+/// Unsupported schemes (anything other than `http` / `https`) are rejected.
+fn validate_grpc_endpoint(endpoint: &str) -> Result<(), String> {
+    let trimmed = endpoint.trim();
+    if trimmed.is_empty() {
+        return Err("grpc_endpoint is empty; expected a URI like \"http://host:port\"".to_string());
+    }
+
+    let uri: http::Uri = trimmed
+        .parse()
+        .map_err(|e: http::uri::InvalidUri| format!("invalid grpc_endpoint \"{trimmed}\": {e}"))?;
+
+    // If no scheme is present, prepend http:// for validation.
+    let effective = if uri.scheme().is_none() {
+        format!("http://{trimmed}")
+    } else {
+        trimmed.to_string()
+    };
+
+    let _ = Endpoint::from_shared(effective.clone())
+        .map_err(|e| format!("invalid grpc_endpoint \"{trimmed}\": {e}"))?;
+
+    // Reject unsupported schemes.
+    if let Some(scheme) = uri.scheme_str() {
+        if scheme != "http" && scheme != "https" {
+            return Err(format!(
+                "unsupported scheme \"{scheme}\" in grpc_endpoint \"{trimmed}\"; \
+                 expected \"http\" or \"https\""
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 impl GrpcClientSettings {
+    /// Performs the configured startup check, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the startup check fails (DNS resolution failure for `dns` mode, or
+    /// connection failure for `connect` mode).
+    pub async fn run_startup_check(&self) -> Result<(), GrpcEndpointError> {
+        match self.startup_check {
+            StartupCheck::None => Ok(()),
+            StartupCheck::Dns => self.run_dns_check().await,
+            StartupCheck::Connect => self.run_connect_check().await,
+        }
+    }
+
+    /// Resolves the endpoint hostname via DNS.
+    ///
+    /// Skipped when a proxy is configured and would handle the target, since the proxy is expected
+    /// to perform name resolution.
+    async fn run_dns_check(&self) -> Result<(), GrpcEndpointError> {
+        let endpoint = self.grpc_endpoint.trim();
+
+        // Extract host and port from the endpoint URI.
+        let uri: http::Uri = endpoint.parse().map_err(|e: http::uri::InvalidUri| {
+            GrpcEndpointError::InvalidEndpoint(format!("invalid URI \"{endpoint}\": {e}"))
+        })?;
+
+        let host = uri
+            .host()
+            .ok_or_else(|| {
+                GrpcEndpointError::InvalidEndpoint(format!("no host in \"{endpoint}\""))
+            })?
+            .trim_matches('[')
+            .trim_matches(']')
+            .to_string();
+
+        let port = uri.port_u16().unwrap_or_else(|| {
+            if uri.scheme_str() == Some("https") {
+                443
+            } else {
+                80
+            }
+        });
+
+        // If a proxy is configured and the endpoint is not bypassed, the proxy performs DNS
+        // resolution -- skip the local check.
+        let proxy = self.effective_proxy_config();
+        if proxy.has_proxy() && !proxy.should_bypass(&host, port) {
+            return Ok(());
+        }
+
+        // Attempt DNS resolution.
+        let lookup_addr = format!("{host}:{port}");
+        let mut addrs = tokio::net::lookup_host(&lookup_addr)
+            .await
+            .map_err(|source| GrpcEndpointError::DnsCheckFailed {
+                host: host.clone(),
+                source,
+            })?;
+
+        if addrs.next().is_none() {
+            return Err(GrpcEndpointError::DnsCheckFailed {
+                host,
+                source: io::Error::new(io::ErrorKind::NotFound, "dns lookup returned no addresses"),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Performs one eager connection attempt to validate the full path.
+    async fn run_connect_check(&self) -> Result<(), GrpcEndpointError> {
+        let channel = self.connect_channel(None).await?;
+        // Drop the channel -- runtime will use a separate lazy channel.
+        drop(channel);
+        Ok(())
+    }
+
     /// Returns the compression encoding to apply to requests, if any.
     #[must_use]
     pub fn compression_encoding(&self) -> Option<CompressionEncoding> {
@@ -339,6 +503,7 @@ impl Default for GrpcClientSettings {
             timeout: None,
             tls: None,
             buffer_size: None,
+            startup_check: StartupCheck::default(),
             proxy: None,
         }
     }
@@ -382,6 +547,17 @@ const fn default_http2_keepalive_timeout() -> Option<Duration> {
 
 const fn default_keep_alive_while_idle() -> bool {
     true
+}
+
+/// Deserializes `grpc_endpoint` while validating that the value is a well-formed URI with an
+/// `http` or `https` scheme.
+fn deserialize_grpc_endpoint<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let endpoint = String::deserialize(deserializer)?;
+    validate_grpc_endpoint(&endpoint).map_err(serde::de::Error::custom)?;
+    Ok(endpoint.trim().to_string())
 }
 
 #[cfg(test)]
@@ -854,5 +1030,234 @@ mod tests {
             ..Default::default()
         };
         assert!(config.has_proxy());
+    }
+
+    // --- Endpoint validation tests ---
+
+    #[test]
+    fn validate_accepts_valid_http_endpoint() {
+        validate_grpc_endpoint("http://localhost:4317").unwrap();
+    }
+
+    #[test]
+    fn validate_accepts_valid_https_endpoint() {
+        validate_grpc_endpoint("https://collector.example.com:4317").unwrap();
+    }
+
+    #[test]
+    fn validate_accepts_endpoint_with_path() {
+        validate_grpc_endpoint("http://localhost:4317/v1/traces").unwrap();
+    }
+
+    #[test]
+    fn validate_accepts_ipv4_endpoint() {
+        validate_grpc_endpoint("http://192.168.1.1:4317").unwrap();
+    }
+
+    #[test]
+    fn validate_accepts_ipv6_endpoint() {
+        validate_grpc_endpoint("http://[::1]:4317").unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_empty_endpoint() {
+        let err = validate_grpc_endpoint("").unwrap_err();
+        assert!(
+            err.contains("empty"),
+            "expected 'empty' in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_whitespace_only_endpoint() {
+        let err = validate_grpc_endpoint("   ").unwrap_err();
+        assert!(
+            err.contains("empty"),
+            "expected 'empty' in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_endpoint_without_scheme() {
+        validate_grpc_endpoint("localhost:4317").unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_unsupported_scheme() {
+        let err = validate_grpc_endpoint("ftp://localhost:4317").unwrap_err();
+        assert!(
+            err.contains("unsupported scheme"),
+            "expected 'unsupported scheme' in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_invalid_uri() {
+        assert!(validate_grpc_endpoint("not a valid url!!!").is_err());
+    }
+
+    // --- StartupCheck deserialization tests ---
+
+    #[test]
+    fn startup_check_defaults_to_none() {
+        let settings: GrpcClientSettings =
+            serde_json::from_str(r#"{ "grpc_endpoint": "http://localhost:4317" }"#).unwrap();
+        assert_eq!(settings.startup_check, StartupCheck::None);
+    }
+
+    #[test]
+    fn startup_check_deserializes_none() {
+        let settings: GrpcClientSettings = serde_json::from_str(
+            r#"{ "grpc_endpoint": "http://localhost:4317", "startup_check": "none" }"#,
+        )
+        .unwrap();
+        assert_eq!(settings.startup_check, StartupCheck::None);
+    }
+
+    #[test]
+    fn startup_check_deserializes_dns() {
+        let settings: GrpcClientSettings = serde_json::from_str(
+            r#"{ "grpc_endpoint": "http://localhost:4317", "startup_check": "dns" }"#,
+        )
+        .unwrap();
+        assert_eq!(settings.startup_check, StartupCheck::Dns);
+    }
+
+    #[test]
+    fn startup_check_deserializes_connect() {
+        let settings: GrpcClientSettings = serde_json::from_str(
+            r#"{ "grpc_endpoint": "http://localhost:4317", "startup_check": "connect" }"#,
+        )
+        .unwrap();
+        assert_eq!(settings.startup_check, StartupCheck::Connect);
+    }
+
+    #[test]
+    fn startup_check_rejects_unknown_value() {
+        let result = serde_json::from_str::<GrpcClientSettings>(
+            r#"{ "grpc_endpoint": "http://localhost:4317", "startup_check": "invalid" }"#,
+        );
+        assert!(result.is_err());
+    }
+
+    // --- Startup check runtime tests ---
+
+    #[tokio::test]
+    async fn startup_check_none_always_succeeds() {
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "http://this.host.does.not.exist.invalid:4317".to_string(),
+            startup_check: StartupCheck::None,
+            ..GrpcClientSettings::default()
+        };
+        // None mode does no I/O, so it succeeds even for unresolvable hosts.
+        settings.run_startup_check().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_check_dns_resolves_localhost() {
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "http://localhost:4317".to_string(),
+            startup_check: StartupCheck::Dns,
+            ..GrpcClientSettings::default()
+        };
+        settings.run_startup_check().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_check_dns_fails_unresolvable() {
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "http://this.host.definitely.does.not.exist.invalid:4317".to_string(),
+            startup_check: StartupCheck::Dns,
+            ..GrpcClientSettings::default()
+        };
+        let err = settings.run_startup_check().await.unwrap_err();
+        assert!(
+            matches!(err, GrpcEndpointError::DnsCheckFailed { .. }),
+            "expected DnsCheckFailed, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_check_dns_skipped_when_proxy_configured() {
+        // When a proxy is configured and the endpoint is NOT in no_proxy,
+        // the DNS check should be skipped (proxy resolves the target).
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "http://this.host.definitely.does.not.exist.invalid:4317".to_string(),
+            startup_check: StartupCheck::Dns,
+            proxy: Some(ProxyConfig {
+                http_proxy: Some("http://my-proxy:3128".into()),
+                ..Default::default()
+            }),
+            ..GrpcClientSettings::default()
+        };
+        // Should succeed because the proxy handles resolution.
+        settings.run_startup_check().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_check_dns_not_skipped_when_endpoint_bypasses_proxy() {
+        // When the endpoint IS in no_proxy, DNS check should still run.
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "http://this.host.definitely.does.not.exist.invalid:4317".to_string(),
+            startup_check: StartupCheck::Dns,
+            proxy: Some(ProxyConfig {
+                http_proxy: Some("http://my-proxy:3128".into()),
+                no_proxy: Some("*.invalid".to_string()),
+                ..Default::default()
+            }),
+            ..GrpcClientSettings::default()
+        };
+        // Should fail because the endpoint bypasses the proxy and can't resolve.
+        let err = settings.run_startup_check().await.unwrap_err();
+        assert!(
+            matches!(err, GrpcEndpointError::DnsCheckFailed { .. }),
+            "expected DnsCheckFailed, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_check_connect_succeeds() {
+        crate::crypto::ensure_crypto_provider();
+        let port = portpicker::pick_unused_port().expect("no free port");
+        // Bind a TCP listener so the eager connect attempt has something to connect to.
+        let _listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        let settings = GrpcClientSettings {
+            grpc_endpoint: format!("http://127.0.0.1:{port}"),
+            startup_check: StartupCheck::Connect,
+            connect_timeout: Duration::from_secs(2),
+            ..GrpcClientSettings::default()
+        };
+        settings.run_startup_check().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_check_connect_fails_connection_refused() {
+        crate::crypto::ensure_crypto_provider();
+        let port = portpicker::pick_unused_port().expect("no free port");
+        let settings = GrpcClientSettings {
+            grpc_endpoint: format!("http://127.0.0.1:{port}"),
+            startup_check: StartupCheck::Connect,
+            connect_timeout: Duration::from_secs(2),
+            ..GrpcClientSettings::default()
+        };
+        let err = settings.run_startup_check().await.unwrap_err();
+        assert!(
+            matches!(err, GrpcEndpointError::Tonic(_)),
+            "expected Tonic transport error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_check_dns_uses_default_port_for_https() {
+        // Endpoint without explicit port and https scheme should default to 443.
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "https://localhost".to_string(),
+            startup_check: StartupCheck::Dns,
+            ..GrpcClientSettings::default()
+        };
+        // localhost should resolve regardless of port.
+        settings.run_startup_check().await.unwrap();
     }
 }
