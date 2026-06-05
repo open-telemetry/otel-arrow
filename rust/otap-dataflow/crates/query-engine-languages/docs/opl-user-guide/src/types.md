@@ -177,7 +177,7 @@ OPL supports the following literal types in expressions:
 | Timestamp | `timestamp"..."` | `timestamp"2026-06-01T00:00:00.0"` |
 
 Regex and timestamp literals are tagged literals -- their values are parsed
-and validated at compile time. An invalid regex pattern or timestamp will
+and **validated at compile time**. An invalid regex pattern or timestamp will
 produce an error before the pipeline runs. Timestamp values must be in ISO
 8601 format.
 
