@@ -1,8 +1,87 @@
 # Perf Exporter
 
-Status: **Skeleton**
+<!-- markdownlint-disable MD013 -->
 
-This crate will contain the implementation of the perf exporter.
+## Metadata
+
+- Full URN: `urn:otel:exporter:perf`
+- Type shortcut: `exporter:perf`
+- Feature gate: Default
+- Stability: Experimental
+
+## Overview
+
+The perf exporter reports pipeline throughput and optional process or host usage
+statistics. It is mainly intended for local benchmarks and performance
+experiments.
+
+## Configuration
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `frequency` | integer | `1000` | Report interval in milliseconds. |
+| `smoothing_factor` | number | `0.3` | Exponential moving average smoothing. |
+| `self_usage` | bool | `true` | Reports process usage. |
+| `cpu_usage` | bool | `true` | Reports CPU usage. |
+| `mem_usage` | bool | `true` | Reports memory usage. |
+| `disk_usage` | bool | `true` | Reports disk usage. |
+| `io_usage` | bool | `true` | Reports network and I/O usage. |
+
+## Examples
+
+```yaml
+type: exporter:perf
+config:
+  frequency: 1000
+  smoothing_factor: 0.3
+  self_usage: true
+  cpu_usage: true
+  mem_usage: true
+  disk_usage: true
+  io_usage: true
+```
+
+## Telemetry
+
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
+
+### Metric Sets
+
+#### `exporter.pdata`
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `exporter.pdata.metrics_consumed` | `{msg}` | Number of pdata metrics consumed by this exporter. |
+| `exporter.pdata.metrics_exported` | `{msg}` | Number of pdata metrics successfully exported. |
+| `exporter.pdata.metrics_failed` | `{msg}` | Number of pdata metrics that failed to be exported. |
+| `exporter.pdata.logs_consumed` | `{msg}` | Number of pdata logs consumed by this exporter. |
+| `exporter.pdata.logs_exported` | `{msg}` | Number of pdata logs successfully exported. |
+| `exporter.pdata.logs_failed` | `{msg}` | Number of pdata logs that failed to be exported. |
+| `exporter.pdata.traces_consumed` | `{msg}` | Number of pdata traces consumed by this exporter. |
+| `exporter.pdata.traces_exported` | `{msg}` | Number of pdata traces successfully exported. |
+| `exporter.pdata.traces_failed` | `{msg}` | Number of pdata traces that failed to be exported. |
+
+#### `exporter.perf.pdata`
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `exporter.perf.pdata.invalid_batches` | `{msg}` | Number of invalid pdata batches received. |
+| `exporter.perf.pdata.logs` | `{log}` | Number of logs received. |
+| `exporter.perf.pdata.spans` | `{span}` | Number of spans received. |
+| `exporter.perf.pdata.metrics` | `{metric}` | Number of metrics received. |
+
+### Events
+
+| Event | Severity | Description |
+| --- | --- | --- |
+| `perf_exporter.start` | `info` | Exporter startup with the configured report interval. |
+
+## Limits
+
+- Output is designed for benchmark inspection, not as a stable telemetry
+  export format.
+- Host usage counters depend on platform support exposed to the process.
 
 ## Example Output
 
@@ -29,7 +108,7 @@ This crate will contain the implementation of the perf exporter.
 =====================Network Usage=====================
 Network Interface: lo0
     - bytes read                        : 0 B/s
-    - total bytes recevied              : 4.07 GB
+    - total bytes received              : 4.07 GB
     - bytes transmitted                 : 0 B/s
     - total bytes transmitted           : 4.07 GB
     - packets received                  : 0 B/s
@@ -42,7 +121,7 @@ Network Interface: lo0
     - total errors on transmitted       : 0 B
 Network Interface: utun3
     - bytes read                        : 0 B/s
-    - total bytes recevied              : 0 B
+    - total bytes received              : 0 B
     - bytes transmitted                 : 0 B/s
     - total bytes transmitted           : 4.40 KB
     - packets received                  : 0 B/s
@@ -55,7 +134,7 @@ Network Interface: utun3
     - total errors on transmitted       : 0 B
 Network Interface: anpi0
     - bytes read                        : 0 B/s
-    - total bytes recevied              : 0 B
+    - total bytes received              : 0 B
     - bytes transmitted                 : 0 B/s
     - total bytes transmitted           : 0 B
     - packets received                  : 0 B/s
@@ -67,3 +146,8 @@ Network Interface: anpi0
     - errors on transmitted             : 0 B/s
     - total errors on transmitted       : 0 B
 ```
+
+## Related Docs
+
+- [Configuration model](../../../../../docs/configuration-model.md)
+- [Core node catalog](../../../README.md)

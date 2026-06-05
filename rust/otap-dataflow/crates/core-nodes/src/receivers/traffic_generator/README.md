@@ -1,5 +1,54 @@
 # Traffic Generator -- SUT Saturation Benchmarks
 
+<!-- markdownlint-disable MD013 -->
+
+## Metadata
+
+- Full URN: `urn:otel:receiver:traffic_generator`
+- Type shortcut: `receiver:traffic_generator`
+- Feature gate: `dev-tools`
+- Stability: Experimental
+
+## Overview
+
+The traffic generator receiver emits synthetic or semantic-convention-derived
+telemetry for tests, demos, and benchmark scenarios. It is compiled only when
+the `dev-tools` feature is enabled.
+
+## Configuration
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `traffic_config` | object | Required | Signal rate, batch size, and signal weights. |
+| `data_source` | enum | `semantic_conventions` | Source of generated telemetry shape. |
+| `registry_path` | path | Built-in default | Semantic convention registry path. |
+| `generation_strategy` | enum | `fresh` | `fresh` or `pre_generated` batches. |
+| `enable_ack_nack` | bool | `false` | Enables generated pdata ACK/NACK interests. |
+| `resource_attributes` | map or array | `[]` | Resource attributes rotated across batches. |
+| `transport_headers` | map | `{}` | Fixed or generated transport headers. |
+
+Important `traffic_config` fields include `production_mode`,
+`signals_per_second`, `max_signal_count`, `max_batch_size`, `metric_weight`,
+`trace_weight`, `log_weight`, and synthetic payload sizing fields.
+
+## Examples
+
+```yaml
+type: receiver:traffic_generator
+config:
+  data_source: synthetic
+  generation_strategy: pre_generated
+  traffic_config:
+    production_mode: open
+    signals_per_second: null
+    max_signal_count: null
+    max_batch_size: 1000
+    metric_weight: 0
+    trace_weight: 0
+    log_weight: 1
+    log_body_size_bytes: 1024
+```
+
 ## Purpose
 
 Verify that a **single traffic-gen sender core can saturate a single
@@ -51,3 +100,53 @@ This configuration saturates the SUT to ~95 % while consuming only
 ~66 % of a single sender core. `pre_generated` uses ~16 % less sender
 CPU than `fresh` (~66 % vs ~82 %) at similar throughput, leaving more
 headroom. One load-gen core is sufficient!
+
+## Telemetry
+
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
+
+### Metric Sets
+
+#### `receiver.traffic_generator`
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `receiver.traffic_generator.logs_produced` | `{log}` | Number of logs generated. |
+| `receiver.traffic_generator.spans_produced` | `{span}` | Number of spans generated. |
+| `receiver.traffic_generator.metrics_produced` | `{metric}` | Number of metrics generated. |
+| `receiver.traffic_generator.smooth.runs.started` | `{run}` | Number of smooth-mode production runs started. |
+| `receiver.traffic_generator.smooth.runs.completed` | `{run}` | Number of smooth-mode production runs that completed before the next run tick. |
+| `receiver.traffic_generator.smooth.runs.behind` | `{run}` | Number of smooth-mode production runs that still had work at the next run tick. |
+| `receiver.traffic_generator.smooth.behind.remaining.batches` | `{batch}` | Number of batches remaining when smooth mode detects that a run is behind. |
+| `receiver.traffic_generator.smooth.behind.remaining.items` | `{item}` | Number of signal items remaining when smooth mode detects that a run is behind. |
+| `receiver.traffic_generator.smooth.run.batches` | `{batch}` | Smooth-mode configured batches per one-second run. |
+| `receiver.traffic_generator.smooth.batch.interval` | `ns` | Smooth-mode configured interval between batches. |
+| `receiver.traffic_generator.smooth.batch.tick.lateness.duration` | `ns` | Lateness of smooth-mode batch ticks relative to their scheduled instant. |
+| `receiver.traffic_generator.smooth.payload.generate.duration` | `ns` | Wall-clock time spent generating or cloning one smooth-mode payload. |
+| `receiver.traffic_generator.smooth.payload.send.duration` | `ns` | Wall-clock time spent sending one smooth-mode payload into the downstream channel. |
+| `receiver.traffic_generator.smooth.payload.send.full` | `{attempt}` | Number of smooth-mode payload send attempts rejected because the downstream channel was full. |
+| `receiver.traffic_generator.smooth.payload.send.retry` | `{payload}` | Number of smooth-mode payloads retried after a previous full-channel send. |
+
+### Events
+
+| Event | Severity | Description |
+| --- | --- | --- |
+| `traffic_generator.smooth_run_behind` | `warn` | Smooth-mode generation did not finish before the next run tick. |
+| `traffic_generator.open_run_behind` | `debug` | Open-loop generation remained behind schedule. |
+| `traffic_generator.drain_ingress` | `info` | Receiver ingress drain started. |
+| `traffic_generator.shutdown` | `info` | Receiver shutdown completed. |
+| `traffic_generator.smooth_fallback_open` | `warn` | Smooth mode fell back to open-loop behavior. |
+
+## Limits
+
+- This receiver is available only with the `dev-tools` feature.
+- `semantic_conventions` data source requires access to the configured registry
+  path at startup.
+- `pre_generated` mode repeats timestamps and IDs from pregenerated batches.
+- `production_mode: open` can produce as fast as the runtime allows.
+
+## Related Docs
+
+- [Configuration model](../../../../../docs/configuration-model.md)
+- [Core node catalog](../../../README.md)

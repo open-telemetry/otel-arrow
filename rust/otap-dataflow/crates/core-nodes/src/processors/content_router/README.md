@@ -1,5 +1,16 @@
 # Content Router Processor
 
+<!-- markdownlint-disable MD013 -->
+
+## Metadata
+
+- Full URN: `urn:otel:processor:content_router`
+- Type shortcut: `processor:content_router`
+- Feature gate: Default
+- Stability: Experimental
+
+## Overview
+
 The content router routes telemetry to named output ports based on a configured
 resource attribute. It is an exclusive-routing processor: each inbound message
 selects at most one downstream output route.
@@ -11,18 +22,21 @@ attribute.
 ## Configuration
 
 ```yaml
-processor:
-  urn: urn:otel:processor:content_router
-  config:
-    routing_key:
-      resource_attribute: service.namespace
-    case_sensitive: false
-    routes:
-      frontend: frontend_pipeline
-      backend: backend_pipeline
-    default_output: fallback
-    admission_policy:
-      on_full: reject_immediately # or "backpressure"
+type: processor:content_router
+outputs:
+  - frontend_pipeline
+  - backend_pipeline
+  - fallback
+config:
+  routing_key:
+    resource_attribute: service.namespace
+  case_sensitive: false
+  routes:
+    frontend: frontend_pipeline
+    backend: backend_pipeline
+  default_output: fallback
+  admission_policy:
+    on_full: reject_immediately # or "backpressure"
 ```
 
 Configuration fields:
@@ -129,3 +143,47 @@ Selected-route NACKs include a machine-readable `NackCause`:
 - `RouteFull`
 - `RouteClosed`
 - `NodeShutdown`
+
+## Examples
+
+See the configuration example above and the multi-output examples in the
+runtime [configuration model](../../../../../docs/configuration-model.md).
+
+## Telemetry
+
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
+
+### Metric Sets
+
+#### `processor.content_router`
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `processor.content_router.signals_routed` | `{msg}` | Number of messages routed to a named port. |
+| `processor.content_router.signals_routed_default` | `{msg}` | Number of messages routed to the default output. |
+| `processor.content_router.signals_nacked` | `{msg}` | Number of messages NACKed (no route match, missing key, mixed batch, conversion error, or send failure). |
+| `processor.content_router.signals_no_routing_key` | `{msg}` | Number of messages where the routing key was missing. |
+| `processor.content_router.signals_conversion_error` | `{msg}` | Number of messages that failed due to internal conversion errors. |
+| `processor.content_router.signals_rejected_route_full` | `{msg}` | Number of messages rejected because the selected route was full. |
+| `processor.content_router.signals_rejected_route_closed` | `{msg}` | Number of messages rejected because the selected route was closed. |
+
+### Events
+
+| Event | Severity | Description |
+| --- | --- | --- |
+| *None* | N/A | No node-specific events are emitted. |
+
+## Limits
+
+- Route keys currently come from resource attributes.
+- `routes` must not be empty.
+- Route destinations and `default_output`, when declared, must match node
+  output ports.
+- `backpressure` parks at most one message per blocked output port.
+
+## Related Docs
+
+- [Configuration model](../../../../../docs/configuration-model.md)
+- [Processor taxonomy](../../../../../docs/processors.md)
+- [Core node catalog](../../../README.md)

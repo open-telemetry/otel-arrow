@@ -250,7 +250,7 @@ establish the performance of the OTAP Dataflow system.
 
 ### Core Nodes
 
-[See crate README.](./crates/core-nodes/README.md)
+[See the core-node catalog.](./crates/core-nodes/README.md)
 
 - Exporters: `console_exporter`, `error_exporter`, `noop_exporter`,
   `otap_exporter`, `otlp_grpc_exporter`, `otlp_http_exporter`,
@@ -259,9 +259,9 @@ establish the performance of the OTAP Dataflow system.
   `content_router`, `debug_processor`, `delay_processor`,
   `durable_buffer_processor`, `fanout_processor`, `filter_processor`,
   `retry_processor`, `signal_type_router`, `transform_processor`
-- Receivers: `traffic_generator`, `internal_telemetry_receiver`,
-  `otap_receiver`, `otlp_receiver`, `syslog_cef_receiver`,
-  `topic_receiver`
+- Receivers: `host_metrics_receiver`, `internal_telemetry_receiver`,
+  `journald_receiver`, `otap_receiver`, `otlp_receiver`,
+  `syslog_cef_receiver`, `topic_receiver`, `traffic_generator`
 
 ### Contrib Nodes
 
@@ -301,6 +301,10 @@ Like the engine, the pipeline datatype `PData` is opaque to this crate.
 Here, the configuration model for the OTAP Dataflow engine defines the
 structs and conventions used to configure as well as observe the
 pipeline, the engine, and the pipeline components.
+
+For runtime YAML authoring, start with the canonical
+[configuration model](./docs/configuration-model.md). It links to the core-node
+catalog, per-node configuration docs, examples, and policy references.
 
 A number of example configurations are listed in
 [`./configs`](./configs). These are deserialized into the

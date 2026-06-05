@@ -1,5 +1,16 @@
 # Fan-out Processor
 
+<!-- markdownlint-disable MD013 -->
+
+## Metadata
+
+- Full URN: `urn:otel:processor:fanout`
+- Type shortcut: `processor:fanout`
+- Feature gate: Default
+- Stability: Experimental
+
+## Overview
+
 The fan-out processor clones incoming PData to multiple downstream destinations
 with configurable delivery modes, ack policies, and fallback routing.
 
@@ -9,21 +20,24 @@ destinations after failures, supporting a broad range of failover policies.
 ## Configuration
 
 ```yaml
-processor:
-  urn: urn:otel:processor:fanout
-  config:
-    mode: parallel          # or "sequential"
-    await_ack: all          # or "primary" or "none"
-    timeout_check_interval: 200ms
-    max_inflight: 10000     # maximum in-flight messages (0 = unlimited)
-    destinations:
-      - port: primary_export
-        primary: true
-        timeout: 5s
-      - port: backup_export
-        fallback_for: primary_export
-        timeout: 10s
-      - port: analytics_export
+type: processor:fanout
+outputs:
+  - primary_export
+  - backup_export
+  - analytics_export
+config:
+  mode: parallel          # or "sequential"
+  await_ack: all          # or "primary" or "none"
+  timeout_check_interval: 200ms
+  max_inflight: 10000     # maximum in-flight messages (0 = unlimited)
+  destinations:
+    - port: primary_export
+      primary: true
+      timeout: 5s
+    - port: backup_export
+      fallback_for: primary_export
+      timeout: 10s
+    - port: analytics_export
 ```
 
 > **Future improvement**: The `destinations` config could be merged with the node's
@@ -314,8 +328,8 @@ copied during clone.
 - **Fallback cycles**: Detected and rejected at config validation
 - **Fallback with `await_ack: none`**: Rejected; fire-and-forget ignores fallbacks
 - **Timeout with `await_ack: none`**: Rejected; fire-and-forget doesn't track responses
-- **Max inflight exceeded**: New messages nacked with backpressure
-  (does not apply to `await_ack: none`)
+- **Max inflight exceeded**: `accept_pdata()` returns `false` and the engine
+  applies backpressure (does not apply to `await_ack: none`)
 - **Shutdown**: Inflight state is dropped; no nacks sent to upstream.
   Upstream will not receive notification for in-progress requests.
 
@@ -356,3 +370,47 @@ Required for: `sequential` mode, `await_ack: all`, any fallback, any timeout
 - Tracks per-endpoint status, timeouts, and fallback chains
 - Coordinates ordering (sequential) or completion (await_all)
 - Handles failover to backup destinations
+
+## Examples
+
+See the configuration example above.
+
+## Telemetry
+
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
+
+### Metric Sets
+
+#### `processor.fanout`
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `processor.fanout.sent` | `{item}` | Requests dispatched. Note: This is a convenience metric that overlaps with channel-level send metrics. Consider removing if metric bloat is a concern. |
+| `processor.fanout.acked` | `{item}` | Requests acked upstream (after await_ack/fallback aggregation). |
+| `processor.fanout.nacked` | `{item}` | Requests nacked upstream (after await_ack/fallback aggregation). |
+| `processor.fanout.timed_out` | `{item}` | Requests that timed out waiting for the configured destination outcome. |
+| `processor.fanout.in_flight` | `{item}` | Current number of in-flight requests tracked by the processor. |
+| `processor.fanout.max_inflight_config` | `{item}` | Configured max_inflight value (0 means unlimited). |
+| `processor.fanout.throttled` | `1` | 1 when fanout is currently refusing new pdata via accept_pdata(), else 0. |
+| `processor.fanout.throttle_episodes` | `{episode}` | Increments on transition from not-throttled to throttled. |
+
+### Events
+
+| Event | Severity | Description |
+| --- | --- | --- |
+| *None* | N/A | No node-specific events are emitted. |
+
+## Limits
+
+- At least one destination is required.
+- At most 64 destinations are supported.
+- Destination ports must correspond to node output ports.
+- Fallback cycles and ambiguous fallback targets are rejected.
+- `max_inflight: 0` is unlimited and is not recommended for production.
+
+## Related Docs
+
+- [Configuration model](../../../../../docs/configuration-model.md)
+- [Processor taxonomy](../../../../../docs/processors.md)
+- [Core node catalog](../../../README.md)

@@ -3,6 +3,10 @@
 This document describes the runtime configuration model used by the OTAP
 Dataflow Engine.
 
+This is the canonical entry point for users configuring the Arrow Dataflow
+Engine from GitHub. It links to the node catalog, per-node configuration docs,
+examples, and supporting policy references.
+
 If you want background on why this model is structured this way, see the
 `Design Rationale` section below.
 
@@ -10,6 +14,23 @@ If you implement receivers/processors/exporters and need crate-level API
 details plus custom node config guidance, see:
 
 - [crates/config/README.md](../crates/config/README.md)
+- [crates/core-nodes/README.md](../crates/core-nodes/README.md)
+
+## Documentation Map
+
+- Runtime configuration structure: this document.
+- Core node catalog:
+  [crates/core-nodes/README.md](../crates/core-nodes/README.md).
+- Node URN syntax: [docs/urns.md](urns.md).
+- Processor behavior taxonomy: [docs/processors.md](processors.md).
+- Runnable configuration examples: [configs/README.md](../configs/README.md).
+- Transport header policies: [docs/transport-headers.md](transport-headers.md).
+- Memory limiter policy: [docs/memory-limiter-phase1.md](memory-limiter-phase1.md).
+
+Per-node documentation lives next to the node implementation under
+`crates/core-nodes/src`. Each node README uses predictable headings such as
+`Metadata`, `Configuration`, `Examples`, `Limits`, and `Telemetry`, so it can
+be read directly by humans and discovered by agents.
 
 ## Configuration File Spec
 
@@ -566,6 +587,67 @@ Config loading validates:
 - Root schema version compatibility (`version: otel_dataflow/v1`).
 - Observability constraints (`engine.observability.pipeline.policies.resources`
   is rejected).
+
+## Core Node Catalog
+
+Core nodes are provided by the `otap-df-core-nodes` crate. Use the `type`
+shortcut shown below in YAML, or the full `urn:otel:<kind>:<id>` form.
+
+The detailed README for each node lives beside its implementation so node
+configuration docs stay close to the code that parses and validates them.
+Unless a node README documents a stronger guarantee, the node stability level is
+`experimental`.
+
+### Core Exporters
+
+<!-- markdownlint-disable MD013 -->
+| Type | Full URN | Description | Details |
+| --- | --- | --- | --- |
+| `exporter:console` | `urn:otel:exporter:console` | Prints logs, metrics, and traces in a hierarchical console format. | [`console_exporter`](../crates/core-nodes/src/exporters/console_exporter/README.md) |
+| `exporter:error` | `urn:otel:exporter:error` | NACKs every received message with a configured error message. | [`error_exporter`](../crates/core-nodes/src/exporters/error_exporter/README.md) |
+| `exporter:noop` | `urn:otel:exporter:noop` | ACKs every received message without external output. | [`noop_exporter`](../crates/core-nodes/src/exporters/noop_exporter/README.md) |
+| `exporter:otap` | `urn:otel:exporter:otap` | Exports OTAP Arrow streams over gRPC. | [`otap_exporter`](../crates/core-nodes/src/exporters/otap_exporter/README.md) |
+| `exporter:otlp_grpc` | `urn:otel:exporter:otlp_grpc` | Exports OTLP logs, metrics, and traces over unary gRPC. | [`otlp_grpc_exporter`](../crates/core-nodes/src/exporters/otlp_grpc_exporter/README.md) |
+| `exporter:otlp_http` | `urn:otel:exporter:otlp_http` | Exports OTLP logs, metrics, and traces over OTLP/HTTP. | [`otlp_http_exporter`](../crates/core-nodes/src/exporters/otlp_http_exporter/README.md) |
+| `exporter:parquet` | `urn:otel:exporter:parquet` | Writes OTAP batches into partitioned Parquet files. | [`parquet_exporter`](../crates/core-nodes/src/exporters/parquet_exporter/README.md) |
+| `exporter:perf` | `urn:otel:exporter:perf` | Reports throughput and host/process usage for benchmark runs. | [`perf_exporter`](../crates/core-nodes/src/exporters/perf_exporter/README.md) |
+| `exporter:topic` | `urn:otel:exporter:topic` | Publishes pdata into a configured in-process topic. | [`topic_exporter`](../crates/core-nodes/src/exporters/topic_exporter/README.md) |
+<!-- markdownlint-enable MD013 -->
+
+### Core Processors
+
+<!-- markdownlint-disable MD013 -->
+| Type | Full URN | Description | Details |
+| --- | --- | --- | --- |
+| `processor:attribute` | `urn:otel:processor:attribute` | Adds, updates, renames, deletes, or hashes OpenTelemetry attributes. | [`attributes_processor`](../crates/core-nodes/src/processors/attributes_processor/README.md) |
+| `processor:batch` | `urn:otel:processor:batch` | Batches OTAP and OTLP payloads by size and time. | [`batch_processor`](../crates/core-nodes/src/processors/batch_processor/README.md) |
+| `processor:content_router` | `urn:otel:processor:content_router` | Routes telemetry by resource attribute value. | [`content_router`](../crates/core-nodes/src/processors/content_router/README.md) |
+| `processor:debug` | `urn:otel:processor:debug` | Emits configurable debug views of pdata passing through a pipeline. | [`debug_processor`](../crates/core-nodes/src/processors/debug_processor/README.md) |
+| `processor:delay` | `urn:otel:processor:delay` | Adds an artificial delay before forwarding each message. | [`delay_processor`](../crates/core-nodes/src/processors/delay_processor/README.md) |
+| `processor:durable_buffer` | `urn:otel:processor:durable_buffer` | Persists pdata to durable storage before forwarding downstream. | [`durable_buffer_processor`](../crates/core-nodes/src/processors/durable_buffer_processor/README.md) |
+| `processor:fanout` | `urn:otel:processor:fanout` | Clones input to multiple output destinations with ack policies. | [`fanout_processor`](../crates/core-nodes/src/processors/fanout_processor/README.md) |
+| `processor:filter` | `urn:otel:processor:filter` | Drops logs or traces that match configured filter rules. | [`filter_processor`](../crates/core-nodes/src/processors/filter_processor/README.md) |
+| `processor:log_sampling` | `urn:otel:processor:log_sampling` | Samples logs using ratio or rate-limited policies. | [`log_sampling_processor`](../crates/core-nodes/src/processors/log_sampling_processor/README.md) |
+| `processor:retry` | `urn:otel:processor:retry` | Retries downstream NACKs with exponential backoff. | [`retry_processor`](../crates/core-nodes/src/processors/retry_processor/README.md) |
+| `processor:type_router` | `urn:otel:processor:type_router` | Routes logs, metrics, and traces to signal-specific outputs. | [`signal_type_router`](../crates/core-nodes/src/processors/signal_type_router/README.md) |
+| `processor:temporal_reaggregation` | `urn:otel:processor:temporal_reaggregation` | Reaggregates metric streams into lower-frequency output. | [`temporal_reaggregation_processor`](../crates/core-nodes/src/processors/temporal_reaggregation_processor/README.md) |
+| `processor:transform` | `urn:otel:processor:transform` | Applies KQL, OPL, or OTTL transformations to OTAP batches. | [`transform_processor`](../crates/core-nodes/src/processors/transform_processor/README.md) |
+<!-- markdownlint-enable MD013 -->
+
+### Core Receivers
+
+<!-- markdownlint-disable MD013 -->
+| Type | Full URN | Description | Details |
+| --- | --- | --- | --- |
+| `receiver:host_metrics` | `urn:otel:receiver:host_metrics` | Scrapes Linux host metrics from procfs and sysfs. | [`host_metrics_receiver`](../crates/core-nodes/src/receivers/host_metrics_receiver/README.md) |
+| `receiver:internal_telemetry` | `urn:otel:receiver:internal_telemetry` | Turns internal engine telemetry log events into pdata. | [`internal_telemetry_receiver`](../crates/core-nodes/src/receivers/internal_telemetry_receiver/README.md) |
+| `receiver:journald` | `urn:otel:receiver:journald` | Ingests local Linux systemd-journald entries. | [`journald_receiver`](../crates/core-nodes/src/receivers/journald_receiver/README.md) |
+| `receiver:otap` | `urn:otel:receiver:otap` | Receives OTAP Arrow streams over gRPC. | [`otap_receiver`](../crates/core-nodes/src/receivers/otap_receiver/README.md) |
+| `receiver:otlp` | `urn:otel:receiver:otlp` | Receives OTLP/gRPC, OTLP/HTTP, or both. | [`otlp_receiver`](../crates/core-nodes/src/receivers/otlp_receiver/README.md) |
+| `receiver:syslog_cef` | `urn:otel:receiver:syslog_cef` | Receives syslog and CEF records over TCP or UDP. | [`syslog_cef_receiver`](../crates/core-nodes/src/receivers/syslog_cef_receiver/README.md) |
+| `receiver:topic` | `urn:otel:receiver:topic` | Subscribes to a configured in-process topic. | [`topic_receiver`](../crates/core-nodes/src/receivers/topic_receiver/README.md) |
+| `receiver:traffic_generator` | `urn:otel:receiver:traffic_generator` | Generates synthetic or semantic-convention traffic for tests and benchmarks. Feature-gated by `dev-tools`. | [`traffic_generator`](../crates/core-nodes/src/receivers/traffic_generator/README.md) |
+<!-- markdownlint-enable MD013 -->
 
 ## Go Collector Users: Mapping and Differences
 

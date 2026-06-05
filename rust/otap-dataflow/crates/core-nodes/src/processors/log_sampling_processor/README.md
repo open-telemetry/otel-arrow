@@ -1,6 +1,13 @@
 # Log Sampling Processor
 
-URN: `urn:otel:processor:log_sampling`
+<!-- markdownlint-disable MD013 -->
+
+## Metadata
+
+- Full URN: `urn:otel:processor:log_sampling`
+- Type shortcut: `processor:log_sampling`
+- Feature gate: Default
+- Stability: Experimental
 
 ## Overview
 
@@ -73,8 +80,38 @@ empty, the processor immediately acks the inbound request via
 
 ## Telemetry
 
-| Metric                 | Unit      | Description                                |
-|------------------------|-----------|--------------------------------------------|
-| `log_signals_consumed` | `{log}`   | Total log records received                 |
-| `log_signals_dropped`  | `{log}`   | Log records dropped by sampling            |
-| `filtering_errors`     | `{error}` | Errors encountered while filtering batches |
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
+
+### Metric Sets
+
+#### `processor.log_sampling.pdata`
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `processor.log_sampling.pdata.log_signals_consumed` | `{log}` | Total log records received by the processor. |
+| `processor.log_sampling.pdata.log_signals_dropped` | `{log}` | Log records dropped by sampling. |
+| `processor.log_sampling.pdata.filtering_errors` | `{error}` | Errors encountered while filtering OTAP batches. |
+| `processor.log_sampling.pdata.filter_buffer_reclamation_failures` | `{error}` | How many times we fail to reclaim the underlying filter buffer. |
+
+### Events
+
+| Event | Severity | Description |
+| --- | --- | --- |
+| *None* | N/A | No node-specific events are emitted. |
+
+## Examples
+
+See [Zip Sampling](#zip-sampling) and [Ratio Sampling](#ratio-sampling).
+
+## Limits
+
+- Sampling is applied only to log records.
+- Exactly one policy must be configured.
+- Metrics and traces pass through unchanged.
+
+## Related Docs
+
+- [Configuration model](../../../../../docs/configuration-model.md)
+- [Processor taxonomy](../../../../../docs/processors.md)
+- [Core node catalog](../../../README.md)

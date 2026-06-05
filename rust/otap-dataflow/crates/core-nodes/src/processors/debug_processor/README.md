@@ -1,8 +1,19 @@
-# Debug Proccessor
+# Debug Processor
 
-Status: **WIP**
+<!-- markdownlint-disable MD013 -->
 
-This crate will contain the implementation of the debug processor.
+## Metadata
+
+- Full URN: `urn:otel:processor:debug`
+- Type shortcut: `processor:debug`
+- Feature gate: Default
+- Stability: Experimental
+
+## Overview
+
+The debug processor observes pdata passing through a pipeline and emits
+human-readable output. It supports configurable verbosity, display mode, signal
+selection, filtering, sampling, and output target.
 
 ## Example Config
 
@@ -24,6 +35,61 @@ config:
       type: no_sampling
    mode: exclude
 ```
+
+## Configuration
+
+The main config fields are:
+
+- `verbosity`: `basic`, `normal`, or `detailed`; default is `normal`.
+- `mode`: display mode; default is `batch`.
+- `signals`: set of active signals; defaults to metrics, spans, and logs.
+- `output`: output target; default is console.
+- `filters`: optional filter rules.
+- `sampling`: optional sampling policy; default is no sampling.
+
+## Examples
+
+See [Example Config](#example-config) and the output examples below.
+
+## Telemetry
+
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
+
+### Metric Sets
+
+#### `processor.debug.pdata`
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `processor.debug.pdata.log_signals_consumed` | `{log}` | Number of log signals consumed. |
+| `processor.debug.pdata.events_consumed` | `{event}` | Number of events (structured logs) consumed. |
+| `processor.debug.pdata.span_signals_consumed` | `{span}` | Number of span signals consumed. |
+| `processor.debug.pdata.span_links_consumed` | `{link}` | Number of span links consumed. |
+| `processor.debug.pdata.span_events_consumed` | `{event}` | Number of span events (structured logs) consumed. |
+| `processor.debug.pdata.metric_signals_consumed` | `{metric}` | Number of metrics consumed. |
+| `processor.debug.pdata.metric_datapoints_consumed` | `{datapoint}` | Number of metric datapoints consumed. |
+| `processor.debug.pdata.metrics_consumed` | `{msg}` | Number of metrics (batches) consumed. |
+| `processor.debug.pdata.logs_consumed` | `{msg}` | Number of logs (batches) consumed. |
+| `processor.debug.pdata.traces_consumed` | `{msg}` | Number of traces (batches) consumed. |
+
+### Events
+
+| Event | Severity | Description |
+| --- | --- | --- |
+| *None* | N/A | No internal telemetry events are emitted; configured debug output is data-plane diagnostic output. |
+
+## Limits
+
+- Debug output is diagnostic and not a stable machine-readable export format.
+- File or console output can become expensive for high-volume streams.
+- Configuration changes are not applied dynamically after node creation.
+
+## Related Docs
+
+- [Configuration model](../../../../../docs/configuration-model.md)
+- [Processor taxonomy](../../../../../docs/processors.md)
+- [Core node catalog](../../../README.md)
 
 ### Verbosity
 
@@ -77,24 +143,15 @@ it will append to the file rather than overwriting
 #### Output to pipeline node
 
 ```yaml
-  debug:
-    type: "processor:debug"
-    outputs: ["passthrough_port", "logging_port"]
-    config:
-      verbosity: basic
-      output:
-        - logging_port
-connections:
-  - from: debug["passthrough_port"]
-    to: noop
-  - from: debug["logging_port"]
-    to: some_node
+type: processor:debug
+outputs: ["passthrough_port", "logging_port"]
+config:
+  verbosity: basic
+  output:
+    - logging_port
 ```
 
-In this config we create a processor with multiple outputs.
-In the config setting we tell the debug-processor to use `logging_port`
-which will send data to another node that has been defined outside of
-this configuration named `some_node`
+Connect the `logging_port` output to the node that should receive debug output.
 
 ### Sampling
 

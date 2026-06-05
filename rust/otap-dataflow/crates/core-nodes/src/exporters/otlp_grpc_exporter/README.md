@@ -1,0 +1,97 @@
+# OTLP gRPC Exporter
+
+<!-- markdownlint-disable MD013 -->
+
+## Metadata
+
+- Full URN: `urn:otel:exporter:otlp_grpc`
+- Type shortcut: `exporter:otlp_grpc`
+- Feature gate: Default
+- Stability: Experimental
+
+## Overview
+
+The OTLP gRPC exporter sends logs, metrics, and traces as unary OTLP export
+requests. It converts OTAP records to OTLP protobuf bytes when needed and
+propagates request success or failure back into the dataflow ACK/NACK path.
+
+## Configuration
+
+The config embeds shared gRPC client settings and adds exporter concurrency
+settings.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `grpc_endpoint` | string | Required | gRPC endpoint to connect to. |
+| `compression` | enum | unset | Optional outbound request compression. |
+| `max_in_flight` | integer | `5` | Maximum concurrent export RPCs. |
+| `num_connections` | integer | `1` | Number of gRPC channels to open. |
+
+Shared gRPC client fields include connect timeout, request timeout, TCP
+keepalive, HTTP/2 settings, TLS, proxy, and transport buffer settings.
+
+## Examples
+
+```yaml
+type: exporter:otlp_grpc
+config:
+  grpc_endpoint: "http://127.0.0.1:4317"
+  max_in_flight: 8
+  num_connections: 1
+```
+
+With request compression:
+
+```yaml
+type: exporter:otlp_grpc
+config:
+  grpc_endpoint: "http://127.0.0.1:4317"
+  compression: gzip
+```
+
+## Telemetry
+
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
+
+### Metric Sets
+
+#### `exporter.pdata`
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `exporter.pdata.metrics_consumed` | `{msg}` | Number of pdata metrics consumed by this exporter. |
+| `exporter.pdata.metrics_exported` | `{msg}` | Number of pdata metrics successfully exported. |
+| `exporter.pdata.metrics_failed` | `{msg}` | Number of pdata metrics that failed to be exported. |
+| `exporter.pdata.logs_consumed` | `{msg}` | Number of pdata logs consumed by this exporter. |
+| `exporter.pdata.logs_exported` | `{msg}` | Number of pdata logs successfully exported. |
+| `exporter.pdata.logs_failed` | `{msg}` | Number of pdata logs that failed to be exported. |
+| `exporter.pdata.traces_consumed` | `{msg}` | Number of pdata traces consumed by this exporter. |
+| `exporter.pdata.traces_exported` | `{msg}` | Number of pdata traces successfully exported. |
+| `exporter.pdata.traces_failed` | `{msg}` | Number of pdata traces that failed to be exported. |
+
+### Events
+
+| Event | Severity | Description |
+| --- | --- | --- |
+| `otlp.exporter.grpc.start` | `info` | Exporter startup with the configured gRPC endpoint. |
+| `otlp.exporter.grpc.channels` | `info` | gRPC channel pool creation with connection count and endpoint. |
+| `otlp.exporter.grpc.receive` | `debug` | A pdata batch was received by the exporter loop. |
+| `otlp.exporter.grpc.shutdown` | `info` | Exporter shutdown. |
+| `otlp.exporter.http.export_error` | `warn` | A gRPC export request did not complete successfully. |
+| `otlp.exporter.grpc.header_skip` | `debug` | A propagated transport header was skipped while building gRPC metadata. |
+
+## Limits
+
+- `max_in_flight` bounds concurrent export RPCs inside the node.
+- `num_connections` only improves distribution when the downstream endpoint can
+  balance separate connections.
+- OTLP partial success responses are treated as export failures by the current
+  implementation.
+
+## Related Docs
+
+- [Configuration model](../../../../../docs/configuration-model.md)
+- [Proxy support](../../../../../docs/proxy-support.md)
+- [Transport headers](../../../../../docs/transport-headers.md)
+- [Core node catalog](../../../README.md)

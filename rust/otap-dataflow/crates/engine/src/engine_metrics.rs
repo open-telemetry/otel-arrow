@@ -167,9 +167,31 @@ impl EngineMetricsMonitor {
 
 /// Returns the current process-wide RSS (Resident Set Size) in bytes.
 fn get_rss_bytes() -> u64 {
-    memory_stats::memory_stats()
+    let rss = memory_stats::memory_stats()
         .map(|stats| stats.physical_mem as u64)
-        .unwrap_or(0)
+        .unwrap_or(0);
+    if rss > 0 {
+        return rss;
+    }
+
+    platform_rss_bytes().unwrap_or(0)
+}
+
+#[cfg(target_os = "linux")]
+fn platform_rss_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let rss_kib = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(|value| value.parse::<u64>().ok())?;
+
+    rss_kib.checked_mul(1024)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn platform_rss_bytes() -> Option<u64> {
+    None
 }
 
 impl Drop for EngineMetricsMonitor {

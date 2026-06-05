@@ -1,8 +1,13 @@
 # Temporal Reaggregation Processor
 
-Status: **WIP**
+<!-- markdownlint-disable MD013 -->
 
-URN: `urn:otel:processor:temporal_reaggregation`
+## Metadata
+
+- Full URN: `urn:otel:processor:temporal_reaggregation`
+- Type shortcut: `processor:temporal_reaggregation`
+- Feature gate: Default
+- Stability: Experimental
 
 ## Overview
 
@@ -31,7 +36,31 @@ This processor only aggregates a subset of metric types. In particular:
 
 Other metric types are passed through unchanged.
 
-## Limitations
+## Telemetry
+
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
+
+### Metric Sets
+
+#### `processor.temporal_reaggregation.pdata`
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `processor.temporal_reaggregation.pdata.flushes_timer` | `{flush}` | Number of flushes triggered by the regular timer. |
+| `processor.temporal_reaggregation.pdata.flushes_overflow` | `{flush}` | Number of flushes triggered by exceeding the maximum stream count. |
+| `processor.temporal_reaggregation.pdata.batches_rejected` | `{batch}` | Number of incoming batches rejected because they individually exceed some specified limit or fail to be processed into a view. |
+
+### Events
+
+| Event | Severity | Description |
+| --- | --- | --- |
+| `temporal_reaggregation.view.creation_failed` | `warn` | A view could not be created over input data. |
+| `temporal_reaggregation.attribute.encode_failed` | `warn` | One or more attributes could not be encoded. |
+| `temporal_reaggregation.calldata.invalid` | `warn` | Returned calldata was invalid for the processor return path. |
+| `temporal_reaggregation.ack.erroneous` | `warn` | An erroneous ACK/NACK event was observed. |
+
+## Limits
 
 This processor has the following limitations:
 
@@ -86,3 +115,13 @@ It is recommended to place this processor:
 A typical pipeline ordering with batch, temporal_reaggregation, and retry
 processors would be:
 `receivers -> temporal_reaggregation -> batch -> retry -> exporters`
+
+## Examples
+
+See the configuration example above.
+
+## Related Docs
+
+- [Configuration model](../../../../../docs/configuration-model.md)
+- [Processor taxonomy](../../../../../docs/processors.md)
+- [Core node catalog](../../../README.md)
