@@ -8,6 +8,11 @@ Use this guide when you are authoring or reviewing runtime YAML. Use the
 [configuration model reference](configuration-model.md) when you need exact
 field semantics, defaults, precedence rules, and validation behavior.
 
+> [!WARNING]
+> This project is experimental and in incubation. The configuration format is
+> not yet stable and can change at any moment, including incompatible changes
+> between releases.
+
 ## Configuration Location
 
 The `df_engine` binary reads one root configuration through `--config`.
