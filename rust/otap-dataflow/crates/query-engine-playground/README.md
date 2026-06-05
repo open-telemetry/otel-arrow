@@ -33,17 +33,17 @@ API for pipeline execution:
 ```text
 Browser                              Rust Backend
 ──────                               ────────────
-protobuf.load() ◄────── GET /proto/  (serves embedded .proto files)
+protobuf.load() <--------- GET /proto/  (serves embedded .proto files)
 
-User edits OTLP JSON ──►
-  protobuf.js encodes to binary ──►
-    POST /api/execute ──────────────► prost::Message::decode()
+User edits OTLP JSON --->
+  protobuf.js encodes to binary --->
+    POST /api/execute --------------> prost::Message::decode()
                                       otlp_to_otap()
                                       OplParser::parse()
                                       Pipeline::execute()
                                       otap_to_otlp()
                                       prost::Message::encode()
-    JSON response ◄─────────────────
-  protobuf.js decodes to JSON ◄──
-Display result + Arrow tables ◄──
+    JSON response <------------------
+  protobuf.js decodes to JSON <--
+Display result + Arrow tables <--
 ```
