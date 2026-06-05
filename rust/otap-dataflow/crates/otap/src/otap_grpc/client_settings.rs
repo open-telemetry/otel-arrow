@@ -52,6 +52,11 @@ pub enum StartupCheck {
 #[serde(deny_unknown_fields)]
 pub struct GrpcClientSettings {
     /// The gRPC endpoint to connect to.
+    ///
+    /// Must be a well-formed URI with an `http://` or `https://` scheme.
+    /// Invalid syntax is rejected at deserialization time so that
+    /// `--validate-and-exit` catches endpoint typos.
+    #[serde(deserialize_with = "deserialize_grpc_endpoint")]
     pub grpc_endpoint: String,
 
     /// Compression method to use for outbound requests. Defaults to no compression.
@@ -555,6 +560,58 @@ const fn default_http2_keepalive_timeout() -> Option<Duration> {
 
 const fn default_keep_alive_while_idle() -> bool {
     true
+}
+
+/// Deserializes `grpc_endpoint` while validating that the value is a
+/// well-formed URI with an `http` or `https` scheme.
+///
+/// This runs at deserialization time so that `validate_typed_config::<Config>`
+/// (and therefore `--validate-and-exit`) rejects invalid endpoint syntax
+/// without requiring any exporter-specific validation function.
+fn deserialize_grpc_endpoint<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let endpoint = String::deserialize(deserializer)?;
+    let trimmed = endpoint.trim();
+
+    if trimmed.is_empty() {
+        return Err(serde::de::Error::custom(
+            "grpc_endpoint is empty; expected a URI like \"http://host:port\"",
+        ));
+    }
+
+    // Endpoint::from_shared performs full URI parsing (synchronously).
+    Endpoint::from_shared(trimmed.to_string()).map_err(|e| {
+        serde::de::Error::custom(format!(
+            "invalid grpc_endpoint \"{trimmed}\": {e}"
+        ))
+    })?;
+
+    // Verify the scheme is http or https (gRPC transport requirement).
+    let uri: http::Uri = trimmed.parse().map_err(|e: http::uri::InvalidUri| {
+        serde::de::Error::custom(format!(
+            "invalid grpc_endpoint URI \"{trimmed}\": {e}"
+        ))
+    })?;
+
+    match uri.scheme_str() {
+        Some("http" | "https") => {}
+        Some(scheme) => {
+            return Err(serde::de::Error::custom(format!(
+                "unsupported scheme \"{scheme}\" in grpc_endpoint \"{trimmed}\"; \
+                 expected \"http\" or \"https\""
+            )));
+        }
+        None => {
+            return Err(serde::de::Error::custom(format!(
+                "missing scheme in grpc_endpoint \"{trimmed}\"; \
+                 expected \"http://\" or \"https://\" prefix"
+            )));
+        }
+    }
+
+    Ok(endpoint)
 }
 
 #[cfg(test)]
