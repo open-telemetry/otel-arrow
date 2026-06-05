@@ -4,6 +4,10 @@ Configuration model crate for the OTAP Dataflow Engine.
 
 If you are authoring runtime YAML, start with:
 
+- [`docs/configuration.md`](../../docs/configuration.md)
+
+Use the reference model for exact field semantics:
+
 - [`docs/configuration-model.md`](../../docs/configuration-model.md)
 
 Design rationale and prior-art discussion:
@@ -16,13 +20,13 @@ This README focuses on crate-level model and API details.
 
 Main public model types:
 
-- `engine::OtelDataflowSpec`: runtime root spec (`version`, `policies`, `engine`
-  , `groups`)
+- `engine::OtelDataflowSpec`: runtime root spec (`version`, `policies`,
+  `topics`, `engine`, `groups`)
 - `engine::EngineConfig`: engine-wide section (`engine: ...`)
 - `pipeline_group::PipelineGroupConfig`
 - `pipeline::PipelineConfig`: nodes, connections, optional policies
-- `policy::Policies`: channel-capacity/health/telemetry/resources
-  policy families
+- `policy::Policies`: channel-capacity/health/telemetry/resources/transport
+  header policy families
 - `topic::TopicSpec`: named inter-pipeline topic specification
 - `node::NodeUserConfig`: per-node configuration envelope
 - `node_urn::NodeUrn`: parsed/canonicalized node type URN
@@ -50,16 +54,21 @@ and tests, but are not a runtime root format for the engine process.
 
 The engine binary resolves the `--config` argument through the
 `config_provider` module before passing content to the parsing APIs
-below. The resolver supports three URI forms:
+below. The resolver supports these URI forms:
 
 | URI | Source |
 | --- | --- |
 | `file:/path/to/config.yaml` | Local file |
 | `env:MY_VAR` | Environment variable (full config content) |
+| `yaml:<content>` | Inline YAML with `::` nested-key expansion |
+| `http://host/path` | Unauthenticated HTTP GET |
 | `/path/to/config.yaml` | Bare path, treated as `file:` |
 
 When `--config` is omitted the resolver falls back to `config.yaml`
 in the current working directory.
+
+`https:`, authenticated config sources, and multi-file merge are not
+implemented.
 
 The top-level entry point is `config_provider::resolve_config`.
 `ResolvedConfig` carries both the original source URI and the loaded
@@ -213,7 +222,7 @@ topics:
 
 - `backend`:
   - `in_memory` (default, currently implemented)
-  - `quiver` (accepted by config, not implemented by the runtime yet)
+  - `quiver` (reserved in the schema and rejected by the current runtime)
 - `impl_selection`:
   - `auto`
   - `force_mixed`
@@ -351,8 +360,7 @@ declarations).
 Connection defaults:
 
 - source output defaults to `"default"` when `from` has no selector
-- `policies.dispatch` is optional and defaults to `one_of` (will most likely be
-  changed to `broadcast` in the future once its implementation is complete)
+- `policies.dispatch` is optional and defaults to `one_of`
 - with multiple destinations, `one_of` means each message is consumed by exactly
   one destination (competing consumers)
 

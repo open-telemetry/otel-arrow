@@ -1,14 +1,15 @@
-# OTAP Dataflow Configuration Model (v1)
+# OTAP Dataflow Configuration Model Reference (v1)
 
-This document describes the runtime configuration model used by the OTAP
+This reference describes the exact runtime configuration model used by the OTAP
 Dataflow Engine.
 
-This is the canonical entry point for users configuring the Arrow Dataflow
-Engine from GitHub. It links to the node catalog, per-node configuration docs,
-examples, and supporting policy references.
+If you are learning how to write an engine configuration, start with
+[Configuration](configuration.md). Use this document when you need field
+semantics, defaults, precedence rules, validation behavior, and reference
+details.
 
-If you want background on why this model is structured this way, see the
-`Design Rationale` section below.
+If you want background on why this model is structured this way, see
+`Design Principles` and `Design Decisions` below.
 
 If you implement receivers/processors/exporters and need crate-level API
 details plus custom node config guidance, see:
@@ -16,9 +17,10 @@ details plus custom node config guidance, see:
 - [crates/config/README.md](../crates/config/README.md)
 - [crates/core-nodes/README.md](../crates/core-nodes/README.md)
 
-## Documentation Map
+## Related Documentation
 
-- Runtime configuration structure: this document.
+- Progressive configuration guide: [configuration.md](configuration.md).
+- Runtime configuration reference: this document.
 - Core node catalog:
   [crates/core-nodes/README.md](../crates/core-nodes/README.md).
 - Node URN syntax: [docs/urns.md](urns.md).
@@ -29,8 +31,123 @@ details plus custom node config guidance, see:
 
 Per-node documentation lives next to the node implementation under
 `crates/core-nodes/src`. Each node README uses predictable headings such as
-`Metadata`, `Configuration`, `Examples`, `Limits`, and `Telemetry`, so it can
+`Metadata`, `Configuration`, `Examples`, `Telemetry`, and `Limits`, so it can
 be read directly by humans and discovered by agents.
+
+## Design Principles
+
+The configuration model is intentionally different from the OpenTelemetry
+Collector YAML model. The Arrow Dataflow Engine can interoperate with Collector
+protocols and concepts, but its configuration is shaped around the engine's
+runtime model rather than YAML shape parity.
+
+The main configuration principles are:
+
+- **Explicit topology**: dataflow edges are declared as `connections`, not
+  inferred from ordered receiver, processor, and exporter lists.
+- **Predictable runtime shape**: the resolved config should make it clear which
+  graph runs in each pipeline, which policies apply, and which topic bindings
+  exist.
+- **Bounded resources by construction**: channel capacities, topic queues,
+  runtime metrics levels, core allocation, and memory limiter behavior are
+  modeled as explicit policies.
+- **Node-local configuration ownership**: each node owns its `config` payload,
+  validation, limits, telemetry, and compatibility notes.
+- **Strict validation over permissive loading**: unknown fields and invalid graph
+  references are rejected early to catch operator mistakes before startup.
+- **Composable advanced topology**: fan-in, fan-out, named output ports, topics,
+  and observability pipelines are first-class concepts rather than special cases.
+- **Operational debuggability**: stable group, pipeline, node, topic, and output
+  identifiers are visible in configuration and can be correlated with runtime
+  telemetry.
+
+For broader project-level principles, see
+[design-principles.md](design-principles.md).
+
+## Design Decisions
+
+This section records the intentional choices behind the v1 model.
+
+### Root Config, Groups, and Pipelines
+
+The engine accepts a single root spec with `version`, optional defaults, and
+`groups`. A group scopes related pipelines and group-level policies. A pipeline
+is an executable graph identified by `(group_id, pipeline_id)`.
+
+This hierarchy gives the controller a stable unit for deployment,
+observability, resource assignment, and future live reconfiguration. It also
+keeps room for multiple related pipelines in one engine process without
+flattening every runtime concern into one global namespace.
+
+### Nodes and Explicit Connections
+
+Nodes are declared separately from graph wiring. Connections define the DAG.
+This is a deliberate difference from Collector pipelines, where a pipeline lists
+receivers, processors, and exporters in order.
+
+Explicit connections make branching, fan-in, fan-out, fallback paths, route
+outputs, and test topologies visible in one graph. They also let validation
+reject missing nodes, invalid output ports, and cycles before the runtime starts.
+
+### Node Types and Node-Local Config
+
+Each node has a `type` expressed as a URN or OTel shortcut, such as
+`receiver:otlp`. The `type` selects the implementation and implies the node
+kind. The `config` object is then owned by that implementation.
+
+This keeps the common engine schema small while letting each receiver,
+processor, and exporter evolve its own configuration and documentation close to
+the code that validates it.
+
+### Output Port Semantics
+
+Every receiver and processor has a default output. Multi-output processors can
+declare named `outputs`, and connections can select them with syntax such as
+`router["logs"]`.
+
+This makes route semantics explicit. It avoids hiding branches inside an
+ordered processor chain and lets the engine validate output selectors.
+
+### Policies
+
+Policies are scoped runtime controls. Top-level policies provide defaults,
+group policies override those defaults for a group, and pipeline policies
+override them for a single pipeline.
+
+Precedence applies by policy family instead of deep-merging nested fragments.
+This avoids ambiguous partial inheritance and keeps the resolved runtime shape
+deterministic. Some policies are intentionally constrained to specific scopes;
+for example, the memory limiter is process-wide and only supported at top-level
+`policies.resources`.
+
+### Topics
+
+Topics are the supported way to decouple pipelines in the same process. A topic
+is declared once, then used by `exporter:topic` and `receiver:topic` nodes.
+
+This keeps each pipeline graph acyclic and locally understandable while still
+supporting worker-pool delivery, fan-out, taps, and staged ingest/processing/
+egress designs. Topic validation happens during startup so invalid
+cross-pipeline loops are rejected early.
+
+### Internal Observability Pipeline
+
+The internal observability pipeline is configured under
+`engine.observability.pipeline`. It uses the same node and connection model as a
+regular pipeline, but it has constrained policy support.
+
+This makes internal telemetry routing explicit without treating observability as
+ordinary user dataflow. Resource policies are rejected there because the
+observability pipeline is part of engine operation, not an independent workload.
+
+### Strict Loading and Validation
+
+The model favors fail-fast loading. Unknown fields, invalid schema versions,
+missing connection endpoints, graph cycles, invalid output selectors, unsupported
+policy placements, and invalid node configs are rejected before startup.
+
+This is intentional. A permissive configuration loader can hide mistakes until
+traffic flows; the engine favors early, actionable errors.
 
 ## Configuration File Spec
 
@@ -49,12 +166,17 @@ argument accepts a URI that selects the config source:
 | --- | --- |
 | `file:/path/to/config.yaml` | Read from a local file |
 | `env:MY_VAR` | Read the full config from an environment variable |
+| `yaml:<content>` | Read inline YAML; `::` expands nested key paths |
+| `http://host/path` | Read via unauthenticated HTTP GET with retry |
 | `/path/to/config.yaml` | Bare path, same as `file:` |
 
 If `--config` is omitted, the engine falls back to `config.yaml` in
 the current working directory.
 
 Standalone pipeline files are not a runtime root format.
+
+`https:`, authenticated config sources, and multi-file merge are not
+implemented.
 
 Contributor note: this top-level model is represented in code as
 `OtelDataflowSpec`.
@@ -93,19 +215,24 @@ groups:
 The runtime model is hierarchical:
 
 - top-level configuration (root)
+- top-level `topics` (optional global topic declarations)
 - `groups` (map of pipeline groups)
+- group-local `topics` (optional topic declarations inside a group)
 - `pipelines` (map of pipelines inside each group)
 
 A **pipeline group** is a logical container for related pipelines.
 
 - It scopes a set of pipelines under one group id.
 - It can define group-level `policies` applied to pipelines in that group.
+- It can define group-local `topics` that override top-level topics with the
+  same local name for pipelines in that group.
 - It is the intermediate level between root defaults and
   pipeline-specific overrides.
 
 A **pipeline** is an executable dataflow graph.
 
-- It contains `nodes`, `connections`, and optional pipeline-level `policies`.
+- It contains `nodes`, optional `extensions`, `connections`, and optional
+  pipeline-level `policies`.
 - It is identified by `(group_id, pipeline_id)`.
 - Pipeline ids must be unique within their group.
 
@@ -151,9 +278,11 @@ Topic declaration precedence for a pipeline in a given group:
 
 At pipeline level:
 
-- `nodes`: map of node id -> node declaration
-- `connections`: explicit graph wiring
+- `type`: pipeline data type, defaulting to `otap`
 - `policies` (optional)
+- `nodes`: map of node id -> node declaration
+- `extensions`: optional map of extension id -> extension declaration
+- `connections`: explicit graph wiring
 
 At node level:
 
@@ -161,6 +290,11 @@ At node level:
 - `config`: node-specific payload
 - `outputs` (optional): named output ports for multi-output nodes
 - `default_output` (optional): explicit default output port for implicit sends
+- `capabilities` (optional): capability bindings to pipeline extensions
+- `entity` (optional): node entity enrichment metadata
+- `header_capture` (optional): receiver-only transport header capture override
+- `header_propagation` (optional): exporter-only transport header propagation
+  override
 
 At connection level:
 
@@ -406,7 +540,7 @@ topics:
 Supported `backend` values:
 
 - `in_memory` (default, currently implemented)
-- `quiver` (accepted by config, not implemented by the runtime yet)
+- `quiver` (reserved in the schema and rejected by the current runtime)
 
 Unsupported backend or policy combinations are rejected during startup topic
 declaration with explicit errors.
@@ -503,8 +637,10 @@ Terminology:
 Node behavior:
 
 - Receivers and processors emit data through output ports.
-- They always have a default output port named `default`.
-- They can explicitly declare additional named output ports with `outputs`.
+- Connections without an explicit selector use an output port named `default`.
+- Nodes can explicitly declare named output ports with `outputs`.
+- If a node declares `outputs`, each selected source port must be listed there;
+  this includes `default` when a connection omits a selector.
 - Exporters are sinks and do not expose output ports.
 
 ## Multi-Output Example
@@ -590,66 +726,24 @@ Config loading validates:
 
 ## Core Node Catalog
 
-Core nodes are provided by the `otap-df-core-nodes` crate. Use the `type`
-shortcut shown below in YAML, or the full `urn:otel:<kind>:<id>` form.
+Core nodes are provided by the `otap-df-core-nodes` crate. Use the shortcut
+form in YAML, such as `receiver:otlp`, or the full `urn:otel:<kind>:<id>` form.
 
-The detailed README for each node lives beside its implementation so node
-configuration docs stay close to the code that parses and validates them.
-Unless a node README documents a stronger guarantee, the node stability level is
-`experimental`.
+The authoritative catalog is
+[crates/core-nodes/README.md](../crates/core-nodes/README.md). Each catalog row
+links to a README beside the node implementation with node-specific
+configuration, examples, telemetry, limits, and stability.
 
-### Core Exporters
+## Relationship to the OpenTelemetry Collector
 
-<!-- markdownlint-disable MD013 -->
-| Type | Full URN | Description | Details |
-| --- | --- | --- | --- |
-| `exporter:console` | `urn:otel:exporter:console` | Prints logs, metrics, and traces in a hierarchical console format. | [`console_exporter`](../crates/core-nodes/src/exporters/console_exporter/README.md) |
-| `exporter:error` | `urn:otel:exporter:error` | NACKs every received message with a configured error message. | [`error_exporter`](../crates/core-nodes/src/exporters/error_exporter/README.md) |
-| `exporter:noop` | `urn:otel:exporter:noop` | ACKs every received message without external output. | [`noop_exporter`](../crates/core-nodes/src/exporters/noop_exporter/README.md) |
-| `exporter:otap` | `urn:otel:exporter:otap` | Exports OTAP Arrow streams over gRPC. | [`otap_exporter`](../crates/core-nodes/src/exporters/otap_exporter/README.md) |
-| `exporter:otlp_grpc` | `urn:otel:exporter:otlp_grpc` | Exports OTLP logs, metrics, and traces over unary gRPC. | [`otlp_grpc_exporter`](../crates/core-nodes/src/exporters/otlp_grpc_exporter/README.md) |
-| `exporter:otlp_http` | `urn:otel:exporter:otlp_http` | Exports OTLP logs, metrics, and traces over OTLP/HTTP. | [`otlp_http_exporter`](../crates/core-nodes/src/exporters/otlp_http_exporter/README.md) |
-| `exporter:parquet` | `urn:otel:exporter:parquet` | Writes OTAP batches into partitioned Parquet files. | [`parquet_exporter`](../crates/core-nodes/src/exporters/parquet_exporter/README.md) |
-| `exporter:perf` | `urn:otel:exporter:perf` | Reports throughput and host/process usage for benchmark runs. | [`perf_exporter`](../crates/core-nodes/src/exporters/perf_exporter/README.md) |
-| `exporter:topic` | `urn:otel:exporter:topic` | Publishes pdata into a configured in-process topic. | [`topic_exporter`](../crates/core-nodes/src/exporters/topic_exporter/README.md) |
-<!-- markdownlint-enable MD013 -->
+OpenTelemetry Collector compatibility is an important goal, but YAML shape
+compatibility is not the goal of this model. The engine uses OTel concepts and
+protocols, and many components have Collector analogs, but the runtime has a
+different execution model: explicit DAGs, bounded channels, per-core pipeline
+instances, explicit Ack/Nack paths, and topics for cross-pipeline decoupling.
 
-### Core Processors
-
-<!-- markdownlint-disable MD013 -->
-| Type | Full URN | Description | Details |
-| --- | --- | --- | --- |
-| `processor:attribute` | `urn:otel:processor:attribute` | Adds, updates, renames, deletes, or hashes OpenTelemetry attributes. | [`attributes_processor`](../crates/core-nodes/src/processors/attributes_processor/README.md) |
-| `processor:batch` | `urn:otel:processor:batch` | Batches OTAP and OTLP payloads by size and time. | [`batch_processor`](../crates/core-nodes/src/processors/batch_processor/README.md) |
-| `processor:content_router` | `urn:otel:processor:content_router` | Routes telemetry by resource attribute value. | [`content_router`](../crates/core-nodes/src/processors/content_router/README.md) |
-| `processor:debug` | `urn:otel:processor:debug` | Emits configurable debug views of pdata passing through a pipeline. | [`debug_processor`](../crates/core-nodes/src/processors/debug_processor/README.md) |
-| `processor:delay` | `urn:otel:processor:delay` | Adds an artificial delay before forwarding each message. | [`delay_processor`](../crates/core-nodes/src/processors/delay_processor/README.md) |
-| `processor:durable_buffer` | `urn:otel:processor:durable_buffer` | Persists pdata to durable storage before forwarding downstream. | [`durable_buffer_processor`](../crates/core-nodes/src/processors/durable_buffer_processor/README.md) |
-| `processor:fanout` | `urn:otel:processor:fanout` | Clones input to multiple output destinations with ack policies. | [`fanout_processor`](../crates/core-nodes/src/processors/fanout_processor/README.md) |
-| `processor:filter` | `urn:otel:processor:filter` | Drops logs or traces that match configured filter rules. | [`filter_processor`](../crates/core-nodes/src/processors/filter_processor/README.md) |
-| `processor:log_sampling` | `urn:otel:processor:log_sampling` | Samples logs using ratio or rate-limited policies. | [`log_sampling_processor`](../crates/core-nodes/src/processors/log_sampling_processor/README.md) |
-| `processor:retry` | `urn:otel:processor:retry` | Retries downstream NACKs with exponential backoff. | [`retry_processor`](../crates/core-nodes/src/processors/retry_processor/README.md) |
-| `processor:type_router` | `urn:otel:processor:type_router` | Routes logs, metrics, and traces to signal-specific outputs. | [`signal_type_router`](../crates/core-nodes/src/processors/signal_type_router/README.md) |
-| `processor:temporal_reaggregation` | `urn:otel:processor:temporal_reaggregation` | Reaggregates metric streams into lower-frequency output. | [`temporal_reaggregation_processor`](../crates/core-nodes/src/processors/temporal_reaggregation_processor/README.md) |
-| `processor:transform` | `urn:otel:processor:transform` | Applies KQL, OPL, or OTTL transformations to OTAP batches. | [`transform_processor`](../crates/core-nodes/src/processors/transform_processor/README.md) |
-<!-- markdownlint-enable MD013 -->
-
-### Core Receivers
-
-<!-- markdownlint-disable MD013 -->
-| Type | Full URN | Description | Details |
-| --- | --- | --- | --- |
-| `receiver:host_metrics` | `urn:otel:receiver:host_metrics` | Scrapes Linux host metrics from procfs and sysfs. | [`host_metrics_receiver`](../crates/core-nodes/src/receivers/host_metrics_receiver/README.md) |
-| `receiver:internal_telemetry` | `urn:otel:receiver:internal_telemetry` | Turns internal engine telemetry log events into pdata. | [`internal_telemetry_receiver`](../crates/core-nodes/src/receivers/internal_telemetry_receiver/README.md) |
-| `receiver:journald` | `urn:otel:receiver:journald` | Ingests local Linux systemd-journald entries. | [`journald_receiver`](../crates/core-nodes/src/receivers/journald_receiver/README.md) |
-| `receiver:otap` | `urn:otel:receiver:otap` | Receives OTAP Arrow streams over gRPC. | [`otap_receiver`](../crates/core-nodes/src/receivers/otap_receiver/README.md) |
-| `receiver:otlp` | `urn:otel:receiver:otlp` | Receives OTLP/gRPC, OTLP/HTTP, or both. | [`otlp_receiver`](../crates/core-nodes/src/receivers/otlp_receiver/README.md) |
-| `receiver:syslog_cef` | `urn:otel:receiver:syslog_cef` | Receives syslog and CEF records over TCP or UDP. | [`syslog_cef_receiver`](../crates/core-nodes/src/receivers/syslog_cef_receiver/README.md) |
-| `receiver:topic` | `urn:otel:receiver:topic` | Subscribes to a configured in-process topic. | [`topic_receiver`](../crates/core-nodes/src/receivers/topic_receiver/README.md) |
-| `receiver:traffic_generator` | `urn:otel:receiver:traffic_generator` | Generates synthetic or semantic-convention traffic for tests and benchmarks. Feature-gated by `dev-tools`. | [`traffic_generator`](../crates/core-nodes/src/receivers/traffic_generator/README.md) |
-<!-- markdownlint-enable MD013 -->
-
-## Go Collector Users: Mapping and Differences
+The configuration model therefore preserves familiar concepts while making
+runtime topology and resource behavior more explicit.
 
 ### Conceptual Mapping
 
@@ -660,7 +754,7 @@ Unless a node README documents a stronger guarantee, the node stability level is
 - Collector branch routing patterns -> node `outputs` +
   `from: node["output_port_name"]`
 
-### Key Differences vs Go Collector Config
+### Key Differences from Collector YAML
 
 - Wiring is explicit in a DAG, not implicit from ordered arrays.
 - A single pipeline can express richer fan-in/fan-out relationships directly.
@@ -668,10 +762,14 @@ Unless a node README documents a stronger guarantee, the node stability level is
   etc.).
 - Complex topologies (branching, routing, fallback patterns) are modeled through
   graph shape and node semantics.
+- Topics are explicit cross-pipeline transports, not implicit component reuse.
+- Policy precedence is resolved by engine scope and policy family, not by
+  Collector component merge conventions.
+- Strict parsing rejects unknown fields and invalid topology early.
 
-## Design Rationale
+## Rationale Summary
 
-The design goals behind this model are:
+The core rationale is:
 
 - Make topology explicit.
 - Avoid implicit behaviors that hide fan-in/fan-out semantics.

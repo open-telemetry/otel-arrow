@@ -302,9 +302,10 @@ Here, the configuration model for the OTAP Dataflow engine defines the
 structs and conventions used to configure as well as observe the
 pipeline, the engine, and the pipeline components.
 
-For runtime YAML authoring, start with the canonical
-[configuration model](./docs/configuration-model.md). It links to the core-node
-catalog, per-node configuration docs, examples, and policy references.
+For runtime YAML authoring, start with
+[Configuration](./docs/configuration.md). Use the
+[configuration model reference](./docs/configuration-model.md) when you need
+exact field semantics, defaults, precedence rules, and validation behavior.
 
 A number of example configurations are listed in
 [`./configs`](./configs). These are deserialized into the

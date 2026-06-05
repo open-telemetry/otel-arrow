@@ -3,9 +3,12 @@
 This directory contains example engine configurations for the OTAP dataflow engine.
 Each file uses `version: otel_dataflow/v1` at the root.
 
+If you are learning how to write these files, start with
+[Configuration](../docs/configuration.md).
+
 Note: These configurations are based on the native OTAP dataflow engine
-configuration model, which is a superset of the Go Collector configuration
-model. Support for the Go Collector YAML format is planned for the future.
+configuration model, which is intentionally distinct from the Go Collector
+YAML model. Support for the Go Collector YAML format is planned for the future.
 
 ## Available Configurations
 

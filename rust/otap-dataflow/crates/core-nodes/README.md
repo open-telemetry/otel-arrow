@@ -4,7 +4,9 @@ This crate contains the built-in OTAP Dataflow Engine receivers, processors,
 and exporters. These nodes are registered into the OTAP pipeline factory maps
 when the crate is linked by the engine binary.
 
-For the full runtime configuration model, start at
+For help writing runtime YAML, start at
+[`docs/configuration.md`](../../docs/configuration.md). For exact runtime
+configuration semantics, see
 [`docs/configuration-model.md`](../../docs/configuration-model.md). For the
 canonical node URN format, see [`docs/urns.md`](../../docs/urns.md).
 

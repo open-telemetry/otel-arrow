@@ -158,11 +158,12 @@ compile_error!(
         "EXAMPLES:\n",
         "  ", env!("CARGO_BIN_NAME"), " --config file:/etc/config.yaml\n",
         "  ", env!("CARGO_BIN_NAME"), " --config env:MY_CONFIG_VAR\n",
+        "  ", env!("CARGO_BIN_NAME"), " --config http://127.0.0.1:9000/config.yaml\n",
         "  ", env!("CARGO_BIN_NAME"), " --config /path/to/config.yaml\n",
     )
 )]
 struct Args {
-    /// Configuration URI (file:/path, env:VAR, or bare path). If omitted, config.yaml in the current directory is tried.
+    /// Configuration URI (file:/path, env:VAR, yaml:..., http://..., or bare path). If omitted, config.yaml in the current directory is tried.
     #[arg(short = 'c', long, value_name = "URI")]
     config: Option<String>,
 
