@@ -51,11 +51,9 @@ pub enum StartupCheck {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct GrpcClientSettings {
-    /// The gRPC endpoint to connect to.
+    /// The gRPC endpoint to connect to (e.g. `"http://localhost:4317"`).
     ///
-    /// Must be a well-formed URI with an `http://` or `https://` scheme.
-    /// Invalid syntax is rejected at deserialization time so that
-    /// `--validate-and-exit` catches endpoint typos.
+    /// If no scheme is provided, `http://` is assumed.
     #[serde(deserialize_with = "deserialize_grpc_endpoint")]
     pub grpc_endpoint: String,
 
@@ -181,8 +179,11 @@ pub enum GrpcEndpointError {
     },
 }
 
-/// Validates that a gRPC endpoint string is a well-formed URI with an
-/// `http` or `https` scheme.  Pure syntax check — no I/O.
+/// Validates that a gRPC endpoint string is a well-formed URI.
+///
+/// When no scheme is present the endpoint is validated as if `http://` were
+/// prepended (matching the Go collector's default behavior).  Explicitly
+/// unsupported schemes (anything other than `http` / `https`) are rejected.
 ///
 /// This is the single source of truth for endpoint validation, shared by
 /// both the serde `deserialize_with` hook (for config-time validation) and
@@ -195,26 +196,33 @@ fn validate_grpc_endpoint(endpoint: &str) -> Result<(), String> {
         );
     }
 
-    // Endpoint::from_shared performs full URI parsing synchronously.
-    let _ = Endpoint::from_shared(trimmed.to_string())
-        .map_err(|e| format!("invalid grpc_endpoint \"{trimmed}\": {e}"))?;
-
-    // Verify the scheme is http or https (gRPC transport requirement).
+    // If no scheme is present, prepend http:// for validation purposes
+    // (the stored value is not modified).
     let uri: http::Uri = trimmed
         .parse()
-        .map_err(|e: http::uri::InvalidUri| format!("invalid grpc_endpoint URI \"{trimmed}\": {e}"))?;
+        .map_err(|e: http::uri::InvalidUri| format!("invalid grpc_endpoint \"{trimmed}\": {e}"))?;
 
-    match uri.scheme_str() {
-        Some("http" | "https") => Ok(()),
-        Some(scheme) => Err(format!(
-            "unsupported scheme \"{scheme}\" in grpc_endpoint \"{trimmed}\"; \
-             expected \"http\" or \"https\""
-        )),
-        None => Err(format!(
-            "missing scheme in grpc_endpoint \"{trimmed}\"; \
-             expected \"http://\" or \"https://\" prefix"
-        )),
+    let effective = if uri.scheme().is_none() {
+        format!("http://{trimmed}")
+    } else {
+        trimmed.to_string()
+    };
+
+    // Endpoint::from_shared performs full URI + transport validation.
+    let _ = Endpoint::from_shared(effective.clone())
+        .map_err(|e| format!("invalid grpc_endpoint \"{trimmed}\": {e}"))?;
+
+    // Reject explicitly unsupported schemes.
+    if let Some(scheme) = uri.scheme_str() {
+        if scheme != "http" && scheme != "https" {
+            return Err(format!(
+                "unsupported scheme \"{scheme}\" in grpc_endpoint \"{trimmed}\"; \
+                 expected \"http\" or \"https\""
+            ));
+        }
     }
+
+    Ok(())
 }
 
 impl GrpcClientSettings {
@@ -1133,17 +1141,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_missing_scheme() {
+    fn validate_accepts_endpoint_without_scheme() {
         let settings = GrpcClientSettings {
             grpc_endpoint: "localhost:4317".to_string(),
             ..GrpcClientSettings::default()
         };
-        let err = settings.validate().unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("missing scheme") || msg.contains("failed to parse"),
-            "expected scheme error, got: {msg}"
-        );
+        settings.validate().unwrap();
     }
 
     #[test]

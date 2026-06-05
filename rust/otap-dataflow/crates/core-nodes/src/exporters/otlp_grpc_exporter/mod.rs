@@ -1807,16 +1807,11 @@ mod tests {
     }
 
     #[test]
-    fn validate_config_rejects_missing_scheme() {
-        let err = validate(&serde_json::json!({
+    fn validate_config_accepts_endpoint_without_scheme() {
+        validate(&serde_json::json!({
             "grpc_endpoint": "localhost:4317"
         }))
-        .unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("invalid grpc_endpoint") || msg.contains("scheme"),
-            "expected endpoint validation error, got: {msg}"
-        );
+        .expect("endpoint without scheme should default to http");
     }
 
     #[test]

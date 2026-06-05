@@ -1418,7 +1418,7 @@ mod tests {
     #[test]
     fn test_double_compression_enabled_by_default() {
         let json_config = json!({
-            "grpc_endpoint": "http://localhost:4317"
+            "grpc_endpoint": "localhost:4317"
         });
         // Create a proper pipeline context for the test
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
@@ -1449,7 +1449,7 @@ mod tests {
     #[test]
     fn test_can_manually_disable_compression_via_config() {
         let json_config = json!({
-            "grpc_endpoint": "http://localhost:4317",
+            "grpc_endpoint": "localhost:4317",
             "compression_method": "none",
             "arrow": {
                 "payload_compression": "none"
@@ -2426,16 +2426,11 @@ mod tests {
     }
 
     #[test]
-    fn validate_config_rejects_missing_scheme() {
-        let err = validate(&json!({
+    fn validate_config_accepts_endpoint_without_scheme() {
+        validate(&json!({
             "grpc_endpoint": "localhost:4317"
         }))
-        .unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("invalid grpc_endpoint") || msg.contains("scheme"),
-            "expected endpoint validation error, got: {msg}"
-        );
+        .expect("endpoint without scheme should default to http");
     }
 
     #[test]
