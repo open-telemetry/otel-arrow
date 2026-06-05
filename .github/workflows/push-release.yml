@@ -145,10 +145,9 @@ jobs:
             echo ""
             echo "### Go Modules"
             echo ""
-            echo "This release includes the following Go modules:"
+            echo "This release includes the following Go module:"
             echo ""
             echo "- \`github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}\`"
-            echo "- \`github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}\`"
             echo ""
             echo "## What's Changed (Rust :crab:)"
             echo ""
@@ -180,7 +179,6 @@ jobs:
           ## Git Tags to Create
           - `v${{ inputs.version }}` - Main release tag
           - `go/v${{ inputs.version }}` - Go module tag
-          - `collector/cmd/otelarrowcol/v${{ inputs.version }}` - Collector module tag
           - `rust/otap-dataflow/v${{ inputs.version }}` - Rust workspace tag (git-tag only; no crates.io publish)
 
           ## GitHub Release
@@ -193,7 +191,6 @@ jobs:
           After release, the following modules will be available:
           ```bash
           go get github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}
-          go get github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}
           ```
 
           ## Release Notes Preview
@@ -224,7 +221,6 @@ jobs:
 
           # Create Go module tags
           git tag -a "go/v${{ inputs.version }}" -m "Release go/v${{ inputs.version }}"
-          git tag -a "collector/cmd/otelarrowcol/v${{ inputs.version }}" -m "Release collector/cmd/otelarrowcol/v${{ inputs.version }}"
 
           # Create Rust workspace tag (git-tag only; no crates.io publish yet)
           git tag -a "rust/otap-dataflow/v${{ inputs.version }}" -m "Release rust/otap-dataflow/v${{ inputs.version }}"
@@ -239,13 +235,11 @@ jobs:
           # Push all tags for this version
           git push origin "v${{ inputs.version }}"
           git push origin "go/v${{ inputs.version }}"
-          git push origin "collector/cmd/otelarrowcol/v${{ inputs.version }}"
           git push origin "rust/otap-dataflow/v${{ inputs.version }}"
 
           echo "Pushed tags:"
           echo "- v${{ inputs.version }}"
           echo "- go/v${{ inputs.version }}"
-          echo "- collector/cmd/otelarrowcol/v${{ inputs.version }}"
           echo "- rust/otap-dataflow/v${{ inputs.version }}"
 
       - name: Create GitHub release
@@ -286,10 +280,8 @@ jobs:
             echo "Git tags created:"
             echo "- v${{ inputs.version }}"
             echo "- go/v${{ inputs.version }}"
-            echo "- collector/cmd/otelarrowcol/v${{ inputs.version }}"
             echo "- rust/otap-dataflow/v${{ inputs.version }}"
             echo ""
             echo "Go modules are now available:"
             echo "- go get github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}"
-            echo "- go get github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}"
           fi
