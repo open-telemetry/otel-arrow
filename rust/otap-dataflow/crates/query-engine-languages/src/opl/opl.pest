@@ -1,6 +1,7 @@
 // Grammar for Observability Programming Language (OPL)
 
 WHITESPACE = _{ " " | NEWLINE | "\t" }
+COMMENT    = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!NEWLINE ~ ANY)*) }
 
 ident = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
 
@@ -15,7 +16,7 @@ single_quote_string_char = _{
   | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
 }
 
-string_literal = {
+string_literal = ${
     ("\"" ~ double_quote_string_char* ~ "\"")
   | ("'" ~ single_quote_string_char* ~ "'")
 }

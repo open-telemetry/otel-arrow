@@ -48,3 +48,8 @@ suites:
   - name: OTC OTLP Attr Insert
     slug: otc_logs_otlp_none_attr_insert_multi_batch
     short: OTC OTLP/Attr
+
+  # Fluent Bit OTLP (modify filter)
+  - name: FB OTLP Modify Insert
+    slug: fbit_logs_otlp_none_attr_insert_multi_batch
+    short: FB OTLP/Modify

@@ -1,0 +1,20 @@
+name: FB OTLP/HTTP Baseline (Logs, Gzip)
+slug: fbit_logs_otlphttp_gzip_baseline
+description: Fluent Bit baseline passthrough for OTLP/HTTP logs with gzip compression
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/fbit-single-core-multi-rate.yaml
+
+meta:
+  binary: fbit
+  protocols: [otlphttp]
+  signals: [logs]
+  compression: gzip
+
+variables:
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_logs.yaml
+  collector_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/fluent_bit/otlphttp-otlphttp.yaml.j2
+  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otlp-http.yaml.j2
+  backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/backend/otlp-http.yaml.j2
+  protocol: otlphttp
+  signal: logs
+  loadgen_max_batch_size: 1000
+  compression_method: gzip
