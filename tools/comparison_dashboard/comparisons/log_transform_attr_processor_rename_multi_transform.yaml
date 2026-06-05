@@ -57,3 +57,8 @@ suites:
   - name: OTC OTLP Transform Rename
     slug: otc_logs_otlp_none_transform_rename_multi_transform
     short: OTC OTLP/Transform
+
+  # Fluent Bit OTLP (modify filter)
+  - name: FB OTLP Modify Rename
+    slug: fbit_logs_otlp_none_attr_rename_multi_transform
+    short: FB OTLP/Modify
