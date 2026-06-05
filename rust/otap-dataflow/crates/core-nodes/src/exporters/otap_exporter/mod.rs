@@ -2365,6 +2365,4 @@ mod tests {
             .expect("server shutdown success");
     }
 
-    // --- Config validation tests ---
-
 }

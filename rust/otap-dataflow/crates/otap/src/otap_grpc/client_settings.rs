@@ -182,12 +182,8 @@ pub enum GrpcEndpointError {
 /// Validates that a gRPC endpoint string is a well-formed URI.
 ///
 /// When no scheme is present the endpoint is validated as if `http://` were
-/// prepended (matching the Go collector's default behavior).  Explicitly
-/// unsupported schemes (anything other than `http` / `https`) are rejected.
-///
-/// This is the single source of truth for endpoint validation, shared by
-/// both the serde `deserialize_with` hook (for config-time validation) and
-/// the public [`GrpcClientSettings::validate`] method.
+/// prepended.  Unsupported schemes (anything other than `http` / `https`)
+/// are rejected.
 fn validate_grpc_endpoint(endpoint: &str) -> Result<(), String> {
     let trimmed = endpoint.trim();
     if trimmed.is_empty() {
@@ -196,23 +192,21 @@ fn validate_grpc_endpoint(endpoint: &str) -> Result<(), String> {
         );
     }
 
-    // If no scheme is present, prepend http:// for validation purposes
-    // (the stored value is not modified).
     let uri: http::Uri = trimmed
         .parse()
         .map_err(|e: http::uri::InvalidUri| format!("invalid grpc_endpoint \"{trimmed}\": {e}"))?;
 
+    // If no scheme is present, prepend http:// for validation.
     let effective = if uri.scheme().is_none() {
         format!("http://{trimmed}")
     } else {
         trimmed.to_string()
     };
 
-    // Endpoint::from_shared performs full URI + transport validation.
     let _ = Endpoint::from_shared(effective.clone())
         .map_err(|e| format!("invalid grpc_endpoint \"{trimmed}\": {e}"))?;
 
-    // Reject explicitly unsupported schemes.
+    // Reject unsupported schemes.
     if let Some(scheme) = uri.scheme_str() {
         if scheme != "http" && scheme != "https" {
             return Err(format!(
@@ -226,26 +220,7 @@ fn validate_grpc_endpoint(endpoint: &str) -> Result<(), String> {
 }
 
 impl GrpcClientSettings {
-    /// Validates the `grpc_endpoint` syntax without performing any I/O.
-    ///
-    /// This checks that the endpoint string is a well-formed URI accepted by
-    /// tonic and uses a supported scheme (`http` or `https`).  It is safe to
-    /// call from synchronous code.
-    ///
-    /// Note: when `GrpcClientSettings` is deserialized via serde this
-    /// validation runs automatically (via `deserialize_with`), so calling
-    /// this explicitly is only necessary when the struct is built
-    /// programmatically.
-    pub fn validate(&self) -> Result<(), GrpcEndpointError> {
-        validate_grpc_endpoint(&self.grpc_endpoint)
-            .map_err(GrpcEndpointError::InvalidEndpoint)
-    }
-
     /// Performs the configured startup check, if any.
-    ///
-    /// This method is called during exporter startup, after config validation
-    /// but before the lazy gRPC channel is created. It provides opt-in
-    /// fail-fast behavior for misconfigured endpoints.
     ///
     /// # Errors
     ///
@@ -1071,104 +1046,58 @@ mod tests {
 
     #[test]
     fn validate_accepts_valid_http_endpoint() {
-        let settings = GrpcClientSettings {
-            grpc_endpoint: "http://localhost:4317".to_string(),
-            ..GrpcClientSettings::default()
-        };
-        settings.validate().unwrap();
+        validate_grpc_endpoint("http://localhost:4317").unwrap();
     }
 
     #[test]
     fn validate_accepts_valid_https_endpoint() {
-        let settings = GrpcClientSettings {
-            grpc_endpoint: "https://collector.example.com:4317".to_string(),
-            ..GrpcClientSettings::default()
-        };
-        settings.validate().unwrap();
+        validate_grpc_endpoint("https://collector.example.com:4317").unwrap();
     }
 
     #[test]
     fn validate_accepts_endpoint_with_path() {
-        let settings = GrpcClientSettings {
-            grpc_endpoint: "http://localhost:4317/v1/traces".to_string(),
-            ..GrpcClientSettings::default()
-        };
-        settings.validate().unwrap();
+        validate_grpc_endpoint("http://localhost:4317/v1/traces").unwrap();
     }
 
     #[test]
     fn validate_accepts_ipv4_endpoint() {
-        let settings = GrpcClientSettings {
-            grpc_endpoint: "http://192.168.1.1:4317".to_string(),
-            ..GrpcClientSettings::default()
-        };
-        settings.validate().unwrap();
+        validate_grpc_endpoint("http://192.168.1.1:4317").unwrap();
     }
 
     #[test]
     fn validate_accepts_ipv6_endpoint() {
-        let settings = GrpcClientSettings {
-            grpc_endpoint: "http://[::1]:4317".to_string(),
-            ..GrpcClientSettings::default()
-        };
-        settings.validate().unwrap();
+        validate_grpc_endpoint("http://[::1]:4317").unwrap();
     }
 
     #[test]
     fn validate_rejects_empty_endpoint() {
-        let settings = GrpcClientSettings {
-            grpc_endpoint: String::new(),
-            ..GrpcClientSettings::default()
-        };
-        let err = settings.validate().unwrap_err();
-        assert!(
-            err.to_string().contains("empty"),
-            "expected 'empty' in error, got: {err}"
-        );
+        let err = validate_grpc_endpoint("").unwrap_err();
+        assert!(err.contains("empty"), "expected 'empty' in error, got: {err}");
     }
 
     #[test]
     fn validate_rejects_whitespace_only_endpoint() {
-        let settings = GrpcClientSettings {
-            grpc_endpoint: "   ".to_string(),
-            ..GrpcClientSettings::default()
-        };
-        let err = settings.validate().unwrap_err();
-        assert!(
-            err.to_string().contains("empty"),
-            "expected 'empty' in error, got: {err}"
-        );
+        let err = validate_grpc_endpoint("   ").unwrap_err();
+        assert!(err.contains("empty"), "expected 'empty' in error, got: {err}");
     }
 
     #[test]
     fn validate_accepts_endpoint_without_scheme() {
-        let settings = GrpcClientSettings {
-            grpc_endpoint: "localhost:4317".to_string(),
-            ..GrpcClientSettings::default()
-        };
-        settings.validate().unwrap();
+        validate_grpc_endpoint("localhost:4317").unwrap();
     }
 
     #[test]
     fn validate_rejects_unsupported_scheme() {
-        let settings = GrpcClientSettings {
-            grpc_endpoint: "ftp://localhost:4317".to_string(),
-            ..GrpcClientSettings::default()
-        };
-        let err = settings.validate().unwrap_err();
+        let err = validate_grpc_endpoint("ftp://localhost:4317").unwrap_err();
         assert!(
-            err.to_string().contains("unsupported scheme"),
+            err.contains("unsupported scheme"),
             "expected 'unsupported scheme' in error, got: {err}"
         );
     }
 
     #[test]
     fn validate_rejects_invalid_uri() {
-        let settings = GrpcClientSettings {
-            grpc_endpoint: "not a valid url!!!".to_string(),
-            ..GrpcClientSettings::default()
-        };
-        assert!(settings.validate().is_err());
+        assert!(validate_grpc_endpoint("not a valid url!!!").is_err());
     }
 
     // --- StartupCheck deserialization tests ---
