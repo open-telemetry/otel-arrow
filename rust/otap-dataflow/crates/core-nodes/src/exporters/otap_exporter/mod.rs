@@ -151,6 +151,24 @@ impl ExportLatencyWindow {
     }
 }
 
+/// Validates the OTAP exporter configuration.
+///
+/// In addition to the standard deserialization check, this validates that
+/// `grpc_endpoint` is a well-formed URI with a supported scheme.
+fn validate_config(config: &Value) -> Result<(), otap_df_config::error::Error> {
+    let cfg: Config = serde_json::from_value(config.clone()).map_err(|e| {
+        otap_df_config::error::Error::InvalidUserConfig {
+            error: e.to_string(),
+        }
+    })?;
+    cfg.grpc
+        .validate()
+        .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+            error: e.to_string(),
+        })?;
+    Ok(())
+}
+
 /// Declares the OTAP exporter as a local exporter factory
 ///
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
@@ -172,7 +190,7 @@ pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    validate_config,
 };
 
 impl OTAPExporter {
@@ -374,6 +392,23 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         );
 
         let exporter_id = effect_handler.exporter_id();
+
+        // Run the optional startup check (dns resolution or eager connect)
+        // before creating the lazy channel used for normal runtime traffic.
+        self.config
+            .grpc
+            .run_startup_check()
+            .await
+            .map_err(|e| {
+                let source_detail = format_error_sources(&e);
+                Error::ExporterError {
+                    exporter: exporter_id.clone(),
+                    kind: ExporterErrorKind::Connect,
+                    error: format!("startup check failed: {e}"),
+                    source_detail,
+                }
+            })?;
+
         let channel = self
             .config
             .grpc
@@ -2346,5 +2381,86 @@ mod tests {
         tokio_rt
             .block_on(server_handle)
             .expect("server shutdown success");
+    }
+
+    // --- Config validation tests ---
+
+    #[test]
+    fn validate_config_accepts_valid_endpoint() {
+        let json_config = json!({
+            "grpc_endpoint": "http://localhost:4317"
+        });
+        super::validate_config(&json_config).expect("valid config should pass validation");
+    }
+
+    #[test]
+    fn validate_config_accepts_startup_check_dns() {
+        let json_config = json!({
+            "grpc_endpoint": "http://localhost:4317",
+            "startup_check": "dns"
+        });
+        super::validate_config(&json_config).expect("config with startup_check=dns should pass");
+    }
+
+    #[test]
+    fn validate_config_accepts_startup_check_connect() {
+        let json_config = json!({
+            "grpc_endpoint": "http://localhost:4317",
+            "startup_check": "connect"
+        });
+        super::validate_config(&json_config)
+            .expect("config with startup_check=connect should pass");
+    }
+
+    #[test]
+    fn validate_config_rejects_invalid_endpoint_syntax() {
+        let json_config = json!({
+            "grpc_endpoint": "not a valid url"
+        });
+        let err = super::validate_config(&json_config).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid grpc_endpoint"),
+            "expected endpoint validation error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_config_rejects_empty_endpoint() {
+        let json_config = json!({
+            "grpc_endpoint": ""
+        });
+        let err = super::validate_config(&json_config).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("empty"),
+            "expected 'empty' in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_config_rejects_missing_scheme() {
+        let json_config = json!({
+            "grpc_endpoint": "localhost:4317"
+        });
+        let err = super::validate_config(&json_config).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid grpc_endpoint") || msg.contains("scheme"),
+            "expected endpoint validation error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_config_rejects_unsupported_scheme() {
+        let json_config = json!({
+            "grpc_endpoint": "ftp://localhost:4317"
+        });
+        let err = super::validate_config(&json_config).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsupported scheme"),
+            "expected 'unsupported scheme' in error, got: {msg}"
+        );
     }
 }
