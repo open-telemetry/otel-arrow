@@ -352,7 +352,11 @@ async function execute(){
 
 runBtn.addEventListener("click", execute);
 document.addEventListener("keydown", function(e){
-  if((e.ctrlKey||e.metaKey) && e.key==="Enter"){ e.preventDefault(); execute(); }
+  if((e.ctrlKey||e.metaKey) && e.key==="Enter"){
+    if (runBtn.disabled) return;
+    e.preventDefault();
+    execute();
+  }
 });
 
 })();
