@@ -1737,7 +1737,10 @@ mod schema_tests {
                     }
                 }
             }
-            DataType::Timestamp(_, _) => {
+            DataType::Timestamp(unit, tz) => {
+                // The full value_type (including unit and tz) is forwarded to
+                // cast() below; binding them here documents intent.
+                let _ = (unit, tz);
                 let values = (start..end).map(|i| i as i64).collect::<Vec<_>>();
                 let values: ArrayRef = Arc::new(Int64Array::from(values));
                 cast(values.as_ref(), value_type).unwrap()
