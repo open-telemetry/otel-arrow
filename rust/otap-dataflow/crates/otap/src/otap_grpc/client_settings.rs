@@ -557,7 +557,7 @@ where
 {
     let endpoint = String::deserialize(deserializer)?;
     validate_grpc_endpoint(&endpoint).map_err(serde::de::Error::custom)?;
-    Ok(endpoint)
+    Ok(endpoint.trim().to_string())
 }
 
 #[cfg(test)]
