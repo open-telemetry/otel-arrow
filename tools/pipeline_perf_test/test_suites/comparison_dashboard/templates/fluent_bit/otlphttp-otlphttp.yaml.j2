@@ -1,0 +1,29 @@
+service:
+  flush: 1
+  log_level: info
+  http_server: on
+  http_listen: 0.0.0.0
+  http_port: 2020
+
+pipeline:
+  inputs:
+    - name: opentelemetry
+      listen: 0.0.0.0
+      port: 4318
+      threaded: off
+
+  outputs:
+    - name: opentelemetry
+      match: '*'
+      host: {{ backend_hostname }}
+      port: 1235
+      grpc: off
+      tls: off
+      logs_uri: /v1/logs
+      metrics_uri: /v1/metrics
+      traces_uri: /v1/traces
+      workers: 0
+      retry_limit: false
+{%- if compression_method and compression_method != "none" %}
+      compress: {{ compression_method }}
+{%- endif %}
