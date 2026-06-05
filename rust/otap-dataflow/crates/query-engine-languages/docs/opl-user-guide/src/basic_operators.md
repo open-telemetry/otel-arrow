@@ -164,7 +164,7 @@ For example, the following expressions are not allowed and will produce an
 error:
 
 ```text
-logs | set resource.schema_url = instrumentation_scope.schema_url
+logs | set resource.schema_url = schema_url // log schema URL
 
 logs | set resource.attributes["service.name"] = instrumentation_scope.attributes["service.name"]
 

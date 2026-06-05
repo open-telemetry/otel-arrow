@@ -127,7 +127,7 @@ Use `where` inside `apply` to keep or remove attributes based on their values:
 ```text
 // remove any attribute whose value matches a sensitive pattern
 logs | apply attributes {
-    where not(matches(value, ".*password.*"))
+    where not(matches(value, r".*password.*"))
 }
 ```
 
@@ -148,7 +148,7 @@ Multiple filters can be chained with `|` inside the `apply` block:
 ```text
 logs | apply attributes {
     where key != "http.method" |
-    where not(matches(key, "debug\\..*"))
+    where not(matches(key, r"debug\\..*"))
 }
 ```
 

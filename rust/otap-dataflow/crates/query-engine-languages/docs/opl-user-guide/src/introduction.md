@@ -76,7 +76,7 @@ This guide covers the currently implemented OPL operators and functions:
 - [Data Model & Types](./types.md) -- signal structure, field reference,
   value types, and literals
 - [Basic Operators](./basic_operators.md) -- filtering with `where` and
-  assigning values with `set`/`extend`
+  assigning values with `set`
 - [Attribute Operators](./attr_operators.md) -- renaming and removing
   attributes with `rename` and `remove`, and bulk-processing attributes
   with `apply`
