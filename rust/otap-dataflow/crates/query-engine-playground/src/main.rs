@@ -121,9 +121,12 @@ async fn main() {
     axum::serve(listener, app).await.expect("server error");
 }
 
-/// Serve the main HTML page.
-async fn serve_index() -> Html<&'static str> {
-    Html(INDEX_HTML)
+/// Serve the main HTML page with caching disabled for development.
+async fn serve_index() -> impl IntoResponse {
+    (
+        [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+        Html(INDEX_HTML),
+    )
 }
 
 /// Serve an embedded `.proto` file.
@@ -144,10 +147,16 @@ async fn serve_proto(Path(path): Path<String>) -> impl IntoResponse {
     match content {
         Some(body) => (
             StatusCode::OK,
-            [(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("text/plain; charset=utf-8"),
-            )],
+            [
+                (
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/plain; charset=utf-8"),
+                ),
+                (
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("no-store"),
+                ),
+            ],
             body,
         )
             .into_response(),
@@ -160,8 +169,9 @@ async fn serve_proto(Path(path): Path<String>) -> impl IntoResponse {
 /// Runs the pipeline on a blocking task because the query engine uses
 /// `Rc`-based internals that are not `Send`.
 async fn handle_execute(Json(req): Json<ExecuteRequest>) -> Json<ExecuteResponse> {
+    let handle = tokio::runtime::Handle::current();
     let result = tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current().block_on(execute_pipeline(req))
+        handle.block_on(execute_pipeline(req))
     })
     .await;
 
@@ -250,12 +260,12 @@ fn build_arrow_tables(result: &OtapArrowRecords) -> HashMap<String, String> {
     for payload_type in result.allowed_payload_types() {
         if let Some(batch) = result.get(*payload_type) {
             if batch.num_rows() > 0 {
-                if let Ok(formatted) = pretty_format_batches(std::slice::from_ref(batch)) {
-                    let _: Option<String> = tables.insert(
-                        payload_type.as_str_name().to_string(),
-                        formatted.to_string(),
-                    );
-                }
+                let text = match pretty_format_batches(std::slice::from_ref(batch)) {
+                    Ok(formatted) => formatted.to_string(),
+                    Err(e) => format!("(formatting error: {e})"),
+                };
+                let _: Option<String> =
+                    tables.insert(payload_type.as_str_name().to_string(), text);
             }
         }
     }
