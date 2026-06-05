@@ -1418,7 +1418,7 @@ mod tests {
     #[test]
     fn test_double_compression_enabled_by_default() {
         let json_config = json!({
-            "grpc_endpoint": "localhost:4317"
+            "grpc_endpoint": "http://localhost:4317"
         });
         // Create a proper pipeline context for the test
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
@@ -1449,7 +1449,7 @@ mod tests {
     #[test]
     fn test_can_manually_disable_compression_via_config() {
         let json_config = json!({
-            "grpc_endpoint": "localhost:4317",
+            "grpc_endpoint": "http://localhost:4317",
             "compression_method": "none",
             "arrow": {
                 "payload_compression": "none"
@@ -2370,7 +2370,7 @@ mod tests {
     // --- Config validation tests (endpoint syntax is validated at deserialization time) ---
 
     fn validate(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
-        otap_df_config::validation::validate_typed_config::<Config>(config)
+        otap_df_config::validation::validate_typed_config::<super::config::Config>(config)
     }
 
     #[test]

@@ -181,46 +181,56 @@ pub enum GrpcEndpointError {
     },
 }
 
+/// Validates that a gRPC endpoint string is a well-formed URI with an
+/// `http` or `https` scheme.  Pure syntax check — no I/O.
+///
+/// This is the single source of truth for endpoint validation, shared by
+/// both the serde `deserialize_with` hook (for config-time validation) and
+/// the public [`GrpcClientSettings::validate`] method.
+fn validate_grpc_endpoint(endpoint: &str) -> Result<(), String> {
+    let trimmed = endpoint.trim();
+    if trimmed.is_empty() {
+        return Err(
+            "grpc_endpoint is empty; expected a URI like \"http://host:port\"".to_string(),
+        );
+    }
+
+    // Endpoint::from_shared performs full URI parsing synchronously.
+    let _ = Endpoint::from_shared(trimmed.to_string())
+        .map_err(|e| format!("invalid grpc_endpoint \"{trimmed}\": {e}"))?;
+
+    // Verify the scheme is http or https (gRPC transport requirement).
+    let uri: http::Uri = trimmed
+        .parse()
+        .map_err(|e: http::uri::InvalidUri| format!("invalid grpc_endpoint URI \"{trimmed}\": {e}"))?;
+
+    match uri.scheme_str() {
+        Some("http" | "https") => Ok(()),
+        Some(scheme) => Err(format!(
+            "unsupported scheme \"{scheme}\" in grpc_endpoint \"{trimmed}\"; \
+             expected \"http\" or \"https\""
+        )),
+        None => Err(format!(
+            "missing scheme in grpc_endpoint \"{trimmed}\"; \
+             expected \"http://\" or \"https://\" prefix"
+        )),
+    }
+}
+
 impl GrpcClientSettings {
     /// Validates the `grpc_endpoint` syntax without performing any I/O.
     ///
     /// This checks that the endpoint string is a well-formed URI accepted by
     /// tonic and uses a supported scheme (`http` or `https`).  It is safe to
-    /// call from synchronous code and is intended for use during static
-    /// config validation (e.g. `--validate-and-exit`).
+    /// call from synchronous code.
+    ///
+    /// Note: when `GrpcClientSettings` is deserialized via serde this
+    /// validation runs automatically (via `deserialize_with`), so calling
+    /// this explicitly is only necessary when the struct is built
+    /// programmatically.
     pub fn validate(&self) -> Result<(), GrpcEndpointError> {
-        let endpoint = self.grpc_endpoint.trim();
-        if endpoint.is_empty() {
-            return Err(GrpcEndpointError::InvalidEndpoint(
-                "grpc_endpoint is empty".to_string(),
-            ));
-        }
-
-        // Endpoint::from_shared performs full URI parsing synchronously.
-        let _ = Endpoint::from_shared(endpoint.to_string()).map_err(|e| {
-            GrpcEndpointError::InvalidEndpoint(format!("failed to parse \"{endpoint}\": {e}"))
-        })?;
-
-        // Verify the scheme is http or https (gRPC transport requirement).
-        let uri: http::Uri = endpoint.parse().map_err(|e: http::uri::InvalidUri| {
-            GrpcEndpointError::InvalidEndpoint(format!("invalid URI \"{endpoint}\": {e}"))
-        })?;
-
-        match uri.scheme_str() {
-            Some("http" | "https") => {}
-            Some(scheme) => {
-                return Err(GrpcEndpointError::InvalidEndpoint(format!(
-                    "unsupported scheme \"{scheme}\" in \"{endpoint}\"; expected \"http\" or \"https\""
-                )));
-            }
-            None => {
-                return Err(GrpcEndpointError::InvalidEndpoint(format!(
-                    "missing scheme in \"{endpoint}\"; expected \"http://\" or \"https://\" prefix"
-                )));
-            }
-        }
-
-        Ok(())
+        validate_grpc_endpoint(&self.grpc_endpoint)
+            .map_err(GrpcEndpointError::InvalidEndpoint)
     }
 
     /// Performs the configured startup check, if any.
@@ -573,44 +583,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let endpoint = String::deserialize(deserializer)?;
-    let trimmed = endpoint.trim();
-
-    if trimmed.is_empty() {
-        return Err(serde::de::Error::custom(
-            "grpc_endpoint is empty; expected a URI like \"http://host:port\"",
-        ));
-    }
-
-    // Endpoint::from_shared performs full URI parsing (synchronously).
-    Endpoint::from_shared(trimmed.to_string()).map_err(|e| {
-        serde::de::Error::custom(format!(
-            "invalid grpc_endpoint \"{trimmed}\": {e}"
-        ))
-    })?;
-
-    // Verify the scheme is http or https (gRPC transport requirement).
-    let uri: http::Uri = trimmed.parse().map_err(|e: http::uri::InvalidUri| {
-        serde::de::Error::custom(format!(
-            "invalid grpc_endpoint URI \"{trimmed}\": {e}"
-        ))
-    })?;
-
-    match uri.scheme_str() {
-        Some("http" | "https") => {}
-        Some(scheme) => {
-            return Err(serde::de::Error::custom(format!(
-                "unsupported scheme \"{scheme}\" in grpc_endpoint \"{trimmed}\"; \
-                 expected \"http\" or \"https\""
-            )));
-        }
-        None => {
-            return Err(serde::de::Error::custom(format!(
-                "missing scheme in grpc_endpoint \"{trimmed}\"; \
-                 expected \"http://\" or \"https://\" prefix"
-            )));
-        }
-    }
-
+    validate_grpc_endpoint(&endpoint).map_err(serde::de::Error::custom)?;
     Ok(endpoint)
 }
 
