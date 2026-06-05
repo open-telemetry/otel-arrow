@@ -161,7 +161,7 @@ OPL supports renaming multiple keys in a single invocation:
 
 ```text
 logs |
-rename attributes 
+rename attributes
     "http.method" as "http.request.method",
     "http.target" as "url.path"
 ```

@@ -63,7 +63,7 @@ Multiple renames targeting the same destination key:
 ```text
 // error: two different sources both rename to the same destination
 logs |
-rename attributes 
+rename attributes
     "http.method" as "http.request.method",
     "method" as "http.request.method"
 ```
