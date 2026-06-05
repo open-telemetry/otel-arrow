@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780628319595,
+  "lastUpdate": 1780685374796,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2508,6 +2508,82 @@ window.BENCHMARK_DATA = {
             "value": 40.18,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=40.3 MiB, error=0.2%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Tom Tan",
+            "username": "ThomsonTan",
+            "email": "Tom.Tan@microsoft.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "082af67b453a42301bdb6f62fd00b1640b641d40",
+          "message": "fix(otap): Transform processor config error on leading whitespace (#3219)\n\n# Change Summary\n\nIn `SignalScope::try_from`\n(`rust/otap-dataflow/crates/core-nodes/src/processors/transform_processor/mod.rs`),\nthe query slice is now trimmed of leading whitespace before the keyword\nchecks.\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Closes #3209 \n\n## How are these changes tested?\n\nAdded test and passed locally.\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry, OR this PR is a `chore`\n(indicated in title).",
+          "timestamp": "2026-06-05T16:49:35Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/082af67b453a42301bdb6f62fd00b1640b641d40"
+        },
+        "date": 1780685374025,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 15.16,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.79,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.995,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 14.86,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=15.9 MiB, error=7.3%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 17.05,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=16.7 MiB, error=1.8%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 18.34,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.3 MiB, error=0.2%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 22,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=21.5 MiB, error=2.4%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 28.44,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=27.8 MiB, error=2.3%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 39.95,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=40.4 MiB, error=1.1%"
           }
         ]
       }
