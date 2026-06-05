@@ -15,7 +15,7 @@ the source key is on the right.
 
 ```text
 // rename "http.method" to the newer semantic convention "http.request.method"
-logs | rename attributes["http.request.method"] = attributes["http.method"]
+logs | rename attributes "http.method" as "http.request.method"
 ```
 
 Only records that have the source key are affected. If a record does not
@@ -29,29 +29,21 @@ Resource and instrumentation scope attributes can be renamed using their
 qualified paths:
 
 ```text
-logs | rename resource.attributes["service.namespace"] = resource.attributes["svc.namespace"]
+logs | rename resource.attributes "svc.namespace" as "service.namespace"
 ```
 
 ```text
-logs |
-rename
-    instrumentation_scope.attributes["otel.scope.name"] =
-        instrumentation_scope.attributes["scope.name"]
+logs | rename instrumentation_scope.attributes "scope.name" as "otel.scope.name"
 ```
 
 ### Multiple renames
 
 Multiple renames can be performed in a single operator invocation by separating
-each assignment with a comma. Renames can span different attribute scopes:
+each assignment with a comma:
 
 ```text
 logs |
-rename
-    attributes["http.request.method"] = attributes["http.method"],
-    attributes["url.path"] = attributes["http.target"],
-    resource.attributes["service.namespace"] = resource.attributes["svc.namespace"],
-    instrumentation_scope.attributes["otel.scope.name"] =
-        instrumentation_scope.attributes["scope.name"]
+rename attributes "http.method" as "http.request.method", "http.target" as "url.path"
 ```
 
 ### Errors
@@ -63,7 +55,7 @@ Renaming an attribute to its own key (a no-op rename):
 
 ```text
 // error: source and destination keys are the same
-logs | rename attributes["http.method"] = attributes["http.method"]
+logs | rename "http.method" as "http.method"
 ```
 
 Multiple renames targeting the same destination key:
@@ -71,9 +63,9 @@ Multiple renames targeting the same destination key:
 ```text
 // error: two different sources both rename to the same destination
 logs |
-rename
-    attributes["http.request.method"] = attributes["http.method"],
-    attributes["http.request.method"] = attributes["method"]
+rename attributes 
+    "http.method" as "http.request.method",
+    "method" as "http.request.method"
 ```
 
 ## Remove Attributes (`remove`)

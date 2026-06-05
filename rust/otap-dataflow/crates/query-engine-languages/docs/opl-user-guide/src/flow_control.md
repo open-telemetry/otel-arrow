@@ -21,7 +21,7 @@ together.
 ```text
 // rename an attribute only for logs with ERROR severity
 logs | if (severity_text == "ERROR") {
-    rename attributes["http.request.method"] = attributes["http.method"]
+    rename attributes "http.method as "http.request.method"
 }
 ```
 
@@ -70,7 +70,7 @@ top-level pipeline. This includes `where`, `set`, `rename`, `remove`,
 ```text
 logs |
 if (severity_text == "ERROR") {
-    rename attributes["http.request.method"] = attributes["http.method"] |
+    rename attributes "http.method"  as "http.request.method" |
     set attributes["error.flagged"] = true
 } else {
     remove attributes["debug.detail"]

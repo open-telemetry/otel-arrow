@@ -154,16 +154,16 @@ rename_key(attributes, "http.method", "http.request.method")
 OPL:
 
 ```text
-logs | rename attributes["http.request.method"] = attributes["http.method"]
+logs | rename attributes "http.method" as "http.request.method"
 ```
 
 OPL supports renaming multiple keys in a single invocation:
 
 ```text
 logs |
-rename
-    attributes["http.request.method"] = attributes["http.method"],
-    attributes["url.path"] = attributes["http.target"]
+rename attributes 
+    "http.method" as "http.request.method",
+    "http.target" as "url.path"
 ```
 
 ## Value Transformation Functions
