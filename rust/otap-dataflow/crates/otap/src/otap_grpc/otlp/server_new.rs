@@ -43,6 +43,7 @@ use tonic::Status;
 use tonic::body::Body;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EnabledCompressionEncodings, EncodeBuf, Encoder};
 use tonic::server::{Grpc, NamedService, UnaryService};
+use tonic::transport::server::{TcpConnectInfo, TlsConnectInfo};
 
 /// Tracks outstanding request subscriptions for a single signal so ACK/NACK responses can be routed
 /// back to the waiting caller. When `wait_for_result` is disabled the receiver skips creating this
@@ -366,7 +367,22 @@ impl UnaryService<OtapPdata> for OtapBatchService {
     type Future = BoxFuture<'static, Result<tonic::Response<Self::Response>, Status>>;
 
     fn call(&mut self, request: tonic::Request<OtapPdata>) -> Self::Future {
-        let (metadata, _extensions, mut otap_batch) = request.into_parts();
+        let (metadata, extensions, mut otap_batch) = request.into_parts();
+
+        // Propagate the receiver-observed peer address so downstream processors
+        // (e.g. k8sattributes) can correlate telemetry with the originating
+        // socket. TLS connections wrap `TcpConnectInfo` inside `TlsConnectInfo`.
+        if let Some(addr) = extensions
+            .get::<TcpConnectInfo>()
+            .and_then(|info| info.remote_addr())
+            .or_else(|| {
+                extensions
+                    .get::<TlsConnectInfo<TcpConnectInfo>>()
+                    .and_then(|info| info.get_ref().remote_addr())
+            })
+        {
+            otap_batch.set_peer_addr(addr);
+        }
 
         let effect_handler = self
             .effect_handler
