@@ -332,6 +332,27 @@ impl Context {
         self.peer_addr = Some(addr);
     }
 
+    /// Merge peer addresses from a set of contributing inputs.
+    ///
+    /// Returns `Some(addr)` only when every contributing input observed the
+    /// same peer address. Returns `None` if any input was peerless or if
+    /// distinct peers contributed — merging processors must use this to
+    /// avoid attributing a multi-peer output to one arbitrary contributor.
+    #[must_use]
+    pub fn merge_peer_addr<I>(inputs: I) -> Option<SocketAddr>
+    where
+        I: IntoIterator<Item = Option<SocketAddr>>,
+    {
+        let mut iter = inputs.into_iter();
+        let first = iter.next()??;
+        for next in iter {
+            if next? != first {
+                return None;
+            }
+        }
+        Some(first)
+    }
+
     /// Get the source node for this context.
     #[must_use]
     pub fn source_node(&self) -> Option<usize> {
@@ -2368,5 +2389,28 @@ mod test {
             Some(addr),
             "peer_addr must survive transport-boundary clone"
         );
+    }
+
+    #[test]
+    fn merge_peer_addr_rules() {
+        let a: SocketAddr = "10.0.0.1:1".parse().unwrap();
+        let b: SocketAddr = "10.0.0.2:2".parse().unwrap();
+
+        // Empty input → None.
+        assert_eq!(Context::merge_peer_addr(std::iter::empty()), None);
+
+        // Single Some → that address.
+        assert_eq!(Context::merge_peer_addr([Some(a)]), Some(a));
+
+        // All identical → that address.
+        assert_eq!(Context::merge_peer_addr([Some(a), Some(a), Some(a)]), Some(a));
+
+        // Any None → None.
+        assert_eq!(Context::merge_peer_addr([Some(a), None]), None);
+        assert_eq!(Context::merge_peer_addr([None, Some(a)]), None);
+        assert_eq!(Context::merge_peer_addr([None, None]), None);
+
+        // Distinct Somes → None (refuse to misattribute).
+        assert_eq!(Context::merge_peer_addr([Some(a), Some(b)]), None);
     }
 }
