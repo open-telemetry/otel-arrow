@@ -32,7 +32,7 @@ API for pipeline execution:
 
 ```text
 Browser                              Rust Backend
-──────                               ────────────
+-------                              ------------
 protobuf.load() <--------- GET /proto/  (serves embedded .proto files)
 
 User edits OTLP JSON --->
