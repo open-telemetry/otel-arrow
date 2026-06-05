@@ -1216,9 +1216,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_check_connect_succeeds() {
+        crate::crypto::ensure_crypto_provider();
+        let port = portpicker::pick_unused_port().expect("no free port");
+        // Bind a TCP listener so the eager connect attempt has something to connect to.
+        let _listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        let settings = GrpcClientSettings {
+            grpc_endpoint: format!("http://127.0.0.1:{port}"),
+            startup_check: StartupCheck::Connect,
+            connect_timeout: Duration::from_secs(2),
+            ..GrpcClientSettings::default()
+        };
+        settings.run_startup_check().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn startup_check_connect_fails_connection_refused() {
         crate::crypto::ensure_crypto_provider();
-        // Pick a port that should have nothing listening on it.
         let port = portpicker::pick_unused_port().expect("no free port");
         let settings = GrpcClientSettings {
             grpc_endpoint: format!("http://127.0.0.1:{port}"),
@@ -1227,7 +1243,6 @@ mod tests {
             ..GrpcClientSettings::default()
         };
         let err = settings.run_startup_check().await.unwrap_err();
-        // connect_channel returns a Tonic transport error on connection refused.
         assert!(
             matches!(err, GrpcEndpointError::Tonic(_)),
             "expected Tonic transport error, got: {err}"
