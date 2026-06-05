@@ -13,10 +13,6 @@
     "docker:pinDigests",
     "helpers:pinGitHubActionDigestsToSemver"
   ],
-  "ignorePaths": [
-    // this directory has generated code, don't send updates to it
-    "collector/cmd/otelarrowcol/**"
-  ],
   // NOTE: Rule ordering matters here
   // Later rules will override earlier rules
   "packageRules": [

@@ -1,107 +1,72 @@
 # Building the components in this repository
 
-There are several options for building the components in this repository.  This
-is a Golang code base, so users familiar with building and installing Golang
-will find this easy to do using Golang tools.  Docker build instructions are
-also provided.
+The OpenTelemetry Protocol with Apache Arrow (OTAP) components -- the `otelarrow`
+receiver and exporter -- live in the [OpenTelemetry Collector Contrib
+repository][CONTRIB] and ship in the upstream **OpenTelemetry Collector Contrib
+distribution**. Rather than generating and checking in a bespoke collector in
+this repository, we test and evaluate the OTAP components using that
+distribution.
 
-The recommended practice for building the OpenTelemetry Collector uses a
-[`builder` tool][BUILDER].  The builder synthesizes a Golang `go.mod` file and
-main package with a specific set of components.  If you are trying to modify and
-build code in this repository, see [CONTRIBUTING.md][], otherwise the
-instructions here will help you simply build the code in order to try it out.
+If you are trying to modify and build the Go code in this repository, see
+[CONTRIBUTING.md][]; the instructions here help you simply run a collector that
+includes the OTAP components.
 
-## Building a collector from local sources using an installed Golang toolchain
+## Running a collector using the Collector Contrib distribution
 
-The `./cmd/otelarrowcol` directory contains a pre-generated collector build with
-a set of demonstration components detailed in
-[`./cmd/otelarrowcol/build-config.yaml`][BUILDCONFIG].
-
-Users who have a recent Golang toolchain installed and wish to build a collector
-for the host operating system can simply run `make otelarrowcol` at the top
-level of this repository.  The executable is placed in `./bin/otelarrowcol`.
-You will be able to run the [examples][EXAMPLES] using the resulting artifact.
+The simplest way to try the OTAP components is to run the upstream
+Collector Contrib image, which already bundles the `otelarrow` receiver and
+exporter alongside the OTLP components and the other accessories used by the
+[examples][EXAMPLES] (debug/file exporters, OTLP/JSON-file and syslog receivers,
+the filter processor, and the headerssetter/basicauth/pprof extensions):
 
 ```shell
-make otelarrowcol
-./bin/otelarrowcol_darwin_arm64 --config collector/examples/bridge/saas-collector.yaml
+docker run --rm -v "$(pwd):/config" -w /config \
+  otel/opentelemetry-collector-contrib:latest \
+  --config <path-to-config.yaml>
 ```
 
-You can also build and run directly from the directory containing the main file,
-e.g.,
+Pin a specific released version (recommended) by replacing `latest` with a
+version tag, e.g. `otel/opentelemetry-collector-contrib:0.153.0`.
 
-```shell
-go run ./collector/cmd/otelarrowcol --config collector/examples/bridge/edge-collector.yaml
-```
+## Building the `otelarrowcol` image from this repository
 
-Note that the `go.work` file in the top-level of this repository enables running
-`otelarrowcol` from the top-level directory.
-
-## Installing a collector using remote sources with an installed Golang toolchain
-
-The `go install` command can build and install a collector by downloading the
-sources to the latest release itself.
-
-```shell
-go install github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
-```
-
-This installs `otelarrowcol`, which can be run with, e.g.,
-
-```shell
-otelarrowcol --config <path-to-config.yaml>
-```
-
-## Building a collector from local sources using Docker
-
-Some vendors and platform providers offer pre-built OpenTelemetry collector
-"distros" including compoments they recommend for use.  When your vendor or
-platform provider adds support for OpenTelemetry Protocol with Apache Arrow, you
-may wish to use the artifacts provided by them.
-
-The top-level `Dockerfile` in this repository demonstrates how to build
-`otelarrowcol` as a container image, and it can easily be modified for
-integration into a custom build and release pipeline.
-
-With Docker installed, simply run:
+The top-level `Dockerfile` in this repository is a thin wrapper that pins a
+specific Collector Contrib distribution. It is used by the pipeline performance
+tests and to obtain a collector binary for the Rust validation tests. Build it
+with:
 
 ```shell
 make docker-otelarrowcol
 ```
 
-You will now be able to run the [examples][EXAMPLES] using the resulting
-`otelarrowcol` image.
+This produces an `otelarrowcol` image equivalent to the pinned upstream
+distribution. You can run the [examples][EXAMPLES] against it just like the
+upstream image:
 
-## Upgrading collector dependencies
+```shell
+docker run --rm -v "$(pwd):/config" -w /config otelarrowcol \
+  --config <path-to-config.yaml>
+```
 
-The collector's Go dependencies (OpenTelemetry Collector core and contrib
-modules) are managed through the `BUILDER_VERSION` variable in the top-level
-`Makefile`. To upgrade all collector dependencies to a new version:
+## Obtaining a collector binary
 
-1. **Update `BUILDER_VERSION`** in the top-level `Makefile` to the desired
-   version:
+The Rust validation test harness runs a collector as a child process and expects
+a binary at `./bin/otelarrowcol`. The `otelarrowcol` make target builds the thin
+image and extracts the collector binary from it:
 
-   ```makefile
-   BUILDER_VERSION = v0.147.0
-   ```
+```shell
+make otelarrowcol
+./bin/otelarrowcol --config collector/examples/bridge/saas-collector.yaml
+```
 
-2. **Regenerate the collector source and tidy modules**:
+## Upgrading the collector version
 
-   ```shell
-   make genotelarrowcol
-   ```
+The collector version is pinned in the top-level `Dockerfile` via the
+`FROM otel/opentelemetry-collector-contrib:<tag>@sha256:<digest>` line. Renovate
+keeps the tag and digest up to date automatically (see
+[`.github/renovate.json5`](../.github/renovate.json5), which enables
+`docker:pinDigests`). To upgrade manually, edit the tag/digest on that line.
 
-   This single command will:
-   - Install the `builder` tool at the specified version.
-   - Update all `go.opentelemetry.io/collector/...` and
-     `github.com/open-telemetry/opentelemetry-collector-contrib/...` module
-     versions in `collector/otelarrowcol-build.yaml` and `Dockerfile`.
-   - Remove and regenerate all files in `collector/cmd/otelarrowcol/`
-     (including `go.mod`, `go.sum`, `components.go`, and `main.go`).
-   - Run `go mod tidy` on all modules.
-
-[BUILDER]:
-    https://github.com/open-telemetry/opentelemetry-collector/blob/main/cmd/builder/README.md
+[CONTRIB]: https://github.com/open-telemetry/opentelemetry-collector-contrib
 [CONTRIBUTING.md]: ../CONTRIBUTING.md
 [EXAMPLES]: ./examples/README.md
-[BUILDCONFIG]: ./otelarrowcol-build.yaml
