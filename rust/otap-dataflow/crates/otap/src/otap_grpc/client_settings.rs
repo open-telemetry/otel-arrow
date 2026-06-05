@@ -39,8 +39,7 @@ pub enum StartupCheck {
     /// this check is skipped because the proxy is expected to perform
     /// name resolution.
     Dns,
-    /// Perform one eager gRPC connection attempt at startup, then switch
-    /// to the normal lazy channel for runtime traffic.
+    /// Perform one eager gRPC connection attempt at startup.
     ///
     /// This validates the entire connection path including proxy tunneling
     /// and TLS handshake.
@@ -132,10 +131,9 @@ pub struct GrpcClientSettings {
 
     /// Optional startup-time endpoint check.
     ///
-    /// - `none` (default): preserve lazy-only behavior.
+    /// - `none` (default): no check is performed.
     /// - `dns`: verify the endpoint host resolves at startup.
-    /// - `connect`: perform one eager connection attempt at startup, then use
-    ///   lazy channels for normal runtime traffic.
+    /// - `connect`: perform one eager connection attempt at startup.
     #[serde(default)]
     pub startup_check: StartupCheck,
 
