@@ -461,9 +461,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                             Box::new(BufReader::new(socket))
                                         };
 
-                                        // Suppress unused variable warning when TLS is disabled
-                                        let _ = peer_addr;
-
                                         let mut line_bytes = Vec::with_capacity(INITIAL_MSG_BUFFER_CAPACITY);
 
                                         let mut arrow_records_builder = ArrowRecordsBuilder::new();
@@ -479,7 +476,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                     match arrow_records_builder.build() {
                                                         Ok(arrow_records) => {
                                                             let res = effect_handler.try_send_message_with_source_node(
-                                                                OtapPdata::new_todo_context(arrow_records.into())
+                                                                OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)
                                                             );
                                                             let mut m = metrics.borrow_mut();
                                                             match &res {
@@ -563,7 +560,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 let items = u64::from(arrow_records_builder.len());
                                                                 match arrow_records_builder.build() {
                                                                     Ok(arrow_records) => {
-                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
 
                                                                         {
                                                                             let mut m = metrics.borrow_mut();
@@ -654,7 +651,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                         // Reset the timer since we already built an arrow record batch due to size constraint
                                                                         interval.reset();
 
-                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
                                                                         {
                                                                             let mut m = metrics.borrow_mut();
                                                                             match &res {
@@ -678,7 +675,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 let items = u64::from(arrow_records_builder.len());
                                                                 match arrow_records_builder.build() {
                                                                     Ok(arrow_records) => {
-                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
 
                                                                         {
                                                                             let mut m = metrics.borrow_mut();
@@ -713,7 +710,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 // Reset the builder for the next batch
                                                                 arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
                                                                     match &res {

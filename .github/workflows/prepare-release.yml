@@ -102,18 +102,6 @@ jobs:
           sed -i 's/^version = "[0-9]\+\.[0-9]\+\.[0-9]\+"/version = "${{ inputs.version }}"/g' rust/otap-dataflow/Cargo.toml
           echo "Updated rust/otap-dataflow/Cargo.toml to ${{ inputs.version }}"
 
-      - name: Update collector build version
-        run: |
-          # Update version in collector/otelarrowcol-build.yaml
-          sed -i "s/version: [0-9]\+\.[0-9]\+\.[0-9]\+/version: ${{ inputs.version }}/" collector/otelarrowcol-build.yaml
-          echo "Updated collector/otelarrowcol-build.yaml version to ${{ inputs.version }}"
-
-      - name: Update collector main.go version
-        run: |
-          # Update version in collector/cmd/otelarrowcol/main.go
-          sed -i "s/Version:     \"[0-9]\+\.[0-9]\+\.[0-9]\+\"/Version:     \"${{ inputs.version }}\"/" collector/cmd/otelarrowcol/main.go
-          echo "Updated collector/cmd/otelarrowcol/main.go version to ${{ inputs.version }}"
-
       - name: Extract release notes for PR body
         id: changelog
         run: |
@@ -182,8 +170,6 @@ jobs:
           - `rust/otap-dataflow/CHANGELOG.md` - Render pending `rust/otap-dataflow/.chloggen/*.yaml` entries under `## v${{ inputs.version }}`
           - `go/.chloggen/*.yaml`, `rust/otap-dataflow/.chloggen/*.yaml` - Consumed entries deleted
           - `rust/otap-dataflow/Cargo.toml` - Bump workspace and root package version to ${{ inputs.version }}
-          - `collector/otelarrowcol-build.yaml` - Update version to ${{ inputs.version }}
-          - `collector/cmd/otelarrowcol/main.go` - Update version to ${{ inputs.version }}
 
           ## Release Notes Preview
           ```
@@ -229,16 +215,12 @@ jobs:
           ### Changes included:
           - Rendered pending chloggen entries into \`go/CHANGELOG.md\` and \`rust/otap-dataflow/CHANGELOG.md\`
           - Bumped \`rust/otap-dataflow/Cargo.toml\` (workspace + root package)
-          - Updated \`collector/otelarrowcol-build.yaml\` version to v${{ inputs.version }}
-          - Updated \`collector/cmd/otelarrowcol/main.go\` version to v${{ inputs.version }}
 
           ${CHANGELOG_CONTENT}
 
           ### Checklist:
           - [ ] Verify both CHANGELOG.md files render the expected entries
           - [ ] Verify Rust crate versions updated
-          - [ ] Verify collector version update in collector/otelarrowcol-build.yaml
-          - [ ] Verify collector main.go version update in collector/cmd/otelarrowcol/main.go
           - [ ] Confirm all tests pass
           - [ ] Ready to merge and tag release
 
