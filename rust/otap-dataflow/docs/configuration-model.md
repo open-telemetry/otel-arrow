@@ -28,6 +28,8 @@ details plus custom node config guidance, see:
 - Runnable configuration examples: [configs/README.md](../configs/README.md).
 - Transport header policies: [docs/transport-headers.md](transport-headers.md).
 - Memory limiter policy: [docs/memory-limiter-phase1.md](memory-limiter-phase1.md).
+- Admin live pipeline reconfiguration:
+  [docs/admin/live-reconfiguration.md](admin/live-reconfiguration.md).
 
 Per-node documentation lives next to the node implementation under
 `crates/core-nodes/src`. Each node README uses predictable headings such as
@@ -75,9 +77,9 @@ The engine accepts a single root spec with `version`, optional defaults, and
 is an executable graph identified by `(group_id, pipeline_id)`.
 
 This hierarchy gives the controller a stable unit for deployment,
-observability, resource assignment, and future live reconfiguration. It also
-keeps room for multiple related pipelines in one engine process without
-flattening every runtime concern into one global namespace.
+observability, resource assignment, and live reconfiguration. It also keeps room
+for multiple related pipelines in one engine process without flattening every
+runtime concern into one global namespace.
 
 ### Nodes and Explicit Connections
 
@@ -151,7 +153,8 @@ traffic flows; the engine favors early, actionable errors.
 
 ## Configuration File Spec
 
-The engine runtime accepts a single configuration file format (v1).
+At startup, the engine runtime accepts a single root configuration file format
+(v1).
 
 - `version`: required schema version (`otel_dataflow/v1`)
 - `policies`: optional top-level defaults
@@ -173,7 +176,28 @@ argument accepts a URI that selects the config source:
 If `--config` is omitted, the engine falls back to `config.yaml` in
 the current working directory.
 
-Standalone pipeline files are not a runtime root format.
+Standalone pipeline files are not a startup root format.
+
+After startup, the admin API supports live pipeline reconfiguration. A live
+reconfigure request submits a pipeline-level config, not a second root file, and
+targets exactly one existing `(group_id, pipeline_id)` address. The controller
+patches the candidate pipeline into the current in-memory root spec, validates
+the resulting full engine snapshot, and then creates, replaces, resizes, or
+noops the logical pipeline through a rollout operation.
+
+Live reconfiguration is intentionally narrower than root-file loading:
+
+- The startup YAML file is not rewritten.
+- The target pipeline group must already exist.
+- Pipeline topology, node configuration, and pipeline-level policy changes are
+  supported for the target pipeline.
+- Scale-only changes use the same pipeline update path when the effective
+  runtime change is `policies.resources.core_allocation`.
+- Group-level, engine-level, and topic-broker mutation are out of scope for the
+  current live reconfiguration API.
+
+For the API flow, rollout behavior, rollback handling, and current limits, see
+[admin/live-reconfiguration.md](admin/live-reconfiguration.md).
 
 `https:`, authenticated config sources, and multi-file merge are not
 implemented.
