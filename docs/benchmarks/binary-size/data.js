@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780620467562,
+  "lastUpdate": 1780706767128,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -4812,6 +4812,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 97.97,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Pritish Nahar",
+            "username": "pritishnahar95",
+            "email": "pritishnahar@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "eead02126551b1b4a30e9ecb1f66172848a40d4b",
+          "message": "feat(otap): propagate receiver-observed peer address on OtapPdata (#3225)\n\n# Change Summary\n\nPropagate the receiver-observed peer socket address end-to-end on\n`OtapPdata` so downstream processors can read request-scoped transport\nfacts about the originating connection.\n\nAn optional `Option<SocketAddr>` peer-address slot is added to the\n`Context` carried by every `OtapPdata`. It is populated by receivers\nbacked by a real socket — OTLP gRPC, OTLP HTTP, OTAP gRPC, and the\nsyslog/CEF TCP path — from the accepting socket at request acceptance\ntime. Receivers without a socket (file-based, journald, UDS, UDP) leave\nit `None`. The value is preserved across transport boundaries by\n`clone_without_context` and is exposed via `OtapPdata::peer_addr()`,\ngiving processors an opt-in accessor that costs nothing when unused.\n\nThis unblocks the OTAP k8sattributes processor's\n`pod_association: connection` and `passthrough` modes, both of which\nrequire the originating peer IP.\n\n## What issue does this PR close?\n\n* Closes #3220\n\n## How are these changes tested?\n\n* New unit tests in `crates/otap/src/pdata.rs` cover the default-`None`\n  state, builder and setter round-trips for `peer_addr`, and that the\n  field survives `clone_without_context()` (the transport-boundary\n  clone).\n* The existing OTLP/OTAP gRPC and HTTP receiver tests continue to\n  exercise the receive paths; `peer_addr` is opportunistic metadata\n  that defaults to `None` for any caller that does not set it, so\n  existing assertions are unaffected.\n* Verified with `cargo check -p otap-df-otap --all-features`.\n\n## Are there any user-facing changes?\n\nYes. `OtapPdata` gains a public accessor (`peer_addr`) plus\n`set_peer_addr` and `with_peer_addr` helpers. No existing API is\nremoved or changed; processors and exporters that do not consult the\nfield pay nothing.\n\n### Changelog\n\n* [x] Added a `.chloggen/*.yaml` entry, OR this PR is a `chore`\n(indicated in title).",
+          "timestamp": "2026-06-05T22:15:20Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/eead02126551b1b4a30e9ecb1f66172848a40d4b"
+        },
+        "date": 1780706755157,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 110.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 98.22,
             "unit": "MB"
           }
         ]
