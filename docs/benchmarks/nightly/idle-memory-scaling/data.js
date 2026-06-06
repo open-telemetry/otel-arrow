@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780685374796,
+  "lastUpdate": 1780713749762,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2584,6 +2584,82 @@ window.BENCHMARK_DATA = {
             "value": 39.95,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=40.4 MiB, error=1.1%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "albertlockett",
+            "username": "albertlockett",
+            "email": "a.lockett@f5.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f9b6074475f5c7916343ca39bf98b2879f053775",
+          "message": "fix: replace OPL `exclude`/`date_time` keywords to match spec (#3180)\n\n# Change Summary\n\n<!--\nReplace with a brief summary of the change in this PR\n-->\n\nIn https://github.com/open-telemetry/otel-arrow/pull/3051 we are adding\na specification for OPL. It has some minor keyword differences from the\ncurrent implementation.\n\nThe keyword for the operation it specifies to remove attributes is\n`remove`, but currently we use `exclude`. I think `remove` is a more\nsensible name, so we'll make this change. (`project-away` will remain an\nalias`).\n\n```\n// before this would be `exclude attributes[\"x\"]`\nlogs | remove attributes[\"x\"]\n```\n\nThe tag we use for timestamp literals also changes to match the spec,\nfrom `date_time` to `timestamp`. This seems more sensible as well,\nbecause that is what the arrow type is called. E.g., now\ntimestamp/datetime literals will be defined like `timestamp\"...\"`\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Relates to #3051 \n\n## How are these changes tested?\n\nUnit tests\n\n## Are there any user-facing changes?\n\nYes - this is a breaking change to OPL syntax\n <!-- If yes, provide further info below -->\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry, OR this PR is a `chore`\n(indicated in title).",
+          "timestamp": "2026-06-06T00:22:55Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f9b6074475f5c7916343ca39bf98b2879f053775"
+        },
+        "date": 1780713748534,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 15.19,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.82,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9986,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 15.55,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=16.0 MiB, error=2.9%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 16.59,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=16.8 MiB, error=1.4%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 18.75,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=18.5 MiB, error=1.5%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 22.07,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=21.8 MiB, error=1.4%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 28.72,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=28.3 MiB, error=1.3%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 41.21,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=41.5 MiB, error=0.7%"
           }
         ]
       }
