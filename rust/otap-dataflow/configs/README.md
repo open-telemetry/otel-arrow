@@ -7,7 +7,7 @@ If you are learning how to write these files, start with
 [Configuration](../docs/configuration.md).
 
 Note: These configurations are based on the native OTAP dataflow engine
-configuration model, which is intentionally distinct from the Go Collector
+configuration model, which is intentionally distinct from the OpenTelemetry Collector
 YAML model. Support for the Go Collector YAML format will be explored in the
 future.
 
