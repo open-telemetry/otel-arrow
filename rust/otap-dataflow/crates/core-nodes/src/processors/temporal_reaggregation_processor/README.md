@@ -49,6 +49,9 @@ config:
   #
   # Set this higher than inbound_request_limit when batches usually contain a
   # mix of aggregable and non-aggregable metrics.
+  #
+  # Set this closer to inbound_request_limit when batches usually contain only
+  # aggregable metrics or only non-aggregable metrics.
   outbound_request_limit: 2048
 
   # Maximum number of individual metric streams tracked while aggregating a
