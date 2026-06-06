@@ -758,7 +758,7 @@ pub(crate) fn parse_tagged_literal(
     };
 
     let static_scalar_expr = match tag_ident_rule.as_str() {
-        "date_time" => {
+        "timestamp" => {
             let date_time = parse_date_time(tagged_str.get_value(), &query_location)?;
             StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
                 query_location,
@@ -1170,14 +1170,14 @@ mod test {
                 StaticScalarExpression::Null(NullScalarExpression::new(QueryLocation::new_fake())),
             ),
             (
-                "date_time\"2026-02-04T00:00:00Z\"",
+                "timestamp\"2026-02-04T00:00:00Z\"",
                 StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
                     QueryLocation::new_fake(),
                     create_utc(2026, 2, 4, 0, 0, 0, 0),
                 )),
             ),
             (
-                "date_time'2026-02-04T00:00:00Z'",
+                "timestamp'2026-02-04T00:00:00Z'",
                 StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
                     QueryLocation::new_fake(),
                     create_utc(2026, 2, 4, 0, 0, 0, 0),
