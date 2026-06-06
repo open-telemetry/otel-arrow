@@ -130,7 +130,7 @@ groups:
                     otlp/export:
                         type: exporter:otlp_grpc
                         config:
-                            grpc_endpoint: "http://127.0.0.1:4318"
+                            grpc_endpoint: "http://192.0.2.10:4317"
 
                 connections:
                     - from: otlp/ingest
