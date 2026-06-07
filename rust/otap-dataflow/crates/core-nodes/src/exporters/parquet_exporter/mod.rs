@@ -160,16 +160,19 @@ impl Exporter<OtapPdata> for ParquetExporter {
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let exporter_id = effect_handler.exporter_id();
-        let object_store = otap_df_otap::object_store::from_storage_type(&self.config.storage)
-            .map_err(|e| {
-                let source_detail = format_error_sources(&e);
-                Error::ExporterError {
-                    exporter: exporter_id.clone(),
-                    kind: ExporterErrorKind::Configuration,
-                    error: format!("error initializing object store {e}"),
-                    source_detail,
-                }
-            })?;
+        let object_store = otap_df_otap::object_store::from_storage_type_with_retry(
+            &self.config.storage,
+            self.config.retry.as_ref(),
+        )
+        .map_err(|e| {
+            let source_detail = format_error_sources(&e);
+            Error::ExporterError {
+                exporter: exporter_id.clone(),
+                kind: ExporterErrorKind::Configuration,
+                error: format!("error initializing object store {e}"),
+                source_detail,
+            }
+        })?;
 
         let writer_options = self.config.writer_options.unwrap_or_default();
 
@@ -200,20 +203,13 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     match writer.flush_aged_beyond_threshold().await {
                         Ok(stats) => {
                             if let Some(io) = self.io_metrics.as_mut() {
-                                if stats.flush_scheduled_max_rows > 0 {
-                                    io.flush_scheduled_max_rows
-                                        .add(stats.flush_scheduled_max_rows);
-                                }
-                                if stats.flush_scheduled_max_age > 0 {
-                                    io.flush_scheduled_max_age
-                                        .add(stats.flush_scheduled_max_age);
-                                }
-                                if stats.files_closed > 0 {
-                                    io.files_closed.add(stats.files_closed);
-                                }
+                                record_io_metrics(io, stats);
                             }
                         }
                         Err(e) => {
+                            if let Some(io) = self.io_metrics.as_mut() {
+                                record_io_metrics(io, e.stats);
+                            }
                             // TODO - this is not the error handling we want long term.  eventually we
                             // should have the concept of retryable & non-retryable errors and use Nack
                             //  message + a Retry processor to handle this gracefully
@@ -268,7 +264,28 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                 node: exporter_id.clone(),
                                 error: std::io::Error::from(ErrorKind::TimedOut)
                             }),
-                        _ = flush_all => Ok(Self::terminal_state(deadline, self.pdata_metrics, self.io_metrics)),
+                        flush_result = flush_all => {
+                            match flush_result {
+                                Ok(stats) => {
+                                    if let Some(io) = self.io_metrics.as_mut() {
+                                        record_io_metrics(io, stats);
+                                    }
+                                    Ok(Self::terminal_state(deadline, self.pdata_metrics, self.io_metrics))
+                                }
+                                Err(e) => {
+                                    if let Some(io) = self.io_metrics.as_mut() {
+                                        record_io_metrics(io, e.stats);
+                                    }
+                                    let source_detail = format_error_sources(&e);
+                                    Err(Error::ExporterError {
+                                        exporter: exporter_id.clone(),
+                                        kind: ExporterErrorKind::Transport,
+                                        error: format!("Parquet write failed: {e}"),
+                                        source_detail,
+                                    })
+                                }
+                            }
+                        },
                     };
                 }
 
@@ -373,29 +390,16 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                 metrics.inc_exported(signal_type);
                             }
                             if let Some(io) = self.io_metrics.as_mut() {
-                                if stats.files_created > 0 {
-                                    io.files_created.add(stats.files_created);
-                                }
-                                if stats.files_closed > 0 {
-                                    io.files_closed.add(stats.files_closed);
-                                }
-                                if stats.rows_written > 0 {
-                                    io.rows_written.add(stats.rows_written);
-                                }
-                                if stats.flush_scheduled_max_rows > 0 {
-                                    io.flush_scheduled_max_rows
-                                        .add(stats.flush_scheduled_max_rows);
-                                }
-                                if stats.flush_scheduled_max_age > 0 {
-                                    io.flush_scheduled_max_age
-                                        .add(stats.flush_scheduled_max_age);
-                                }
+                                record_io_metrics(io, stats);
                             }
                         }
                         Err(e) => {
                             // mark failure before returning
                             if let Some(metrics) = self.pdata_metrics.as_mut() {
                                 metrics.inc_failed(signal_type);
+                            }
+                            if let Some(io) = self.io_metrics.as_mut() {
+                                record_io_metrics(io, e.stats);
                             }
                             // TODO - this is not the error handling we want long term.
                             // eventually we should have the concept of retryable & non-retryable errors and
@@ -417,6 +421,38 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 }
             }
         }
+    }
+}
+
+fn record_io_metrics(
+    io: &mut MetricSet<metrics::ParquetExporterMetrics>,
+    stats: writer::WriteStats,
+) {
+    if stats.files_created > 0 {
+        io.files_created.add(stats.files_created);
+    }
+    if stats.files_closed > 0 {
+        io.files_closed.add(stats.files_closed);
+    }
+    if stats.rows_written > 0 {
+        io.rows_written.add(stats.rows_written);
+    }
+    if stats.flush_scheduled_max_rows > 0 {
+        io.flush_scheduled_max_rows
+            .add(stats.flush_scheduled_max_rows);
+    }
+    if stats.flush_scheduled_max_age > 0 {
+        io.flush_scheduled_max_age
+            .add(stats.flush_scheduled_max_age);
+    }
+    if stats.flush_attempts > 0 {
+        io.flush_attempts.add(stats.flush_attempts);
+    }
+    if stats.flush_success > 0 {
+        io.flush_success.add(stats.flush_success);
+    }
+    if stats.flush_failures > 0 {
+        io.flush_failures.add(stats.flush_failures);
     }
 }
 
@@ -513,6 +549,7 @@ mod test {
             storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
+            retry: None,
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -621,6 +658,7 @@ mod test {
             storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
+            retry: None,
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -764,6 +802,7 @@ mod test {
             storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
+            retry: None,
             partitioning_strategies: Some(vec![config::PartitioningStrategy::SchemaMetadata(
                 vec![idgen::PARTITION_METADATA_KEY.to_string()],
             )]),
@@ -852,6 +891,7 @@ mod test {
             storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
+            retry: None,
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -894,6 +934,7 @@ mod test {
             storage: object_store::StorageType::File {
                 base_uri: format!("testdelayed:///{base_dir_url}?delay=500ms"),
             },
+            retry: None,
             partitioning_strategies: None,
             writer_options: Some(WriterOptions {
                 target_rows_per_file: Some(50),
@@ -1054,6 +1095,7 @@ mod test {
             storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
+            retry: None,
             partitioning_strategies: None,
             writer_options: Some(WriterOptions {
                 target_rows_per_file: None,
@@ -1213,6 +1255,7 @@ mod test {
             storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
+            retry: None,
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -1284,6 +1327,7 @@ mod test {
             storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
+            retry: None,
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -1521,6 +1565,7 @@ mod test {
             storage: object_store::StorageType::File {
                 base_uri: base_dir.clone(),
             },
+            retry: None,
             partitioning_strategies: None,
             writer_options: None,
         });

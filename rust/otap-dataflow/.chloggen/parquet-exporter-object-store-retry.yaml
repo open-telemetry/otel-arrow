@@ -1,0 +1,4 @@
+change_type: enhancement
+component: pipeline
+note: "Expose object-store retry settings on the Parquet exporter and add flush outcome metrics."
+issues: []
