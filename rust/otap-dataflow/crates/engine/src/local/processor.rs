@@ -1,0 +1,1161 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Set of traits and structures used to implement processors.
+//!
+//! A processor is a node in the pipeline that transforms, filters, or otherwise processes messages
+//! as they flow through the pipeline. Processors can perform operations such as:
+//!
+//! 1. Filtering messages based on certain criteria
+//! 2. Transforming message content or format
+//! 3. Aggregating multiple messages into a single message
+//! 4. Splitting a single message into multiple messages
+//! 5. Adding or removing attributes from messages
+//!
+//! # Lifecycle
+//!
+//! 1. The processor is instantiated and configured
+//! 2. The processor receives and processes both data messages and control messages
+//! 3. For each message, the processor can transform it, filter it, or split it into multiple messages
+//! 4. The processor can maintain state between processing calls if needed
+//! 5. The processor responds to control messages such as Config, TimerTick, or Shutdown
+//! 6. The processor shuts down when it receives a `Shutdown` control message or encounters a fatal error
+//!
+//! # Thread Safety
+//!
+//! This implementation is designed to be used in a single-threaded environment.
+//! The `Processor` trait does not require the `Send` bound, allowing for the use of non-thread-safe
+//! types.
+//!
+//! # Scalability
+//!
+//! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
+//! in parallel on different cores, each with its own processor instance.
+
+use crate::Interests;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::control::WakeupRevision;
+use crate::control::{AckMsg, NackMsg, RuntimeCtrlMsgSender, WakeupSlot};
+use crate::effect_handler::{
+    EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
+};
+use crate::error::{Error, TypedError};
+use crate::flow_metrics::{
+    EndFlowMetrics, FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
+    IncomingFlowMetrics, LocalFlowMetricState, nanos_u64,
+};
+use crate::message::{Message, Sender};
+use crate::node::NodeId;
+use crate::output_router::OutputRouter;
+use crate::process_duration::ComputeDuration;
+use crate::processor::ProcessorRuntimeRequirements;
+use crate::{WakeupError, WakeupSetOutcome};
+use async_trait::async_trait;
+use otap_df_config::PortName;
+use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::instrument::Mmsc;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::reporter::MetricsReporter;
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+/// A trait for processors in the pipeline (!Send definition).
+#[async_trait(?Send)]
+pub trait Processor<PData> {
+    /// Processes a message and optionally produces effects, such as generating new pdata messages.
+    ///
+    /// This method is called by the pipeline engine for each message that arrives at the processor.
+    /// Unlike receivers, processors have known inputs (messages from previous stages), so the pipeline
+    /// engine can control when to call this method and when the processor executes.
+    ///
+    /// This approach allows for greater flexibility and optimization, giving the pipeline engine
+    /// the ability to decide whether to spawn one task per processor or one task for a group of processors.
+    /// The method signature uses `&mut self` rather than `Box<Self>` because the engine only wants to
+    /// temporarily allow mutation of the processor instance, not transfer ownership.
+    ///
+    /// The processor can:
+    /// - Transform the message and return a new message
+    /// - Filter the message by returning None
+    /// - Split the message into multiple messages by returning a vector
+    /// - Handle control messages (e.g., Config, TimerTick, Wakeup, Shutdown)
+    ///
+    /// Processor-local wakeups are scheduled through
+    /// [`EffectHandler::set_wakeup`]. They are delivered back to the processor
+    /// as `Message::Control(NodeControlMsg::Wakeup { .. })` through the normal
+    /// inbox path and participate in the same control-vs-pdata fairness rules
+    /// as other control traffic.
+    ///
+    /// # Parameters
+    ///
+    /// - `msg`: The message to process, which can be either a data message or a control message
+    /// - `effect_handler`: A handler to perform side effects such as sending messages to the next node.
+    ///    This can be either Send or !Send depending on the processor's Mode type.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())`: The processor successfully processed the message
+    /// - `Err(Error)`: The processor encountered an error and could not process the message
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the processor encounters an unrecoverable error.
+    async fn process(
+        &mut self,
+        msg: Message<PData>,
+        effect_handler: &mut EffectHandler<PData>,
+    ) -> Result<(), Error>;
+
+    /// Returns whether the engine should deliver pdata messages to this processor right now.
+    ///
+    /// When this returns `false` the engine pauses pdata delivery and only forwards control
+    /// messages (acks/nacks) until the processor signals it is ready again. Defaults to `true`.
+    fn accept_pdata(&self) -> bool {
+        true
+    }
+
+    /// Returns optional runtime services that this processor needs from the engine.
+    ///
+    /// This is the single source of truth for runtime wiring. For example,
+    /// `local_wakeups: Some(...)` both enables processor-local wakeups and
+    /// declares the live slot count the engine must provision.
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        ProcessorRuntimeRequirements::none()
+    }
+}
+
+/// A `!Send` implementation of the EffectHandler.
+#[derive(Clone)]
+pub struct EffectHandler<PData> {
+    pub(crate) core: EffectHandlerCore<PData>,
+    /// Output-port router.
+    pub router: OutputRouter<Sender<PData>>,
+    /// Per-handler flow_metric state. See [`LocalFlowMetricState`] /
+    /// [`EndFlowMetrics`] for field-level documentation.
+    pub(crate) flow: LocalFlowMetricState,
+}
+
+/// Implementation for the `!Send` effect handler.
+impl<PData> EffectHandler<PData> {
+    /// Creates a new local (!Send) `EffectHandler` with the given processor name.
+    #[must_use]
+    pub fn new(
+        node_id: NodeId,
+        msg_senders: HashMap<PortName, Sender<PData>>,
+        default_port: Option<PortName>,
+        metrics_reporter: MetricsReporter,
+    ) -> Self {
+        let core = EffectHandlerCore::new(node_id.clone(), metrics_reporter);
+        let router = OutputRouter::new(node_id, msg_senders, default_port);
+        EffectHandler {
+            core,
+            router,
+            flow: LocalFlowMetricState::default(),
+        }
+    }
+
+    /// Returns the id of the processor associated with this handler.
+    #[must_use]
+    pub fn processor_id(&self) -> NodeId {
+        self.core.node_id()
+    }
+
+    /// Sets whether outgoing messages need source node tagging.
+    pub fn set_source_tagging(&mut self, value: SourceTagging) {
+        self.core.set_source_tagging(value);
+    }
+
+    /// Returns whether outgoing messages need source node tagging.
+    /// This is true when the destination node has multiple input sources.
+    #[must_use]
+    pub const fn source_tagging(&self) -> SourceTagging {
+        self.core.source_tagging()
+    }
+
+    /// Returns the list of connected output ports for this processor.
+    #[must_use]
+    pub fn connected_ports(&self) -> Vec<PortName> {
+        self.router.connected_ports()
+    }
+
+    /// Returns the selected default output port name, if one exists.
+    #[must_use]
+    pub fn default_port(&self) -> Option<PortName> {
+        self.router.default_port()
+    }
+
+    /// Returns the precomputed node interests.
+    #[must_use]
+    pub fn node_interests(&self) -> Interests {
+        self.core.node_interests()
+    }
+
+    /// Begin per-message flow_metric timing for the upcoming `process()` call.
+    ///
+    /// Sets the send-marker to "now" so that the first
+    /// [`take_elapsed_since_send_marker_ns`] call (typically from the send
+    /// hook) measures elapsed time from the start of `process()`.
+    /// No-op when no flow_metrics are configured.
+    pub(crate) fn begin_process_timing(&self) {
+        if self.flow.active {
+            self.flow.last_send_marker.set(Some(Instant::now()));
+        }
+    }
+
+    /// Returns nanoseconds elapsed since the send-marker was last set or
+    /// advanced, then advances the marker to "now". Returns 0 when no
+    /// marker is active (e.g. flow_metrics disabled, or
+    /// `begin_process_timing` was not called for this message).
+    #[must_use]
+    pub fn take_elapsed_since_send_marker_ns(&self) -> u64 {
+        let Some(prev) = self.flow.last_send_marker.get() else {
+            return 0;
+        };
+        let now = Instant::now();
+        self.flow.last_send_marker.set(Some(now));
+        nanos_u64(now.duration_since(prev).as_nanos())
+    }
+
+    /// Returns whether any flow_metric is configured in this pipeline.
+    #[must_use]
+    pub fn flow_metrics_active(&self) -> bool {
+        self.flow.active
+    }
+
+    /// Sets flow_metric start/stop roles for this node.
+    pub(crate) fn set_flow_roles(
+        &mut self,
+        is_start: bool,
+        is_end: bool,
+        signals_incoming_metric: Option<MetricSet<FlowSignalsIncomingMetrics>>,
+        duration_metric: Option<MetricSet<FlowDurationMetrics>>,
+        signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>>,
+        flow_metrics_active: bool,
+    ) {
+        self.flow.is_start = is_start;
+        self.flow.is_end = is_end;
+        self.flow.active = flow_metrics_active;
+        self.flow.incoming = IncomingFlowMetrics {
+            signals_incoming: signals_incoming_metric
+                .map(|metrics| (metrics, Cell::new(Mmsc::default()))),
+        };
+        self.flow.end = EndFlowMetrics {
+            duration: duration_metric.map(|metrics| (metrics, Cell::new(Mmsc::default()))),
+            signals_outgoing: signals_outgoing_metric
+                .map(|metrics| (metrics, Cell::new(Mmsc::default()))),
+        };
+    }
+
+    /// Returns whether this node is a flow_metric start node.
+    #[must_use]
+    pub fn is_flow_start(&self) -> bool {
+        self.flow.is_start
+    }
+
+    /// Returns whether this node is a flow_metric stop node.
+    #[must_use]
+    pub fn is_flow_end(&self) -> bool {
+        self.flow.is_end
+    }
+
+    /// Record `total` nanoseconds into the local flow_metric accumulator.
+    ///
+    /// This is called on the send path at the stop node.  The observation
+    /// is accumulated into a local `Mmsc` and drained into the `MetricSet`
+    /// on the next periodic [`report_flow_metrics`] call — matching the
+    /// `ComputeDuration` reporting pattern.
+    pub fn record_flow_duration(&self, total: u64) {
+        let Some((_, acc_cell)) = self.flow.end.duration.as_ref() else {
+            return;
+        };
+        let mut acc = acc_cell.get();
+        acc.record(total as f64);
+        acc_cell.set(acc);
+    }
+
+    /// Record signal-item count into the local incoming flow accumulator.
+    pub fn record_flow_signals_incoming(&self, signals: u64) {
+        let Some((_, acc_cell)) = self.flow.incoming.signals_incoming.as_ref() else {
+            return;
+        };
+        let mut acc = acc_cell.get();
+        acc.record(signals as f64);
+        acc_cell.set(acc);
+    }
+
+    /// Record signal-item count into the local outgoing flow accumulator.
+    pub fn record_flow_signals_outgoing(&self, signals: u64) {
+        let Some((_, acc_cell)) = self.flow.end.signals_outgoing.as_ref() else {
+            return;
+        };
+        let mut acc = acc_cell.get();
+        acc.record(signals as f64);
+        acc_cell.set(acc);
+    }
+
+    /// Drain accumulated flow_metric observations into the MetricSet and
+    /// report to the telemetry collector.
+    ///
+    /// Called by the engine on periodic `CollectTelemetry` and at
+    /// shutdown — the same cadence as `ComputeDuration::report`.
+    pub(crate) fn report_flow_metrics(&mut self) {
+        if let Some((metrics, acc_cell)) = self.flow.incoming.signals_incoming.as_mut() {
+            let acc = acc_cell.replace(Mmsc::default());
+            metrics.signals_incoming.merge(acc);
+            let _ = self.core.metrics_reporter.report(metrics);
+        }
+        if let Some((metrics, acc_cell)) = self.flow.end.duration.as_mut() {
+            let acc = acc_cell.replace(Mmsc::default());
+            metrics.compute_duration.merge(acc);
+            let _ = self.core.metrics_reporter.report(metrics);
+        }
+        if let Some((metrics, acc_cell)) = self.flow.end.signals_outgoing.as_mut() {
+            let acc = acc_cell.replace(Mmsc::default());
+            metrics.signals_outgoing.merge(acc);
+            let _ = self.core.metrics_reporter.report(metrics);
+        }
+    }
+
+    /// Time a synchronous, fallible closure if process-duration timing
+    /// is enabled.
+    ///
+    /// Delegates to [`ComputeDuration::timed`] with this handler's
+    /// precomputed interests. FlowMetric participation is automatic via
+    /// the engine's `Instant`-marker timing in `process()` and does not
+    /// require `timed()`. This method exists solely to provide the
+    /// success/failed outcome split for the
+    /// `processor.compute.{success,failed}.duration` metric.
+    ///
+    /// The closure-based API structurally prevents timing from
+    /// spanning `.await` points.
+    #[inline]
+    pub fn timed<T, E>(
+        &self,
+        cd: &ComputeDuration,
+        f: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        cd.timed(self.core.node_interests(), f)
+    }
+
+    /// Sends a message to the next node(s) in the pipeline using the default port.
+    ///
+    /// If a default port is configured (either explicitly or deduced when a single port is
+    /// connected), it will be used. Otherwise, an error is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::ChannelSendError`] if the message could not be sent or [`Error::ProcessorError`]
+    /// if the default port is not configured.
+    #[inline]
+    pub async fn send_message(&self, mut data: PData) -> Result<(), TypedError<PData>>
+    where
+        PData: crate::processor::FlowMetricHook,
+    {
+        data.before_processor_send(self);
+        self.router.send_default(data).await
+    }
+
+    /// Attempts to send a message without awaiting.
+    ///
+    /// Unlike `send_message`, this method returns immediately if the downstream
+    /// channel is full, allowing the caller to handle backpressure without awaiting.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
+    /// channel is full, or [`SendError::Closed`] if the channel is closed.
+    /// Returns a [`TypedError::Error`] if no default port is configured.
+    #[inline]
+    pub fn try_send_message(&self, mut data: PData) -> Result<(), TypedError<PData>>
+    where
+        PData: crate::processor::FlowMetricHook,
+    {
+        data.before_processor_send(self);
+        self.router.try_send_default(data)
+    }
+
+    /// Sends a message to a specific named output port.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::ChannelSendError`] if the message could not be sent, or
+    /// [`Error::ProcessorError`] if the port does not exist.
+    #[inline]
+    pub async fn send_message_to<P>(
+        &self,
+        port: P,
+        mut data: PData,
+    ) -> Result<(), TypedError<PData>>
+    where
+        P: Into<PortName>,
+        PData: crate::processor::FlowMetricHook,
+    {
+        data.before_processor_send(self);
+        self.router.send_to(port, data).await
+    }
+
+    /// Attempts to send a message to a specific named output port without awaiting.
+    ///
+    /// Unlike `send_message_to`, this method returns immediately if the downstream
+    /// channel is full, allowing the caller to handle backpressure without awaiting.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
+    /// channel is full, or [`SendError::Closed`] if the channel is closed.
+    /// Returns a [`TypedError::Error`] if the port does not exist.
+    #[inline]
+    pub fn try_send_message_to<P>(&self, port: P, mut data: PData) -> Result<(), TypedError<PData>>
+    where
+        P: Into<PortName>,
+        PData: crate::processor::FlowMetricHook,
+    {
+        data.before_processor_send(self);
+        self.router.try_send_to(port, data)
+    }
+
+    /// Print an info message to stdout.
+    ///
+    /// This method provides a standardized way for processors to output
+    /// informational messages without blocking the async runtime.
+    pub async fn info(&self, message: &str) {
+        self.core.info(message).await;
+    }
+
+    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
+    /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Current limitation: Only one timer can be started by an exporter at a time.
+    pub async fn start_periodic_timer(
+        &self,
+        duration: Duration,
+    ) -> Result<TimerCancelHandle<PData>, Error> {
+        self.core.start_periodic_timer(duration).await
+    }
+
+    /// Starts a cancellable periodic telemetry timer that emits CollectTelemetry.
+    pub async fn start_periodic_telemetry(
+        &self,
+        duration: Duration,
+    ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
+        self.core.start_periodic_telemetry(duration).await
+    }
+
+    /// Delay data.
+    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
+        self.core.delay_data(when, data).await
+    }
+
+    /// Requeue retained pdata onto this node later.
+    pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
+        self.core.requeue_later(when, data)
+    }
+
+    /// Set or replace a processor-local wakeup.
+    pub fn set_wakeup(
+        &self,
+        slot: WakeupSlot,
+        when: Instant,
+    ) -> Result<WakeupSetOutcome, WakeupError> {
+        self.core.set_wakeup(slot, when)
+    }
+
+    /// Cancel a previously scheduled processor-local wakeup.
+    #[must_use]
+    pub fn cancel_wakeup(&self, slot: WakeupSlot) -> bool {
+        self.core.cancel_wakeup(slot)
+    }
+
+    /// Pop the next wakeup from the local scheduler, regardless of whether
+    /// it is due. Returns `None` when no wakeup is scheduled or when local
+    /// wakeups are not enabled.
+    ///
+    /// This is intended for testing, where the inbox loop is not running and
+    /// wakeups need to be manually delivered.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn pop_wakeup(&self) -> Option<(WakeupSlot, Instant, WakeupRevision)> {
+        self.core.pop_wakeup()
+    }
+
+    /// Reports metrics collected by the processor.
+    #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
+    pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
+        &mut self,
+        metrics: &mut MetricSet<M>,
+    ) -> Result<(), TelemetryError> {
+        self.core.report_metrics(metrics)
+    }
+
+    /// Reports processor-local wakeup scheduler metrics, if enabled.
+    pub fn report_local_scheduler_metrics(
+        &self,
+        metrics_reporter: &mut MetricsReporter,
+    ) -> Result<(), TelemetryError> {
+        self.core.report_local_scheduler_metrics(metrics_reporter)
+    }
+
+    /// Sets the runtime control message sender for this effect handler.
+    ///
+    /// Primarily used by tests and manual harnesses that construct an EffectHandler directly;
+    /// the engine wiring sets this automatically in `prepare_runtime`.
+    pub fn set_runtime_ctrl_msg_sender(
+        &mut self,
+        runtime_ctrl_msg_sender: RuntimeCtrlMsgSender<PData>,
+    ) {
+        self.core
+            .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_sender);
+    }
+
+    /// Sets the pipeline result message sender for this effect handler.
+    ///
+    /// Primarily used by tests and manual harnesses that construct an EffectHandler directly;
+    /// the engine wiring sets this automatically in `prepare_runtime`.
+    pub fn set_pipeline_completion_msg_sender(
+        &mut self,
+        pipeline_completion_msg_sender: crate::control::PipelineCompletionMsgSender<PData>,
+    ) {
+        self.core
+            .set_pipeline_completion_msg_sender(pipeline_completion_msg_sender);
+    }
+
+    // More methods will be added in the future as needed.
+}
+
+impl<PData> crate::processor::FlowMetricEffectHandler for EffectHandler<PData> {
+    #[inline]
+    fn is_flow_start(&self) -> bool {
+        EffectHandler::is_flow_start(self)
+    }
+    #[inline]
+    fn is_flow_end(&self) -> bool {
+        EffectHandler::is_flow_end(self)
+    }
+    #[inline]
+    fn take_elapsed_since_send_marker_ns(&self) -> u64 {
+        EffectHandler::take_elapsed_since_send_marker_ns(self)
+    }
+    #[inline]
+    fn record_flow_duration(&self, total: u64) {
+        EffectHandler::record_flow_duration(self, total);
+    }
+    #[inline]
+    fn record_flow_signals_incoming(&self, signals: u64) {
+        EffectHandler::record_flow_signals_incoming(self, signals);
+    }
+    #[inline]
+    fn record_flow_signals_outgoing(&self, signals: u64) {
+        EffectHandler::record_flow_signals_outgoing(self, signals);
+    }
+}
+
+#[async_trait(?Send)]
+impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for EffectHandler<PData> {
+    async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error> {
+        self.core.route_ack(ack).await
+    }
+
+    async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error> {
+        self.core.route_nack(nack).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(missing_docs)]
+    use super::*;
+    use crate::_private::AckNackRouting;
+    use crate::completion_emission_metrics::make_completion_emission_metrics;
+    use crate::context::ControllerContext;
+    use crate::control::{
+        AckMsg, Frame, NackMsg, PipelineCompletionMsg, RouteData, WakeupSlot,
+        pipeline_completion_msg_channel,
+    };
+    use crate::entity_context::NodeTelemetryHandle;
+    use crate::local::message::LocalSender;
+    use crate::testing::test_node;
+    use crate::{Interests, Unwindable, WakeupError};
+    use otap_df_channel::error::SendError;
+    use otap_df_channel::mpsc;
+    use otap_df_config::{MetricLevel, node::NodeKind};
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use std::borrow::Cow;
+    use std::collections::{HashMap, HashSet};
+    use tokio::time::{Duration, timeout};
+
+    fn channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
+        mpsc::Channel::new(capacity)
+    }
+
+    impl crate::processor::FlowMetricHook for u64 {}
+
+    #[derive(Clone, Debug)]
+    struct TestPData {
+        frames: Vec<Frame>,
+    }
+
+    impl TestPData {
+        fn with_ack_frame(node_id: usize) -> Self {
+            Self {
+                frames: vec![Frame {
+                    node_id,
+                    interests: Interests::ACKS,
+                    route: RouteData::default(),
+                }],
+            }
+        }
+
+        fn with_nack_frame(node_id: usize) -> Self {
+            Self {
+                frames: vec![Frame {
+                    node_id,
+                    interests: Interests::NACKS,
+                    route: RouteData::default(),
+                }],
+            }
+        }
+    }
+
+    impl Unwindable for TestPData {
+        fn has_frames(&self) -> bool {
+            !self.frames.is_empty()
+        }
+
+        fn pop_frame(&mut self) -> Option<Frame> {
+            self.frames.pop()
+        }
+
+        fn drop_payload(&mut self) {}
+    }
+
+    fn test_node_telemetry() -> (TelemetryRegistryHandle, NodeTelemetryHandle) {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry.clone());
+        let pipeline_ctx = controller
+            .pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
+            .with_node_context(
+                "test_node".into(),
+                "urn:test:processor:example".into(),
+                NodeKind::Processor,
+                HashMap::new(),
+            );
+        let entity_key = pipeline_ctx.register_node_entity();
+        (
+            registry,
+            NodeTelemetryHandle::new(pipeline_ctx.metrics_registry(), entity_key),
+        )
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_to_named_port() {
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        eh.send_message_to("b", 42).await.unwrap();
+
+        // Ensure only 'b' received
+        assert!(
+            timeout(Duration::from_millis(50), a_rx.recv())
+                .await
+                .is_err()
+        );
+        assert_eq!(b_rx.recv().await.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_single_port_fallback() {
+        let (tx, rx) = channel::<u64>(10);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("only".into(), Sender::Local(LocalSender::mpsc(tx)));
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+
+        eh.send_message(7).await.unwrap();
+        assert_eq!(rx.recv().await.unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_uses_default_port() {
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            Some("a".into()),
+            metrics_reporter,
+        );
+
+        eh.send_message(11).await.unwrap();
+
+        assert_eq!(a_rx.recv().await.unwrap(), 11);
+        assert!(
+            timeout(Duration::from_millis(50), b_rx.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    /// Scenario: a processor effect handler has not been wired with the
+    /// processor-local wakeup runtime capability and attempts to schedule a
+    /// wakeup anyway.
+    /// Guarantees: the call fails with `WakeupError::Unsupported` instead of
+    /// panicking, so non-opting processors do not require the wakeup runtime
+    /// machinery to exist.
+    #[test]
+    fn effect_handler_set_wakeup_without_runtime_support_returns_unsupported() {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh =
+            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+
+        assert_eq!(
+            eh.set_wakeup(WakeupSlot(0), Instant::now()),
+            Err(WakeupError::Unsupported)
+        );
+        assert!(!eh.cancel_wakeup(WakeupSlot(0)));
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_ambiguous_without_default() {
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+
+        let res = eh.send_message(5).await;
+        assert!(res.is_err());
+
+        // Nothing should be received on either port
+        assert!(
+            timeout(Duration::from_millis(50), a_rx.recv())
+                .await
+                .is_err()
+        );
+        assert!(
+            timeout(Duration::from_millis(50), b_rx.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn effect_handler_connected_ports_lists_all() {
+        let (a_tx, _a_rx) = channel::<u64>(1);
+        let (b_tx, _b_rx) = channel::<u64>(1);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+
+        let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
+        let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();
+        assert_eq!(ports, expected);
+    }
+
+    #[test]
+    fn effect_handler_try_send_message_success() {
+        let (tx, rx) = channel::<u64>(10);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            Some("out".into()),
+            metrics_reporter,
+        );
+
+        // Should succeed when channel has capacity
+        assert!(eh.try_send_message(42).is_ok());
+        assert_eq!(rx.try_recv().unwrap(), 42);
+    }
+
+    #[test]
+    fn effect_handler_try_send_message_inbox_full() {
+        // Create a channel with capacity 1
+        let (tx, _rx) = channel::<u64>(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            Some("out".into()),
+            metrics_reporter,
+        );
+
+        // First send should succeed
+        assert!(eh.try_send_message(1).is_ok());
+
+        // Second send should fail with Full since channel capacity is 1
+        let result = eh.try_send_message(2);
+        assert!(matches!(
+            result,
+            Err(TypedError::ChannelSendError(SendError::Full(2)))
+        ));
+    }
+
+    #[test]
+    fn effect_handler_try_send_message_no_default_sender() {
+        let (a_tx, _a_rx) = channel::<u64>(10);
+        let (b_tx, _b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        // No default port specified with multiple ports = ambiguous
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+
+        // Should return configuration error when no default sender
+        let result = eh.try_send_message(99);
+        assert!(matches!(result, Err(TypedError::Error(_))));
+    }
+
+    #[test]
+    fn effect_handler_try_send_message_to_success() {
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+
+        // Should succeed when sending to a specific port
+        assert!(eh.try_send_message_to("b", 42).is_ok());
+        assert_eq!(b_rx.try_recv().unwrap(), 42);
+        // Port 'a' should not have received anything
+        assert!(a_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn effect_handler_try_send_message_to_channel_full() {
+        let (tx, _rx) = channel::<u64>(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+
+        // First send should succeed
+        assert!(eh.try_send_message_to("out", 1).is_ok());
+        // Second send should fail with Full
+        let result = eh.try_send_message_to("out", 2);
+        assert!(matches!(
+            result,
+            Err(TypedError::ChannelSendError(SendError::Full(2)))
+        ));
+    }
+
+    #[test]
+    fn effect_handler_try_send_message_to_unknown_port() {
+        let (tx, _rx) = channel::<u64>(10);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+
+        // Should return error for unknown port
+        let result = eh.try_send_message_to("unknown", 99);
+        assert!(matches!(result, Err(TypedError::Error(_))));
+    }
+
+    #[tokio::test]
+    async fn effect_handler_route_ack_records_completion_emission_metrics() {
+        let (_registry, telemetry_handle) = test_node_telemetry();
+        let completion_metrics =
+            make_completion_emission_metrics(&Some(telemetry_handle), MetricLevel::Normal)
+                .expect("completion emission metrics should be registered");
+        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh = EffectHandler::<TestPData>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+        );
+        eh.set_pipeline_completion_msg_sender(completion_tx);
+        eh.core
+            .set_completion_emission_metrics(Some(completion_metrics.clone()));
+
+        eh.route_ack(AckMsg::new(TestPData::with_ack_frame(1)))
+            .await
+            .expect("route_ack should succeed");
+
+        assert!(matches!(
+            completion_rx.recv().await.expect("completion message"),
+            PipelineCompletionMsg::DeliverAck { .. }
+        ));
+        let counts = completion_metrics
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .counts();
+        assert_eq!(counts, (1, 0));
+    }
+
+    #[tokio::test]
+    async fn effect_handler_route_nack_records_completion_emission_metrics() {
+        let (_registry, telemetry_handle) = test_node_telemetry();
+        let completion_metrics =
+            make_completion_emission_metrics(&Some(telemetry_handle), MetricLevel::Normal)
+                .expect("completion emission metrics should be registered");
+        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh = EffectHandler::<TestPData>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+        );
+        eh.set_pipeline_completion_msg_sender(completion_tx);
+        eh.core
+            .set_completion_emission_metrics(Some(completion_metrics.clone()));
+
+        eh.route_nack(NackMsg::new("test nack", TestPData::with_nack_frame(1)))
+            .await
+            .expect("route_nack should succeed");
+
+        assert!(matches!(
+            completion_rx.recv().await.expect("completion message"),
+            PipelineCompletionMsg::DeliverNack { .. }
+        ));
+        let counts = completion_metrics
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .counts();
+        assert_eq!(counts, (0, 1));
+    }
+
+    #[tokio::test]
+    async fn effect_handler_route_ack_without_frames_does_not_record_completion_emission_metrics() {
+        let (_registry, telemetry_handle) = test_node_telemetry();
+        let completion_metrics =
+            make_completion_emission_metrics(&Some(telemetry_handle), MetricLevel::Normal)
+                .expect("completion emission metrics should be registered");
+        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel::<TestPData>(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh = EffectHandler::<TestPData>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+        );
+        eh.set_pipeline_completion_msg_sender(completion_tx);
+        eh.core
+            .set_completion_emission_metrics(Some(completion_metrics.clone()));
+
+        eh.route_ack(AckMsg::new(TestPData { frames: Vec::new() }))
+            .await
+            .expect("route_ack without frames should be a no-op");
+
+        assert!(
+            timeout(Duration::from_millis(50), completion_rx.recv())
+                .await
+                .is_err()
+        );
+        let counts = completion_metrics
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .counts();
+        assert_eq!(counts, (0, 0));
+    }
+
+    /// Verify that flow_metric duration and item counts accumulate into local Mmsc
+    /// values and report_flow_metrics drains into MetricSets.
+    #[test]
+    fn flow_accumulate_then_report() {
+        use crate::context::ControllerContext;
+        use crate::flow_metrics::{
+            FlowAttributeSet, FlowDurationMetrics, FlowSignalsIncomingMetrics,
+            FlowSignalsOutgoingMetrics,
+        };
+        use otap_df_config::node::NodeKind;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+        // Set up a pipeline context and register a flow_metric entity.
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry.clone());
+        let pipeline_ctx = controller
+            .pipeline_context_with("g".into(), "p".into(), 0, 1, 0)
+            .with_node_context(
+                "end_node".into(),
+                "urn:test:processor:example".into(),
+                NodeKind::Processor,
+                HashMap::new(),
+            );
+        let entity_key = pipeline_ctx
+            .metrics_registry()
+            .register_entity(FlowAttributeSet::default());
+        let start_metric_set = pipeline_ctx
+            .metrics_registry()
+            .register_metric_set_for_entity::<FlowSignalsIncomingMetrics>(entity_key);
+        let duration_metric_set = pipeline_ctx
+            .metrics_registry()
+            .register_metric_set_for_entity::<FlowDurationMetrics>(entity_key);
+        let outgoing_metric_set = pipeline_ctx
+            .metrics_registry()
+            .register_metric_set_for_entity::<FlowSignalsOutgoingMetrics>(entity_key);
+
+        // Create an EffectHandler with both flow_metric roles.
+        let (_snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
+        let mut eh = EffectHandler::<u64>::new(
+            test_node("end_node"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+        );
+        eh.set_flow_roles(
+            true,
+            true,
+            Some(start_metric_set),
+            Some(duration_metric_set),
+            Some(outgoing_metric_set),
+            true,
+        );
+
+        // Record two observations — should accumulate in the local Mmsc,
+        // not touch the MetricSet yet.
+        eh.record_flow_signals_incoming(10);
+        eh.record_flow_signals_incoming(20);
+        eh.record_flow_duration(1000);
+        eh.record_flow_duration(2000);
+        eh.record_flow_signals_outgoing(7);
+        eh.record_flow_signals_outgoing(8);
+
+        let start_acc = eh
+            .flow
+            .incoming
+            .signals_incoming
+            .as_ref()
+            .unwrap()
+            .1
+            .get()
+            .get();
+        assert_eq!(
+            start_acc.count, 2,
+            "start item Mmsc should have 2 observations"
+        );
+        assert!((start_acc.sum - 30.0).abs() < f64::EPSILON);
+
+        let acc = eh.flow.end.duration.as_ref().unwrap().1.get().get();
+        assert_eq!(acc.count, 2, "local Mmsc should have 2 observations");
+        assert!((acc.sum - 3000.0).abs() < f64::EPSILON);
+        let produced_acc = eh.flow.end.signals_outgoing.as_ref().unwrap().1.get().get();
+        assert_eq!(
+            produced_acc.count, 2,
+            "stop item Mmsc should have 2 observations"
+        );
+        assert!((produced_acc.sum - 15.0).abs() < f64::EPSILON);
+
+        // MetricSet should still be empty before report.
+        let ms_snap = eh
+            .flow
+            .end
+            .duration
+            .as_ref()
+            .unwrap()
+            .0
+            .compute_duration
+            .get();
+        assert_eq!(ms_snap.count, 0, "MetricSet should be empty before report");
+
+        // report_flow_metrics drains the accumulator into the MetricSet.
+        eh.report_flow_metrics();
+
+        // Accumulators should be drained.
+        let start_acc_after = eh
+            .flow
+            .incoming
+            .signals_incoming
+            .as_ref()
+            .unwrap()
+            .1
+            .get()
+            .get();
+        assert_eq!(
+            start_acc_after.count, 0,
+            "start accumulator should be drained"
+        );
+        let acc_after = eh.flow.end.duration.as_ref().unwrap().1.get().get();
+        assert_eq!(acc_after.count, 0, "duration accumulator should be drained");
+        let produced_acc_after = eh.flow.end.signals_outgoing.as_ref().unwrap().1.get().get();
+        assert_eq!(
+            produced_acc_after.count, 0,
+            "stop item accumulator should be drained"
+        );
+
+        // Another record + report cycle should work independently.
+        eh.record_flow_duration(500);
+        eh.report_flow_metrics();
+        let acc_final = eh.flow.end.duration.as_ref().unwrap().1.get().get();
+        assert_eq!(
+            acc_final.count, 0,
+            "accumulator drained after second report"
+        );
+    }
+
+    /// When flow_metrics are active, `begin_process_timing` arms the marker and
+    /// `take_elapsed_since_send_marker_ns` reports a non-zero delta after work.
+    #[test]
+    fn flow_metric_marker_accumulates_after_begin_process_timing() {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh =
+            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        eh.set_flow_roles(true, false, None, None, None, true);
+        assert!(eh.flow.active);
+
+        eh.begin_process_timing();
+
+        // Burn a small amount of CPU so the elapsed delta is non-zero on every
+        // platform we test on.
+        let mut value = 0u64;
+        for i in 0..10_000 {
+            value = value.wrapping_add(std::hint::black_box(i));
+        }
+        let _ = std::hint::black_box(value);
+
+        let ns = eh.take_elapsed_since_send_marker_ns();
+        assert!(
+            ns > 0,
+            "take_elapsed_since_send_marker_ns should be non-zero after begin_process_timing, got {ns}"
+        );
+    }
+
+    /// Without `begin_process_timing`, `take_elapsed_since_send_marker_ns`
+    /// returns 0 (no marker armed).
+    #[test]
+    fn flow_metric_marker_returns_zero_when_unarmed() {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh =
+            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        eh.set_flow_roles(true, false, None, None, None, true);
+        assert_eq!(eh.take_elapsed_since_send_marker_ns(), 0);
+    }
+}

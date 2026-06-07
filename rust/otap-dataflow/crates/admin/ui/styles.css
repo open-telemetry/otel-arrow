@@ -1,0 +1,18 @@
+/* Base visual primitives shared across pages/modules. Keep this file minimal. */
+body {
+  background: radial-gradient(circle at top, #1e293b 0, #020617 50%, #000 100%);
+}
+
+/* Card chrome is reused by the dashboard sections and popovers. */
+.card {
+  backdrop-filter: blur(10px);
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+/* Connection indicator dot used in the header status area. */
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+}

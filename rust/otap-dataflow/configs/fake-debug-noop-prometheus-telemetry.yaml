@@ -1,0 +1,61 @@
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              type: prometheus
+              config:
+                host: "0.0.0.0"
+                port: 9090
+                path: "/metrics"
+      views:
+        - selector:
+            scope_name: "receiver.traffic_generator"
+            instrument_name: "logs.produced"
+          stream:
+            name: "otlp.logs.produced.count"
+            description: "Count of logs produced"
+        - selector:
+            scope_name: "processor.debug.pdata"
+            instrument_name: "logs.consumed"
+          stream:
+            name: "debug.logs.consumed.count"
+            description: "Count of log messages consumed by debug processor"
+    resource:
+      service.name: "fake-debug-noop-service"
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_signal_count: 1000
+                max_batch_size: 1000
+                signals_per_second: 1000
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          debug:
+            type: processor:debug
+            config:
+              verbosity: basic
+          noop:
+            type: exporter:noop
+            config:
+
+        connections:
+          - from: receiver
+            to: debug
+          - from: debug
+            to: noop

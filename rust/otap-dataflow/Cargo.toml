@@ -1,0 +1,399 @@
+[workspace]
+members = [
+    "benchmarks",
+    "crates/*",
+    "xtask"
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["OpenTelemetry"]
+edition = "2024"
+repository = "https://github.com/open-telemetry/otel-arrow"
+license = "Apache-2.0"
+publish = false
+rust-version = "1.87.0"
+
+[package]
+name = "otap-df"
+version = "0.1.0"
+description = "OpenTelemetry Rust Dataflow Engine supporting natively OTLP and OTAP Data Formats"
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords = ["OpenTelemetry", "OTLP", "OTAP", "Dataflow", "Engine"]
+categories = ["asynchronous", "network-programming"]
+
+[[bin]]
+name = "df_engine"
+path = "src/main.rs"
+
+[dependencies]
+otap-df-config.workspace = true
+otap-df-contrib-nodes.workspace = true
+otap-df-controller.workspace = true
+otap-df-core-nodes.workspace = true
+otap-df-engine.workspace = true
+otap-df-otap.workspace = true
+clap.workspace = true
+mimalloc = { workspace = true, optional = true }
+dhat = { workspace = true, optional = true }
+cfg-if.workspace = true
+
+[target.'cfg(not(windows))'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
+
+[workspace.dependencies]
+otap-df-admin-api = { path = "crates/admin-api" }
+otap-df-admin-types = { path = "crates/admin-types" }
+otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
+otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
+otap-df-config = { path = "crates/config" }
+otap-df-contrib-nodes = { path = "crates/contrib-nodes" }
+otap-df-control-channel = { path = "crates/control-channel" }
+otap-df-controller = { path = "crates/controller" }
+otap-df-core-nodes = { path = "crates/core-nodes" }
+otap-df-engine = { path = "crates/engine" }
+otap-df-otap = { path = "crates/otap" }
+otap-test-tls-certs = { package = "otap-df-test-tls-certs", path = "crates/otap-test-tls-certs" }
+otap-df-pdata = { path = "crates/pdata" }
+otap-df-pdata-views = { path = "crates/pdata-views" }
+otap-df-telemetry = { path = "crates/telemetry" }
+quiver = { package = "otap-df-quiver", path = "crates/quiver" }
+data_engine_expressions = { path = "../experimental/query_engine/expressions" }
+data_engine_kql_parser = { path = "../experimental/query_engine/kql-parser" }
+data_engine_parser_abstractions = { path = "../experimental/query_engine/parser-abstractions"}
+
+ahash = "0.8.11"
+arc-swap = "1.7"
+arrayvec = "0.7.6"
+arrow = { version = "58.1", features=["prettyprint"] }
+arrow-buffer = { version = "58.1" }
+arrow-ipc = { version = "58.1", features=["zstd"] }
+arrow-schema = { version = "58.1" }
+arrow-array = { version = "58.1" }
+arrow-cast = { version = "58.1" }
+arrow-select = { version = "58.1" }
+async-stream = "0.3.6"
+async-trait = "0.1.88"
+async-unsync = "0.3.0"
+axum = "0.8.4"
+base64 = "0.22.1"
+bitflags = "2.10"
+bytes = "1.11.1"
+bytemuck = "1.24"
+blake3 = "1.5.5"
+cfg-if = "1.0.4"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = { version = "0.10" }
+ciborium = "0.2.2"
+clap = { version = "4.5.42", features = ["derive"] }
+clap_complete = "4.5.55"
+core_affinity = "0.8.3"
+criterion = "0.8.0"
+data-encoding = "2.9.0"
+datafusion = { version = "53.0.0", default-features = false }
+dhat = "0.3.3"
+fluke-hpack = "0.3.1"
+flume = { version = "0.12.0", default-features = false, features = ["async"] }
+futures = "0.3.32"
+futures-core = "0.3.32"
+futures-channel = "0.3.32"
+futures-timer = "3.0.3"
+async-channel = { version = "2.5.0" }
+hashbrown = { version = "0.17", features = ["equivalent"] }
+http = "1.4"
+humantime = "2.3.0"
+humantime-serde = "1.1.1"
+iso8601 = "0.6.3"
+itoa = "1"
+itertools = "0.14.0"
+k8s-openapi = { version = "0.27.0", features = ["latest"] }
+kube = {version = "3.0.1", features = ["derive"] }
+linkme = "0.3.35"
+local-sync = "0.1.1"
+miette = { version="7.6.0", features = ["fancy"] }
+mimalloc = { version = "0.1.48", features = ["extended", "v3", "debug"] }
+libmimalloc-sys = { version = "0.1.44", features = ["extended", "v3"] }
+tikv-jemallocator = { version = "0.6.1" }
+tikv-jemalloc-ctl = { version = "0.6.1", features = ["stats"] }
+tikv-jemalloc-sys = "0.6.1"
+memchr = "2.8.0"
+memmap2 = "0.9"
+memory-stats = "1"
+libc = "0.2"
+nix = { version = "0.31.0", features = ["process", "signal", "fs", "mman"] }
+notify = "8.0"  # Uses platform-native backend: inotify (Linux), kqueue (macOS), ReadDirectoryChanges (Windows)
+num_enum = "0.7"
+object_store = {version = "0.13.2", default-features = false}
+once_cell = "1.20.2"
+
+# TODO: Note this dependency is duplicate with crates/pdata/src/proto
+# which generates the code from a submodule. Ideally we could share
+# this dependency, as it means moving the derive macros used in our
+# tests upstream. This is currently used by experimental logs
+# exporters, hence the "logs" feature.
+opentelemetry-proto = { version = "0.31", default-features = false, features = ["gen-tonic-messages", "logs"]}
+
+opentelemetry = "0.31.0"
+opentelemetry_sdk = { version = "0.31.0", default-features = false, features = ["metrics", "internal-logs"] }
+opentelemetry-stdout = { version = "0.31.0", default-features = false, features = ["metrics"] }
+opentelemetry-otlp = { version = "0.31.1", default-features = false, features = ["http-proto", "reqwest-blocking-client", "metrics", "internal-logs"] }
+opentelemetry-prometheus = { version = "0.31.0", default-features = false, features = ["internal-logs"] }
+parking_lot = "0.12.5"
+paste = "1"
+parquet = { version = "58.1", default-features = false, features = ["arrow", "async", "object_store"]}
+pest = "2.8"
+pest_derive = "2.8"
+portpicker = "0.1.1"
+pretty_assertions = "1.4.1"
+proc-macro2 = "1.0"
+prometheus = "0.14.0"
+prost = "0.14"
+prost-types = "0.14"
+quote = "1.0"
+rand = "0.10.0"
+rcgen = "0.14"
+regex = "1.12"
+roaring = "0.11.2"
+ryu = "1"
+rustls = { version = "0.23.22", default-features = false, features = ["std", "tls12"] }
+rustls-pki-types = { version = "1.11", features = ["std"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
+rustls-native-certs = "0.8.2"
+rustls-openssl = "0.3"
+rustls-symcrypt = "0.2.2"
+schemars = { version = "1.0.0" }
+serde = { version = "1.0.228", features = ["derive", "rc"] }
+serde_cbor = "0.11.2"
+serde_json = { version = "1.0.149" }
+serde_yaml = "0.9.34-deprecated"        # Deprecated, but no good alternative yet
+crc32fast = "1.4.2"
+replace_with = "0.1.8"
+simdutf8 = "0.1.5"
+slotmap = "1.0.7"
+smallvec = { version = "1.15" , features = ["union", "const_new"] }
+socket2 = { version = "0.6.1", features = ["all"] }
+ipnet = "2.11.0"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+zstd = "0.13"
+sysinfo = "0.39"
+tempfile = "3"
+thiserror = "2.0.17"
+tracing = { version = ">=0.1.40", default-features = false }
+tracing-subscriber = { version = "0.3", default-features = false }
+tokio = { version = "1.48.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std", "process"] }
+tokio-stream = "0.1.17"
+tokio-util = { version = "0.7.17" }
+tonic = { version = "0.14", default-features = false, features = [
+    "channel",
+    "codegen",
+    "deflate",
+    "gzip",
+    "router",
+    "server",
+    "transport",
+    "zstd",
+] }
+tonic-middleware = "0.4.0"
+tonic-prost = "0.14"
+tower = "0.5.2"
+tower-service = "0.3"
+hyper-util = "0.1.17"
+hyper = { version = "1", features = ["http1", "server", "client"] }
+http-body-util = "0.1"
+trybuild = "1.0"
+unsync = "0.1.2"
+url = "2.5.7"
+uuid = { version = "1.17.0", features = ["v4", "v7"] }
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "b64667aea6a93b0916a76962cada13a06bdfb40e"}
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "b64667aea6a93b0916a76962cada13a06bdfb40e" }
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "b64667aea6a93b0916a76962cada13a06bdfb40e"}
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "b64667aea6a93b0916a76962cada13a06bdfb40e"}
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "b64667aea6a93b0916a76962cada13a06bdfb40e"}
+sha1 = { version = "0.11" }
+sha2 = "0.10.9"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+zip = "=8.6.0"
+byte-unit = { version = "5.2.0", features = ["serde"] }
+cpu-time = "1.0.0"
+one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "293b7d3b135f862bf3a128a98b2a9715c97f3994" }
+
+azure_core = {version = "1.0.0", default-features = false }
+azure_identity = {version = "1.0.0", default-features = false }
+flate2 = "1.1.5"
+
+# Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).
+# TLS remains enabled through rustls-no-provider, with the provider installed at startup via crypto-* features.
+reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no-provider", "json", "query", "http2", "stream", "charset", "system-proxy"] }
+
+time = "0.3.44"
+wiremock = "0.6.5"
+anyhow = "1.0.98"
+crossterm = "0.29"
+data_engine_recordset = { path = '../experimental/query_engine/engine-recordset' }
+eventheader_dynamic = "0.5.0"
+include_dir = "0.7.4"
+mime_guess = "2.0.5"
+minijinja = "2"
+otap-df-admin = { path = 'crates/admin' }
+otap-df-channel = { path = 'crates/channel' }
+otap-df-engine-macros = { path = 'crates/engine-macros' }
+otap-df-query-engine-languages = { path = 'crates/query-engine-languages' }
+otap-df-query-engine = { path = 'crates/query-engine' }
+otap-df-quiver = { path = 'crates/quiver' }
+otap-df-state = { path = 'crates/state' }
+otap-df-telemetry-macros = { path = 'crates/telemetry-macros' }
+prost-build = "0.14"
+ratatui = "0.30"
+testcontainers = "0.27"
+toml = "1.0.0"
+tonic-prost-build = "0.14"
+tracepoint = { version = "0.5.0", features = ["user_events"] }
+tracepoint_decode = "0.5.0"
+urlencoding = "2"
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "47ece283fa10334cca14c2dd6311824c052c08e3" }
+
+[patch."https://github.com/open-telemetry/otel-arrow"]
+otap-df-pdata = { path = "crates/pdata" }
+otap-df-pdata-views = { path = "crates/pdata-views" }
+
+[features]
+# ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof
+default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws"]
+jemalloc = ["dep:tikv-jemallocator", "otap-df-engine/jemalloc"]
+mimalloc = ["dep:mimalloc"]
+azure = ["otap-df-otap/azure"]
+aws = ["otap-df-otap/aws"]
+unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
+unchecked-index = []
+unchecked-arithmetic = []
+dhat-heap = [
+    "dep:dhat",
+]
+
+# Dev/test tooling (traffic generator) and the otap integration tests
+# that exercise it. Activating this from the workspace default keeps
+# `cargo test` running the full suite locally; CI jobs that drop
+# `dev-tools` (e.g. the Linux ARM `build_nonrequired` job) avoid the
+# weaver / gix / reqwest / native-tls / openssl-sys C build.
+dev-tools = ["otap-df-core-nodes/dev-tools", "otap-df-otap/integration-tests"]
+
+# Admin UI live log streaming over WebSocket.
+admin-live-logs-ws = ["otap-df-controller/admin-live-logs-ws"]
+
+# Cryptographic provider selection (mutually exclusive).
+# Exactly one must be enabled when using TLS or any rustls-backed dependency (e.g. reqwest).
+crypto-ring = ["otap-df-otap/crypto-ring"]
+crypto-aws-lc = ["otap-df-otap/crypto-aws-lc"]
+crypto-symcrypt = ["otap-df-otap/crypto-symcrypt"]
+crypto-openssl = ["otap-df-otap/crypto-openssl"]
+
+# Contrib exporters (opt-in) - now in contrib-nodes
+contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
+geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
+azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
+# Contrib receivers (opt-in) - now in contrib-nodes
+contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
+user_events-receiver = ["otap-df-contrib-nodes/user_events-receiver"]
+user_events-eventheader = ["otap-df-contrib-nodes/user_events-eventheader"]
+# Contrib processors (opt-in) - now in contrib-nodes
+contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
+condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]
+recordset-kql-processor = ["otap-df-contrib-nodes/recordset-kql-processor"]
+resource-validator-processor = ["otap-df-contrib-nodes/resource-validator-processor"]
+# Contrib receivers (opt-in) - Windows-only
+etw-receiver = ["otap-df-contrib-nodes/etw-receiver"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+
+[workspace.lints.rust]
+# General compatibility lints
+rust_2018_idioms = { level = "warn", priority = -1 }
+rust_2021_compatibility = { level = "warn", priority = -1 }
+rust_2024_compatibility = { level = "warn", priority = -1 }
+future_incompatible = { level = "warn", priority = -1 }
+nonstandard_style = { level = "warn", priority = -1 }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)", "cfg(validation_tests)"] }
+
+# Strict safety & quality standards
+missing_docs = "deny"
+unsafe_code = "deny"
+unstable_features = "deny"
+unused_import_braces = "deny"
+unused_qualifications = "deny"
+unused_results = "deny"
+trivial_numeric_casts = "deny"
+variant_size_differences = "deny"
+unused_extern_crates = "deny"
+
+# Additional helpful warnings
+unused_lifetimes = "warn"
+semicolon_in_expressions_from_macros = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_macro_rules = "warn"
+
+[workspace.lints.clippy]
+# Strong defaults: deny problematic patterns
+cargo = { level = "deny", priority = -1 }
+correctness = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+restriction = { level = "allow", priority = -1 }
+
+# Specific Clippy lint customizations
+unwrap_used = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+must-use-candidate = "warn"
+await_holding_lock = "warn"
+manual_async_fn = "warn"
+dbg_macro = "warn"
+explicit_into_iter_loop = "warn"
+
+# Explicitly allowed practical exceptions
+multiple_crate_versions = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+wrong_self_convention = "allow"
+module_name_repetitions = "allow"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+missing_crate_level_docs = "deny"
+
+[profile.release]
+debug = "line-tables-only"  # minimum required for profiling
+
+[profile.profiling]
+inherits = "release"
+debug = 2
+
+# A more in-depth analysis is necessary to determine the optimal parameters for the release profile.
+#[profile.release]
+#lto = "thin"
+#strip = true
+
+[profile.bench]
+inherits = "release"
+opt-level = 3
+debug = false
+incremental = false
+lto = "fat"
+codegen-units = 1
+# Potentially override lto for faster builds:
+# lto = "thin"
+# Potentially override debug/strip for easier debugging:
+# debug = true
+# strip = "none"
+
+# cargo build --profile release-debug
+[profile.release-debug]
+inherits = "release"
+debug = true  # Or 2 for full debug info
+strip = "none" # Keep symbols and debug info
+panic = "unwind"

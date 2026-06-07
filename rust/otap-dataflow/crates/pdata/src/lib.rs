@@ -1,0 +1,147 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! PData support modules.
+
+/// Module contains traits and utilities for OTLP (OpenTelemetry
+/// Protocol) message types.
+pub mod otlp;
+
+/// Module contains the underlying OTLP and OTAP protobuf objects.
+pub mod proto;
+
+/// Module contains the views for OTAP <-> OTLP objects.
+pub mod views;
+
+pub mod error;
+pub mod otap;
+pub mod schema;
+
+pub mod arrays;
+pub(crate) mod decode;
+pub mod encode;
+pub(crate) mod payload;
+
+pub use otap::OtapArrowRecords;
+pub use otlp::OtlpProtoBytes;
+pub use payload::{OtapPayload, OtapPayloadHelpers};
+
+/// Testing support
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
+// The validation module is only used for integration tests with the OpenTelemetry Collector.
+// The collector is only built on Linux in CI, so we only compile these tests on Linux.
+#[cfg(all(test, target_os = "linux"))]
+mod validation;
+
+pub use decode::decoder::Consumer;
+pub use encode::producer::Producer;
+
+use otap_df_config::ConversionOptions;
+
+/// Try to convert with options, including limits.
+pub trait TryFromWithOptions<T>: Sized {
+    /// The error type.
+    type Error;
+
+    /// Performs the conversion
+    fn try_from_with_options(value: T, opts: ConversionOptions) -> Result<Self, Self::Error>;
+
+    /// Performs a default conversion
+    fn try_from_with_default(value: T) -> Result<Self, Self::Error> {
+        TryFromWithOptions::<T>::try_from_with_options(value, ConversionOptions::default())
+    }
+}
+
+/// Try to convert with options, including limits.
+pub trait TryIntoWithOptions<T>: Sized {
+    /// The error type.
+    type Error;
+
+    /// Performs the conversion
+    fn try_into_with_options(self, opts: ConversionOptions) -> Result<T, Self::Error>;
+
+    /// Performs a default conversion
+    fn try_into_with_default(self) -> Result<T, Self::Error> {
+        self.try_into_with_options(ConversionOptions::default())
+    }
+}
+
+impl<T, U> TryIntoWithOptions<U> for T
+where
+    U: TryFromWithOptions<T>,
+{
+    type Error = U::Error;
+
+    #[inline]
+    fn try_into_with_options(self, opts: ConversionOptions) -> Result<U, Self::Error> {
+        U::try_from_with_options(self, opts)
+    }
+}
+
+/// TraceID identifier of a Trace
+#[derive(Eq, PartialEq, Clone, Copy, Debug, Default)]
+pub struct TraceID([u8; 16]);
+
+impl TraceID {
+    /// creates a new instance of the TraceID by copying the bytes
+    #[must_use]
+    pub const fn new(value: &[u8; 16]) -> TraceID {
+        TraceID(*value)
+    }
+}
+
+impl From<[u8; 16]> for TraceID {
+    fn from(tid: [u8; 16]) -> Self {
+        TraceID(tid)
+    }
+}
+
+impl From<TraceID> for Vec<u8> {
+    fn from(tid: TraceID) -> Self {
+        tid.0.to_vec()
+    }
+}
+
+impl TryFrom<&[u8]> for TraceID {
+    type Error = std::array::TryFromSliceError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let id_bytes: [u8; 16] = value.try_into()?;
+        Ok(TraceID::from(id_bytes))
+    }
+}
+
+/// SpanID identifier of a Span
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SpanID([u8; 8]);
+
+impl SpanID {
+    /// creates a new instance of the SpanID by copying the bytes
+    #[must_use]
+    pub const fn new(value: &[u8; 8]) -> SpanID {
+        SpanID(*value)
+    }
+}
+
+impl From<[u8; 8]> for SpanID {
+    fn from(sid: [u8; 8]) -> Self {
+        SpanID(sid)
+    }
+}
+
+impl From<SpanID> for Vec<u8> {
+    fn from(sid: SpanID) -> Self {
+        sid.0.to_vec()
+    }
+}
+
+impl TryFrom<&[u8]> for SpanID {
+    type Error = std::array::TryFromSliceError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let id_bytes: [u8; 8] = value.try_into()?;
+        Ok(SpanID::from(id_bytes))
+    }
+}

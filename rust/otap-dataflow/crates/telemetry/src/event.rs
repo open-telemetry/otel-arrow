@@ -1,0 +1,660 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Definition of all signals/conditions that drive state transitions and log events.
+
+use crate::log_tap::InternalLogTapDropCounter;
+use crate::self_tracing::{LogRecord, format_log_record_to_string};
+use otap_df_config::{DeployedPipelineKey, NodeId, node::NodeKind, observed_state::SendPolicy};
+use serde::Serialize;
+use serde::ser::Serializer;
+use std::fmt;
+use std::time::SystemTime;
+
+/// A sharable/clonable observed event reporter sending events to an `ObservedStore`.
+///
+/// Engine lifecycle events (Admitted, Ready, …) can optionally be routed through
+/// a dedicated unbounded channel so they are never silently dropped under
+/// backpressure.  Log events always use the bounded/lossy path controlled by
+/// [`SendPolicy`].
+#[derive(Clone)]
+pub struct ObservedEventReporter {
+    policy: SendPolicy,
+    sender: flume::Sender<ObservedEvent>,
+    drop_counter: Option<InternalLogTapDropCounter>,
+    /// Dedicated reliable sender for engine lifecycle events.
+    /// When `Some`, [`report`](Self::report) bypasses the lossy path and uses
+    /// a blocking send on the unbounded engine channel.
+    engine_sender: Option<flume::Sender<EngineEvent>>,
+}
+
+impl ObservedEventReporter {
+    /// Creates a new `ObservedEventReporter` with the given sender channel.
+    ///
+    /// Engine events sent via [`report`](Self::report) will follow the lossy
+    /// path governed by `policy`.  Use [`new_with_engine_sender`](Self::new_with_engine_sender)
+    /// to guarantee reliable delivery for engine events.
+    #[must_use]
+    pub const fn new(policy: SendPolicy, sender: flume::Sender<ObservedEvent>) -> Self {
+        Self {
+            policy,
+            sender,
+            drop_counter: None,
+            engine_sender: None,
+        }
+    }
+
+    /// Creates a reporter that delivers engine events reliably through a
+    /// dedicated unbounded channel while log events still use the bounded/lossy
+    /// path.
+    #[must_use]
+    pub const fn new_with_engine_sender(
+        policy: SendPolicy,
+        sender: flume::Sender<ObservedEvent>,
+        engine_sender: flume::Sender<EngineEvent>,
+    ) -> Self {
+        Self {
+            policy,
+            sender,
+            drop_counter: None,
+            engine_sender: Some(engine_sender),
+        }
+    }
+
+    /// Attach a counter for logs dropped before they reach retention.
+    #[must_use]
+    pub fn with_drop_counter(mut self, drop_counter: InternalLogTapDropCounter) -> Self {
+        self.drop_counter = Some(drop_counter);
+        self
+    }
+
+    /// Returns the configured send policy. Test-only accessor used to verify
+    /// that the policy was threaded through correctly during construction.
+    #[cfg(test)]
+    pub(crate) fn policy(&self) -> &SendPolicy {
+        &self.policy
+    }
+
+    /// Report an engine event.
+    ///
+    /// When a dedicated engine sender is configured, the event is delivered
+    /// reliably (blocking send on an unbounded channel).  Otherwise it falls
+    /// back to the shared lossy path.
+    pub fn report(&self, event: EngineEvent) {
+        if let Some(engine_sender) = &self.engine_sender {
+            if let Err(e) = engine_sender.send(event) {
+                crate::raw_error!(
+                    "engine.channel.disconnected",
+                    message = "Engine channel disconnected, dropping engine event",
+                    event = ?e.into_inner()
+                );
+            }
+        } else {
+            // Fallback: lossy path (used in tests and backward-compat scenarios).
+            self.observe(ObservedEvent::Engine(event))
+        }
+    }
+
+    /// Report a log event.
+    pub fn log(&self, event: LogEvent) {
+        self.observe(ObservedEvent::Log(event))
+    }
+
+    fn observe(&self, event: ObservedEvent) {
+        let is_log = matches!(event, ObservedEvent::Log(_));
+        match self.policy.blocking_timeout {
+            None => match self.sender.try_send(event) {
+                Ok(_) => {}
+                Err(err) => {
+                    if is_log {
+                        if let Some(drop_counter) = &self.drop_counter {
+                            drop_counter.increment();
+                        }
+                    }
+                    if !self.policy.console_fallback {
+                        return;
+                    }
+                    match err {
+                        flume::TrySendError::Full(event) => {
+                            crate::raw_error!("observed.channel.full", message = "Channel full, dropping observed event", event = ?event);
+                        }
+                        flume::TrySendError::Disconnected(event) => {
+                            crate::raw_error!("observed.channel.disconnected", message = "Disconnect, dropping observed event", event = ?event);
+                        }
+                    }
+                }
+            },
+            Some(timeout) => match self.sender.send_timeout(event, timeout) {
+                Ok(_) => {}
+                Err(err) => {
+                    if is_log {
+                        if let Some(drop_counter) = &self.drop_counter {
+                            drop_counter.increment();
+                        }
+                    }
+                    if !self.policy.console_fallback {
+                        return;
+                    }
+                    match err {
+                        flume::SendTimeoutError::Timeout(event) => {
+                            crate::raw_error!("observed.channel.timeout", message = "Timeout, dropping observed event", event = ?event);
+                        }
+                        flume::SendTimeoutError::Disconnected(event) => {
+                            crate::raw_error!("observed.channel.disconnected", message = "Disconnect, dropping observed event", event = ?event);
+                        }
+                    }
+                }
+            },
+        };
+    }
+}
+
+/// The observed event
+#[derive(Debug, Clone, Serialize)]
+pub enum ObservedEvent {
+    /// The engine event has pipeline key and structured information.
+    Engine(EngineEvent),
+    /// The log event.
+    Log(LogEvent),
+}
+
+/// An observed event emitted by the engine.
+#[derive(Debug, Clone, Serialize)]
+pub struct LogEvent {
+    /// Timestamp of when the event was observed.
+    #[serde(serialize_with = "ts_to_rfc3339")]
+    pub time: SystemTime,
+    /// Structured log record.
+    pub record: LogRecord,
+}
+
+impl fmt::Display for LogEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            format_log_record_to_string(Some(self.time), &self.record)
+        )
+    }
+}
+
+impl fmt::Display for ObservedEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ObservedEvent::Engine(event) => write!(f, "Engine({:?})", event.key),
+            ObservedEvent::Log(event) => write!(f, "Log({})", event),
+        }
+    }
+}
+
+/// An observed event emitted by the engine.
+#[derive(Debug, Clone, Serialize)]
+pub struct EngineEvent {
+    // ---- Source identification ----
+    /// Unique key identifying the pipeline instance.
+    pub key: DeployedPipelineKey,
+    /// When reporting a node-level event, the node it applies to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<NodeId>,
+    /// When reporting a node-level event, the kind of node it applies to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_kind: Option<NodeKind>,
+
+    // ---- Event context ----
+    /// Timestamp of when the event was observed.
+    #[serde(serialize_with = "ts_to_rfc3339")]
+    pub time: SystemTime,
+    /// One of the defined event types (e.g. `StartRequested`, `Ready`, `RuntimeError`, ...).
+    pub r#type: EventType,
+    /// Message content for this event.
+    ///
+    /// TODO: Consider replacing String with &'static str, then in places
+    /// that format! strings switch to LogRecord structured values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Grouping of event types by category.
+#[derive(Debug, Clone, Serialize)]
+pub enum EventType {
+    /// Request-level events.
+    Request(RequestEvent),
+    /// Success/normal-progress events.
+    Success(SuccessEvent),
+    /// Error/failure events.
+    Error(ErrorEvent),
+}
+
+/// Request-level events
+#[derive(Debug, Clone, Serialize)]
+pub enum RequestEvent {
+    /// A request to (re)start the pipeline lifecycle from a stopped state.
+    StartRequested,
+    /// Begin graceful shutdown and drain existing work.
+    ShutdownRequested,
+    /// Request graceful deletion (drain if needed, then delete).
+    DeleteRequested,
+    /// Request immediate deletion (skip draining; preempt everything).
+    ForceDeleteRequested,
+}
+
+/// Success/normal events
+#[derive(Debug, Clone, Serialize)]
+pub enum SuccessEvent {
+    /// Controller accepted the pipeline and allows startup to proceed.
+    Admitted,
+    /// All the nodes are initialized and the pipeline tasks are ready to start.
+    Ready,
+    /// An update plan has been accepted and should begin applying.
+    UpdateAdmitted,
+    /// The update completed successfully and the new spec is active.
+    UpdateApplied,
+    /// Rollback finished successfully; last known good is restored.
+    RollbackComplete,
+    /// Graceful shutdown was latched and receivers were asked to stop new ingress.
+    IngressDrainStarted,
+    /// All receivers finished their drain work and downstream shutdown may proceed.
+    ReceiversDrained,
+    /// Shutdown has propagated from receivers to processors/exporters.
+    DownstreamShutdownStarted,
+    /// All ongoing work has drained to zero; safe to stop or delete.
+    Drained,
+    /// Resource teardown has finished; nothing remains.
+    Deleted,
+}
+
+/// Error/failure events
+#[derive(Debug, Clone, Serialize)]
+pub enum ErrorEvent {
+    /// Admission refused the pipeline.
+    /// Reasons might include invalid config, resource limits, ...
+    AdmissionError(ErrorSummary),
+    /// Startup aborted because configuration was invalid/incompatible.
+    ConfigRejected(ErrorSummary),
+    /// The update could not complete; transition to rollback.
+    UpdateFailed(ErrorSummary),
+    /// Rollback could not complete successfully.
+    RollbackFailed(ErrorSummary),
+    /// Draining failed or timed out according to policy.
+    DrainError(ErrorSummary),
+    /// Graceful shutdown reached its deadline before natural drain completion.
+    DrainDeadlineReached,
+    /// An unrecoverable runtime fault/crash occurred.
+    RuntimeError(ErrorSummary),
+    /// An error occurred during teardown.
+    DeleteError(ErrorSummary),
+}
+
+/// A structured summary of an error, suitable for serialization and user display.
+#[derive(Debug, Clone, Serialize)]
+pub enum ErrorSummary {
+    /// Summary of a pipeline-level error.
+    Pipeline {
+        /// High-level error category (connect/configuration/transport/etc.).
+        error_kind: String,
+        /// User-facing error message.
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        /// Flattened source chain for deeper debugging, if available.
+        source: Option<String>,
+    },
+
+    /// Summary of a node-level error.
+    Node {
+        /// Identifier of the node emitting the error.
+        node: String,
+        /// Node classification (e.g. `exporter`, `processor`).
+        node_kind: NodeKind,
+        /// High-level error category (connect/configuration/transport/etc.).
+        error_kind: String,
+        /// User-facing error message.
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        /// Flattened source chain for deeper debugging, if available.
+        source: Option<String>,
+    },
+}
+
+impl EngineEvent {
+    /// Create an `Admitted` engine-level event.
+    #[must_use]
+    pub fn admitted(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::Admitted),
+            message,
+        }
+    }
+
+    /// Create a `Ready` pipeline-level event.
+    #[must_use]
+    pub fn ready(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::Ready),
+            message,
+        }
+    }
+
+    /// Create an `UpdateAdmitted` pipeline-level event.
+    #[must_use]
+    pub fn update_admitted(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::UpdateAdmitted),
+            message,
+        }
+    }
+
+    /// Create an `UpdateApplied` pipeline-level event.
+    #[must_use]
+    pub fn update_applied(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::UpdateApplied),
+            message,
+        }
+    }
+
+    /// Create a `RollbackComplete` pipeline-level event.
+    #[must_use]
+    pub fn rollback_complete(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::RollbackComplete),
+            message,
+        }
+    }
+
+    /// Create an `IngressDrainStarted` pipeline-level event.
+    #[must_use]
+    pub fn ingress_drain_started(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::IngressDrainStarted),
+            message,
+        }
+    }
+
+    /// Create a `ReceiversDrained` pipeline-level event.
+    #[must_use]
+    pub fn receivers_drained(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::ReceiversDrained),
+            message,
+        }
+    }
+
+    /// Create a `DownstreamShutdownStarted` pipeline-level event.
+    #[must_use]
+    pub fn downstream_shutdown_started(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::DownstreamShutdownStarted),
+            message,
+        }
+    }
+
+    /// Create a `Drained` pipeline-level event.
+    #[must_use]
+    pub fn drained(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::Drained),
+            message,
+        }
+    }
+
+    /// Create a `Deleted` pipeline-level event.
+    #[must_use]
+    pub fn deleted(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Success(SuccessEvent::Deleted),
+            message,
+        }
+    }
+
+    /// Create an `AdmissionError` engine-level event.
+    #[must_use]
+    pub fn admission_error(
+        key: DeployedPipelineKey,
+        message: Option<String>,
+        error: ErrorSummary,
+    ) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Error(ErrorEvent::AdmissionError(error)),
+            message,
+        }
+    }
+
+    /// Create a `ConfigRejected` pipeline-level event.
+    #[must_use]
+    pub fn config_rejected(
+        key: DeployedPipelineKey,
+        message: Option<String>,
+        error: ErrorSummary,
+    ) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Error(ErrorEvent::ConfigRejected(error)),
+            message,
+        }
+    }
+
+    /// Create an `UpdateFailed` pipeline-level event.
+    #[must_use]
+    pub fn update_failed(
+        key: DeployedPipelineKey,
+        message: Option<String>,
+        error: ErrorSummary,
+    ) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Error(ErrorEvent::UpdateFailed(error)),
+            message,
+        }
+    }
+
+    /// Create a `RollbackFailed` pipeline-level event.
+    #[must_use]
+    pub fn rollback_failed(
+        key: DeployedPipelineKey,
+        message: Option<String>,
+        error: ErrorSummary,
+    ) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Error(ErrorEvent::RollbackFailed(error)),
+            message,
+        }
+    }
+
+    /// Create a `DrainError` pipeline-level event.
+    #[must_use]
+    pub fn drain_error(
+        key: DeployedPipelineKey,
+        message: Option<String>,
+        error: ErrorSummary,
+    ) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Error(ErrorEvent::DrainError(error)),
+            message,
+        }
+    }
+
+    /// Create a `DrainDeadlineReached` pipeline-level event.
+    #[must_use]
+    pub fn drain_deadline_reached(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Error(ErrorEvent::DrainDeadlineReached),
+            message,
+        }
+    }
+
+    /// Create a `DeleteError` pipeline-level event.
+    #[must_use]
+    pub fn delete_error(
+        key: DeployedPipelineKey,
+        message: Option<String>,
+        error: ErrorSummary,
+    ) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Error(ErrorEvent::DeleteError(error)),
+            message,
+        }
+    }
+
+    /// Create a `RuntimeError` pipeline-level event.
+    #[must_use]
+    pub fn pipeline_runtime_error(
+        key: DeployedPipelineKey,
+        message: impl Into<String>,
+        error: ErrorSummary,
+    ) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Error(ErrorEvent::RuntimeError(error)),
+            message: Some(message.into()),
+        }
+    }
+
+    /// Create a `RuntimeError` node-level event.
+    #[must_use]
+    pub fn node_runtime_error(
+        key: DeployedPipelineKey,
+        node_id: NodeId,
+        node_kind: NodeKind,
+        message: Option<String>,
+        error: ErrorSummary,
+    ) -> Self {
+        Self {
+            key,
+            node_id: Some(node_id),
+            node_kind: Some(node_kind),
+            time: SystemTime::now(),
+            r#type: EventType::Error(ErrorEvent::RuntimeError(error)),
+            message,
+        }
+    }
+
+    /// Create a `StartRequested` request-level event.
+    #[must_use]
+    pub fn start_requested(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Request(RequestEvent::StartRequested),
+            message,
+        }
+    }
+
+    /// Create a `ShutdownRequested` request-level event.
+    #[must_use]
+    pub fn shutdown_requested(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Request(RequestEvent::ShutdownRequested),
+            message,
+        }
+    }
+
+    /// Create a `DeleteRequested` request-level event.
+    #[must_use]
+    pub fn delete_requested(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Request(RequestEvent::DeleteRequested),
+            message,
+        }
+    }
+
+    /// Create a `ForceDeleteRequested` request-level event.
+    #[must_use]
+    pub fn force_delete_requested(key: DeployedPipelineKey, message: Option<String>) -> Self {
+        Self {
+            key,
+            node_id: None,
+            node_kind: None,
+            time: SystemTime::now(),
+            r#type: EventType::Request(RequestEvent::ForceDeleteRequested),
+            message,
+        }
+    }
+}
+
+/// Serialize a `SystemTime` as an RFC 3339 string.
+fn ts_to_rfc3339<S>(t: &SystemTime, s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let dt: chrono::DateTime<chrono::Utc> = (*t).into();
+    s.serialize_str(&dt.to_rfc3339())
+}

@@ -1,0 +1,55 @@
+{
+  "engine": {
+    "telemetry": {
+      "reporting_interval": "5s",
+      "metrics": {
+        "readers": [
+          {
+            "periodic": {
+              "exporter": {
+                "console": {}
+              }
+            }
+          }
+        ]
+      },
+      "logs": {
+        "level": "info",
+        "processors": [
+          {
+            "batch": {
+              "exporter": {
+                "console": {}
+              }
+            }
+          }
+        ]
+      },
+      "resource": {
+        "service.name": "test_service",
+        "service.version": "1.0.0",
+        "instance.id": 10
+      }
+    }
+  },
+  "policies": {
+    "channel_capacity": {
+      "control": {
+        "node": 100,
+        "pipeline": 100,
+        "completion": 200
+      },
+      "pdata": 128
+    }
+  },
+  "nodes": {
+    "receiver1": {
+      "type": "urn:test:receiver:example",
+      "config": null
+    },
+    "exporter1": {
+      "type": "urn:test:exporter:example",
+      "config": null
+    }
+  }
+}

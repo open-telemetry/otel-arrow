@@ -1,0 +1,584 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Set of traits and structures used to implement receivers.
+//!
+//! A receiver is an ingress node that feeds a pipeline with data from external sources while
+//! performing the necessary conversions to produce messages in a format recognized by the rest of
+//! downstream pipeline nodes (e.g. OTLP or OTAP message format).
+//!
+//! A receiver can operate in various ways, including:
+//!
+//! 1. Listening on a socket to receive push-based telemetry data,
+//! 2. Being notified of changes in a local directory (e.g. log file monitoring),
+//! 3. Actively scraping an endpoint to retrieve the latest metrics from a system,
+//! 4. Or using any other method to receive or extract telemetry data from external sources.
+//!
+//! # Lifecycle
+//!
+//! 1. The receiver is instantiated and configured.
+//! 2. The `start` method is called, which begins the receiver's operation.
+//! 3. The receiver processes both internal control messages and external data.
+//! 4. The receiver shuts down when it receives a `Shutdown` control message or encounters a fatal
+//!    error.
+//!
+//! # Thread Safety
+//!
+//! This implementation is designed for use in both single-threaded and multi-threaded environments.
+//! The `Receiver` trait requires the `Send` bound, enabling the use of thread-safe types.
+//!
+//! # Scalability
+//!
+//! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
+//! parallel on different cores, each with its own receiver instance.
+
+use crate::Interests;
+use crate::control::{NodeControlMsg, RuntimeCtrlMsgSender};
+use crate::effect_handler::{
+    EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
+};
+use crate::error::{Error, TypedError};
+use crate::message::Sender;
+use crate::node::NodeId;
+use crate::output_router::OutputRouter;
+use crate::terminal_state::TerminalState;
+use async_trait::async_trait;
+use otap_df_channel::error::RecvError;
+use otap_df_config::PortName;
+use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
+use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::reporter::MetricsReporter;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::time::Duration;
+use tokio::net::{TcpListener, UdpSocket};
+
+/// A trait for ingress receivers (!Send definition).
+///
+/// Receivers are responsible for accepting data from external sources and converting
+/// it into messages that can be processed by the pipeline.
+#[async_trait( ? Send)]
+pub trait Receiver<PData> {
+    /// Starts the receiver and begins processing incoming external data and control messages.
+    ///
+    /// The pipeline engine will call this function to start the receiver in a separate task.
+    /// Receivers are assigned their own dedicated task at pipeline initialization because their
+    /// primary function involves interacting with the external world, and the pipeline has no
+    /// prior knowledge of when these interactions will occur.
+    ///
+    /// The `Box<Self>` signature indicates that when this method is called, the receiver takes
+    /// exclusive ownership of its instance. This approach is necessary because a receiver cannot
+    /// yield control back to the pipeline engine - it must independently manage its inputs and
+    /// processing timing. The only way the pipeline engine can interact with the receiver after
+    /// starting it is through the control message channel.
+    ///
+    /// Receivers are expected to process both internal control messages and external sources and
+    /// use the EffectHandler to send messages to the next node(s) in the pipeline.
+    ///
+    /// Important note: Receivers are expected to process internal control messages in priority over
+    /// external data.
+    ///
+    /// # Parameters
+    ///
+    /// - `ctrl_chan`: A channel to receive control messages.
+    /// - `effect_handler`: A handler to perform side effects such as opening a listener.
+    ///
+    /// Each of these parameters is **NOT** [`Send`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if an unrecoverable error occurs.
+    ///
+    /// # Cancellation Safety
+    ///
+    /// This method should be cancellation safe and clean up any resources when dropped.
+    async fn start(
+        self: Box<Self>,
+        ctrl_chan: ControlChannel<PData>,
+        effect_handler: EffectHandler<PData>,
+    ) -> Result<TerminalState, Error>;
+}
+
+/// A channel for receiving control messages (in a !Send environment).
+///
+/// This structure wraps a receiver end of a channel that carries [`NodeControlMsg`]
+/// values used to control the behavior of a receiver at runtime.
+pub struct ControlChannel<PData> {
+    rx: crate::message::Receiver<NodeControlMsg<PData>>,
+}
+
+impl<PData> ControlChannel<PData> {
+    /// Creates a new `ControlChannelLocal` with the given receiver.
+    #[must_use]
+    pub fn new(rx: crate::message::Receiver<NodeControlMsg<PData>>) -> Self {
+        Self { rx }
+    }
+
+    /// Asynchronously receives the next control message.
+    ///
+    /// Note: produced outcome metrics are now recorded by the pipeline
+    /// controller via `Frame` entries collected during context
+    /// unwinding, not here.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RecvError`] if the channel is closed.
+    pub async fn recv(&mut self) -> Result<NodeControlMsg<PData>, RecvError> {
+        self.rx.recv().await
+    }
+}
+
+/// A `!Send` implementation of the EffectHandler.
+#[derive(Clone)]
+pub struct EffectHandler<PData> {
+    pub(crate) core: EffectHandlerCore<PData>,
+    /// Output-port router.
+    pub router: OutputRouter<Sender<PData>>,
+    /// Capture policy for extracting transport headers from inbound metadata.
+    /// `None` when no capture policy is configured (zero overhead).
+    capture_policy: Option<HeaderCapturePolicy>,
+}
+
+/// Implementation for the `!Send` effect handler.
+impl<PData> EffectHandler<PData> {
+    /// Creates a new local (!Send) `EffectHandler` with the given receiver name and timer request sender.
+    #[must_use]
+    pub fn new(
+        node_id: NodeId,
+        msg_senders: HashMap<PortName, Sender<PData>>,
+        default_port: Option<PortName>,
+        node_request_sender: RuntimeCtrlMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
+    ) -> Self {
+        let mut core = EffectHandlerCore::new(node_id.clone(), metrics_reporter);
+        core.set_runtime_ctrl_msg_sender(node_request_sender);
+        let router = OutputRouter::new(node_id, msg_senders, default_port);
+        EffectHandler {
+            core,
+            router,
+            capture_policy: None,
+        }
+    }
+
+    /// Returns the id of the receiver associated with this handler.
+    #[must_use]
+    pub fn receiver_id(&self) -> NodeId {
+        self.core.node_id()
+    }
+
+    /// Sets outgoing message source tagging mode.
+    pub fn set_source_tagging(&mut self, value: SourceTagging) {
+        self.core.set_source_tagging(value);
+    }
+
+    /// Outgoing message source tagging mode.  Typically Enabled when
+    /// the destination node has multiple input sources.
+    #[must_use]
+    pub const fn source_tagging(&self) -> SourceTagging {
+        self.core.source_tagging()
+    }
+
+    /// Returns the list of connected output ports for this receiver.
+    #[must_use]
+    pub fn connected_ports(&self) -> Vec<PortName> {
+        self.router.connected_ports()
+    }
+
+    /// Returns the precomputed node interests.
+    #[must_use]
+    pub fn node_interests(&self) -> Interests {
+        self.core.node_interests()
+    }
+
+    /// Returns the capture policy if a header capture policy is configured.
+    ///
+    /// Returns `None` when no capture policy is active (zero overhead).
+    #[must_use]
+    pub fn capture_policy(&self) -> Option<&HeaderCapturePolicy> {
+        self.capture_policy.as_ref()
+    }
+
+    /// Sets the capture policy for transport header extraction.
+    pub fn set_capture_policy(&mut self, policy: Option<HeaderCapturePolicy>) {
+        self.capture_policy = policy;
+    }
+
+    /// Sends a message to the next node(s) in the pipeline using the default port.
+    ///
+    /// If a default port is configured (either explicitly or deduced when a single port is
+    /// connected), it will be used. Otherwise, an error is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`TypedError::ChannelSendError`] if the message could not be sent or
+    /// [`TypedError::Error::ReceiverError`] if the default port is not configured.
+    #[inline]
+    pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
+        self.router.send_default(data).await
+    }
+
+    /// Attempts to send a message without awaiting.
+    ///
+    /// Unlike `send_message`, this method returns immediately if the downstream
+    /// channel is full, allowing the caller to handle backpressure without awaiting.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
+    /// channel is full, or [`SendError::Closed`] if the channel is closed.
+    /// Returns a [`TypedError::Error`] if no default port is configured.
+    #[inline]
+    pub fn try_send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
+        self.router.try_send_default(data)
+    }
+
+    /// Sends a message to a specific named output port.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`Error::ChannelSendError`] if the message could not be sent, or
+    /// [`Error::ReceiverError`] if the port does not exist.
+    #[inline]
+    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
+    where
+        P: Into<PortName>,
+    {
+        self.router.send_to(port, data).await
+    }
+
+    /// Attempts to send a message to a specific named output port without awaiting.
+    ///
+    /// Unlike `send_message_to`, this method returns immediately if the downstream
+    /// channel is full, allowing the caller to handle backpressure without awaiting.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
+    /// channel is full, or [`SendError::Closed`] if the channel is closed.
+    /// Returns a [`TypedError::Error`] if the port does not exist.
+    #[inline]
+    pub fn try_send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
+    where
+        P: Into<PortName>,
+    {
+        self.router.try_send_to(port, data)
+    }
+
+    /// Creates a non-blocking TCP listener on the given address with socket options defined by the
+    /// pipeline engine implementation. It's important for receiver implementer to create TCP
+    /// listeners via this method to ensure the scalability and the serviceability of the pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::IoError`] if any step in the process fails.
+    pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error> {
+        self.core.tcp_listener(addr, self.receiver_id())
+    }
+
+    /// Creates a non-blocking UDP socket on the given address with socket options defined by the
+    /// pipeline engine implementation. It's important for receiver implementer to create UDP
+    /// sockets via this method to ensure the scalability and the serviceability of the pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::IoError`] if any step in the process fails.
+    pub fn udp_socket(&self, addr: SocketAddr) -> Result<UdpSocket, Error> {
+        self.core.udp_socket(addr, self.receiver_id())
+    }
+
+    /// Print an info message to stdout.
+    ///
+    /// This method provides a standardized way for receivers to output
+    /// informational messages without blocking the async runtime.
+    pub async fn info(&self, message: &str) {
+        self.core.info(message).await;
+    }
+
+    /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
+    /// Returns a handle that can be used to cancel the timer.
+    ///
+    /// Current limitation: Only one timer can be started by a receiver at a time.
+    pub async fn start_periodic_timer(
+        &self,
+        duration: Duration,
+    ) -> Result<TimerCancelHandle<PData>, Error> {
+        self.core.start_periodic_timer(duration).await
+    }
+
+    /// Starts a cancellable periodic telemetry timer that emits CollectTelemetry.
+    pub async fn start_periodic_telemetry(
+        &self,
+        duration: Duration,
+    ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
+        self.core.start_periodic_telemetry(duration).await
+    }
+
+    /// Notifies the pipeline runtime that this receiver has completed ingress drain.
+    pub async fn notify_receiver_drained(&self) -> Result<(), Error> {
+        self.core.notify_receiver_drained().await
+    }
+
+    /// Reports metrics collected by the receiver.
+    #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
+    pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
+        &mut self,
+        metrics: &mut MetricSet<M>,
+    ) -> Result<(), TelemetryError> {
+        self.core.report_metrics(metrics)
+    }
+
+    // More methods will be added in the future as needed.
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(missing_docs)]
+    use super::*;
+    use crate::control::runtime_ctrl_msg_channel;
+    use crate::local::message::LocalSender;
+    use crate::testing::test_node;
+    use otap_df_channel::error::SendError;
+    use otap_df_channel::mpsc;
+    use std::borrow::Cow;
+    use std::collections::{HashMap, HashSet};
+    use tokio::time::{Duration, timeout};
+
+    fn channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
+        mpsc::Channel::new(capacity)
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_to_named_port() {
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
+
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+
+        eh.send_message_to("b", 42).await.unwrap();
+
+        // Ensure only 'b' received
+        assert!(
+            timeout(Duration::from_millis(50), a_rx.recv())
+                .await
+                .is_err()
+        );
+        assert_eq!(b_rx.recv().await.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_single_port_fallback() {
+        let (tx, rx) = channel::<u64>(10);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("only".into(), Sender::Local(LocalSender::mpsc(tx)));
+
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+
+        eh.send_message(7).await.unwrap();
+        assert_eq!(rx.recv().await.unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_uses_default_port() {
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
+
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            Some("a".into()),
+            ctrl_tx,
+            metrics_reporter,
+        );
+
+        eh.send_message(11).await.unwrap();
+
+        assert_eq!(a_rx.recv().await.unwrap(), 11);
+        assert!(
+            timeout(Duration::from_millis(50), b_rx.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn effect_handler_send_message_ambiguous_without_default() {
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
+
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+
+        let res = eh.send_message(5).await;
+        assert!(res.is_err());
+
+        // Nothing should be received on either port
+        assert!(
+            timeout(Duration::from_millis(50), a_rx.recv())
+                .await
+                .is_err()
+        );
+        assert!(
+            timeout(Duration::from_millis(50), b_rx.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn effect_handler_connected_ports_lists_all() {
+        let (a_tx, _a_rx) = channel::<u64>(1);
+        let (b_tx, _b_rx) = channel::<u64>(1);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
+
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+
+        let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
+        let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();
+        assert_eq!(ports, expected);
+    }
+
+    #[test]
+    fn effect_handler_try_send_message_success() {
+        let (tx, rx) = channel::<u64>(10);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
+
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            Some("out".into()),
+            ctrl_tx,
+            metrics_reporter,
+        );
+
+        // Should succeed when channel has capacity
+        assert!(eh.try_send_message(42).is_ok());
+        assert_eq!(rx.try_recv().unwrap(), 42);
+    }
+
+    #[test]
+    fn effect_handler_try_send_message_inbox_full() {
+        let (tx, _rx) = channel::<u64>(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
+
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            Some("out".into()),
+            ctrl_tx,
+            metrics_reporter,
+        );
+
+        // First send should succeed
+        assert!(eh.try_send_message(1).is_ok());
+        // Second send should fail with Full
+        let result = eh.try_send_message(2);
+        assert!(matches!(
+            result,
+            Err(TypedError::ChannelSendError(SendError::Full(2)))
+        ));
+    }
+
+    #[test]
+    fn effect_handler_try_send_message_no_default_sender() {
+        let (a_tx, _a_rx) = channel::<u64>(10);
+        let (b_tx, _b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
+
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+
+        // Should return configuration error when no default sender
+        let result = eh.try_send_message(99);
+        assert!(matches!(result, Err(TypedError::Error(_))));
+    }
+
+    #[test]
+    fn effect_handler_try_send_message_to_success() {
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
+
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+
+        // Should succeed when sending to a specific port
+        assert!(eh.try_send_message_to("b", 42).is_ok());
+        assert_eq!(b_rx.try_recv().unwrap(), 42);
+        // Port 'a' should not have received anything
+        assert!(a_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn effect_handler_try_send_message_to_channel_full() {
+        let (tx, _rx) = channel::<u64>(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
+
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+
+        // First send should succeed
+        assert!(eh.try_send_message_to("out", 1).is_ok());
+        // Second send should fail with Full
+        let result = eh.try_send_message_to("out", 2);
+        assert!(matches!(
+            result,
+            Err(TypedError::ChannelSendError(SendError::Full(2)))
+        ));
+    }
+
+    #[test]
+    fn effect_handler_try_send_message_to_unknown_port() {
+        let (tx, _rx) = channel::<u64>(10);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
+
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+
+        // Should return error for unknown port
+        let result = eh.try_send_message_to("unknown", 99);
+        assert!(matches!(result, Err(TypedError::Error(_))));
+    }
+}

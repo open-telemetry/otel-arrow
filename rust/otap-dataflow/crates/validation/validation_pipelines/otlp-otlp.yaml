@@ -1,0 +1,15 @@
+nodes:
+  receiver:
+    type: "receiver:otlp"
+    config:
+      protocols:
+        grpc:
+          listening_addr: 127.0.0.1:4317
+
+  exporter:
+    type: "exporter:otlp_grpc"
+    config:
+      grpc_endpoint: http://127.0.0.1:4318
+connections:
+  - from: receiver
+    to: exporter

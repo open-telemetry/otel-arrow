@@ -1,0 +1,112 @@
+[package]
+name = "benchmarks"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+arrow.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+otap-df-core-nodes = { workspace = true, features = ["dev-tools", "bench"] }
+otap-df-otap = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
+tonic = { workspace = true }
+prost = { workspace = true }
+
+otap-df-control-channel = { workspace = true }
+otap-df-config = { workspace = true }
+otap-df-channel = { workspace = true }
+otap-df-engine = { workspace = true }
+otap-df-telemetry = { workspace = true }
+otap-df-pdata = { workspace = true, features = ["bench", "testing"] }
+otap-df-pdata-views = { workspace = true }
+
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["registry"] }
+
+fluke-hpack.workspace = true
+futures-channel.workspace = true
+futures.workspace = true
+flume.workspace = true
+core_affinity.workspace = true
+local-sync.workspace = true
+async-unsync.workspace = true
+roaring.workspace = true
+unsync.workspace = true
+portpicker.workspace = true
+tokio-stream.workspace = true
+weaver_common.workspace = true
+bytes.workspace = true
+
+[target.'cfg(not(windows))'.dev-dependencies]
+tikv-jemallocator.workspace = true
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "channel"
+harness = false
+
+[[bench]]
+name = "control_channel"
+harness = false
+
+[[bench]]
+name = "exporter"
+harness = false
+
+[[bench]]
+name = "otap_encoder"
+harness = false
+
+[[bench]]
+name = "pdata_filter"
+harness = false
+
+[[bench]]
+name = "pdata_views"
+harness = false
+
+[[bench]]
+name = "syslog_cef_receiver"
+harness = false
+
+[[bench]]
+name = "otlp_bytes"
+harness = false
+
+[[bench]]
+name = "transport_optimize"
+harness = false
+
+[[bench]]
+name = "attribute_transform"
+harness = false
+
+[[bench]]
+name = "item_count"
+harness = false
+
+[[bench]]
+name = "otap_logs_view"
+harness = false
+
+[[bench]]
+name = "self_tracing"
+harness = false
+
+[[bench]]
+name = "topic_balanced"
+harness = false
+
+[[bench]]
+name = "topic_broadcast"
+harness = false

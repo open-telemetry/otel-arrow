@@ -1,0 +1,58 @@
+version: otel_dataflow/v1
+engine: { }
+groups:
+  default:
+    pipelines:
+      grpc_pipeline:
+        # OTLP/gRPC receiver on port 4315 -> OTLP/gRPC exporter to port 4317
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          grpc_receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4315"
+
+          grpc_exporter:
+            type: exporter:otlp_grpc
+            config:
+              grpc_endpoint: "http://127.0.0.1:4317"
+
+        connections:
+          - from: grpc_receiver
+            to: grpc_exporter
+
+      http_pipeline:
+        # OTLP/HTTP receiver on port 4316 -> OTLP/HTTP exporter to port 4318
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          http_receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                http:
+                  listening_addr: "127.0.0.1:4316"
+
+          http_exporter:
+            type: exporter:otlp_http
+            config:
+              http: {}
+              endpoint: "http://127.0.0.1:4318"
+              client_pool_size: 1
+
+        connections:
+          - from: http_receiver
+            to: http_exporter

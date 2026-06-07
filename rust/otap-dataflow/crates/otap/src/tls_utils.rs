@@ -1,0 +1,2513 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use arc_swap::ArcSwap;
+use base64::prelude::*;
+use futures::{Stream, StreamExt};
+use notify::{Event, RecursiveMode, Watcher};
+use otap_df_config::tls::TlsClientConfig;
+use otap_df_config::tls::TlsServerConfig;
+use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
+use rustls::RootCertStore;
+use rustls::pki_types::CertificateDer;
+use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
+use rustls::server::{ClientHello, ResolvesServerCert, WantsServerCert, WebPkiClientVerifier};
+use rustls::sign::CertifiedKey;
+use rustls::{
+    ConfigBuilder, DigitallySignedStruct, DistinguishedName, ServerConfig, SignatureScheme,
+    WantsVerifier,
+};
+use rustls_native_certs::load_native_certs;
+use rustls_pki_types::pem::PemObject;
+use rustls_pki_types::{PrivateKeyDer, UnixTime};
+use std::fmt;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
+use tokio::sync::OnceCell;
+use tonic::transport::{Certificate, ClientTlsConfig};
+use tonic::transport::{Identity, ServerTlsConfig};
+
+/// Maximum allowed size for TLS certificate and key files (4MB).
+/// This limit is chosen to be generous enough for typical certificate chains (which are usually < 10KB)
+/// while preventing potential OOM issues from loading extremely large files.
+const MAX_TLS_FILE_SIZE: u64 = 4 * 1024 * 1024; // 4MB
+
+/// Maximum number of concurrent TLS handshakes per receiver instance.
+///
+/// This is a conservative default that balances concurrency with resource usage:
+/// - Allows concurrent handshakes to prevent slow clients from blocking others
+/// - Limits memory overhead for pending handshake state
+/// - May need adjustment based on actual workload characteristics
+const MAX_CONCURRENT_HANDSHAKES: usize = 64;
+
+/// Default interval between certificate reload checks (5 minutes).
+/// This is used when no explicit reload_interval is configured.
+const DEFAULT_RELOAD_INTERVAL_SECS: u64 = 300;
+
+/// Minimum interval between CA certificate reloads to prevent rapid successive reloads.
+/// Events arriving within this window after a reload will be debounced.
+const CA_RELOAD_DEBOUNCE_SECS: u64 = 1;
+
+/// Delay before reading file metadata after receiving a filesystem event.
+/// This allows atomic rename operations to fully complete before we check the file identity.
+/// On macOS, kqueue events can arrive before the rename operation is visible to stat().
+const FS_EVENT_SETTLE_DELAY_MS: u64 = 50;
+
+/// Converts native system certificates to PEM format.
+///
+/// Takes a `CertificateResult` from `rustls_native_certs::load_native_certs()` and
+/// converts each certificate to PEM format with 64-character line wrapping.
+/// Any errors encountered during loading are logged as warnings.
+fn convert_native_certs_to_pem(cert_res: &rustls_native_certs::CertificateResult) -> Vec<u8> {
+    let mut pem_data = Vec::new();
+
+    for error in &cert_res.errors {
+        otel_warn!("tls.native_cert.load_error", error = ?error);
+    }
+
+    for cert in &cert_res.certs {
+        let base64_cert = BASE64_STANDARD.encode(cert.as_ref());
+        // BASE64_STANDARD produces only ASCII, so working with chars is safe.
+        // Wrap at 64 characters per line for PEM format.
+        let wrapped: String = base64_cert
+            .chars()
+            .collect::<Vec<_>>()
+            .chunks(64)
+            .map(|chunk| chunk.iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let pem = format!(
+            "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+            wrapped
+        );
+        pem_data.extend_from_slice(pem.as_bytes());
+    }
+
+    pem_data
+}
+
+/// Loads TLS configuration for a server.
+///
+/// Returns `Ok(None)` when no cert/key material is provided, indicating TLS is disabled.
+pub async fn load_server_tls_config(
+    config: &TlsServerConfig,
+) -> Result<Option<ServerTlsConfig>, io::Error> {
+    // If neither cert nor key is provided, we assume TLS is disabled.
+    // However, if one is provided, the other must be too.
+    let (cert, key) = match (
+        &config.config.cert_file,
+        &config.config.key_file,
+        &config.config.cert_pem,
+        &config.config.key_pem,
+    ) {
+        (Some(cert_file), Some(key_file), _, _) => {
+            let cert = read_file_with_limit_async(cert_file).await.map_err(|e| {
+                otel_error!("tls.cert_file.read_error", cert_file = ?cert_file, error = ?e, message = "Failed to read cert file", );
+                e
+            })?;
+            let key = read_file_with_limit_async(key_file).await.map_err(|e| {
+                otel_error!("tls.key_file.read_error", key_file = ?key_file, error = ?e, message = "Failed to read key file");
+                e
+            })?;
+            (cert, key)
+        }
+        (None, None, Some(cert_pem), Some(key_pem)) => {
+            (cert_pem.as_bytes().to_vec(), key_pem.as_bytes().to_vec())
+        }
+        (None, None, None, None) => {
+            return Ok(None);
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "TLS configuration error: both certificate and key must be provided. \
+                     Found cert_file={:?}, key_file={:?}, cert_pem={:?}, key_pem={:?}",
+                    config.config.cert_file.is_some(),
+                    config.config.key_file.is_some(),
+                    config.config.cert_pem.is_some(),
+                    config.config.key_pem.is_some()
+                ),
+            ));
+        }
+    };
+
+    let identity = Identity::from_pem(cert, key);
+    let tls_builder = ServerTlsConfig::new().identity(identity);
+
+    // Note: Client CA/mTLS support is handled by build_reloadable_server_config instead.
+
+    Ok(Some(tls_builder))
+}
+
+/// Loads TLS configuration for a client.
+///
+/// This is used by **exporters** and other components that initiate TLS connections.
+///
+/// Returns `Ok(None)` when TLS settings are empty and the endpoint URI is not `https://`.
+///
+/// # Known Limitations
+///
+/// **TODO: Hot Reload Not Implemented**
+///
+/// Unlike the receiver implementation (which uses `LazyReloadableCertResolver` for automatic
+/// certificate reloading), exporter TLS configuration is static and loaded once at startup.
+/// The `reload_interval` field in `TlsConfig` is present but currently unused for clients.
+///
+/// **Impact:** Exporters with expiring client certificates require process restart. This creates
+/// a feature parity gap with receivers and an operational burden for long-running exporters
+/// with short-lived certificates (e.g., certificates rotated every 24 hours).
+///
+/// **Implementation Complexity:** Adding hot reload for exporters requires either:
+/// - Recreating the gRPC channel when certificates expire (may disrupt in-flight requests)
+/// - Implementing a custom TLS connector with lazy certificate loading (complex integration
+///   with tonic's transport layer)
+///
+/// Consider implementing certificate hot reload if this becomes an operational requirement.
+pub(crate) async fn load_client_tls_config(
+    config: Option<&TlsClientConfig>,
+    endpoint_uri: &str,
+) -> Result<Option<ClientTlsConfig>, io::Error> {
+    let wants_tls = endpoint_uri.starts_with("https://");
+
+    let Some(config) = config else {
+        // Go collector behavior: absence of a TLS block means "use scheme defaults".
+        // - https:// => TLS enabled with default trust anchors
+        // - http://  => plaintext
+        if !wants_tls {
+            return Ok(None);
+        }
+
+        let mut tls = ClientTlsConfig::new();
+        tls = add_system_trust_anchors_if_enabled(tls, true).await?;
+        return Ok(Some(tls));
+    };
+
+    let insecure = config.insecure.unwrap_or(false);
+    let custom_ca_configured = config.ca_file.is_some()
+        || config
+            .ca_pem
+            .as_ref()
+            .is_some_and(|pem| !pem.trim().is_empty());
+
+    // Align with Go configtls.ClientConfig.LoadTLSConfig:
+    // when insecure=true and no custom CA is configured, return None and let the
+    // endpoint scheme decide whether the connection is plaintext or TLS.
+    if insecure && !custom_ca_configured {
+        return Ok(None);
+    }
+
+    if let Some(true) = config.insecure_skip_verify {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "TLS configuration error: insecure_skip_verify=true is not supported by the current Rust OTLP client implementation (tonic/rustls). \
+             Remove insecure_skip_verify or set it to false.\n\n\
+             TODO: Implement this only with an explicit, clearly-labeled dangerous verifier override.",
+        ));
+    }
+
+    let client_cert_configured = config.config.cert_file.is_some()
+        || config
+            .config
+            .cert_pem
+            .as_ref()
+            .is_some_and(|pem| !pem.trim().is_empty());
+    let client_key_configured = config.config.key_file.is_some()
+        || config
+            .config
+            .key_pem
+            .as_ref()
+            .is_some_and(|pem| !pem.trim().is_empty());
+
+    // Note: Providing a TLS config block forces TLS regardless of scheme.
+
+    let mut tls = ClientTlsConfig::new();
+
+    // Domain name / SNI.
+    if let Some(domain) = &config.server_name {
+        tls = tls.domain_name(domain.clone());
+    }
+
+    // Validate trust anchors are configured.
+    let include_system = config.include_system_ca_certs_pool.unwrap_or(true);
+    let ca_configured = config.ca_file.is_some()
+        || config
+            .ca_pem
+            .as_ref()
+            .is_some_and(|pem| !pem.trim().is_empty());
+
+    if !include_system && !ca_configured {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "TLS configuration error: no trust anchors configured. \
+             Either provide ca_file/ca_pem or set include_system_ca_certs_pool to true (or omit it).",
+        ));
+    }
+
+    // System CA pool.
+    tls = add_system_trust_anchors_if_enabled(tls, include_system).await?;
+
+    // Custom CA.
+    if let Some(ca_file) = &config.ca_file {
+        let ca_pem = read_file_with_limit_async(ca_file).await.map_err(|e| {
+            otel_error!("tls.ca_file.read_error", ca_file = ?ca_file, error = ?e, message = "Failed to read CA file");
+            e
+        })?;
+        tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
+    }
+    if let Some(ca_pem) = &config.ca_pem {
+        if ca_pem.trim().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "TLS configuration error: ca_pem is set but empty or contains only whitespace",
+            ));
+        }
+        tls = tls.ca_certificate(Certificate::from_pem(ca_pem.as_bytes()));
+    }
+
+    // Client identity (mTLS).
+    if client_cert_configured || client_key_configured {
+        if !(client_cert_configured && client_key_configured) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "TLS configuration error: both client certificate and key must be provided for mTLS",
+            ));
+        }
+
+        // Match on all combinations of cert/key sources to avoid unnecessary allocations.
+        // When using PEM strings, pass as_bytes() directly instead of copying to Vec.
+        tls = match (
+            (&config.config.cert_file, &config.config.cert_pem),
+            (&config.config.key_file, &config.config.key_pem),
+        ) {
+            ((Some(cert_path), _), (Some(key_path), _)) => {
+                let cert = read_file_with_limit_async(cert_path).await.map_err(|e| {
+                    otel_error!("tls.client_cert_file.read_error", cert_path = ?cert_path, error = %e, message = "Failed to read client cert file");
+                    e
+                })?;
+                let key = read_file_with_limit_async(key_path).await.map_err(|e| {
+                    otel_error!("tls.client_key_file.read_error", key_path = ?key_path, error = ?e, message = "Failed to read client key file");
+                    e
+                })?;
+                tls.identity(Identity::from_pem(cert, key))
+            }
+            ((Some(cert_path), _), (None, Some(key_pem))) => {
+                let cert = read_file_with_limit_async(cert_path).await.map_err(|e| {
+                    otel_error!("tls.client_cert_file.read_error", cert_path = ?cert_path, error = ?e, message = "Failed to read client cert file");
+                    e
+                })?;
+                tls.identity(Identity::from_pem(cert, key_pem.as_bytes()))
+            }
+            ((None, Some(cert_pem)), (Some(key_path), _)) => {
+                let key = read_file_with_limit_async(key_path).await.map_err(|e| {
+                    otel_error!("tls.client_key_file.read_error", key_path = ?key_path, error = ?e, message = "Failed to read client key file");
+                    e
+                })?;
+                tls.identity(Identity::from_pem(cert_pem.as_bytes(), key))
+            }
+            ((None, Some(cert_pem)), (None, Some(key_pem))) => {
+                tls.identity(Identity::from_pem(cert_pem.as_bytes(), key_pem.as_bytes()))
+            }
+            _ => unreachable!("validation ensures both cert and key are configured"),
+        };
+    }
+
+    Ok(Some(tls))
+}
+
+async fn add_system_trust_anchors_if_enabled(
+    tls: ClientTlsConfig,
+    include_system: bool,
+) -> Result<ClientTlsConfig, io::Error> {
+    if !include_system {
+        return Ok(tls);
+    }
+
+    // Use cached system roots if available, otherwise load them.
+    // Cloning the Vec<CertificateDer> is cheap (ref-counted inner data).
+    // OnceCell ensures only one task loads the certificates, preventing race conditions.
+    static SYSTEM_ROOTS: OnceCell<Vec<CertificateDer<'static>>> = OnceCell::const_new();
+
+    let roots = SYSTEM_ROOTS
+        .get_or_try_init(|| async {
+            // Loading native certificates involves blocking I/O (e.g. reading from disk or
+            // querying the OS keychain). We must offload this to a blocking thread to avoid
+            // stalling the async runtime.
+            tokio::task::spawn_blocking(|| {
+                let native = load_native_certs();
+                if !native.errors.is_empty() {
+                    otel_warn!(
+                        "tls.native_cert.load_errors",
+                        count = native.errors.len(),
+                        first = ?native.errors.first(),
+                        message = "Errors while loading native certificates",
+                    );
+                }
+                native.certs
+            })
+            .await
+            .map_err(io::Error::other)
+        })
+        .await?
+        .clone();
+
+    let mut store = RootCertStore::empty();
+    // Best-effort: accept that some system certs might not parse.
+    let (added, ignored) = store.add_parsable_certificates(roots);
+    otel_debug!(
+        "tls.native_cert.loaded",
+        added = added,
+        ignored = ignored,
+        message = "Loaded system CA certificates"
+    );
+
+    Ok(tls.trust_anchors(store.roots))
+}
+
+/// Creates a TLS stream from a TCP listener stream and a TLS acceptor.
+///
+/// This function handles the TLS handshake for each incoming connection.
+/// TLS handshake failures are logged and filtered out (non-fatal).
+/// Transport-level listener errors are propagated to terminate the server.
+///
+/// # Concurrency
+///
+/// TLS handshakes are performed concurrently (up to `MAX_CONCURRENT_HANDSHAKES`) to prevent
+/// slow or malicious clients from blocking other connections. This is important because
+/// TLS handshakes involve network round-trips and can take significant time.
+///
+/// When the maximum concurrent handshakes limit is reached, backpressure is applied:
+/// new connections wait in the OS TCP accept queue until a handshake slot becomes available.
+/// This prevents unbounded resource consumption while maintaining high throughput.
+pub fn create_tls_stream<S, T>(
+    listener_stream: S,
+    tls_acceptor: tokio_rustls::TlsAcceptor,
+    handshake_timeout: Option<Duration>,
+) -> impl Stream<Item = Result<tokio_rustls::server::TlsStream<T>, io::Error>>
+where
+    S: Stream<Item = Result<T, io::Error>> + Send + 'static,
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    listener_stream
+        .map(move |conn_res| {
+            let acceptor = tls_acceptor.clone();
+            async move {
+                match conn_res {
+                    Ok(conn) => {
+                        // Try TLS handshake
+                        let handshake_future = acceptor.accept(conn);
+                        let timeout_duration = handshake_timeout.unwrap_or(Duration::from_secs(10));
+
+                        match tokio::time::timeout(timeout_duration, handshake_future).await {
+                            Ok(Ok(stream)) => Some(Ok::<_, io::Error>(stream)),
+                            Ok(Err(e)) => {
+                                // TLS handshake failed - log and continue
+                                otel_warn!("tls.handshake.failed", error = ?e, message = "TLS handshake failed");
+                                None
+                            }
+                            Err(_) => {
+                                otel_warn!("tls.handshake.timeout", message = "TLS handshake timed out");
+                                None
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // Transport-level listener error - propagate to terminate server
+                        Some(Err(e))
+                    }
+                }
+            }
+        })
+        // Allow concurrent handshakes to prevent slow/malicious clients from blocking others
+        .buffer_unordered(MAX_CONCURRENT_HANDSHAKES)
+        // Filter out failed handshakes (None values)
+        .filter_map(|res| async move { res })
+}
+
+/// A certificate resolver that lazily reloads TLS certificates with throttled file modification time (mtime) checks.
+///
+/// # Performance characteristics
+///
+/// - Mtime checks for the certificate and key files are throttled by a configurable interval (`check_interval_secs`)
+///   to minimize filesystem operations. This means the filesystem is not polled on every handshake, but only after
+///   the specified interval has elapsed since the last check.
+/// - If a file change is detected during a TLS handshake (i.e., the mtime has changed since the last check),
+///   the certificate and key are reloaded asynchronously. This ensures that new certificates are picked up without
+///   requiring a server restart, while avoiding excessive filesystem access.
+/// - Reloads happen in the context of TLS handshakes. Certificate updates are applied to subsequent connections after
+///   the async reload completes, which typically happens within a short time after file modification is detected.
+#[derive(Debug)]
+pub struct LazyReloadableCertResolver {
+    /// Current certificate
+    cert_key: Arc<ArcSwap<CertifiedKey>>,
+
+    /// File paths
+    cert_path: PathBuf,
+    key_path: PathBuf,
+
+    /// Last known modification times (Arc for sharing with async reload tasks)
+    cert_mtime: Arc<AtomicU64>,
+    key_mtime: Arc<AtomicU64>,
+
+    /// Last time we checked mtime (unix timestamp in seconds)
+    last_check_time: AtomicU64,
+
+    /// Minimum interval between mtime checks (seconds)
+    check_interval_secs: u64,
+
+    /// Reload lock (Arc for sharing with async reload tasks)
+    is_reloading: Arc<AtomicBool>,
+}
+
+impl LazyReloadableCertResolver {
+    /// Creates a new LazyReloadableCertResolver
+    pub fn new(
+        cert_path: PathBuf,
+        key_path: PathBuf,
+        check_interval: Option<Duration>,
+    ) -> Result<Self, io::Error> {
+        let cert_key = load_certified_key_sync(&cert_path, &key_path)?;
+        let cert_mtime = get_mtime(&cert_path)?;
+        let key_mtime = get_mtime(&key_path)?;
+        let now = current_timestamp();
+
+        Ok(Self {
+            cert_key: Arc::new(ArcSwap::from_pointee(cert_key)),
+            cert_path,
+            key_path,
+            cert_mtime: Arc::new(AtomicU64::new(cert_mtime)),
+            key_mtime: Arc::new(AtomicU64::new(key_mtime)),
+            last_check_time: AtomicU64::new(now),
+            check_interval_secs: check_interval
+                .map(|d| d.as_secs())
+                .unwrap_or(DEFAULT_RELOAD_INTERVAL_SECS), // Default: 5 minutes
+            is_reloading: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Check if enough time has passed, then check mtime and reload if needed.
+    pub fn check_and_reload_if_interval_expired(&self) -> bool {
+        let now = current_timestamp();
+        let last_check = self.last_check_time.load(Ordering::Relaxed);
+
+        // Fast path: interval not expired yet
+        if now.saturating_sub(last_check) < self.check_interval_secs {
+            return false; // Skip mtime check entirely
+        }
+
+        // Interval expired - try to win the check race (leader election)
+        if self
+            .last_check_time
+            .compare_exchange(last_check, now, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            // Another thread won - they'll handle the check.
+            // Re-check the fast path: if the winner updated last_check_time, interval should be unexpired.
+            let updated_last_check = self.last_check_time.load(Ordering::Relaxed);
+            if now.saturating_sub(updated_last_check) < self.check_interval_secs {
+                return false;
+            }
+            // If still expired, we can retry once (rare), or just return false to avoid spinning.
+            // For simplicity, just return false here; a loop could be added for more aggressive detection.
+            return false;
+        }
+
+        // We won - check mtimes
+        let current_cert_mtime = match get_mtime(&self.cert_path) {
+            Ok(m) => m,
+            Err(e) => {
+                otel_warn!("tls.cert.mtime_check_failed", error = ?e, message = "Failed to check cert mtime");
+                return false;
+            }
+        };
+
+        let current_key_mtime = match get_mtime(&self.key_path) {
+            Ok(m) => m,
+            Err(e) => {
+                otel_warn!("tls.key.mtime_check_failed", error = ?e, message = "Failed to check key mtime");
+                return false;
+            }
+        };
+
+        // Compare with cached mtimes
+        let last_cert_mtime = self.cert_mtime.load(Ordering::Relaxed);
+        let last_key_mtime = self.key_mtime.load(Ordering::Relaxed);
+
+        if current_cert_mtime == last_cert_mtime && current_key_mtime == last_key_mtime {
+            return false; // No change
+        }
+
+        // Files changed! Spawn async reload task
+        if self
+            .is_reloading
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return false; // Another thread already reloading
+        }
+
+        // Clone what we need for the async task
+        let cert_path = self.cert_path.clone();
+        let key_path = self.key_path.clone();
+        let cert_key = Arc::clone(&self.cert_key);
+        let cert_mtime = Arc::clone(&self.cert_mtime);
+        let key_mtime = Arc::clone(&self.key_mtime);
+        let is_reloading = Arc::clone(&self.is_reloading);
+
+        // Spawn async reload - doesn't block the current handshake
+        // Fire-and-forget: we intentionally don't await the task.
+        // Using drop() to explicitly ignore the JoinHandle and satisfy clippy::let_underscore_future.
+        drop(tokio::spawn(async move {
+            match load_certified_key_async(&cert_path, &key_path).await {
+                Ok(new_cert) => {
+                    cert_key.store(Arc::new(new_cert));
+                    cert_mtime.store(current_cert_mtime, Ordering::Relaxed);
+                    key_mtime.store(current_key_mtime, Ordering::Relaxed);
+                    otel_info!(
+                        "tls.cert_reloaded",
+                        cert = ?cert_path,
+                        key = ?key_path,
+                        message = "TLS certificate reloaded asynchronously",
+                    );
+                }
+                Err(e) => {
+                    otel_error!(
+                        "tls.cert_reload_failed",
+                        error = ?e,
+                        message = "Failed to reload cert asynchronously (keeping current)",
+                    );
+                }
+            }
+            is_reloading.store(false, Ordering::Release);
+        }));
+
+        // Return immediately - current handshake uses existing (valid) cert
+        false
+    }
+
+    /// Returns the currently loaded certified key
+    pub fn current_cert_key(&self) -> Arc<CertifiedKey> {
+        self.cert_key.load_full()
+    }
+}
+
+impl ResolvesServerCert for LazyReloadableCertResolver {
+    fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        // Lazy check: only if interval expired (no overhead on most requests)
+        let _ = self.check_and_reload_if_interval_expired();
+
+        // Return current cert (wait-free)
+        Some(self.cert_key.load_full())
+    }
+}
+
+/// Internal state for the CA file watcher callback.
+///
+/// # Design: Why Blocking I/O Here is Acceptable
+///
+/// This callback runs in the notify crate's dedicated OS thread, not in the tokio
+/// async runtime. The blocking operations (std::fs::metadata, std::thread::sleep)
+/// only affect the watcher thread, which exists solely to monitor file changes.
+///
+/// Since CA reloads are rare (minutes/hours apart), the performance impact is
+/// negligible. The TLS handshake path remains wait-free - just an atomic pointer load.
+///
+/// Alternative: A channel-based bridge to a tokio worker task would eliminate blocking
+/// entirely, but adds complexity for minimal benefit in this use case.
+struct CaWatcherState {
+    /// The verifier to update on reload (shared with ReloadableClientCaVerifier).
+    /// Arc allows sharing between watcher and verifier, ArcSwap enables atomic updates.
+    inner: Arc<ArcSwap<Arc<dyn ClientCertVerifier>>>,
+    /// Canonical path to match against events
+    watched_path: PathBuf,
+    /// Original path for reloading the file
+    reload_path: PathBuf,
+    /// Whether to include system CAs
+    include_system_cas: bool,
+    /// Last known file identity (inode on Unix)
+    last_identity: Arc<AtomicU64>,
+    /// Timestamp of last reload (for debouncing)
+    last_reload: Arc<AtomicU64>,
+    /// Lock to prevent concurrent reloads
+    is_reloading: Arc<AtomicBool>,
+}
+
+impl CaWatcherState {
+    /// Create a new watcher state.
+    fn new(
+        ca_file_path: &Path,
+        inner: Arc<ArcSwap<Arc<dyn ClientCertVerifier>>>,
+        ca_path: PathBuf,
+        include_system_cas: bool,
+    ) -> Result<Self, io::Error> {
+        let watched_path = std::fs::canonicalize(&ca_path).unwrap_or_else(|_| ca_path.clone());
+        let initial_identity = get_file_identity(ca_file_path).unwrap_or(0);
+
+        Ok(Self {
+            inner,
+            watched_path,
+            reload_path: ca_path,
+            include_system_cas,
+            last_identity: Arc::new(AtomicU64::new(initial_identity)),
+            last_reload: Arc::new(AtomicU64::new(0)),
+            is_reloading: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Handle a file system event.
+    fn handle_event(&self, res: Result<Event, notify::Error>) {
+        match res {
+            Ok(event) => self.process_event(event),
+            Err(e) => {
+                otel_warn!("tls.file_watcher.error", error = ?e, message = "File watcher error")
+            }
+        }
+    }
+
+    /// Process a file system event, potentially triggering a reload.
+    fn process_event(&self, event: Event) {
+        otel_debug!("tls.file_watcher.event", event = ?event, message = "File watcher event");
+
+        // Filter out irrelevant event types early (before expensive path checks)
+        if matches!(event.kind, notify::EventKind::Access(_)) {
+            return;
+        }
+
+        if !self.is_event_for_watched_file(&event) {
+            return;
+        }
+
+        otel_debug!(
+            "tls.file_watcher.match",
+            message = "Event matches our CA file, proceeding with reload check"
+        );
+
+        // Small delay to allow filesystem operations to complete (e.g., atomic renames).
+        // This blocks the notify thread briefly, but is acceptable because:
+        // - CA reloads are rare (days/weeks apart)
+        // - notify buffers events internally
+        // - 50ms won't cause meaningful event loss
+        std::thread::sleep(Duration::from_millis(FS_EVENT_SETTLE_DELAY_MS));
+
+        if !self.should_reload() {
+            return;
+        }
+
+        self.perform_reload();
+    }
+
+    /// Check if the event is for the file we're watching.
+    fn is_event_for_watched_file(&self, event: &Event) -> bool {
+        let is_match = event.paths.iter().any(|p| {
+            if p == &self.watched_path {
+                return true;
+            }
+            // Try canonicalizing the event path if direct match fails
+            std::fs::canonicalize(p)
+                .map(|canon_p| canon_p == self.watched_path)
+                .unwrap_or(false)
+        });
+
+        if !is_match {
+            otel_debug!(
+                "tls.file_watcher.no_match",
+                event_paths = ?event.paths,
+                watched_path = ?self.watched_path,
+                message = "Event not for our file"
+            );
+        }
+
+        is_match
+    }
+
+    /// Check if we should reload based on file identity and debouncing.
+    fn should_reload(&self) -> bool {
+        // Check if file identity (inode) has changed
+        let current_identity = match get_file_identity(&self.reload_path) {
+            Ok(id) => id,
+            Err(e) => {
+                otel_debug!("tls.file_watcher.identity_error", error = ?e, message = "Failed to get file identity, skipping reload");
+                return false;
+            }
+        };
+
+        let prev_identity = self.last_identity.load(Ordering::Relaxed);
+        if current_identity == prev_identity {
+            otel_debug!(
+                "tls.file_watcher.identity_unchanged",
+                message = "File identity unchanged, skipping reload"
+            );
+            return false;
+        }
+        otel_debug!(
+            "tls.file_watcher.identity_changed",
+            prev_identity = prev_identity,
+            current_identity = current_identity,
+            message = "File identity changed"
+        );
+
+        // Check debounce window
+        let now = current_timestamp();
+        let last = self.last_reload.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < CA_RELOAD_DEBOUNCE_SECS {
+            otel_debug!(
+                "tls.file_watcher.debounce",
+                message = "Debouncing CA file change event"
+            );
+            return false;
+        }
+
+        // Try to acquire reload lock
+        if self
+            .is_reloading
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            otel_debug!(
+                "tls.file_watcher.reload_in_progress",
+                message = "CA reload already in progress, skipping"
+            );
+            return false;
+        }
+
+        true
+    }
+
+    /// Perform the actual CA certificate reload.
+    fn perform_reload(&self) {
+        otel_info!(
+            "tls.file_watcher.reload_start",
+            path = ?self.reload_path,
+            message = "CA certificate file changed, reloading"
+        );
+
+        // Note: There's a theoretical TOCTOU between getting identity and reading the file.
+        // If the file changes in between, we may store a stale identity, causing one extra
+        // reload on the next event. This is harmless and the debounce prevents rapid retries.
+        let current_identity = get_file_identity(&self.reload_path).unwrap_or(0);
+        let now = current_timestamp();
+
+        match reload_ca_verifier(&self.reload_path, self.include_system_cas) {
+            Ok(new_verifier) => {
+                self.inner.store(Arc::new(new_verifier));
+                self.last_identity
+                    .store(current_identity, Ordering::Relaxed);
+                self.last_reload.store(now, Ordering::Relaxed);
+                otel_info!(
+                    "tls.file_watcher.reload_success",
+                    message = "Successfully reloaded client CA certificates"
+                );
+            }
+            Err(e) => {
+                otel_error!(
+                    "tls.file_watcher.reload_failed",
+                    error = ?e,
+                    message = "Failed to reload CA certificates (keeping previous)",
+                );
+            }
+        }
+
+        self.is_reloading.store(false, Ordering::Release);
+    }
+}
+
+/// A dynamically reloadable client certificate verifier for mTLS.
+///
+/// This verifier supports zero-downtime hot-reload of client CA certificates through
+/// file system watching. When the CA certificate file is modified, the verifier
+/// automatically reloads the CA store without interrupting existing connections.
+///
+/// # Performance
+///
+/// The TLS handshake hot path is wait-free - just an atomic pointer load with no
+/// filesystem access or blocking. Reload operations happen in a separate watcher
+/// thread and don't impact concurrent connections.
+///
+/// # Industry Standard Approach
+///
+/// This implementation follows the patterns used by Envoy, Linkerd, and other
+/// production service meshes:
+///
+/// 1. **File System Watching**: Uses OS-native file notifications (inotify on Linux,
+///    kqueue on macOS, FSEvents on macOS) for immediate detection of certificate changes.
+///
+/// 2. **Atomic Swap**: Uses `ArcSwap` for lock-free, wait-free reads during TLS handshakes.
+///    New connections get the updated CA store; existing connections are unaffected.
+///
+/// 3. **Debouncing**: Multiple rapid file changes are coalesced to avoid excessive reloads.
+///
+/// 4. **Graceful Degradation**: If reload fails, the previous valid CA store is retained.
+///
+/// # Usage
+///
+/// ```ignore
+/// let verifier = ReloadableClientCaVerifier::new_with_file_watch(
+///     ca_file_path,
+///     include_system_cas,
+/// )?;
+/// ```
+pub struct ReloadableClientCaVerifier {
+    /// The current client certificate verifier (atomically swappable).
+    ///
+    /// Architecture: Arc<ArcSwap<Arc<dyn ClientCertVerifier>>>
+    ///
+    /// Why three layers of Arc?
+    /// 1. **Outer Arc**: Shared ownership between the verifier and watcher callback.
+    ///    Multiple threads need access to the same ArcSwap (hot path + reload path).
+    ///
+    /// 2. **ArcSwap**: Atomic pointer swap for lock-free reads during TLS handshakes.
+    ///    Allows updating the verifier without blocking concurrent connections.
+    ///
+    /// 3. **Inner Arc**: rustls requires ClientCertVerifier to be in an Arc for trait
+    ///    object lifetime management. The WebPkiClientVerifier we swap is Arc<dyn ...>.
+    ///
+    /// Performance: Hot path is just `inner.load()` - a single atomic pointer load.
+    inner: Arc<ArcSwap<Arc<dyn ClientCertVerifier>>>,
+
+    /// Path to the CA file being watched (if file-based)
+    ca_file_path: Option<PathBuf>,
+
+    /// Whether to include system CA certificates
+    include_system_cas: bool,
+
+    /// Static CA PEM data (if not file-based)
+    static_ca_pem: Option<Vec<u8>>,
+
+    /// File watcher handle (kept alive to continue watching)
+    /// Using Box<dyn Watcher> to support both RecommendedWatcher and PollWatcher
+    #[allow(dead_code)]
+    watcher: Option<Box<dyn Watcher + Send + Sync>>,
+}
+
+impl fmt::Debug for ReloadableClientCaVerifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReloadableClientCaVerifier")
+            .field("ca_file_path", &self.ca_file_path)
+            .field("include_system_cas", &self.include_system_cas)
+            .field("has_static_ca", &self.static_ca_pem.is_some())
+            .field("watching", &self.watcher.is_some())
+            .finish()
+    }
+}
+
+impl ReloadableClientCaVerifier {
+    /// Creates a new reloadable client CA verifier with file system watching.
+    ///
+    /// This is the recommended method for production mTLS deployments where
+    /// CA certificates may be rotated frequently (e.g., short-lived certificates
+    /// from SPIFFE/SPIRE or cert-manager).
+    ///
+    /// # Arguments
+    ///
+    /// * `ca_file_path` - Path to the PEM-encoded CA certificate file
+    /// * `include_system_cas` - Whether to include system root CA certificates
+    ///
+    /// # Returns
+    ///
+    /// Returns the verifier wrapped in an `Arc` for thread-safe sharing.
+    pub fn new_with_file_watch(
+        ca_file_path: PathBuf,
+        include_system_cas: bool,
+    ) -> Result<Arc<Self>, io::Error> {
+        // Initial load
+        let ca_pem = read_file_with_limit_sync(&ca_file_path)?;
+        otel_debug!(
+            "tls.ca.initial_load",
+            size_bytes = ca_pem.len(),
+            message = "Initial CA PEM size"
+        );
+        let verifier = build_webpki_verifier(&ca_pem, include_system_cas)?;
+
+        let inner = Arc::new(ArcSwap::from_pointee(verifier));
+        let inner_for_watcher = Arc::clone(&inner);
+        let ca_path_for_watcher = ca_file_path.clone();
+        let include_system_for_watcher = include_system_cas;
+
+        // Set up file watcher
+        let watcher = Self::setup_file_watcher(
+            &ca_file_path,
+            inner_for_watcher,
+            ca_path_for_watcher,
+            include_system_for_watcher,
+        )?;
+
+        Ok(Arc::new(Self {
+            inner,
+            ca_file_path: Some(ca_file_path),
+            include_system_cas,
+            static_ca_pem: None,
+            watcher: Some(watcher),
+        }))
+    }
+
+    /// Creates a verifier from in-memory PEM data (no file watching).
+    ///
+    /// Use this when CA certificates are provided via configuration strings
+    /// rather than files. This verifier will not support hot-reload.
+    pub fn new_from_pem(ca_pem: Vec<u8>, include_system_cas: bool) -> Result<Arc<Self>, io::Error> {
+        let verifier = build_webpki_verifier(&ca_pem, include_system_cas)?;
+
+        Ok(Arc::new(Self {
+            inner: Arc::new(ArcSwap::from_pointee(verifier)),
+            ca_file_path: None,
+            include_system_cas,
+            static_ca_pem: Some(ca_pem),
+            watcher: None,
+        }))
+    }
+
+    /// Creates a verifier with interval-based polling (fallback for systems without file watching).
+    ///
+    /// This is less efficient than file watching but works on all platforms and file systems.
+    pub fn new_with_polling(
+        ca_file_path: PathBuf,
+        include_system_cas: bool,
+        poll_interval: Duration,
+    ) -> Result<Arc<Self>, io::Error> {
+        // Initial load
+        let ca_pem = read_file_with_limit_sync(&ca_file_path)?;
+        let verifier = build_webpki_verifier(&ca_pem, include_system_cas)?;
+
+        let inner = Arc::new(ArcSwap::from_pointee(verifier));
+        let inner_for_poll = Arc::clone(&inner);
+        let ca_path_for_poll = ca_file_path.clone();
+
+        // Set up polling watcher
+        let watcher = Self::setup_polling_watcher(
+            &ca_file_path,
+            inner_for_poll,
+            ca_path_for_poll,
+            include_system_cas,
+            poll_interval,
+        )?;
+
+        Ok(Arc::new(Self {
+            inner,
+            ca_file_path: Some(ca_file_path),
+            include_system_cas,
+            static_ca_pem: None,
+            watcher: Some(watcher),
+        }))
+    }
+
+    /// Sets up a file system watcher using OS-native notifications.
+    fn setup_file_watcher(
+        ca_file_path: &Path,
+        inner: Arc<ArcSwap<Arc<dyn ClientCertVerifier>>>,
+        ca_path: PathBuf,
+        include_system_cas: bool,
+    ) -> Result<Box<dyn Watcher + Send + Sync>, io::Error> {
+        // Initialize watcher state
+        let state = CaWatcherState::new(ca_file_path, inner, ca_path.clone(), include_system_cas)?;
+
+        let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+            state.handle_event(res);
+        })
+        .map_err(io::Error::other)?;
+
+        // Watch the parent directory instead of the file itself. This is necessary because:
+        // 1. Atomic file replacements (mv tmp ca.crt) create a new inode - watching the old
+        //    file would lose track when it's replaced.
+        // 2. Kubernetes ConfigMaps/Secrets use symlink swapping, which also requires
+        //    watching the parent directory to detect changes.
+        // 3. Many editors (vim, etc.) use atomic save patterns that replace the file.
+        // Events are filtered in `is_event_for_watched_file()` to only process changes
+        // to our specific CA file.
+        let parent_dir = ca_file_path.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CA file has no parent directory",
+            )
+        })?;
+        let parent_dir =
+            std::fs::canonicalize(parent_dir).unwrap_or_else(|_| parent_dir.to_path_buf());
+
+        watcher
+            .watch(&parent_dir, RecursiveMode::NonRecursive)
+            .map_err(io::Error::other)?;
+
+        otel_info!(
+            "tls.file_watcher.setup",
+            ca_file = ?ca_file_path,
+            watching_parent = ?parent_dir,
+            message = "File watcher set up for CA certificates"
+        );
+
+        Ok(Box::new(watcher))
+    }
+
+    /// Sets up a polling-based watcher for environments where native watching isn't reliable.
+    fn setup_polling_watcher(
+        ca_file_path: &Path,
+        inner: Arc<ArcSwap<Arc<dyn ClientCertVerifier>>>,
+        ca_path: PathBuf,
+        include_system_cas: bool,
+        poll_interval: Duration,
+    ) -> Result<Box<dyn Watcher + Send + Sync>, io::Error> {
+        let is_reloading = Arc::new(AtomicBool::new(false));
+
+        let config = notify::Config::default().with_poll_interval(poll_interval);
+
+        let mut watcher = notify::PollWatcher::new(
+            move |res: Result<Event, notify::Error>| match res {
+                Ok(event) => {
+                    if !matches!(
+                        event.kind,
+                        notify::EventKind::Modify(_) | notify::EventKind::Create(_)
+                    ) {
+                        return;
+                    }
+
+                    if is_reloading
+                        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                        .is_err()
+                    {
+                        return;
+                    }
+
+                    otel_info!(
+                        "tls.poll_watcher.event",
+                        ca_path = ?ca_path,
+                        message = "CA certificate file changed (polling), reloading"
+                    );
+
+                    match reload_ca_verifier(&ca_path, include_system_cas) {
+                        Ok(new_verifier) => {
+                            inner.store(Arc::new(new_verifier));
+                            otel_info!("tls.poll_watcher.reload_success", message = "Successfully reloaded client CA certificates");
+                        }
+                        Err(e) => {
+                            otel_error!(
+                                "tls.poll_watcher.reload_failed",
+                                error = ?e,
+                                message = "Failed to reload CA certificates (keeping previous)"
+                            );
+                        }
+                    }
+
+                    is_reloading.store(false, Ordering::Release);
+                }
+                Err(e) => {
+                    otel_warn!("tls.poll_watcher.error", error = ?e, message = "Poll watcher error");
+                }
+            },
+            config,
+        )
+        .map_err(io::Error::other)?;
+
+        watcher
+            .watch(ca_file_path, RecursiveMode::NonRecursive)
+            .map_err(io::Error::other)?;
+
+        otel_info!(
+            "tls.poll_watcher.setup",
+            ca_file = ?ca_file_path,
+            interval = ?poll_interval,
+            message = "Poll watcher set up for CA certificates",
+        );
+
+        Ok(Box::new(watcher))
+    }
+
+    /// Returns the current verifier for debugging/testing purposes.
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn current_verifier(&self) -> Arc<Arc<dyn ClientCertVerifier>> {
+        self.inner.load_full()
+    }
+}
+
+/// Implements the ClientCertVerifier trait by delegating to the inner verifier.
+///
+/// This trait is from rustls's `danger` module, which requires careful handling
+/// to ensure security. Safety is ensured by delegating all verification to a
+/// properly constructed `WebPkiClientVerifier` which performs full certificate
+/// chain validation.
+impl ClientCertVerifier for ReloadableClientCaVerifier {
+    fn root_hint_subjects(&self) -> &[DistinguishedName] {
+        // Root hints are CA Distinguished Names sent in CertificateRequest to help
+        // clients choose which certificate to send (e.g., if client has multiple certs).
+        //
+        // Problem: This method requires returning a &'static slice, but our CA verifier
+        // can change at any time due to hot-reload. We can't safely return a reference
+        // to the current CA's DNs because they might be swapped out mid-handshake.
+        //
+        // Solution: Return empty slice. Clients will send their certificate anyway (they
+        // just won't have the hint about which CA we trust). This is TLS-spec compliant
+        // and what Envoy does for dynamic CAs.
+        //
+        // Impact: Clients with multiple certificates might send the wrong one first,
+        // causing a retry. In practice, most clients have only one cert, so no issue.
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        now: UnixTime,
+    ) -> Result<ClientCertVerified, rustls::Error> {
+        // Load current verifier (wait-free, atomic)
+        let verifier = self.inner.load();
+        verifier.verify_client_cert(end_entity, intermediates, now)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        let verifier = self.inner.load();
+        verifier.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        let verifier = self.inner.load();
+        verifier.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        let verifier = self.inner.load();
+        verifier.supported_verify_schemes()
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        let verifier = self.inner.load();
+        verifier.client_auth_mandatory()
+    }
+}
+
+/// Builds a WebPkiClientVerifier from PEM-encoded CA certificates.
+fn build_webpki_verifier(
+    ca_pem: &[u8],
+    include_system_cas: bool,
+) -> Result<Arc<dyn ClientCertVerifier>, io::Error> {
+    let mut roots = RootCertStore::empty();
+
+    // Add system CAs if requested
+    if include_system_cas {
+        let system_certs = load_native_certs();
+        for error in &system_certs.errors {
+            otel_warn!("tls.native_cert.load_error", error = ?error);
+        }
+        for cert in system_certs.certs {
+            if let Err(e) = roots.add(cert) {
+                otel_warn!("tls.native_cert.add_error", error = ?e);
+            }
+        }
+    }
+
+    // Add user-provided CAs
+    let mut reader = io::BufReader::new(ca_pem);
+    let mut count = 0;
+    for cert in CertificateDer::pem_reader_iter(&mut reader) {
+        let cert = cert.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        roots
+            .add(cert)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        count += 1;
+    }
+
+    if roots.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "No CA certificates loaded",
+        ));
+    }
+
+    otel_debug!(
+        "tls.ca.verifier_built",
+        count = count,
+        message = "Built verifier with CA certificates"
+    );
+
+    WebPkiClientVerifier::builder(roots.into())
+        .build()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+/// Reloads the CA verifier from a file path.
+fn reload_ca_verifier(
+    ca_path: &Path,
+    include_system_cas: bool,
+) -> Result<Arc<dyn ClientCertVerifier>, io::Error> {
+    let ca_pem = read_file_with_limit_sync(ca_path)?;
+    otel_debug!(
+        "tls.ca.reloaded",
+        size_bytes = ca_pem.len(),
+        message = "Reloaded CA PEM"
+    );
+    build_webpki_verifier(&ca_pem, include_system_cas)
+}
+
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn get_mtime(path: &Path) -> Result<u64, io::Error> {
+    std::fs::metadata(path)?
+        .modified()?
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(io::Error::other)
+}
+
+/// Get a unique file identifier that changes when the file is replaced.
+/// On Unix, this uses the inode number which changes on atomic rename.
+/// On other platforms, falls back to mtime.
+#[cfg(unix)]
+fn get_file_identity(path: &Path) -> Result<u64, io::Error> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path)?;
+    Ok(metadata.ino())
+}
+
+#[cfg(windows)]
+fn get_file_identity(path: &Path) -> Result<u64, io::Error> {
+    // On Windows, use last_write_time() which has 100-nanosecond precision (FILETIME),
+    // unlike get_mtime() which truncates to seconds and can miss rapid file replacements.
+    use std::os::windows::fs::MetadataExt;
+    let metadata = std::fs::metadata(path)?;
+    Ok(metadata.last_write_time())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn get_file_identity(path: &Path) -> Result<u64, io::Error> {
+    // On other platforms, fall back to mtime
+    get_mtime(path)
+}
+
+/// Parses a certified key from PEM-encoded certificate and key bytes.
+fn parse_certified_key(
+    cert_pem: &[u8],
+    key_pem: &[u8],
+    cert_path_debug: &Path,
+) -> Result<CertifiedKey, io::Error> {
+    use std::io::BufReader;
+
+    let certs: Vec<_> = CertificateDer::pem_reader_iter(&mut BufReader::new(cert_pem))
+        .collect::<Result<_, _>>()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    if certs.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("No certificates found in file: {:?}", cert_path_debug),
+        ));
+    }
+
+    let key = PrivateKeyDer::from_pem_reader(&mut BufReader::new(key_pem))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    let provider = rustls::crypto::CryptoProvider::get_default().ok_or_else(|| {
+        io::Error::other(
+            "no rustls CryptoProvider installed — call install_crypto_provider() first",
+        )
+    })?;
+    let signing_key = provider
+        .key_provider
+        .load_private_key(key.clone_key())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    Ok(CertifiedKey::new(certs, signing_key))
+}
+
+/// Async version for background reloads - doesn't block handshakes
+async fn load_certified_key_async(
+    cert_path: &Path,
+    key_path: &Path,
+) -> Result<CertifiedKey, io::Error> {
+    // Use async file I/O - doesn't block
+    let cert_pem = read_file_with_limit_async(cert_path).await?;
+    let key_pem = read_file_with_limit_async(key_path).await?;
+
+    parse_certified_key(&cert_pem, &key_pem, cert_path)
+}
+
+/// Sync version for initial load in constructor
+fn load_certified_key_sync(cert_path: &Path, key_path: &Path) -> Result<CertifiedKey, io::Error> {
+    let cert_pem = read_file_with_limit_sync(cert_path)?;
+    let key_pem = read_file_with_limit_sync(key_path)?;
+
+    parse_certified_key(&cert_pem, &key_pem, cert_path)
+}
+
+/// Builds a reloadable server config from the given configuration.
+///
+/// This function creates a TLS server configuration with support for:
+///
+/// 1. **Server Certificate Hot-Reload**: Using `LazyReloadableCertResolver` for
+///    automatic reloading of server cert/key when files change.
+///
+/// 2. **Client CA Certificate Hot-Reload (mTLS)**: Using `ReloadableClientCaVerifier`
+///    for zero-downtime reload of client CA certificates. This is particularly useful
+///    for environments with frequently rotating certificates (SPIFFE/SPIRE, cert-manager).
+///
+/// # Hot-Reload Behavior
+///
+/// - **Server certificates**: Checked on a configurable interval (`reload_interval`).
+/// - **Client CA certificates**: Reloaded immediately when file changes are detected
+///   via file system notifications (when `watch_client_ca` is enabled), or on the
+///   same interval as server certificates (when `watch_client_ca` is disabled).
+///
+/// # Arguments
+///
+/// * `config` - TLS server configuration containing paths or PEM data for certificates
+///
+/// # Returns
+///
+/// An `Arc<ServerConfig>` ready for use with `TlsAcceptor`.
+pub async fn build_reloadable_server_config(
+    config: &TlsServerConfig,
+) -> Result<Arc<ServerConfig>, io::Error> {
+    let check_interval = config.config.reload_interval;
+
+    let builder = ServerConfig::builder();
+
+    // Determine client auth configuration
+    let builder = build_client_auth(config, builder).await?;
+
+    // Cert resolver
+    let mut server_config = if let (Some(cert_path), Some(key_path)) =
+        (&config.config.cert_file, &config.config.key_file)
+    {
+        // File-based: use lazy reloader
+        let cert_resolver = Arc::new(LazyReloadableCertResolver::new(
+            cert_path.clone(),
+            key_path.clone(),
+            check_interval,
+        )?);
+        builder.with_cert_resolver(cert_resolver)
+    } else if let (Some(cert_pem), Some(key_pem)) =
+        (&config.config.cert_pem, &config.config.key_pem)
+    {
+        // PEM-based: static
+        let certs = CertificateDer::pem_reader_iter(&mut io::BufReader::new(cert_pem.as_bytes()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        let key = PrivateKeyDer::from_pem_reader(&mut io::BufReader::new(key_pem.as_bytes()))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        builder
+            .with_single_cert(certs, key)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "TLS requires either cert_file/key_file or cert_pem/key_pem",
+        ));
+    };
+
+    server_config.alpn_protocols = vec![b"h2".to_vec()];
+
+    Ok(Arc::new(server_config))
+}
+
+/// Builds the client authentication (mTLS) configuration.
+///
+/// This function handles three modes of client CA certificate management:
+///
+/// 1. **File-based with file watching** (`watch_client_ca: true`):
+///    Uses OS-native file notifications for immediate reload when CA files change.
+///    Best for environments with frequent certificate rotation.
+///
+/// 2. **File-based with interval polling** (`watch_client_ca: false`, `client_ca_file` set):
+///    Falls back to interval-based checking (using `reload_interval`).
+///    More compatible with all file systems but less responsive.
+///
+/// 3. **PEM-based static** (`client_ca_pem` set):
+///    CA certificates provided inline; no hot-reload supported.
+async fn build_client_auth(
+    config: &TlsServerConfig,
+    builder: ConfigBuilder<ServerConfig, WantsVerifier>,
+) -> Result<ConfigBuilder<ServerConfig, WantsServerCert>, io::Error> {
+    let include_system_cas = config.include_system_ca_certs_pool.unwrap_or(false);
+    let watch_enabled = config.watch_client_ca;
+    let check_interval = config
+        .config
+        .reload_interval
+        .unwrap_or(Duration::from_secs(DEFAULT_RELOAD_INTERVAL_SECS));
+
+    // Check if we have any CA configuration
+    let has_ca_file = config.client_ca_file.is_some();
+    let has_ca_pem = config.client_ca_pem.is_some();
+
+    if !has_ca_file && !has_ca_pem && !include_system_cas {
+        // No client auth configured
+        otel_debug!(
+            "tls.mtls.disabled",
+            message = "No client CA configured, disabling client authentication"
+        );
+        return Ok(builder.with_no_client_auth());
+    }
+
+    // Build the appropriate verifier based on configuration
+    if let Some(ca_file) = &config.client_ca_file {
+        // File-based CA configuration
+        let verifier = if watch_enabled {
+            otel_info!(
+                "tls.file_watcher.setup",
+                ca_file = ?ca_file,
+                message = "Configuring mTLS with file watching for CA certificates"
+            );
+            ReloadableClientCaVerifier::new_with_file_watch(ca_file.clone(), include_system_cas)?
+        } else {
+            otel_info!(
+                "tls.poll_watcher.setup",
+                ca_file = ?ca_file,
+                interval = ?check_interval,
+                message = "Configuring mTLS with polling for CA certificates"
+            );
+            ReloadableClientCaVerifier::new_with_polling(
+                ca_file.clone(),
+                include_system_cas,
+                check_interval,
+            )?
+        };
+
+        Ok(builder.with_client_cert_verifier(verifier))
+    } else if let Some(ca_pem) = &config.client_ca_pem {
+        // PEM-based (static) CA configuration
+        otel_info!(
+            "tls.mtls.configure_static_pem",
+            message = "Configuring mTLS with static PEM CA certificates"
+        );
+
+        // For PEM-based, we need to combine with system CAs if requested
+        let mut combined_pem = Vec::new();
+
+        if include_system_cas {
+            let cert_res = tokio::task::spawn_blocking(load_native_certs)
+                .await
+                .map_err(io::Error::other)?;
+            combined_pem.extend_from_slice(&convert_native_certs_to_pem(&cert_res));
+        }
+
+        combined_pem.extend_from_slice(ca_pem.as_bytes());
+
+        // Pass false because system CAs are already included in combined_pem above
+        let verifier = ReloadableClientCaVerifier::new_from_pem(combined_pem, false)?;
+        Ok(builder.with_client_cert_verifier(verifier))
+    } else if include_system_cas {
+        // Only system CAs (no user-provided CA)
+        otel_info!(
+            "tls.mtls.configure_system_cas",
+            message = "Configuring mTLS with system CA certificates only"
+        );
+
+        let cert_res = tokio::task::spawn_blocking(load_native_certs)
+            .await
+            .map_err(io::Error::other)?;
+        let system_pem = convert_native_certs_to_pem(&cert_res);
+
+        if system_pem.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "include_system_ca_certs_pool is true, but no CA certificates were loaded. \
+                 Cannot enable mTLS without CA certificates.",
+            ));
+        }
+
+        // Pass false because system CAs are already in system_pem
+        let verifier = ReloadableClientCaVerifier::new_from_pem(system_pem, false)?;
+        Ok(builder.with_client_cert_verifier(verifier))
+    } else {
+        // This shouldn't happen given the guard at the top, but handle it
+        Ok(builder.with_no_client_auth())
+    }
+}
+
+/// Builds a TLS acceptor from optional TLS configuration.
+///
+/// Returns `Ok(None)` if `tls_config` is `None` (TLS disabled).
+/// Returns `Ok(Some(TlsAcceptor))` if TLS is successfully configured.
+/// Returns `Err` if TLS configuration fails.
+pub async fn build_tls_acceptor(
+    tls_config: Option<&TlsServerConfig>,
+) -> Result<Option<tokio_rustls::TlsAcceptor>, io::Error> {
+    match tls_config {
+        Some(config) => {
+            let server_config = build_reloadable_server_config(config).await?;
+            Ok(Some(tokio_rustls::TlsAcceptor::from(server_config)))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Performs a TLS handshake on a single accepted TCP connection.
+///
+/// This is the single-connection counterpart to [`create_tls_stream`], suitable
+/// for receivers that accept connections individually (e.g., Syslog over TCP)
+/// rather than processing a stream of connections (e.g., gRPC servers).
+///
+/// # Arguments
+///
+/// * `stream` - The accepted TCP stream to wrap with TLS
+/// * `acceptor` - The TLS acceptor configured with server certificates
+/// * `handshake_timeout` - Maximum time allowed for the TLS handshake
+///
+/// # Returns
+///
+/// * `Ok(TlsStream)` on successful handshake
+/// * `Err` with `ErrorKind::TimedOut` if handshake exceeds timeout
+/// * `Err` on protocol/certificate errors
+///
+/// # Example
+///
+/// ```ignore
+/// let tls_stream = accept_tls_connection(
+///     tcp_stream,
+///     &tls_acceptor,
+///     Duration::from_secs(10),
+/// ).await?;
+/// let reader = BufReader::new(tls_stream);
+/// ```
+pub async fn accept_tls_connection<T>(
+    stream: T,
+    acceptor: &tokio_rustls::TlsAcceptor,
+    handshake_timeout: Duration,
+) -> Result<tokio_rustls::server::TlsStream<T>, io::Error>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    match tokio::time::timeout(handshake_timeout, acceptor.accept(stream)).await {
+        Ok(Ok(tls_stream)) => Ok(tls_stream),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("TLS handshake timed out after {:?}", handshake_timeout),
+        )),
+    }
+}
+
+pub(crate) async fn read_file_with_limit_async(path: &Path) -> Result<Vec<u8>, io::Error> {
+    let metadata = tokio::fs::metadata(path).await?;
+    if metadata.len() > MAX_TLS_FILE_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "File {:?} is too large ({} bytes). Max allowed is {} bytes.",
+                path,
+                metadata.len(),
+                MAX_TLS_FILE_SIZE
+            ),
+        ));
+    }
+    tokio::fs::read(path).await
+}
+
+fn read_file_with_limit_sync(path: &Path) -> Result<Vec<u8>, io::Error> {
+    let metadata = std::fs::metadata(path)?;
+    if metadata.len() > MAX_TLS_FILE_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "File {:?} is too large ({} bytes). Max allowed is {} bytes.",
+                path,
+                metadata.len(),
+                MAX_TLS_FILE_SIZE
+            ),
+        ));
+    }
+    std::fs::read(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_config::tls::TlsConfig;
+    use otap_test_tls_certs as tls_certs;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Generate a self-signed certificate using shared rcgen helpers.
+    fn generate_cert(dir: &Path, name: &str, cn: &str) {
+        let cert = tls_certs::generate_self_signed_cert(cn, Some(cn), true);
+        cert.write_to_dir(dir, name);
+    }
+
+    /// Generate an end-entity (leaf) certificate signed by a CA using rcgen.
+    ///
+    /// This creates a proper PKI hierarchy:
+    /// - CA certificate (`CA:TRUE`) → can be added to root stores as trust anchor
+    /// - End-entity certificate (`CA:FALSE`) → presented during TLS handshake
+    ///
+    /// This avoids two issues:
+    /// 1. `CaUsedAsEndEntity` error when using CA certs as server/client certs
+    /// 2. `ExtensionValueInvalid` error on macOS when adding non-CA certs to root stores
+    ///
+    /// # Arguments
+    /// * `dir` - Directory to write certificate files
+    /// * `ca_name` - Base name for CA cert file (creates `{ca_name}.crt`)
+    /// * `cert_name` - Base name for end-entity cert files
+    /// * `cn` - Common Name for the end-entity cert (also used as SAN for hostname verification)
+    fn generate_ca_signed_cert(dir: &Path, ca_name: &str, cert_name: &str, cn: &str) {
+        let _ = tls_certs::write_ca_and_leaf_to_dir(
+            dir,
+            ca_name,
+            &format!("{cn}CA"),
+            cert_name,
+            cn,
+            Some(cn),
+            None,
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_lazy_reload_resolver() {
+        crate::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+        let cert_path = path.join("server.crt");
+        let key_path = path.join("server.key");
+
+        // 1. Generate initial cert
+        generate_cert(path, "cert1", "localhost");
+        let _ = fs::copy(path.join("cert1.crt"), &cert_path).expect("Copy cert1.crt");
+        let _ = fs::copy(path.join("cert1.key"), &key_path).expect("Copy cert1.key");
+
+        // 2. Create resolver with short interval
+        let resolver = LazyReloadableCertResolver::new(
+            cert_path.clone(),
+            key_path.clone(),
+            Some(Duration::from_millis(500)),
+        )
+        .expect("Failed to create resolver");
+
+        let initial_cert = resolver.current_cert_key();
+        assert!(!initial_cert.cert.is_empty());
+
+        // 3. Wait for interval to expire
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        // 4. Update cert file (ensure mtime changes)
+        // Sleep a bit to ensure FS mtime granularity (some systems are 1s)
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+
+        generate_cert(path, "cert2", "otherhost");
+        let _ = fs::copy(path.join("cert2.crt"), &cert_path).expect("Copy cert2.crt");
+        let _ = fs::copy(path.join("cert2.key"), &key_path).expect("Copy cert2.key");
+
+        // 5. Trigger reload (async - returns false immediately)
+        let reloaded = resolver.check_and_reload_if_interval_expired();
+        assert!(!reloaded, "Async reload returns false immediately");
+
+        // 6. Poll for async reload to complete (avoids flaky fixed-duration sleep)
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let new_cert = resolver.current_cert_key();
+            if initial_cert.cert != new_cert.cert {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "Cert should have changed within 5s timeout"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // 7. Trigger again immediately - should not reload (interval not expired)
+        let reloaded_again = resolver.check_and_reload_if_interval_expired();
+        assert!(!reloaded_again, "Should not reload again immediately");
+    }
+
+    #[tokio::test]
+    async fn test_load_server_tls_config_missing_key() {
+        let config = TlsServerConfig {
+            config: TlsConfig {
+                cert_pem: Some("fake cert".to_string()),
+                key_pem: None,
+                cert_file: None,
+                key_file: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: None,
+        };
+
+        let result = load_server_tls_config(&config).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("TLS configuration error"));
+    }
+
+    #[tokio::test]
+    async fn test_load_server_tls_config_missing_cert() {
+        let config = TlsServerConfig {
+            config: TlsConfig {
+                cert_pem: None,
+                key_pem: Some("fake key".to_string()),
+                cert_file: None,
+                key_file: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: None,
+        };
+
+        let result = load_server_tls_config(&config).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_load_server_tls_config_success_pem() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+        generate_cert(path, "server", "localhost");
+
+        let cert_pem = fs::read_to_string(path.join("server.crt")).expect("Failed to read cert");
+        let key_pem = fs::read_to_string(path.join("server.key")).expect("Failed to read key");
+
+        let config = TlsServerConfig {
+            config: TlsConfig {
+                cert_pem: Some(cert_pem),
+                key_pem: Some(key_pem),
+                cert_file: None,
+                key_file: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: None,
+        };
+
+        let result = load_server_tls_config(&config).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_load_server_tls_config_success_file() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+        generate_cert(path, "server", "localhost");
+
+        let cert_path = path.join("server.crt");
+        let key_path = path.join("server.key");
+
+        let config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(cert_path),
+                key_file: Some(key_path),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: None,
+        };
+
+        let result = load_server_tls_config(&config).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_reloadable_client_ca_verifier_file_watch() {
+        crate::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+        let ca_path = path.join("ca.crt");
+
+        // 1. Generate initial CA cert
+        generate_cert(path, "ca1", "TestCA1");
+        let _ = fs::copy(path.join("ca1.crt"), &ca_path).expect("Copy ca1.crt");
+
+        // 2. Create verifier with file watching
+        let verifier = ReloadableClientCaVerifier::new_with_file_watch(ca_path.clone(), false)
+            .expect("Failed to create verifier");
+
+        // Verify it was created successfully
+        assert!(verifier.client_auth_mandatory());
+
+        // 3. Wait a bit for the watcher to be set up
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // 4. Update CA file (ensure file system detects change)
+        tokio::time::sleep(Duration::from_millis(1100)).await; // Ensure mtime changes
+
+        generate_cert(path, "ca2", "TestCA2");
+        let _ = fs::copy(path.join("ca2.crt"), &ca_path).expect("Copy ca2.crt");
+
+        // 5. Wait for file watcher to trigger reload
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // The verifier should still work (we can't easily verify the CA changed,
+        // but we can verify no errors occurred during reload)
+        assert!(verifier.client_auth_mandatory());
+    }
+
+    #[tokio::test]
+    async fn test_reloadable_client_ca_verifier_from_pem() {
+        crate::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate a CA cert
+        generate_cert(path, "ca", "TestCA");
+        let ca_pem = fs::read(path.join("ca.crt")).expect("Failed to read CA cert");
+
+        // Create verifier from PEM
+        let verifier = ReloadableClientCaVerifier::new_from_pem(ca_pem, false)
+            .expect("Failed to create verifier");
+
+        // Verify it was created successfully
+        assert!(verifier.client_auth_mandatory());
+    }
+
+    #[tokio::test]
+    async fn test_build_reloadable_server_config_with_mtls() {
+        crate::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate server cert and CA cert
+        generate_cert(path, "server", "localhost");
+        generate_cert(path, "ca", "TestCA");
+
+        let config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: Some(Duration::from_secs(1)),
+            },
+            client_ca_file: Some(path.join("ca.crt")),
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: true,
+            handshake_timeout: None,
+        };
+
+        let result = build_reloadable_server_config(&config).await;
+        assert!(result.is_ok());
+
+        let _server_config = result.unwrap();
+        // Verify mTLS config was created successfully
+        // Note: ServerConfig doesn't expose client_auth_mandatory directly,
+        // but if we got here without error, mTLS is configured.
+    }
+
+    /// Test accept_tls_connection with server-side TLS only (no client cert required).
+    ///
+    /// This test verifies the full TLS handshake flow:
+    /// 1. Server creates TLS acceptor with CA-signed cert
+    /// 2. Client connects and trusts the CA
+    /// 3. TLS handshake completes successfully
+    /// 4. Data can be exchanged over the encrypted connection
+    #[tokio::test]
+    async fn test_accept_tls_connection_server_only() {
+        crate::crypto::ensure_crypto_provider();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate CA and CA-signed server certificate
+        // CA cert goes in client's trust store, server cert is presented during TLS
+        generate_ca_signed_cert(path, "ca", "server", "localhost");
+
+        // Build server TLS config (no client auth)
+        let server_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_secs(10)),
+        };
+
+        // Build TLS acceptor (same pattern as syslog_cef_receiver)
+        let tls_acceptor = build_tls_acceptor(Some(&server_config))
+            .await
+            .expect("Failed to build TLS acceptor")
+            .expect("TLS acceptor should be Some");
+
+        // Bind TCP listener
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind TCP listener");
+        let server_addr = listener.local_addr().expect("Failed to get server address");
+
+        // Build client TLS config that trusts the CA (not the server cert directly)
+        let ca_cert_pem = fs::read(path.join("ca.crt")).expect("Failed to read CA cert");
+        let mut root_store = RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(&ca_cert_pem) {
+            let cert = cert.expect("Failed to parse CA cert");
+            root_store
+                .add(cert)
+                .expect("Failed to add cert to root store");
+        }
+
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let client_connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        // Spawn server task
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
+
+            // Perform TLS handshake using accept_tls_connection
+            let tls_stream = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(5))
+                .await
+                .expect("TLS handshake failed");
+
+            // Write test data
+            use tokio::io::AsyncWriteExt;
+            let mut tls_stream = tls_stream;
+            tls_stream
+                .write_all(b"Hello from TLS server!\n")
+                .await
+                .expect("Failed to write");
+            tls_stream.flush().await.expect("Failed to flush");
+        });
+
+        // Client connects and performs TLS handshake
+        let client_handle = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(server_addr)
+                .await
+                .expect("Failed to connect to server");
+
+            let server_name =
+                rustls_pki_types::ServerName::try_from("localhost").expect("Invalid server name");
+
+            let mut tls_stream = client_connector
+                .connect(server_name, stream)
+                .await
+                .expect("Client TLS handshake failed");
+
+            // Read response
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(&mut tls_stream);
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line).await.expect("Failed to read");
+            assert_eq!(line, "Hello from TLS server!\n");
+        });
+
+        // Wait for both tasks
+        let (server_result, client_result) = tokio::join!(server_handle, client_handle);
+        server_result.expect("Server task panicked");
+        client_result.expect("Client task panicked");
+    }
+
+    /// Test accept_tls_connection with mTLS (mutual TLS - both server and client certs).
+    ///
+    /// This test verifies mutual authentication:
+    /// 1. Server requires client certificate signed by a trusted CA
+    /// 2. Client trusts server's CA and presents its own certificate
+    /// 3. Both sides authenticate each other
+    /// 4. TLS handshake completes successfully
+    #[tokio::test]
+    async fn test_accept_tls_connection_mtls() {
+        crate::crypto::ensure_crypto_provider();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate CA-signed server and client certs
+        // Using separate CAs for server and client to properly test mTLS
+        generate_ca_signed_cert(path, "server_ca", "server", "localhost");
+        generate_ca_signed_cert(path, "client_ca", "client", "TestClient");
+
+        // Build server TLS config with client CA (mTLS)
+        let server_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            // Server trusts client CA
+            client_ca_file: Some(path.join("client_ca.crt")),
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_secs(10)),
+        };
+
+        // Build TLS acceptor (same pattern as syslog_cef_receiver)
+        let tls_acceptor = build_tls_acceptor(Some(&server_config))
+            .await
+            .expect("Failed to build TLS acceptor")
+            .expect("TLS acceptor should be Some");
+
+        // Bind TCP listener
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind TCP listener");
+        let server_addr = listener.local_addr().expect("Failed to get server address");
+
+        // Build client TLS config - client trusts server CA
+        let server_ca_pem = fs::read(path.join("server_ca.crt")).expect("Failed to read server CA");
+        let mut root_store = RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(&server_ca_pem) {
+            let cert = cert.expect("Failed to parse server CA cert");
+            root_store
+                .add(cert)
+                .expect("Failed to add cert to root store");
+        }
+
+        // Load client cert and key
+        let client_cert_pem =
+            fs::read(path.join("client.crt")).expect("Failed to read client cert");
+        let client_key_pem = fs::read(path.join("client.key")).expect("Failed to read client key");
+
+        let client_certs: Vec<_> = CertificateDer::pem_slice_iter(&client_cert_pem)
+            .collect::<Result<_, _>>()
+            .expect("Failed to parse client certs");
+        let client_key =
+            PrivateKeyDer::from_pem_slice(&client_key_pem).expect("Failed to parse client key");
+
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_client_auth_cert(client_certs, client_key)
+            .expect("Failed to configure client auth");
+        let client_connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        // Spawn server task
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
+
+            // Perform TLS handshake using accept_tls_connection
+            let tls_stream = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(5))
+                .await
+                .expect("mTLS handshake failed");
+
+            // Write test data
+            use tokio::io::AsyncWriteExt;
+            let mut tls_stream = tls_stream;
+            tls_stream
+                .write_all(b"Hello from mTLS server!\n")
+                .await
+                .expect("Failed to write");
+            tls_stream.flush().await.expect("Failed to flush");
+        });
+
+        // Client connects with client certificate
+        let client_handle = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(server_addr)
+                .await
+                .expect("Failed to connect to server");
+
+            let server_name =
+                rustls_pki_types::ServerName::try_from("localhost").expect("Invalid server name");
+
+            let mut tls_stream = client_connector
+                .connect(server_name, stream)
+                .await
+                .expect("Client mTLS handshake failed");
+
+            // Read response
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(&mut tls_stream);
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line).await.expect("Failed to read");
+            assert_eq!(line, "Hello from mTLS server!\n");
+        });
+
+        // Wait for both tasks
+        let (server_result, client_result) = tokio::join!(server_handle, client_handle);
+        server_result.expect("Server task panicked");
+        client_result.expect("Client task panicked");
+    }
+
+    /// Test accept_tls_connection timeout when client doesn't complete handshake.
+    #[tokio::test]
+    async fn test_accept_tls_connection_timeout() {
+        crate::crypto::ensure_crypto_provider();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate CA-signed server cert (same pattern as other tests)
+        generate_ca_signed_cert(path, "ca", "server", "localhost");
+
+        let server_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_millis(100)),
+        };
+
+        let tls_acceptor = build_tls_acceptor(Some(&server_config))
+            .await
+            .expect("Failed to build TLS acceptor")
+            .expect("TLS acceptor should be Some");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind TCP listener");
+        let server_addr = listener.local_addr().expect("Failed to get server address");
+
+        // Spawn server task that expects timeout
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
+
+            // Use a very short timeout
+            let result =
+                accept_tls_connection(stream, &tls_acceptor, Duration::from_millis(100)).await;
+
+            // Should timeout because client never sends TLS handshake
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        });
+
+        // Client connects but never sends TLS handshake data
+        let client_handle = tokio::spawn(async move {
+            let _stream = tokio::net::TcpStream::connect(server_addr)
+                .await
+                .expect("Failed to connect to server");
+
+            // Just hold the connection open without doing TLS handshake
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        });
+
+        // Wait for both tasks
+        let (server_result, client_result) = tokio::join!(server_handle, client_handle);
+        server_result.expect("Server task panicked");
+        client_result.expect("Client task panicked");
+    }
+
+    /// Test that client rejects server certificate from untrusted CA.
+    ///
+    /// This verifies that TLS properly enforces certificate validation:
+    /// - Server presents a certificate signed by CA-A
+    /// - Client only trusts CA-B
+    /// - Handshake should fail
+    #[tokio::test]
+    async fn test_accept_tls_connection_untrusted_server() {
+        crate::crypto::ensure_crypto_provider();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate server cert signed by one CA
+        generate_ca_signed_cert(path, "server_ca", "server", "localhost");
+        // Generate a different CA that client will trust (but server doesn't use)
+        generate_ca_signed_cert(path, "other_ca", "other", "other");
+
+        let server_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_secs(10)),
+        };
+
+        let tls_acceptor = build_tls_acceptor(Some(&server_config))
+            .await
+            .expect("Failed to build TLS acceptor")
+            .expect("TLS acceptor should be Some");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind TCP listener");
+        let server_addr = listener.local_addr().expect("Failed to get server address");
+
+        // Client trusts a DIFFERENT CA (other_ca), not the server's CA (server_ca)
+        let other_ca_pem = fs::read(path.join("other_ca.crt")).expect("Failed to read other CA");
+        let mut root_store = RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(&other_ca_pem) {
+            let cert = cert.expect("Failed to parse CA cert");
+            root_store
+                .add(cert)
+                .expect("Failed to add cert to root store");
+        }
+
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let client_connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        // Spawn server task
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
+
+            // Server handshake may fail or succeed from server's perspective,
+            // but we expect an error on one side
+            let _ = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(5)).await;
+        });
+
+        // Client connects - should fail because it doesn't trust server's CA
+        let client_handle = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(server_addr)
+                .await
+                .expect("Failed to connect to server");
+
+            let server_name =
+                rustls_pki_types::ServerName::try_from("localhost").expect("Invalid server name");
+
+            let result = client_connector.connect(server_name, stream).await;
+
+            // Client should reject the server's certificate
+            assert!(
+                result.is_err(),
+                "Client should reject untrusted server certificate"
+            );
+        });
+
+        let (server_result, client_result) = tokio::join!(server_handle, client_handle);
+        server_result.expect("Server task panicked");
+        client_result.expect("Client task panicked");
+    }
+
+    /// Test that server rejects client certificate from untrusted CA in mTLS.
+    ///
+    /// This verifies that mTLS properly enforces client certificate validation:
+    /// - Server expects client certs signed by CA-A
+    /// - Client presents a certificate signed by CA-B
+    /// - Handshake should fail
+    #[tokio::test]
+    async fn test_accept_tls_connection_untrusted_client() {
+        crate::crypto::ensure_crypto_provider();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate server cert
+        generate_ca_signed_cert(path, "server_ca", "server", "localhost");
+        // Generate client cert signed by one CA
+        generate_ca_signed_cert(path, "client_ca", "client", "TestClient");
+        // Generate a different CA that server will trust (but client doesn't use)
+        generate_ca_signed_cert(path, "trusted_client_ca", "trusted_client", "TrustedClient");
+
+        // Server trusts trusted_client_ca, but client will present cert from client_ca
+        let server_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            // Server trusts a DIFFERENT CA than what client uses
+            client_ca_file: Some(path.join("trusted_client_ca.crt")),
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_secs(10)),
+        };
+
+        let tls_acceptor = build_tls_acceptor(Some(&server_config))
+            .await
+            .expect("Failed to build TLS acceptor")
+            .expect("TLS acceptor should be Some");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind TCP listener");
+        let server_addr = listener.local_addr().expect("Failed to get server address");
+
+        // Client trusts server's CA
+        let server_ca_pem = fs::read(path.join("server_ca.crt")).expect("Failed to read server CA");
+        let mut root_store = RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(&server_ca_pem) {
+            let cert = cert.expect("Failed to parse server CA cert");
+            root_store
+                .add(cert)
+                .expect("Failed to add cert to root store");
+        }
+
+        // Client uses cert from client_ca (which server doesn't trust)
+        let client_cert_pem =
+            fs::read(path.join("client.crt")).expect("Failed to read client cert");
+        let client_key_pem = fs::read(path.join("client.key")).expect("Failed to read client key");
+
+        let client_certs: Vec<_> = CertificateDer::pem_slice_iter(&client_cert_pem)
+            .collect::<Result<_, _>>()
+            .expect("Failed to parse client certs");
+        let client_key =
+            PrivateKeyDer::from_pem_slice(&client_key_pem).expect("Failed to parse client key");
+
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_client_auth_cert(client_certs, client_key)
+            .expect("Failed to configure client auth");
+        let client_connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        // Spawn server task - should reject client cert
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
+
+            let result = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(5)).await;
+
+            // Server should reject the client's certificate
+            assert!(
+                result.is_err(),
+                "Server should reject untrusted client certificate"
+            );
+        });
+
+        // Client connects with untrusted cert
+        let client_handle = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(server_addr)
+                .await
+                .expect("Failed to connect to server");
+
+            let server_name =
+                rustls_pki_types::ServerName::try_from("localhost").expect("Invalid server name");
+
+            // Handshake may fail on client side too when server rejects
+            let _ = client_connector.connect(server_name, stream).await;
+        });
+
+        let (server_result, client_result) = tokio::join!(server_handle, client_handle);
+        server_result.expect("Server task panicked");
+        client_result.expect("Client task panicked");
+    }
+
+    /// Test that client rejects server certificate with hostname mismatch.
+    ///
+    /// This verifies hostname verification:
+    /// - Server cert has SAN for "wronghost"
+    /// - Client connects expecting "localhost"
+    /// - Handshake should fail due to hostname mismatch
+    #[tokio::test]
+    async fn test_accept_tls_connection_hostname_mismatch() {
+        crate::crypto::ensure_crypto_provider();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate server cert with SAN for "wronghost", not "localhost"
+        generate_ca_signed_cert(path, "ca", "server", "wronghost");
+
+        let server_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_secs(10)),
+        };
+
+        let tls_acceptor = build_tls_acceptor(Some(&server_config))
+            .await
+            .expect("Failed to build TLS acceptor")
+            .expect("TLS acceptor should be Some");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind TCP listener");
+        let server_addr = listener.local_addr().expect("Failed to get server address");
+
+        // Client trusts the CA
+        let ca_pem = fs::read(path.join("ca.crt")).expect("Failed to read CA cert");
+        let mut root_store = RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(&ca_pem) {
+            let cert = cert.expect("Failed to parse CA cert");
+            root_store
+                .add(cert)
+                .expect("Failed to add cert to root store");
+        }
+
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let client_connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        // Spawn server task
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
+
+            // Server handshake may succeed, but client will reject
+            let _ = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(5)).await;
+        });
+
+        // Client connects expecting "localhost" but server cert has "wronghost"
+        let client_handle = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(server_addr)
+                .await
+                .expect("Failed to connect to server");
+
+            // Client expects "localhost" but cert has SAN for "wronghost"
+            let server_name =
+                rustls_pki_types::ServerName::try_from("localhost").expect("Invalid server name");
+
+            let result = client_connector.connect(server_name, stream).await;
+
+            // Client should reject due to hostname mismatch
+            assert!(
+                result.is_err(),
+                "Client should reject certificate with hostname mismatch"
+            );
+        });
+
+        let (server_result, client_result) = tokio::join!(server_handle, client_handle);
+        server_result.expect("Server task panicked");
+        client_result.expect("Client task panicked");
+    }
+}

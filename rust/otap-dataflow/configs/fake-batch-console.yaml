@@ -1,0 +1,49 @@
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    logs:
+      level: info
+      providers:
+        engine: console_async
+        global: console_async
+        admin: console_direct
+        internal: console_direct
+groups:
+  default:
+    pipelines:
+      main:
+        # Shows the batch processor.
+        policies:
+          channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
+
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_signal_count: 10000
+                max_batch_size: 10
+                signals_per_second: 10
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          batch:
+            type: processor:batch
+            config:
+              otap:
+                min_size: 1000
+                sizer: items
+              format: preserve
+              max_batch_duration: 3s
+          console:
+            type: exporter:console
+            config: {}
+
+        connections:
+          - from: generator
+            to: batch
+          - from: batch
+            to: console

@@ -1,0 +1,33 @@
+[package]
+name = "otap-df-config"
+description = "Configuration model for OTAP pipeline"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+miette = { workspace = true }
+schemars = { workspace = true }
+byte-unit = { workspace = true }
+humantime-serde = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+
+[dev-dependencies]
+k8s-openapi = { workspace = true }
+kube = { workspace = true }
+schemars = { workspace = true }
+tempfile = { workspace = true }
+wiremock = { workspace = true }
+tokio = { workspace = true }
+rustls = { workspace = true, features = ["ring"] }

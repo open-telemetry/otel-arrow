@@ -1,0 +1,199 @@
+# Engine Configuration Examples
+
+This directory contains example engine configurations for the OTAP dataflow engine.
+Each file uses `version: otel_dataflow/v1` at the root.
+
+Note: These configurations are based on the native OTAP dataflow engine
+configuration model, which is a superset of the Go Collector configuration
+model. Support for the Go Collector YAML format is planned for the future.
+
+## Available Configurations
+
+### `fake-batch-debug-noop.yaml`
+
+Demonstrates the batch processor:
+
+- Generates fake data -> batch processor -> debug processor -> noop exporter
+
+### `fake-debug-noop-telemetry.yaml`
+
+A basic pipeline with telemetry export enabled:
+
+- Generates fake data -> debug processor -> noop exporter
+- Includes `engine.telemetry` configuration with console metrics export
+
+### `fake-debug-output-ports.yaml`
+
+Demonstrates multiple output ports:
+
+- Generates fake data -> debug processor with multiple output ports -> noop exporter
+
+### `fake-filter-debug-noop.yaml`
+
+Demonstrates the filter processor:
+
+- Generates fake data -> filter processor -> debug processor -> noop exporter
+
+### `fake-transform-debug-noop.yaml`
+
+Demonstrate using the transform processor to transform data
+
+- Generates fake data -> debug -> transform -> debug -> noop exporter
+
+The input data can be viewed at /tmp/debug1.log and the transformed output at
+/tmp/debug2.log
+
+### `fake-otap.yaml`
+
+Generates fake data and exports via OTAP:
+
+- Generates fake data -> OTAP exporter to `http://127.0.0.1:4318`
+
+### `fake-otlp.yaml`
+
+Generates fake data and exports via OTLP:
+
+- Generates fake data -> OTLP exporter to `http://127.0.0.1:4317`
+
+### `fake-parquet.yaml`
+
+Generates fake data and exports to Parquet files:
+
+- Generates fake data -> Parquet exporter to `/tmp`
+
+### `fake-perf.yaml`
+
+Generates fake data with performance metrics:
+
+- Generates fake data -> performance exporter
+- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+
+### `fake-multi-tenant-perf.yaml`
+
+Generates mixed-tenant traffic using weighted resource attribute rotation:
+
+- Uses `data_source: synthetic` with two resource attribute sets (`tenant.id:
+  prod` and `tenant.id: ppe`) weighted 3:1, producing a 75% / 25% batch split
+  per  pipeline.
+- Generates fake data -> performance exporter
+- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+
+The `resource_attributes` field accepts three forms:
+
+| Form | Description |
+| ---- | ----------- |
+| Single map | All batches carry the same attributes (weight 1) |
+| List of maps | Equal round-robin rotation across entries (weight 1 each) |
+| List of weighted entries (`attrs` + `weight`) | Each entry receives batches proportional to its weight |
+
+> **Note:** `resource_attributes` only applies to `data_source: synthetic`.
+> With `generation_strategy: pre_generated`, only the first attribute set is used.
+
+### `otap-otap.yaml`
+
+A basic OTAP pipeline configuration:
+
+- Receives OTAP traffic on `127.0.0.1:4317`
+- Exports OTAP traffic to `http://127.0.0.1:1235`
+
+### `otap-otlp.yaml`
+
+OTAP to OTLP protocol conversion:
+
+- Receives OTAP traffic on `127.0.0.1:4317`
+- Exports OTLP traffic to `http://127.0.0.1:1235`
+
+### `otap-perf.yaml`
+
+OTAP receiver with performance metrics:
+
+- Receives OTAP traffic on `127.0.0.1:4317`
+- Measures and exports performance metrics
+- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+
+### `otlp-otap.yaml`
+
+OTLP to OTAP protocol conversion:
+
+- Receives OTLP traffic on `127.0.0.1:4317`
+- Exports OTAP traffic to `http://127.0.0.1:1235`
+
+### `otlp-otlp.yaml`
+
+A basic OTLP pipeline configuration:
+
+- Receives OTLP traffic on `127.0.0.1:4317`
+- Exports OTLP traffic to `http://127.0.0.1:1235`
+
+### `otlp-http-otlp.yaml`
+
+OTLP receiver over both protocols:
+
+- Receives OTLP/gRPC on `127.0.0.1:4317`
+- Receives OTLP/HTTP on `127.0.0.1:4318`
+- Exports OTLP/gRPC traffic to `http://127.0.0.1:4319`
+
+### `otlp-grpc-http-forward.yaml`
+
+OTLP forwarding proxy with separate gRPC and HTTP pipelines:
+
+- Receives OTLP/gRPC on `127.0.0.1:4315` and forwards to `http://127.0.0.1:4317`
+- Receives OTLP/HTTP on `127.0.0.1:4316` and forwards to `http://127.0.0.1:4318`
+
+Note: In this configuration, the pipeline does not decode or
+encode OTLP messages; they are simply forwarded from one port
+to another.
+
+### `otlp-perf.yaml`
+
+OTLP receiver with performance metrics:
+
+- Receives OTLP traffic on `127.0.0.1:4317`
+- Measures and exports performance metrics
+- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+
+### `syslog-perf.yaml`
+
+Syslog/CEF receiver with performance metrics:
+
+- Receives syslog messages on UDP `0.0.0.0:5140`
+- Measures and exports performance metrics
+- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+
+To send a quick test message (UDP):
+
+```bash
+echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message" | nc -u -w1 127.0.0.1 5140
+```
+
+For sustained load testing, see the [load generator](../../tools/pipeline_perf_test/load_generator/readme.md):
+
+```bash
+cd tools/pipeline_perf_test/load_generator
+python loadgen.py --load-type syslog --syslog-server 127.0.0.1 --syslog-port 5140 --syslog-transport udp --duration 15
+```
+
+> **Note:** The default `syslog-perf.yaml` config only enables UDP.
+> To also accept TCP, add a `tcp` section under `protocol` in the config.
+
+## Usage
+
+You can use these configurations with the following CLI command:
+
+```bash
+# Use a specific configuration (bare path)
+cargo run -- --config configs/otlp-otlp.yaml
+
+# Explicit file: URI
+cargo run -- --config file:configs/otlp-otlp.yaml
+
+# Load config from an environment variable
+export MY_CONFIG=$(cat configs/otlp-otlp.yaml)
+cargo run -- --config env:MY_CONFIG
+
+# Validate a configuration without starting the engine
+cargo run -- --config configs/otlp-otlp.yaml --validate-and-exit
+```
+
+The `--config` argument supports `file:`, `env:`, and bare path forms.
+See `src/README.md` for the full URI reference.

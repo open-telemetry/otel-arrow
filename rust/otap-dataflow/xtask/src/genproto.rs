@@ -1,0 +1,87 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use std::path::Path;
+
+// Note This is derived from the otel-arrow-rust build script included
+// features to disable the client and/or server sides of the OTAP
+// protocol.  TODO: We have not retained these features, but it will
+// make sense to for portions of the otap-df-pdata crate:
+//
+//        .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
+//        .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#)
+
+pub(crate) fn compile_proto() -> anyhow::Result<()> {
+    let out_dir = Path::new("crates/pdata/src/proto");
+    let base = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+
+    // Generate OTAP (Arrow) protos
+    generate_otap_protos(out_dir, &base);
+
+    // Generate OTLP protos
+    generate_otlp_protos(out_dir, &base);
+
+    Ok(())
+}
+
+#[allow(unused_results)]
+fn prost_cfg() -> prost_build::Config {
+    // Documentation comments are a problem because they look like
+    // doctests and clippy wants to checks them.
+    let mut cfg = prost_build::Config::default();
+    #[allow(unused_mut)]
+    cfg.disable_comments(["."]);
+    // Disable prettyplease, otherwise 'cargo fmt' will reformat
+    // compared with 'cargo build'.
+    cfg.format(false);
+    cfg
+}
+
+fn generate_otap_protos(out_dir: &Path, base: &str) {
+    // Create a tonic-build configuration with our custom settings
+    let builder = tonic_prost_build::configure()
+        .build_server(true)
+        .build_client(true)
+        .disable_comments(["."])
+        .out_dir(out_dir);
+
+    // Compile the protobuf definitions
+    builder
+        .compile_with_config(
+            prost_cfg(),
+            &["experimental/arrow/v1/arrow_service.proto"],
+            &[format!("{base}/../../../proto/opentelemetry/proto/").as_str()],
+        )
+        .expect("Failed to compile OTAP protos.");
+}
+
+fn generate_otlp_protos(out_dir: &Path, base: &str) {
+    // Configure the builder for OTLP protos
+    let builder = tonic_prost_build::configure()
+        .build_server(true)
+        .build_client(true)
+        .disable_comments(["."])
+        .out_dir(out_dir);
+
+    // Note: this adds derive expressions for each OTLP message type.
+    let builder = otap_df_pdata_otlp_model::add_type_attributes(builder);
+
+    builder
+        .compile_with_config(
+            prost_cfg(),
+            &[
+                "opentelemetry/proto/common/v1/common.proto",
+                "opentelemetry/proto/resource/v1/resource.proto",
+                "opentelemetry/proto/trace/v1/trace.proto",
+                "opentelemetry/proto/metrics/v1/metrics.proto",
+                "opentelemetry/proto/logs/v1/logs.proto",
+                "opentelemetry/proto/profiles/v1development/profiles.proto",
+                "opentelemetry/proto/collector/logs/v1/logs_service.proto",
+                "opentelemetry/proto/collector/trace/v1/trace_service.proto",
+                "opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
+                "opentelemetry/proto/collector/profiles/v1development/profiles_service.proto",
+            ],
+            &[format!("{base}/../../../proto/opentelemetry-proto").as_str()],
+        )
+        .expect("Failed to compile OTLP protos.");
+}

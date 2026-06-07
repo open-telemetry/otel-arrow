@@ -1,0 +1,25 @@
+version: otel_dataflow/v1
+engine: { }
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          syslog:
+            type: receiver:syslog_cef
+            config:
+              protocol:
+                udp:
+                  listening_addr: "0.0.0.0:5140"
+          console:
+            type: exporter:console
+            config: {}
+
+        connections:
+          - from: syslog
+            to: console

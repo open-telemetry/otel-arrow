@@ -1,0 +1,362 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Slot-based correlation system for correlating in-flight requests
+//! and responses. Provides a RouteData to retrieve the data for
+//! Ack/Nack handling. Based on the slotmap crate.
+
+use otap_df_engine::control::CallData;
+use otap_df_engine::error::Error;
+use slotmap::{Key as SlotKey, KeyData, SlotMap, new_key_type};
+
+new_key_type! {
+    /// Slot identifier used for calldata.
+    pub struct Key;
+}
+
+impl From<Key> for CallData {
+    fn from(key: Key) -> Self {
+        smallvec::smallvec![key.data().as_ffi().into()]
+    }
+}
+
+impl TryFrom<CallData> for Key {
+    type Error = Error;
+
+    fn try_from(value: CallData) -> Result<Self, Self::Error> {
+        if value.len() != 1 {
+            return Err(Error::InternalError {
+                message: "invalid calldata format".into(),
+            });
+        }
+
+        Ok(KeyData::from_ffi(value[0].into()).into())
+    }
+}
+
+/// State managing the slot array and free list.
+/// Generic over user data type `UData`.
+pub struct State<UData> {
+    /// Implemented by slotmap.
+    slots: SlotMap<Key, UData>,
+
+    /// Maximum size configuration.
+    max_size: usize,
+}
+
+impl<UData> State<UData> {
+    /// Create new server state with the given configuration
+    #[must_use]
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            // Pre-size the slot map so we do not allocate on the hot path for
+            // the common case where concurrency stays within the configured
+            // limit.
+            slots: SlotMap::with_capacity_and_key(max_size),
+            max_size,
+        }
+    }
+
+    /// Allocate a slot for a new request.  The closure is called only
+    /// if a slot is available, creating the user data. This also
+    /// returns additional user data (e.g., the receiver end of a
+    /// channel).
+    ///
+    /// Conveniently, oneshot::channel() returns a pair such that
+    /// allocate_slot(|| oneshot::channel()) stores tx as UData and
+    /// returns Some((key, rx)).
+    #[must_use]
+    pub fn allocate<F, R>(&mut self, create: F) -> Option<(Key, R)>
+    where
+        F: FnOnce() -> (UData, R),
+    {
+        if self.slots.len() >= self.max_size {
+            return None;
+        }
+
+        let (udata, ures) = create();
+
+        let key = self.slots.insert(udata);
+
+        Some((key, ures))
+    }
+
+    /// Like allocate(), however takes UData directly instead of a
+    /// function returning an optional value of type R.  In case the
+    /// map is full, the UData is returned.
+    pub fn allocate_with_data(&mut self, data: UData) -> Result<Key, UData> {
+        if self.slots.len() >= self.max_size {
+            return Err(data);
+        }
+
+        Ok(self.slots.insert(data))
+    }
+
+    /// Reserve a slot if available. Useful when needing to do multiple atomic
+    /// inserts across more than one [State].
+    pub fn reserve(&mut self) -> Option<Reservation<'_, UData>> {
+        if self.slots.len() >= self.max_size {
+            return None;
+        }
+
+        Some(Reservation { state: self })
+    }
+
+    /// Get immutable reference to user data in a slot (if key is valid).
+    #[must_use]
+    pub fn get(&self, key: Key) -> Option<&UData> {
+        self.slots.get(key)
+    }
+
+    /// Modify user data in a slot (if key is valid).
+    #[must_use]
+    pub fn get_mut(&mut self, key: Key) -> Option<&mut UData> {
+        self.slots.get_mut(key)
+    }
+
+    /// Modify user data in a slot with a function. Return true for
+    /// the slot to stay alive.
+    #[must_use]
+    pub fn mutate<F>(&mut self, key: Key, mut f: F) -> Option<UData>
+    where
+        F: FnMut(&mut UData) -> bool,
+    {
+        if self
+            .slots
+            .get_mut(key)
+            .map(|value| !f(value))
+            .unwrap_or(false)
+        {
+            self.slots.remove(key)
+        } else {
+            None
+        }
+    }
+
+    /// Take user data from a slot (if key is valid).
+    #[must_use]
+    pub fn take(&mut self, key: Key) -> Option<UData> {
+        self.slots.remove(key)
+    }
+
+    /// Take and drop the user data (if key is valid).
+    pub fn cancel(&mut self, key: Key) {
+        _ = self.take(key);
+    }
+
+    /// Returns the number of live slots.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// Returns true when there are no live slots.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    /// Returns true if there is at least one empty slot.
+    #[must_use]
+    pub fn has_capacity(&self) -> bool {
+        self.remaining_capacity() > 0
+    }
+
+    /// How much free capacity there is in this map.
+    #[must_use]
+    pub fn remaining_capacity(&self) -> usize {
+        self.max_size - self.len()
+    }
+
+    /// Iterate over all live slots.
+    pub fn iter(&self) -> impl Iterator<Item = (Key, &UData)> {
+        self.slots.iter()
+    }
+
+    /// Drains all live slots, invoking `f` for each user datum.
+    pub fn drain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(UData),
+    {
+        let keys: Vec<Key> = self.slots.keys().collect();
+        for key in keys {
+            if let Some(value) = self.slots.remove(key) {
+                f(value);
+            }
+        }
+    }
+}
+
+/// A reservation to insert a single item. It's guaranteed that having a
+/// Reservation means a slot in the map is available.
+///
+/// This holds an exclusive reference to [State] and the length was checked before
+/// handing it out, so it is not possible for another actor to take the reserved
+/// slot until this Reservation is consumed or dropped.
+pub struct Reservation<'a, UData> {
+    state: &'a mut State<UData>,
+}
+
+impl<'a, UData> Reservation<'a, UData> {
+    /// Consume the reservation to insert an element
+    pub fn insert(self, data: UData) -> Key {
+        self.state.slots.insert(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::oneshot;
+
+    type TestUData = oneshot::Sender<Result<(), String>>;
+
+    fn create_test_state() -> State<TestUData> {
+        State::new(3)
+    }
+
+    #[test]
+    fn test_allocate() {
+        let mut state = create_test_state();
+
+        let (key1, _) = state.allocate(|| oneshot::channel()).unwrap();
+        let (key2, _) = state.allocate(|| oneshot::channel()).unwrap();
+        let (key3, _) = state.allocate(|| oneshot::channel()).unwrap();
+
+        assert_eq!(state.slots.len(), 3);
+        assert_eq!(state.slots.capacity(), 3);
+
+        let result = state.allocate(|| oneshot::channel());
+
+        assert!(result.is_none(), "beyond capacity");
+        assert_eq!(state.slots.len(), 3);
+
+        state.cancel(key1);
+        assert_eq!(state.slots.len(), 2);
+        assert_eq!(state.slots.capacity(), 3);
+
+        state.cancel(key2);
+        state.cancel(key3);
+        assert_eq!(state.slots.len(), 0);
+        assert_eq!(state.slots.capacity(), 3);
+    }
+
+    #[test]
+    fn test_take_current() {
+        let mut state = create_test_state();
+
+        // Pre-fill to capacity
+        assert_eq!(state.slots.capacity(), 3);
+
+        let (key, rx) = state.allocate(|| oneshot::channel()).unwrap();
+        assert_eq!(state.slots.len(), 1);
+
+        state
+            .take(key)
+            .map(|channel| channel.send(Ok(())))
+            .expect("sent")
+            .expect("ok");
+
+        let result = rx.blocking_recv().unwrap();
+        assert!(result.is_ok());
+        assert_eq!(state.slots.len(), 0);
+    }
+
+    #[test]
+    fn test_take_old() {
+        let mut state = create_test_state();
+
+        let (key, rx) = state.allocate(|| oneshot::channel()).unwrap();
+        state.cancel(key);
+        assert!(rx.blocking_recv().is_err());
+
+        let (_key2, _) = state.allocate(|| oneshot::channel()).unwrap();
+
+        // Try to take old generation
+        assert!(state.take(key).is_none());
+
+        assert_eq!(state.slots.len(), 1);
+    }
+
+    #[test]
+    fn test_cancel_twice() {
+        let mut state = create_test_state();
+
+        let (key, _) = state.allocate(|| oneshot::channel()).unwrap();
+        assert_eq!(state.slots.len(), 1);
+
+        state.cancel(key);
+        assert_eq!(state.slots.len(), 0);
+
+        state.cancel(key);
+        assert_eq!(state.slots.len(), 0);
+    }
+
+    #[test]
+    fn test_allocs_and_deallocs() {
+        let mut state = create_test_state();
+
+        let (key1, _) = state.allocate(|| oneshot::channel()).unwrap();
+        let (key2, _) = state.allocate(|| oneshot::channel()).unwrap();
+        let (key3, _) = state.allocate(|| oneshot::channel()).unwrap();
+
+        state.cancel(key2);
+        assert_eq!(state.slots.len(), 2);
+
+        let (key4, _) = state.allocate(|| oneshot::channel()).unwrap();
+
+        state.cancel(key1);
+        state.cancel(key3);
+        state.cancel(key4);
+
+        assert_eq!(state.slots.len(), 0);
+        assert_eq!(state.slots.capacity(), 3);
+
+        let (key5, _) = state.allocate(|| oneshot::channel()).unwrap();
+
+        assert_eq!(state.slots.len(), 1);
+        assert_eq!(state.slots.capacity(), 3);
+
+        state.cancel(key5);
+
+        assert_eq!(state.slots.len(), 0);
+    }
+
+    #[test]
+    fn test_reserve_and_insert() {
+        let mut state: State<&'static str> = State::new(2);
+
+        let reservation = state.reserve().expect("capacity available");
+        let key = reservation.insert("hello");
+
+        assert_eq!(state.get(key), Some(&"hello"));
+        assert_eq!(state.len(), 1);
+    }
+
+    #[test]
+    fn test_reserve_full() {
+        let mut state: State<&'static str> = State::new(2);
+
+        let _ = state.allocate_with_data("a").unwrap();
+        let _ = state.allocate_with_data("b").unwrap();
+
+        assert!(state.reserve().is_none(), "should be at capacity");
+    }
+
+    #[test]
+    fn test_allocate_data() {
+        let mut state: State<&'static str> = State::new(3);
+
+        let _ = state.allocate_with_data("1").unwrap();
+        let _ = state.allocate_with_data("2").unwrap();
+        let _ = state.allocate_with_data("3").unwrap();
+
+        assert_eq!(state.slots.len(), 3);
+        assert_eq!(state.slots.capacity(), 3);
+
+        let result = state.allocate_with_data("4");
+
+        assert_eq!(result.expect_err("is_err"), "4");
+        assert_eq!(state.slots.len(), 3);
+    }
+}

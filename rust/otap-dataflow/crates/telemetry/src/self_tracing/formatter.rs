@@ -1,0 +1,975 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! An alternative to Tokio fmt::layer().
+
+use super::encoder::level_to_severity_number;
+use super::{
+    BorrowedLogRecord, LOG_BUFFER_SIZE, LogContext, LogContextFn, LogRecord, SavedCallsite,
+};
+use chrono::{DateTime, Datelike, Timelike, Utc};
+use otap_df_pdata::views::otlp::bytes::logs::RawLogRecord;
+use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
+use otap_df_pdata_views::views::logs::LogRecordView;
+use std::io::{Cursor, Write};
+use std::time::SystemTime;
+use tracing::{Event, Level, Subscriber};
+use tracing_subscriber::layer::{Context, Layer as TracingLayer};
+use tracing_subscriber::registry::LookupSpan;
+
+/// ANSI codes a.k.a. "Select Graphic Rendition" codes.
+#[derive(Clone, Copy)]
+#[repr(u8)]
+pub enum AnsiCode {
+    /// Reset all attributes.
+    Reset = 0,
+    /// Bold text.
+    Bold = 1,
+    /// Dim text.
+    Dim = 2,
+    /// Red foreground. Use for ERROR/FATAL.
+    Red = 31,
+    /// Green foreground. Use for INFO.
+    Green = 32,
+    /// Yellow foreground. Use for WARN.
+    Yellow = 33,
+    /// Blue foreground. Use for DEBUG/TRACE.
+    Blue = 34,
+    /// Magenta foreground. Use for SCOPE/ENTITY.
+    Magenta = 35,
+    /// Cyan foreground. Use for RESOURCE.
+    Cyan = 36,
+}
+
+/// Color mode for console output.
+#[derive(Debug, Clone, Copy)]
+pub enum ColorMode {
+    /// Enable ANSI color codes.
+    Color,
+    /// Disable ANSI color codes.
+    NoColor,
+}
+
+/// A buffer writer with color mode for styled output.
+///
+/// Combines a `Cursor<&mut [u8]>` buffer with a `ColorMode` so callbacks
+/// only need one argument that can both write bytes and apply ANSI styling.
+///
+/// One byte of the underlying buffer is reserved for a trailing newline
+/// (written by [`finish_line`](Self::finish_line)), so writers always have
+/// room to terminate the line even when content fills the buffer.
+pub struct StyledBufWriter<'a> {
+    buf: Cursor<&'a mut [u8]>,
+    /// Logical capacity for content (always `underlying.len() - 1`, or 0 if empty).
+    /// The byte at `cap` is reserved for the trailing newline.
+    cap: usize,
+    color_mode: ColorMode,
+}
+
+impl<'a> StyledBufWriter<'a> {
+    /// Create a new styled buffer writer.
+    ///
+    /// One byte of `buf` is reserved for the trailing newline written by
+    /// [`finish_line`](Self::finish_line). Caller must size `buf` accordingly.
+    #[inline]
+    pub const fn new(buf: &'a mut [u8], color_mode: ColorMode) -> Self {
+        let cap = buf.len().saturating_sub(1);
+        Self {
+            buf: Cursor::new(buf),
+            cap,
+            color_mode,
+        }
+    }
+
+    /// Write an ANSI escape sequence (no-op for NoColor).
+    #[inline]
+    fn write_ansi(&mut self, code: AnsiCode) {
+        if let ColorMode::Color = self.color_mode {
+            // TODO: This could be optimized using precalculated or
+            // hardcoded ANSI [u8;4] values.
+            let _ = write!(self.buf, "\x1b[{}m", code as u8);
+        }
+    }
+
+    /// Get current buffer position.
+    #[inline]
+    #[must_use]
+    pub const fn position(&self) -> usize {
+        self.buf.position() as usize
+    }
+
+    /// Check if the buffer is full (position >= content capacity).
+    #[inline]
+    #[must_use]
+    pub const fn is_full(&self) -> bool {
+        self.buf.position() as usize >= self.cap
+    }
+
+    /// Finish the current line by writing the trailing newline.
+    ///
+    /// The reserved last byte guarantees that `\n` always fits — even when
+    /// callers tried to write more content than the buffer holds.
+    #[inline]
+    pub fn finish_line(&mut self) {
+        let _ = self.buf.write_all(b"\n");
+    }
+}
+
+impl Write for StyledBufWriter<'_> {
+    #[inline]
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let pos = self.buf.position() as usize;
+        let remaining = self.cap.saturating_sub(pos);
+        let n = buf.len().min(remaining);
+        self.buf.write(&buf[..n])
+    }
+
+    #[inline]
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.buf.flush()
+    }
+}
+
+/// Console writes formatted text to stdout or stderr.
+#[derive(Debug, Clone, Copy)]
+pub struct ConsoleWriter {
+    color_mode: ColorMode,
+}
+
+/// A minimal alternative to tracing_subscriber::fmt::layer().
+pub struct RawLoggingLayer {
+    writer: ConsoleWriter,
+    context_fn: LogContextFn,
+}
+
+impl RawLoggingLayer {
+    /// Return a new formatting layer with associated writer and context function.
+    #[must_use]
+    pub fn new(writer: ConsoleWriter, context_fn: LogContextFn) -> Self {
+        Self { writer, context_fn }
+    }
+
+    /// Process a tracing Event directly, bypassing the dispatcher.
+    pub fn dispatch_event(&self, event: &Event<'_>) {
+        let time = SystemTime::now();
+        let record = LogRecord::new(event, (self.context_fn)());
+        self.writer.print_log_record(time, &record.as_view(), |w| {
+            w.format_entity_suffix_without_registry(&record.context);
+        });
+    }
+}
+
+impl ConsoleWriter {
+    /// Create a writer that outputs to stdout without ANSI colors.
+    #[must_use]
+    pub const fn no_color() -> Self {
+        Self {
+            color_mode: ColorMode::NoColor,
+        }
+    }
+
+    /// Create a writer that outputs to stderr with ANSI colors.
+    #[must_use]
+    pub const fn color() -> Self {
+        Self {
+            color_mode: ColorMode::Color,
+        }
+    }
+}
+
+/// Format a LogRecord as a human-readable string (for testing/compatibility).
+///
+/// Output format: `2026-01-06T10:30:45.123Z  INFO target::name (file.rs:42): body [attr=value, ...]`
+#[must_use]
+pub fn format_log_record_to_string(time: Option<SystemTime>, record: &LogRecord) -> String {
+    let mut buf = [0u8; LOG_BUFFER_SIZE];
+    let len = {
+        let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
+        w.format_log_record(time, record, |w| {
+            w.format_entity_suffix_without_registry(&record.context);
+        });
+        w.position()
+    };
+    // The buffer contains valid UTF-8 since we only write ASCII and valid UTF-8 strings
+    String::from_utf8_lossy(&buf[..len]).into_owned()
+}
+
+impl ConsoleWriter {
+    /// Return the color mode.
+    #[must_use]
+    pub const fn color_mode(&self) -> ColorMode {
+        self.color_mode
+    }
+
+    /// Print a log record directly to stdout or stderr (based on level).
+    ///
+    /// The `scope_formatter` callback is invoked after the log body/attributes,
+    /// before the newline. This allows callers to append scope information
+    /// (e.g., entity context from a registry) atomically within the same write.
+    pub fn print_log_record<F>(
+        &self,
+        time: SystemTime,
+        view: &BorrowedLogRecord<'_>,
+        scope_formatter: F,
+    ) where
+        F: FnOnce(&mut StyledBufWriter<'_>),
+    {
+        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let len = {
+            let mut w = StyledBufWriter::new(&mut buf, self.color_mode);
+            w.format_log(Some(time), view, scope_formatter);
+            w.position()
+        };
+        self.write_line(view.callsite.level(), &buf[..len]);
+    }
+}
+
+/// Write callsite details as event_name to any `io::Write` target.
+///
+/// Format: `target::name (file:line)` or `target::name` if no file/line.
+/// This is used by both the text formatter and the OTLP encoder, so does
+/// not belong in StyledBufWriter.
+#[inline]
+pub fn write_event_name_to<W: Write>(w: &mut W, callsite: &SavedCallsite) {
+    let _ = w.write_all(callsite.target().as_bytes());
+    let _ = w.write_all(b"::");
+    let _ = w.write_all(callsite.name().as_bytes());
+}
+
+impl StyledBufWriter<'_> {
+    /// Format a LogRecord with custom suffix formatter.
+    pub fn format_log_record<F>(
+        &mut self,
+        time: Option<SystemTime>,
+        record: &LogRecord,
+        write_suffix: F,
+    ) where
+        F: FnOnce(&mut Self),
+    {
+        self.format_log(time, &record.as_view(), write_suffix);
+    }
+
+    /// Format a log record view with custom suffix formatter.
+    ///
+    /// This is the core formatting method. It accepts a borrowed
+    /// [`BorrowedLogRecord`] so both owned `LogRecord` and zero-copy
+    /// stack paths can share the same logic.
+    pub fn format_log<F>(
+        &mut self,
+        time: Option<SystemTime>,
+        view: &BorrowedLogRecord<'_>,
+        write_suffix: F,
+    ) where
+        F: FnOnce(&mut Self),
+    {
+        let raw_view = RawLogRecord::new(view.body_attrs_bytes);
+        let level = *view.callsite.level();
+
+        self.format_log_line(
+            time,
+            &raw_view,
+            |w| w.write_level(&level),
+            |w| {
+                w.write_styled(AnsiCode::Bold, |w| write_event_name_to(w, &view.callsite));
+            },
+            write_suffix,
+        );
+    }
+    /// Write a SystemTime timestamp as ISO 8601 (UTC) to buffer.
+    #[inline]
+    pub fn write_timestamp(&mut self, time: SystemTime) {
+        let dt: DateTime<Utc> = time.into();
+        let millis = dt.timestamp_subsec_millis();
+
+        let _ = write!(
+            self,
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+            dt.year(),
+            dt.month(),
+            dt.day(),
+            dt.hour(),
+            dt.minute(),
+            dt.second(),
+            millis
+        );
+    }
+
+    /// Write body and attributes from a LogRecordView to buffer.
+    /// - If has_event_name and body present: print ": " then body
+    /// - If has_event_name and no body but attrs present: print ":" (attrs add " [")
+    /// - Body prints directly
+    /// - Attributes print " [...]" before themselves
+    /// - If `dropped_attributes_count` is non-zero, a " (N dropped)" suffix is
+    ///   appended to make truncations/drops visible to operators.
+    fn write_body_and_attrs<V: LogRecordView>(&mut self, record: &V, has_event_name: bool) {
+        let body = record.body();
+        let mut attrs = record.attributes().peekable();
+        // Treat an empty-string body as absent. The otel_*! macros produce
+        // an empty body because tracing requires at least a format string.
+        // See also: `encode_body_string` in encoder.rs.
+        let has_body = body
+            .as_ref()
+            .is_some_and(|v| v.as_string().is_none_or(|s| !s.is_empty()));
+        let has_attrs = attrs.peek().is_some();
+        let dropped = record.dropped_attributes_count();
+
+        // Print separator after event_name if there's content following
+        if has_event_name && (has_body || has_attrs || dropped > 0) {
+            if has_body {
+                let _ = self.write_all(b": ");
+            } else {
+                // No body, attrs will add " [" so just print ":"
+                let _ = self.write_all(b":");
+            }
+        }
+
+        // Write body if present
+        if let Some(body) = body {
+            self.write_any_value(&body);
+        }
+
+        // Write attributes if present (with leading " [")
+        self.write_attrs(attrs);
+
+        // Surface dropped-attribute count if present.
+        if dropped > 0 {
+            let _ = write!(self, " ({dropped} dropped)");
+        }
+    }
+
+    /// Write attributes from any AttributeView iterator to buffer.
+    pub fn write_attrs<A: AttributeView>(&mut self, attrs: impl Iterator<Item = A>) {
+        let mut attrs = attrs.peekable();
+        if attrs.peek().is_some() {
+            let _ = self.write_all(b" [");
+            let mut first = true;
+            for attr in attrs {
+                if self.is_full() {
+                    break;
+                }
+                if !first {
+                    let _ = self.write_all(b", ");
+                }
+                first = false;
+                let _ = self.write_all(attr.key());
+                let _ = self.write_all(b"=");
+                match attr.value() {
+                    Some(v) => self.write_any_value(&v),
+                    None => {
+                        let _ = self.write_all(b"<?>");
+                    }
+                }
+            }
+            let _ = self.write_all(b"]");
+        }
+    }
+
+    /// Write an AnyValue to buffer (strings unquoted).
+    fn write_any_value<'b>(&mut self, value: &impl AnyValueView<'b>) {
+        match value.value_type() {
+            ValueType::String => {
+                if let Some(s) = value.as_string() {
+                    let _ = self.write_all(s);
+                }
+            }
+            ValueType::Int64 => {
+                if let Some(i) = value.as_int64() {
+                    let _ = write!(self, "{}", i);
+                }
+            }
+            ValueType::Bool => {
+                if let Some(b) = value.as_bool() {
+                    let _ = self.write_all(if b { b"true" } else { b"false" });
+                }
+            }
+            ValueType::Double => {
+                if let Some(d) = value.as_double() {
+                    let _ = write!(self, "{:.6}", d);
+                }
+            }
+            ValueType::Bytes => {
+                if let Some(bytes) = value.as_bytes() {
+                    let _ = self.write_all(b"[");
+                    for (i, b) in bytes.iter().enumerate() {
+                        if i > 0 {
+                            let _ = self.write_all(b", ");
+                        }
+                        let _ = write!(self, "{}", b);
+                    }
+                    let _ = self.write_all(b"]");
+                }
+            }
+            ValueType::Array => {
+                let _ = self.write_all(b"[");
+                if let Some(array_iter) = value.as_array() {
+                    let mut first = true;
+                    for item in array_iter {
+                        if !first {
+                            let _ = self.write_all(b", ");
+                        }
+                        first = false;
+                        self.write_any_value(&item);
+                    }
+                }
+                let _ = self.write_all(b"]");
+            }
+            ValueType::KeyValueList => {
+                let _ = self.write_all(b"{");
+                if let Some(kvlist_iter) = value.as_kvlist() {
+                    let mut first = true;
+                    for kv in kvlist_iter {
+                        if !first {
+                            let _ = self.write_all(b", ");
+                        }
+                        first = false;
+                        let _ = self.write_all(kv.key());
+                        if let Some(val) = kv.value() {
+                            let _ = self.write_all(b"=");
+                            self.write_any_value(&val);
+                        }
+                    }
+                }
+                let _ = self.write_all(b"}");
+            }
+            ValueType::Empty => {}
+        }
+    }
+
+    /// Write content with ANSI styling, automatically resetting after.
+    #[inline]
+    pub fn write_styled<F>(&mut self, code: AnsiCode, f: F)
+    where
+        F: FnOnce(&mut Self),
+    {
+        // Note! This may leave the console in a colored state if the buffer fills
+        // mid-write. TODO: This can likely be fixed as part of #1746.
+        self.write_ansi(code);
+        f(self);
+        self.write_ansi(AnsiCode::Reset);
+    }
+
+    /// Write a tracing Level with appropriate color and padding.
+    #[inline]
+    pub fn write_level(&mut self, level: &Level) {
+        self.write_severity(Some(level_to_severity_number(level) as i32), None);
+    }
+
+    /// Write severity with appropriate color and padding.
+    /// Severity numbers follow OTLP conventions (1-24, where INFO=9).
+    /// If severity_text is provided, it overrides the default text derived from the number.
+    #[inline]
+    pub fn write_severity(&mut self, severity: Option<i32>, severity_text: Option<&[u8]>) {
+        // Determine text: use provided text if non-empty, otherwise derive from number
+        let (text, code): (&[u8], _) = match severity_text.filter(|t| !t.is_empty()) {
+            Some(t) => (t, Self::severity_to_color(severity)),
+            None => match severity {
+                Some(s) if s >= 17 => (b"ERROR", AnsiCode::Red),
+                Some(s) if s >= 13 => (b"WARN ", AnsiCode::Yellow),
+                Some(s) if s >= 9 => (b"INFO ", AnsiCode::Green),
+                Some(s) if s >= 5 => (b"DEBUG", AnsiCode::Blue),
+                Some(s) if s >= 1 => (b"TRACE", AnsiCode::Magenta),
+                _ => (b"     ", AnsiCode::Reset),
+            },
+        };
+        self.write_styled(code, |w| {
+            let _ = w.write_all(text);
+        });
+        let _ = self.write_all(b" ");
+    }
+
+    /// Map severity number to ANSI color code.
+    #[inline]
+    const fn severity_to_color(severity: Option<i32>) -> AnsiCode {
+        match severity {
+            Some(s) if s >= 17 => AnsiCode::Red,    // FATAL/ERROR
+            Some(s) if s >= 13 => AnsiCode::Yellow, // WARN
+            Some(s) if s >= 9 => AnsiCode::Green,   // INFO
+            Some(s) if s >= 1 => AnsiCode::Blue,    // DEBUG/TRACE
+            _ => AnsiCode::Reset,
+        }
+    }
+
+    /// This prints the entity keys without attempting any form of lookup
+    /// leaving context keys unsymbolized e.g. 'entity/pipeline=EntityKey("1v3")'.
+    pub fn format_entity_suffix_without_registry(&mut self, context: &LogContext) {
+        self.write_styled(AnsiCode::Magenta, |w| {
+            for key in context.iter() {
+                let _ = write!(w, " entity={:?}", key);
+            }
+        });
+    }
+
+    /// Format a log line from a LogRecordView with custom formatters.
+    ///
+    /// Spacing convention: each section adds its own leading separator.
+    /// - Level ends with a space
+    /// - Event name (if any) prints space before itself
+    /// - Body (if any) prints ": " before itself
+    /// - Attributes (if any) print " [...]" before themselves
+    /// - Suffix (if any) is written after attributes, before the newline
+    pub fn format_log_line<V, L, E, S>(
+        &mut self,
+        time: Option<SystemTime>,
+        record: &V,
+        format_level: L,
+        format_event_name: E,
+        write_suffix: S,
+    ) where
+        V: LogRecordView,
+        L: FnOnce(&mut Self),
+        E: FnOnce(&mut Self),
+        S: FnOnce(&mut Self),
+    {
+        self.format_line_impl(
+            time,
+            format_level,
+            format_event_name,
+            |w, has_event_name| {
+                w.write_body_and_attrs(record, has_event_name);
+            },
+            write_suffix,
+        );
+    }
+
+    /// Format a header line (RESOURCE, SCOPE) with attributes and custom formatters.
+    ///
+    /// Unlike `format_log_line`, this takes raw attributes instead of a `LogRecordView`,
+    /// and doesn't print a body - just the header name and attributes.
+    pub fn format_header_line<A, L, E, S>(
+        &mut self,
+        time: Option<SystemTime>,
+        attrs: impl Iterator<Item = A>,
+        format_level: L,
+        format_event_name: E,
+        write_suffix: S,
+    ) where
+        A: AttributeView,
+        L: FnOnce(&mut Self),
+        E: FnOnce(&mut Self),
+        S: FnOnce(&mut Self),
+    {
+        self.format_line_impl(
+            time,
+            format_level,
+            format_event_name,
+            |w, _has_event_name| {
+                w.write_attrs(attrs);
+            },
+            write_suffix,
+        );
+    }
+
+    /// Common implementation for formatting a line with timestamp, level, event name, and content.
+    fn format_line_impl<L, E, C, S>(
+        &mut self,
+        time: Option<SystemTime>,
+        format_level: L,
+        format_event_name: E,
+        write_content: C,
+        write_suffix: S,
+    ) where
+        L: FnOnce(&mut Self),
+        E: FnOnce(&mut Self),
+        C: FnOnce(&mut Self, bool),
+        S: FnOnce(&mut Self),
+    {
+        // Timestamp (optional)
+        if let Some(time) = time {
+            self.write_styled(AnsiCode::Dim, |w| w.write_timestamp(time));
+            let _ = self.write_all(b"  ");
+        }
+
+        // Custom level/prefix formatting (tree structure, severity, etc.)
+        format_level(self);
+
+        // Track position to detect if event_name was written
+        let pos_before = self.position();
+        format_event_name(self);
+        let has_event_name = self.position() > pos_before;
+
+        // Write content (body+attrs or just attrs)
+        write_content(self, has_event_name);
+
+        // Write suffix (e.g., entity scope) before newline
+        write_suffix(self);
+
+        // Always terminate the line, even when the buffer is full.
+        self.finish_line();
+    }
+}
+
+impl ConsoleWriter {
+    /// Write a log line to stdout or stderr.
+    fn write_line(&self, level: &Level, data: &[u8]) {
+        let use_stderr = matches!(*level, Level::ERROR | Level::WARN);
+        let _ = if use_stderr {
+            std::io::stderr().write_all(data)
+        } else {
+            std::io::stdout().write_all(data)
+        };
+    }
+}
+
+impl<S> TracingLayer<S> for RawLoggingLayer
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    // Allocates a buffer on the stack, formats the event to a LogRecord
+    // with partial OTLP bytes.
+    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        self.dispatch_event(event);
+    }
+
+    // Note! This tracing layer does not implement Span-related features
+    // available through LookupSpan. This is important future work and will
+    // require introducing a notion of context. Presently, the Tokio tracing
+    // Context does not pass through the OTAP dataflow engine.
+    //
+    // We are likely to issue span events as events, meaning not to build
+    // Span objects at runtime.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::self_tracing::DirectLogRecordEncoder;
+    use crate::self_tracing::encoder::level_to_severity_number;
+    use bytes::Bytes;
+    use otap_df_pdata::otlp::ProtoBuffer;
+    use otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value;
+    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord as ProtoLogRecord;
+    use prost::Message;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use tracing_subscriber::prelude::*;
+
+    struct CaptureLayer {
+        formatted: Arc<Mutex<String>>,
+        encoded: Arc<Mutex<Bytes>>,
+    }
+
+    impl<S> TracingLayer<S> for CaptureLayer
+    where
+        S: Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+            let time = SystemTime::now();
+            let record = LogRecord::new(event, LogContext::new());
+
+            // Capture formatted output
+            *self.formatted.lock().unwrap() = format_log_record_to_string(Some(time), &record);
+
+            // Capture full OTLP encoding
+            let mut buf = ProtoBuffer::default();
+            let mut encoder = DirectLogRecordEncoder::new(&mut buf);
+            let _ = encoder.encode_log_record(time, &record);
+            *self.encoded.lock().unwrap() = buf.into_bytes();
+        }
+    }
+
+    fn new_capture_layer() -> (CaptureLayer, Arc<Mutex<String>>, Arc<Mutex<Bytes>>) {
+        let formatted = Arc::new(Mutex::new(String::new()));
+        let encoded = Arc::new(Mutex::new(Bytes::new()));
+        let layer = CaptureLayer {
+            formatted: formatted.clone(),
+            encoded: encoded.clone(),
+        };
+        (layer, formatted, encoded)
+    }
+
+    // strip timestamp and newline
+    fn strip_ts(s: &str) -> (&str, &str) {
+        // timestamp is 24 bytes, see assertion below.
+        (&s[..24], s[26..].trim_end())
+    }
+
+    // helps test that a timestamp formats to text and from proto timestamp the same.
+    fn format_timestamp(nanos: u64) -> String {
+        let mut buf = [0u8; 32];
+        let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
+        let time = std::time::UNIX_EPOCH + Duration::from_nanos(nanos);
+        w.write_timestamp(time);
+        let len = w.position();
+        assert_eq!(len, 24);
+        String::from_utf8_lossy(&buf[..len]).into_owned()
+    }
+
+    fn format_attrs(attrs: &[KeyValue]) -> String {
+        if attrs.is_empty() {
+            return String::new();
+        }
+        let mut result = String::from(" [");
+        for (i, kv) in attrs.iter().enumerate() {
+            if i > 0 {
+                result.push_str(", ");
+            }
+            result.push_str(&kv.key);
+            result.push('=');
+            if let Some(ref v) = kv.value {
+                if let Some(ref val) = v.value {
+                    match val {
+                        Value::StringValue(s) => result.push_str(s),
+                        Value::IntValue(i) => result.push_str(&i.to_string()),
+                        Value::BoolValue(b) => result.push_str(if *b { "true" } else { "false" }),
+                        Value::DoubleValue(d) => result.push_str(&format!("{:.6}", d)),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+        result.push(']');
+        result
+    }
+
+    fn assert_log_record(
+        formatted: &Arc<Mutex<String>>,
+        encoded: &Arc<Mutex<Bytes>>,
+        expected_level: Level,
+        expected_body: &str,
+        expected_attrs: Vec<KeyValue>,
+    ) {
+        // Decode the OTLP bytes
+        let bytes = encoded.lock().unwrap();
+        let decoded = ProtoLogRecord::decode(bytes.as_ref()).expect("decode failed");
+
+        // Verify OTLP encoding
+        let sev_text = expected_level.as_str();
+        assert_eq!(
+            decoded.severity_number,
+            level_to_severity_number(&expected_level) as i32,
+            "severity_number mismatch"
+        );
+        // Severity text not coded in OTLP bytes form.
+        assert!(decoded.severity_text.is_empty());
+        assert_eq!(
+            decoded.body,
+            Some(AnyValue::new_string(expected_body)),
+            "body mismatch"
+        );
+        assert_eq!(decoded.attributes, expected_attrs, "attributes mismatch");
+
+        // Build expected text suffix
+        let attrs_text = format_attrs(&expected_attrs);
+        let expected_suffix = format!(": {}{}", expected_body, attrs_text);
+
+        // Verify event_name has correct shape. Note: tracing
+        // autogenerates names of the form `event <file>:<line>` for
+        // unannotated macro calls; we just check it starts with
+        // `event`. The crate/module path appears in
+        // InstrumentationScope.name (verified separately below).
+        assert!(
+            decoded.event_name.starts_with("event"),
+            "event_name should start with 'event', got: {}",
+            decoded.event_name
+        );
+
+        // Verify text formatting
+        let binding = formatted.lock().unwrap();
+        let (ts_str, rest) = strip_ts(&binding);
+
+        // Verify timestamp matches OTLP value
+        let expected_ts = format_timestamp(decoded.time_unix_nano);
+        assert_eq!(ts_str, expected_ts, "timestamp mismatch");
+
+        assert!(
+            rest.starts_with(sev_text),
+            "expected level '{}', got: {}",
+            sev_text,
+            rest
+        );
+        assert!(
+            rest.ends_with(&expected_suffix),
+            "expected suffix '{}', got: {}",
+            expected_suffix,
+            rest
+        );
+    }
+
+    #[test]
+    fn test_log_format() {
+        let (layer, formatted, encoded) = new_capture_layer();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let _guard = tracing::dispatcher::set_default(&dispatch);
+
+        tracing::info!("hello world");
+        assert_log_record(&formatted, &encoded, Level::INFO, "hello world", vec![]);
+
+        tracing::warn!(count = 42i64, "something odd");
+        assert_log_record(
+            &formatted,
+            &encoded,
+            Level::WARN,
+            "something odd",
+            vec![KeyValue::new("count", AnyValue::new_int(42))],
+        );
+
+        tracing::error!(msg = "oops", "we failed");
+        assert_log_record(
+            &formatted,
+            &encoded,
+            Level::ERROR,
+            "we failed",
+            vec![KeyValue::new("msg", AnyValue::new_string("oops"))],
+        );
+    }
+
+    #[test]
+    fn test_timestamp_format() {
+        // Create a specific timestamp: 2024-01-15T12:30:45.678Z
+        let timestamp_ns: u64 = 1_705_321_845_678_000_000;
+        let time = std::time::UNIX_EPOCH + Duration::from_nanos(timestamp_ns);
+
+        let record = LogRecord {
+            callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
+            body_attrs_bytes: Bytes::new(),
+            dropped_attributes_count: 0,
+            context: LogContext::new(),
+        };
+
+        let output = format_log_record_to_string(Some(time), &record);
+
+        // Note that the severity text is formatted using the Metadata::Level
+        // so the text appears, unlike the protobuf case.
+        assert_eq!(
+            output,
+            "2024-01-15T12:30:45.678Z  INFO  test_module::submodule::test_event\n"
+        );
+
+        // Verify full OTLP encoding with known callsite
+        let mut buf = ProtoBuffer::default();
+        let mut encoder = DirectLogRecordEncoder::new(&mut buf);
+        let _ = encoder.encode_log_record(time, &record);
+        let decoded = ProtoLogRecord::decode(buf.into_bytes().as_ref()).expect("decode failed");
+
+        assert_eq!(decoded.time_unix_nano, 1_705_321_845_678_000_000);
+        assert_eq!(decoded.severity_number, 9); // INFO
+        assert!(decoded.severity_text.is_empty()); // Not coded
+        // `DirectLogRecordEncoder` only writes the `LogRecord` message;
+        // `event_name` here is the bare callsite name. The owning
+        // `InstrumentationScope` (which carries `callsite.target()` as
+        // its `name`) is written by `encode_export_logs_request` and is
+        // covered by `encode_export_logs_request_with_scope_attributes`
+        // in encoder.rs.
+        assert_eq!(decoded.event_name, "test_event");
+    }
+
+    #[test]
+    fn test_buffer_overflow() {
+        let mut attrs = Vec::new();
+        for i in 0..200 {
+            attrs.push(KeyValue::new(
+                format!("attribute_key_{:03}", i),
+                AnyValue::new_string(format!("value_{:03}", i)),
+            ));
+        }
+
+        let proto_record = ProtoLogRecord {
+            body: Some(AnyValue::new_string("This is the log message body")),
+            attributes: attrs,
+            ..Default::default()
+        };
+
+        let mut encoded = Vec::new();
+        proto_record.encode(&mut encoded).unwrap();
+
+        // Create a specific timestamp: 2024-01-15T12:30:45.678Z
+        let timestamp_ns: u64 = 1_705_321_845_678_000_000;
+        let time = std::time::UNIX_EPOCH + Duration::from_nanos(timestamp_ns);
+
+        let record = LogRecord {
+            callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
+            body_attrs_bytes: Bytes::from(encoded),
+            dropped_attributes_count: 0,
+            context: LogContext::new(),
+        };
+
+        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let len = {
+            let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
+            w.format_log_record(Some(time), &record, |_| {});
+            w.position()
+        };
+
+        // Fills exactly to capacity due to overflow.
+        // Note! we could append a ... or some other indicator.
+        assert_eq!(len, LOG_BUFFER_SIZE);
+
+        // Verify the output starts correctly with timestamp and body
+        let output = std::str::from_utf8(&buf[..len]).unwrap();
+        assert!(
+            output.starts_with("2024-01-15T12:30:45.678Z"),
+            "got: {}",
+            output
+        );
+        assert!(
+            output.contains("This is the log message body"),
+            "got: {}",
+            output
+        );
+        assert!(
+            output.contains("attribute_key_000=value_000"),
+            "got: {}",
+            output
+        );
+        assert!(
+            output.contains("attribute_key_010=value_010"),
+            "got: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn finish_line_guarantees_trailing_newline() {
+        // Even when callers attempt to write more content than fits, the
+        // reserved last byte ensures finish_line can always terminate the
+        // line so adjacent log lines never glom together on the console.
+        use std::io::Write;
+
+        // Tiny buffer; content is clamped to cap (= len-1).
+        let mut buf = [0u8; 8];
+        let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
+        let _ = w.write_all(b"AAAAAAAAAAAAAA"); // exceeds 8
+        assert!(w.is_full());
+        w.finish_line();
+        assert_eq!(&buf, b"AAAAAAA\n", "last byte is reserved newline");
+
+        // Non-full buffer: append newline normally.
+        let mut buf = [0u8; 16];
+        let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
+        let _ = w.write_all(b"abc");
+        w.finish_line();
+        let pos = w.position();
+        assert_eq!(&buf[..pos], b"abc\n");
+
+        // Filled to logical cap (= len-1): newline goes in reserved slot.
+        let mut buf = [0u8; 4];
+        let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
+        let _ = w.write_all(b"abcd");
+        assert!(w.is_full());
+        w.finish_line();
+        assert_eq!(&buf, b"abc\n");
+    }
+
+    static TEST_CALLSITE: TestCallsite = TestCallsite;
+    struct TestCallsite;
+
+    impl tracing::Callsite for TestCallsite {
+        fn set_interest(&self, _: tracing::subscriber::Interest) {}
+        fn metadata(&self) -> &tracing::Metadata<'_> {
+            &TEST_METADATA
+        }
+    }
+
+    static TEST_METADATA: tracing::Metadata<'static> = tracing::Metadata::new(
+        "test_event",
+        "test_module::submodule",
+        Level::INFO,
+        Some("src/test.rs"),
+        Some(123),
+        Some("test_module::submodule"),
+        tracing::field::FieldSet::new(&[], tracing::callsite::Identifier(&TEST_CALLSITE)),
+        tracing::metadata::Kind::EVENT,
+    );
+}
