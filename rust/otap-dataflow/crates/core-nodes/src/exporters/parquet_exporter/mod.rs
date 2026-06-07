@@ -169,7 +169,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
         {
             otel_warn!(
                 "parquet.exporter.retry_ignored_for_file_storage",
-                message = "parquet exporter retry settings are ignored for local file storage"
+                message = "parquet exporter retry settings are not applied to local file storage (invalid values will still be rejected)"
             );
         }
         let object_store = otap_df_otap::object_store::from_storage_type_with_retry(

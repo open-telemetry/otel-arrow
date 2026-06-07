@@ -71,13 +71,6 @@ pub struct WriteError {
 }
 
 impl WriteError {
-    fn new(error: ParquetError) -> Self {
-        Self {
-            stats: WriteStats::default(),
-            error,
-        }
-    }
-
     fn from_flush_stats(stats: FlushAttemptStats, error: ParquetError) -> Self {
         Self {
             stats: WriteStats {
@@ -168,7 +161,10 @@ impl WriterManager {
         }
 
         // write the scheduled batches to the files
-        let rows_written_total = self.write_scheduled().await.map_err(WriteError::new)?;
+        let rows_written_total = match self.write_scheduled().await {
+            Ok(rows_written) => rows_written,
+            Err(error) => return Err(WriteError { stats, error }),
+        };
         stats.rows_written += rows_written_total as u64;
 
         // if we can determine after the write process that any files should be flushed
@@ -396,8 +392,8 @@ impl WriterManager {
         })
     }
 
-    /// If this [`WriterManager`] was configured with `[WriterOptions::flush_when_older_than`],
-    /// then this method wil flush any current writers with rows older than this threshold.
+    /// If this [`WriterManager`] was configured with [`WriterOptions::flush_when_older_than`],
+    /// then this method will flush any current writers with rows older than this threshold.
     pub async fn flush_aged_beyond_threshold(&mut self) -> Result<WriteStats, WriteError> {
         // schedule flushes -- this will put every writer whose age is older than the threshold
         // into the pending queue
