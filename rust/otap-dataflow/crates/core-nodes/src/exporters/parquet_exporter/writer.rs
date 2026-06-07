@@ -40,7 +40,7 @@ pub struct WriteStats {
     /// Number of file close/flush attempts initiated.
     pub flush_attempts: u64,
     /// Number of file close/flush attempts that succeeded.
-    pub flush_success: u64,
+    pub flush_successes: u64,
     /// Number of file close/flush attempts that failed.
     pub flush_failures: u64,
 }
@@ -55,7 +55,7 @@ struct FlushScheduleStats {
 struct FlushAttemptStats {
     files_closed: u64,
     flush_attempts: u64,
-    flush_success: u64,
+    flush_successes: u64,
     flush_failures: u64,
 }
 
@@ -83,7 +83,7 @@ impl WriteError {
             stats: WriteStats {
                 files_closed: stats.files_closed,
                 flush_attempts: stats.flush_attempts,
-                flush_success: stats.flush_success,
+                flush_successes: stats.flush_successes,
                 flush_failures: stats.flush_failures,
                 ..Default::default()
             },
@@ -193,7 +193,7 @@ impl WriterManager {
         };
         stats.files_closed += attempt_stats.files_closed;
         stats.flush_attempts += attempt_stats.flush_attempts;
-        stats.flush_success += attempt_stats.flush_success;
+        stats.flush_successes += attempt_stats.flush_successes;
         stats.flush_failures += attempt_stats.flush_failures;
 
         Ok(stats)
@@ -328,7 +328,7 @@ impl WriterManager {
         loop {
             for file_writer in self.pending_file_flushes.drain(..) {
                 if self.unflushed_batches_state.has_unflushed_child(
-                    file_writer.batch_ids.iter().cloned(),
+                    file_writer.batch_ids.iter().copied(),
                     file_writer.payload_type,
                 ) {
                     requeue.push(file_writer);
@@ -344,12 +344,13 @@ impl WriterManager {
 
             for file_writer in &flushable {
                 self.unflushed_batches_state.decr_unflushed_write(
-                    file_writer.batch_ids.iter().cloned(),
+                    file_writer.batch_ids.iter().copied(),
                     file_writer.payload_type,
                 );
             }
 
             stats.flush_attempts += flushable.len() as u64;
+            // Drain all in-flight closes so per-file success/failure metrics are complete.
             let mut closes = flushable
                 .drain(..)
                 .map(|fw| fw.writer.close())
@@ -360,7 +361,7 @@ impl WriterManager {
                 match result {
                     Ok(_) => {
                         stats.files_closed += 1;
-                        stats.flush_success += 1;
+                        stats.flush_successes += 1;
                     }
                     Err(error) => {
                         stats.flush_failures += 1;
@@ -389,7 +390,7 @@ impl WriterManager {
         Ok(WriteStats {
             files_closed: attempt_stats.files_closed,
             flush_attempts: attempt_stats.flush_attempts,
-            flush_success: attempt_stats.flush_success,
+            flush_successes: attempt_stats.flush_successes,
             flush_failures: attempt_stats.flush_failures,
             ..Default::default()
         })
@@ -416,7 +417,7 @@ impl WriterManager {
             flush_scheduled_max_age: schedule_stats.scheduled_max_age,
             files_closed: attempt_stats.files_closed,
             flush_attempts: attempt_stats.flush_attempts,
-            flush_success: attempt_stats.flush_success,
+            flush_successes: attempt_stats.flush_successes,
             flush_failures: attempt_stats.flush_failures,
         })
     }
@@ -452,7 +453,7 @@ fn new_parquet_arrow_writer(
     schema: SchemaRef,
     full_path: String,
 ) -> AsyncArrowWriter<ParquetObjectWriter> {
-    let object_writer = ParquetObjectWriter::new(object_store.clone(), full_path.clone().into());
+    let object_writer = ParquetObjectWriter::new(object_store, full_path.into());
     AsyncArrowWriter::try_new(object_writer, schema, Some(WriterProperties::default()))
         .expect("Failed to create AsyncArrowWriter")
 }
@@ -483,7 +484,7 @@ impl FileWriter {
     }
 
     async fn write_scheduled(&mut self) -> Result<usize, ParquetError> {
-        let drained_batches: Vec<_> = self.scheduled_batches.drain(..).collect();
+        let drained_batches = std::mem::take(&mut self.scheduled_batches);
         let mut rows = 0usize;
         for batch in drained_batches {
             rows += batch.num_rows();
@@ -607,7 +608,7 @@ mod test {
     #[derive(Debug)]
     struct FailPutForPrefixStore {
         inner: LocalFileSystem,
-        prefix: &'static str,
+        prefixes: &'static [&'static str],
     }
 
     impl fmt::Display for FailPutForPrefixStore {
@@ -624,7 +625,11 @@ mod test {
             payload: PutPayload,
             opts: PutOptions,
         ) -> Result<PutResult> {
-            if location.as_ref().starts_with(self.prefix) {
+            if self
+                .prefixes
+                .iter()
+                .any(|prefix| location.as_ref().starts_with(prefix))
+            {
                 return Err(object_store::Error::Generic {
                     store: "fail_put_for_prefix",
                     source: Box::new(std::io::Error::other("injected put failure")),
@@ -638,7 +643,11 @@ mod test {
             location: &Path,
             opts: PutMultipartOptions,
         ) -> Result<Box<dyn MultipartUpload>> {
-            if location.as_ref().starts_with(self.prefix) {
+            if self
+                .prefixes
+                .iter()
+                .any(|prefix| location.as_ref().starts_with(prefix))
+            {
                 return Err(object_store::Error::Generic {
                     store: "fail_put_for_prefix",
                     source: Box::new(std::io::Error::other("injected put failure")),
@@ -759,7 +768,7 @@ mod test {
         let path = temp_dir.path();
         let object_store = Arc::new(FailPutForPrefixStore {
             inner: LocalFileSystem::new_with_prefix(path).unwrap(),
-            prefix: "logs/",
+            prefixes: &["logs/"],
         });
         let mut writer = WriterManager::new(object_store, WriterOptions::default());
 
@@ -773,9 +782,35 @@ mod test {
 
         let err = writer.flush_all().await.unwrap_err();
         assert_eq!(err.stats.flush_attempts, 4);
-        assert_eq!(err.stats.flush_success, 3);
+        assert_eq!(err.stats.flush_successes, 3);
         assert_eq!(err.stats.flush_failures, 1);
         assert_eq!(err.stats.files_closed, 3);
+        assert!(err.to_string().contains("injected put failure"));
+    }
+
+    #[tokio::test]
+    async fn test_flush_stats_count_multiple_concurrent_failures() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path();
+        let object_store = Arc::new(FailPutForPrefixStore {
+            inner: LocalFileSystem::new_with_prefix(path).unwrap(),
+            prefixes: &["log_attrs/", "resource_attrs/"],
+        });
+        let mut writer = WriterManager::new(object_store, WriterOptions::default());
+
+        let otap_batch = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions::default(),
+        ));
+        let _ = writer
+            .write(&[WriteBatch::new(0, &otap_batch, None)])
+            .await
+            .unwrap();
+
+        let err = writer.flush_all().await.unwrap_err();
+        assert_eq!(err.stats.flush_attempts, 3);
+        assert_eq!(err.stats.flush_successes, 1);
+        assert_eq!(err.stats.flush_failures, 2);
+        assert_eq!(err.stats.files_closed, 1);
         assert!(err.to_string().contains("injected put failure"));
     }
 

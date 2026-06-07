@@ -37,7 +37,7 @@ pub struct ParquetExporterMetrics {
 
     /// File close/flush attempts that succeeded and made the file visible to readers.
     #[metric(unit = "{file}")]
-    pub flush_success: Counter<u64>,
+    pub flush_successes: Counter<u64>,
 
     /// File close/flush attempts that failed after the lower-level retry policy was exhausted.
     #[metric(unit = "{file}")]

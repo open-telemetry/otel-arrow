@@ -57,6 +57,7 @@ use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::otel_warn;
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -160,6 +161,17 @@ impl Exporter<OtapPdata> for ParquetExporter {
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let exporter_id = effect_handler.exporter_id();
+        if self.config.retry.is_some()
+            && matches!(
+                &self.config.storage,
+                otap_df_otap::object_store::StorageType::File { .. }
+            )
+        {
+            otel_warn!(
+                "parquet.exporter.retry_ignored_for_file_storage",
+                message = "parquet exporter retry settings are ignored for local file storage"
+            );
+        }
         let object_store = otap_df_otap::object_store::from_storage_type_with_retry(
             &self.config.storage,
             self.config.retry.as_ref(),
@@ -448,8 +460,8 @@ fn record_io_metrics(
     if stats.flush_attempts > 0 {
         io.flush_attempts.add(stats.flush_attempts);
     }
-    if stats.flush_success > 0 {
-        io.flush_success.add(stats.flush_success);
+    if stats.flush_successes > 0 {
+        io.flush_successes.add(stats.flush_successes);
     }
     if stats.flush_failures > 0 {
         io.flush_failures.add(stats.flush_failures);

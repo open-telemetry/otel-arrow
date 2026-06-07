@@ -23,8 +23,8 @@ use object_store::{BackoffConfig, RetryConfig};
 pub mod azure;
 
 /// Retry settings for object-store-backed storage.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RetryOptionsUnchecked")]
 pub struct RetryOptions {
     /// The maximum number of times to retry a request. Set to 0 to disable retries.
     pub max_retries: usize,
@@ -45,15 +45,85 @@ pub struct RetryOptions {
     pub retry_timeout: Duration,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetryOptionsUnchecked {
+    #[serde(default = "default_max_retries")]
+    max_retries: usize,
+
+    #[serde(default = "default_init_backoff")]
+    #[serde(with = "humantime_serde")]
+    init_backoff: Duration,
+
+    #[serde(default = "default_max_backoff")]
+    #[serde(with = "humantime_serde")]
+    max_backoff: Duration,
+
+    #[serde(default = "default_backoff_base")]
+    backoff_base: f64,
+
+    #[serde(default = "default_retry_timeout")]
+    #[serde(with = "humantime_serde")]
+    retry_timeout: Duration,
+}
+
+impl TryFrom<RetryOptionsUnchecked> for RetryOptions {
+    type Error = object_store::Error;
+
+    fn try_from(value: RetryOptionsUnchecked) -> Result<Self, Self::Error> {
+        let retry = Self {
+            max_retries: value.max_retries,
+            init_backoff: value.init_backoff,
+            max_backoff: value.max_backoff,
+            backoff_base: value.backoff_base,
+            retry_timeout: value.retry_timeout,
+        };
+        retry.validate()?;
+        Ok(retry)
+    }
+}
+
+// Keep these values aligned with object_store::RetryConfig::default() and
+// object_store::BackoffConfig::default().
+const fn default_max_retries() -> usize {
+    10
+}
+
+const fn default_init_backoff() -> Duration {
+    Duration::from_millis(100)
+}
+
+const fn default_max_backoff() -> Duration {
+    Duration::from_secs(15)
+}
+
+const fn default_backoff_base() -> f64 {
+    2.0
+}
+
+const fn default_retry_timeout() -> Duration {
+    Duration::from_secs(3 * 60)
+}
+
 impl RetryOptions {
     /// Validate the options against object_store retry/backoff constraints.
     pub fn validate(&self) -> Result<(), object_store::Error> {
-        if !self.backoff_base.is_finite() || self.backoff_base < 1.0 {
+        if !self.backoff_base.is_finite() || self.backoff_base <= 1.0 {
             return Err(object_store::Error::Generic {
                 store: "retry",
                 source: Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    "backoff_base must be finite and greater than or equal to 1.0",
+                    "backoff_base must be finite and greater than 1.0",
+                )),
+            });
+        }
+
+        if self.init_backoff == Duration::ZERO {
+            return Err(object_store::Error::Generic {
+                store: "retry",
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "init_backoff must be greater than 0",
                 )),
             });
         }
@@ -347,6 +417,33 @@ mod test {
     }
 
     #[test]
+    fn retry_options_deserialize_uses_object_store_defaults() {
+        let retry: RetryOptions = serde_json::from_value(json!({
+            "max_retries": 5
+        }))
+        .unwrap();
+
+        assert_eq!(retry.max_retries, 5);
+        assert_eq!(retry.init_backoff, Duration::from_millis(100));
+        assert_eq!(retry.max_backoff, Duration::from_secs(15));
+        assert_eq!(retry.backoff_base, 2.0);
+        assert_eq!(retry.retry_timeout, Duration::from_secs(180));
+    }
+
+    #[test]
+    fn retry_options_deserialize_rejects_invalid_backoff() {
+        let result = serde_json::from_value::<RetryOptions>(json!({
+            "max_retries": 5,
+            "init_backoff": "100ms",
+            "max_backoff": "15s",
+            "backoff_base": 1.0,
+            "retry_timeout": "3min"
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     #[cfg(any(feature = "azure", feature = "aws"))]
     fn retry_options_translate_to_object_store_retry_config() {
         let retry = RetryOptions {
@@ -379,6 +476,32 @@ mod test {
     }
 
     #[test]
+    fn retry_options_validate_rejects_backoff_base_one() {
+        let retry = RetryOptions {
+            max_retries: 3,
+            init_backoff: Duration::from_millis(50),
+            max_backoff: Duration::from_secs(5),
+            backoff_base: 1.0,
+            retry_timeout: Duration::from_secs(60),
+        };
+
+        assert!(retry.validate().is_err());
+    }
+
+    #[test]
+    fn retry_options_validate_rejects_zero_initial_backoff() {
+        let retry = RetryOptions {
+            max_retries: 3,
+            init_backoff: Duration::ZERO,
+            max_backoff: Duration::from_secs(5),
+            backoff_base: 2.0,
+            retry_timeout: Duration::from_secs(60),
+        };
+
+        assert!(retry.validate().is_err());
+    }
+
+    #[test]
     fn retry_options_validate_rejects_inverted_backoff_durations() {
         let retry = RetryOptions {
             max_retries: 3,
@@ -401,12 +524,40 @@ mod test {
             max_retries: 1,
             init_backoff: Duration::from_millis(10),
             max_backoff: Duration::from_millis(10),
-            backoff_base: 1.0,
+            backoff_base: 2.0,
             retry_timeout: Duration::from_secs(1),
         };
 
         let _ = from_storage_type(&storage).unwrap();
         let _ = from_storage_type_with_retry(&storage, Some(&retry)).unwrap();
+    }
+
+    #[test]
+    fn file_storage_rejects_invalid_retry() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = StorageType::File {
+            base_uri: temp_dir.path().to_string_lossy().to_string(),
+        };
+        let retry = RetryOptions {
+            max_retries: 1,
+            init_backoff: Duration::ZERO,
+            max_backoff: Duration::from_millis(10),
+            backoff_base: 2.0,
+            retry_timeout: Duration::from_secs(1),
+        };
+
+        assert!(from_storage_type_with_retry(&storage, Some(&retry)).is_err());
+    }
+
+    #[cfg(any(feature = "azure", feature = "aws"))]
+    fn valid_retry_options() -> RetryOptions {
+        RetryOptions {
+            max_retries: 3,
+            init_backoff: Duration::from_millis(50),
+            max_backoff: Duration::from_secs(5),
+            backoff_base: 2.0,
+            retry_timeout: Duration::from_secs(60),
+        }
     }
 
     /// Creates an instance of object store that will have it's writes delayed by some amount.
@@ -551,6 +702,22 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "azure")]
+    fn test_get_azure_storage_with_retry() {
+        crate::crypto::ensure_crypto_provider();
+        let storage = StorageType::Azure {
+            base_uri: "https://mystorageaccount.blob.core.windows.net/container".to_string(),
+            storage_scope: None,
+            auth: cloud_auth::azure::AuthMethod::AzureCli {
+                subscription: None,
+                tenant_id: None,
+            },
+        };
+        let retry = valid_retry_options();
+        assert!(from_storage_type_with_retry(&storage, Some(&retry)).is_ok());
+    }
+
+    #[test]
     #[cfg(feature = "aws")]
     fn test_get_s3_storage() {
         crate::crypto::ensure_crypto_provider();
@@ -567,6 +734,26 @@ mod test {
             },
         };
         assert!(from_storage_type(&storage).is_ok());
+    }
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_get_s3_storage_with_retry() {
+        crate::crypto::ensure_crypto_provider();
+        let storage = StorageType::S3 {
+            base_uri: "s3://my-bucket/test".to_string(),
+            region: Some("us-east-1".to_string()),
+            endpoint: Some("http://localhost:4566".to_string()),
+            allow_http: Some(true),
+            virtual_hosted_style_request: Some(false),
+            auth: cloud_auth::aws::AuthMethod::StaticCredentials {
+                access_key_id: "test".to_string(),
+                secret_access_key: "test".into(),
+                session_token: None,
+            },
+        };
+        let retry = valid_retry_options();
+        assert!(from_storage_type_with_retry(&storage, Some(&retry)).is_ok());
     }
 
     #[test]
