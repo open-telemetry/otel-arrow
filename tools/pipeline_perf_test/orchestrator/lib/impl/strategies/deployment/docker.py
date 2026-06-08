@@ -231,18 +231,21 @@ components:
         runtime = get_component_docker_runtime(ctx)
         client = get_or_create_docker_client(ctx)
 
+        run_kwargs = dict(
+            image=self.config.image,
+            name=sanitize_docker_name(component.name),
+            detach=True,
+            network=sanitize_docker_name(self.config.network),
+            ports=build_port_bindings(self.config.ports),
+            volumes=build_volume_bindings(self.config.volumes),
+            environment=self.config.environment,
+            command=self.config.command,
+        )
+        if self.config.cpuset_cpus is not None:
+            run_kwargs["cpuset_cpus"] = self.config.cpuset_cpus
+
         try:
-            container = client.containers.run(
-                image=self.config.image,
-                name=sanitize_docker_name(component.name),
-                detach=True,
-                network=sanitize_docker_name(self.config.network),
-                ports=build_port_bindings(self.config.ports),
-                volumes=build_volume_bindings(self.config.volumes),
-                environment=self.config.environment,
-                command=self.config.command,
-                cpuset_cpus=self.config.cpuset_cpus,
-            )
+            container = client.containers.run(**run_kwargs)
         except DockerException as e:
             logger.error(f"Error launching Docker container: {e}")
             raise
