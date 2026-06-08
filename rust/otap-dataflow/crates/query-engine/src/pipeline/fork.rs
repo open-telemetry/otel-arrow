@@ -35,7 +35,6 @@ pub struct ForkPipelineStage {
     /// Scratch space for storing temporary batch results before concatenating results.
     branch_results: Vec<OtapArrowRecords>,
 }
-}
 
 impl ForkPipelineStage {
     pub fn new(branches: Vec<ForkPipelineStageBranch>) -> Self {

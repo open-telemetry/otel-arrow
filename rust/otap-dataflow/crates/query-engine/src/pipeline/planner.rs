@@ -298,9 +298,8 @@ impl PipelinePlanner {
                                 let is_final_branch = i == branch_expr.get_branches().len() - 1;
                                 if !is_final_branch {
                                     return Err(Error::InvalidPipelineError {
-                                        cause: "default branch found in non consuming Branch data expression 
-                                            found in invalid location".into(), 
-                                        query_location: Some(branch_expr.get_query_location().clone())
+                                        cause: "default branch found in consuming Branch data expression in invalid location".into(),
+                                         query_location: Some(branch_expr.get_query_location().clone()),
                                     });
                                 } else {
                                     default_branch = Some(pipeline_stages)
