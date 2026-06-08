@@ -1509,7 +1509,7 @@ mod test {
                     .unwrap();
                 assert_eq!(default_out, OtapArrowRecords::Logs(Logs::default()));
 
-                // assert on what came out of hte error out port
+                // assert on what came out of the error out port
                 let mut routed = Vec::new();
                 while let Ok(msg) = error_port.try_recv() {
                     routed.push(msg);
