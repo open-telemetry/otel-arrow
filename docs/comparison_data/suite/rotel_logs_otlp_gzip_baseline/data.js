@@ -1,0 +1,18 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["rotel_logs_otlp_gzip_baseline"] = {
+  "name": "Rotel OTLP Baseline w/ Gzip (Logs)",
+  "slug": "rotel_logs_otlp_gzip_baseline",
+  "description": "rotel-dev/rotel baseline for OTLP logs with gzip compression",
+  "meta": {
+    "binary": "rotel",
+    "protocols": [
+      "otlp"
+    ],
+    "signals": [
+      "logs"
+    ],
+    "compression": "gzip"
+  },
+  "env": null,
+  "tests": []
+};
