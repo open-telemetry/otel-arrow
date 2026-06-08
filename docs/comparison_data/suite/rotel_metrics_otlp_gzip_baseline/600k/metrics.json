@@ -1,0 +1,62 @@
+[
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/600k - Dropped Metrics %",
+    "name": "dropped_metrics_percentage",
+    "unit": "%",
+    "value": 32.86948013305664
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/600k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 99.96945184281975
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/600k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 100.31950031230481
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/600k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 7267.892057291667
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/600k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 9750.5859375
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/600k - Metric Throughput",
+    "name": "metrics_produced_rate",
+    "unit": "metrics/sec",
+    "value": 325034.5334383634
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/600k - Metric Throughput",
+    "name": "metrics_received_rate",
+    "unit": "metrics/sec",
+    "value": 217436.31000367663
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/600k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000582
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/600k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 9465960.654131139
+  },
+  {
+    "extra": "Rotel OTLP Baseline w/ Gzip (Metrics)/600k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 15295253.419835422
+  }
+]

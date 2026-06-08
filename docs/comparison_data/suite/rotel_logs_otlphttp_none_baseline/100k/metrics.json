@@ -1,0 +1,68 @@
+[
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Logs)/100k - Dropped Logs %",
+    "name": "dropped_logs_percentage",
+    "unit": "%",
+    "value": 0.057600002735853195
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Logs)/100k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_avg",
+    "unit": "%",
+    "value": 24.037632797755037
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Logs)/100k - CPU % (Normalized)",
+    "name": "cpu_percentage_normalized_max",
+    "unit": "%",
+    "value": 24.691657853810263
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Logs)/100k - RAM (MiB)",
+    "name": "ram_mib_avg",
+    "unit": "MiB",
+    "value": 34.27591145833333
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Logs)/100k - RAM (MiB)",
+    "name": "ram_mib_max",
+    "unit": "MiB",
+    "value": 35.109375
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Logs)/100k - Log Throughput",
+    "name": "logs_produced_rate",
+    "unit": "logs/sec",
+    "value": 100680.58058866324
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Logs)/100k - Log Throughput",
+    "name": "logs_received_rate",
+    "unit": "logs/sec",
+    "value": 100622.58857424418
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Logs)/100k - Test Duration",
+    "name": "test_duration",
+    "unit": "seconds",
+    "value": 60.000677
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Logs)/100k - Network Utilization",
+    "name": "network_tx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 1813106.0268171837
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Logs)/100k - Network Utilization",
+    "name": "network_rx_bytes_rate_avg",
+    "unit": "bytes/sec",
+    "value": 35779452.30528418
+  },
+  {
+    "extra": "Rotel OTLP/HTTP Baseline (Logs)/100k - Egress Bytes Per Log",
+    "name": "egress_bytes_per_log",
+    "unit": "bytes/log",
+    "value": 18.018876800007853
+  }
+]

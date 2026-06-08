@@ -1,0 +1,10 @@
+name: Rotel OTLP Baseline (Logs)
+slug: rotel_logs_otlp_none_baseline
+description: rotel-dev/rotel baseline for OTLP logs with no compression
+meta:
+  binary: rotel
+  protocols:
+  - otlp
+  signals:
+  - logs
+  compression: none
