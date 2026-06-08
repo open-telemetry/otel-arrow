@@ -52,7 +52,7 @@ impl Expression for DataExpression {
             DataExpression::Discard(_) => "DataExpression(Discard)",
             DataExpression::Summary(_) => "DataExpression(Summary)",
             DataExpression::Transform(_) => "DataExpression(Transform)",
-            DataExpression::Branch(_) => "DataExpression(Conditional)",
+            DataExpression::Branch(_) => "DataExpression(Branch)",
             DataExpression::Output(_) => "DataExpression(Output)",
         }
     }
@@ -154,10 +154,10 @@ impl Expression for DiscardDataExpression {
     }
 }
 
-/// Conditional data expression.
+/// Branch data expression.
 ///
 /// This is used to define a data operation where some nested [`DataExpression`]s are applied to
-/// a subset of data which matches a predicate condition. Each combination of condition/expressions
+/// a subset of data which may matches a predicate condition. Each combination of condition/expressions
 /// forms a "branch". The "default branch" defines how to optionally handle data that matches no
 /// other branch's condition.
 #[derive(Clone, Debug, PartialEq)]
@@ -167,7 +167,7 @@ pub struct BranchDataExpression {
     /// Whether each branch consumes the records, or receive a copy
     branches_consume_records: bool,
 
-    /// Branches which will conditionally process
+    /// Branches which will process the records
     branches: Vec<DataExpressionBranch>,
 }
 
@@ -269,27 +269,35 @@ impl Expression for BranchDataExpression {
                 }
 
                 if i == last_idx {
-                    writeln!(f, "{indent}    └── Expressions:")?;
-                    let last_idx = branch.expressions.len() - 1;
-                    for (i, expr) in branch.expressions.iter().enumerate() {
-                        if i == last_idx {
-                            write!(f, "{indent}        └── ")?;
-                            expr.fmt_with_indent(f, &format!("{indent}            "))?;
-                        } else {
-                            write!(f, "{indent}        ├── ")?;
-                            expr.fmt_with_indent(f, &format!("{indent}        │   "))?;
+                    if branch.expressions.is_empty() {
+                        writeln!(f, "{indent}    └── Expressions: []")?;
+                    } else {
+                        writeln!(f, "{indent}    └── Expressions:")?;
+                        let last_idx = branch.expressions.len() - 1;
+                        for (i, expr) in branch.expressions.iter().enumerate() {
+                            if i == last_idx {
+                                write!(f, "{indent}        └── ")?;
+                                expr.fmt_with_indent(f, &format!("{indent}            "))?;
+                            } else {
+                                write!(f, "{indent}        ├── ")?;
+                                expr.fmt_with_indent(f, &format!("{indent}        │   "))?;
+                            }
                         }
                     }
                 } else {
-                    writeln!(f, "{indent}    ├── Expressions:")?;
-                    let last_idx = branch.expressions.len() - 1;
-                    for (i, expr) in branch.expressions.iter().enumerate() {
-                        if i == last_idx {
-                            write!(f, "{indent}    │   └── ")?;
-                            expr.fmt_with_indent(f, &format!("{indent}    │       "))?;
-                        } else {
-                            write!(f, "{indent}    │   ├── ")?;
-                            expr.fmt_with_indent(f, &format!("{indent}    │   │   "))?;
+                    if branch.expressions.is_empty() {
+                        writeln!(f, "{indent}    ├── Expressions: []")?;
+                    } else {
+                        writeln!(f, "{indent}    ├── Expressions:")?;
+                        let last_idx = branch.expressions.len() - 1;
+                        for (i, expr) in branch.expressions.iter().enumerate() {
+                            if i == last_idx {
+                                write!(f, "{indent}    │   └── ")?;
+                                expr.fmt_with_indent(f, &format!("{indent}    │       "))?;
+                            } else {
+                                write!(f, "{indent}    │   ├── ")?;
+                                expr.fmt_with_indent(f, &format!("{indent}    │   │   "))?;
+                            }
                         }
                     }
                 }
