@@ -55,8 +55,8 @@ use otap_df_config::policy::{
     ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, TelemetryPolicy,
 };
 use otap_df_config::topic::{
-    TopicAckPropagationMode, TopicBackendKind, TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy,
-    TopicSpec,
+    TopicAckPropagationMode, TopicBackendKind, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy,
+    TopicImplSelectionPolicy, TopicSpec,
 };
 use otap_df_config::transport_headers_policy::TransportHeadersPolicy;
 use otap_df_config::{
@@ -464,6 +464,7 @@ impl<
                 balanced_capacity,
                 broadcast_capacity,
                 on_lag: broadcast_on_lag,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InferredTopicMode::BalancedOnly => TopicOptions::BalancedOnly {
                 capacity: balanced_capacity,
@@ -471,6 +472,7 @@ impl<
             InferredTopicMode::BroadcastOnly => TopicOptions::BroadcastOnly {
                 capacity: broadcast_capacity,
                 on_lag: broadcast_on_lag,
+                ack_mode: TopicBroadcastAckMode::First,
             },
         }
     }

@@ -356,6 +356,33 @@ pub enum TopicBroadcastOnLagPolicy {
     Disconnect,
 }
 
+/// Broadcast Ack/Nack aggregation mode for tracked publishes.
+///
+/// Controls how upstream Ack/Nack resolves when a tracked message is broadcast
+/// to multiple subscribers. Only meaningful when
+/// [`TopicAckPropagationMode::Auto`] is in effect.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TopicBroadcastAckMode {
+    /// The first broadcast subscriber to Ack/Nack resolves the upstream message.
+    #[default]
+    First,
+    /// The upstream message Acks only when all broadcast subscribers eligible at
+    /// publish time Ack; any Nack (or a required subscriber disappearing)
+    /// resolves the upstream message as Nack.
+    All,
+}
+
+impl std::fmt::Display for TopicBroadcastAckMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::First => "first",
+            Self::All => "all",
+        };
+        f.write_str(value)
+    }
+}
+
 /// Policy controlling whether topic hops can bridge Ack/Nack across pipelines.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -386,7 +413,7 @@ const fn default_topic_ack_propagation_timeout() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::{
-        SubscriptionGroupName, TopicAckPropagationMode, TopicBackendKind,
+        SubscriptionGroupName, TopicAckPropagationMode, TopicBackendKind, TopicBroadcastAckMode,
         TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy, TopicName, TopicQueueOnFullPolicy,
         TopicSpec,
     };
@@ -536,6 +563,23 @@ impl_selection: force_mixed
             topic.impl_selection,
             Some(TopicImplSelectionPolicy::ForceMixed)
         );
+    }
+
+    #[test]
+    fn topic_broadcast_ack_mode_defaults_and_serde() {
+        assert_eq!(
+            TopicBroadcastAckMode::default(),
+            TopicBroadcastAckMode::First
+        );
+        assert_eq!(
+            serde_yaml::to_string(&TopicBroadcastAckMode::All)
+                .expect("ack mode should serialize")
+                .trim(),
+            "all"
+        );
+        let parsed: TopicBroadcastAckMode =
+            serde_yaml::from_str("first").expect("ack mode should parse");
+        assert_eq!(parsed, TopicBroadcastAckMode::First);
     }
 
     #[test]

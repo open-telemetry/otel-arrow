@@ -161,7 +161,28 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
     }
 
     pub(crate) fn publish(&self, envelope: Envelope<T>) {
-        let seq = self.write_seq.fetch_add(1, Ordering::Release) + 1;
+        let seq = self.reserve_seq();
+        self.commit_slot(seq, envelope);
+    }
+
+    /// Reserve the next ring sequence without writing a slot.
+    ///
+    /// Paired with [`FastBroadcastRing::commit_slot`]. Splitting the reservation
+    /// from the slot write lets `all`-mode broadcast publish reserve the
+    /// sequence under the subscriber-registry lock and perform the (more
+    /// expensive) slot write plus waker fan-out after releasing that lock.
+    ///
+    /// Between a reserve and its matching commit, `write_seq` is advanced but the
+    /// slot is not yet written; [`FastBroadcastRing::try_read`] returns
+    /// [`BroadcastReadResult::NotReady`] for that window and the reader re-parks
+    /// on the waker, which fires from `commit_slot`.
+    pub(crate) fn reserve_seq(&self) -> u64 {
+        self.write_seq.fetch_add(1, Ordering::Release) + 1
+    }
+
+    /// Write the envelope into the slot reserved by [`FastBroadcastRing::reserve_seq`]
+    /// and wake parked readers.
+    pub(crate) fn commit_slot(&self, seq: u64, envelope: Envelope<T>) {
         let idx = ((seq - 1) as usize) & self.mask;
         *self.slots[idx].lock() = Some((seq, envelope));
         self.waker_set.wake_all();
@@ -238,13 +259,16 @@ impl<T: Send + Sync + 'static> TopicInner<T> {
             TopicOptions::BalancedOnly { capacity } => {
                 TopicInner::BalancedOnly(BalancedOnlyTopic::new(name, capacity))
             }
-            TopicOptions::BroadcastOnly { capacity, on_lag } => {
-                TopicInner::BroadcastOnly(BroadcastOnlyTopic::new(name, capacity, on_lag))
-            }
+            TopicOptions::BroadcastOnly {
+                capacity,
+                on_lag,
+                ack_mode: _,
+            } => TopicInner::BroadcastOnly(BroadcastOnlyTopic::new(name, capacity, on_lag)),
             TopicOptions::Mixed {
                 balanced_capacity,
                 broadcast_capacity,
                 on_lag,
+                ack_mode: _,
             } => TopicInner::Mixed(MixedTopic::new(
                 name,
                 balanced_capacity,
