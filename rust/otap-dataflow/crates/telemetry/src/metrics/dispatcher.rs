@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use opentelemetry::{global, metrics::Meter};
+use opentelemetry::{InstrumentationScope, global, metrics::Meter, metrics::MeterProvider};
 use tokio::time::{MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 
@@ -57,16 +57,32 @@ impl MetricsDispatcher {
     }
 
     fn dispatch_metrics(&self) -> Result<(), Error> {
+        self.dispatch_metrics_to(&*global::meter_provider())
+    }
+
+    /// Dispatches the accumulated metrics through `meter_provider`.
+    ///
+    /// Production callers pass the global meter provider; tests can inject a
+    /// dedicated [`MeterProvider`] (e.g. backed by an in-memory exporter) to
+    /// observe the emitted instrumentation scopes and data points.
+    fn dispatch_metrics_to(&self, meter_provider: &dyn MeterProvider) -> Result<(), Error> {
         self.metrics_handler
             .visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
-                let meter = global::meter(descriptor.name);
+                let scope_attributes = Self::to_opentelemetry_attributes(attributes);
+                let meter = if scope_attributes.is_empty() {
+                    meter_provider.meter(descriptor.name)
+                } else {
+                    meter_provider.meter_with_scope(
+                        InstrumentationScope::builder(descriptor.name)
+                            .with_attributes(scope_attributes)
+                            .build(),
+                    )
+                };
 
-                // There is no support for metric level attributes currently. Attaching resource level attributes to every metric.
-                // TODO: Consider adding metric level attributes and not to add resource level attributes to every metric.
-                let otel_attributes = Self::to_opentelemetry_attributes(attributes);
-
+                // Entity attributes live on the instrumentation scope so OTel Views can
+                // target them via scope_attributes selectors; data points carry none.
                 for (field, value) in metrics_iter {
-                    self.add_opentelemetry_metric(field, value, &otel_attributes, &meter);
+                    self.add_opentelemetry_metric(field, value, &[], &meter);
                 }
             });
 
@@ -319,10 +335,160 @@ mod tests {
 
     use super::*;
     use crate::descriptor::MetricValueType;
+    use crate::instrument::Mmsc;
+    use crate::metrics::{MetricSetHandler, MetricsDescriptor};
     use crate::{
         attributes::AttributeIterator,
         descriptor::{AttributeField, AttributeValueType, AttributesDescriptor},
     };
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
+    use opentelemetry_sdk::metrics::{InMemoryMetricExporter, SdkMeterProvider};
+
+    // --- End-to-end scope-attribute dispatch tests -----------------------------
+    //
+    // These drive the real `dispatch_metrics_to` code path against a dedicated
+    // in-memory meter provider (no global state, parallel-safe) and assert the
+    // key behavior of the resource/scope reorganization: entity attributes are
+    // attached to the *instrumentation scope*, never duplicated onto data points.
+
+    static SCOPE_ATTR_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "scope_attr_dispatch_test",
+        metrics: &[MetricsField {
+            name: "requests",
+            unit: "{request}",
+            brief: "request count",
+            instrument: Instrument::Counter,
+            temporality: Some(Temporality::Delta),
+            value_type: MetricValueType::U64,
+        }],
+    };
+
+    #[derive(Debug, Default)]
+    struct CounterMetricSet {
+        requests: crate::instrument::Counter<u64>,
+    }
+
+    impl MetricSetHandler for CounterMetricSet {
+        fn descriptor(&self) -> &'static MetricsDescriptor {
+            &SCOPE_ATTR_METRICS_DESCRIPTOR
+        }
+        fn snapshot_values(&self) -> Vec<MetricValue> {
+            vec![MetricValue::from(self.requests.get())]
+        }
+        fn clear_values(&mut self) {
+            self.requests.reset();
+        }
+        fn needs_flush(&self) -> bool {
+            !MetricValue::from(self.requests.get()).is_zero()
+        }
+    }
+
+    // Carries a single `service` attribute -> exercises the scope-attribute branch.
+    static WITH_ATTRS_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+        name: "scope_attrs_present",
+        fields: &[AttributeField {
+            key: "service",
+            r#type: AttributeValueType::String,
+            brief: "service name",
+        }],
+    };
+
+    // Carries no attributes -> exercises the bare-scope branch.
+    static NO_ATTRS_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+        name: "scope_attrs_absent",
+        fields: &[],
+    };
+
+    #[derive(Debug)]
+    struct ScopeAttrs {
+        descriptor: &'static AttributesDescriptor,
+        values: Vec<AttributeValue>,
+    }
+
+    impl AttributeSetHandler for ScopeAttrs {
+        fn descriptor(&self) -> &'static AttributesDescriptor {
+            self.descriptor
+        }
+        fn attribute_values(&self) -> &[AttributeValue] {
+            &self.values
+        }
+        fn iter_attributes<'a>(&'a self) -> AttributeIterator<'a> {
+            AttributeIterator::new(self.descriptor.fields, &self.values)
+        }
+    }
+
+    /// Dispatches the dispatcher's accumulated metrics through a dedicated
+    /// in-memory meter provider and returns the exported resource metrics.
+    ///
+    /// Shared harness for the end-to-end dispatch tests: it drives the real
+    /// `dispatch_metrics_to` code path with no global state (parallel-safe).
+    fn dispatch_to_in_memory(dispatcher: &MetricsDispatcher) -> Vec<ResourceMetrics> {
+        let exporter = InMemoryMetricExporter::default();
+        let meter_provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+
+        dispatcher
+            .dispatch_metrics_to(&meter_provider)
+            .expect("dispatch_metrics_to failed");
+
+        meter_provider.force_flush().expect("force_flush failed");
+
+        exporter
+            .get_finished_metrics()
+            .expect("get_finished_metrics failed")
+    }
+
+    /// Registers a counter metric set with `attrs`, records `count` increments,
+    /// dispatches through the shared in-memory harness, and returns
+    /// `(scope attributes, data-point attributes, summed value)` for the
+    /// exported `requests` counter. Asserts exactly one data point was emitted.
+    fn dispatch_and_collect(
+        attrs: ScopeAttrs,
+        count: u64,
+    ) -> (
+        Vec<opentelemetry::KeyValue>,
+        Vec<opentelemetry::KeyValue>,
+        u64,
+    ) {
+        let registry = TelemetryRegistryHandle::new();
+        let mut metric_set = registry.register_metric_set::<CounterMetricSet>(attrs);
+        metric_set.requests.add(count);
+
+        let snapshot = metric_set.snapshot();
+        registry.accumulate_metric_set_snapshot(snapshot.key, &snapshot.metrics);
+
+        let dispatcher =
+            MetricsDispatcher::new(registry.clone(), std::time::Duration::from_secs(1));
+        let finished = dispatch_to_in_memory(&dispatcher);
+
+        let mut result = None;
+        for rm in &finished {
+            for sm in rm.scope_metrics() {
+                for metric in sm.metrics() {
+                    if metric.name() == "requests" {
+                        let scope_attrs = sm.scope().attributes().cloned().collect::<Vec<_>>();
+                        let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
+                            panic!("expected a u64 Sum for the requests counter");
+                        };
+                        let data_points: Vec<_> = sum.data_points().collect();
+                        assert_eq!(
+                            data_points.len(),
+                            1,
+                            "expected exactly one data point, found {}",
+                            data_points.len()
+                        );
+                        let dp = data_points[0];
+                        let dp_attrs = dp.attributes().cloned().collect::<Vec<_>>();
+                        assert!(result.is_none(), "requests metric exported more than once");
+                        result = Some((scope_attrs, dp_attrs, dp.value()));
+                    }
+                }
+            }
+        }
+
+        result.expect("requests metric not exported")
+    }
 
     #[test]
     fn test_to_opentelemetry_key_value() {
@@ -580,15 +746,6 @@ mod tests {
     /// record_synthetic_histogram → OTel SDK histogram export.
     #[test]
     fn test_mmsc_exported_as_histogram_with_no_buckets() {
-        use opentelemetry::metrics::MeterProvider as _;
-        use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
-        use opentelemetry_sdk::metrics::{InMemoryMetricExporter, SdkMeterProvider};
-
-        use crate::attributes::AttributeIterator;
-        use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
-        use crate::instrument::Mmsc;
-        use crate::metrics::{MetricSetHandler, MetricsDescriptor};
-
         // --- Mock metric set with a single MMSC field --------------------------
 
         static MMSC_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
@@ -623,43 +780,11 @@ mod tests {
             }
         }
 
-        static MOCK_ATTRS_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
-            name: "test_attrs",
-            fields: &[AttributeField {
-                key: "service",
-                r#type: AttributeValueType::String,
-                brief: "service name",
-            }],
-        };
-
-        #[derive(Debug)]
-        struct MockAttrs {
-            values: Vec<AttributeValue>,
-        }
-
-        impl AttributeSetHandler for MockAttrs {
-            fn descriptor(&self) -> &'static AttributesDescriptor {
-                &MOCK_ATTRS_DESCRIPTOR
-            }
-            fn attribute_values(&self) -> &[AttributeValue] {
-                &self.values
-            }
-            fn iter_attributes<'a>(&'a self) -> AttributeIterator<'a> {
-                AttributeIterator::new(self.descriptor().fields, &self.values)
-            }
-        }
-
-        // --- Set up OTel SDK with in-memory exporter ---------------------------
-
-        let exporter = InMemoryMetricExporter::default();
-        let meter_provider = SdkMeterProvider::builder()
-            .with_periodic_exporter(exporter.clone())
-            .build();
-
         // --- Register, record, accumulate, dispatch ----------------------------
 
         let registry = TelemetryRegistryHandle::new();
-        let mut metric_set = registry.register_metric_set::<MmscMetricSet>(MockAttrs {
+        let mut metric_set = registry.register_metric_set::<MmscMetricSet>(ScopeAttrs {
+            descriptor: &WITH_ATTRS_DESCRIPTOR,
             values: vec![AttributeValue::String("my-svc".into())],
         });
 
@@ -674,26 +799,12 @@ mod tests {
         let snapshot = metric_set.snapshot();
         registry.accumulate_metric_set_snapshot(snapshot.key, &snapshot.metrics);
 
-        // Dispatch: walk the registry and push to OTel SDK (via a
-        // provider-specific meter instead of the global one).
+        // Dispatch through the real code path via the shared in-memory harness.
         let dispatcher =
             MetricsDispatcher::new(registry.clone(), std::time::Duration::from_secs(1));
-        registry.visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
-            let meter = meter_provider.meter(descriptor.name);
-            let otel_attributes = MetricsDispatcher::to_opentelemetry_attributes(attributes);
-            for (field, value) in metrics_iter {
-                dispatcher.add_opentelemetry_metric(field, value, &otel_attributes, &meter);
-            }
-        });
-
-        // Flush to trigger export.
-        meter_provider.force_flush().expect("force_flush failed");
+        let finished = dispatch_to_in_memory(&dispatcher);
 
         // --- Assert on the exported histogram ----------------------------------
-
-        let finished = exporter
-            .get_finished_metrics()
-            .expect("get_finished_metrics failed");
 
         let mut found = false;
         for rm in &finished {
@@ -726,5 +837,46 @@ mod tests {
             found,
             "histogram metric 'latency' not found in exported data"
         );
+    }
+
+    #[test]
+    fn test_dispatch_metrics_puts_entity_attributes_on_scope() {
+        let attrs = ScopeAttrs {
+            descriptor: &WITH_ATTRS_DESCRIPTOR,
+            values: vec![AttributeValue::String("my-svc".into())],
+        };
+
+        let (scope_attrs, dp_attrs, value) = dispatch_and_collect(attrs, 3);
+
+        // The recorded value must survive the dispatch unchanged.
+        assert_eq!(value, 3, "exported counter value mismatch");
+
+        // Entity attributes must live on the instrumentation scope...
+        assert_eq!(scope_attrs.len(), 1, "expected exactly one scope attribute");
+        assert_eq!(scope_attrs[0].key.as_str(), "service");
+        assert_eq!(scope_attrs[0].value.as_str(), "my-svc");
+
+        // ...and must NOT be duplicated onto the data points.
+        assert!(
+            dp_attrs.is_empty(),
+            "data points must not carry entity attributes, found: {dp_attrs:?}"
+        );
+    }
+
+    #[test]
+    fn test_dispatch_metrics_without_attributes_uses_bare_scope() {
+        let attrs = ScopeAttrs {
+            descriptor: &NO_ATTRS_DESCRIPTOR,
+            values: vec![],
+        };
+
+        let (scope_attrs, dp_attrs, value) = dispatch_and_collect(attrs, 5);
+
+        assert_eq!(value, 5, "exported counter value mismatch");
+        assert!(
+            scope_attrs.is_empty(),
+            "scope must have no attributes when the entity has none, found: {scope_attrs:?}"
+        );
+        assert!(dp_attrs.is_empty(), "data points must carry no attributes");
     }
 }
