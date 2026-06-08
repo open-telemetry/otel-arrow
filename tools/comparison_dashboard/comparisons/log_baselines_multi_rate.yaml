@@ -101,3 +101,11 @@ suites:
   - name: FB Logs OTLP/HTTP Baseline (Zstd)
     slug: fbit_logs_otlphttp_zstd_baseline
     short: FB OTLP-HTTP/Zstd
+
+  # Rotel
+  - name: Rotel Logs OTLP Baseline (Gzip)
+    slug: rotel_logs_otlp_gzip_baseline
+    short: Rotel OTLP/Gzip
+  - name: Rotel Logs OTLP/HTTP Baseline (Gzip)
+    slug: rotel_logs_otlphttp_gzip_baseline
+    short: Rotel OTLP-HTTP/Gzip
