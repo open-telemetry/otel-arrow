@@ -655,7 +655,7 @@ mod tests {
     /// Tests the transform processor OPL `rename` operation. Renames the
     /// `thread.id` attribute to `new_thread_id`. The old key must be absent
     /// and the new key must be present on every log record.
-    /// Query: `logs | rename attributes["new_thread_id"] = attributes["thread.id"]`
+    /// Query: `logs | rename attributes "thread.id" as "new_thread_id"`
     #[test]
     fn validation_transform_opl_rename_attribute() {
         Scenario::new()
