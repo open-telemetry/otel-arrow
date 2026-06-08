@@ -199,7 +199,8 @@ rename_pair = {
 }
 
 rename_target = {
-    attribute_selection_expression | identifier_expression
+    attribute_selection_expression
+  | identifier_expression
 }
 
 rename_operator_call = {
