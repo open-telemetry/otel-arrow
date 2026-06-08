@@ -211,6 +211,9 @@ impl TrackedPublishTracker {
     ///
     /// As with [`TrackedPublishTracker::register`], a closed tracker resolves the
     /// returned receipt immediately as [`TrackedPublishOutcome::TopicClosed`].
+    ///
+    // TODO(#2252 PR2): this quorum API is unit-tested but has no engine caller
+    // yet; it gets wired into broadcast publish/ack/disconnect in PR2.
     pub fn register_quorum(
         &self,
         message_id: u64,
