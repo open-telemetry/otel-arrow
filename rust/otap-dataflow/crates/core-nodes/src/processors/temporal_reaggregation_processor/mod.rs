@@ -763,8 +763,7 @@ impl TemporalReaggregationProcessor {
         // Compute the merged peer_addr from every input that contributed to
         // this aggregate before clear_state drains the accumulator. Returns
         // None when contributing inputs disagreed or any were peerless.
-        let merged_peer =
-            Context::merge_peer_addr(std::mem::take(&mut self.aggregated_peer_addrs));
+        let merged_peer = Context::merge_peer_addr(std::mem::take(&mut self.aggregated_peer_addrs));
         self.clear_state();
         // Whenever we flush we cancel the current wakeup if any. Wakeups are
         // scheduled whenever we start aggregating a new batch

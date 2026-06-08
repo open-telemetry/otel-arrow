@@ -2403,7 +2403,10 @@ mod test {
         assert_eq!(Context::merge_peer_addr([Some(a)]), Some(a));
 
         // All identical → that address.
-        assert_eq!(Context::merge_peer_addr([Some(a), Some(a), Some(a)]), Some(a));
+        assert_eq!(
+            Context::merge_peer_addr([Some(a), Some(a), Some(a)]),
+            Some(a)
+        );
 
         // Any None → None.
         assert_eq!(Context::merge_peer_addr([Some(a), None]), None);

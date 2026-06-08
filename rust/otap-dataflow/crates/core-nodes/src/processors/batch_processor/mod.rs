@@ -1072,8 +1072,7 @@ where
 
             // If any inputs in this batch require notification, get an
             // outbound slot and subscribe.
-            let (routed_ctxs, merged_peer) =
-                self.buffer.drain_context(weight, &mut input_context);
+            let (routed_ctxs, merged_peer) = self.buffer.drain_context(weight, &mut input_context);
             // Forward the receiver-observed peer address only when every
             // input merged into this output batch came from the same peer
             // (see Context::merge_peer_addr). Mixed-peer batches leave
@@ -3461,8 +3460,8 @@ mod tests {
 
                 // Send enough inputs to size-trigger one output batch.
                 for _ in 0..2 {
-                    let rec = encode_logs_otap_batch(&datagen.generate_logs())
-                        .expect("encode logs");
+                    let rec =
+                        encode_logs_otap_batch(&datagen.generate_logs()).expect("encode logs");
                     let pdata = OtapPdata::new_default(rec.into()).with_peer_addr(peer);
                     ctx.process(Message::PData(pdata))
                         .await
@@ -3503,8 +3502,8 @@ mod tests {
                 let mut datagen = DataGenerator::new(1);
 
                 for peer in [peer_a, peer_b] {
-                    let rec = encode_logs_otap_batch(&datagen.generate_logs())
-                        .expect("encode logs");
+                    let rec =
+                        encode_logs_otap_batch(&datagen.generate_logs()).expect("encode logs");
                     let pdata = OtapPdata::new_default(rec.into()).with_peer_addr(peer);
                     ctx.process(Message::PData(pdata))
                         .await
