@@ -48,7 +48,7 @@ use otap_df_engine::{
 };
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
-use otap_df_otap::pdata::{Context, OtapPdata};
+use otap_df_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::{
     OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, error::Error as PDataError,
@@ -1439,7 +1439,16 @@ where
         let remaining = output_batches.pop().expect("has last");
         let last_input = from_inputs.context.last().expect("has last");
         let last_weight = sizer.batch_size(&remaining).expect("known size");
-        let new_part = BatchPortion::new(last_input.inkey, last_input.peer_addr, last_weight);
+        // The retained partial output may aggregate records from multiple
+        // input requests, but the existing context bookkeeping only tracks
+        // input portions, not which inputs contributed to which output
+        // batch. Reusing `last_input.peer_addr` here would be wrong when
+        // inputs from multiple peers fed the final output batch: it would
+        // misattribute the retained portion (and any future merge that
+        // consumes it) to one arbitrary contributor. Conservatively drop
+        // the address — merge_peer_addr will then propagate `None`, the
+        // safe default.
+        let new_part = BatchPortion::new(last_input.inkey, None, last_weight);
 
         from_inputs.weight -= last_weight;
 
@@ -1461,8 +1470,9 @@ where
         let mut out = Vec::new();
         // Track every contributing portion's peer_addr, even ones that do not
         // route ack/nack, so the merged output `peer_addr` is correct when
-        // some (or all) inputs had no subscribers.
-        let mut peers: Vec<Option<SocketAddr>> = Vec::new();
+        // some (or all) inputs had no subscribers. Folded incrementally to
+        // avoid allocating a `Vec` on every flush.
+        let mut peer_merger = PeerAddrMerger::new();
 
         while weight > 0 && contexts.pos < contexts.inputs.len() {
             let bp = contexts.inputs.get_mut(contexts.pos).expect("valid");
@@ -1471,7 +1481,7 @@ where
             bp.weight -= take;
             weight -= take;
             let peer_addr = bp.peer_addr;
-            peers.push(peer_addr);
+            peer_merger.push(peer_addr);
 
             if bp.weight == 0 {
                 contexts.pos += 1;
@@ -1486,7 +1496,7 @@ where
             }
         }
 
-        let merged_peer = Context::merge_peer_addr(peers);
+        let merged_peer = peer_merger.finish();
         let routed = (!out.is_empty()).then_some(out);
         (routed, merged_peer)
     }

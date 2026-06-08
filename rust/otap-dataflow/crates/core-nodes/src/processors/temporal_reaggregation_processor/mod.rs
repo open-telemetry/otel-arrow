@@ -6,7 +6,6 @@
 //! This processor decreases telemetry volume by reaggregating metrics collected
 //! at a higher frequency into a lower one.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -33,7 +32,7 @@ use otap_df_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
 use otap_df_engine::{ConsumerEffectHandlerExtension, Interests};
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
-use otap_df_otap::pdata::{Context, OtapPdata};
+use otap_df_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::views::otap::OtapMetricsView;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
@@ -241,12 +240,12 @@ pub struct TemporalReaggregationProcessor {
     /// flushed.
     pending_flush: Vec<CallData>,
 
-    /// Receiver-observed peer addresses of every input whose data contributed
-    /// to [Self::builder]. Tracked independently of subscriber state so that
-    /// flushes from no-subscriber inputs can also forward `peer_addr` (via
-    /// [`Context::merge_peer_addr`]) when all contributing inputs agreed.
-    /// Drained on every flush alongside the builder.
-    aggregated_peer_addrs: Vec<Option<SocketAddr>>,
+    /// Running merge of the receiver-observed peer addresses of every input
+    /// whose data contributed to [Self::builder]. Tracked independently of
+    /// subscriber state so that flushes from no-subscriber inputs can also
+    /// forward `peer_addr` when all contributing inputs agreed. Reset on
+    /// every flush alongside the builder.
+    aggregated_peer: PeerAddrMerger,
 
     /// A map of all passthrough and aggregated batches sent by this processor.
     /// The CallData returned to this processor in ack/nack messages can be
@@ -361,7 +360,7 @@ impl TemporalReaggregationProcessor {
             inbound_batches: SlotState::new(config.inbound_request_limit.get()),
             pending_flush: Vec::new(),
             outbound_batches: SlotState::new(config.outbound_request_limit.get()),
-            aggregated_peer_addrs: Vec::new(),
+            aggregated_peer: PeerAddrMerger::new(),
         })
     }
 
@@ -647,7 +646,7 @@ impl TemporalReaggregationProcessor {
                     // The aggregated portion of this input has been folded into
                     // the in-progress builder; remember its peer_addr so the
                     // next flush can compute the merged output peer_addr.
-                    self.aggregated_peer_addrs.push(pdata.peer_addr());
+                    self.aggregated_peer.push(pdata.peer_addr());
                     // Pass data through if there are no subscribers — but we
                     // still need a wakeup to flush the aggregated portion.
                     let (inbound_ctx, _) = pdata.into_parts();
@@ -705,7 +704,7 @@ impl TemporalReaggregationProcessor {
                 AggregationResult::AllAggregated => {
                     // The full input was folded into the in-progress builder;
                     // remember its peer_addr for the next flush.
-                    self.aggregated_peer_addrs.push(pdata.peer_addr());
+                    self.aggregated_peer.push(pdata.peer_addr());
                     // Nothing to passthrough and no subscribers so we don't
                     // care about ack/nack — but we still need a wakeup to
                     // flush the aggregated data.
@@ -760,10 +759,10 @@ impl TemporalReaggregationProcessor {
         checkpoint: Option<Checkpoint>,
     ) -> Result<(), Error> {
         let records = self.builder.finish(checkpoint);
-        // Compute the merged peer_addr from every input that contributed to
-        // this aggregate before clear_state drains the accumulator. Returns
-        // None when contributing inputs disagreed or any were peerless.
-        let merged_peer = Context::merge_peer_addr(std::mem::take(&mut self.aggregated_peer_addrs));
+        // Snapshot the merged peer_addr from every input that contributed to
+        // this aggregate before clear_state resets the running merger.
+        // Returns None when contributing inputs disagreed or any were peerless.
+        let merged_peer = self.aggregated_peer.finish();
         self.clear_state();
         // Whenever we flush we cancel the current wakeup if any. Wakeups are
         // scheduled whenever we start aggregating a new batch
@@ -1356,7 +1355,7 @@ impl TemporalReaggregationProcessor {
     fn clear_state(&mut self) {
         self.identities.clear();
         self.builder.clear();
-        self.aggregated_peer_addrs.clear();
+        self.aggregated_peer = PeerAddrMerger::new();
     }
 }
 
@@ -1424,6 +1423,7 @@ mod tests {
     use super::testing::*;
     use super::*;
     use std::future::Future;
+    use std::net::SocketAddr;
 
     use otap_df_engine::testing::processor::TestContext;
     use otap_df_pdata::otap::OtapBatchStore;

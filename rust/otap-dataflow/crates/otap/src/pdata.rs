@@ -343,14 +343,11 @@ impl Context {
     where
         I: IntoIterator<Item = Option<SocketAddr>>,
     {
-        let mut iter = inputs.into_iter();
-        let first = iter.next()??;
-        for next in iter {
-            if next? != first {
-                return None;
-            }
+        let mut merger = PeerAddrMerger::new();
+        for next in inputs {
+            merger.push(next);
         }
-        Some(first)
+        merger.finish()
     }
 
     /// Get the source node for this context.
@@ -375,6 +372,63 @@ impl Context {
 }
 
 // Frame is defined in otap_df_engine::control (imported above).
+
+/// Incremental builder applying the same merge rule as
+/// [`Context::merge_peer_addr`] without allocating a `Vec` of intermediate
+/// peer addresses.
+///
+/// Use when contributing inputs are observed one-at-a-time as part of an
+/// existing pass over the input list (e.g. a processor's flush loop). Push
+/// each input's `peer_addr` exactly once with [`PeerAddrMerger::push`], then
+/// call [`PeerAddrMerger::finish`] to obtain the merged result.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PeerAddrMerger {
+    candidate: Option<SocketAddr>,
+    started: bool,
+    poisoned: bool,
+}
+
+impl PeerAddrMerger {
+    /// Create an empty merger. `finish` on an unused merger returns `None`.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            candidate: None,
+            started: false,
+            poisoned: false,
+        }
+    }
+
+    /// Fold one contributing input's `peer_addr` into the running merge.
+    pub fn push(&mut self, peer_addr: Option<SocketAddr>) {
+        if self.poisoned {
+            return;
+        }
+        match peer_addr {
+            None => {
+                self.poisoned = true;
+                self.candidate = None;
+            }
+            Some(addr) if !self.started => {
+                self.started = true;
+                self.candidate = Some(addr);
+            }
+            Some(addr) => {
+                if self.candidate != Some(addr) {
+                    self.poisoned = true;
+                    self.candidate = None;
+                }
+            }
+        }
+    }
+
+    /// Return the merged peer address, or `None` if no inputs were pushed or
+    /// the merge was poisoned by a peerless or distinct contributor.
+    #[must_use]
+    pub const fn finish(self) -> Option<SocketAddr> {
+        self.candidate
+    }
+}
 
 impl otap_df_engine::Unwindable for OtapPdata {
     fn has_frames(&self) -> bool {
@@ -2415,5 +2469,47 @@ mod test {
 
         // Distinct Somes → None (refuse to misattribute).
         assert_eq!(Context::merge_peer_addr([Some(a), Some(b)]), None);
+    }
+
+    #[test]
+    fn peer_addr_merger_matches_merge_peer_addr() {
+        let a: SocketAddr = "10.0.0.1:1".parse().unwrap();
+        let b: SocketAddr = "10.0.0.2:2".parse().unwrap();
+
+        // Empty.
+        let m = PeerAddrMerger::new();
+        assert_eq!(m.finish(), None);
+
+        // Single Some.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        assert_eq!(m.finish(), Some(a));
+
+        // All identical.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(Some(a));
+        m.push(Some(a));
+        assert_eq!(m.finish(), Some(a));
+
+        // Any None poisons subsequent pushes.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(None);
+        m.push(Some(a));
+        assert_eq!(m.finish(), None);
+
+        // Distinct Somes.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(Some(b));
+        assert_eq!(m.finish(), None);
+
+        // After conflict, further identical pushes do not "heal" the result.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(Some(b));
+        m.push(Some(a));
+        assert_eq!(m.finish(), None);
     }
 }
