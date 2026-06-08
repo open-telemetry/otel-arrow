@@ -205,7 +205,6 @@ pub(crate) fn parse_rename_operator_call(
             }
         };
 
-        // Build full paths: target_selectors + key
         let mut source_selectors = target_selectors.clone();
         source_selectors.push(ScalarExpression::Static(StaticScalarExpression::String(
             source_key,
@@ -248,7 +247,10 @@ fn parse_rename_target(rule: Pair<'_, Rule>) -> Result<Vec<ScalarExpression>, Pa
         match inner_rule.as_rule() {
             Rule::identifier_expression => {
                 selectors.push(ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(to_query_location(&inner_rule), inner_rule.as_str()),
+                    StringScalarExpression::new(
+                        to_query_location(&inner_rule),
+                        inner_rule.as_str(),
+                    ),
                 )));
             }
             invalid_rule => {
