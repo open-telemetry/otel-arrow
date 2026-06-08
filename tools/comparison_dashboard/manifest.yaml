@@ -187,15 +187,10 @@ suites:
   - suites/otc/otc-logs-otap-none-attr-rename-multi-transform.yaml
   
   # Rotel
-  - suites/rotel/rotel-logs-otlp-none-baseline.yaml
   - suites/rotel/rotel-logs-otlp-gzip-baseline.yaml
-  - suites/rotel/rotel-logs-otlphttp-none-baseline.yaml
   - suites/rotel/rotel-logs-otlphttp-gzip-baseline.yaml
-  - suites/rotel/rotel-metrics-otlp-none-baseline.yaml
   - suites/rotel/rotel-metrics-otlp-gzip-baseline.yaml
-  - suites/rotel/rotel-metrics-otlphttp-none-baseline.yaml
   - suites/rotel/rotel-metrics-otlphttp-gzip-baseline.yaml
-  - suites/rotel/rotel-traces-otlp-none-baseline.yaml
   - suites/rotel/rotel-traces-otlp-gzip-baseline.yaml
 
   # Fluent Bit

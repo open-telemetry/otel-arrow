@@ -86,10 +86,7 @@ suites:
     slug: otc_traces_otlphttp_none_baseline
     short: OTC OTLP-HTTP/None
 
-  # Rotel OTLP
-  - name: Rotel Traces OTLP Baseline (None)
-    slug: rotel_traces_otlp_none_baseline
-    short: Rotel OTLP/None
+  # Rotel
   - name: Rotel Traces OTLP Baseline (Gzip)
     slug: rotel_traces_otlp_gzip_baseline
     short: Rotel OTLP/Gzip

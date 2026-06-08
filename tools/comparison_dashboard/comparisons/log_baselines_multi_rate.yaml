@@ -108,18 +108,10 @@ suites:
     slug: fbit_logs_otlphttp_zstd_baseline
     short: FB OTLP-HTTP/Zstd
 
-  # Rotel OTLP
-  - name: Rotel Logs OTLP Baseline (None)
-    slug: rotel_logs_otlp_none_baseline
-    short: Rotel OTLP/None
+  # Rotel
   - name: Rotel Logs OTLP Baseline (Gzip)
     slug: rotel_logs_otlp_gzip_baseline
     short: Rotel OTLP/Gzip
-
-  # Rotel OTLP/HTTP
-  - name: Rotel Logs OTLP/HTTP Baseline (None)
-    slug: rotel_logs_otlphttp_none_baseline
-    short: Rotel OTLP-HTTP/None
   - name: Rotel Logs OTLP/HTTP Baseline (Gzip)
     slug: rotel_logs_otlphttp_gzip_baseline
     short: Rotel OTLP-HTTP/Gzip
