@@ -8,7 +8,10 @@ use arrow::array::{
 };
 use arrow::compute::kernels::cast;
 use arrow::datatypes::{
-    ArrowNativeType, Float64Type, GenericBinaryType, Int64Type, UInt8Type, UInt16Type, UInt64Type,
+    ArrowNativeType, DurationMicrosecondType, DurationMillisecondType, DurationNanosecondType,
+    DurationSecondType, Float64Type, GenericBinaryType, Int64Type, TimestampMicrosecondType,
+    TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt8Type, UInt16Type,
+    UInt64Type,
 };
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaBuilder};
 use itertools::Either;
@@ -668,6 +671,34 @@ pub fn estimate_cardinality<'a>(info: &FieldInfo<'a>) -> Cardinality {
     match info.value_type {
         DataType::UInt64 => estimate_cardinality_primitive_type::<UInt64Type, 8>(info),
         DataType::Int64 => estimate_cardinality_primitive_type::<Int64Type, 8>(info),
+        DataType::Duration(unit) => match unit {
+            arrow_schema::TimeUnit::Second => {
+                estimate_cardinality_primitive_type::<DurationSecondType, 8>(info)
+            }
+            arrow_schema::TimeUnit::Millisecond => {
+                estimate_cardinality_primitive_type::<DurationMillisecondType, 8>(info)
+            }
+            arrow_schema::TimeUnit::Microsecond => {
+                estimate_cardinality_primitive_type::<DurationMicrosecondType, 8>(info)
+            }
+            arrow_schema::TimeUnit::Nanosecond => {
+                estimate_cardinality_primitive_type::<DurationNanosecondType, 8>(info)
+            }
+        },
+        DataType::Timestamp(unit, _) => match unit {
+            arrow_schema::TimeUnit::Second => {
+                estimate_cardinality_primitive_type::<TimestampSecondType, 8>(info)
+            }
+            arrow_schema::TimeUnit::Millisecond => {
+                estimate_cardinality_primitive_type::<TimestampMillisecondType, 8>(info)
+            }
+            arrow_schema::TimeUnit::Microsecond => {
+                estimate_cardinality_primitive_type::<TimestampMicrosecondType, 8>(info)
+            }
+            arrow_schema::TimeUnit::Nanosecond => {
+                estimate_cardinality_primitive_type::<TimestampNanosecondType, 8>(info)
+            }
+        },
         DataType::Float64 => estimate_cardinality_primitive_type::<Float64Type, 8>(info),
         DataType::FixedSizeBinary(8) => estimate_cardinality_fixed_size_type::<8>(info),
         DataType::FixedSizeBinary(16) => estimate_cardinality_fixed_size_type::<16>(info),
@@ -1097,6 +1128,101 @@ mod schema_tests {
     #[test]
     fn test_cardinality_mixed_batch_sizes() {
         test_cardinality_helper(&[250, 10], Some(DataType::UInt16));
+    }
+
+    #[test]
+    fn test_cardinality_duration_all_time_units() {
+        for unit in [
+            arrow_schema::TimeUnit::Second,
+            arrow_schema::TimeUnit::Millisecond,
+            arrow_schema::TimeUnit::Microsecond,
+            arrow_schema::TimeUnit::Nanosecond,
+        ] {
+            test_cardinality_for_type(&[250], &DataType::Duration(unit), Some(DataType::UInt8));
+        }
+    }
+
+    #[test]
+    fn test_cardinality_duration_all_time_units_above_u8_boundary() {
+        for unit in [
+            arrow_schema::TimeUnit::Second,
+            arrow_schema::TimeUnit::Millisecond,
+            arrow_schema::TimeUnit::Microsecond,
+            arrow_schema::TimeUnit::Nanosecond,
+        ] {
+            test_cardinality_for_type(
+                &[250, 10],
+                &DataType::Duration(unit),
+                Some(DataType::UInt16),
+            );
+        }
+    }
+
+    #[test]
+    fn test_cardinality_timestamp_all_time_units() {
+        for unit in [
+            arrow_schema::TimeUnit::Second,
+            arrow_schema::TimeUnit::Millisecond,
+            arrow_schema::TimeUnit::Microsecond,
+            arrow_schema::TimeUnit::Nanosecond,
+        ] {
+            test_cardinality_for_type(
+                &[250],
+                &DataType::Timestamp(unit, None),
+                Some(DataType::UInt8),
+            );
+        }
+    }
+
+    #[test]
+    fn test_cardinality_timestamp_all_time_units_above_u8_boundary() {
+        for unit in [
+            arrow_schema::TimeUnit::Second,
+            arrow_schema::TimeUnit::Millisecond,
+            arrow_schema::TimeUnit::Microsecond,
+            arrow_schema::TimeUnit::Nanosecond,
+        ] {
+            test_cardinality_for_type(
+                &[250, 10],
+                &DataType::Timestamp(unit, None),
+                Some(DataType::UInt16),
+            );
+        }
+    }
+
+    #[test]
+    fn test_cardinality_timestamp_with_timezone() {
+        test_cardinality_for_type(
+            &[250],
+            &DataType::Timestamp(
+                arrow_schema::TimeUnit::Microsecond,
+                Some(Arc::<str>::from("UTC")),
+            ),
+            Some(DataType::UInt8),
+        );
+    }
+
+    #[test]
+    fn test_cardinality_timestamp_with_timezone_above_u8_boundary() {
+        test_cardinality_for_type(
+            &[250, 10],
+            &DataType::Timestamp(
+                arrow_schema::TimeUnit::Microsecond,
+                Some(Arc::<str>::from("UTC")),
+            ),
+            Some(DataType::UInt16),
+        );
+    }
+
+    #[test]
+    fn test_generate_timestamp_values_preserves_timezone_datatype() {
+        let value_type = DataType::Timestamp(
+            arrow_schema::TimeUnit::Nanosecond,
+            Some(Arc::<str>::from("UTC")),
+        );
+
+        let values = generate_values_for_type(0, 3, &value_type);
+        assert_eq!(values.data_type(), &value_type);
     }
 
     /// Create a Dict(u8, Utf8) batch with low cardinality for a given column name.
@@ -1596,6 +1722,29 @@ mod schema_tests {
             DataType::Float64 => Arc::new(Float64Array::from(
                 (start..end).map(|i| i as f64 + 0.5).collect::<Vec<_>>(),
             )),
+            DataType::Duration(unit) => {
+                let values = (start..end).map(|i| i as i64).collect::<Vec<_>>();
+                match unit {
+                    arrow_schema::TimeUnit::Second => Arc::new(DurationSecondArray::from(values)),
+                    arrow_schema::TimeUnit::Millisecond => {
+                        Arc::new(DurationMillisecondArray::from(values))
+                    }
+                    arrow_schema::TimeUnit::Microsecond => {
+                        Arc::new(DurationMicrosecondArray::from(values))
+                    }
+                    arrow_schema::TimeUnit::Nanosecond => {
+                        Arc::new(DurationNanosecondArray::from(values))
+                    }
+                }
+            }
+            DataType::Timestamp(unit, tz) => {
+                // The full value_type (including unit and tz) is forwarded to
+                // cast() below; binding them here documents intent.
+                let _ = (unit, tz);
+                let values = (start..end).map(|i| i as i64).collect::<Vec<_>>();
+                let values: ArrayRef = Arc::new(Int64Array::from(values));
+                cast(values.as_ref(), value_type).unwrap()
+            }
             DataType::FixedSizeBinary(8) => {
                 use arrow::buffer::Buffer;
                 let values: Vec<u8> = (start..end)
