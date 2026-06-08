@@ -97,6 +97,7 @@ impl TryFrom<&PipelineExpression> for SignalScope {
         // TODO the logic here wouldn't be safe for languages other than Kql. We might want to have
         //  the pipeline expression be able to return name of the source
         let query = pipeline_expr.get_query_slice(pipeline_expr.get_query_location());
+        let query = query.trim_start();
         Ok(if query.starts_with("logs") {
             Self::Signal(SignalType::Logs)
         } else if query.starts_with("traces") {
@@ -1133,6 +1134,26 @@ mod test {
                 assert_eq!(metrics.num_rows(), 1);
             })
             .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_signal_scope_leading_whitespace() {
+        // Regression test for https://github.com/open-telemetry/otel-arrow/issues/3209:
+        // leading whitespace (including newlines) must not break signal-type detection.
+        let runtime = TestRuntime::<OtapPdata>::new();
+        for query in [
+            "  logs | where name == \"foo\"",
+            "\n\ttraces | where name == \"foo\"",
+            "  metrics | where name == \"foo\"",
+            " \n signals | where name == \"foo\"",
+        ] {
+            let _processor = try_create_with_kql_query(query, &runtime)
+                .expect("created processor despite leading whitespace");
+        }
+
+        // also exercise the OPL path, which shares SignalScope::try_from
+        let _opl = try_create_with_opl_query("  logs | where name == \"foo\"", &runtime)
+            .expect("created OPL processor despite leading whitespace");
     }
 
     /// test helper function to set a pdata sender on the processor wrapper for the named output port
