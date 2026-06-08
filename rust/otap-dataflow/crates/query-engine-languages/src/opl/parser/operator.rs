@@ -158,7 +158,7 @@ pub(crate) fn parse_rename_operator_call(
         ParserError::SyntaxError(query_location.clone(), "expected rename target".to_string())
     })?;
 
-    let target_selectors = parse_rename_target(target_rule, pipeline_builder)?;
+    let target_selectors = parse_rename_target(target_rule)?;
 
     // Parse each rename pair ("old_key" as "new_key")
     let mut keys = Vec::with_capacity(inner_rules.len());
@@ -239,42 +239,36 @@ pub(crate) fn parse_rename_operator_call(
 /// For example:
 /// - `attributes` -> `["attributes"]`
 /// - `resource.attributes` -> `["resource", "attributes"]`
-fn parse_rename_target(
-    rule: Pair<'_, Rule>,
-    pipeline_builder: &dyn PipelineBuilder,
-) -> Result<Vec<ScalarExpression>, ParserError> {
+fn parse_rename_target(rule: Pair<'_, Rule>) -> Result<Vec<ScalarExpression>, ParserError> {
     let query_location = to_query_location(&rule);
-    let inner_rule = rule.into_inner().next().ok_or_else(|| {
-        ParserError::SyntaxError(
-            query_location.clone(),
-            "expected rename target content".to_string(),
-        )
-    })?;
+    let inner_rules = rule.into_inner();
+    let mut selectors = Vec::with_capacity(inner_rules.len());
 
-    match inner_rule.as_rule() {
-        Rule::identifier_expression => Ok(vec![ScalarExpression::Static(
-            StaticScalarExpression::String(StringScalarExpression::new(
-                to_query_location(&inner_rule),
-                inner_rule.as_str(),
-            )),
-        )]),
-        Rule::attribute_selection_expression => {
-            match parse_attribute_selection_expression(inner_rule, pipeline_builder)?.into() {
-                ScalarExpression::Source(source_expr) => {
-                    Ok(source_expr.into_value_accessor().into_selectors())
-                }
-                other => Err(ParserError::SyntaxNotSupported(
+    for inner_rule in inner_rules {
+        match inner_rule.as_rule() {
+            Rule::identifier_expression => {
+                selectors.push(ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(to_query_location(&inner_rule), inner_rule.as_str()),
+                )));
+            }
+            invalid_rule => {
+                return Err(invalid_child_rule_error(
                     query_location,
-                    format!("expected source expression for rename target, found {other:?}"),
-                )),
+                    Rule::rename_target,
+                    invalid_rule,
+                ));
             }
         }
-        invalid_rule => Err(invalid_child_rule_error(
-            query_location,
-            Rule::rename_target,
-            invalid_rule,
-        )),
     }
+
+    if selectors.is_empty() {
+        return Err(ParserError::SyntaxError(
+            query_location,
+            "expected rename target content".to_string(),
+        ));
+    }
+
+    Ok(selectors)
 }
 
 pub(crate) fn parse_set_operator_call(
