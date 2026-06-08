@@ -78,7 +78,7 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-attr-otlp.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-attr-otlp.yaml.j2
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
         max_batch_size: 512
@@ -86,7 +86,7 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-attr-otap.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-attr-otap.yaml.j2
         loadgen_exporter_type: otlp
         backend_receiver_type: otap
         max_batch_size: 512
@@ -94,7 +94,7 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-attr-otap.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-attr-otap.yaml.j2
         loadgen_exporter_type: otap
         backend_receiver_type: otap
         max_batch_size: 512
@@ -102,7 +102,7 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-attr-otlp.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-attr-otlp.yaml.j2
         loadgen_exporter_type: otap
         backend_receiver_type: otlp
         max_batch_size: 512
@@ -110,7 +110,7 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml.j2
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
         max_batch_size: 512
@@ -120,7 +120,7 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml.j2
         loadgen_exporter_type: otap
         backend_receiver_type: otap
         max_batch_size: 512

@@ -257,10 +257,10 @@ impl GrpcClientSettings {
             }
         });
 
-        // If a proxy is configured and the endpoint is not bypassed, the proxy performs DNS
-        // resolution -- skip the local check.
+        // If the actual connection path will use a proxy for this endpoint, the proxy performs
+        // DNS resolution -- skip the local check.
         let proxy = self.effective_proxy_config();
-        if proxy.has_proxy() && !proxy.should_bypass(&host, port) {
+        if proxy.get_proxy_for_uri(&uri).is_some() {
             return Ok(());
         }
 
@@ -1192,6 +1192,25 @@ mod tests {
         };
         // Should succeed because the proxy handles resolution.
         settings.run_startup_check().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_check_dns_not_skipped_when_proxy_does_not_apply_to_endpoint_scheme() {
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "http://this.host.definitely.does.not.exist.invalid:4317".to_string(),
+            startup_check: StartupCheck::Dns,
+            proxy: Some(ProxyConfig {
+                https_proxy: Some("http://my-proxy:3128".into()),
+                ..Default::default()
+            }),
+            ..GrpcClientSettings::default()
+        };
+
+        let err = settings.run_startup_check().await.unwrap_err();
+        assert!(
+            matches!(err, GrpcEndpointError::DnsCheckFailed { .. }),
+            "expected DnsCheckFailed, got: {err}"
+        );
     }
 
     #[tokio::test]
