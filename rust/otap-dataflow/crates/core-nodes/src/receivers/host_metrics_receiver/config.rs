@@ -454,7 +454,7 @@ pub struct ProcessLabelsConfig {
 impl Default for ProcessLabelsConfig {
     fn default() -> Self {
         Self {
-            pid: false,
+            pid: true,
             command: true,
             executable_name: true,
             executable_path: false,
@@ -714,6 +714,11 @@ pub(super) fn validate_config(config: &Config) -> Result<(), otap_df_config::err
     }
     let process_labels = &config.families.processes.process.labels;
     if config.families.processes.mode == ProcessMode::SummaryAndPerProcess {
+        if !process_labels.pid {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "processes.process.labels.pid must be true when processes.mode=summary_and_per_process".to_owned(),
+            });
+        }
         let mut unsupported_labels = Vec::new();
         if process_labels.executable_path {
             unsupported_labels.push("executable_path");

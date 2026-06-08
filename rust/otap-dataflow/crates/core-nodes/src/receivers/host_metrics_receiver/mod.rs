@@ -956,7 +956,7 @@ mod tests {
                         },
                         "max_processes": 10,
                         "labels": {
-                            "pid": false,
+                            "pid": true,
                             "command": true,
                             "executable_name": true,
                             "parent_pid": true
@@ -982,6 +982,18 @@ mod tests {
         );
         assert_eq!(config.families.processes.process.max_processes, 10);
         validate_config(&config).expect("valid config");
+    }
+
+    #[test]
+    fn rejects_per_process_config_without_pid_label() {
+        let mut config = Config::default();
+        config.families.processes.mode = ProcessMode::SummaryAndPerProcess;
+        config.families.processes.process.labels.pid = false;
+
+        assert!(matches!(
+            validate_config(&config),
+            Err(otap_df_config::error::Error::InvalidUserConfig { .. })
+        ));
     }
 
     #[test]

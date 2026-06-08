@@ -14,7 +14,8 @@ use paths::{PathKind, ProcfsPaths};
 use projection::{CounterTracker, host_arch};
 pub(crate) use projection::{HostResource, HostScrape, HostSnapshot};
 use readings::*;
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
@@ -22,7 +23,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, Ordering as AtomicOrdering},
 };
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -58,6 +59,30 @@ impl ProcessCommand {
             command: comm.to_owned(),
             executable_name: comm.to_owned(),
         }
+    }
+}
+
+struct RankedProcessMetrics {
+    process: ProcessMetrics,
+}
+
+impl Eq for RankedProcessMetrics {}
+
+impl Ord for RankedProcessMetrics {
+    fn cmp(&self, other: &Self) -> Ordering {
+        compare_process_rank(&self.process, &other.process)
+    }
+}
+
+impl PartialEq for RankedProcessMetrics {
+    fn eq(&self, other: &Self) -> bool {
+        compare_process_rank(&self.process, &other.process) == Ordering::Equal
+    }
+}
+
+impl PartialOrd for RankedProcessMetrics {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -191,7 +216,7 @@ impl AcceptedScrapeGuard {
 
 impl Drop for AcceptedScrapeGuard {
     fn drop(&mut self) {
-        self.accepted.store(false, Ordering::Release);
+        self.accepted.store(false, AtomicOrdering::Release);
     }
 }
 
@@ -221,7 +246,7 @@ impl ProcfsScrapeWorker {
     ) -> Result<oneshot::Receiver<io::Result<HostScrape>>, StartScrapeError> {
         if self
             .accepted
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
             .is_err()
         {
             return Err(StartScrapeError::Busy);
@@ -232,7 +257,7 @@ impl ProcfsScrapeWorker {
             .map_err(|err| match err {
                 mpsc::TrySendError::Full(_) => StartScrapeError::Busy,
                 mpsc::TrySendError::Disconnected(_) => {
-                    self.accepted.store(false, Ordering::Release);
+                    self.accepted.store(false, AtomicOrdering::Release);
                     StartScrapeError::Stopped
                 }
             })?;
@@ -294,7 +319,7 @@ impl ProcfsSource {
             process_file_path: PathBuf::new(),
             clk_tck: clock_ticks_per_second(),
             page_size_bytes: page_size_bytes(),
-            process_cpu_count: available_process_cpu_count(),
+            process_cpu_count: 1.0,
             previous_cpu: None,
             filesystem_worker: FilesystemStatWorker::new()?,
             counter_tracker: CounterTracker::default(),
@@ -354,18 +379,23 @@ impl ProcfsSource {
             None
         };
 
-        let cpuinfo = match due
-            .cpu
+        let host_cpuinfo = match (due.cpu || due.per_processes)
             .then(|| self.read_path(PathKind::Cpuinfo))
             .transpose()
         {
             Ok(Some(cpuinfo)) => parse_cpuinfo(cpuinfo),
             Ok(None) => CpuInfo::default(),
             Err(err) => {
-                record_partial_error(&mut partial_errors, &mut first_error, err);
+                if due.cpu {
+                    record_partial_error(&mut partial_errors, &mut first_error, err);
+                }
                 CpuInfo::default()
             }
         };
+        if host_cpuinfo.logical_count != 0 {
+            self.process_cpu_count = host_cpuinfo.logical_count as f64;
+        }
+        let cpuinfo = due.cpu.then_some(host_cpuinfo).unwrap_or_default();
 
         let load = match due
             .load
@@ -585,13 +615,17 @@ impl ProcfsSource {
         partial_errors: &mut u64,
         first_error: &mut Option<io::Error>,
     ) -> Vec<ProcessMetrics> {
-        let mut processes = Vec::new();
+        let process_limit = self.config.process_max_processes;
+        if process_limit == 0 {
+            return Vec::new();
+        }
+        let mut processes = BinaryHeap::with_capacity(process_limit);
         let proc_dir = self.paths.proc_path();
         let entries = match fs::read_dir(proc_dir) {
             Ok(entries) => entries,
             Err(err) => {
                 record_partial_error(partial_errors, first_error, err);
-                return processes;
+                return Vec::new();
             }
         };
         for entry in entries {
@@ -613,18 +647,16 @@ impl ProcfsSource {
                 partial_errors,
                 first_error,
             ) {
-                Ok(Some(process)) => processes.push(process),
+                Ok(Some(process)) => push_top_process(&mut processes, process, process_limit),
                 Ok(None) => {}
                 Err(err) => record_partial_error(partial_errors, first_error, err),
             }
         }
-        processes.sort_by(|a, b| {
-            b.total_cpu_seconds()
-                .total_cmp(&a.total_cpu_seconds())
-                .then_with(|| b.memory_usage_bytes.cmp(&a.memory_usage_bytes))
-                .then_with(|| a.key.pid.cmp(&b.key.pid))
-        });
-        processes.truncate(self.config.process_max_processes);
+        let mut processes: Vec<_> = processes
+            .into_iter()
+            .map(|ranked_process| ranked_process.process)
+            .collect();
+        processes.sort_by(compare_process_rank);
         self.previous_process_cpu
             .retain(|key, _| processes.iter().any(|process| process.key == *key));
         processes
@@ -944,6 +976,31 @@ impl ProcfsSource {
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
     }
+}
+
+fn push_top_process(
+    processes: &mut BinaryHeap<RankedProcessMetrics>,
+    process: ProcessMetrics,
+    process_limit: usize,
+) {
+    if processes.len() < process_limit {
+        processes.push(RankedProcessMetrics { process });
+        return;
+    }
+    if processes
+        .peek()
+        .is_some_and(|worst_process| compare_process_rank(&process, &worst_process.process).is_lt())
+    {
+        let _ = processes.pop();
+        processes.push(RankedProcessMetrics { process });
+    }
+}
+
+fn compare_process_rank(a: &ProcessMetrics, b: &ProcessMetrics) -> Ordering {
+    b.total_cpu_seconds()
+        .total_cmp(&a.total_cpu_seconds())
+        .then_with(|| b.memory_usage_bytes.cmp(&a.memory_usage_bytes))
+        .then_with(|| a.key.pid.cmp(&b.key.pid))
 }
 
 fn process_filter_allows(

@@ -179,6 +179,8 @@ groups:
 - `families.network.include_connection_count` is rejected in v1.
 - Process metrics are aggregate host summaries by default. Linux per-process
   metrics are available only with `processes.mode: summary_and_per_process`.
+- Linux per-process metrics require `processes.process.labels.pid: true` so
+  exported per-process metric series include a process identity.
 - `system.process.count` emits the registered `process.state=running` summary.
   Linux `procs_blocked` is parsed but not emitted because `blocked` is not a
   registered `process.state` value.

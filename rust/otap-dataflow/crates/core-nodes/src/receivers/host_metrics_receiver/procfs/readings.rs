@@ -892,12 +892,6 @@ pub(super) fn clock_ticks_per_second() -> f64 {
     if ticks > 0 { ticks as f64 } else { 100.0 }
 }
 
-pub(super) fn available_process_cpu_count() -> f64 {
-    std::thread::available_parallelism()
-        .map(|count| count.get() as f64)
-        .unwrap_or(1.0)
-}
-
 #[allow(unsafe_code)]
 pub(super) fn page_size_bytes() -> u64 {
     // SAFETY: _SC_PAGESIZE is a valid sysconf name; the call has no side effects.

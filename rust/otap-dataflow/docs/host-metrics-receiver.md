@@ -210,7 +210,7 @@ nodes:
               match_type: strict
             max_processes: 100
             labels:
-              pid: false
+              pid: true
               command: true
               executable_name: true
               parent_pid: true
@@ -245,6 +245,9 @@ Rules:
   `process.thread.count`, and `process.uptime`. It requires `max_processes` to be
   greater than zero and tracks CPU deltas by `(pid, start_time)` to avoid PID
   reuse mixing.
+- `processes.mode: summary_and_per_process` requires
+  `processes.process.labels.pid: true` so two same-command processes cannot emit
+  indistinguishable per-process metric series.
 - Per-process filters match either `process.command` or
   `process.executable.name`. `process.command` is read from the first
   `/proc/<pid>/cmdline` argument with lossy UTF-8 conversion when available and
