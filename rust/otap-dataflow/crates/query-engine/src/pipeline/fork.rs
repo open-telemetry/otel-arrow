@@ -29,12 +29,12 @@ use crate::{
 /// to duplicate the telemetry, process it, and send it to different destinations using an operator
 /// such as "route_to".
 pub struct ForkPipelineStage {
-    /// Branches that wil process a copy of each telemetry batch
+    /// Branches that will process a copy of each telemetry batch
     branches: Vec<ForkPipelineStageBranch>,
 
     /// Scratch space for storing temporary batch results before concatenating results.
-    /// T
     branch_results: Vec<OtapArrowRecords>,
+}
 }
 
 impl ForkPipelineStage {
