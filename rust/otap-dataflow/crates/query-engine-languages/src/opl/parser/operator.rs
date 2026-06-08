@@ -784,7 +784,7 @@ mod tests {
 
     #[test]
     pub fn test_remove_map_keys_operator_call() {
-        let query = r#"exclude
+        let query = r#"remove
             attributes["x"],
             attributes["y"],
             resource.attributes["z"]"#;

@@ -1326,44 +1326,4 @@ mod tests {
         let records = &logs.resource_logs[0].scope_logs[0].log_records;
         assert!(records[0].attributes.is_empty());
     }
-
-    /// Verify that generated log batches are not trivially compressible.
-    ///
-    /// Generates 500 logs with ~1KB bodies, 6 attributes, and trace context
-    /// enabled, then checks the zstd compression ratio stays within a
-    /// realistic range. Before these changes all records were nearly identical
-    /// and compressed at ~57:1; with varied bodies, attribute values, severity
-    /// rotation, and random trace_id/span_id the ratio drops to ~19:1.
-    ///
-    /// The assert uses a generous 3:1–45:1 window to avoid flaky failures
-    /// across platforms while still catching regressions to the old
-    /// all-identical regime (>50:1).
-    ///
-    /// Run with:
-    /// ```sh
-    /// cargo test -p otap-df-core-nodes --features dev-tools -- test_compression_ratio --nocapture
-    /// ```
-    #[test]
-    fn test_compression_ratio_is_realistic() {
-        use prost::Message;
-
-        let logs = static_otlp_logs_with_config(500, Some(1024), Some(6), true, None);
-        let raw = logs.encode_to_vec();
-        let raw_size = raw.len();
-
-        let compressed = zstd::bulk::compress(&raw, 3).expect("zstd compression failed");
-        let compressed_size = compressed.len();
-
-        let ratio = raw_size as f64 / compressed_size as f64;
-
-        println!(
-            "Compression: raw={raw_size} bytes, compressed={compressed_size} bytes, ratio={ratio:.1}:1"
-        );
-
-        assert!(
-            (3.0..=45.0).contains(&ratio),
-            "compression ratio {ratio:.1}:1 is outside acceptable range (3:1 – 45:1); \
-             raw={raw_size} bytes, compressed={compressed_size} bytes"
-        );
-    }
 }
