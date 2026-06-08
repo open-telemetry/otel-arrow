@@ -334,7 +334,7 @@ mod test {
     fn test_pipeline_stages_that_dont_support_attribute_exec_is_planning_error() {
         let query = r#"
             logs | apply attributes {
-                project-rename attributes["x"] = attributes["y"]
+                rename attributes "y" as "x"
             }"#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
         let planner = PipelinePlanner::new();

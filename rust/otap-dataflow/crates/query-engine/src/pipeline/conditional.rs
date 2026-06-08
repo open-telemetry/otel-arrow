@@ -447,7 +447,7 @@ mod test {
         let result = exec_logs_pipeline::<OplParser>(
             r#"
             logs | if (severity_text == "ERROR") {
-                project-rename attributes["y"] = attributes["x"]
+                rename attributes "x" as "y"
             }"#,
             to_logs_data(log_records),
         )
@@ -485,7 +485,7 @@ mod test {
         let result = exec_logs_pipeline::<OplParser>(
             r#"
             logs | if (matches(severity_text, ".*E.*")) {
-                project-rename attributes["y"] = attributes["x"]
+                rename attributes "x" as "y"
             }"#,
             to_logs_data(log_records),
         )
@@ -520,9 +520,9 @@ mod test {
         let result = exec_logs_pipeline::<OplParser>(
             r#"
             logs | if (severity_text == "ERROR") {
-                project-rename attributes["y"] = attributes["x"]
+                rename attributes "x" as "y"
             } else {
-                project-rename attributes["z"] = attributes["x"]
+                rename attributes "x" as "z"
             }"#,
             to_logs_data(log_records),
         )
@@ -567,9 +567,9 @@ mod test {
 
         let query = r#"logs |
             if (severity_text == "ERROR") {
-                project-rename attributes["y"] = attributes["x"]
+                rename attributes "x" as "y"
             } else if (event_name == "test") {
-                project-rename attributes["z"] = attributes["x"]
+                rename attributes "x" as "z"
             } else {
                 project-away attributes["x"]
             }
@@ -618,11 +618,11 @@ mod test {
         ];
         let query = r#"logs |
             if (severity_text == "INFO") {
-                project-rename attributes["y"] = attributes["x"]
+                rename attributes "x" as "y"
             } else if (severity_text == "ERROR") {
-                project-rename attributes["z"] = attributes["x"]
+                rename attributes "x" as "z"
             } else if (severity_text == "WARN") {
-                project-rename attributes["a"] = attributes["x"]
+                rename attributes "x" as "a"
             } else {
                 project-away attributes["x"]
             }
@@ -652,9 +652,9 @@ mod test {
         let pipeline_expr = OplParser::parse(
             r#"logs |
             if (severity_text == "ERROR") {
-                project-rename attributes["y"] = attributes["x"]
+                rename attributes "x" as "y"
             } else if (event_name == "test") {
-                project-rename attributes["z"] = attributes["x"]
+                rename attributes "x" as "z"
             } else {
                 project-away attributes["x"]
             }
