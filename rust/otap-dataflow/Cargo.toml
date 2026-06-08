@@ -219,7 +219,7 @@ zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
 
-one_collect = { git = "https://github.com/swashtek/one-collect.git", rev = "7166248" }
+one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "5a9f381edf38e24bf583f25f7fce9def0c013173" }
 
 azure_core = {version = "1.0.0", default-features = false }
 azure_identity = {version = "1.0.0", default-features = false }

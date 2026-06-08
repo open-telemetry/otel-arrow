@@ -40,8 +40,9 @@
 //! [`one_collect::etw::tdh::TdhDecoder`] to discover the event schema at
 //! runtime via the Windows TDH APIs.  The decoder maintains a schema cache
 //! so that repeated events with the same layout avoid kernel transitions.
-//! Decoded field data is copied into [`DecodedField`] structs and sent
-//! across the channel alongside the event header metadata.
+//! Each field's bytes are interpreted into a typed [`EtwAttributeValue`]
+//! (see [`interpret_field_value`]) and stored in a [`DecodedField`], which is
+//! sent across the channel alongside the event header metadata.
 //!
 //! ## Lifecycle
 //!
@@ -139,20 +140,45 @@ const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
 // ── Event data transferred across the channel ────────────────────────────────
 
+/// Typed value of a single TDH-decoded ETW field.
+///
+/// The decoder interprets each field's raw bytes **once** (on the
+/// `ProcessTrace` thread) into one of these variants, instead of deferring
+/// interpretation to the encoder via a `(type_name, len)` string match.  This
+/// gives compile-time exhaustiveness at every consumer match site — adding a
+/// variant is a compile error rather than a silent fall-through — and avoids
+/// the redundant `type_name: String` allocation plus consumer-side byte
+/// re-parsing.  Modeled on the Linux `user_events_receiver`'s
+/// `DecodedAttrValue`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EtwAttributeValue {
+    /// UTF-8 / UTF-16-decoded string value.
+    Str(String),
+    /// Signed/unsigned integer widened to `i64`.
+    Int(i64),
+    /// Floating-point value widened to `f64`.
+    Double(f64),
+    /// Boolean value.  Note: the current `one_collect` decoder maps
+    /// `TDH_INTYPE_BOOLEAN` to a `u8`, so real BOOLEAN fields arrive as
+    /// [`Int`](Self::Int); this variant is reserved for a future decoder that
+    /// emits a distinct boolean type name.
+    Bool(bool),
+    /// Genuinely unsupported / opaque field bytes.  The encoder renders these
+    /// as a hex string.  Empty for zero-length or undecodable fields.
+    Bytes(Vec<u8>),
+}
+
 /// A single decoded field from a TDH-decoded TraceLogging event.
 ///
 /// During the `ProcessTrace` callback the raw `EVENT_RECORD` is still valid,
-/// so we copy each field's bytes into an owned `Vec<u8>` before sending the
-/// event across the channel.
+/// so we interpret each field's bytes into an owned [`EtwAttributeValue`]
+/// before sending the event across the channel.
 #[derive(Debug, Clone)]
 pub struct DecodedField {
     /// Field name (e.g. `"ProcessId"`, or `"Parent.ChildField"` for nested structs).
     pub name: String,
-    /// Type name matching one_collect conventions (e.g. `"u32"`, `"string"`, `"wstring"`).
-    pub type_name: String,
-    /// Raw field data bytes copied from the event payload.
-    /// Empty for unsupported or zero-length fields.
-    pub data: Vec<u8>,
+    /// Typed field value, interpreted from the raw payload bytes by the decoder.
+    pub value: EtwAttributeValue,
 }
 
 /// Lightweight snapshot of an ETW event captured in the `ProcessTrace` callback.
@@ -302,12 +328,150 @@ fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
 
 // ── TDH field extraction ─────────────────────────────────────────────────────
 
+/// Number of 100-nanosecond ticks between the Windows `FILETIME` epoch
+/// (1601-01-01 UTC) and the Unix epoch (1970-01-01 UTC).
+const FILETIME_TICKS_TO_UNIX_EPOCH: i64 = 116_444_736_000_000_000;
+
+/// Interpret a TDH-decoded field's raw bytes as a typed [`EtwAttributeValue`].
+///
+/// The `type_name` strings come from `one_collect`'s TDH decoder
+/// (`intype_to_field_info`) and follow the same naming conventions as the
+/// user_events tracefs decoder.  Doing this interpretation here — next to the
+/// decoder — keeps TDH type knowledge in one place and lets the encoder
+/// collapse to an exhaustive match over [`EtwAttributeValue`] with no silent
+/// `(type_name, len)` fall-throughs.
+///
+/// Type-name reference (from `one_collect::etw::tdh::intype_to_field_info`):
+/// `s8`/`s16`/`s32`/`s64` (signed, with `HEXINT*` folded into `s32`/`s64`),
+/// `u8`/`u16`/`u32`/`u64` (unsigned, with `BOOLEAN` folded into `u8`),
+/// `float`/`double`, `string`/`wstring`/`counted_string`/`counted_wstring`
+/// (text), `pointer` (4 or 8 bytes), `filetime` (8 bytes), `guid` (16),
+/// `systemtime` (16), `binary` (SID / opaque), and `unsupported`.
+///
+/// Genuinely opaque types (`guid`, `systemtime`, `binary`, `unsupported`) and
+/// any length mismatch fall back to [`EtwAttributeValue::Bytes`], which the
+/// encoder renders as a hex string.  Numeric conversions use the host byte
+/// order, matching the live same-host capture model.
+fn interpret_field_value(type_name: &str, data: &[u8]) -> EtwAttributeValue {
+    match (type_name, data.len()) {
+        // Signed integers (HEXINT32/64 are surfaced by one_collect as s32/s64).
+        ("s8", 1) => EtwAttributeValue::Int(i64::from(data[0] as i8)),
+        ("s16" | "short", 2) => EtwAttributeValue::Int(i64::from(i16::from_ne_bytes(
+            data.try_into().expect("matched len==2"),
+        ))),
+        ("s32" | "int", 4) => EtwAttributeValue::Int(i64::from(i32::from_ne_bytes(
+            data.try_into().expect("matched len==4"),
+        ))),
+        ("s64" | "long", 8) => {
+            EtwAttributeValue::Int(i64::from_ne_bytes(data.try_into().expect("matched len==8")))
+        }
+
+        // Unsigned integers.  Note: one_collect maps TDH_INTYPE_BOOLEAN to
+        // "u8", so boolean fields arrive here as a 0/1 integer.
+        ("u8", 1) => EtwAttributeValue::Int(i64::from(data[0])),
+        ("u16" | "unsigned short", 2) => EtwAttributeValue::Int(i64::from(u16::from_ne_bytes(
+            data.try_into().expect("matched len==2"),
+        ))),
+        ("u32" | "unsigned int", 4) => EtwAttributeValue::Int(i64::from(u32::from_ne_bytes(
+            data.try_into().expect("matched len==4"),
+        ))),
+        ("u64" | "unsigned long", 8) => {
+            // u64 may overflow i64; saturate to i64::MAX for observability.
+            let v = u64::from_ne_bytes(data.try_into().expect("matched len==8"));
+            EtwAttributeValue::Int(v.min(i64::MAX as u64) as i64)
+        }
+
+        // Explicit boolean spellings, kept for forward-compatibility in case a
+        // future decoder emits a distinct "bool"/"boolean" type name.  With the
+        // current one_collect decoder these are unreachable (BOOLEAN → "u8").
+        ("bool" | "boolean", 1) => EtwAttributeValue::Bool(data[0] != 0),
+        ("bool" | "boolean", 4) => EtwAttributeValue::Bool(
+            u32::from_ne_bytes(data.try_into().expect("matched len==4")) != 0,
+        ),
+
+        // Pointer (4 bytes on 32-bit payloads, 8 on 64-bit).  Surface as an
+        // unsigned integer (saturating to i64::MAX) rather than opaque bytes.
+        ("pointer", 4) => EtwAttributeValue::Int(i64::from(u32::from_ne_bytes(
+            data.try_into().expect("matched len==4"),
+        ))),
+        ("pointer", 8) => {
+            let v = u64::from_ne_bytes(data.try_into().expect("matched len==8"));
+            EtwAttributeValue::Int(v.min(i64::MAX as u64) as i64)
+        }
+
+        // FILETIME: 8-byte count of 100-ns ticks since 1601-01-01 UTC.
+        // Convert to Unix-epoch nanoseconds so it is a usable timestamp
+        // instead of an opaque hex blob.
+        ("filetime", 8) => {
+            let ticks = i64::from_ne_bytes(data.try_into().expect("matched len==8"));
+            let unix_ns = ticks
+                .saturating_sub(FILETIME_TICKS_TO_UNIX_EPOCH)
+                .saturating_mul(100);
+            EtwAttributeValue::Int(unix_ns)
+        }
+
+        // Floating point
+        ("float", 4) => EtwAttributeValue::Double(f64::from(f32::from_ne_bytes(
+            data.try_into().expect("matched len==4"),
+        ))),
+        ("double", 8) => {
+            EtwAttributeValue::Double(f64::from_ne_bytes(data.try_into().expect("matched len==8")))
+        }
+
+        // ANSI/UTF-8 strings (null-terminated or not).
+        ("string", _) => {
+            let s = String::from_utf8_lossy(data);
+            EtwAttributeValue::Str(s.trim_end_matches('\0').to_owned())
+        }
+        // Counted ANSI/UTF-8 strings (TDH_INTYPE_COUNTEDANSISTRING, in_type 301).
+        // The u16 byte-count prefix has already been consumed by the framework's
+        // StaticLenPrefixArray — `data` contains only the UTF-8 content bytes.
+        ("counted_string", _) => {
+            let s = String::from_utf8_lossy(data);
+            EtwAttributeValue::Str(s.trim_end_matches('\0').to_owned())
+        }
+        // Counted UTF-16 strings (TDH_INTYPE_COUNTEDSTRING, in_type 300).
+        ("counted_wstring", _) if data.len() >= 2 => EtwAttributeValue::Str(decode_utf16le(data)),
+        ("counted_wstring", _) => EtwAttributeValue::Str(String::new()),
+        // UTF-16LE strings, trim null terminator.
+        ("wstring", _) if data.len() >= 2 => EtwAttributeValue::Str(decode_utf16le(data)),
+
+        // Opaque fixed/variable-length types that have no scalar
+        // representation: GUID, SYSTEMTIME, SID/BINARY, and the decoder's
+        // "unsupported" sentinel.  Preserved as raw bytes (hex downstream)
+        // rather than dropped.  Listed explicitly so the intent is documented
+        // and the catch-all below only ever sees truly unknown names.
+        ("guid" | "systemtime" | "binary" | "unsupported", _) => {
+            EtwAttributeValue::Bytes(data.to_vec())
+        }
+
+        // Empty payloads carry no value.
+        _ if data.is_empty() => EtwAttributeValue::Str(String::new()),
+        // Unknown type name or length mismatch: preserve the raw bytes so the
+        // encoder can surface them (as a hex string) rather than dropping them.
+        _ => EtwAttributeValue::Bytes(data.to_vec()),
+    }
+}
+
+/// Decode a UTF-16LE byte slice into a `String`, stopping at the first NUL
+/// code unit and substituting U+FFFD for invalid surrogate pairs.
+fn decode_utf16le(data: &[u8]) -> String {
+    let u16_iter = data
+        .chunks_exact(2)
+        .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+        .take_while(|&c| c != 0);
+    char::decode_utf16(u16_iter)
+        .map(|r| r.unwrap_or('\u{FFFD}'))
+        .collect()
+}
+
 /// Extract decoded fields from a TDH-decoded event.
 ///
 /// For each field in the event format, this function uses the format's
 /// `try_get_field_data_closure` to correctly resolve dynamic offsets
-/// (e.g. for null-terminated strings that shift subsequent field positions)
-/// and copies the field data into an owned [`DecodedField`].
+/// (e.g. for null-terminated strings that shift subsequent field positions),
+/// then interprets the field bytes into a typed [`EtwAttributeValue`] via
+/// [`interpret_field_value`].
 ///
 /// # Safety
 ///
@@ -334,10 +498,14 @@ fn extract_decoded_fields(
         }))
         .unwrap_or_default();
 
+        // Interpret the raw bytes into a typed value once, here on the
+        // decode thread, so the encoder never re-parses bytes or string-
+        // matches on a `type_name`.
+        let value = interpret_field_value(&field.type_name, &data);
+
         fields.push(DecodedField {
             name: field.name.clone(),
-            type_name: field.type_name.clone(),
-            data,
+            value,
         });
     }
 
@@ -902,6 +1070,163 @@ mod tests {
     fn parse_guid_invalid_length() {
         let result = parse_guid("22fb2cd6-0e7b");
         assert!(result.is_err());
+    }
+
+    // ── Field value interpretation ───────────────────
+
+    #[test]
+    fn interpret_signed_integers() {
+        assert_eq!(
+            interpret_field_value("s8", &[0xFF]),
+            EtwAttributeValue::Int(-1)
+        );
+        assert_eq!(
+            interpret_field_value("s16", &(-2i16).to_ne_bytes()),
+            EtwAttributeValue::Int(-2)
+        );
+        assert_eq!(
+            interpret_field_value("int", &(-3i32).to_ne_bytes()),
+            EtwAttributeValue::Int(-3)
+        );
+        assert_eq!(
+            interpret_field_value("long", &(-4i64).to_ne_bytes()),
+            EtwAttributeValue::Int(-4)
+        );
+    }
+
+    #[test]
+    fn interpret_unsigned_integers() {
+        assert_eq!(
+            interpret_field_value("u8", &[200]),
+            EtwAttributeValue::Int(200)
+        );
+        assert_eq!(
+            interpret_field_value("unsigned short", &40000u16.to_ne_bytes()),
+            EtwAttributeValue::Int(40000)
+        );
+        assert_eq!(
+            interpret_field_value("u32", &1234u32.to_ne_bytes()),
+            EtwAttributeValue::Int(1234)
+        );
+        // u64 above i64::MAX saturates to i64::MAX.
+        assert_eq!(
+            interpret_field_value("unsigned long", &u64::MAX.to_ne_bytes()),
+            EtwAttributeValue::Int(i64::MAX)
+        );
+    }
+
+    #[test]
+    fn interpret_boolean() {
+        assert_eq!(
+            interpret_field_value("boolean", &[0]),
+            EtwAttributeValue::Bool(false)
+        );
+        assert_eq!(
+            interpret_field_value("boolean", &[1]),
+            EtwAttributeValue::Bool(true)
+        );
+        // 4-byte Win32 BOOL form.
+        assert_eq!(
+            interpret_field_value("bool", &0u32.to_ne_bytes()),
+            EtwAttributeValue::Bool(false)
+        );
+        assert_eq!(
+            interpret_field_value("bool", &1u32.to_ne_bytes()),
+            EtwAttributeValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn interpret_floating_point() {
+        assert_eq!(
+            interpret_field_value("float", &1.5f32.to_ne_bytes()),
+            EtwAttributeValue::Double(1.5)
+        );
+        assert_eq!(
+            interpret_field_value("double", &2.5f64.to_ne_bytes()),
+            EtwAttributeValue::Double(2.5)
+        );
+    }
+
+    #[test]
+    fn interpret_strings() {
+        assert_eq!(
+            interpret_field_value("string", b"hello\0"),
+            EtwAttributeValue::Str("hello".to_string())
+        );
+        assert_eq!(
+            interpret_field_value("counted_string", b"world"),
+            EtwAttributeValue::Str("world".to_string())
+        );
+        // UTF-16LE "Hi" with NUL terminator.
+        let wide: Vec<u8> = "Hi\0".encode_utf16().flat_map(u16::to_ne_bytes).collect();
+        assert_eq!(
+            interpret_field_value("wstring", &wide),
+            EtwAttributeValue::Str("Hi".to_string())
+        );
+    }
+
+    #[test]
+    fn interpret_pointer() {
+        // 32-bit pointer.
+        assert_eq!(
+            interpret_field_value("pointer", &0x1234_5678u32.to_ne_bytes()),
+            EtwAttributeValue::Int(0x1234_5678)
+        );
+        // 64-bit pointer above i64::MAX saturates to i64::MAX.
+        assert_eq!(
+            interpret_field_value("pointer", &u64::MAX.to_ne_bytes()),
+            EtwAttributeValue::Int(i64::MAX)
+        );
+    }
+
+    #[test]
+    fn interpret_filetime_converts_to_unix_nanos() {
+        // The FILETIME epoch tick count itself maps to Unix epoch (0 ns).
+        assert_eq!(
+            interpret_field_value("filetime", &FILETIME_TICKS_TO_UNIX_EPOCH.to_ne_bytes()),
+            EtwAttributeValue::Int(0)
+        );
+        // One second (10,000,000 ticks) past the Unix epoch → 1e9 ns.
+        let one_sec_after = FILETIME_TICKS_TO_UNIX_EPOCH + 10_000_000;
+        assert_eq!(
+            interpret_field_value("filetime", &one_sec_after.to_ne_bytes()),
+            EtwAttributeValue::Int(1_000_000_000)
+        );
+    }
+
+    #[test]
+    fn interpret_opaque_types_fall_back_to_bytes() {
+        // GUID, systemtime, binary, and the decoder's "unsupported" sentinel
+        // are preserved as raw bytes (rendered as hex downstream) rather than
+        // silently dropped.
+        let data = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        for type_name in ["guid", "systemtime", "binary", "unsupported"] {
+            assert_eq!(
+                interpret_field_value(type_name, &data),
+                EtwAttributeValue::Bytes(data.clone()),
+                "type_name={type_name} should fall back to Bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn interpret_empty_payload_is_empty_string() {
+        assert_eq!(
+            interpret_field_value("u32", &[]),
+            EtwAttributeValue::Str(String::new())
+        );
+    }
+
+    #[test]
+    fn interpret_length_mismatch_falls_back_to_bytes() {
+        // A "u32" with the wrong length must not panic; it falls through to
+        // the opaque Bytes path instead of the fixed-width integer arm.
+        let data = vec![1, 2, 3];
+        assert_eq!(
+            interpret_field_value("u32", &data),
+            EtwAttributeValue::Bytes(data)
+        );
     }
 
     // ── Trace level mapping ──────────────────────────

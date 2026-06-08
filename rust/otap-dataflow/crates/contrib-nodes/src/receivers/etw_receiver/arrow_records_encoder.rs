@@ -16,7 +16,7 @@ use otap_df_pdata::encode::record::{
 use otap_df_pdata::otap::{Logs, OtapArrowRecords};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
-use super::session::{DecodedField, EtwEventData};
+use super::session::{EtwAttributeValue, EtwEventData};
 
 // ── ETW level → OTel severity number mapping ─────────────────────────────────
 
@@ -60,91 +60,23 @@ enum AttrValue<'a> {
     Str(Cow<'a, str>),
     Int(i64),
     Double(f64),
+    Bool(bool),
     Bytes(&'a [u8]),
 }
 
-/// Interpret a TDH-decoded field as a typed attribute value.
+/// Map a decoder-produced [`EtwAttributeValue`] to the encoder's borrowing
+/// [`AttrValue`].
 ///
-/// The `type_name` strings come from `one_collect`'s TDH decoder and follow
-/// the same naming conventions as the user_events tracefs decoder.
-fn decode_field_value(field: &DecodedField) -> AttrValue<'_> {
-    let data = field.data.as_slice();
-    match (field.type_name.as_str(), data.len()) {
-        // Signed integers
-        ("s8", 1) => AttrValue::Int(i64::from(data[0] as i8)),
-        ("s16" | "short", 2) => AttrValue::Int(i64::from(i16::from_ne_bytes(
-            data.try_into().expect("matched len==2"),
-        ))),
-        ("s32" | "int", 4) => AttrValue::Int(i64::from(i32::from_ne_bytes(
-            data.try_into().expect("matched len==4"),
-        ))),
-        ("s64" | "long", 8) => {
-            AttrValue::Int(i64::from_ne_bytes(data.try_into().expect("matched len==8")))
-        }
-
-        // Unsigned integers
-        ("u8", 1) => AttrValue::Int(i64::from(data[0])),
-        ("u16" | "unsigned short", 2) => AttrValue::Int(i64::from(u16::from_ne_bytes(
-            data.try_into().expect("matched len==2"),
-        ))),
-        ("u32" | "unsigned int", 4) => AttrValue::Int(i64::from(u32::from_ne_bytes(
-            data.try_into().expect("matched len==4"),
-        ))),
-        ("u64" | "unsigned long", 8) => {
-            // u64 may overflow i64; saturate to i64::MAX for observability.
-            let v = u64::from_ne_bytes(data.try_into().expect("matched len==8"));
-            AttrValue::Int(v.min(i64::MAX as u64) as i64)
-        }
-
-        // Floating point
-        ("float", 4) => AttrValue::Double(f64::from(f32::from_ne_bytes(
-            data.try_into().expect("matched len==4"),
-        ))),
-        ("double", 8) => {
-            AttrValue::Double(f64::from_ne_bytes(data.try_into().expect("matched len==8")))
-        }
-
-        // Strings (null-terminated or not)
-        ("string", _) => {
-            let s = String::from_utf8_lossy(data);
-            let trimmed = s.trim_end_matches('\0');
-            AttrValue::Str(Cow::Owned(trimmed.to_owned()))
-        }
-        // Counted ANSI/UTF-8 strings (TDH_INTYPE_COUNTEDANSISTRING, in_type 301).
-        // The u16 byte-count prefix has already been consumed by the framework's
-        // StaticLenPrefixArray — `data` contains only the UTF-8 content bytes.
-        ("counted_string", _) => {
-            let s = String::from_utf8_lossy(data);
-            let trimmed = s.trim_end_matches('\0');
-            AttrValue::Str(Cow::Owned(trimmed.to_owned()))
-        }
-        // Counted UTF-16 strings (TDH_INTYPE_COUNTEDSTRING, in_type 300).
-        ("counted_wstring", _) if data.len() >= 2 => {
-            let u16_iter = data
-                .chunks_exact(2)
-                .map(|c| u16::from_ne_bytes([c[0], c[1]]))
-                .take_while(|&c| c != 0);
-            let decoded: String = char::decode_utf16(u16_iter)
-                .map(|r| r.unwrap_or('\u{FFFD}'))
-                .collect();
-            AttrValue::Str(Cow::Owned(decoded))
-        }
-        ("counted_wstring", _) => AttrValue::Str(Cow::Borrowed("")),
-        ("wstring", _) if data.len() >= 2 => {
-            // UTF-16LE decoding, trim null terminator
-            let u16_iter = data
-                .chunks_exact(2)
-                .map(|c| u16::from_ne_bytes([c[0], c[1]]))
-                .take_while(|&c| c != 0);
-            let decoded: String = char::decode_utf16(u16_iter)
-                .map(|r| r.unwrap_or('\u{FFFD}'))
-                .collect();
-            AttrValue::Str(Cow::Owned(decoded))
-        }
-
-        // For unrecognized types, emit the raw bytes as a hex string
-        _ if data.is_empty() => AttrValue::Str(Cow::Borrowed("")),
-        _ => AttrValue::Bytes(data),
+/// All type interpretation already happened in the decoder
+/// (`session::interpret_field_value`), so this is an exhaustive, allocation-free
+/// match — adding a new [`EtwAttributeValue`] variant is a compile error here.
+fn decode_field_value(value: &EtwAttributeValue) -> AttrValue<'_> {
+    match value {
+        EtwAttributeValue::Str(s) => AttrValue::Str(Cow::Borrowed(s)),
+        EtwAttributeValue::Int(i) => AttrValue::Int(*i),
+        EtwAttributeValue::Double(d) => AttrValue::Double(*d),
+        EtwAttributeValue::Bool(b) => AttrValue::Bool(*b),
+        EtwAttributeValue::Bytes(b) => AttrValue::Bytes(b),
     }
 }
 
@@ -302,7 +234,7 @@ impl EtwArrowRecordsBuilder {
             if field.name.is_empty() {
                 continue;
             }
-            let value = decode_field_value(field);
+            let value = decode_field_value(&field.value);
             self.append_attr(&field.name, value);
         }
 
@@ -316,6 +248,7 @@ impl EtwArrowRecordsBuilder {
             AttrValue::Str(s) => self.log_attrs.any_values_builder.append_str(s.as_bytes()),
             AttrValue::Int(i) => self.log_attrs.any_values_builder.append_int(i),
             AttrValue::Double(d) => self.log_attrs.any_values_builder.append_double(d),
+            AttrValue::Bool(b) => self.log_attrs.any_values_builder.append_bool(b),
             AttrValue::Bytes(b) => {
                 // Encode raw bytes as hex string for observability
                 let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -380,7 +313,7 @@ impl EtwArrowRecordsBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::receivers::etw_receiver::session::{DecodedField, EtwEventData};
+    use crate::receivers::etw_receiver::session::{DecodedField, EtwAttributeValue, EtwEventData};
 
     fn test_event() -> EtwEventData {
         EtwEventData {
@@ -398,13 +331,11 @@ mod tests {
             decoded_fields: vec![
                 DecodedField {
                     name: "ProcessId".to_string(),
-                    type_name: "u32".to_string(),
-                    data: 1234u32.to_ne_bytes().to_vec(),
+                    value: EtwAttributeValue::Int(1234),
                 },
                 DecodedField {
                     name: "FileName".to_string(),
-                    type_name: "string".to_string(),
-                    data: b"test.exe\0".to_vec(),
+                    value: EtwAttributeValue::Str("test.exe".to_string()),
                 },
             ],
             user_data: vec![0u8; 16],
@@ -482,8 +413,7 @@ mod tests {
         let mut event = test_event();
         event.decoded_fields = vec![DecodedField {
             name: String::new(),
-            type_name: "u32".to_string(),
-            data: 42u32.to_ne_bytes().to_vec(),
+            value: EtwAttributeValue::Int(42),
         }];
         builder.append(&event);
 
