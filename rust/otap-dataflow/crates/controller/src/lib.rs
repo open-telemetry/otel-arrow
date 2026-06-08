@@ -50,6 +50,7 @@ use otap_df_config::engine::{
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use otap_df_config::node::{NodeKind, NodeUserConfig};
+use otap_df_config::pipeline::telemetry::AttributeValue;
 use otap_df_config::policy::MemoryLimiterMode;
 use otap_df_config::policy::{
     ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, TelemetryPolicy,
@@ -1167,9 +1168,32 @@ impl<
     {
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
-        let (engine, pipelines, observability_pipeline) = resolved_config.into_parts();
+        let (mut engine, pipelines, observability_pipeline) = resolved_config.into_parts();
         let num_pipelines = pipelines.len();
         let admin_settings = engine.http_admin.clone().unwrap_or_default();
+
+        // Create the shared telemetry registry first - it is used by both the
+        // observed state store and the internal telemetry system, and by the
+        // controller context below.
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry.clone());
+
+        // Inject auto-detected process/host resource attributes (host.id,
+        // container.id, service.instance.id) into the telemetry resource map so
+        // they surface on the OTel Resource / Prometheus target_info. Explicit
+        // config-provided keys take precedence over auto-detected values.
+        for (key, value) in controller_ctx.resource_attributes() {
+            let _ = engine
+                .telemetry
+                .resource
+                .entry(key)
+                .or_insert_with(|| AttributeValue::String(value));
+        }
+
+        // Snapshot the resolved resource map (config + auto-detected) for the admin
+        // endpoint's target_info, mirroring what the SDK Resource receives.
+        let admin_resource = engine.telemetry.resource.clone();
+
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let telemetry_config = &engine.telemetry;
@@ -1182,7 +1206,6 @@ impl<
 
         // Create the shared telemetry registry first - it will be used by both
         // the observed state store and the internal telemetry system.
-        let telemetry_registry = TelemetryRegistryHandle::new();
         let log_tap_handle = telemetry_config
             .logs
             .tap
@@ -1227,7 +1250,6 @@ impl<
 
         let metrics_dispatcher = telemetry_system.dispatcher();
         let metrics_reporter = telemetry_system.reporter();
-        let controller_ctx = ControllerContext::new(telemetry_system.registry());
         let memory_pressure_state = controller_ctx.memory_pressure_state();
         let (memory_pressure_tx, _memory_pressure_rx) =
             tokio::sync::watch::channel(MemoryPressureChanged::initial());
@@ -1556,7 +1578,7 @@ impl<
                     telemetry_registry,
                     memory_pressure_state,
                     log_tap_handle,
-                    engine_config.engine.telemetry.resource.clone(),
+                    admin_resource,
                     cancellation_token,
                 )
             },
