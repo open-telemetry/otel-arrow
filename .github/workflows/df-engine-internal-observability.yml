@@ -41,6 +41,7 @@ concurrency:
 jobs:
   weaver-live-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -70,71 +71,57 @@ jobs:
       - name: Build df_engine
         run: cargo build --release --bin df_engine
         working-directory: ./rust/otap-dataflow
-      # NOTE: The manual start/wait/stop dance for the weaver listener below
-      # can be replaced with the `weaver-live-check-{start,stop}` composite
-      # actions once https://github.com/open-telemetry/weaver/pull/1448
-      # is released, which should cut this job roughly in half.
-      - name: Run df_engine against weaver live-check
-        timeout-minutes: 5
+      # Weaver listener lifecycle (start, readiness probe, /stop, report
+      # capture, artifact upload) is owned by the upstream composite
+      # actions below. Pinned to the weaver#1448 merge commit on
+      # weaver `main`; no released weaver tag contains these actions
+      # yet (latest = v0.23.0). The actions are pure bash wrappers and
+      # only use weaver flags that v0.23.0 already supports, so the
+      # WEAVER_VERSION binary above is unaffected.
+      - name: Start weaver live-check listener
+        id: weaver-start
+        uses: open-telemetry/weaver/.github/actions/weaver-live-check-start@3e9b722324783f871d2828f62c8cf706e046c83a
+        with:
+          registry: rust/otap-dataflow/semconv
+          otlp-grpc-port: '4317'
+          admin-port: '4320'
+          # Generous safety net: the listener uses `--output http` so the
+          # report is only retrievable via `/stop`. Make sure weaver does
+          # not self-exit on inactivity before df_engine startup, triggers,
+          # and flush complete (~30s readiness + triggers + 8s flush).
+          inactivity-timeout: '300'
+          # Pin the state dir explicitly so failure-path diagnostics
+          # (weaver.log bundling) and the stop action both work even if
+          # the start action fails before exporting
+          # `WEAVER_LIVE_CHECK_STATE_DIR` via $GITHUB_ENV.
+          state-dir: ${{ runner.temp }}/weaver-live-check-df-engine
+      - name: Start df_engine
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           mkdir -p live-check-report
-
-          echo "Weaver version:       ${WEAVER_VERSION}"
-          weaver --version || true
-
-          echo "::group::Start weaver live-check listener"
-          weaver registry live-check \
-            --registry rust/otap-dataflow/semconv \
-            --input-source otlp \
-            --otlp-grpc-port 4317 \
-            --admin-port 4320 \
-            --inactivity-timeout 60 \
-            --format json \
-            --output live-check-report \
-            > live-check-report/weaver.log 2>&1 &
-          WEAVER_PID=$!
-          echo "weaver pid: $WEAVER_PID"
-          echo "::endgroup::"
-
-          # Wait for the OTLP listener to come up; fail fast if it never does.
-          OTLP_UP=0
-          for i in $(seq 1 30); do
-            if (echo > /dev/tcp/127.0.0.1/4317) >/dev/null 2>&1; then
-              OTLP_UP=1
-              break
-            fi
-            sleep 1
-          done
-          if [ "$OTLP_UP" -ne 1 ]; then
-            echo "::error::weaver OTLP listener (127.0.0.1:4317) did not come up within 30s"
-            tail -n 200 live-check-report/weaver.log || true
-            kill -KILL "$WEAVER_PID" 2>/dev/null || true
-            exit 1
-          fi
-
-          echo "::group::Start df_engine"
           ./rust/otap-dataflow/target/release/df_engine \
             --config rust/otap-dataflow/configs/internal-events-otlp.yaml \
             --num-cores 1 \
             > live-check-report/df_engine.log 2>&1 &
           ENGINE_PID=$!
           echo "df_engine pid: $ENGINE_PID"
-          echo "::endgroup::"
+          echo "ENGINE_PID=$ENGINE_PID" >> "$GITHUB_ENV"
 
           # Wait for the engine to report ready via its admin endpoint.
           # `/api/v1/readyz` signals all pipelines (including the TLS-enabled
-          # OTLP receiver below) are up and serving.
+          # OTLP receiver in the engine config) are up and serving.
           if ! curl --retry 30 --retry-delay 1 --retry-all-errors --max-time 2 -fsS \
               http://127.0.0.1:14319/api/v1/readyz > /dev/null; then
             echo "::error::df_engine admin /readyz did not become healthy within 30s"
             tail -n 200 live-check-report/df_engine.log || true
             kill -KILL "$ENGINE_PID" 2>/dev/null || true
-            kill -KILL "$WEAVER_PID" 2>/dev/null || true
             exit 1
           fi
-
+      - name: Run active triggers
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
           # Run every script in the trigger directory. These exist solely
           # to fire events that need active driving (e.g. network calls);
           # passive events fire from the engine config on its own and need
@@ -142,56 +129,55 @@ jobs:
           # `semconv/groups/event.<name>.yaml`; if it cannot be exercised
           # purely by the engine config, drop a script in
           # `semconv/triggers/` that drives it.
-          echo "::group::Run active triggers"
           shopt -s nullglob
           for trigger in rust/otap-dataflow/semconv/triggers/*.sh; do
             echo "--- $(basename "$trigger") ---"
             bash "$trigger"
           done
-          echo "::endgroup::"
-          shopt -s nullglob
-          for trigger in rust/otap-dataflow/semconv/triggers/*.sh; do
-            echo "--- $(basename "$trigger") ---"
-            bash "$trigger"
-          done
-          echo "::endgroup::"
-
+      - name: Flush internal telemetry to weaver
+        run: |
           # Allow the internal_telemetry receiver to drain and the OTLP
-          # exporter to flush to weaver.
+          # exporter to flush to weaver before we stop the listener.
           sleep 8
-
-          echo "::group::Stop services"
-          # df_engine does not implement SIGINT shutdown today; hard-kill it
-          # and do NOT `wait` on it (would block indefinitely).
-          kill -KILL "$ENGINE_PID" 2>/dev/null || true
-          # Tell weaver to finalize the report.
-          curl -fsS -X POST "http://127.0.0.1:4320/stop" || true
-          # Weaver exits non-zero when any violations are found in the
-          # report. That is currently expected because the registry is
-          # not yet exhaustive (attributes emitted by the engine that
-          # aren't declared show up as violations); the substantive
-          # validation happens in the dedicated `Assert` step below.
-          # Capture the exit code without letting `bash -e` abort the script.
-          WEAVER_EXIT=0
-          wait "$WEAVER_PID" || WEAVER_EXIT=$?
-          echo "weaver exit code: $WEAVER_EXIT"
-          echo "::endgroup::"
-
-          echo "::group::Weaver log (tail)"
-          tail -n 200 live-check-report/weaver.log || true
-          echo "::endgroup::"
-
+      - name: Stop df_engine
+        if: always()
+        run: |
+          set -euo pipefail
+          # df_engine does not implement SIGINT shutdown today; hard-kill
+          # it and do NOT `wait` on it (would block indefinitely).
+          if [ -n "${ENGINE_PID:-}" ]; then
+            kill -KILL "$ENGINE_PID" 2>/dev/null || true
+          fi
           echo "::group::df_engine log (tail)"
-          tail -n 100 live-check-report/df_engine.log || true
+          tail -n 100 live-check-report/df_engine.log 2>/dev/null || true
           echo "::endgroup::"
+      - name: Stop weaver live-check and collect report
+        id: weaver-stop
+        if: always()
+        uses: open-telemetry/weaver/.github/actions/weaver-live-check-stop@3e9b722324783f871d2828f62c8cf706e046c83a
+        with:
+          # Match the explicit state dir from the start action so this
+          # works even if start failed before exporting it via env.
+          state-dir: ${{ runner.temp }}/weaver-live-check-df-engine
+          # Tolerate weaver's global findings exit code today: the
+          # registry is not yet exhaustive, so attribute-level
+          # violations from undeclared attributes are expected. The
+          # substantive gate is the registry-driven event coverage
+          # check in the next step.
+          fail-on: 'none'
+          # Keep using our own bundled upload (which also includes the
+          # df_engine and weaver logs) below.
+          upload-report: 'false'
       - name: Assert every registered event was validated
         if: always()
         working-directory: ${{ github.workspace }}
+        env:
+          REPORT_PATH: ${{ steps.weaver-stop.outputs['report-path'] }}
         run: |
           set -euo pipefail
-          REPORT=live-check-report/live_check.json
-          if [ ! -s "$REPORT" ]; then
-            echo "::error::No live-check report found at $REPORT"
+          REPORT="${REPORT_PATH:-}"
+          if [ -z "$REPORT" ] || [ ! -s "$REPORT" ]; then
+            echo "::error::No live-check report found (path='$REPORT')"
             exit 1
           fi
 
@@ -250,6 +236,24 @@ jobs:
             fi
           done
           exit "$fail"
+      - name: Bundle live-check artifacts
+        if: always()
+        env:
+          REPORT_PATH: ${{ steps.weaver-stop.outputs['report-path'] }}
+          WEAVER_STATE_DIR: ${{ runner.temp }}/weaver-live-check-df-engine
+        run: |
+          set -euo pipefail
+          mkdir -p live-check-report
+          if [ -n "${REPORT_PATH:-}" ] && [ -s "$REPORT_PATH" ]; then
+            cp "$REPORT_PATH" live-check-report/live_check.json
+          fi
+          # weaver.log lives in the start action's state dir. Use the
+          # explicit path we passed in (works even on a start failure
+          # where $WEAVER_LIVE_CHECK_STATE_DIR was never exported).
+          if [ -s "$WEAVER_STATE_DIR/weaver.log" ]; then
+            cp "$WEAVER_STATE_DIR/weaver.log" live-check-report/weaver.log
+          fi
+          ls -la live-check-report || true
       - name: Upload live-check report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
