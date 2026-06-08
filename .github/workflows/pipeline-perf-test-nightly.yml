@@ -44,7 +44,9 @@ jobs:
           docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
           cd ../..
 
-      - name: Build otelarrowcol
+      - name: Build otelarrowcol image
+        # Builds the thin Dockerfile, which pulls the upstream OpenTelemetry
+        # Collector Contrib distribution (includes the otelarrow components).
         run: |
           docker build . -t otelarrowcol
 

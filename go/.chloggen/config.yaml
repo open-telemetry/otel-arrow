@@ -23,8 +23,8 @@ default_change_logs:
 # not literal directory paths.
 components:
   - all
+  - collector/cmd/otelarrowcol
   - pkg/arrow
   - pkg/otel/arrow
   - pkg/otel/otlp
-  - collector/cmd/otelarrowcol
   - dependencies
