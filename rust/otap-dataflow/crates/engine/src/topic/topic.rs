@@ -160,6 +160,16 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
         }
     }
 
+    /// Publish an envelope: reserve the next sequence, then write its slot.
+    ///
+    /// This is the default (`First`-mode) path and is equivalent to calling
+    /// [`FastBroadcastRing::reserve_seq`] immediately followed by
+    /// [`FastBroadcastRing::commit_slot`]. The two are split so `all`-mode
+    /// broadcast publish can reserve the sequence under the subscriber-registry
+    /// lock (to snapshot the exact quorum membership for that sequence) and then
+    /// perform the heavier slot write plus waker fan-out after releasing the
+    /// lock. See `reserve_seq`/`commit_slot` for the reserved-but-uncommitted
+    /// window, which is read-safe (readers see `NotReady` and re-park).
     pub(crate) fn publish(&self, envelope: Envelope<T>) {
         let seq = self.reserve_seq();
         self.commit_slot(seq, envelope);
@@ -259,11 +269,15 @@ impl<T: Send + Sync + 'static> TopicInner<T> {
             TopicOptions::BalancedOnly { capacity } => {
                 TopicInner::BalancedOnly(BalancedOnlyTopic::new(name, capacity))
             }
+            // TODO(#2252 PR2): honor `ack_mode` here so broadcast topics support
+            // `all` (quorum) resolution. Ignored in PR1 (always behaves as `first`).
             TopicOptions::BroadcastOnly {
                 capacity,
                 on_lag,
                 ack_mode: _,
             } => TopicInner::BroadcastOnly(BroadcastOnlyTopic::new(name, capacity, on_lag)),
+            // `ack_mode` is intentionally ignored for Mixed: PR3 rejects `all` on
+            // any non-broadcast-only topic, so Mixed is always `first`.
             TopicOptions::Mixed {
                 balanced_capacity,
                 broadcast_capacity,
@@ -579,6 +593,9 @@ pub(crate) struct BroadcastOnlyTopic<T: Send + Sync + 'static> {
     broadcast_on_lag: TopicBroadcastOnLagPolicy,
     outcomes: TrackedPublishTracker,
     closed: AtomicBool,
+    // TODO(#2252 PR2): add a broadcast subscriber registry, used only in `all`
+    // mode, to track which subscribers must ack each message. `first` mode never
+    // touches it.
 }
 
 impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
@@ -626,6 +643,8 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
             return Err(TopicClosed);
         }
 
+        // TODO(#2252 PR2): in `all` mode, record the set of subscribers that must
+        // ack this message before resolving upstream. `first` mode is unchanged.
         let id = self.next_message_id();
         let receipt = self.outcomes.register(id, timeout, permit);
         self.broadcast_ring.publish(Envelope {
@@ -652,6 +671,8 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
     }
 
     fn subscribe_broadcast(&self, _opts: SubscriberOptions) -> BroadcastSub<T> {
+        // TODO(#2252 PR2): in `all` mode, register this subscriber so it can be
+        // included in the must-ack set of future messages. `first` mode is unchanged.
         let start_seq = self.broadcast_ring.current_seq() + 1;
         BroadcastSub {
             ring: Arc::clone(&self.broadcast_ring),
@@ -1016,6 +1037,9 @@ pub(crate) struct BroadcastSub<T: Send + Sync + 'static> {
     cursor: Arc<Mutex<BroadcastCursor>>,
     on_lag: TopicBroadcastOnLagPolicy,
     ack_state: AckState,
+    // TODO(#2252 PR2): in `all` mode, track this subscriber's identity so its
+    // acks count toward the quorum and its disconnect/drop nacks any messages it
+    // still owes. `first` mode is unchanged.
 }
 
 impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BroadcastSub<T> {
@@ -1115,6 +1139,8 @@ impl<T: Send + Sync + 'static> BroadcastSub<T> {
                 cursor.spun = false;
                 if self.on_lag == TopicBroadcastOnLagPolicy::Disconnect {
                     cursor.disconnected_on_lag = true;
+                    // TODO(#2252 PR2): in `all` mode, a lag-disconnect here must
+                    // nack any messages this subscriber still owes an ack for.
                 }
                 Some(Ok(RecvDelivery::Lagged { missed }))
             }

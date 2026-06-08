@@ -294,6 +294,8 @@ pub struct TopicBroadcastPolicies {
     /// Behavior when a broadcast subscriber falls behind the retained ring window.
     #[serde(default)]
     pub on_lag: TopicBroadcastOnLagPolicy,
+    // TODO(#2252 PR3): add a user-facing `ack_mode` field here and reject the
+    // config combinations that aren't safe (e.g. `all` with a lossy lag policy).
 }
 
 impl Default for TopicBroadcastPolicies {

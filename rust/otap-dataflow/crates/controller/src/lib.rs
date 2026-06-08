@@ -459,6 +459,8 @@ impl<
         let balanced_capacity = spec.policies.balanced.queue_capacity.max(1);
         let broadcast_capacity = spec.policies.broadcast.queue_capacity.max(1);
         let broadcast_on_lag = spec.policies.broadcast.on_lag;
+        // TODO(#2252 PR3): pass the configured `ack_mode` through instead of
+        // hardcoding `first`, and reject `all` on non-broadcast-only topics.
         match inferred_mode {
             InferredTopicMode::Mixed => TopicOptions::Mixed {
                 balanced_capacity,
