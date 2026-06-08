@@ -246,9 +246,9 @@ impl PipelinePlanner {
                         if branch.get_condition().is_some() {
                             // forking with filter not yet supported. This should be composed by
                             // caller into a fork containing either a conditional data or a filter
-                            return Err(Error::NotYetSupportedError { 
+                            return Err(Error::NotYetSupportedError {
                                 message:  "copying data branch expression with condition not yet supported".into()
-                            })
+                            });
                         }
 
                         let pipeline_stages = self.plan_data_exprs(
@@ -297,11 +297,11 @@ impl PipelinePlanner {
                             None => {
                                 let is_final_branch = i == branch_expr.get_branches().len() - 1;
                                 if !is_final_branch {
-                                    return Err(Error::InvalidPipelineError { 
+                                    return Err(Error::InvalidPipelineError {
                                         cause: "default branch found in non consuming Branch data expression 
                                             found in invalid location".into(), 
                                         query_location: Some(branch_expr.get_query_location().clone())
-                                    })
+                                    });
                                 } else {
                                     default_branch = Some(pipeline_stages)
                                 }
