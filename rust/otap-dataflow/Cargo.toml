@@ -153,7 +153,7 @@ prometheus = "0.14.0"
 prost = "0.14"
 prost-types = "0.14"
 quote = "1.0"
-rand = "0.10.0"
+rand = "0.10.1"
 rcgen = "0.14"
 regex = "1.12"
 roaring = "0.11.2"
@@ -229,7 +229,7 @@ flate2 = "1.1.5"
 # TLS remains enabled through rustls-no-provider, with the provider installed at startup via crypto-* features.
 reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no-provider", "json", "query", "http2", "stream", "charset", "system-proxy"] }
 
-time = "0.3.44"
+time = "0.3.47"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"

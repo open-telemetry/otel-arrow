@@ -355,17 +355,16 @@ the ability to run them via simple `go install` and `go run` commands.  The
 `go.work` file names all the module definitions inside this repository and
 allows them all to be used at once during local development.
 
-### Upgrading OpenTelemetry Collector dependencies
+### Upgrading the collector used for testing
 
-When a new version of the OpenTelemetry collector, is available, the easiest way
-to upgrade this repository is:
-
-1. Update the `distribution::otelcol_version` field in `otelarrowcol-build.yaml`
-2. Modify any components from the core or contrib repositories to use the
-   corresponding versions (e.g., pprofextension's module version should match
-   the new collector release).
-3. Regenerate `otelarrowcol` via `make genotelarrowcol`
-4. Run `go work sync` to update the other modules with fresh dependencies.
+The OTAP components are tested using the upstream OpenTelemetry Collector
+Contrib distribution rather than a collector generated in this repository. The
+distribution version is pinned in the top-level `Dockerfile`
+(`FROM otel/opentelemetry-collector-contrib:<tag>@sha256:<digest>`) and is kept
+up to date automatically by Renovate (see
+[`.github/renovate.json5`](./.github/renovate.json5), which enables
+`docker:pinDigests`). To upgrade manually, edit the tag and digest on that
+`FROM` line. See [collector/BUILDING.md](./collector/BUILDING.md) for details.
 
 ## Project Team
 

@@ -199,7 +199,7 @@ rename_operator_call = {
 }
 
 remove_map_keys_operator_call = {
-    ("exclude" | "project-away") ~ (attribute_selection_expression | index_expression) ~ ("," ~ (attribute_selection_expression | index_expression))*
+    ("remove" | "project-away") ~ (attribute_selection_expression | index_expression) ~ ("," ~ (attribute_selection_expression | index_expression))*
 }
 
 set_operator_call = {

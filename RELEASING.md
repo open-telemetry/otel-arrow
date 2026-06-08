@@ -93,9 +93,6 @@ Before making actual changes, run the workflow in dry-run mode:
      entries.
    - Bump the Rust workspace + root package versions in
      `rust/otap-dataflow/Cargo.toml`.
-   - Update the collector versions in
-     `collector/otelarrowcol-build.yaml` and
-     `collector/cmd/otelarrowcol/main.go`.
    - Create a release branch (`otelbot/release-vX.Y.Z`) and open a pull
      request.
 
@@ -106,7 +103,6 @@ Before making actual changes, run the workflow in dry-run mode:
    - Both `go/CHANGELOG.md` and `rust/otap-dataflow/CHANGELOG.md` render
      the expected entries.
    - `rust/otap-dataflow/Cargo.toml` reflects the new version.
-   - Collector version files are updated.
 3. Ensure all CI checks pass.
 4. Merge the pull request.
 
@@ -142,7 +138,6 @@ The following git tags are created:
 - `vX.Y.Z` - Main release tag.
 - `go/vX.Y.Z` - Go module tag (covers
   `github.com/open-telemetry/otel-arrow/go`).
-- `collector/cmd/otelarrowcol/vX.Y.Z` - Collector module tag.
 - `rust/otap-dataflow/vX.Y.Z` - Rust workspace tag.
 
 ## Supported Components
@@ -152,7 +147,6 @@ The release process handles:
 **Go Modules:**
 
 - `github.com/open-telemetry/otel-arrow/go`
-- `github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol`
 
 **Rust Workspace:**
 
@@ -224,27 +218,20 @@ release:
      rust/otap-dataflow/Cargo.toml
    ```
 
-3. Update the collector version files
-   (`collector/otelarrowcol-build.yaml` and
-   `collector/cmd/otelarrowcol/main.go`).
+3. Commit the changes, open and merge a PR.
 
-4. Commit the changes, open and merge a PR.
-
-5. Create and push the release tags:
+4. Create and push the release tags:
 
    ```bash
    git tag -a vX.Y.Z -m "Release vX.Y.Z"
    git tag -a go/vX.Y.Z -m "Release go/vX.Y.Z"
-   git tag -a collector/cmd/otelarrowcol/vX.Y.Z \
-     -m "Release collector/cmd/otelarrowcol/vX.Y.Z"
    git tag -a rust/otap-dataflow/vX.Y.Z \
      -m "Release rust/otap-dataflow/vX.Y.Z"
    git push origin vX.Y.Z go/vX.Y.Z \
-     collector/cmd/otelarrowcol/vX.Y.Z \
      rust/otap-dataflow/vX.Y.Z
    ```
 
-6. Create a GitHub release manually.
+5. Create a GitHub release manually.
 
 ## Version Strategy
 

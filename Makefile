@@ -11,9 +11,6 @@ MODULES := $(shell find . -name go.mod)
 
 GODIRS := $(foreach d,$(MODULES),$(shell dirname $d))
 GOCMD?= go
-BUILD_INFO=-ldflags "-X $(BUILD_INFO_IMPORT_PATH).Version=$(VERSION)"
-VERSION=$(shell git describe --always --match "v[0-9]*" HEAD)
-BUILD_INFO_IMPORT_PATH=go.opentelemetry.io/collector/internal/version
 
 .PHONY: all gotidy test build fmt
 
@@ -34,37 +31,28 @@ gotidy:
 doc:
 	$(GOCMD) run go/tools/data_model_gen/main.go
 
+# Image name for the OTAP-enabled collector used by the pipeline perf tests and
+# as the source of the collector binary for the Rust validation test harness.
+# The image is built from the thin Dockerfile, which pins the upstream
+# OpenTelemetry Collector Contrib distribution (kept current by Renovate).
+OTELARROWCOL_IMAGE ?= otelarrowcol
 
-
-# Install opentelemetry-collector builder at a specific version which should (almost always) match component references in collector/otelarrowcol-build.yaml
-# In addition to installing the builder, this command attempts to synchronize this version in both otelarrowcol-build.yaml and Dockerfile
-# In the event that Collector and Collector-Contrib references need to be different versions, manual edits may be required after running this command
-BUILDER_VERSION = v0.149.0
-BUILDER = builder
-.PHONY: $(BUILDER)
-builder:
-	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@$(BUILDER_VERSION)
-	@echo "Updating otelarrowcol-build.yaml gomods to version $(BUILDER_VERSION)..."
-	sed -i 's|go.opentelemetry.io/collector/\([^[:space:]]*\) v[0-9][0-9.]*|go.opentelemetry.io/collector/\1 $(BUILDER_VERSION)|g' collector/otelarrowcol-build.yaml
-	sed -i 's|github.com/open-telemetry/opentelemetry-collector-contrib/\([^[:space:]]*\) v[0-9][0-9.]*|github.com/open-telemetry/opentelemetry-collector-contrib/\1 $(BUILDER_VERSION)|g' collector/otelarrowcol-build.yaml
-	@echo "Updating Dockerfile to use builder@$(BUILDER_VERSION)..."
-	sed -i 's|go.opentelemetry.io/collector/cmd/builder@v[0-9.]*|go.opentelemetry.io/collector/cmd/builder@$(BUILDER_VERSION)|g' Dockerfile
-
-.PHONY: genotelarrowcol
-genotelarrowcol: builder
-	rm -f collector/cmd/otelarrowcol/*
-	GOWORK="off" $(BUILDER) --skip-compilation --config collector/otelarrowcol-build.yaml
-	$(MAKE) gotidy
-
-.PHONY: otelarrowcol
-otelarrowcol:
-	(cd collector/cmd/otelarrowcol && \
-		GO111MODULE=on CGO_ENABLED=0 \
-		$(GOCMD) build -trimpath -o ../../../bin/otelarrowcol $(BUILD_INFO) .)
-
+# Build the collector image from the thin Dockerfile.
 .PHONY: docker-otelarrowcol
 docker-otelarrowcol:
-	docker build . -t otelarrowcol
+	docker build . -t $(OTELARROWCOL_IMAGE)
+
+# Extract the collector binary from the image into bin/otelarrowcol, where the
+# Rust validation test harness expects it (see
+# rust/otap-dataflow/crates/pdata/src/validation/collector.rs). The binary is a
+# static (CGO-disabled) Go executable, so it runs directly on the CI host.
+.PHONY: otelarrowcol
+otelarrowcol: docker-otelarrowcol
+	mkdir -p bin
+	cid=$$(docker create $(OTELARROWCOL_IMAGE)) || exit 1; \
+	docker cp $$cid:/otelcol-contrib bin/otelarrowcol; status=$$?; \
+	docker rm -f $$cid >/dev/null 2>&1 || true; \
+	exit $$status
 
 # Install chloggen at a pinned version. Used by both contributors (via
 # `make chlog-new-{go,rust}`) and the release workflows (via
