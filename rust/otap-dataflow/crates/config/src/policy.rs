@@ -287,6 +287,15 @@ pub struct FlowMetricConfig {
     /// Metrics to enable. Omitted means all metrics are enabled.
     #[serde(default)]
     pub metrics: Option<Vec<FlowMetric>>,
+    /// Optional per-flow purpose differentiator, emitted as the `flow.purpose`
+    /// scope attribute on every metric this flow produces. Lets OTel View
+    /// selectors target distinct flavors of processor work (e.g. `filter`
+    /// flows that keep/drop records vs `transform` flows that enrich and
+    /// reshape them) even though all flows share the single `flow`
+    /// instrumentation scope. Omitted means no `flow.purpose` differentiation
+    /// (backward compatible).
+    #[serde(default)]
+    pub purpose: Option<String>,
 }
 
 impl FlowMetricConfig {
@@ -892,6 +901,29 @@ mod tests {
     }
 
     #[test]
+    fn flow_metrics_purpose_defaults_to_none() {
+        let yaml = r#"
+            flow_metrics:
+              - id: flow1
+                bounds: { start_node: a, end_node: b }
+        "#;
+        let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
+        assert_eq!(policy.flow_metrics[0].purpose, None);
+    }
+
+    #[test]
+    fn flow_metrics_purpose_is_parsed() {
+        let yaml = r#"
+            flow_metrics:
+              - id: flow1
+                bounds: { start_node: a, end_node: b }
+                purpose: receiver
+        "#;
+        let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
+        assert_eq!(policy.flow_metrics[0].purpose.as_deref(), Some("receiver"));
+    }
+
+    #[test]
     fn flow_metrics_rejects_empty_metrics() {
         let policies = Policies {
             telemetry: Some(super::TelemetryPolicy {
@@ -902,6 +934,7 @@ mod tests {
                         end_node: "b".to_string(),
                     },
                     metrics: Some(vec![]),
+                    purpose: None,
                 }],
                 ..super::TelemetryPolicy::default()
             }),
@@ -929,6 +962,7 @@ mod tests {
                         super::FlowMetric::ComputeDuration,
                         super::FlowMetric::ComputeDuration,
                     ]),
+                    purpose: None,
                 }],
                 ..super::TelemetryPolicy::default()
             }),
