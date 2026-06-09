@@ -16,7 +16,7 @@ correlates stream responses back to upstream ACK/NACK handling.
 
 ## Getting Started
 
-Point the exporter at an OTAP-compatible gRPC receiver:
+Point the exporter at an OTAP-compatible gRPC endpoint:
 
 ```yaml
 type: exporter:otap
