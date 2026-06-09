@@ -516,6 +516,13 @@ mod imp {
             inspect_journal_path(&root_path.join(relative), 0, &mut summary);
         }
 
+        check_journal_access_summary(root_path, summary)
+    }
+
+    fn check_journal_access_summary(
+        root_path: &Path,
+        summary: JournalAccessSummary,
+    ) -> Result<(), JournalError> {
         if (summary.journal_files > 0 || summary.unreadable_directories > 0)
             && summary.readable_files == 0
             && (summary.unreadable_files > 0 || summary.unreadable_directories > 0)
@@ -530,7 +537,7 @@ mod imp {
                     .unwrap_or_else(|| "permission denied".to_owned()),
             });
         }
-        if root_path != Path::new("/") && summary.visible_directories == 0 {
+        if summary.visible_directories == 0 {
             return Err(JournalError::JournalDirectoriesMissing {
                 root_path: root_path.to_path_buf(),
             });
@@ -649,6 +656,17 @@ mod imp {
             std::fs::set_permissions(&log_dir, std::fs::Permissions::from_mode(0o755))
                 .expect("restore log dir permissions");
             assert!(matches!(result, Err(JournalError::JournalAccess { .. })));
+        }
+
+        #[test]
+        fn preflight_reports_missing_directories_for_default_root() {
+            let result =
+                check_journal_access_summary(Path::new("/"), JournalAccessSummary::default());
+
+            assert!(matches!(
+                result,
+                Err(JournalError::JournalDirectoriesMissing { .. })
+            ));
         }
     }
 }
