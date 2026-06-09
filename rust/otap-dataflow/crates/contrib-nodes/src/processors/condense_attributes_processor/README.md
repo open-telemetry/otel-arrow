@@ -1,6 +1,10 @@
 # Condense Attributes Processor
 
-**Status:** WIP
+## Metadata
+
+- Type: `processor:condense_attributes` (`urn:otel:processor:condense_attributes`)
+- Feature gate: `condense-attributes-processor`
+- Stability: WIP
 
 ## Overview
 
@@ -21,6 +25,17 @@ It is possible that this implementation could be folded into
   split or parse the content at later stages as needed without a dependency on
   ordering.
 
+## Getting Started
+
+Condense all log attributes into one destination attribute:
+
+```yaml
+type: processor:condense_attributes
+config:
+  destination_key: condensed
+  delimiter: ";"
+```
+
 ## Feature Flag
 
 This processor requires the `condense-attributes-processor` feature flag to be
@@ -32,14 +47,25 @@ cargo build --features condense-attributes-processor
 
 ## Configuration
 
-The processor accepts the following configuration options:
+```yaml
+type: processor:condense_attributes
+config:
+  # Attribute that receives the condensed key=value string (required).
+  destination_key: condensed
 
-| Field | Type | Required | Description |
-| ----- | ---- | -------- | ----------- |
-| `destination_key` | string | **Yes** | The name of the attribute that will contain the condensed string |
-| `delimiter` | string | **Yes** | The delimiter used to separate key=value pairs in the condensed string (must be a single character) |
-| `source_keys` | array of strings | No | If provided, only attributes with these keys will be condensed. Other attributes are preserved as-is. |
-| `exclude_keys` | array of strings | No | If provided, attributes with these keys will NOT be condensed. They are preserved as-is while all others are condensed. |
+  # Separator between key=value pairs (required, must be one character).
+  delimiter: ";"
+
+  # Optional allow-list. When set, only these attributes are condensed.
+  source_keys:
+    - attr1
+    - attr2
+
+  # Optional deny-list. When set, every attribute except these is condensed.
+  # Mutually exclusive with source_keys.
+  # exclude_keys:
+  #   - attr1
+```
 
 **Important Notes:**
 
@@ -59,11 +85,11 @@ condensed into a single string.
 
 **Example Configuration:**
 
-```json
-{
-  "destination_key": "condensed",
-  "delimiter": ";"
-}
+```yaml
+type: processor:condense_attributes
+config:
+  destination_key: condensed
+  delimiter: ";"
 ```
 
 **Input Attributes:**
@@ -83,12 +109,12 @@ other attributes are preserved in their original form.
 
 **Example Configuration:**
 
-```json
-{
-  "destination_key": "condensed",
-  "delimiter": ";",
-  "source_keys": ["attr1", "attr2"]
-}
+```yaml
+type: processor:condense_attributes
+config:
+  destination_key: condensed
+  delimiter: ";"
+  source_keys: ["attr1", "attr2"]
 ```
 
 **Input Attributes:**
@@ -109,12 +135,12 @@ condensed. The excluded attributes are preserved in their original form.
 
 **Example Configuration:**
 
-```json
-{
-  "destination_key": "condensed",
-  "delimiter": ";",
-  "exclude_keys": ["attr1"]
-}
+```yaml
+type: processor:condense_attributes
+config:
+  destination_key: condensed
+  delimiter: ";"
+  exclude_keys: ["attr1"]
 ```
 
 **Input Attributes:**
