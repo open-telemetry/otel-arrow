@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: "Add per-subscription pending limits to the Linux user_events receiver."
+note: "Add grouped session and per-subscription pending limits to the Linux user_events receiver."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3071]

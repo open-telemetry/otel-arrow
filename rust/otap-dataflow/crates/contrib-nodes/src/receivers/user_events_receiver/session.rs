@@ -178,8 +178,8 @@ impl UserEventsSession {
             .collect::<Vec<_>>();
         let config = UserEventsSessionConfig {
             per_cpu_buffer_size: config.per_cpu_buffer_size,
-            max_pending_events: config.max_pending_events,
-            max_pending_bytes: config.max_pending_bytes,
+            max_pending_events: config.limits.max_pending_events,
+            max_pending_bytes: config.limits.max_pending_bytes,
             // Open the perf ring for this pipeline's pinned CPU only.
             // Keeping ring reads on the same CPU as the pipeline thread
             // preserves the NUMA-locality design documented in the
