@@ -13,7 +13,7 @@ directories).
   Node.js/npx to be installed):
 
 ```bash
-npx markdownlint-cli <file1.md> <file2.md>
+npx markdownlint-cli2 <file1.md> <file2.md>
 ```
 
 ## Sanity checks
@@ -25,6 +25,49 @@ python3 tools/sanitycheck.py
 ```
 
 Fix any errors before committing.
+
+## Component naming conventions
+
+When adding a new component, keep public names consistent across the module,
+URN, and primary telemetry metric set. Prefer snake_case component names for
+consistency. Component IDs in URNs may use lowercase letters, digits,
+underscores (`_`), hyphens (`-`), and dots (`.`).
+
+Component URNs should use:
+
+```text
+urn:otel:<component_kind>:<component_name>
+```
+
+Examples:
+
+```text
+urn:otel:receiver:journald
+urn:otel:processor:transform
+urn:otel:exporter:topic
+```
+
+Primary metric set names for new components should generally use:
+
+```text
+<component_kind>.<component_name>
+```
+
+Examples:
+
+```text
+receiver.journald
+receiver.host_metrics
+processor.transform
+processor.filter.pdata
+exporter.topic
+exporter.azure_monitor
+```
+
+Use established component-specific prefixes or suffixes only when they already
+exist for that component family, such as `.pdata` for pdata-specific metrics or
+existing `otap.*` component families. Do not introduce reversed or redundant
+names such as `journald.receiver.metrics`.
 
 ## After every Rust code change
 
@@ -63,6 +106,22 @@ cd rust/otap-dataflow && cargo xtask check --diagnostics
 
 Interpretation guidance for this output is documented in
 [`docs/xtask-diagnostics.md`](docs/xtask-diagnostics.md).
+
+## Changelog entries
+
+If your Rust change is user-facing, add a changelog entry by **copying
+[`.chloggen/TEMPLATE.yaml`](.chloggen/TEMPLATE.yaml)** to a new `.yaml` file
+in [`.chloggen/`](.chloggen/) (e.g. `otlp-exporter-fix-data-loss.yaml`) and
+filling in the fields.
+
+Required fields: `change_type` (one of `breaking`, `deprecation`,
+`new_component`, `enhancement`, `bug_fix`), `component` (must be listed in
+[`.chloggen/config.yaml`](.chloggen/config.yaml)), `note`, and `issues`.
+
+Skip the entry only when the change is not user-facing. In that case include
+`chore` in the PR title.
+
+See [`.chloggen/README.md`](.chloggen/README.md) for full details.
 
 ## Before finalizing changes
 

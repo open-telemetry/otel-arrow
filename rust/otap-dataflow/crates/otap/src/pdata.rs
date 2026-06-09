@@ -13,6 +13,7 @@
 //! encountered issues (Nack) downstream, optionally preserving the payload for retry or logging.
 //! This functionality is exposed through various traits implemented by effect handlers.
 
+use std::net::SocketAddr;
 use std::num::NonZeroU64;
 
 use async_trait::async_trait;
@@ -32,11 +33,16 @@ use crate::transport_headers::TransportHeaders;
 
 /// Context for OTAP requests.
 ///
-/// Carries two independent concerns:
+/// Carries three independent concerns:
 /// - **Routing stack**: Ack/Nack routing frames used by the pipeline engine
 ///   for result notification. Reset at transport boundaries (topic hops).
 /// - **Transport headers**: Protocol-neutral request-scoped metadata captured
 ///   from inbound transport headers. Preserved across transport boundaries.
+/// - **Peer address**: Optional socket address observed by the receiving
+///   socket at request acceptance time. Populated by receivers that have a
+///   real socket (OTLP gRPC/HTTP, OTAP gRPC, syslog/CEF) and left `None` by
+///   sourceless receivers (file-based, journald). Preserved across transport
+///   boundaries.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Context {
     stack: Vec<Frame>,
@@ -45,6 +51,9 @@ pub struct Context {
     /// `None` when no headers have been captured (the common case, zero
     /// additional allocation).
     transport_headers: Option<TransportHeaders>,
+    /// Peer address observed by the receiving socket at request acceptance
+    /// time. `None` for receivers without a real socket.
+    peer_addr: Option<SocketAddr>,
     /// Active flow_metric accumulator (nanoseconds).
     ///
     /// `Some(ns)` when a message is inside a flow_metric range (between
@@ -64,6 +73,7 @@ impl Context {
         Self {
             stack: Vec::with_capacity(capacity),
             transport_headers: None,
+            peer_addr: None,
             flow_compute_ns: None,
         }
     }
@@ -311,6 +321,17 @@ impl Context {
         self.transport_headers = Some(headers);
     }
 
+    /// Returns the peer address observed by the receiving socket, if any.
+    #[must_use]
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        self.peer_addr
+    }
+
+    /// Set the peer address for this context.
+    pub fn set_peer_addr(&mut self, addr: SocketAddr) {
+        self.peer_addr = Some(addr);
+    }
+
     /// Get the source node for this context.
     #[must_use]
     pub fn source_node(&self) -> Option<usize> {
@@ -480,15 +501,16 @@ impl OtapPdata {
     /// pipelines) where in-process Ack/Nack routing state must not leak across
     /// boundaries.
     ///
-    /// Transport headers are **preserved** because they represent
-    /// request-scoped metadata (tenant ID, auth, trace context) that should
-    /// survive cross-pipeline hops.
+    /// Transport headers and peer address are **preserved** because they
+    /// represent request-scoped metadata (tenant ID, auth, trace context,
+    /// originating peer) that should survive cross-pipeline hops.
     #[must_use]
     pub fn clone_without_context(&self) -> Self {
         Self {
             context: Context {
                 stack: Vec::new(),
                 transport_headers: self.context.transport_headers.clone(),
+                peer_addr: self.context.peer_addr,
                 flow_compute_ns: None,
             },
             payload: self.payload.clone(),
@@ -620,6 +642,29 @@ impl OtapPdata {
     #[must_use]
     pub fn with_transport_headers(mut self, headers: TransportHeaders) -> Self {
         self.context.set_transport_headers(headers);
+        self
+    }
+
+    /// Returns the peer address observed by the receiving socket, if any.
+    ///
+    /// Receivers backed by a real socket (OTLP gRPC/HTTP, OTAP gRPC,
+    /// syslog/CEF) populate this at request acceptance time. Receivers
+    /// without a socket (file-based, journald) leave it `None`. Processors
+    /// and exporters that do not consult the peer address pay nothing.
+    #[must_use]
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        self.context.peer_addr()
+    }
+
+    /// Set the peer address on this pdata's context.
+    pub fn set_peer_addr(&mut self, addr: SocketAddr) {
+        self.context.set_peer_addr(addr);
+    }
+
+    /// Builder-style method to attach a peer address.
+    #[must_use]
+    pub fn with_peer_addr(mut self, addr: SocketAddr) -> Self {
+        self.context.set_peer_addr(addr);
         self
     }
 }
@@ -2296,5 +2341,32 @@ mod test {
 
         let cloned = pdata.clone_without_context();
         assert!(!cloned.has_active_flow_metric());
+    }
+
+    #[test]
+    fn peer_addr_default_is_none_and_round_trips() {
+        let pdata = create_test_pdata();
+        assert!(pdata.peer_addr().is_none());
+
+        let addr: SocketAddr = "10.0.0.1:5005".parse().unwrap();
+        let pdata = create_test_pdata().with_peer_addr(addr);
+        assert_eq!(pdata.peer_addr(), Some(addr));
+
+        let mut pdata = create_test_pdata();
+        pdata.set_peer_addr(addr);
+        assert_eq!(pdata.peer_addr(), Some(addr));
+    }
+
+    #[test]
+    fn peer_addr_survives_clone_without_context() {
+        let addr: SocketAddr = "[2001:db8::1]:9999".parse().unwrap();
+        let pdata = create_test_pdata().with_peer_addr(addr);
+
+        let cloned = pdata.clone_without_context();
+        assert_eq!(
+            cloned.peer_addr(),
+            Some(addr),
+            "peer_addr must survive transport-boundary clone"
+        );
     }
 }

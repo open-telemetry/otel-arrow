@@ -9,13 +9,20 @@ mod readings;
 
 use crate::receivers::host_metrics_receiver::{CompiledFilter, HostViewValidationMode};
 use paths::{PathKind, ProcfsPaths};
-use projection::{CounterTracker, HostScrape, host_arch};
-pub(crate) use projection::{HostResource, HostSnapshot};
+use projection::{CounterTracker, host_arch};
+pub(crate) use projection::{HostResource, HostScrape, HostSnapshot};
 use readings::*;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
+use std::path::PathBuf;
+use std::sync::mpsc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
+use tokio::sync::oneshot;
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 const BYTES_PER_KIB: u64 = 1024;
@@ -39,6 +46,7 @@ pub struct ProcfsSource {
 }
 
 /// Procfs collection config.
+#[derive(Clone)]
 pub struct ProcfsConfig {
     /// CPU metrics.
     pub cpu: bool,
@@ -56,6 +64,8 @@ pub struct ProcfsConfig {
     pub network: bool,
     /// Process summary metrics.
     pub processes: bool,
+    /// Linux load average metrics.
+    pub load: bool,
     /// Derived aggregate CPU utilization.
     pub cpu_utilization: bool,
     /// Emit memory limit metric.
@@ -96,6 +106,92 @@ pub struct ProcfsConfig {
     pub validation: HostViewValidationMode,
 }
 
+/// Dedicated worker for procfs/sysfs host inspection.
+///
+/// The pipeline task owns scheduling, control handling, projection, encoding,
+/// and downstream send. This worker owns `ProcfsSource` and performs the
+/// synchronous host reads so the current-thread runtime is not blocked by host
+/// filesystem traversal.
+pub struct ProcfsScrapeWorker {
+    tx: mpsc::SyncSender<ScrapeWorkerRequest>,
+    accepted: Arc<AtomicBool>,
+}
+
+/// Error returned when a scrape cannot be started.
+#[derive(Debug)]
+pub enum StartScrapeError {
+    /// A previous scrape is still running.
+    Busy,
+    /// The worker has stopped.
+    Stopped,
+}
+
+struct ScrapeWorkerRequest {
+    due: ProcfsFamilies,
+    response: oneshot::Sender<io::Result<HostScrape>>,
+}
+
+struct AcceptedScrapeGuard {
+    accepted: Arc<AtomicBool>,
+}
+
+impl AcceptedScrapeGuard {
+    fn new(accepted: Arc<AtomicBool>) -> Self {
+        Self { accepted }
+    }
+}
+
+impl Drop for AcceptedScrapeGuard {
+    fn drop(&mut self) {
+        self.accepted.store(false, Ordering::Release);
+    }
+}
+
+impl ProcfsScrapeWorker {
+    /// Starts a worker rooted at `/` or at a host root bind mount.
+    pub fn new(root_path: Option<PathBuf>, config: ProcfsConfig) -> io::Result<Self> {
+        let mut source = ProcfsSource::new(root_path.as_deref(), config)?;
+        let accepted = Arc::new(AtomicBool::new(false));
+        let worker_accepted = Arc::clone(&accepted);
+        let (tx, rx) = mpsc::sync_channel::<ScrapeWorkerRequest>(1);
+        let _handle = std::thread::Builder::new()
+            .name("host-metrics-scraper".to_owned())
+            .spawn(move || {
+                while let Ok(request) = rx.recv() {
+                    let _accepted = AcceptedScrapeGuard::new(Arc::clone(&worker_accepted));
+                    let result = source.scrape_due_blocking(request.due);
+                    let _ = request.response.send(result);
+                }
+            })?;
+        Ok(Self { tx, accepted })
+    }
+
+    /// Starts one scrape if the worker is idle.
+    pub fn try_start_scrape(
+        &self,
+        due: ProcfsFamilies,
+    ) -> Result<oneshot::Receiver<io::Result<HostScrape>>, StartScrapeError> {
+        if self
+            .accepted
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(StartScrapeError::Busy);
+        }
+        let (response, rx) = oneshot::channel();
+        self.tx
+            .try_send(ScrapeWorkerRequest { due, response })
+            .map_err(|err| match err {
+                mpsc::TrySendError::Full(_) => StartScrapeError::Busy,
+                mpsc::TrySendError::Disconnected(_) => {
+                    self.accepted.store(false, Ordering::Release);
+                    StartScrapeError::Stopped
+                }
+            })?;
+        Ok(rx)
+    }
+}
+
 /// Families due for one scrape.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ProcfsFamilies {
@@ -115,6 +211,8 @@ pub struct ProcfsFamilies {
     pub network: bool,
     /// Process summary metrics.
     pub processes: bool,
+    /// Linux load average metrics.
+    pub load: bool,
 }
 
 impl ProcfsFamilies {
@@ -128,6 +226,7 @@ impl ProcfsFamilies {
             filesystem: self.filesystem && config.filesystem,
             network: self.network && config.network,
             processes: self.processes && config.processes,
+            load: self.load && config.load,
         }
     }
 }
@@ -151,8 +250,8 @@ impl ProcfsSource {
         Ok(source)
     }
 
-    /// Collects one host snapshot for the due family set.
-    pub async fn scrape_due(&mut self, due: ProcfsFamilies) -> io::Result<HostScrape> {
+    /// Collects one host snapshot for the due family set on a blocking worker.
+    pub fn scrape_due_blocking(&mut self, due: ProcfsFamilies) -> io::Result<HostScrape> {
         let due = due.enabled_by(&self.config);
         let now_unix_nano = now_unix_nano();
         let clk_tck = self.clk_tck;
@@ -208,6 +307,19 @@ impl ProcfsSource {
             }
         };
 
+        let load = match due
+            .load
+            .then(|| self.read_path(PathKind::Loadavg))
+            .transpose()
+        {
+            Ok(Some(loadavg)) => parse_loadavg(loadavg),
+            Ok(None) => None,
+            Err(err) => {
+                record_partial_error(&mut partial_errors, &mut first_error, err);
+                None
+            }
+        };
+
         let memory = match due
             .memory
             .then(|| self.read_path(PathKind::Meminfo))
@@ -260,8 +372,6 @@ impl ProcfsSource {
             }
         };
 
-        tokio::task::consume_budget().await;
-
         let disks = if due.disk {
             let disk_include = self.config.disk_include.clone();
             let disk_exclude = self.config.disk_exclude.clone();
@@ -285,8 +395,6 @@ impl ProcfsSource {
             None
         };
 
-        tokio::task::consume_budget().await;
-
         let networks = if due.network {
             let network_include = self.config.network_include.clone();
             let network_exclude = self.config.network_exclude.clone();
@@ -304,8 +412,6 @@ impl ProcfsSource {
         } else {
             None
         };
-
-        tokio::task::consume_budget().await;
 
         let filesystems = if due.filesystem {
             let include_virtual = self.config.filesystem_include_virtual;
@@ -345,8 +451,6 @@ impl ProcfsSource {
             Vec::new()
         };
 
-        tokio::task::consume_budget().await;
-
         let resource = self.read_resource().clone();
         let counter_starts = self.counter_tracker.snapshot(
             start_time_unix_nano,
@@ -368,6 +472,7 @@ impl ProcfsSource {
             cpu: due.cpu.then_some(stat.cpu).flatten(),
             cpu_utilization,
             cpuinfo,
+            load,
             memory,
             uptime_seconds,
             paging,
@@ -416,6 +521,9 @@ impl ProcfsSource {
         if self.config.memory {
             let _ = File::open(self.paths.path(PathKind::Meminfo))?;
         }
+        if self.config.load {
+            let _ = File::open(self.paths.path(PathKind::Loadavg))?;
+        }
         if self.config.system {
             let _ = File::open(self.paths.path(PathKind::Uptime))?;
         }
@@ -448,6 +556,9 @@ impl ProcfsSource {
         }
         if self.config.memory && !self.source_available(PathKind::Meminfo) {
             self.config.memory = false;
+        }
+        if self.config.load && !self.source_available(PathKind::Loadavg) {
+            self.config.load = false;
         }
         if self.config.system && !self.source_available(PathKind::Uptime) {
             self.config.system = false;

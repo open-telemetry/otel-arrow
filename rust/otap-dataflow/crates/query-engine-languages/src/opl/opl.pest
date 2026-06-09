@@ -1,6 +1,7 @@
 // Grammar for Observability Programming Language (OPL)
 
 WHITESPACE = _{ " " | NEWLINE | "\t" }
+COMMENT    = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!NEWLINE ~ ANY)*) }
 
 ident = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
 
@@ -15,7 +16,7 @@ single_quote_string_char = _{
   | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
 }
 
-string_literal = {
+string_literal = ${
     ("\"" ~ double_quote_string_char* ~ "\"")
   | ("'" ~ single_quote_string_char* ~ "'")
 }
@@ -193,12 +194,20 @@ assignment_expression = {
     (attribute_selection_expression | index_expression | identifier_expression) ~ "=" ~ expression
 }
 
+rename_pair = {
+    string_literal ~ "as" ~ string_literal
+}
+
+rename_target = {
+    identifier_expression ~ ("." ~ identifier_expression)*
+}
+
 rename_operator_call = {
-    ("rename" | "project-rename") ~ assignment_expression ~ ("," ~ assignment_expression)*
+    "rename" ~ rename_target ~ rename_pair ~ ("," ~ rename_pair)*
 }
 
 remove_map_keys_operator_call = {
-    ("exclude" | "project-away") ~ (attribute_selection_expression | index_expression) ~ ("," ~ (attribute_selection_expression | index_expression))*
+    ("remove" | "project-away") ~ (attribute_selection_expression | index_expression) ~ ("," ~ (attribute_selection_expression | index_expression))*
 }
 
 set_operator_call = {
