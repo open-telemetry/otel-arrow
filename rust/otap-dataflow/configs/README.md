@@ -8,7 +8,7 @@ If you are learning how to write these files, start with
 
 Note: These configurations are based on the native OTAP dataflow engine
 configuration model, which is intentionally distinct from the OpenTelemetry Collector
-YAML model. Support for the Go Collector YAML format will be explored in the
+YAML model. Support for the OTel Collector YAML format will be explored in the
 future.
 
 ## Available Configurations
