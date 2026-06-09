@@ -18,27 +18,12 @@ This processor and its query engine integration are under active development.
 
 ## Getting Started
 
-Choose exactly one query form for the transform:
+Write the query to transform your telemetry in your preferred language:
 
 ```yaml
 type: processor:transform
 config:
   kql_query: "logs | where body != ''"
-```
-
-## Configuration
-
-Exactly one query form is selected by the flattened query enum.
-
-```yaml
-type: processor:transform
-config:
-  # Select exactly one query form.
-  kql_query: "logs | where body != ''"
-  # opl_query: "..."
-  # ottl:
-  #   log_statements:
-  #     - set(attributes["processed"], true)
 
   # Pending request tracking limits.
   inbound_request_limit: 1024
