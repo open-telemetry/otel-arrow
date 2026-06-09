@@ -68,7 +68,7 @@ When `--config` is omitted the resolver falls back to `config.yaml`
 in the current working directory.
 
 `https:`, authenticated config sources, and multi-file merge are not
-implemented.
+yet implemented.
 
 The top-level entry point is `config_provider::resolve_config`.
 `ResolvedConfig` carries both the original source URI and the loaded
