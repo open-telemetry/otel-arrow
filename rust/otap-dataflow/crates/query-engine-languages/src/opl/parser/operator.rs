@@ -11,7 +11,8 @@ use data_engine_expressions::{
     PipelineFunction, PipelineFunctionExpression, PipelineFunctionParameter,
     PipelineFunctionParameterType, QueryLocation, ReduceMapTransformExpression,
     RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
-    SourceScalarExpression, StaticScalarExpression, TransformExpression, ValueAccessor, ValueType,
+    SourceScalarExpression, StaticScalarExpression, StringScalarExpression, TransformExpression,
+    ValueAccessor, ValueType,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_string_literal, to_query_location,
@@ -150,25 +151,73 @@ pub(crate) fn parse_rename_operator_call(
     pipeline_builder: &mut dyn PipelineBuilder,
 ) -> Result<(), ParserError> {
     let query_location = to_query_location(&rule);
-    let inner_rules = rule.into_inner();
-    let mut keys = Vec::with_capacity(inner_rules.len());
+    let mut inner_rules = rule.into_inner();
 
-    for rule in inner_rules {
-        let (dest, source) = parse_assignment_expression(rule, pipeline_builder)?;
-        match source {
-            ScalarExpression::Source(source) => keys.push(MapKeyRenameSelector::new(
-                source.into_value_accessor(),
-                dest.into_value_accessor(),
-            )),
+    // Parse the rename target (e.g. `attributes`, `resource.attributes`)
+    let target_rule = inner_rules.next().ok_or_else(|| {
+        ParserError::SyntaxError(query_location.clone(), "expected rename target".to_string())
+    })?;
+
+    let target_selectors = parse_rename_target(target_rule)?;
+
+    // Parse each rename pair ("old_key" as "new_key")
+    let mut keys = Vec::with_capacity(inner_rules.len());
+    for pair_rule in inner_rules {
+        if pair_rule.as_rule() != Rule::rename_pair {
+            return Err(ParserError::SyntaxError(
+                to_query_location(&pair_rule),
+                format!("expected rename pair, found {:?}", pair_rule.as_rule()),
+            ));
+        }
+
+        let pair_location = to_query_location(&pair_rule);
+        let mut pair_inner = pair_rule.into_inner();
+
+        let source_key_rule = pair_inner.next().ok_or_else(|| {
+            ParserError::SyntaxError(
+                pair_location.clone(),
+                "expected source key in rename pair".to_string(),
+            )
+        })?;
+        let dest_key_rule = pair_inner.next().ok_or_else(|| {
+            ParserError::SyntaxError(
+                pair_location.clone(),
+                "expected destination key in rename pair".to_string(),
+            )
+        })?;
+
+        let source_key = match parse_standard_string_literal(source_key_rule) {
+            StaticScalarExpression::String(s) => s,
             other => {
-                return Err(ParserError::SyntaxNotSupported(
-                    query_location,
-                    format!(
-                        "rename operator only supports assignment from source. Found {other:?}"
-                    ),
+                return Err(ParserError::SyntaxError(
+                    pair_location,
+                    format!("expected string literal for source key, found {other:?}"),
                 ));
             }
-        }
+        };
+        let dest_key = match parse_standard_string_literal(dest_key_rule) {
+            StaticScalarExpression::String(s) => s,
+            other => {
+                return Err(ParserError::SyntaxError(
+                    pair_location,
+                    format!("expected string literal for destination key, found {other:?}"),
+                ));
+            }
+        };
+
+        let mut source_selectors = target_selectors.clone();
+        source_selectors.push(ScalarExpression::Static(StaticScalarExpression::String(
+            source_key,
+        )));
+        let mut dest_selectors = target_selectors.clone();
+        dest_selectors.push(ScalarExpression::Static(StaticScalarExpression::String(
+            dest_key,
+        )));
+
+        keys.push(MapKeyRenameSelector::new(
+            ValueAccessor::new_with_selectors(source_selectors),
+            ValueAccessor::new_with_selectors(dest_selectors),
+        ));
     }
 
     let transform_expr = TransformExpression::RenameMapKeys(RenameMapKeysTransformExpression::new(
@@ -182,6 +231,46 @@ pub(crate) fn parse_rename_operator_call(
     pipeline_builder.push_data_expression(DataExpression::Transform(transform_expr));
 
     Ok(())
+}
+
+/// Parses the rename target rule into a list of selectors representing the attribute path.
+///
+/// For example:
+/// - `attributes` -> `["attributes"]`
+/// - `resource.attributes` -> `["resource", "attributes"]`
+fn parse_rename_target(rule: Pair<'_, Rule>) -> Result<Vec<ScalarExpression>, ParserError> {
+    let query_location = to_query_location(&rule);
+    let inner_rules = rule.into_inner();
+    let mut selectors = Vec::with_capacity(inner_rules.len());
+
+    for inner_rule in inner_rules {
+        match inner_rule.as_rule() {
+            Rule::identifier_expression => {
+                selectors.push(ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(
+                        to_query_location(&inner_rule),
+                        inner_rule.as_str(),
+                    ),
+                )));
+            }
+            invalid_rule => {
+                return Err(invalid_child_rule_error(
+                    query_location,
+                    Rule::rename_target,
+                    invalid_rule,
+                ));
+            }
+        }
+    }
+
+    if selectors.is_empty() {
+        return Err(ParserError::SyntaxError(
+            query_location,
+            "expected rename target content".to_string(),
+        ));
+    }
+
+    Ok(selectors)
 }
 
 pub(crate) fn parse_set_operator_call(
@@ -841,9 +930,7 @@ mod tests {
 
     #[test]
     fn test_parse_rename_operator_call() {
-        let query = r#"rename
-                attributes["x"] = attributes["y"],
-                resource.attributes["x2"] = resource.attributes["y2"]"#;
+        let query = r#"rename attributes "y" as "x", "y2" as "x2""#;
         let mut state = ParserState::new(query);
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
@@ -888,9 +975,6 @@ mod tests {
                     MapKeyRenameSelector::new(
                         ValueAccessor::new_with_selectors(vec![
                             ScalarExpression::Static(StaticScalarExpression::String(
-                                StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
-                            )),
-                            ScalarExpression::Static(StaticScalarExpression::String(
                                 StringScalarExpression::new(
                                     QueryLocation::new_fake(),
                                     "attributes",
@@ -901,9 +985,6 @@ mod tests {
                             )),
                         ]),
                         ValueAccessor::new_with_selectors(vec![
-                            ScalarExpression::Static(StaticScalarExpression::String(
-                                StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
-                            )),
                             ScalarExpression::Static(StaticScalarExpression::String(
                                 StringScalarExpression::new(
                                     QueryLocation::new_fake(),
@@ -916,6 +997,55 @@ mod tests {
                         ]),
                     ),
                 ],
+            ),
+        ));
+
+        assert_eq!(&expressions[0], &expected);
+    }
+
+    #[test]
+    fn test_parse_rename_operator_call_resource_attrs() {
+        let query = r#"rename resource.attributes "y" as "x""#;
+        let mut state = ParserState::new(query);
+        let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
+        assert_eq!(parse_result.len(), 1);
+        let rule = parse_result.into_iter().next().unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
+        let result = state.build().unwrap();
+        let expressions = result.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        let expected = DataExpression::Transform(TransformExpression::RenameMapKeys(
+            RenameMapKeysTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                vec![MapKeyRenameSelector::new(
+                    ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "y"),
+                        )),
+                    ]),
+                    ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "x"),
+                        )),
+                    ]),
+                )],
             ),
         ));
 
