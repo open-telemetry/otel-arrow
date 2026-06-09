@@ -51,6 +51,9 @@ pub mod otlp_http;
 /// Cloud specific auth utilities
 pub mod cloud_auth;
 
+/// Redacted string type for sensitive values.
+pub mod opaque_string;
+
 /// Object storage utilities including integrations for different cloud
 /// providers
 pub mod object_store;

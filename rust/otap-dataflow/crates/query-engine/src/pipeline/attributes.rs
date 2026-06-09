@@ -61,7 +61,6 @@ impl PipelineStage for AttributeTransformPipelineStage {
 #[cfg(test)]
 mod test {
     use data_engine_kql_parser::{KqlParser, Parser};
-    use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
         OtapArrowRecords,
         otap::Logs,
@@ -76,6 +75,7 @@ mod test {
         },
         testing::round_trip::{otlp_to_otap, to_logs_data},
     };
+    use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::{Pipeline, test::exec_logs_pipeline};
 
@@ -106,8 +106,10 @@ mod test {
         )])
     }
 
-    async fn test_rename_single_attributes<P: Parser>() {
-        let result = exec_logs_pipeline::<P>(
+    // KQL rename tests use KQL's `project-rename` syntax (assignment-based)
+    #[tokio::test]
+    async fn test_rename_single_attributes_kql_parser() {
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | project-rename attributes[\"y\"] = attributes[\"x\"]",
             generate_logs_test_data(),
         )
@@ -124,8 +126,7 @@ mod test {
             ]
         );
 
-        // test renaming resource attributes:
-        let result = exec_logs_pipeline::<P>(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | project-rename resource.attributes[\"yr1\"] = resource.attributes[\"xr1\"]",
             generate_logs_test_data(),
         )
@@ -142,8 +143,7 @@ mod test {
             ]
         );
 
-        // test renaming scope attributes:
-        let result = exec_logs_pipeline::<P>(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | project-rename instrumentation_scope.attributes[\"ys1\"] = instrumentation_scope.attributes[\"xs1\"]",
             generate_logs_test_data(),
         )
@@ -161,19 +161,67 @@ mod test {
         );
     }
 
-    #[tokio::test]
-    async fn test_rename_single_attributes_kql_parser() {
-        test_rename_single_attributes::<KqlParser>().await;
-    }
-
+    // OPL rename tests use the new `rename <target> "old" as "new"` syntax
     #[tokio::test]
     async fn test_rename_single_attributes_opl_parser() {
-        test_rename_single_attributes::<OplParser>().await;
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | rename attributes "x" as "y""#,
+            generate_logs_test_data(),
+        )
+        .await;
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("a"))])
+                    .finish(),
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("x2", AnyValue::new_string("b"))])
+                    .finish(),
+            ]
+        );
+
+        // test renaming resource attributes:
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | rename resource.attributes "xr1" as "yr1""#,
+            generate_logs_test_data(),
+        )
+        .await;
+        assert_eq!(
+            result.resource_logs[0]
+                .resource
+                .as_ref()
+                .unwrap()
+                .attributes,
+            &[
+                KeyValue::new("yr1", AnyValue::new_string("a")),
+                KeyValue::new("xr2", AnyValue::new_string("a")),
+            ]
+        );
+
+        // test renaming scope attributes:
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | rename instrumentation_scope.attributes "xs1" as "ys1""#,
+            generate_logs_test_data(),
+        )
+        .await;
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0]
+                .scope
+                .as_ref()
+                .unwrap()
+                .attributes,
+            &[
+                KeyValue::new("ys1", AnyValue::new_string("a")),
+                KeyValue::new("xs2", AnyValue::new_string("a")),
+            ]
+        );
     }
 
-    async fn test_rename_multiple_attributes<P: Parser>() {
+    #[tokio::test]
+    async fn test_rename_multiple_attributes_kql_parser() {
         // test renaming multiple attributes from same batch
-        let result = exec_logs_pipeline::<P>(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs |
                 project-rename
                     attributes[\"y\"] = attributes[\"x\"],
@@ -195,7 +243,7 @@ mod test {
         );
 
         // test renaming multiple attributes from many batches
-        let result = exec_logs_pipeline::<P>(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs |
                 project-rename
                     attributes[\"y\"] = attributes[\"x\"],
@@ -243,18 +291,77 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_rename_multiple_attributes_kql_parser() {
-        test_rename_multiple_attributes::<KqlParser>().await;
+    async fn test_rename_multiple_attributes_opl_parser() {
+        // test renaming multiple attributes from same batch
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | rename attributes "x" as "y", "x2" as "y2""#,
+            generate_logs_test_data(),
+        )
+        .await;
+
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("a"))])
+                    .finish(),
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y2", AnyValue::new_string("b"))])
+                    .finish(),
+            ]
+        );
+
+        // test renaming multiple attributes from many batches using chained rename calls
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs
+                | rename attributes "x" as "y"
+                | rename resource.attributes "xr1" as "yr1"
+                | rename instrumentation_scope.attributes "xs1" as "ys1""#,
+            generate_logs_test_data(),
+        )
+        .await;
+
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("a"))])
+                    .finish(),
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("x2", AnyValue::new_string("b"))])
+                    .finish(),
+            ]
+        );
+
+        assert_eq!(
+            result.resource_logs[0]
+                .resource
+                .as_ref()
+                .unwrap()
+                .attributes,
+            &[
+                KeyValue::new("yr1", AnyValue::new_string("a")),
+                KeyValue::new("xr2", AnyValue::new_string("a")),
+            ]
+        );
+
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0]
+                .scope
+                .as_ref()
+                .unwrap()
+                .attributes,
+            &[
+                KeyValue::new("ys1", AnyValue::new_string("a")),
+                KeyValue::new("xs2", AnyValue::new_string("a")),
+            ]
+        );
     }
 
     #[tokio::test]
-    async fn test_rename_multiple_attributes_opl_parser() {
-        test_rename_multiple_attributes::<OplParser>().await;
-    }
-
-    async fn test_rename_when_no_attrs_batch_present<P: Parser>() {
+    async fn test_rename_when_no_attrs_batch_present_kql_parser() {
         let input = vec![LogRecord::build().event_name("test").finish()];
-        let result = exec_logs_pipeline::<P>(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs |
                 project-rename
                     attributes[\"y\"] = attributes[\"x\"],
@@ -267,23 +374,26 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_rename_when_no_attrs_batch_present_kql_parser() {
-        test_rename_when_no_attrs_batch_present::<KqlParser>().await;
+    async fn test_rename_when_no_attrs_batch_present_opl_parser() {
+        let input = vec![LogRecord::build().event_name("test").finish()];
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | rename attributes "x" as "y", "x2" as "y2""#,
+            to_logs_data(input.clone()),
+        )
+        .await;
+
+        assert_eq!(result.resource_logs[0].scope_logs[0].log_records, input);
     }
 
     #[tokio::test]
-    async fn test_rename_when_no_attrs_batch_present_opl_parser() {
-        test_rename_when_no_attrs_batch_present::<OplParser>().await;
-    }
-
-    async fn test_invalid_renames_are_errors<P: Parser>() {
+    async fn test_invalid_renames_are_errors_kql_parser() {
         let invalid_renames = [
             "logs | project-rename attributes[\"y\"] = attributes[\"y\"]",
             "logs | project-rename attributes[\"y\"] = attributes[\"x\"], attributes[\"y\"] = attributes[\"z\"]",
         ];
 
         for query in invalid_renames {
-            let mut pipeline = Pipeline::new(P::parse(query).unwrap().pipeline);
+            let mut pipeline = Pipeline::new(KqlParser::parse(query).unwrap().pipeline);
             let result = pipeline
                 .execute(OtapArrowRecords::Logs(Logs::default()))
                 .await;
@@ -296,13 +406,23 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_invalid_renames_are_errors_kql_parser() {
-        test_invalid_renames_are_errors::<KqlParser>().await;
-    }
-
-    #[tokio::test]
     async fn test_invalid_renames_are_errors_opl_parser() {
-        test_invalid_renames_are_errors::<OplParser>().await;
+        let invalid_renames = [
+            r#"logs | rename attributes "y" as "y""#,
+            r#"logs | rename attributes "x" as "y", "z" as "y""#,
+        ];
+
+        for query in invalid_renames {
+            let mut pipeline = Pipeline::new(OplParser::parse(query).unwrap().pipeline);
+            let result = pipeline
+                .execute(OtapArrowRecords::Logs(Logs::default()))
+                .await;
+            let err = result.unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("Invalid attribute transform: Duplicate key in rename target")
+            )
+        }
     }
 
     async fn test_delete_attributes<P: Parser>() {

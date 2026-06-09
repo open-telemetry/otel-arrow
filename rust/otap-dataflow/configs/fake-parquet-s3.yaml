@@ -29,6 +29,12 @@ groups:
                   region: us-east-1
                   auth:
                     type: default
+              retry:
+                max_retries: 10
+                init_backoff: "200ms"
+                max_backoff: "30s"
+                backoff_base: 2.0
+                retry_timeout: "2min"
               partitioning_strategies:
                 - schema_metadata: ["_part_id"]
               writer_options:

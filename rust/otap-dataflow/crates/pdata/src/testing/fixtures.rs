@@ -375,10 +375,19 @@ pub fn logs_with_varying_attributes_and_properties(batch_size: usize) -> LogsDat
 #[must_use]
 pub fn traces_with_full_resource_and_scope() -> TracesData {
     TracesData::new(vec![ResourceSpans::new(
-        Resource::build().finish(),
+        Resource::build()
+            .attributes(vec![KeyValue::new(
+                "service.name",
+                AnyValue::new_string("test-service"),
+            )])
+            .finish(),
         vec![ScopeSpans::new(
             InstrumentationScope::build()
                 .name("test-scope".to_string())
+                .attributes(vec![KeyValue::new(
+                    "scopekey",
+                    AnyValue::new_string("scopeval"),
+                )])
                 .finish(),
             vec![
                 Span::build()

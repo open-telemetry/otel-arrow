@@ -1,0 +1,70 @@
+{{- define "entry" -}}
+- `{{ .Component }}`: {{ .Note }} (
+{{- range $i, $issue := .Issues }}
+{{- if $i }}, {{ end -}}
+[#{{ $issue }}](https://github.com/open-telemetry/otel-arrow/issues/{{ $issue }})
+{{- end -}}
+)
+
+{{- if .SubText }}
+{{ .SubText | indent 2 }}
+{{- end }}
+{{- end }}
+## {{ .Version }}
+
+{{- if .BreakingChanges }}
+
+### :stop_sign: Breaking changes :stop_sign:
+
+{{- range $i, $change := .BreakingChanges }}
+{{- if eq $i 0}}
+{{end}}
+{{ template "entry" $change }}
+{{- end }}
+{{- end }}
+
+{{- if .Deprecations }}
+
+### :triangular_flag_on_post: Deprecations :triangular_flag_on_post:
+
+{{- range $i, $change := .Deprecations }}
+{{- if eq $i 0}}
+{{end}}
+{{ template "entry" $change }}
+{{- end }}
+{{- end }}
+
+{{- if .NewComponents }}
+
+### :rocket: New components :rocket:
+
+{{- range $i, $change := .NewComponents }}
+{{- if eq $i 0}}
+{{end}}
+{{ template "entry" $change }}
+{{- end }}
+{{- end }}
+
+{{- if .Enhancements }}
+
+### :bulb: Enhancements :bulb:
+
+{{- range $i, $change := .Enhancements }}
+{{- if eq $i 0}}
+{{end}}
+{{ template "entry" $change }}
+{{- end }}
+{{- end }}
+
+{{- if .BugFixes }}
+
+### :toolbox: Bug fixes :toolbox:
+
+{{- range $i, $change := .BugFixes }}
+{{- if eq $i 0}}
+{{end}}
+{{ template "entry" $change }}
+{{- end }}
+{{- end }}
+
+<!-- previous-version -->

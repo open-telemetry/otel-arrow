@@ -103,7 +103,7 @@ groups:
             type: receiver:traffic_generator
             config:
               enable_ack_nack: true
-              data_source: static
+              data_source: synthetic
               generation_strategy: pre_generated
               traffic_config:
                 signals_per_second: 200000

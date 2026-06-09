@@ -43,6 +43,7 @@ fn test_receiver_create(
     _node: otap_df_engine::node::NodeId,
     _node_config: Arc<NodeUserConfig>,
     _receiver_config: &ReceiverConfig,
+    _capabilities: &otap_df_engine::capability::registry::Capabilities,
 ) -> Result<ReceiverWrapper<()>, otap_df_config::error::Error> {
     panic!("test receiver factory should not be constructed")
 }
@@ -52,6 +53,7 @@ fn test_exporter_create(
     _node: otap_df_engine::node::NodeId,
     _node_config: Arc<NodeUserConfig>,
     _exporter_config: &ExporterConfig,
+    _capabilities: &otap_df_engine::capability::registry::Capabilities,
 ) -> Result<ExporterWrapper<()>, otap_df_config::error::Error> {
     panic!("test exporter factory should not be constructed")
 }

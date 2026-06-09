@@ -83,6 +83,52 @@ Examples of `<type>`: `feat` (new feature), `fix` (bug fix), `docs`
 - Include a brief description of what and why, avoiding overly technical jargon.
 - Use present-tense verbs, e.g., "Add" instead of "Added."
 
+### Changelog entries
+
+This repository maintains two changelogs - [`go/CHANGELOG.md`](./go/CHANGELOG.md)
+for the Go tree and
+[`rust/otap-dataflow/CHANGELOG.md`](./rust/otap-dataflow/CHANGELOG.md) for the
+Rust tree. Both are managed with
+[`chloggen`](https://github.com/open-telemetry/opentelemetry-go-build-tools/tree/main/chloggen).
+Entries live alongside the code they describe:
+
+- Go changes: [`go/.chloggen/`](./go/.chloggen/)
+- Rust changes: [`rust/otap-dataflow/.chloggen/`](./rust/otap-dataflow/.chloggen/)
+
+Every PR with a user-facing change must add at least one YAML entry in the
+appropriate directory. Copy the `TEMPLATE.yaml` in the appropriate
+`.chloggen/` directory to a new `.yaml` file (e.g.
+`arrow-encoder-fix-null-handling.yaml`) and fill in the fields
+(`change_type`, `component`, `note`, `issues`).
+
+You can validate or preview entries locally:
+
+```bash
+make chlog-install                       # one-time install
+make chlog-validate
+make chlog-preview                       # optional: render without writing
+```
+
+See [`go/.chloggen/README.md`](./go/.chloggen/README.md) and
+[`rust/otap-dataflow/.chloggen/README.md`](./rust/otap-dataflow/.chloggen/README.md)
+for the full guide and the allowed `component:` values (defined in the
+`config.yaml` of each directory).
+
+**Skipping a changelog entry.** Use any of the following when the change is
+not user-facing (build chores, internal refactors, doc-only edits, dev-only
+dependency bumps):
+
+- Include `chore` in the PR title.
+- Apply the `chore` label.
+- For dependency-update PRs: Renovate auto-applies the `dependencies` label
+  and bot-authored PRs are exempt.
+
+Note: runtime dependency bumps that ship in a released binary or library
+should still get a changelog entry, since downstream consumers may care.
+
+The [`changelog` workflow](./.github/workflows/changelog.yml) enforces this on
+pull requests targeting `main`.
+
 ### Including Tests for New Features or Bug Fixes
 
 Testing is crucial to ensure code reliability. When contributing:
@@ -119,6 +165,58 @@ If you have any questions or run into issues:
 
 Join the OpenTelemetry
 [Slack](https://cloud-native.slack.com/archives/C07S4Q67LTF) Community.
+
+## Filing Issues
+
+We track bugs, feature requests, and project tasks in
+[GitHub Issues](https://github.com/open-telemetry/otel-arrow/issues).
+
+ **Please pick the right channel:**
+
+- Bug, feature, or task: file an issue using the appropriate
+  [template](https://github.com/open-telemetry/otel-arrow/issues/new/choose).
+- Usage question or open-ended discussion: prefer the CNCF Slack channel
+  [#otel-arrow](https://cloud-native.slack.com/archives/C07S4Q67LTF)
+  over filing an issue.
+- Security vulnerability: **DO NOT file a public issue.** Follow
+  [SECURITY.md](./SECURITY.md) to report privately.
+
+### Bug reports
+
+Use the
+[Bug Report template](https://github.com/open-telemetry/otel-arrow/issues/new?template=bug_report.yaml).
+A good bug report lets anyone reproduce the problem without further
+back-and-forth. The template prompts for the version, affected
+component(s), steps to reproduce, expected vs. actual behavior,
+environment, and logs - please fill in as many fields as apply. **Minimal,
+self-contained reproductions are required for all bug reports.** If a minimal
+repro is not viable, an explanation must be provided in the description.
+
+### Feature requests and proposals
+
+Use the
+[Feature Request template](https://github.com/open-telemetry/otel-arrow/issues/new?template=feature_request.yaml).
+Focus on the use case and the problem you are solving, not a specific
+implementation. For larger changes that will need design consensus (new
+components, protocol changes, breaking changes), call that out in the
+description so a maintainer can sponsor a proposal discussion before
+implementation begins.
+
+### Tasks and other issues
+
+Use the
+[Task template](https://github.com/open-telemetry/otel-arrow/issues/new?template=task.yaml)
+for internal work items (refactors, CI, tooling), or the
+[Other template](https://github.com/open-telemetry/otel-arrow/issues/new?template=other.yaml)
+if none of the above fit.
+
+### What happens after you file
+
+New issues are picked up by triagers, who apply labels, ask clarifying
+questions if needed, and decide whether the issue is ready to work on or
+needs SIG discussion. The full process - including how to volunteer to
+work on an open issue - is described in
+[ISSUE_TRIAGE.md](./ISSUE_TRIAGE.md).
 
 ## Our Development Process
 
@@ -257,17 +355,16 @@ the ability to run them via simple `go install` and `go run` commands.  The
 `go.work` file names all the module definitions inside this repository and
 allows them all to be used at once during local development.
 
-### Upgrading OpenTelemetry Collector dependencies
+### Upgrading the collector used for testing
 
-When a new version of the OpenTelemetry collector, is available, the easiest way
-to upgrade this repository is:
-
-1. Update the `distribution::otelcol_version` field in `otelarrowcol-build.yaml`
-2. Modify any components from the core or contrib repositories to use the
-   corresponding versions (e.g., pprofextension's module version should match
-   the new collector release).
-3. Regenerate `otelarrowcol` via `make genotelarrowcol`
-4. Run `go work sync` to update the other modules with fresh dependencies.
+The OTAP components are tested using the upstream OpenTelemetry Collector
+Contrib distribution rather than a collector generated in this repository. The
+distribution version is pinned in the top-level `Dockerfile`
+(`FROM otel/opentelemetry-collector-contrib:<tag>@sha256:<digest>`) and is kept
+up to date automatically by Renovate (see
+[`.github/renovate.json5`](./.github/renovate.json5), which enables
+`docker:pinDigests`). To upgrade manually, edit the tag and digest on that
+`FROM` line. See [collector/BUILDING.md](./collector/BUILDING.md) for details.
 
 ## Project Team
 
@@ -275,8 +372,10 @@ to upgrade this repository is:
 
 - [Albert Lockett](https://github.com/albertlockett), F5
 - [Drew Relmas](https://github.com/drewrelmas), Microsoft
+- [Jake Dern](https://github.com/JakeDern), F5
 - [Joshua MacDonald](https://github.com/jmacd), Microsoft
 - [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
+- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
 
 For more information about the maintainer role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer).
@@ -284,10 +383,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 ### Approvers
 
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
-- [Jake Dern](https://github.com/JakeDern), F5
 - [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
-- [Lei Huang](https://github.com/v0y4g3r), Greptime
-- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
 
 For more information about the approver role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
@@ -295,10 +391,12 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 ### Emeritus Approvers
 
 - [Alex Boten](https://github.com/codeboten)
+- [Lei Huang](https://github.com/v0y4g3r)
 - [Moh Osman](https://github.com/moh-osman3)
 
 ### Triagers
 
+- [Aaron Marten](https://github.com/AaronRM), Microsoft
 - [Tom Tan](https://github.com/ThomsonTan), Microsoft
 
 For more information about the triager role, see the [community

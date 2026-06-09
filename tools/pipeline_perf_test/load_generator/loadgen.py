@@ -762,9 +762,20 @@ def handle_signal(sig, frame):
 
 
 def is_port_in_use(port, host="0.0.0.0"):
+    """Return True if ``port`` cannot be bound on ``host``.
+
+    Tests bindability (the property we actually care about before calling
+    ``app.run``) rather than reachability. ``connect_ex`` only sees loopback
+    listeners and would miss a process bound to the same wildcard address on
+    a different interface. Using ``bind`` with ``SO_REUSEADDR`` disabled gives
+    a true "is this address+port currently claimed?" answer.
+    """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(1)
-        return s.connect_ex((host, port)) == 0
+        try:
+            s.bind((host, port))
+        except OSError:
+            return True
+    return False
 
 
 def main():
@@ -922,8 +933,8 @@ def main():
     args = parser.parse_args()
 
     if args.serve:
-        if is_port_in_use(FLASK_PORT):
-            raise RuntimeError(f"Port {FLASK_PORT} is already in use.")
+        if is_port_in_use(args.serve_port):
+            raise RuntimeError(f"Port {args.serve_port} is already in use.")
         app.run(host="0.0.0.0", port=args.serve_port)
         return
 

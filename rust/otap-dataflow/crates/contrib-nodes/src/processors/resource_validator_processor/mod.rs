@@ -175,12 +175,14 @@ pub fn create_resource_validator_processor(
 pub static RESOURCE_VALIDATOR_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
         name: RESOURCE_VALIDATOR_PROCESSOR_URN,
-        create: |pipeline_ctx: PipelineContext,
-                 node: NodeId,
-                 node_config: Arc<NodeUserConfig>,
-                 proc_cfg: &ProcessorConfig| {
-            create_resource_validator_processor(pipeline_ctx, node, node_config, proc_cfg)
-        },
+        create:
+            |pipeline_ctx: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             proc_cfg: &ProcessorConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+                create_resource_validator_processor(pipeline_ctx, node, node_config, proc_cfg)
+            },
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: otap_df_config::validation::validate_typed_config::<Config>,
     };

@@ -23,7 +23,7 @@ is addressed in the Phase 1 implementation:
 | Multiple implementations of same capability | `CapabilityRegistry` keyed by `(extension_name, TypeId)` -- different extensions can provide the same capability |
 | Multiple configured instances | `extensions:` section in YAML, each with a unique name; nodes bind by name in `capabilities:` |
 | Existing config model integration | Extensions are siblings to `nodes` in the pipeline config hierarchy |
-| Preserve performance model (thread-per-core) | Local extensions use `Rc` (no locks); shared extensions use `Clone + Send` with `Arc`-wrapped state |
+| Preserve performance model (thread-per-core) | Local extensions use `Rc<RefCell<T>>` for shared state (no locks); shared extensions use `Clone + Send` with `Arc`-wrapped state. Both are still instantiated per pipeline instance (per core) at pipeline scope -- see *Pipeline-scoped extensions are per-core* below. |
 | Background tasks | Active extensions get their own event loop via `Extension::start()` |
 | Explicit capability binding | Nodes declare `capabilities: { name: extension_instance }` -- no implicit discovery |
 | No hot-path registry lookup | Capabilities resolved once at factory time; nodes hold typed handles for their lifetime |
@@ -78,9 +78,23 @@ four additional principles:
 
 ### Ownership and cloning model
 
-Local capabilities return `Rc<dyn local::Trait>` -- all
-local consumers share the same instance via reference
-counting. No cloning, no locks.
+Local capabilities return `Box<dyn local::Trait>` -- each
+local consumer gets an independent boxed instance, mirroring
+the shared side. For a local extension to share mutable
+state across consumers (e.g., a token cache, a connection
+table), fields must be wrapped in `Rc<RefCell<T>>` so all
+clones see the same data:
+
+```rust
+#[derive(Clone)]
+struct MyLocalExtension {
+    // Shared mutable state -- Rc<RefCell<_>> ensures
+    // clones see the same data, no Send required.
+    token_cache: Rc<RefCell<HashMap<String, BearerToken>>>,
+    // Plain data -- cloned independently per consumer.
+    scope: String,
+}
+```
 
 Shared capabilities return `Box<dyn shared::Trait>` --
 each consumer gets an independent clone. For shared
@@ -136,10 +150,10 @@ themselves, and they never touch pipeline data directly.
 |  | Receiver  |  | Exporter  |                            |
 |  | require   |  | require   |                            |
 |  | _local()  |  | _shared() |                            |
-|  | -> Rc<T>  |  | -> Box<T> |                            |
+|  | -> Box<T> |  | -> Box<T> |                            |
 |  +-----------+  +-----------+                            |
 |                                                          |
-|  Local consumers get Rc<dyn local::Trait>                |
+|  Local consumers get Box<dyn local::Trait>               |
 |  Shared consumers get Box<dyn shared::Trait> (Send)      |
 +----------------------------------------------------------+
 ```
@@ -151,6 +165,47 @@ themselves, and they never touch pipeline data directly.
    shutdown, extensions terminate only after all data-path
    nodes have drained. Passive extensions (no lifecycle)
    skip spawning entirely.
+
+   *Scope of the guarantee.* This orders **lifecycle
+   calls**, not init completion. `start()` is async, so
+   invoking it merely enqueues a future; the extension's
+   init body runs concurrently with the data path once
+   polling begins. Capability *construction* happens at
+   build time (before any spawn), so structural wiring is
+   always in place. However, if an extension performs
+   deferred async init in `start()` (opening a
+   connection, loading config, warming a cache),
+   capability consumers may observe the pre-init state
+   until that work completes. Today, extensions handle
+   this themselves -- e.g., produce final state at
+   capability construction time, or have the capability
+   surface a not-ready error/default until init has
+   progressed.
+
+   *Future consideration.* If an extension genuinely
+   needs an init-complete guarantee before the data path
+   runs, the framework can later add an opt-in readiness
+   probe so participating extensions can block data-path
+   spawn until they signal ready, while non-participating
+   extensions keep today's behavior unchanged.
+
+   *Runtime cost.* `start()` runs on the same per-core
+   async runtime as the data path -- the runtime that
+   drives every node, channel, and extension on this
+   core. Blocking calls (synchronous I/O, lock
+   contention, file reads without `tokio::fs`) and
+   CPU-heavy work (compression, large
+   serialization/deserialization, cryptographic
+   operations) inside `start()` -- or inside any
+   capability method dispatched on that runtime --
+   stall every other future on the core, including the
+   data path itself. Extensions that need such work
+   must move it off the per-core runtime: a bounded
+   `tokio::task::spawn_blocking` for blocking I/O, a
+   dedicated worker thread for sustained CPU work, or
+   a Rayon pool for parallel compute. The same
+   guidance applies to background extensions, whose
+   `start()` body shares the same runtime.
 
 2. **PData-free.** Extensions are completely decoupled from
    the pipeline data type. They use `ExtensionControlMsg`
@@ -176,16 +231,17 @@ themselves, and they never touch pipeline data directly.
    `.build()`; exactly one registration is required and a
    second is unrepresentable in the typestate. The choice
    of `.shared(...)` vs `.local(...)` only governs how the
-   engine hosts the instance (`Send + Clone` vs `!Send`,
-   per-pipeline). Background extensions never appear as
-   the right-hand side of a capability binding; their
-   factory's `capabilities` field is `Option<_>::None`,
-   and that `None` is the engine's runtime signal "this is
-   a Background extension" -- capability registration is
-   skipped entirely. For lifecycle dispatch (event loop,
-   control channel, shutdown sequencing) Background is
-   handled exactly like Active. The shape constraints are
-   compile-time enforced by the typestate builder:
+   engine hosts the instance (`Send + Clone` vs
+   `Clone` but not `Send`, per-pipeline). Background extensions
+   never appear as the right-hand side of a capability
+   binding; their factory's `capabilities` field is
+   `Option<_>::None`, and that `None` is the engine's
+   runtime signal "this is a Background extension" --
+   capability registration is skipped entirely. For
+   lifecycle dispatch (event loop, control channel,
+   shutdown sequencing) Background is handled exactly like
+   Active. The shape constraints are compile-time enforced
+   by the typestate builder:
    - Active and Passive **must** register >=1 capability.
    - Background **must** register 0 capabilities (no
      `extension_capabilities!` invocation).
@@ -198,16 +254,13 @@ themselves, and they never touch pipeline data directly.
    consumers call `require_shared()` / `require_local()`
    and cannot observe which policy was used.
    - `.cloned()` -- each consumer receives a clone of
-     the value handed to the builder. The semantics
-     differ by execution model:
-     - For `.shared(value: E)` (`E: Clone + Send`), each
-       consumer gets `value.clone()` -- an independent
-       copy of the underlying object.
-     - For `.local(rc: Rc<E>)`, each consumer gets
-       `Rc::clone(&rc)` -- a new handle to the *same*
-       underlying object. Local consumers in the same
-       pipeline instance therefore share one extension
-       instance.
+     the value handed to the builder. Both execution
+     models share the same semantics: an `E: Clone`
+     prototype is stored, and each consumer gets
+     `value.clone()` -- an independent copy of the
+     underlying object. To share state across consumers,
+     wrap fields in `Rc<RefCell<T>>` (local) or
+     `Arc<Mutex<T>>` (shared).
    - `.constructed()` -- each consumer receives a
      newly-constructed instance from a user-supplied
      `Fn() -> E + Clone` closure.
@@ -227,20 +280,22 @@ themselves, and they never touch pipeline data directly.
      `wrap_shared_as_local` fallback. This is the most
      common pattern.
    - **Local-only:** `.active().local(Rc::new(ext)).build()`
-     -- only local consumers can use this extension.
+     -- only local consumers can use this extension
+     (`E: Clone` is required for the per-consumer factory).
      Shared consumers (`require_shared()`) get a config
      error. Use when the extension is inherently `!Send`.
    - **Dual-type:** `.active().local(Rc::new(l)).shared(s).build()`
      -- separate types with independent lifecycles.
    - **Passive cloned:** `.passive().cloned().shared(ext).build()`
-     -- no lifecycle; consumers clone a stored prototype.
+     or `.passive().cloned().local(ext).build()` -- no
+     lifecycle; consumers clone a stored prototype.
    - **Passive constructed:** `.passive().constructed().shared(|| MyExt::new(cfg.clone())).build()`
      -- no lifecycle; each consumer invokes the stored
      constructor closure.
 
 7. **Type-safe capability resolution.** Consumers call
    `capabilities.require_local::<BearerTokenProvider>()`
-   (returns `Rc<dyn local::BearerTokenProvider>`) or
+   (returns `Box<dyn local::BearerTokenProvider>`) or
    `capabilities.require_shared::<KeyValueStore>()`
    (returns `Box<dyn shared::KeyValueStore>`, which is `Send`).
    The zero-sized registration struct carries associated
@@ -256,7 +311,7 @@ themselves, and they never touch pipeline data directly.
    on `require_local()`, the registered shared factory
    runs and its result is routed through the capability's
    `wrap_shared_as_local` adapter to produce
-   `Rc<dyn C::Local>`.
+   `Box<dyn C::Local>`.
 
 8. **`#[capability]` proc macro.** Each capability is
    defined via a single `#[capability]` attribute on a

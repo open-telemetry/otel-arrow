@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use tokio::runtime::LocalRuntime;
 
+pub mod capability;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod dst;
 pub mod exporter;

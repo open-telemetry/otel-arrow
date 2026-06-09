@@ -306,7 +306,7 @@ impl ProxyConfig {
     /// - "192.168.0.0/16" - CIDR notation for IP ranges
     /// - "example.com:443" - exact hostname match with a specific port
     /// - "[::1]:4317" - IPv6 literal match with a specific port
-    fn should_bypass(&self, host: &str, port: u16) -> bool {
+    pub(crate) fn should_bypass(&self, host: &str, port: u16) -> bool {
         let no_proxy = match &self.no_proxy {
             Some(np) => np,
             None => return false,

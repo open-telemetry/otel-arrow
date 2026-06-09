@@ -17,8 +17,9 @@
 //!
 //! # Supported
 //!
-//! - Methods with `&self` receiver (sync and async)
-//! - Method-level generics, lifetimes, and where clauses
+//! - Methods with `&self` or `&mut self` receivers (sync and async;
+//!   explicit lifetimes like `&'a self` are also accepted)
+//! - Method-level lifetime parameters and where clauses
 //! - Default method bodies (preserved in generated local/shared traits)
 //! - Doc attributes on the trait (propagated to generated traits)
 //! - Visibility modifiers on the trait
@@ -30,8 +31,7 @@
 //!
 //! - **Trait-level generics or lifetime parameters** — e.g.
 //!   `#[capability] trait Foo<T>` or `#[capability] trait Bar<'a>`.
-//!   Method-level generics (one bullet up) *are* supported because the
-//!   trait object `dyn Foo` exists for the trait as a whole. Trait-level
+//!   Method-level lifetimes (one bullet up) *are* supported. Trait-level
 //!   parameters, by contrast, mean the trait isn't one type but a
 //!   *family* — `Foo<u32>`, `Foo<String>`, etc. — each with its own
 //!   `TypeId::of::<Foo<T>>()`. The registry keys entries by a single
@@ -40,6 +40,14 @@
 //!   parameter at the trait definition (e.g. work over `String` or a
 //!   sealed enum) or split the family into separate `#[capability]`
 //!   traits.
+//! - **Method-level generic type or const parameters** — e.g.
+//!   `fn get<T>(&self, key: T) -> T` or `fn pad<const N: usize>(&self)`.
+//!   The macro generates `Box<dyn local::Trait>` / `Box<dyn shared::Trait>`
+//!   handles, and dyn-compatibility (object safety) forbids generic type
+//!   or const parameters on dispatchable methods because each
+//!   monomorphization would need its own vtable slot. Use a concrete type
+//!   (or a sealed enum) at the trait method signature instead. Method-level
+//!   *lifetime* parameters are accepted.
 //! - **Supertraits** (`trait Foo: Bar`) — the `SharedAsLocal` adapter only
 //!   delegates methods defined directly on the `#[capability]` trait. It cannot
 //!   auto-implement supertrait methods. Define all methods directly on the
@@ -49,6 +57,16 @@
 //!   implementations could have different associated types, making a single
 //!   registry entry impossible.
 //! - **Associated constants** — same fundamental issue as associated types.
+//! - **Receiver shapes other than `&self` / `&mut self`** — rejected at the
+//!   macro level with a fail-fast diagnostic. Specifically:
+//!     - No `self` associated functions (`fn foo()`) — not dispatchable through
+//!       `dyn Trait`.
+//!     - Consuming `self` (`fn foo(self)`) — non-object-safe; the
+//!       `SharedAsLocal` adapter holds `Box<dyn shared::Trait>` and cannot
+//!       call methods that consume the trait object.
+//!     - Arbitrary self types (`self: Box<Self>`, `self: Arc<Self>`, …) — the
+//!       adapter delegates through a `Box<dyn shared::Trait>` field and only
+//!       knows how to forward `&self` / `&mut self` receivers.
 //!
 //! # Generated code paths
 //!
@@ -60,7 +78,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    Ident, ItemTrait, LitStr, Meta, TraitItem, TraitItemFn,
+    FnArg, GenericParam, Ident, ItemTrait, LitStr, Meta, TraitItem, TraitItemFn,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
     token::Comma,
@@ -127,12 +145,16 @@ impl Parse for CapabilityArgs {
 ///
 /// Returns a compile error if unsupported features are used.
 fn validate_trait(trait_item: &ItemTrait) -> Result<(), TokenStream> {
-    // Reject trait-level generics (including lifetimes).
+    // Reject trait-level generics (including lifetimes). Method-level
+    // lifetimes are accepted; method-level type/const parameters are
+    // rejected separately below with their own diagnostic.
     if !trait_item.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
             &trait_item.generics,
             "#[capability] does not support trait-level generics or lifetimes; \
-             use method-level generics instead",
+             method-level lifetimes are supported, but type or const parameters \
+             must be expressed with concrete method signatures (or by splitting \
+             the family into separate capability traits)",
         )
         .to_compile_error());
     }
@@ -164,6 +186,100 @@ fn validate_trait(trait_item: &ItemTrait) -> Result<(), TokenStream> {
                     "#[capability] does not support associated constants",
                 )
                 .to_compile_error());
+            }
+            TraitItem::Fn(f) => {
+                // Reject unsupported receiver shapes up front so the
+                // diagnostic points at the bad receiver rather than at
+                // generated `dyn Trait` / adapter code far from the
+                // capability definition.
+                //
+                // Supported: `&self`, `&mut self` (with or without an
+                //            explicit lifetime, e.g. `&'a self`).
+                // Rejected: no `self` associated functions, consuming
+                //           `self`, and arbitrary self types
+                //           (`self: Box<Self>`, `self: Arc<Self>`, …).
+                match f.sig.inputs.first() {
+                    Some(FnArg::Receiver(recv)) => {
+                        if recv.colon_token.is_some() {
+                            // Typed receiver such as `self: Box<Self>`.
+                            return Err(syn::Error::new_spanned(
+                                recv,
+                                "#[capability] does not support arbitrary self types \
+                                 (e.g. `self: Box<Self>`, `self: Arc<Self>`); the \
+                                 SharedAsLocal adapter delegates through a `Box<dyn \
+                                 shared::Trait>` field and can only forward `&self` / \
+                                 `&mut self` receivers",
+                            )
+                            .to_compile_error());
+                        }
+                        if recv.reference.is_none() {
+                            // Consuming `self`.
+                            return Err(syn::Error::new_spanned(
+                                recv,
+                                "#[capability] does not support methods that consume \
+                                 `self`; the SharedAsLocal adapter holds a \
+                                 `Box<dyn shared::Trait>` and cannot call methods \
+                                 that take `self` by value. Use `&self` or `&mut self` \
+                                 instead.",
+                            )
+                            .to_compile_error());
+                        }
+                    }
+                    _ => {
+                        // First input is not a receiver — either no inputs
+                        // at all or `fn foo(arg: T)` style associated fn.
+                        return Err(syn::Error::new_spanned(
+                            &f.sig,
+                            "#[capability] does not support associated functions \
+                             without a `self` receiver; every method must take \
+                             `&self` or `&mut self` because the registry dispatches \
+                             through `Box<dyn local::Trait>` / `Box<dyn shared::Trait>`",
+                        )
+                        .to_compile_error());
+                    }
+                }
+
+                // Reject method-level generic type and const parameters.
+                // The macro generates `Box<dyn local::Trait>` /
+                // `Box<dyn shared::Trait>` handles, and dyn-compatibility
+                // (object safety) forbids generic type or const parameters
+                // on dispatchable methods. Lifetimes are fine — they
+                // don't affect dyn-compatibility.
+                for gp in &f.sig.generics.params {
+                    match gp {
+                        GenericParam::Type(_) | GenericParam::Const(_) => {
+                            return Err(syn::Error::new_spanned(
+                                gp,
+                                "#[capability] does not support method-level generic type \
+                                 or const parameters; the generated `Box<dyn Trait>` handles \
+                                 require dyn-compatibility. Use a concrete type (or sealed \
+                                 enum) in the method signature instead.",
+                            )
+                            .to_compile_error());
+                        }
+                        GenericParam::Lifetime(_) => {}
+                    }
+                }
+
+                // Reject non-ident parameter patterns (e.g. destructured
+                // arguments like `(a, b): (u64, u64)`). The adapter
+                // delegation requires simple ident parameters so it can
+                // forward by name. Catching this here gives a clear
+                // compile error instead of a proc-macro panic deeper in
+                // codegen.
+                for arg in &f.sig.inputs {
+                    if let FnArg::Typed(pat_type) = arg
+                        && !matches!(&*pat_type.pat, syn::Pat::Ident(_))
+                    {
+                        return Err(syn::Error::new_spanned(
+                            &pat_type.pat,
+                            "#[capability] requires simple identifier parameters; \
+                             destructured patterns (e.g. `(a, b): (u64, u64)`) are not \
+                             supported because the generated adapter delegates by parameter name.",
+                        )
+                        .to_compile_error());
+                    }
+                }
             }
             _ => {}
         }
@@ -247,15 +363,19 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
                 .inputs
                 .iter()
                 .filter_map(|arg| {
-                    if let syn::FnArg::Typed(pat_type) = arg {
+                    if let FnArg::Typed(pat_type) = arg {
                         if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
                             Some(&pat_ident.ident)
                         } else {
-                            // Non-ident patterns (e.g., destructuring) would
-                            // silently break delegation. This can't happen for
-                            // capability traits validated above (no associated
-                            // types, simple &self methods), but panic defensively.
-                            panic!("#[capability] adapter delegation requires simple ident parameters, got a pattern")
+                            // validate_trait rejects non-ident parameter
+                            // patterns up-front with a syn::Error, so this
+                            // branch is unreachable in practice. Kept as a
+                            // belt-and-suspenders panic in case a future
+                            // change to validation lets one slip through.
+                            unreachable!(
+                                "#[capability] adapter delegation requires simple ident parameters; \
+                                 should have been rejected by validate_trait"
+                            )
                         }
                     } else {
                         None
@@ -365,14 +485,14 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
 
                 let adapt_as_local: fn(
                     ::std::boxed::Box<dyn ::std::any::Any + Send>,
-                ) -> ::std::rc::Rc<dyn ::std::any::Any> = |erased| {
+                ) -> ::std::boxed::Box<dyn ::std::any::Any> = |erased| {
                     let shared: ::std::boxed::Box<::std::boxed::Box<dyn shared::#trait_name>> =
                         erased
                             .downcast()
                             .expect("shared_entry produce closure returned wrong envelope");
-                    let rc_local = <#trait_name as crate::capability::ExtensionCapability>::
+                    let boxed_local = <#trait_name as crate::capability::ExtensionCapability>::
                         wrap_shared_as_local(*shared);
-                    ::std::rc::Rc::new(rc_local) as ::std::rc::Rc<dyn ::std::any::Any>
+                    ::std::boxed::Box::new(boxed_local) as ::std::boxed::Box<dyn ::std::any::Any>
                 };
 
                 crate::capability::registry::SharedCapabilityEntry::new(
@@ -387,9 +507,9 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
             /// object.
             ///
             /// The entry's produce closure calls the stored instance
-            /// factory, downcasts the erased `Rc<dyn Any>` to `Rc<E>`,
-            /// coerces to `Rc<dyn local::#trait_name>`, and re-erases
-            /// under the double-`Rc` envelope expected by the registry.
+            /// factory, downcasts the erased `Box<dyn Any>` to `Box<E>`,
+            /// coerces to `Box<dyn local::#trait_name>`, and re-erases
+            /// under the double-`Box` envelope expected by the registry.
             #[allow(non_snake_case, clippy::missing_errors_doc)]
             #vis fn local_entry<E>(
                 extension_id: ::otap_df_config::ExtensionId,
@@ -398,13 +518,13 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
             where
                 E: local::#trait_name + 'static,
             {
-                let produce = move || -> ::std::rc::Rc<dyn ::std::any::Any> {
+                let produce = move || -> ::std::boxed::Box<dyn ::std::any::Any> {
                     let erased = factory.produce();
-                    let concrete: ::std::rc::Rc<E> = erased
+                    let concrete: ::std::boxed::Box<E> = erased
                         .downcast()
                         .expect("instance_factory produced wrong type for capability");
-                    let local: ::std::rc::Rc<dyn local::#trait_name> = concrete;
-                    ::std::rc::Rc::new(local) as ::std::rc::Rc<dyn ::std::any::Any>
+                    let local: ::std::boxed::Box<dyn local::#trait_name> = concrete;
+                    ::std::boxed::Box::new(local) as ::std::boxed::Box<dyn ::std::any::Any>
                 };
 
                 crate::capability::registry::LocalCapabilityEntry::new(extension_id, produce)
@@ -426,9 +546,9 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
 
             fn wrap_shared_as_local(
                 shared: ::std::boxed::Box<Self::Shared>,
-            ) -> ::std::rc::Rc<Self::Local> {
+            ) -> ::std::boxed::Box<Self::Local> {
                 let adapter = #shared_as_local_name(shared);
-                ::std::rc::Rc::new(adapter)
+                ::std::boxed::Box::new(adapter)
             }
         }
 
@@ -436,6 +556,11 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
         // slice at link time, so the engine can enumerate all capabilities
         // compiled into the binary (by name, description, and TypeId) without
         // needing an explicit registration call.
+        //
+        // `#[allow(unsafe_code)]` is required because `linkme::distributed_slice`
+        // emits a static with `#[link_section = "..."]`, which the engine
+        // crate's lints (`-D unsafe-code`) would otherwise reject.
+        #[allow(unsafe_code)]
         #[::linkme::distributed_slice(crate::capability::KNOWN_CAPABILITIES)]
         #[linkme(crate = ::linkme)]
         static #known_cap_static: crate::capability::KnownCapability =
@@ -444,5 +569,142 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
                 description: #description_str,
                 type_id: || ::std::any::TypeId::of::<#trait_name>(),
             };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parse a trait body and run it through `validate_trait`, returning the
+    /// error message text on rejection or `None` on success.
+    fn validate(src: &str) -> Option<String> {
+        let trait_item: ItemTrait = syn::parse_str(src).expect("parse trait");
+        validate_trait(&trait_item).err().map(|ts| ts.to_string())
+    }
+
+    #[test]
+    fn accepts_ref_self() {
+        assert!(validate("trait Cap { fn get(&self) -> u32; }").is_none());
+    }
+
+    #[test]
+    fn accepts_ref_self_with_lifetime() {
+        assert!(validate("trait Cap { fn get<'a>(&'a self) -> &'a str; }").is_none());
+    }
+
+    #[test]
+    fn accepts_async_ref_self() {
+        assert!(validate("trait Cap { async fn get(&self) -> u32; }").is_none());
+    }
+
+    #[test]
+    fn accepts_default_method_body() {
+        assert!(validate("trait Cap { fn get(&self) -> u32 { 0 } }").is_none());
+    }
+
+    #[test]
+    fn accepts_mut_self_reference() {
+        assert!(validate("trait Cap { fn set(&mut self); }").is_none());
+    }
+
+    #[test]
+    fn accepts_mut_self_reference_with_lifetime() {
+        assert!(validate("trait Cap { fn set<'a>(&'a mut self); }").is_none());
+    }
+
+    #[test]
+    fn accepts_async_mut_self() {
+        assert!(validate("trait Cap { async fn set(&mut self); }").is_none());
+    }
+
+    #[test]
+    fn accepts_method_lifetime_param() {
+        // Lifetime parameters do not affect dyn-compatibility, so they
+        // are allowed.
+        assert!(validate("trait Cap { fn get<'a>(&'a self) -> &'a str; }").is_none());
+    }
+
+    #[test]
+    fn rejects_method_generic_type_param() {
+        // Generic type parameters break dyn-compatibility of the
+        // generated `Box<dyn local/shared::Trait>` handles.
+        let err = validate("trait Cap { fn get<T>(&self, key: T) -> T; }").expect("should reject");
+        assert!(
+            err.contains("method-level generic type"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_method_generic_const_param() {
+        // Const generics likewise break dyn-compatibility.
+        let err = validate("trait Cap { fn pad<const N: usize>(&self) -> [u8; N]; }")
+            .expect("should reject");
+        assert!(
+            err.contains("method-level generic type"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_destructured_parameter_pattern() {
+        // Destructured arg patterns (e.g. `(a, b): (u64, u64)`) cannot
+        // be forwarded by name through the SharedAsLocal adapter; we
+        // reject them with a syn::Error rather than panicking deep in
+        // codegen.
+        let err =
+            validate("trait Cap { fn set(&self, (a, b): (u64, u64)); }").expect("should reject");
+        assert!(
+            err.contains("simple identifier parameters"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_no_self_associated_fn() {
+        let err = validate("trait Cap { fn make() -> u32; }").expect("should reject");
+        assert!(
+            err.contains("without a `self` receiver"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_consuming_self() {
+        let err = validate("trait Cap { fn finish(self); }").expect("should reject");
+        assert!(err.contains("consume `self`"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn rejects_typed_self_receiver_box() {
+        let err = validate("trait Cap { fn run(self: Box<Self>); }").expect("should reject");
+        assert!(
+            err.contains("arbitrary self types"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_typed_self_receiver_arc() {
+        let err =
+            validate("trait Cap { fn run(self: std::sync::Arc<Self>); }").expect("should reject");
+        assert!(
+            err.contains("arbitrary self types"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn trait_level_generics_error_mentions_method_lifetimes() {
+        // Regression for the previously misleading wording that just said
+        // "use method-level generics instead" — method-level type/const
+        // generics are also rejected, so the error should clarify that
+        // only method-level lifetimes are supported.
+        let err = validate("trait Cap<T> { fn get(&self) -> T; }").expect("should reject");
+        assert!(
+            err.contains("method-level lifetimes are supported"),
+            "unexpected error: {err}"
+        );
     }
 }

@@ -1,0 +1,4 @@
+change_type: breaking
+component: query-engine
+note: changes keyword "exclude" to "remove", and changes "date_time" literal tag to "timestamp" to align with nascent spec
+issues: [3051]

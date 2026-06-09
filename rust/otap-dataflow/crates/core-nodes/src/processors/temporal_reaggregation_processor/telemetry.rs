@@ -20,7 +20,7 @@ pub const INVALID_CALLDATA_EVENT: &str = "temporal_reaggregation.calldata.invali
 pub const ERRONEOUS_ACK_EVENT: &str = "temporal_reaggregation.ack.erroneous";
 
 /// Metrics for the temporal reaggregation processor.
-#[metric_set(name = "temporal_reaggregation.processor.pdata.metrics")]
+#[metric_set(name = "processor.temporal_reaggregation.pdata")]
 #[derive(Debug, Default, Clone)]
 pub struct TemporalReaggregationMetrics {
     /// Number of flushes triggered by the regular timer.

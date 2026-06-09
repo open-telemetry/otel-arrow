@@ -200,12 +200,14 @@ pub fn create_condense_attributes_processor(
 pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
         name: CONDENSE_ATTRIBUTES_PROCESSOR_URN,
-        create: |pipeline_ctx: PipelineContext,
-                 node: NodeId,
-                 node_config: Arc<NodeUserConfig>,
-                 proc_cfg: &ProcessorConfig| {
-            create_condense_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
-        },
+        create:
+            |pipeline_ctx: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             proc_cfg: &ProcessorConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+                create_condense_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
+            },
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: |config| Config::from_config(config).map(|_| ()),
     };

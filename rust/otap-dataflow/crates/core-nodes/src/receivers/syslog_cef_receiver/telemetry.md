@@ -8,17 +8,17 @@ by the component and log events emitted via `otel_*` log macros.
 
 ## Metrics
 
-Metrics are registered under the metric set name `syslog_cef.receiver`.
+Metrics are registered under the metric set name `receiver.syslog_cef`.
 
 | Metric name | Type | Unit | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `syslog_cef.receiver.received_logs_total` | Counter | `{item}` | Total number of log records observed at the socket before parsing. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `syslog_cef.receiver.received_logs_forwarded` | Counter | `{item}` | Number of log records successfully forwarded downstream. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `syslog_cef.receiver.received_logs_invalid` | Counter | `{item}` | Number of log records rejected because their payload is zero-length. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `syslog_cef.receiver.received_logs_truncated` | Counter | `{item}` | Number of log records whose raw message exceeded the maximum message size and were truncated before parsing. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `syslog_cef.receiver.received_logs_forward_failed` | Counter | `{item}` | Number of log records refused by downstream (backpressure/unavailable). | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `syslog_cef.receiver.tcp_connections_active` | UpDownCounter | `{conn}` | Number of currently active TCP connections. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `syslog_cef.receiver.tls_handshake_failures` | Counter | `{error}` | Number of TLS handshake failures. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.syslog_cef.received_logs_total` | Counter | `{item}` | Total number of log records observed at the socket before parsing. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.syslog_cef.received_logs_forwarded` | Counter | `{item}` | Number of log records successfully forwarded downstream. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.syslog_cef.received_logs_invalid` | Counter | `{item}` | Number of log records rejected because their payload is zero-length. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.syslog_cef.received_logs_truncated` | Counter | `{item}` | Number of log records whose raw message exceeded the maximum message size and were truncated before parsing. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.syslog_cef.received_logs_forward_failed` | Counter | `{item}` | Number of log records refused by downstream (backpressure/unavailable). | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.syslog_cef.tcp_connections_active` | UpDownCounter | `{conn}` | Number of currently active TCP connections. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.syslog_cef.tls_handshake_failures` | Counter | `{error}` | Number of TLS handshake failures. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 
 ## Logs
 
@@ -37,10 +37,10 @@ When adding or changing telemetry in this component:
 
 1. **Metrics**
    - If you add a field under
-     `#[metric_set(name = "syslog_cef.receiver")]`, add or
+     `#[metric_set(name = "receiver.syslog_cef")]`, add or
      update its row in the **Metrics** table.
    - Use metric names in the form
-     `syslog_cef.receiver.<field_name>` unless the field has
+     `receiver.syslog_cef.<field_name>` unless the field has
      an explicit metric-name override.
 
 2. **Logs**

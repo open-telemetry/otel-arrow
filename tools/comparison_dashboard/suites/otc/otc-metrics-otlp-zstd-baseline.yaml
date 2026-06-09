@@ -1,0 +1,21 @@
+name: OTC OTLP Baseline w/ Zstd (Metrics)
+slug: otc_metrics_otlp_zstd_baseline
+description: OpenTelemetry Collector baseline for OTLP metrics with zstd compression
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/otc-single-core-multi-rate.yaml
+
+meta:
+  binary: otc
+  protocols: [otlp]
+  signals: [metrics]
+  compression: zstd
+
+variables:
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_metrics.yaml
+  collector_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/otelcol/otlp-otlp.yaml.j2
+  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otlp.yaml.j2
+  backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/backend/otlp.yaml.j2
+  protocol: otlp
+  signal: metrics
+  loadgen_max_batch_size: 1000
+  compression_method: zstd
+  otelcol_gomaxprocs: 1

@@ -44,21 +44,6 @@ pub fn config_map_to_telemetry(
         .collect()
 }
 
-/// Resource attributes (host id, process instance id, container id, ...).
-#[attribute_set(name = "resource.attrs")]
-#[derive(Debug, Clone, Default, Hash)]
-pub struct ResourceAttributeSet {
-    /// Unique process instance identifier (base32-encoded UUID v7).
-    #[attribute]
-    pub process_instance_id: Cow<'static, str>,
-    /// Host identifier, when available (e.g. hostname).
-    #[attribute]
-    pub host_id: Cow<'static, str>,
-    /// Container identifier, when available (e.g. Docker or containerd container ID).
-    #[attribute]
-    pub container_id: Cow<'static, str>,
-}
-
 /// Engine attributes (core id, numa node id, ...).
 #[attribute_set(name = "controller.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
@@ -67,13 +52,30 @@ pub struct EngineAttributeSet {
     #[attribute]
     pub core_id: usize,
 
-    /// Resource attributes.
-    #[compose]
-    pub resource_attrs: ResourceAttributeSet,
-
     /// NUMA node identifier.
     #[attribute]
     pub numa_node_id: usize,
+}
+
+static ENGINE_ENTITY_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+    name: "engine",
+    fields: &[],
+};
+
+/// Empty attribute set for the engine-global entity. Process/host identity
+/// now lives on the OTel Resource layer, so engine-wide metrics carry no
+/// scope attributes.
+#[derive(Debug, Clone, Default, Hash)]
+pub struct EngineEntityAttributeSet;
+
+impl AttributeSetHandler for EngineEntityAttributeSet {
+    fn descriptor(&self) -> &'static AttributesDescriptor {
+        &ENGINE_ENTITY_DESCRIPTOR
+    }
+
+    fn attribute_values(&self) -> &[AttributeValue] {
+        &[]
+    }
 }
 
 /// Pipeline attributes.

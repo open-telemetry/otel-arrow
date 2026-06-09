@@ -753,12 +753,14 @@ mod tests {
         let attrs_text = format_attrs(&expected_attrs);
         let expected_suffix = format!(": {}{}", expected_body, attrs_text);
 
-        // Verify event_name has correct prefix. Note: file:line are not always available, not tested.
-        let expected_prefix = "otap_df_telemetry::self_tracing::formatter::tests::event";
+        // Verify event_name has correct shape. Note: tracing
+        // autogenerates names of the form `event <file>:<line>` for
+        // unannotated macro calls; we just check it starts with
+        // `event`. The crate/module path appears in
+        // InstrumentationScope.name (verified separately below).
         assert!(
-            decoded.event_name.starts_with(expected_prefix),
-            "event_name should start with '{}', got: {}",
-            expected_prefix,
+            decoded.event_name.starts_with("event"),
+            "event_name should start with 'event', got: {}",
             decoded.event_name
         );
 
@@ -844,7 +846,13 @@ mod tests {
         assert_eq!(decoded.time_unix_nano, 1_705_321_845_678_000_000);
         assert_eq!(decoded.severity_number, 9); // INFO
         assert!(decoded.severity_text.is_empty()); // Not coded
-        assert_eq!(decoded.event_name, "test_module::submodule::test_event");
+        // `DirectLogRecordEncoder` only writes the `LogRecord` message;
+        // `event_name` here is the bare callsite name. The owning
+        // `InstrumentationScope` (which carries `callsite.target()` as
+        // its `name`) is written by `encode_export_logs_request` and is
+        // covered by `encode_export_logs_request_with_scope_attributes`
+        // in encoder.rs.
+        assert_eq!(decoded.event_name, "test_event");
     }
 
     #[test]

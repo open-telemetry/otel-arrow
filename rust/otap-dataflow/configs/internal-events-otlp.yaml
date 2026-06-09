@@ -1,0 +1,112 @@
+version: otel_dataflow/v1
+# df_engine config that exercises internal events so the
+# `df-engine-events-weaver-live-check` CI job can validate them
+# end-to-end against the in-tree semantic-conventions registry under
+# `rust/otap-dataflow/semconv/`.
+#
+# Tracking issue: https://github.com/open-telemetry/otel-arrow/issues/1613
+#
+# Wiring:
+#
+#   groups.default.pipelines.main
+#     urn:otel:receiver:otlp                            <-- the CI job
+#       :: gRPC on 127.0.0.1:14317                          drives traffic
+#       :: TLS enabled                                      at this listener
+#           |                                               to fire the
+#           v                                               internal events
+#     urn:otel:exporter:noop                                being validated.
+#
+#   engine.observability.pipeline
+#     urn:otel:receiver:internal_telemetry              <-- captures internal
+#           |                                               logs from the
+#           v                                               engine thread
+#     urn:otel:exporter:otlp_grpc                       --> 127.0.0.1:4317
+#       :: 127.0.0.1:4317 (plaintext)                       (the weaver
+#                                                           live-check
+#                                                           OTLP listener)
+#
+# Cert + key are read from /tmp/df-engine-tls; CI generates a
+# self-signed pair there before launching df_engine.
+
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:14319"
+  telemetry:
+    logs:
+      # `debug` so that DEBUG-level events such as
+      # `otlp.exporter.grpc.receive` are captured in addition to the
+      # WARN-level `tls.handshake.failed` and `otlp.exporter.http.export_error`.
+      # The internal_telemetry provider is `noop` so this does not feed back.
+      level: "debug"
+      providers:
+        global: its
+        engine: its
+        # Avoid feedback: nodes downstream of the internal receiver
+        # must not themselves emit through ITS.
+        internal: noop
+        admin: console_direct
+
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "urn:otel:receiver:internal_telemetry"
+          config: {}
+        otlp_out:
+          type: "urn:otel:exporter:otlp_grpc"
+          config:
+            grpc_endpoint: "http://127.0.0.1:4317"
+      connections:
+        - from: itr
+          to: otlp_out
+
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          otlp_in:
+            type: "urn:otel:receiver:otlp"
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:14317"
+                  tls:
+                    cert_file: "/tmp/df-engine-tls/cert.pem"
+                    key_file: "/tmp/df-engine-tls/key.pem"
+          syslog_in:
+            type: "urn:otel:receiver:syslog_cef"
+            config:
+              protocol:
+                tcp:
+                  listening_addr: "127.0.0.1:14514"
+          # Drives `otlp.exporter.http.export_error` (per failed export)
+          # AND `otlp.exporter.grpc.receive` (per batch pulled from the
+          # exporter's inbox) by feeding synthetic traffic into an OTLP
+          # exporter pointed at an unbound port.
+          gen:
+            type: "urn:otel:receiver:traffic_generator"
+            config:
+              data_source: synthetic
+              generation_strategy: fresh
+              traffic_config:
+                signals_per_second: 5
+                max_batch_size: 1
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+                log_body_size_bytes: 64
+          dead_exporter:
+            type: "urn:otel:exporter:otlp_grpc"
+            config:
+              grpc_endpoint: "http://127.0.0.1:14999"
+          sink:
+            type: "urn:otel:exporter:noop"
+            config: {}
+        connections:
+          - from: otlp_in
+            to: sink
+          - from: syslog_in
+            to: sink
+          - from: gen
+            to: dead_exporter

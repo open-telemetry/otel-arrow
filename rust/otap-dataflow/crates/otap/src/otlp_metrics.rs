@@ -7,7 +7,7 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
 /// OTLP receiver metrics.
-#[metric_set(name = "otlp.receiver")]
+#[metric_set(name = "receiver.otlp")]
 #[derive(Debug, Default, Clone)]
 pub struct OtlpReceiverMetrics {
     /// Number of acks received from downstream (routed back to the caller).

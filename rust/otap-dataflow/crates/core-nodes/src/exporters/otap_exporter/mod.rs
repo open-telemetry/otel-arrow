@@ -162,7 +162,8 @@ pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
+             exporter_config: &ExporterConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         Ok(ExporterWrapper::local(
             OTAPExporter::from_config(pipeline, &node_config.config)?,
             node,
@@ -373,6 +374,19 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         );
 
         let exporter_id = effect_handler.exporter_id();
+
+        // Run the optional startup check (dns resolution or eager connect) before creating the
+        // lazy channel used for normal runtime traffic.
+        self.config.grpc.run_startup_check().await.map_err(|e| {
+            let source_detail = format_error_sources(&e);
+            Error::ExporterError {
+                exporter: exporter_id.clone(),
+                kind: ExporterErrorKind::Connect,
+                error: format!("startup check failed: {e}"),
+                source_detail,
+            }
+        })?;
+
         let channel = self
             .config
             .grpc
@@ -387,10 +401,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     source_detail,
                 }
             })?;
-
-        let timer_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
 
         // start a grpc client and connect to the server
         let mut arrow_metrics_client = ArrowMetricsServiceClient::new(channel.clone());
@@ -498,7 +508,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             &effect_handler,
                         )
                         .await?;
-                        _ = timer_cancel_handle.cancel().await;
                         self.export_latency_window
                             .report_into(&mut self.async_metrics);
                         return Ok(TerminalState::new(

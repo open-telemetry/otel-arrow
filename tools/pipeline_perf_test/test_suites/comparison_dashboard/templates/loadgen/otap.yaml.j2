@@ -22,7 +22,7 @@ groups:
           receiver:
             type: "urn:otel:receiver:traffic_generator"
             config:
-              data_source: semantic_conventions
+              data_source: {{ data_source | default("semantic_conventions") }}
               generation_strategy: {{ generation_strategy | default("pre_generated") }}
               traffic_config:
                 production_mode: {{ production_mode | default("smooth") }}
@@ -31,6 +31,12 @@ groups:
                 metric_weight: {{ metric_weight | default(0) }}
                 trace_weight: {{ trace_weight | default(0) }}
                 log_weight: {{ log_weight | default(100) }}
+{%- if num_log_attributes is defined %}
+                num_log_attributes: {{ num_log_attributes }}
+{%- endif %}
+{%- if num_metric_attributes is defined %}
+                num_metric_attributes: {{ num_metric_attributes }}
+{%- endif %}
 
           exporter:
             type: "urn:otel:exporter:otap"

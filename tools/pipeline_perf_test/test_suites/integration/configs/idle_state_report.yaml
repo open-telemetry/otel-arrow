@@ -55,6 +55,36 @@ queries:
         ORDER BY
           m.component_name DESC;
 
+  - name: Create engine self-reported metrics
+    sql: |
+      CREATE TABLE engine_self_metrics AS
+        WITH metrics_filtered AS (
+          SELECT *,
+          "metric_attributes.component_name" AS component_name
+          FROM metrics
+          WHERE metric_name = 'memory_rss'
+            AND "metric_attributes.component_name" = 'df-engine'
+        ),
+        observation_only AS (
+          SELECT *
+          FROM observation_window
+        )
+        SELECT
+          m.component_name,
+          metric_name,
+          MIN(m.value) AS min_value,
+          AVG(m.value) AS avg_value,
+          MAX(m.value) AS max_value
+        FROM
+          observation_only AS ow
+        JOIN
+          metrics_filtered AS m
+          ON m.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        GROUP BY
+          m.component_name, m.metric_name
+        ORDER BY
+          m.component_name DESC;
+
   - name: Idle State Summary
     sql: |
       CREATE TABLE idle_state_summary AS
@@ -108,13 +138,31 @@ queries:
                 EXTRACT(EPOCH FROM (stop_ts - start_ts)) AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Idle Test Duration' AS extra
           FROM observation_window
-          CROSS JOIN metadata_row;
+          CROSS JOIN metadata_row
+
+          UNION ALL
+
+          SELECT 'idle_rss_mib_avg' AS name, 'MiB' AS unit, avg_value / 1024 / 1024 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Idle Process RSS (MiB) (Avg)' AS extra
+          FROM engine_self_metrics
+          CROSS JOIN metadata_row
+          WHERE component_name = 'df-engine' AND metric_name = 'memory_rss'
+
+          UNION ALL
+
+          SELECT 'idle_rss_mib_max' AS name, 'MiB' AS unit, max_value / 1024 / 1024 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Idle Process RSS (MiB) (Max)' AS extra
+          FROM engine_self_metrics
+          CROSS JOIN metadata_row
+          WHERE component_name = 'df-engine' AND metric_name = 'memory_rss';
 
 result_tables:
   - name: observation_window
     description: The observation window for idle state measurement
   - name: component_resource_metrics
     description: CPU and Memory metrics during idle state
+  - name: engine_self_metrics
+    description: Engine self-reported metrics (process RSS) during idle state
   - name: idle_state_summary
     description: Summary of idle state performance metrics
   - name: gh_actions_benchmark

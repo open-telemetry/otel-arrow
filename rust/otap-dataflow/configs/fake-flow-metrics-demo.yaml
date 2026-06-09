@@ -44,13 +44,13 @@ groups:
           telemetry:
             runtime_metrics: normal
             flow_metrics:
-              - name: ingest_pipeline
+              - id: ingest_pipeline
                 bounds:
                   start_node: sampler
                   end_node: attr4
                 # metrics is optional
                 # if omitted, all supported metrics are recorded
-                metrics: [ compute_duration, signals_incoming, signals_outgoing ]
+                metrics: [compute_duration, signals_incoming, signals_outgoing]
 
         nodes:
           receiver:

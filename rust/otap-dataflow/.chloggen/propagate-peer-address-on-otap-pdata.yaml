@@ -1,0 +1,27 @@
+# Use this changelog template to create an entry for release notes.
+
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: enhancement
+
+# The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
+# Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
+component: otap
+
+# A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
+note: Propagate the receiver-observed peer socket address on `OtapPdata` so processors can read request-scoped transport facts via `OtapPdata::peer_addr()`.
+
+# Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
+issues: [3220]
+
+# (Optional) One or more lines of additional information to render under the primary note.
+# These lines will be padded with 2 spaces and then inserted directly into the document.
+# Use pipe (|) for multiline entries.
+subtext: |
+  Adds an optional `Option<SocketAddr>` peer-address slot to the `Context`
+  carried by every `OtapPdata`, populated by the OTLP gRPC, OTLP HTTP, OTAP
+  gRPC, and syslog/CEF TCP receivers from the accepting socket. Receivers
+  without a real socket (file-based, journald, UDS) leave it `None`. The
+  value is preserved across transport boundaries by `clone_without_context`
+  and is exposed via `OtapPdata::peer_addr()` so processors that care
+  (notably the k8sattributes processor's `pod_association: connection` and
+  `passthrough` modes) can opt in to reading it.

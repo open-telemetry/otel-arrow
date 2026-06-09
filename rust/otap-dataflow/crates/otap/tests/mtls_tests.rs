@@ -165,7 +165,11 @@ async fn test_mtls_missing_client_cert() {
         match tls_acceptor.accept(stream).await {
             Ok(_) => true,
             Err(e) => {
-                otel_info!("Server correctly rejected client", error = ?e);
+                otel_info!(
+                    "mtls_test.server_rejected_client",
+                    message = "Server correctly rejected client",
+                    error = ?e
+                );
                 false
             }
         }
@@ -274,7 +278,11 @@ async fn test_mtls_wrong_client_cert() {
         match tls_acceptor.accept(stream).await {
             Ok(_) => true,
             Err(e) => {
-                otel_info!("Server correctly rejected untrusted client", error = ?e);
+                otel_info!(
+                    "mtls_test.server_rejected_untrusted_client",
+                    message = "Server correctly rejected untrusted client",
+                    error = ?e
+                );
                 false
             }
         }
@@ -610,7 +618,10 @@ async fn test_mtls_ca_hot_reload() {
         );
     }
 
-    otel_info!("mTLS CA hot-reload test completed successfully");
+    otel_info!(
+        "mtls_test.ca_hot_reload_completed",
+        message = "mTLS CA hot-reload test completed successfully"
+    );
 }
 
 /// Test that server keeps accepting clients when CA file is replaced with invalid/corrupted content.

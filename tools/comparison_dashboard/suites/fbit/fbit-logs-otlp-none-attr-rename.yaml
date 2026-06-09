@@ -1,0 +1,22 @@
+name: FB OTLP Attr Rename (Logs)
+slug: fbit_logs_otlp_none_attr_rename
+description: Fluent Bit OTLP logs, modify filter renaming exception.type to exception.kind
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/fbit-single-core-multi-rate.yaml
+
+meta:
+  binary: fbit
+  protocols: [otlp]
+  signals: [logs]
+  compression: none
+
+variables:
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_logs.yaml
+  collector_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/fluent_bit/otlp-attr-rename.yaml.j2
+  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otlp.yaml.j2
+  backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/backend/otlp.yaml.j2
+  protocol: otlp
+  signal: logs
+  loadgen_max_batch_size: 1000
+  compression_method: none
+  rename_pairs:
+    - {source: "exception.type", destination: "exception.kind"}

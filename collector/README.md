@@ -19,9 +19,10 @@ official OpenTelemetry Collector-Contrib release images since v0.105.0.
 
 See [Building][BUILDING].
 
-## Other components built into `otelarrowcol`
+## Other components used by the examples
 
-Several Collector-Contrib extensions are included in the build:
+Several Collector-Contrib extensions are used by the [examples][EXAMPLES] and
+are included in the upstream Collector Contrib distribution:
 
 - [basicauth][BASICAUTHEXT]: Allows use of username and password for
   authorization.
@@ -68,6 +69,7 @@ development.  Notable former components:
   `fileexporter` and `otlpjsonfilereceiver`. [Removed.][PHASE1REMOVAL2]
 
 [BUILDING]: ./BUILDING.md
+[EXAMPLES]: ./examples/README.md
 [COLLECTORCONTRIB]:
     https://github.com/open-telemetry/opentelemetry-collector-contrib
 [ARROWEXPORTER]:

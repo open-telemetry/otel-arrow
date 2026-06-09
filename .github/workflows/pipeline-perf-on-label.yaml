@@ -6,6 +6,7 @@ name: Pipeline Perf Dedicated
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     branches:
       - main
 
@@ -22,9 +23,17 @@ jobs:
   pipeline-perf-test-dedicated:
     if: contains(github.event.pull_request.labels.*.name, 'pipelineperf')
     runs-on: oracle-bare-metal-64cpu-1024gb-x86-64-ubuntu-24
+    # Route tool-created temp files to RUNNER_TEMP, which GitHub Actions empties
+    # at the start and end of every job. Required when running directly on the
+    # shared bare-metal host (no job-level container) per
+    # https://github.com/open-telemetry/community/blob/main/docs/how-to-use-bare-metal-runner.md
+    env:
+      TMPDIR: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
+      TEMP: ${{ runner.temp }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
@@ -65,7 +74,7 @@ jobs:
           python-version: "3.14"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       - name: Set up Python (non-OL8)
         if: ${{ steps.detect_os.outputs.id != 'ol' }}
@@ -74,7 +83,7 @@ jobs:
           python-version: "3.14"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       - name: Build dataflow_engine
         run: |
@@ -94,6 +103,41 @@ jobs:
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
 
+      - name: Run saturation/scaling performance test suite
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          ./scripts/run-saturation-tests.sh --output-json results/scaling-efficiency.json \
+            | tee saturation-scaling-report.txt
+          echo "### Saturation/Scaling Test Analysis" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          sed -n '/^=.*SCALING ANALYSIS/,/^=\{10,\}$/p' saturation-scaling-report.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Run single-core saturation max throughput test (OTLP)
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/saturation-max-throughput.yaml
+
+      - name: Run single-core saturation max throughput test (OTAP)
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/saturation-max-throughput-otap.yaml
+
+      - name: Run passthrough performance test (OTLP)
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/passthrough.yaml
+
+      - name: Run passthrough performance test (OTAP)
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/passthrough-otap.yaml
+
       - name: Post-run disk usage diagnostics
         if: always()
         run: |
@@ -102,3 +146,14 @@ jobs:
           echo ""
           echo "=== Docker disk usage ==="
           docker system df -v 2>/dev/null || true
+
+      # Bare-metal host cleanup: remove only the Docker artifacts created by
+      # this job. Avoid broad commands (e.g. rm -rf /tmp/*) per the shared
+      # runner guidelines.
+      - name: Clean up Docker artifacts created by this job
+        if: always()
+        run: |
+          docker rmi -f df_engine 2>/dev/null || true
+          # Prune dangling (unused) build cache and images only.
+          docker builder prune -f 2>/dev/null || true
+          docker image prune -f 2>/dev/null || true

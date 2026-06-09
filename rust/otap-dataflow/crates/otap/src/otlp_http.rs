@@ -515,6 +515,10 @@ struct HttpHandler {
     global_semaphore: Option<Arc<Semaphore>>,
     /// Protocol-local semaphore enforcing HTTP's `max_concurrent_requests`.
     local_semaphore: Arc<Semaphore>,
+    /// Peer address observed at TCP accept time for this connection, attached
+    /// to every `OtapPdata` produced from the connection so downstream
+    /// processors can read it via `OtapPdata::peer_addr()`.
+    peer_addr: SocketAddr,
 }
 
 impl HttpHandler {
@@ -700,6 +704,7 @@ impl HttpHandler {
             };
 
             let mut pdata = OtapPdata::new(context, payload.into());
+            pdata.set_peer_addr(self.peer_addr);
 
             // Capture transport headers from HTTP headers when a capture policy is configured.
             if let Some(policy) = self.effect_handler.capture_policy() {
@@ -888,6 +893,7 @@ pub async fn serve(
                     admission_state: admission_state.clone(),
                     global_semaphore: global_semaphore.clone(),
                     local_semaphore: local_semaphore.clone(),
+                    peer_addr,
                 };
 
                 if let Some(acceptor) = maybe_tls_acceptor.clone() {

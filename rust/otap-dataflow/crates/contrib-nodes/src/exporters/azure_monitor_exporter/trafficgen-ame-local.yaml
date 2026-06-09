@@ -38,7 +38,7 @@ groups:
           traffic-generator:
             type: "urn:otel:receiver:traffic_generator"
             config:
-              data_source: static
+              data_source: synthetic
               generation_strategy: fresh
               traffic_config:
                 signals_per_second: null # uncapped. Use a different number to limit the rate

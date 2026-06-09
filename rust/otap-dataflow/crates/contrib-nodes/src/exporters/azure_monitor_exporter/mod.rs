@@ -54,7 +54,8 @@ pub static AZURE_MONITOR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory 
     create: |pipeline_ctx: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
+             exporter_config: &ExporterConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         // Deserialize user config JSON into typed Config
         let cfg: Config = serde_json::from_value(node_config.config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {

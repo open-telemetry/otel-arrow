@@ -20,6 +20,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 pub mod logs;
+pub mod metrics;
 pub mod traces;
 // threshold numbers to determine which method to use for building id filter
 // ToDo: determine optimimal numbers

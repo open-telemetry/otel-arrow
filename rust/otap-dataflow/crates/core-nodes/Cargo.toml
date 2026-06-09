@@ -16,7 +16,7 @@ workspace = true
 otap-df-channel = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-engine = { workspace = true }
-otap-df-opl = { workspace = true }
+otap-df-query-engine-languages = { workspace = true }
 otap-df-otap = { workspace = true }
 otap-df-pdata = { workspace = true }
 otap-df-pdata-views = { workspace = true }
@@ -38,7 +38,7 @@ futures.workspace = true
 futures-timer.workspace = true
 humantime-serde.workspace = true
 linkme.workspace = true
-object_store = {workspace = true, features = ["fs"]}
+object_store = { workspace = true, features = ["fs"] }
 parquet.workspace = true
 prost.workspace = true
 rand.workspace = true
@@ -71,7 +71,13 @@ libc.workspace = true
 nix.workspace = true
 
 [features]
-dev-tools = ["dep:weaver_common", "dep:weaver_forge", "dep:weaver_resolved_schema", "dep:weaver_resolver", "dep:weaver_semconv"]
+dev-tools = [
+    "dep:weaver_common",
+    "dep:weaver_forge",
+    "dep:weaver_resolved_schema",
+    "dep:weaver_resolver",
+    "dep:weaver_semconv",
+]
 bench = []
 
 [dev-dependencies]

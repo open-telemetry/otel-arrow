@@ -50,7 +50,8 @@ All events MUST be emitted using the `otel_*` macros from the
   includes the file path and line number -- which is not durable and breaks
   filtering, alerting, and dashboards whenever code is moved or reformatted.
 - **Automatic `target`.** The wrappers set the tracing `target` field to the
-  crate name (`env!("CARGO_PKG_NAME")`) automatically. With raw `tracing`
+  crate name (`env!("CARGO_PKG_NAME")`) automatically. When exported via
+  OTLP, this becomes the `InstrumentationScope.name`. With raw `tracing`
   macros the default target is the module path, which is an internal
   implementation detail and can change without notice.
 
@@ -194,8 +195,9 @@ otel_info!("exporter.start",
 
 ## Event naming
 
-Event names MUST be low-cardinality and stable. Follow the semantic conventions
-guide for naming:
+Event names MUST be low-cardinality and stable. Follow the
+[semantic conventions guide](semantic-conventions-guide.md#event-naming) for
+naming:
 
 - Lowercase and dot-separated. It identifies a class of event, not an instance.
 - Keep the name stable and "type-like". Treat it as a schema identifier.

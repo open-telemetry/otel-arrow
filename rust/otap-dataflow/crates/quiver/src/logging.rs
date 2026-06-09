@@ -112,6 +112,32 @@
 //! otel_debug!("quiver.wal.replay", status = "stopped_incomplete");
 //! ```
 
+/// Compile-time validator for event names used by the crate-local
+/// `otel_info!` / `otel_warn!` / `otel_debug!` / `otel_error!` /
+/// `otel_event!` macros.
+///
+/// Event names must be short, stable identifiers (e.g. `quiver.wal.rotate`)
+/// — not free-form sentences. This function is called from a `const`
+/// context so any violation surfaces as a compile error at the macro call
+/// site, not at runtime.
+///
+/// Rules enforced:
+/// - non-empty
+/// - no ASCII whitespace (space, tab, newline, carriage return)
+pub(crate) const fn validate_event_name(name: &str) {
+    let bytes = name.as_bytes();
+    assert!(!bytes.is_empty(), "otel event name must not be empty");
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        assert!(
+            b != b' ' && b != b'\t' && b != b'\n' && b != b'\r',
+            "otel event name must not contain whitespace; use a short stable identifier (e.g. \"component.action\")"
+        );
+        i += 1;
+    }
+}
+
 /// Macro for logging informational messages with a required event name.
 ///
 /// # Arguments
@@ -125,12 +151,14 @@
 /// ```
 #[allow(unused_macro_rules)]
 macro_rules! otel_info {
-    ($name:expr, $($fields:tt)+) => {
+    ($name:expr, $($fields:tt)+) => {{
+        const _: () = $crate::logging::validate_event_name($name);
         tracing::info!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
-    };
-    ($name:expr) => {
+    }};
+    ($name:expr) => {{
+        const _: () = $crate::logging::validate_event_name($name);
         tracing::info!(name: $name, target: env!("CARGO_PKG_NAME"), "");
-    };
+    }};
 }
 
 /// Macro for logging warning messages with a required event name.
@@ -149,12 +177,14 @@ macro_rules! otel_info {
 /// ```
 #[allow(unused_macro_rules)]
 macro_rules! otel_warn {
-    ($name:expr, $($fields:tt)+) => {
+    ($name:expr, $($fields:tt)+) => {{
+        const _: () = $crate::logging::validate_event_name($name);
         tracing::warn!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
-    };
-    ($name:expr) => {
+    }};
+    ($name:expr) => {{
+        const _: () = $crate::logging::validate_event_name($name);
         tracing::warn!(name: $name, target: env!("CARGO_PKG_NAME"), "");
-    };
+    }};
 }
 
 /// Macro for logging error messages with a required event name.
@@ -172,12 +202,14 @@ macro_rules! otel_warn {
 /// ```
 #[allow(unused_macro_rules)]
 macro_rules! otel_error {
-    ($name:expr, $($fields:tt)+) => {
+    ($name:expr, $($fields:tt)+) => {{
+        const _: () = $crate::logging::validate_event_name($name);
         tracing::error!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
-    };
-    ($name:expr) => {
+    }};
+    ($name:expr) => {{
+        const _: () = $crate::logging::validate_event_name($name);
         tracing::error!(name: $name, target: env!("CARGO_PKG_NAME"), "");
-    };
+    }};
 }
 
 /// Macro for logging debug messages with a required event name.
@@ -193,12 +225,14 @@ macro_rules! otel_error {
 /// ```
 #[allow(unused_macro_rules)]
 macro_rules! otel_debug {
-    ($name:expr, $($fields:tt)+) => {
+    ($name:expr, $($fields:tt)+) => {{
+        const _: () = $crate::logging::validate_event_name($name);
         tracing::debug!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
-    };
-    ($name:expr) => {
+    }};
+    ($name:expr) => {{
+        const _: () = $crate::logging::validate_event_name($name);
         tracing::debug!(name: $name, target: env!("CARGO_PKG_NAME"), "");
-    };
+    }};
 }
 
 /// Macro for logging messages at a runtime-selectable severity level.
@@ -223,7 +257,8 @@ macro_rules! otel_debug {
 // otel_event! may not be used yet in production code within this crate; suppress the lint.
 #[allow(unused_macros)]
 macro_rules! otel_event {
-    ($level:expr, $name:expr, $($fields:tt)+) => {
+    ($level:expr, $name:expr, $($fields:tt)+) => {{
+        const _: () = $crate::logging::validate_event_name($name);
         match $level {
             tracing::Level::TRACE => {
                 tracing::trace!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
@@ -241,8 +276,9 @@ macro_rules! otel_event {
                 tracing::error!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
             }
         }
-    };
-    ($level:expr, $name:expr) => {
+    }};
+    ($level:expr, $name:expr) => {{
+        const _: () = $crate::logging::validate_event_name($name);
         match $level {
             tracing::Level::TRACE => {
                 tracing::trace!(name: $name, target: env!("CARGO_PKG_NAME"), "");
@@ -260,7 +296,7 @@ macro_rules! otel_event {
                 tracing::error!(name: $name, target: env!("CARGO_PKG_NAME"), "");
             }
         }
-    };
+    }};
 }
 
 // Make macros available within this crate only (no #[macro_export])

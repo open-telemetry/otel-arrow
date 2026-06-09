@@ -1,0 +1,4 @@
+change_type: enhancement
+component: pipeline
+note: Add static gRPC endpoint syntax validation and optional startup_check (none/dns/connect) to OTLP gRPC and OTAP exporters
+issues: [3211]

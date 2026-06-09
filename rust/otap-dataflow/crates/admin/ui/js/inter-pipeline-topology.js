@@ -149,11 +149,11 @@ export function buildInterPipelineTopology(metricSets) {
   const endpointIds = new Set();
 
   for (const set of metricSets || []) {
-    if (set.name !== "topic.exporter.metrics" && set.name !== "topic.receiver") {
+    if (set.name !== "exporter.topic" && set.name !== "receiver.topic") {
       continue;
     }
 
-    const role = set.name === "topic.exporter.metrics" ? "exporter" : "receiver";
+    const role = set.name === "exporter.topic" ? "exporter" : "receiver";
     const endpoint = buildTopicEndpoint(set, role);
     if (!endpoint) continue;
 

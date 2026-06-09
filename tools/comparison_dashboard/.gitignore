@@ -1,2 +1,6 @@
-# Staging directory where the dashboard script stores data during suite runs
+# Local staging directory used during `dashboard.py run`.
 .data
+
+# Default build output directory for `dashboard.py build`. Generated;
+# never committed on main.
+.site/

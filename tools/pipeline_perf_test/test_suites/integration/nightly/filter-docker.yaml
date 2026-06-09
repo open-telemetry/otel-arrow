@@ -17,7 +17,7 @@ components:
         ###   This doesn't work.
         #     build-context: 'otel-arrow=../../'
         volumes:
-          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/nonroot/config.yaml:ro'
         command:
           - "--config"
           - "./config.yaml"
@@ -38,7 +38,7 @@ components:
         ports:
           - "8086:8080"
         volumes:
-          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/nonroot/config.yaml:ro'
         command:
           - "--config"
           - "./config.yaml"
@@ -59,7 +59,7 @@ components:
         ports:
           - "8087:8080"
         volumes:
-          - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+          - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/nonroot/config.yaml:ro'
         command:
           - "--config"
           - "./config.yaml"
@@ -79,7 +79,7 @@ tests:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
       variables:
         result_dir: "nightly_filter"
-        engine_config_template: test_suites/integration/templates/configs/engine/filter/otlp-filter-otlp.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/filter/otlp-filter-otlp.yaml.j2
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
         observation_interval: 60
@@ -88,7 +88,7 @@ tests:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
       variables:
         result_dir: "nightly_filter"
-        engine_config_template: test_suites/integration/templates/configs/engine/filter/otlp-filter-otap.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/filter/otlp-filter-otap.yaml.j2
         loadgen_exporter_type: otlp
         backend_receiver_type: otap
         observation_interval: 60
@@ -97,7 +97,7 @@ tests:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
       variables:
         result_dir: "nightly_filter"
-        engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otap.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otap.yaml.j2
         loadgen_exporter_type: otap
         backend_receiver_type: otap
         observation_interval: 60
@@ -106,7 +106,7 @@ tests:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
       variables:
         result_dir: "nightly_filter"
-        engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otlp.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otlp.yaml.j2
         loadgen_exporter_type: otap
         backend_receiver_type: otlp
         observation_interval: 60

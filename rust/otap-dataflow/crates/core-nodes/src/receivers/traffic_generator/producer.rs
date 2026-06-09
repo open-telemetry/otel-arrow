@@ -15,7 +15,7 @@ use super::config::{
     Config, DataSource, GenerationStrategy, ResourceAttributeSet, TrafficConfig,
     build_rotation_table,
 };
-use super::{semconv_signal, static_signal};
+use super::{semconv_signal, synthetic_signal};
 
 /// A SignalProducer yields the signals that need to be exported in a given
 /// second in order to meet the data volume production requirements with a
@@ -56,10 +56,10 @@ impl TrafficProducer {
                     .expect("SemanticConventions data source should return Some registry");
                 Box::new(WeaverGenerator { registry })
             }
-            DataSource::Static => {
+            DataSource::Synthetic => {
                 let entries = config.resource_attributes().to_vec();
                 let rotation = build_rotation_table(&entries);
-                Box::new(StaticGenerator {
+                Box::new(SyntheticGenerator {
                     idx: 0,
                     entries,
                     rotation,
@@ -252,7 +252,19 @@ fn create_shape(cfg: &TrafficConfig) -> TrafficShape {
     let metric_percent = signal_percent(cfg.metric_weight, total_weight);
     let trace_percent = signal_percent(cfg.trace_weight, total_weight);
 
-    let signals_per_second = cfg.signals_per_second.unwrap_or(cfg.max_batch_size) as u32;
+    // When signals_per_second is None (uncapped / saturation mode), use a high
+    // target so the shape contains enough batches to keep the open-loop sender
+    // busy for a full 1-second run window. We use 1024 × max_batch_size which
+    // is large enough for any realistic throughput while remaining bounded for
+    // PreGenerated mode memory usage.
+    //
+    // When max_signal_count is also set, cap the uncapped target to that value
+    // since the producer will never emit more than max_signal_count total.
+    let uncapped_target = match cfg.get_max_signal_count() {
+        Some(max) => (max as usize).min(cfg.max_batch_size.saturating_mul(1024)),
+        None => cfg.max_batch_size.saturating_mul(1024),
+    };
+    let signals_per_second = cfg.signals_per_second.unwrap_or(uncapped_target) as u32;
     let logs_per_second = signal_per_second(signals_per_second, log_percent);
     let metrics_per_second = signal_per_second(signals_per_second, metric_percent);
     let traces_per_second = signal_per_second(signals_per_second, trace_percent);
@@ -465,11 +477,11 @@ impl SignalGenerator for WeaverGenerator {
     }
 }
 
-/// Signal generator that produces signals from hardcoded static templates.
+/// Signal generator that produces signals from hardcoded synthetic templates.
 ///
 /// Resource attributes are rotated across batches according to a weighted
 /// round-robin table built from the configured [`ResourceAttributeSet`] entries.
-pub struct StaticGenerator {
+pub struct SyntheticGenerator {
     idx: usize,
     entries: Vec<ResourceAttributeSet>,
     rotation: Vec<usize>,
@@ -485,7 +497,7 @@ pub struct StaticGenerator {
     num_data_points_per_metric: Option<usize>,
 }
 
-impl StaticGenerator {
+impl SyntheticGenerator {
     /// Return the resource attributes for the current batch, or `None` when no
     /// custom attributes are configured.
     ///
@@ -502,10 +514,10 @@ impl StaticGenerator {
     }
 }
 
-impl SignalGenerator for StaticGenerator {
+impl SignalGenerator for SyntheticGenerator {
     fn generate_logs(&mut self, count: usize) -> GenerateResult {
         let attrs = self.attrs_for_batch();
-        let payload = static_signal::static_otlp_logs_with_config(
+        let payload = synthetic_signal::static_otlp_logs_with_config(
             count,
             self.log_body_size_bytes,
             self.num_log_attributes,
@@ -520,7 +532,7 @@ impl SignalGenerator for StaticGenerator {
 
     fn generate_metrics(&mut self, count: usize) -> GenerateResult {
         let attrs = self.attrs_for_batch();
-        let payload = static_signal::static_otlp_metrics_with_config(
+        let payload = synthetic_signal::static_otlp_metrics_with_config(
             count,
             self.num_metric_attributes,
             self.num_data_points_per_metric,
@@ -534,7 +546,7 @@ impl SignalGenerator for StaticGenerator {
 
     fn generate_traces(&mut self, count: usize) -> GenerateResult {
         let attrs = self.attrs_for_batch();
-        let payload = static_signal::static_otlp_traces(count, attrs);
+        let payload = synthetic_signal::static_otlp_traces(count, attrs);
         let payload = OtlpProtoMessage::Traces(payload);
 
         self.idx += 1;
@@ -547,9 +559,9 @@ mod tests {
     use super::super::config::TrafficConfig;
     use super::*;
 
-    /// Helper to build a minimal `StaticGenerator` with no resource attributes.
-    fn static_generator() -> StaticGenerator {
-        StaticGenerator {
+    /// Helper to build a minimal `SyntheticGenerator` with no resource attributes.
+    fn synthetic_generator() -> SyntheticGenerator {
+        SyntheticGenerator {
             idx: 0,
             entries: Vec::new(),
             rotation: Vec::new(),
@@ -569,7 +581,7 @@ mod tests {
         TrafficProducer {
             strategy,
             signal_count,
-            generator: Box::new(static_generator()),
+            generator: Box::new(synthetic_generator()),
             max_signal_count,
             produced_count: 0,
         }
@@ -619,6 +631,35 @@ mod tests {
     }
 
     #[test]
+    fn test_create_shape_uncapped_produces_large_shape() {
+        let cfg = TrafficConfig::new(
+            None, // signals_per_second = None means uncapped
+            None, // max_signal_count
+            512,  // max_batch_size
+            0,    // metric_weight
+            0,    // trace_weight
+            100,  // log_weight
+        );
+
+        let shape = create_shape(&cfg);
+
+        // With uncapped mode, the shape should contain many batches (1024 * max_batch_size / max_batch_size = 1024).
+        assert_eq!(shape.len(), 1024, "uncapped shape should have 1024 batches");
+
+        let total: usize = shape.iter().map(|(_, c)| c).sum();
+        assert_eq!(
+            total,
+            512 * 1024,
+            "uncapped shape total signals should be max_batch_size * 1024"
+        );
+
+        // Every entry should be max_batch_size.
+        for (_, count) in &shape {
+            assert_eq!(*count, 512, "each batch should be max_batch_size");
+        }
+    }
+
+    #[test]
     fn test_traffic_producer_fresh_yields_correct_count() {
         let cfg = TrafficConfig::new(
             Some(30), // signals_per_second
@@ -636,7 +677,7 @@ mod tests {
         let mut producer = TrafficProducer {
             strategy,
             signal_count,
-            generator: Box::new(static_generator()),
+            generator: Box::new(synthetic_generator()),
             max_signal_count: None,
             produced_count: 0,
         };
@@ -678,7 +719,7 @@ mod tests {
         );
 
         let shape = create_shape(&cfg);
-        let mut generator = static_generator();
+        let mut generator = synthetic_generator();
         let payloads =
             create_fresh_payloads(&mut generator, &shape).expect("pre-generation should succeed");
         let expected_count = payloads.len();
@@ -690,7 +731,7 @@ mod tests {
         let mut producer = TrafficProducer {
             strategy,
             signal_count,
-            generator: Box::new(static_generator()),
+            generator: Box::new(synthetic_generator()),
             max_signal_count: None,
             produced_count: 0,
         };
@@ -728,7 +769,7 @@ mod tests {
         let entries = vec![make_entry("prod"), make_entry("staging")];
         let rotation = build_rotation_table(&entries);
 
-        let mut generator = StaticGenerator {
+        let mut generator = SyntheticGenerator {
             idx: 0,
             entries,
             rotation,
@@ -807,8 +848,8 @@ mod tests {
         use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
         use prost::Message;
 
-        // static_generator() has empty entries and rotation — no custom resource attrs.
-        let mut generator = static_generator();
+        // synthetic_generator() has empty entries and rotation — no custom resource attrs.
+        let mut generator = synthetic_generator();
 
         let batch_1 = generator
             .generate_logs(1)

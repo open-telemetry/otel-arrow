@@ -13,6 +13,7 @@ use {
     otap_df_telemetry::otel_error, reqwest::Certificate, reqwest::Identity,
 };
 
+use crate::compression::{CompressionMethod, deserialize_compression_method};
 use crate::otap_grpc::client_settings::{
     default_concurrency_limit, default_connect_timeout, default_tcp_keepalive, default_tcp_nodelay,
 };
@@ -51,9 +52,27 @@ pub struct HttpClientSettings {
     /// Client-side TLS/mTLS configuration.
     #[serde(default)]
     pub tls: Option<TlsClientConfig>,
+
+    /// Compression method to apply to outbound request bodies. When set, the
+    /// body is encoded with the chosen algorithm and a `Content-Encoding`
+    /// header is added to the request. Accepts a single value (`"gzip"`,
+    /// `"zstd"`, `"deflate"`) or the explicit string `"none"`. Defaults to
+    /// no compression.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_compression_method",
+        alias = "compression_method"
+    )]
+    pub compression: Option<CompressionMethod>,
 }
 
 impl HttpClientSettings {
+    /// Returns the configured request-body compression method, if any.
+    #[must_use]
+    pub fn compression(&self) -> Option<CompressionMethod> {
+        self.compression
+    }
+
     /// Returns a non-zero concurrency limit.
     #[must_use]
     pub fn effective_concurrency_limit(&self) -> usize {
@@ -211,6 +230,7 @@ impl Default for HttpClientSettings {
             tcp_keepalive_interval: None,
             timeout: None,
             tls: None,
+            compression: None,
         }
     }
 }

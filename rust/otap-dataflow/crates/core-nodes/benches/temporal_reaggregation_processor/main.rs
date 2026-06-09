@@ -141,6 +141,7 @@ fn create_processor() -> ProcessorState {
         test_node("temporal_reaggregation_bench"),
         Arc::new(node_config),
         &config,
+        &otap_df_engine::capability::registry::Capabilities::empty(),
     )
     .expect("failed to create processor");
 

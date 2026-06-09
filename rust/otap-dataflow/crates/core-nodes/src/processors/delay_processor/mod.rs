@@ -63,6 +63,7 @@ pub fn create_delay_processor(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
+    _capabilities: &otap_df_engine::capability::registry::Capabilities,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let config: DelayConfig = serde_json::from_value(node_config.config.clone()).map_err(|e| {
         ConfigError::InvalidUserConfig {
@@ -153,8 +154,14 @@ mod tests {
         let mut node_config = NodeUserConfig::new_processor_config(DELAY_PROCESSOR_URN);
         node_config.config = json!({ "delay": "1ms" });
 
-        let proc = create_delay_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
-            .expect("create processor");
+        let proc = create_delay_processor(
+            pipeline_ctx,
+            node,
+            Arc::new(node_config),
+            rt.config(),
+            &otap_df_engine::capability::registry::Capabilities::empty(),
+        )
+        .expect("create processor");
 
         let phase = rt.set_processor(proc);
 

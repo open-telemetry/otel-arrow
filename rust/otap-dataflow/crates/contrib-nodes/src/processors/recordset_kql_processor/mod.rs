@@ -2,6 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub(crate) mod config;
+// Moved from `engine-recordset-otlp-bridge` crate which has different lint
+// settings. Lint compliance will be addressed in a follow-up.
+#[allow(
+    elided_lifetimes_in_paths,
+    missing_docs,
+    unsafe_code,
+    unused_qualifications,
+    unused_results,
+    clippy::explicit_into_iter_loop,
+    clippy::must_use_candidate,
+    clippy::print_stdout,
+    clippy::unwrap_used,
+    rust_2018_idioms
+)]
+pub mod otlp_bridge;
 pub(crate) mod processor;
 
 use self::config::RecordsetKqlProcessorConfig;
@@ -20,6 +35,7 @@ pub fn create_recordset_kql_processor(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
+    _capabilities: &otap_df_engine::capability::registry::Capabilities,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let config: RecordsetKqlProcessorConfig = serde_json::from_value(node_config.config.clone())
         .map_err(|e| ConfigError::InvalidUserConfig {

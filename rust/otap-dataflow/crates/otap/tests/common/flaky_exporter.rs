@@ -7,10 +7,20 @@
 //! State is registered with `register_state(id, ...)` before pipeline creation
 //! and looked up by the exporter factory using the ID from config.
 //!
-//! This allows testing retry behavior within a single pipeline run:
-//! 1. Register state with `register_state(id, counter, false)` - exporter NACKs everything
-//! 2. Later call `set_should_ack(id, true)` - exporter starts ACKing
-//! 3. Verify that retried data eventually gets delivered
+//! Two coordination styles are supported:
+//!
+//! 1. **External flip (manual)** — register with [`register_state`] (or
+//!    [`register_state_with_auto_flip`] passing `0` for `nack_first_n`) and
+//!    later call [`set_should_ack_by_id`] from the test thread. Required when
+//!    the test needs to interleave permanent/transient NACK phases.
+//! 2. **Auto-flip (deterministic)** — register with
+//!    [`register_state_with_auto_flip`] and pass a positive `nack_first_n`.
+//!    The exporter sends NACKs until the combined count of transient and
+//!    permanent NACKs reaches `nack_first_n`, then atomically flips itself to
+//!    ACK mode in the same task that handles the inbound PData. This removes
+//!    any cross-thread timing race between the test thread polling for a NACK
+//!    and the pipeline actually producing one. See
+//!    [`register_state_with_auto_flip`] for the full parameter list.
 //!
 //! This design avoids global state issues when tests run in parallel.
 
@@ -47,6 +57,13 @@ struct FlakyState {
     permanent_nack: Arc<AtomicBool>,
     /// Count of permanent NACKs sent.
     permanent_nack_count: Arc<AtomicU64>,
+    /// If non-zero, the exporter atomically flips `should_ack` to true once
+    /// the combined count of transient and permanent NACKs sent reaches at
+    /// least this value, making the flip deterministic instead of requiring
+    /// an external coordinating thread.
+    /// A value of `0` disables auto-flip (callers must call
+    /// [`set_should_ack_by_id`] explicitly).
+    auto_ack_after_nacks: Arc<AtomicU64>,
 }
 
 /// Registry of flaky exporter states keyed by unique test/pipeline ID.
@@ -58,12 +75,34 @@ static STATE_REGISTRY: LazyLock<Mutex<HashMap<String, FlakyState>>> =
 /// Call this before building the pipeline. The ID should match the `flaky_id`
 /// field in the exporter's node config.
 pub fn register_state(id: impl Into<String>, counter: Arc<AtomicU64>, should_ack: bool) {
+    register_state_with_auto_flip(id, counter, should_ack, 0);
+}
+
+/// Register state with a deterministic auto-flip threshold.
+///
+/// If `nack_first_n > 0`, the exporter sends NACKs until the combined count of
+/// transient and permanent NACKs reaches `nack_first_n`, at which point it
+/// atomically flips itself to ACK mode in the same task that processes
+/// incoming PData. This eliminates the need for a separate flip thread polling
+/// [`nack_count_by_id`]/[`permanent_nack_count_by_id`] and avoids any
+/// cross-thread timing race between detection of the first NACK and the retry
+/// processor's elapsed-time budget. The check fires after either NACK branch,
+/// so tests that run the exporter in permanent-only mode also benefit.
+///
+/// `nack_first_n == 0` is equivalent to [`register_state`] (manual flip mode).
+pub fn register_state_with_auto_flip(
+    id: impl Into<String>,
+    counter: Arc<AtomicU64>,
+    should_ack: bool,
+    nack_first_n: u64,
+) {
     let state = FlakyState {
         should_ack: Arc::new(AtomicBool::new(should_ack)),
         counter,
         nack_count: Arc::new(AtomicU64::new(0)),
         permanent_nack: Arc::new(AtomicBool::new(false)),
         permanent_nack_count: Arc::new(AtomicU64::new(0)),
+        auto_ack_after_nacks: Arc::new(AtomicU64::new(nack_first_n)),
     };
     let _ = STATE_REGISTRY.lock().insert(id.into(), state);
 }
@@ -116,6 +155,7 @@ fn get_state(
     Arc<AtomicU64>,
     Arc<AtomicBool>,
     Arc<AtomicU64>,
+    Arc<AtomicU64>,
 )> {
     STATE_REGISTRY.lock().get(id).map(|s| {
         (
@@ -124,6 +164,7 @@ fn get_state(
             s.nack_count.clone(),
             s.permanent_nack.clone(),
             s.permanent_nack_count.clone(),
+            s.auto_ack_after_nacks.clone(),
         )
     })
 }
@@ -134,6 +175,7 @@ struct FlakyExporter {
     nack_count: Option<Arc<AtomicU64>>,
     permanent_nack: Option<Arc<AtomicBool>>,
     permanent_nack_count: Option<Arc<AtomicU64>>,
+    auto_ack_after_nacks: Option<Arc<AtomicU64>>,
 }
 
 #[allow(unsafe_code)]
@@ -143,13 +185,17 @@ static FLAKY_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     create: |_pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
+             exporter_config: &ExporterConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         // Look up state by ID from node config
         let flaky_id = node_config.config.get("flaky_id").and_then(|v| v.as_str());
-        let (counter, should_ack, nack_count, permanent_nack, permanent_nack_count) = flaky_id
-            .and_then(get_state)
-            .map(|(c, a, n, p, pc)| (Some(c), Some(a), Some(n), Some(p), Some(pc)))
-            .unwrap_or((None, None, None, None, None));
+        let (counter, should_ack, nack_count, permanent_nack, permanent_nack_count, auto_ack) =
+            flaky_id
+                .and_then(get_state)
+                .map(|(c, a, n, p, pc, aa)| {
+                    (Some(c), Some(a), Some(n), Some(p), Some(pc), Some(aa))
+                })
+                .unwrap_or((None, None, None, None, None, None));
         Ok(ExporterWrapper::local(
             FlakyExporter {
                 counter,
@@ -157,6 +203,7 @@ static FLAKY_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
                 nack_count,
                 permanent_nack,
                 permanent_nack_count,
+                auto_ack_after_nacks: auto_ack,
             },
             node,
             node_config,
@@ -220,6 +267,36 @@ impl Exporter<OtapPdata> for FlakyExporter {
                                 .await?;
                             if let Some(ref nack_count) = self.nack_count {
                                 let _ = nack_count.fetch_add(1, Ordering::Release);
+                            }
+                        }
+
+                        // Deterministic self-flip: once we've sent the
+                        // configured number of NACKs (transient + permanent
+                        // combined), atomically switch to ACK mode in the same
+                        // task that handles inbound PData. This makes recovery
+                        // data-driven instead of relying on an external thread
+                        // polling and racing with the retry processor's
+                        // elapsed-time budget. The check covers both NACK
+                        // branches so tests configured for permanent-only NACK
+                        // mode also benefit.
+                        if let Some(ref auto) = self.auto_ack_after_nacks {
+                            let threshold = auto.load(Ordering::Relaxed);
+                            if threshold > 0 {
+                                let transient = self
+                                    .nack_count
+                                    .as_ref()
+                                    .map(|n| n.load(Ordering::Acquire))
+                                    .unwrap_or(0);
+                                let permanent = self
+                                    .permanent_nack_count
+                                    .as_ref()
+                                    .map(|n| n.load(Ordering::Acquire))
+                                    .unwrap_or(0);
+                                if transient.saturating_add(permanent) >= threshold {
+                                    if let Some(ref should_ack) = self.should_ack {
+                                        should_ack.store(true, Ordering::SeqCst);
+                                    }
+                                }
                             }
                         }
                     }

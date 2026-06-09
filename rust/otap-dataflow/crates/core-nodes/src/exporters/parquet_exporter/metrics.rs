@@ -30,4 +30,16 @@ pub struct ParquetExporterMetrics {
     /// Files scheduled for flush due to exceeding max age threshold.
     #[metric(unit = "{file}")]
     pub flush_scheduled_max_age: Counter<u64>,
+
+    /// File close/flush attempts initiated by the exporter.
+    #[metric(unit = "{file}")]
+    pub flush_attempts: Counter<u64>,
+
+    /// File close/flush attempts that succeeded and made the file visible to readers.
+    #[metric(unit = "{file}")]
+    pub flush_successes: Counter<u64>,
+
+    /// File close/flush attempts that failed after the lower-level retry policy was exhausted.
+    #[metric(unit = "{file}")]
+    pub flush_failures: Counter<u64>,
 }

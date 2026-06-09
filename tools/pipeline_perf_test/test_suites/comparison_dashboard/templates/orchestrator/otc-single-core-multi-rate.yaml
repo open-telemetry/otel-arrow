@@ -1,0 +1,206 @@
+name: {{suite_name}}
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: {{df_engine_image}}
+        network: testbed
+        ports:
+          - "8085:8080"
+        volumes:
+          - '{{data_dir}}/loadgen-config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
+  go-collector:
+    deployment:
+      docker:
+        image: {{otelcol_image}}
+        network: testbed
+        ports:
+          - "8086:8086"
+        volumes:
+          - '{{data_dir}}/otelcol-config.rendered.yaml:/tmp/config.yaml:ro'
+        environment:
+          - GOMAXPROCS={{variables.otelcol_gomaxprocs | default(1)}}
+{%- if variables.otelcol_gomemlimit is defined %}
+          - GOMEMLIMIT={{variables.otelcol_gomemlimit}}
+{%- endif %}
+        command:
+          - "--config"
+          - "/tmp/config.yaml"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8086/metrics
+  backend-service:
+    deployment:
+      docker:
+        image: {{df_engine_image}}
+        network: testbed
+        ports:
+          - "8087:8080"
+        volumes:
+          - '{{data_dir}}/backend-config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8087/api/v1/telemetry/metrics?format=prometheus&reset=false
+
+{%- set signal = variables.signal | default("logs") %}
+{%- if signal == "logs" %}
+{%- set log_weight = 100 %}{%- set metric_weight = 0 %}{%- set trace_weight = 0 %}
+{%- elif signal == "metrics" %}
+{%- set log_weight = 0 %}{%- set metric_weight = 100 %}{%- set trace_weight = 0 %}
+{%- elif signal == "traces" %}
+{%- set log_weight = 0 %}{%- set metric_weight = 0 %}{%- set trace_weight = 100 %}
+{%- endif %}
+
+{# Spread every suite-defined variable as a flat key (so step/leaf templates can
+reference them by bare name) and forward the whole `variables` dict so any
+downstream template can also use namespaced access (`variables.X`). Per-test
+overrides below the spread win on key collision. #}
+{% macro forward_variables() -%}
+{%- for k, v in variables.items() %}
+        {{ k }}: {{ v | tojson }}
+{%- endfor %}
+        variables: {{ variables | tojson }}
+{%- endmacro -%}
+
+tests:
+  # 100k: 1 loadgen core
+  - name: 100k
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/otelcol.yaml
+      variables:{{ forward_variables() }}
+        data_dir: {{data_dir}}
+        test_dir: {{data_dir}}/tests/100k
+        report_name: "OTel Collector 100k - {{suite_name}}"
+        observation_interval: {{observation_interval}}
+        signals_per_second: 100000
+        log_weight: {{log_weight}}
+        metric_weight: {{metric_weight}}
+        trace_weight: {{trace_weight}}
+        backend_core_start: 1
+        backend_core_end: 1
+        loadgen_core_start: 2
+        loadgen_core_end: 2
+
+  # 200k: 2 loadgen cores
+  - name: 200k
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/otelcol.yaml
+      variables:{{ forward_variables() }}
+        data_dir: {{data_dir}}
+        test_dir: {{data_dir}}/tests/200k
+        report_name: "OTel Collector 200k - {{suite_name}}"
+        observation_interval: {{observation_interval}}
+        signals_per_second: 100000
+        log_weight: {{log_weight}}
+        metric_weight: {{metric_weight}}
+        trace_weight: {{trace_weight}}
+        backend_core_start: 1
+        backend_core_end: 1
+        loadgen_core_start: 2
+        loadgen_core_end: 3
+
+  # 300k: 3 loadgen cores
+  - name: 300k
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/otelcol.yaml
+      variables:{{ forward_variables() }}
+        data_dir: {{data_dir}}
+        test_dir: {{data_dir}}/tests/300k
+        report_name: "OTel Collector 300k - {{suite_name}}"
+        observation_interval: {{observation_interval}}
+        signals_per_second: 100000
+        log_weight: {{log_weight}}
+        metric_weight: {{metric_weight}}
+        trace_weight: {{trace_weight}}
+        backend_core_start: 1
+        backend_core_end: 1
+        loadgen_core_start: 2
+        loadgen_core_end: 4
+
+  # 400k: 4 loadgen cores
+  - name: 400k
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/otelcol.yaml
+      variables:{{ forward_variables() }}
+        data_dir: {{data_dir}}
+        test_dir: {{data_dir}}/tests/400k
+        report_name: "OTel Collector 400k - {{suite_name}}"
+        observation_interval: {{observation_interval}}
+        signals_per_second: 100000
+        log_weight: {{log_weight}}
+        metric_weight: {{metric_weight}}
+        trace_weight: {{trace_weight}}
+        backend_core_start: 1
+        backend_core_end: 1
+        loadgen_core_start: 2
+        loadgen_core_end: 5
+
+  - name: 600k
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/otelcol.yaml
+      variables:{{ forward_variables() }}
+        data_dir: {{data_dir}}
+        test_dir: {{data_dir}}/tests/600k
+        report_name: "OTel Collector 600k - {{suite_name}}"
+        observation_interval: {{observation_interval}}
+        signals_per_second: 100000
+        log_weight: {{log_weight}}
+        metric_weight: {{metric_weight}}
+        trace_weight: {{trace_weight}}
+        backend_core_start: 1
+        backend_core_end: 1
+        loadgen_core_start: 2
+        loadgen_core_end: 7
+
+  - name: 800k
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/otelcol.yaml
+      variables:{{ forward_variables() }}
+        data_dir: {{data_dir}}
+        test_dir: {{data_dir}}/tests/800k
+        report_name: "OTel Collector 800k - {{suite_name}}"
+        observation_interval: {{observation_interval}}
+        signals_per_second: 100000
+        log_weight: {{log_weight}}
+        metric_weight: {{metric_weight}}
+        trace_weight: {{trace_weight}}
+        backend_core_start: 1
+        backend_core_end: 1
+        loadgen_core_start: 2
+        loadgen_core_end: 9
+
+  - name: 1000k
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/otelcol.yaml
+      variables:{{ forward_variables() }}
+        data_dir: {{data_dir}}
+        test_dir: {{data_dir}}/tests/1000k
+        report_name: "OTel Collector 1000k - {{suite_name}}"
+        observation_interval: {{observation_interval}}
+        signals_per_second: 100000
+        log_weight: {{log_weight}}
+        metric_weight: {{metric_weight}}
+        trace_weight: {{trace_weight}}
+        backend_core_start: 1
+        backend_core_end: 1
+        loadgen_core_start: 2
+        loadgen_core_end: 11

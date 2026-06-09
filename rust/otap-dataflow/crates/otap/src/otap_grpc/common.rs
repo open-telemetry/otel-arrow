@@ -13,9 +13,28 @@
 use crate::otap_grpc::otlp::server_new::{AckSlot, RouteResponse};
 use crate::otap_grpc::server_settings::GrpcServerSettings;
 use crate::pdata::OtapPdata;
+use http::Extensions;
 use otap_df_config::SignalType;
 use otap_df_engine::control::{AckMsg, NackMsg};
+use std::net::SocketAddr;
 use tonic::transport::Server;
+use tonic::transport::server::{TcpConnectInfo, TlsConnectInfo};
+
+/// Extracts the peer socket address from a tonic request's connection-info
+/// extensions. Returns `None` for connections without TCP-backed transport
+/// (e.g. UDS) or when tonic was unable to record the remote address. TLS
+/// connections wrap `TcpConnectInfo` inside `TlsConnectInfo`.
+#[must_use]
+pub fn peer_addr_from_extensions(extensions: &Extensions) -> Option<SocketAddr> {
+    extensions
+        .get::<TcpConnectInfo>()
+        .and_then(|info| info.remote_addr())
+        .or_else(|| {
+            extensions
+                .get::<TlsConnectInfo<TcpConnectInfo>>()
+                .and_then(|info| info.get_ref().remote_addr())
+        })
+}
 
 /// Aggregates the per-signal ACK subscription maps that let us route responses back to callers.
 #[derive(Clone, Default)]

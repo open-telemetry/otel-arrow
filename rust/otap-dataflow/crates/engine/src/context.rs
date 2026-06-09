@@ -4,9 +4,9 @@
 //! Context providing general information on the current controller and the current pipeline.
 
 use crate::attributes::{
-    ChannelAttributeSet, CustomAttributeSet, EngineAttributeSet, NodeAttributeSet,
-    NodeWithCustomAttributeSet, NodeWithCustomTopicAttributeSet, NodeWithTopicAttributeSet,
-    PipelineAttributeSet, config_map_to_telemetry,
+    ChannelAttributeSet, CustomAttributeSet, EngineAttributeSet, EngineEntityAttributeSet,
+    NodeAttributeSet, NodeWithCustomAttributeSet, NodeWithCustomTopicAttributeSet,
+    NodeWithTopicAttributeSet, PipelineAttributeSet, config_map_to_telemetry,
 };
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::memory_limiter::MemoryPressureState;
@@ -98,8 +98,11 @@ static CONTAINER_ID: LazyLock<Cow<'static, str>> =
 #[derive(Clone, Debug)]
 pub struct ControllerContext {
     telemetry_registry_handle: TelemetryRegistryHandle,
+    /// Unique process instance identifier (base32-encoded UUID v7).
     process_instance_id: Cow<'static, str>,
+    /// Host identifier, when available (e.g. hostname).
     host_id: Cow<'static, str>,
+    /// Container identifier, when available (e.g. Docker or containerd container ID).
     container_id: Cow<'static, str>,
     numa_node_id: usize,
     memory_pressure_state: MemoryPressureState,
@@ -159,6 +162,28 @@ impl ControllerContext {
         }
     }
 
+    /// Creates a `ControllerContext` with explicit auto-detected identity values.
+    ///
+    /// Test-only: the production [`new`](Self::new) constructor derives these
+    /// from the host environment, which is unsuitable for asserting the
+    /// semantic-convention mapping in [`resource_attributes`](Self::resource_attributes).
+    #[cfg(test)]
+    fn new_with_identity(
+        telemetry_registry_handle: TelemetryRegistryHandle,
+        process_instance_id: impl Into<Cow<'static, str>>,
+        host_id: impl Into<Cow<'static, str>>,
+        container_id: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        Self {
+            telemetry_registry_handle,
+            process_instance_id: process_instance_id.into(),
+            host_id: host_id.into(),
+            container_id: container_id.into(),
+            numa_node_id: 0,
+            memory_pressure_state: MemoryPressureState::default(),
+        }
+    }
+
     /// Returns a new pipeline context with the given identifiers and the current controller context
     /// as the parent context.
     #[must_use]
@@ -204,20 +229,35 @@ impl ControllerContext {
         )
     }
 
-    /// Registers the engine-level entity for engine-wide metrics.
+    /// Registers the engine-level entity for engine-wide metrics with no scope attributes.
     ///
     /// Returns the [`EntityKey`] to pass to
     /// [`EngineMetricsMonitor::new`](crate::engine_metrics::EngineMetricsMonitor::new).
     #[must_use]
     pub fn register_engine_entity(&self) -> EntityKey {
-        use crate::attributes::ResourceAttributeSet;
-
         self.telemetry_registry_handle
-            .register_entity(ResourceAttributeSet {
-                process_instance_id: self.process_instance_id.clone(),
-                host_id: self.host_id.clone(),
-                container_id: self.container_id.clone(),
-            })
+            .register_entity(EngineEntityAttributeSet)
+    }
+
+    /// Returns the auto-detected process/host resource attributes mapped to
+    /// OpenTelemetry semantic-convention keys. Empty values are omitted.
+    /// Keys: `host.id`, `container.id`, `service.instance.id`.
+    #[must_use]
+    pub fn resource_attributes(&self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        if !self.host_id.is_empty() {
+            out.push(("host.id".to_string(), self.host_id.to_string()));
+        }
+        if !self.container_id.is_empty() {
+            out.push(("container.id".to_string(), self.container_id.to_string()));
+        }
+        if !self.process_instance_id.is_empty() {
+            out.push((
+                "service.instance.id".to_string(),
+                self.process_instance_id.to_string(),
+            ));
+        }
+        out
     }
 
     /// Returns a handle to the telemetry registry.
@@ -471,14 +511,7 @@ impl PipelineContext {
     }
 
     fn engine_attribute_set(&self) -> EngineAttributeSet {
-        use crate::attributes::ResourceAttributeSet;
-
         EngineAttributeSet {
-            resource_attrs: ResourceAttributeSet {
-                process_instance_id: self.controller_context.process_instance_id.clone(),
-                host_id: self.controller_context.host_id.clone(),
-                container_id: self.controller_context.container_id.clone(),
-            },
             core_id: self.pipeline_context_params.core_id,
             numa_node_id: self.controller_context.numa_node_id,
         }
@@ -593,5 +626,48 @@ impl PipelineContext {
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_attributes_maps_semconv_keys() {
+        let ctx = ControllerContext::new_with_identity(
+            TelemetryRegistryHandle::new(),
+            "proc-123",
+            "machine-abc",
+            "container-xyz",
+        );
+
+        // All three identities present: emitted in a stable order under their
+        // OpenTelemetry semantic-convention keys.
+        assert_eq!(
+            ctx.resource_attributes(),
+            vec![
+                ("host.id".to_string(), "machine-abc".to_string()),
+                ("container.id".to_string(), "container-xyz".to_string()),
+                ("service.instance.id".to_string(), "proc-123".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn resource_attributes_omits_empty_values() {
+        // Empty host/container should be skipped entirely (no empty-valued
+        // attributes), leaving only the populated service.instance.id.
+        let ctx = ControllerContext::new_with_identity(
+            TelemetryRegistryHandle::new(),
+            "proc-123",
+            "",
+            "",
+        );
+
+        assert_eq!(
+            ctx.resource_attributes(),
+            vec![("service.instance.id".to_string(), "proc-123".to_string())]
+        );
     }
 }

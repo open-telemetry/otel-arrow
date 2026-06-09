@@ -14,7 +14,6 @@ use super::*;
 use otap_df_config::ExtensionId;
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
 // ── Hand-written test capability ─────────────────────────────────────
 
@@ -38,14 +37,14 @@ impl super::super::ExtensionCapability for TestCap {
     type Local = dyn TestCapLocal;
     type Shared = dyn TestCapShared;
 
-    fn wrap_shared_as_local(shared: Box<Self::Shared>) -> Rc<Self::Local> {
+    fn wrap_shared_as_local(shared: Box<Self::Shared>) -> Box<Self::Local> {
         struct Adapter(Box<dyn TestCapShared>);
         impl TestCapLocal for Adapter {
             fn value(&self) -> &str {
                 self.0.value()
             }
         }
-        Rc::new(Adapter(shared))
+        Box::new(Adapter(shared))
     }
 }
 
@@ -82,11 +81,11 @@ impl TestCap {
             let shared: Box<dyn TestCapShared> = concrete;
             Box::new(shared) as Box<dyn Any + Send>
         };
-        let adapt_as_local: fn(Box<dyn Any + Send>) -> Rc<dyn Any> = |erased| {
+        let adapt_as_local: fn(Box<dyn Any + Send>) -> Box<dyn Any> = |erased| {
             let shared: Box<Box<dyn TestCapShared>> = erased.downcast().expect("envelope");
-            let rc_local =
+            let boxed_local =
                 <TestCap as super::super::ExtensionCapability>::wrap_shared_as_local(*shared);
-            Rc::new(rc_local) as Rc<dyn Any>
+            Box::new(boxed_local) as Box<dyn Any>
         };
         SharedCapabilityEntry::new(extension_id, produce, adapt_as_local)
     }
@@ -98,13 +97,13 @@ impl TestCap {
     where
         E: TestCapLocal + 'static,
     {
-        let produce = move || -> Rc<dyn Any> {
+        let produce = move || -> Box<dyn Any> {
             let erased = factory.produce();
-            let concrete: Rc<E> = erased
+            let concrete: Box<E> = erased
                 .downcast()
                 .expect("instance_factory produced wrong type");
-            let local: Rc<dyn TestCapLocal> = concrete;
-            Rc::new(local) as Rc<dyn Any>
+            let local: Box<dyn TestCapLocal> = concrete;
+            Box::new(local) as Box<dyn Any>
         };
         LocalCapabilityEntry::new(extension_id, produce)
     }
@@ -120,6 +119,7 @@ impl TestCapShared for SharedImpl {
     }
 }
 
+#[derive(Clone)]
 struct LocalImpl(&'static str);
 impl TestCapLocal for LocalImpl {
     fn value(&self) -> &str {
@@ -138,10 +138,10 @@ fn shared_instance_factory(val: &'static str) -> crate::capability::SharedInstan
     })
 }
 
-// Build a LocalInstanceFactory producing a shared `Rc<LocalImpl>`.
+// Build a LocalInstanceFactory producing a fresh `Box<LocalImpl>`
+// per call. Mimics the builder's clone-per-consumer output.
 fn local_instance_factory(val: &'static str) -> crate::capability::LocalInstanceFactory {
-    let shared: Rc<LocalImpl> = Rc::new(LocalImpl(val));
-    crate::capability::LocalInstanceFactory::new(move || Rc::clone(&shared) as Rc<dyn Any>)
+    crate::capability::LocalInstanceFactory::new(move || Box::new(LocalImpl(val)) as Box<dyn Any>)
 }
 
 fn register_shared(registry: &mut CapabilityRegistry, ext_id: &'static str, val: &'static str) {
@@ -785,7 +785,7 @@ fn test_end_to_end_shared_only_via_bundle() {
     // 1. Build a passive-cloned shared bundle around SharedImpl.
     let name: ExtensionId = "azure-auth".into();
     let user_config = Arc::new(ExtensionUserConfig::new(
-        "urn:test:azure".into(),
+        "urn:test:extension:azure".into(),
         serde_json::Value::Null,
     ));
     let runtime_config = ExtensionConfig::new("azure-auth");
@@ -856,14 +856,14 @@ fn test_end_to_end_local_only_via_bundle() {
 
     let name: ExtensionId = "kv".into();
     let user_config = Arc::new(ExtensionUserConfig::new(
-        "urn:test:kv".into(),
+        "urn:test:extension:kv".into(),
         serde_json::Value::Null,
     ));
     let runtime_config = ExtensionConfig::new("kv");
     let bundle = ExtensionWrapper::builder(name.clone(), user_config, &runtime_config)
         .passive()
         .cloned()
-        .local(Rc::new(LocalImpl("kv-value")))
+        .local(LocalImpl("kv-value"))
         .build()
         .expect("bundle builds");
 
@@ -913,7 +913,7 @@ fn test_end_to_end_shared_constructed_policy_mints_independent_instances() {
 
     let name: ExtensionId = "counter".into();
     let user_config = Arc::new(ExtensionUserConfig::new(
-        "urn:test:counter".into(),
+        "urn:test:extension:counter".into(),
         serde_json::Value::Null,
     ));
     let runtime_config = ExtensionConfig::new("counter");
@@ -921,10 +921,10 @@ fn test_end_to_end_shared_constructed_policy_mints_independent_instances() {
     // ConstructedImpl: each `start()` increments a shared counter so
     // we can confirm the factory ran per-consumer.
     #[derive(Clone)]
-    struct ConstructedImpl(Arc<AtomicUsize>, &'static str);
+    struct ConstructedImpl(&'static str);
     impl TestCapShared for ConstructedImpl {
         fn value(&self) -> &str {
-            self.1
+            self.0
         }
     }
 
@@ -936,7 +936,7 @@ fn test_end_to_end_shared_constructed_policy_mints_independent_instances() {
         .constructed()
         .shared::<ConstructedImpl, _>(move || {
             let _ = counter_for_closure.fetch_add(1, Ordering::SeqCst);
-            ConstructedImpl(Arc::clone(&counter_for_closure), "constructed")
+            ConstructedImpl("constructed")
         })
         .build()
         .expect("bundle builds");
@@ -1011,7 +1011,7 @@ fn test_register_into_rejects_metadata_vs_bundle_mismatch() {
 
     let name: ExtensionId = "drifty".into();
     let user_config = Arc::new(ExtensionUserConfig::new(
-        "urn:test:drifty".into(),
+        "urn:test:extension:drifty".into(),
         serde_json::Value::Null,
     ));
     let runtime_config = ExtensionConfig::new("drifty");
@@ -1057,7 +1057,7 @@ fn test_register_into_rejects_metadata_vs_bundle_mismatch() {
     // Symmetric direction: shared advertised, bundle is local-only.
     let local_only_name: ExtensionId = "drifty-local".into();
     let local_only_user_config = Arc::new(ExtensionUserConfig::new(
-        "urn:test:drifty-local".into(),
+        "urn:test:extension:drifty-local".into(),
         serde_json::Value::Null,
     ));
     let local_only_runtime_config = ExtensionConfig::new("drifty-local");
@@ -1068,7 +1068,7 @@ fn test_register_into_rejects_metadata_vs_bundle_mismatch() {
     )
     .passive()
     .cloned()
-    .local(Rc::new(LocalImpl("v")))
+    .local(LocalImpl("v"))
     .build()
     .expect("bundle builds");
 
@@ -1351,7 +1351,7 @@ fn test_register_into_background_no_op() {
 
     let name: ExtensionId = "bg".into();
     let user_config = Arc::new(ExtensionUserConfig::new(
-        "urn:test:bg".into(),
+        "urn:test:extension:bg".into(),
         serde_json::Value::Null,
     ));
     let runtime_config = ExtensionConfig::new("bg");
@@ -1409,4 +1409,307 @@ fn test_resolve_bindings_background_not_a_provider() {
         msg.contains("does not provide"),
         "expected Step-4 'does not provide' error; got: {msg}",
     );
+}
+
+// ── Box-clone refactor regression tests ─────────────────────────────────────
+
+/// The local-side registry envelope must mirror the shared envelope
+/// shape: `Box<Box<dyn C::Local>>` erased as `Box<dyn Any>`.
+/// `require_local` downcasts the outer `Any` to `Box<dyn C::Local>`
+/// then dereferences it. This test pins the shape so anyone refactoring
+/// the macro (or the hand-rolled `local_entry::<E>` here) cannot
+/// collapse the double-box without the consumer path failing loudly.
+#[test]
+fn test_local_entry_produce_uses_double_box_envelope() {
+    let factory = local_instance_factory("envelope-val");
+    let entry = TestCap::local_entry::<LocalImpl>("ext-env".into(), factory);
+
+    let erased: Box<dyn Any> = (entry.produce)();
+    let boxed_trait_object: Box<Box<dyn TestCapLocal>> = erased
+        .downcast::<Box<dyn TestCapLocal>>()
+        .expect("local_entry must emit Box<Box<dyn C::Local>> erased as Box<dyn Any>");
+    assert_eq!((*boxed_trait_object).value(), "envelope-val");
+}
+
+// A separate test capability whose method takes `&mut self` — proving
+// the proc macro relaxation is end-to-end exercisable through both the
+// native local path and the SharedAsLocal fallback. Hand-rolled because
+// `#[capability]` cannot expand inside the engine crate.
+
+trait MutSelfCapLocal {
+    fn bump(&mut self) -> u32;
+}
+trait MutSelfCapShared: Send {
+    fn bump(&mut self) -> u32;
+}
+
+struct MutSelfCap;
+impl super::super::private::Sealed for MutSelfCap {}
+impl super::super::ExtensionCapability for MutSelfCap {
+    const NAME: &'static str = "mut_self_cap";
+    type Local = dyn MutSelfCapLocal;
+    type Shared = dyn MutSelfCapShared;
+    fn wrap_shared_as_local(shared: Box<Self::Shared>) -> Box<Self::Local> {
+        struct Adapter(Box<dyn MutSelfCapShared>);
+        impl MutSelfCapLocal for Adapter {
+            fn bump(&mut self) -> u32 {
+                self.0.bump()
+            }
+        }
+        Box::new(Adapter(shared))
+    }
+}
+
+#[allow(unsafe_code)]
+#[linkme::distributed_slice(super::super::KNOWN_CAPABILITIES)]
+#[linkme(crate = linkme)]
+static _MUT_SELF_CAP: super::super::KnownCapability = super::super::KnownCapability {
+    name: "mut_self_cap",
+    description: "Test capability with &mut self method",
+    type_id: || TypeId::of::<MutSelfCap>(),
+};
+
+impl MutSelfCap {
+    fn shared_entry<E>(
+        extension_id: ExtensionId,
+        factory: crate::capability::SharedInstanceFactory,
+    ) -> SharedCapabilityEntry
+    where
+        E: MutSelfCapShared + 'static,
+    {
+        let produce = move || -> Box<dyn Any + Send> {
+            let erased = factory.produce();
+            let concrete: Box<E> = erased.downcast().expect("instance factory");
+            let shared: Box<dyn MutSelfCapShared> = concrete;
+            Box::new(shared) as Box<dyn Any + Send>
+        };
+        let adapt_as_local: fn(Box<dyn Any + Send>) -> Box<dyn Any> = |erased| {
+            let shared: Box<Box<dyn MutSelfCapShared>> = erased.downcast().expect("envelope");
+            let boxed_local =
+                <MutSelfCap as super::super::ExtensionCapability>::wrap_shared_as_local(*shared);
+            Box::new(boxed_local) as Box<dyn Any>
+        };
+        SharedCapabilityEntry::new(extension_id, produce, adapt_as_local)
+    }
+
+    fn local_entry<E>(
+        extension_id: ExtensionId,
+        factory: crate::capability::LocalInstanceFactory,
+    ) -> LocalCapabilityEntry
+    where
+        E: MutSelfCapLocal + 'static,
+    {
+        let produce = move || -> Box<dyn Any> {
+            let erased = factory.produce();
+            let concrete: Box<E> = erased.downcast().expect("instance factory");
+            let local: Box<dyn MutSelfCapLocal> = concrete;
+            Box::new(local) as Box<dyn Any>
+        };
+        LocalCapabilityEntry::new(extension_id, produce)
+    }
+}
+
+#[derive(Clone)]
+struct MutSelfImpl {
+    counter: u32,
+}
+impl MutSelfCapLocal for MutSelfImpl {
+    fn bump(&mut self) -> u32 {
+        self.counter += 1;
+        self.counter
+    }
+}
+impl MutSelfCapShared for MutSelfImpl {
+    fn bump(&mut self) -> u32 {
+        self.counter += 1;
+        self.counter
+    }
+}
+
+/// `&mut self` methods are callable through `Box<dyn local::Trait>`
+/// — the whole point of the Box-clone refactor on the local side.
+#[test]
+fn test_local_capability_supports_mut_self_native() {
+    let mut reg = CapabilityRegistry::new();
+    let factory = crate::capability::LocalInstanceFactory::new(|| {
+        Box::new(MutSelfImpl { counter: 0 }) as Box<dyn Any>
+    });
+    reg.register_local(
+        TypeId::of::<MutSelfCap>(),
+        MutSelfCap::local_entry::<MutSelfImpl>("ext".into(), factory),
+    )
+    .unwrap();
+
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(
+        &bindings("mut_self_cap", "ext"),
+        &reg,
+        &known_exts(&["ext"]),
+        &mut tracker,
+    )
+    .unwrap();
+
+    let mut handle = caps.require_local::<MutSelfCap>().unwrap();
+    assert_eq!(handle.bump(), 1);
+    assert_eq!(handle.bump(), 2);
+    assert_eq!(handle.bump(), 3);
+}
+
+/// `&mut self` is also callable through the SharedAsLocal fallback —
+/// the adapter holds the inner `Box<dyn shared::Trait>` in a field
+/// (`self.0`), which `&mut self` adapter methods can reborrow as
+/// `&mut *self.0` to delegate.
+#[test]
+fn test_local_capability_supports_mut_self_via_shared_as_local() {
+    let mut reg = CapabilityRegistry::new();
+    let factory = crate::capability::SharedInstanceFactory::new(|| {
+        Box::new(MutSelfImpl { counter: 0 }) as Box<dyn Any + Send>
+    });
+    reg.register_shared(
+        TypeId::of::<MutSelfCap>(),
+        MutSelfCap::shared_entry::<MutSelfImpl>("ext".into(), factory),
+    )
+    .unwrap();
+
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(
+        &bindings("mut_self_cap", "ext"),
+        &reg,
+        &known_exts(&["ext"]),
+        &mut tracker,
+    )
+    .unwrap();
+
+    // Local consumer claim goes through the SharedAsLocal fallback.
+    let mut handle = caps.require_local::<MutSelfCap>().unwrap();
+    assert_eq!(handle.bump(), 1);
+    assert_eq!(handle.bump(), 2);
+}
+
+/// Two consumers binding the same `.passive().cloned().local(E)`
+/// extension must each receive an independent boxed clone. Mutating
+/// one must not be observable through the other — proving the Box-
+/// clone refactor honors per-consumer ownership rather than fanning
+/// `Rc::clone`s of a shared instance.
+#[test]
+fn test_passive_cloned_local_hands_out_independent_clones() {
+    let mut reg = CapabilityRegistry::new();
+    // Use a per-consumer-cloning factory: each `produce()` call returns
+    // a fresh `Box<MutSelfImpl>` derived from the prototype, mirroring
+    // what `set_local_cloned` builds in the builder.
+    let prototype = MutSelfImpl { counter: 0 };
+    let factory = crate::capability::LocalInstanceFactory::new(move || {
+        Box::new(prototype.clone()) as Box<dyn Any>
+    });
+    reg.register_local(
+        TypeId::of::<MutSelfCap>(),
+        MutSelfCap::local_entry::<MutSelfImpl>("ext".into(), factory),
+    )
+    .unwrap();
+
+    // Two independent resolutions = two independent consumer nodes.
+    let mut tracker = ConsumedTracker::new();
+    let caps_a = resolve_bindings(
+        &bindings("mut_self_cap", "ext"),
+        &reg,
+        &known_exts(&["ext"]),
+        &mut tracker,
+    )
+    .unwrap();
+    let caps_b = resolve_bindings(
+        &bindings("mut_self_cap", "ext"),
+        &reg,
+        &known_exts(&["ext"]),
+        &mut tracker,
+    )
+    .unwrap();
+
+    let mut handle_a = caps_a.require_local::<MutSelfCap>().unwrap();
+    let mut handle_b = caps_b.require_local::<MutSelfCap>().unwrap();
+
+    // Mutating A should not affect B.
+    assert_eq!(handle_a.bump(), 1);
+    assert_eq!(handle_a.bump(), 2);
+    assert_eq!(handle_b.bump(), 1, "consumer B must start from prototype");
+    assert_eq!(handle_a.bump(), 3, "consumer A must keep its own counter");
+    assert_eq!(handle_b.bump(), 2, "consumer B must keep its own counter");
+}
+
+/// Regression: when an extension exposes multiple capabilities of the
+/// same variant and a node consumes only some of them, the variant must
+/// still be reported as consumed.
+///
+/// Under the old `unconsumed_local()`-based pruning logic, a single
+/// unbound capability would make the extension appear in the
+/// "unconsumed" set, causing the engine to drop a variant that was
+/// actually in use by other capabilities. `consumed_local()` /
+/// `consumed_shared()` express the correct "any consumed" semantics:
+/// the variant is in use as soon as one capability is bound.
+#[test]
+fn test_tracker_consumed_local_any_capability_consumed() {
+    let mut tracker = ConsumedTracker::new();
+    let ext: ExtensionId = "multi-cap-ext".into();
+
+    // Same extension exposes two distinct local capabilities.
+    let cap_a =
+        tracker.ensure_local_consumer_slot(TypeId::of::<TestCap>(), "test_cap", ext.clone());
+    let _cap_b =
+        tracker.ensure_local_consumer_slot(TypeId::of::<MutSelfCap>(), "mut_self_cap", ext.clone());
+
+    // Only cap_a is consumed; cap_b is left untouched.
+    cap_a.set(true);
+
+    // Old semantics would still flag the extension in `unconsumed_local`
+    // (because cap_b's slot is still false), which is preserved here as
+    // documentation. The fix is to use `consumed_local` instead, which
+    // correctly reports the extension as in-use.
+    let unconsumed: HashSet<ExtensionId> = tracker
+        .unconsumed_local()
+        .into_iter()
+        .map(|(e, _)| e)
+        .collect();
+    assert!(
+        unconsumed.contains(&ext),
+        "cap_b is still unbound, so ext appears under the per-capability unconsumed view"
+    );
+
+    let consumed = tracker.consumed_local();
+    assert!(
+        consumed.contains(&ext),
+        "consumed_local must report ext because cap_a was consumed"
+    );
+}
+
+#[test]
+fn test_tracker_consumed_shared_any_capability_consumed() {
+    let mut tracker = ConsumedTracker::new();
+    let ext: ExtensionId = "multi-cap-ext".into();
+
+    let _cap_a =
+        tracker.ensure_shared_consumer_slot(TypeId::of::<TestCap>(), "test_cap", ext.clone());
+    let cap_b = tracker.ensure_shared_consumer_slot(
+        TypeId::of::<MutSelfCap>(),
+        "mut_self_cap",
+        ext.clone(),
+    );
+
+    cap_b.set(true);
+
+    let consumed = tracker.consumed_shared();
+    assert!(
+        consumed.contains(&ext),
+        "consumed_shared must report ext because cap_b was consumed"
+    );
+}
+
+#[test]
+fn test_tracker_consumed_empty_when_no_capability_consumed() {
+    let mut tracker = ConsumedTracker::new();
+    let ext: ExtensionId = "unused-ext".into();
+
+    let _ = tracker.ensure_local_consumer_slot(TypeId::of::<TestCap>(), "test_cap", ext.clone());
+    let _ = tracker.ensure_shared_consumer_slot(TypeId::of::<MutSelfCap>(), "mut_self_cap", ext);
+
+    assert!(tracker.consumed_local().is_empty());
+    assert!(tracker.consumed_shared().is_empty());
 }

@@ -80,8 +80,8 @@ Main consumed metric-set families:
 - `tokio.runtime`
 - `channel.sender`
 - `channel.receiver`
-- `topic.exporter.metrics`
-- `topic.receiver`
+- `exporter.topic`
+- `receiver.topic`
 - node metric sets keyed by `node.id`
 
 ## State model

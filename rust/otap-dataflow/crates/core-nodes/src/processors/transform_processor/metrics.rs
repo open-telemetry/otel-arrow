@@ -7,7 +7,7 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
 /// Metrics for the TransformProcessor node.
-#[metric_set(name = "transform.processor")]
+#[metric_set(name = "processor.transform")]
 #[derive(Debug, Default, Clone)]
 pub struct Metrics {
     /// Number of messages successfully transformed.

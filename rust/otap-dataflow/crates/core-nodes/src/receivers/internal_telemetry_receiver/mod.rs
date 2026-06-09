@@ -55,7 +55,8 @@ pub static INTERNAL_TELEMETRY_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFac
     create: |mut pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig| {
+             receiver_config: &ReceiverConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         // Get internal telemetry settings from the pipeline context
         let internal_telemetry = pipeline.take_internal_telemetry().ok_or_else(|| {
             otap_df_config::error::Error::InvalidUserConfig {
@@ -112,11 +113,6 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
         let resource_bytes = internal.resource_bytes;
         let log_tap = internal.log_tap;
         let mut scope_cache = ScopeToBytesMap::new(internal.registry);
-
-        // Start periodic telemetry collection
-        let _ = effect_handler
-            .start_periodic_telemetry(std::time::Duration::from_secs(1))
-            .await?;
 
         loop {
             tokio::select! {

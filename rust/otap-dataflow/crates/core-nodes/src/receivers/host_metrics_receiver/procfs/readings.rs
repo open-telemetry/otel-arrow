@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use super::ProcessKey;
 use super::{BYTES_PER_KIB, DISKSTAT_SECTOR_BYTES, NANOS_PER_SEC};
+use crate::receivers::host_metrics_receiver::ProcessLabelsConfig;
 
 #[derive(Copy, Clone, Default)]
 pub(super) struct CpuTimes {
@@ -26,6 +28,13 @@ pub(super) struct CpuInfo {
     pub(super) logical_count: u64,
     pub(super) physical_count: u64,
     pub(super) frequencies_hz: Vec<f64>,
+}
+
+#[derive(Copy, Clone, Default)]
+pub(super) struct LoadAverage {
+    pub(super) one_minute: f64,
+    pub(super) five_minutes: f64,
+    pub(super) fifteen_minutes: f64,
 }
 
 #[derive(Copy, Clone, Default)]
@@ -82,6 +91,49 @@ pub(super) struct ProcessStats {
     pub(super) running: u64,
     pub(super) blocked: u64,
     pub(super) created: u64,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct ProcessMetrics {
+    pub(super) key: ProcessKey,
+    pub(super) labels: ProcessLabelsConfig,
+    pub(super) command: String,
+    pub(super) executable_name: String,
+    pub(super) parent_pid: u32,
+    pub(super) user_cpu_seconds: f64,
+    pub(super) system_cpu_seconds: f64,
+    pub(super) user_cpu_utilization: Option<f64>,
+    pub(super) system_cpu_utilization: Option<f64>,
+    pub(super) memory_usage_bytes: u64,
+    pub(super) memory_virtual_bytes: u64,
+    pub(super) read_bytes: Option<u64>,
+    pub(super) write_bytes: Option<u64>,
+    pub(super) threads: u64,
+    pub(super) uptime_seconds: f64,
+}
+
+impl ProcessMetrics {
+    pub(super) fn total_cpu_seconds(&self) -> f64 {
+        self.user_cpu_seconds + self.system_cpu_seconds
+    }
+}
+
+pub(super) struct ProcessStat {
+    pub(super) pid: u32,
+    pub(super) command: String,
+    pub(super) parent_pid: u32,
+    pub(super) user_cpu_seconds: f64,
+    pub(super) system_cpu_seconds: f64,
+    pub(super) threads: u64,
+    pub(super) start_time_ticks: u64,
+    pub(super) virtual_memory_bytes: u64,
+    pub(super) resident_pages: u64,
+}
+
+#[derive(Default)]
+pub(super) struct ProcessIo {
+    pub(super) read_bytes: u64,
+    pub(super) write_bytes: u64,
 }
 
 #[derive(Default)]
@@ -380,6 +432,15 @@ pub(super) fn parse_uptime(input: &str) -> Option<f64> {
     input.split_whitespace().next()?.parse().ok()
 }
 
+pub(super) fn parse_loadavg(input: &str) -> Option<LoadAverage> {
+    let mut fields = input.split_whitespace();
+    Some(LoadAverage {
+        one_minute: fields.next()?.parse().ok()?,
+        five_minutes: fields.next()?.parse().ok()?,
+        fifteen_minutes: fields.next()?.parse().ok()?,
+    })
+}
+
 pub(super) fn parse_vmstat(input: &str) -> PagingStats {
     let mut total_faults = 0;
     let mut major_faults = 0;
@@ -439,6 +500,70 @@ pub(super) fn parse_swaps(input: &str) -> Vec<SwapStats> {
         });
     }
     swaps
+}
+
+pub(super) fn parse_process_stat(input: &str, pid: u32, clk_tck: f64) -> Option<ProcessStat> {
+    let open = input.find('(')?;
+    let close = input.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    let command = input[open + 1..close].to_owned();
+
+    let mut parent_pid = 0;
+    let mut user_cpu_seconds = 0.0;
+    let mut system_cpu_seconds = 0.0;
+    let mut threads = 0;
+    let mut start_time_ticks = 0;
+    let mut virtual_memory_bytes = 0;
+    let mut resident_pages = None;
+
+    for (index, field) in input[close + 1..].split_whitespace().enumerate() {
+        match index {
+            1 => parent_pid = parse_u64(field).try_into().unwrap_or(u32::MAX),
+            11 => user_cpu_seconds = ticks_to_seconds(parse_u64(field), clk_tck),
+            12 => system_cpu_seconds = ticks_to_seconds(parse_u64(field), clk_tck),
+            17 => threads = parse_u64(field),
+            19 => start_time_ticks = parse_u64(field),
+            20 => virtual_memory_bytes = parse_u64(field),
+            21 => {
+                resident_pages = Some(parse_u64(field));
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let resident_pages = resident_pages?;
+
+    Some(ProcessStat {
+        pid,
+        command,
+        parent_pid,
+        user_cpu_seconds,
+        system_cpu_seconds,
+        threads,
+        start_time_ticks,
+        virtual_memory_bytes,
+        resident_pages,
+    })
+}
+
+pub(super) fn parse_process_io(input: &str) -> ProcessIo {
+    let mut io = ProcessIo::default();
+    for line in input.lines() {
+        let mut fields = line.split_whitespace();
+        let Some(key) = fields.next() else {
+            continue;
+        };
+        let value = fields.next().map(parse_u64).unwrap_or_default();
+        match key.trim_end_matches(':') {
+            "read_bytes" => io.read_bytes = value,
+            "write_bytes" => io.write_bytes = value,
+            _ => {}
+        }
+    }
+    io
 }
 
 pub(super) fn parse_diskstats(
@@ -767,6 +892,16 @@ pub(super) fn clock_ticks_per_second() -> f64 {
     if ticks > 0 { ticks as f64 } else { 100.0 }
 }
 
+#[allow(unsafe_code)]
+pub(super) fn page_size_bytes() -> u64 {
+    // SAFETY: _SC_PAGESIZE is a valid sysconf name; the call has no side effects.
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    u64::try_from(page_size)
+        .ok()
+        .filter(|size| *size > 0)
+        .unwrap_or(4096)
+}
+
 pub(super) fn now_unix_nano() -> u64 {
     let Ok(duration) = SystemTime::now().duration_since(UNIX_EPOCH) else {
         return 0;
@@ -776,4 +911,34 @@ pub(super) fn now_unix_nano() -> u64 {
 
 pub(super) fn saturating_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_process_stat_reads_required_fields_without_collecting_all_fields() {
+        let stat = parse_process_stat(
+            "123 (test process) S 42 0 0 0 0 0 0 0 0 0 150 25 0 0 0 0 7 0 900 4096 3",
+            123,
+            100.0,
+        )
+        .expect("process stat");
+
+        assert_eq!(stat.pid, 123);
+        assert_eq!(stat.command, "test process");
+        assert_eq!(stat.parent_pid, 42);
+        assert_eq!(stat.user_cpu_seconds, 1.5);
+        assert_eq!(stat.system_cpu_seconds, 0.25);
+        assert_eq!(stat.threads, 7);
+        assert_eq!(stat.start_time_ticks, 900);
+        assert_eq!(stat.virtual_memory_bytes, 4096);
+        assert_eq!(stat.resident_pages, 3);
+    }
+
+    #[test]
+    fn parse_process_stat_rejects_truncated_input() {
+        assert!(parse_process_stat("123 (test) S 42", 123, 100.0).is_none());
+    }
 }

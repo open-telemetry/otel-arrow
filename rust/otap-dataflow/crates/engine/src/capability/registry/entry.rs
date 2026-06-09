@@ -49,16 +49,17 @@ where
 
 /// Object-safe `Fn + Clone` producing an erased local trait object.
 ///
-/// The stored closure returns `Rc<Rc<dyn C::Local>>` erased as
-/// `Rc<dyn Any>` — the double-`Rc` envelope the registry uses.
+/// The stored closure returns `Box<Box<dyn C::Local>>` erased as
+/// `Box<dyn Any>` — the double-box envelope the registry uses,
+/// mirroring the shared-side shape (without the `Send` bound).
 #[doc(hidden)]
-pub trait LocalProduce: Fn() -> Rc<dyn Any> {
+pub trait LocalProduce: Fn() -> Box<dyn Any> {
     fn clone_box(&self) -> Box<dyn LocalProduce>;
 }
 
 impl<F> LocalProduce for F
 where
-    F: Fn() -> Rc<dyn Any> + Clone + 'static,
+    F: Fn() -> Box<dyn Any> + Clone + 'static,
 {
     fn clone_box(&self) -> Box<dyn LocalProduce> {
         Box::new(self.clone())
@@ -70,14 +71,14 @@ where
 /// A type-erased local (!Send) capability entry.
 ///
 /// The `produce` closure — built by the `#[capability]`-generated
-/// `local_entry::<E>` caster — mints a fresh `Rc<dyn C::Local>` by
+/// `local_entry::<E>` caster — mints a fresh `Box<dyn C::Local>` by
 /// calling the extension's `LocalInstanceFactory`, downcasting to `E`,
 /// and coercing to the trait object.
 #[doc(hidden)]
 pub struct LocalCapabilityEntry {
     /// The extension that provided this capability.
     pub(crate) extension_id: ExtensionId,
-    /// Produce a fresh local trait object erased as `Rc<dyn Any>`.
+    /// Produce a fresh local trait object erased as `Box<dyn Any>`.
     pub(crate) produce: Box<dyn LocalProduce>,
 }
 
@@ -86,7 +87,7 @@ impl LocalCapabilityEntry {
     #[must_use]
     pub fn new<F>(extension_id: ExtensionId, produce: F) -> Self
     where
-        F: Fn() -> Rc<dyn Any> + Clone + 'static,
+        F: Fn() -> Box<dyn Any> + Clone + 'static,
     {
         Self {
             extension_id,
@@ -103,7 +104,7 @@ impl LocalCapabilityEntry {
 /// - `produce` — builds `Box<Box<dyn C::Shared>>` erased as
 ///   `Box<dyn Any + Send>`. Called per consumer.
 /// - `adapt_as_local` — takes that same erased double box and returns
-///   `Rc<Rc<dyn C::Local>>` erased as `Rc<dyn Any>`. Used by the
+///   `Box<Box<dyn C::Local>>` erased as `Box<dyn Any>`. Used by the
 ///   `SharedAsLocal` fallback path in `resolve_bindings`.
 #[doc(hidden)]
 pub struct SharedCapabilityEntry {
@@ -115,7 +116,7 @@ pub struct SharedCapabilityEntry {
     /// Turn a produced shared trait object (erased) into a local trait
     /// object (erased). Only called during resolve for the
     /// `SharedAsLocal` fallback.
-    pub(crate) adapt_as_local: fn(Box<dyn Any + Send>) -> Rc<dyn Any>,
+    pub(crate) adapt_as_local: fn(Box<dyn Any + Send>) -> Box<dyn Any>,
 }
 
 impl SharedCapabilityEntry {
@@ -125,7 +126,7 @@ impl SharedCapabilityEntry {
     pub fn new<F>(
         extension_id: ExtensionId,
         produce: F,
-        adapt_as_local: fn(Box<dyn Any + Send>) -> Rc<dyn Any>,
+        adapt_as_local: fn(Box<dyn Any + Send>) -> Box<dyn Any>,
     ) -> Self
     where
         F: Fn() -> Box<dyn Any + Send> + Send + Clone + 'static,
@@ -172,7 +173,7 @@ pub(crate) struct ResolvedLocalEntry {
 /// takes its `produce` cell to mint a `Box<dyn C::Shared>`. As the
 /// SharedAsLocal fallback for a binding with no native local entry,
 /// [`Capabilities::require_local`] takes the same cell and routes the
-/// output through `adapt_as_local` to mint an `Rc<dyn C::Local>`.
+/// output through `adapt_as_local` to mint a `Box<dyn C::Local>`.
 /// Either path consumes the single underlying [`Cell::take()`], so the
 /// per-binding one-shot contract is enforced naturally without an
 /// auxiliary claim flag.
@@ -190,8 +191,8 @@ pub(crate) struct ResolvedSharedEntry {
     /// Adapter fn pointer used by the SharedAsLocal fallback path
     /// in [`Capabilities::require_local`]. Takes a produced shared
     /// trait object (erased as `Box<dyn Any + Send>`) and returns a
-    /// local trait object (erased as `Rc<dyn Any>` wrapping
-    /// `Rc<dyn C::Local>`). Originally minted by the
+    /// local trait object (erased as `Box<dyn Any>` wrapping
+    /// `Box<dyn C::Local>`). Originally minted by the
     /// `#[capability]`-generated `shared_entry::<E>` caster.
-    pub(crate) adapt_as_local: fn(Box<dyn Any + Send>) -> Rc<dyn Any>,
+    pub(crate) adapt_as_local: fn(Box<dyn Any + Send>) -> Box<dyn Any>,
 }

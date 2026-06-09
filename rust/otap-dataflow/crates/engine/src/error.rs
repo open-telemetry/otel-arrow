@@ -332,18 +332,36 @@ pub enum Error {
         plugin_urn: NodeUrn,
     },
 
-    /// An extension was placed in the `nodes` section instead of `extensions`.
-    #[error("Extension `{node}` was placed in `nodes` but belongs in the `extensions` section")]
-    ExtensionInNodesSection {
-        /// The node name that was misconfigured.
-        node: NodeName,
-    },
-
     /// The specified extension already exists in the pipeline.
     #[error("The extension `{extension}` already exists")]
     ExtensionAlreadyExists {
         /// The name of the extension that already exists.
         extension: ExtensionId,
+    },
+
+    /// Unknown extension plugin.
+    #[error("Unknown extension plugin `{plugin_urn}`")]
+    UnknownExtension {
+        /// The URN of the unknown extension plugin.
+        plugin_urn: String,
+    },
+
+    /// Capability registration failed for an extension.
+    #[error("Failed to register capabilities for extension `{extension}`: {message}")]
+    CapabilityRegistrationFailed {
+        /// The extension whose capability registration failed.
+        extension: ExtensionId,
+        /// Underlying error message.
+        message: String,
+    },
+
+    /// Capability resolution failed for a node.
+    #[error("Failed to resolve capability bindings for node `{node}`: {message}")]
+    CapabilityResolutionFailed {
+        /// The node whose capability resolution failed.
+        node: NodeName,
+        /// Underlying error message.
+        message: String,
     },
 
     /// Unknown node.
@@ -558,8 +576,10 @@ impl Error {
             Error::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
             Error::TooManyNodes {} => "TooManyNodes",
             Error::UnknownExporter { .. } => "UnknownExporter",
-            Error::ExtensionInNodesSection { .. } => "ExtensionInNodesSection",
             Error::ExtensionAlreadyExists { .. } => "ExtensionAlreadyExists",
+            Error::UnknownExtension { .. } => "UnknownExtension",
+            Error::CapabilityRegistrationFailed { .. } => "CapabilityRegistrationFailed",
+            Error::CapabilityResolutionFailed { .. } => "CapabilityResolutionFailed",
             Error::UnknownNode { .. } => "UnknownNode",
             Error::UnknownOutputPort { .. } => "UnknownOutputPort",
             Error::UnknownProcessor { .. } => "UnknownProcessor",

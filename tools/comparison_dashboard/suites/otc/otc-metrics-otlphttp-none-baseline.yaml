@@ -1,0 +1,22 @@
+name: OTC OTLP/HTTP Baseline (Metrics)
+slug: otc_metrics_otlphttp_none_baseline
+description: OpenTelemetry Collector baseline for OTLP/HTTP metrics with no compression
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/otc-single-core-multi-rate.yaml
+
+meta:
+  binary: otc
+  protocols: [otlphttp]
+  signals: [metrics]
+  compression: none
+
+variables:
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_metrics.yaml
+  collector_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/otelcol/otlphttp-otlphttp.yaml.j2
+  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otlp-http.yaml.j2
+  backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/backend/otlp-http.yaml.j2
+  protocol: otlphttp
+  signal: metrics
+  loadgen_max_batch_size: 1000
+  compression_method: none
+  exporter_port: 4318
+  otelcol_gomaxprocs: 1

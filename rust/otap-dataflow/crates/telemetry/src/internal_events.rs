@@ -17,6 +17,32 @@ pub mod _private {
     pub use tracing::metadata::Kind;
     pub use tracing::{Event, Level};
     pub use tracing::{callsite2, debug, error, info, trace, valueset, warn};
+
+    /// Compile-time validator for OpenTelemetry event names used by the
+    /// `otel_info!` / `otel_warn!` / `otel_debug!` / `otel_error!` /
+    /// `otel_event!` macros.
+    ///
+    /// Event names must be short, stable identifiers (e.g.
+    /// `receiver.start`, `channel.full`) — not free-form sentences. This
+    /// function is called from a `const` context so any violation surfaces
+    /// as a compile error at the macro call site, not at runtime.
+    ///
+    /// Rules enforced:
+    /// - non-empty
+    /// - no ASCII whitespace (space, tab, newline, carriage return)
+    pub const fn validate_event_name(name: &str) {
+        let bytes = name.as_bytes();
+        assert!(!bytes.is_empty(), "otel event name must not be empty");
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            assert!(
+                b != b' ' && b != b'\t' && b != b'\n' && b != b'\r',
+                "otel event name must not contain whitespace; use a short stable identifier (e.g. \"component.action\")"
+            );
+            i += 1;
+        }
+    }
 }
 
 /// Macro for logging informational messages.
@@ -33,15 +59,17 @@ pub mod _private {
 /// ```
 #[macro_export]
 macro_rules! otel_info {
-    ($name:expr, $($fields:tt)+) => {
+    ($name:expr, $($fields:tt)+) => {{
+        const _: () = $crate::_private::validate_event_name($name);
         $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
-    };
+    }};
     // The trailing "" is required because tracing macros need at least a format
     // string or fields. The encoder skips empty strings so no body is encoded.
     // See: `DirectFieldVisitor::encode_body_string` in encoder.rs.
-    ($name:expr) => {
+    ($name:expr) => {{
+        const _: () = $crate::_private::validate_event_name($name);
         $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), "");
-    };
+    }};
 }
 
 /// Macro for logging warning messages.
@@ -58,13 +86,15 @@ macro_rules! otel_info {
 /// ```
 #[macro_export]
 macro_rules! otel_warn {
-    ($name:expr, $($fields:tt)+) => {
+    ($name:expr, $($fields:tt)+) => {{
+        const _: () = $crate::_private::validate_event_name($name);
         $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
-    };
+    }};
     // See otel_info! for why "" is needed here.
-    ($name:expr) => {
+    ($name:expr) => {{
+        const _: () = $crate::_private::validate_event_name($name);
         $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), "");
-    };
+    }};
 }
 
 /// Macro for logging debug messages.
@@ -81,13 +111,15 @@ macro_rules! otel_warn {
 /// ```
 #[macro_export]
 macro_rules! otel_debug {
-    ($name:expr, $($fields:tt)+) => {
+    ($name:expr, $($fields:tt)+) => {{
+        const _: () = $crate::_private::validate_event_name($name);
         $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
-    };
+    }};
     // See otel_info! for why "" is needed here.
-    ($name:expr) => {
+    ($name:expr) => {{
+        const _: () = $crate::_private::validate_event_name($name);
         $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), "");
-    };
+    }};
 }
 
 /// Macro for logging error messages.
@@ -104,13 +136,15 @@ macro_rules! otel_debug {
 /// ```
 #[macro_export]
 macro_rules! otel_error {
-    ($name:expr, $($fields:tt)+) => {
+    ($name:expr, $($fields:tt)+) => {{
+        const _: () = $crate::_private::validate_event_name($name);
         $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
-    };
+    }};
     // See otel_info! for why "" is needed here.
-    ($name:expr) => {
+    ($name:expr) => {{
+        const _: () = $crate::_private::validate_event_name($name);
         $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), "");
-    };
+    }};
 }
 
 /// Macro for logging messages at a runtime-selectable severity level.
@@ -139,7 +173,8 @@ macro_rules! otel_error {
 /// ```
 #[macro_export]
 macro_rules! otel_event {
-    ($level:expr, $name:expr, $($fields:tt)+) => {
+    ($level:expr, $name:expr, $($fields:tt)+) => {{
+        const _: () = $crate::_private::validate_event_name($name);
         match $level {
             $crate::_private::Level::TRACE => {
                 $crate::_private::trace!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
@@ -157,8 +192,9 @@ macro_rules! otel_event {
                 $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
             }
         }
-    };
-    ($level:expr, $name:expr) => {
+    }};
+    ($level:expr, $name:expr) => {{
+        const _: () = $crate::_private::validate_event_name($name);
         match $level {
             $crate::_private::Level::TRACE => {
                 $crate::_private::trace!(name: $name, target: env!("CARGO_PKG_NAME"), "");
@@ -176,7 +212,7 @@ macro_rules! otel_event {
                 $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), "");
             }
         }
-    };
+    }};
 }
 
 /// Log an error message directly to stderr, bypassing the tracing dispatcher.
@@ -196,6 +232,7 @@ macro_rules! otel_event {
 #[macro_export]
 macro_rules! raw_error {
     ($name:expr $(, $($fields:tt)*)?) => {{
+        const _: () = $crate::_private::validate_event_name($name);
         use $crate::self_tracing::ConsoleWriter;
         let now = std::time::SystemTime::now();
         let record = $crate::__log_record_impl!($crate::_private::Level::ERROR, $name $(, $($fields)*)?);
@@ -240,8 +277,8 @@ mod tests {
     #[test]
     fn test_raw_error() {
         let err = Error::ConfigurationError("bad config".into());
-        raw_error!("raw error message", error = ?err);
-        raw_error!("simple error message");
+        raw_error!("test.raw_error", message = "raw error message", error = ?err);
+        raw_error!("test.raw_error.simple", message = "simple error message");
     }
 
     #[test]

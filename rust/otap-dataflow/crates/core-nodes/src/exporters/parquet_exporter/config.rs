@@ -12,6 +12,9 @@ pub struct Config {
     /// The base URI for where the parquet files should be written
     pub storage: otap_df_otap::object_store::StorageType,
 
+    /// Optional object_store retry settings for cloud-backed storage.
+    pub retry: Option<otap_df_otap::object_store::RetryOptions>,
+
     /// Configuration for how to compute partitions from the dataset
     pub partitioning_strategies: Option<Vec<PartitioningStrategy>>,
 
@@ -95,6 +98,7 @@ mod test {
             storage: StorageType::File {
                 base_uri: "s3://albert-bucket/parquet-files".to_string(),
             },
+            retry: None,
             partitioning_strategies: Some(vec![PartitioningStrategy::SchemaMetadata(vec![
                 "_part_id".to_string(),
             ])]),
@@ -104,6 +108,34 @@ mod test {
             }),
         };
         assert_eq!(config, expected)
+    }
+
+    #[test]
+    fn test_deserialize_explicit_retry() {
+        let json_cfg = json!({
+            "storage": {
+                "file": {
+                  "base_uri": "/tmp/parquet-files"
+                }
+            },
+            "retry": {
+                "max_retries": 10,
+                "init_backoff": "200ms",
+                "max_backoff": "30s",
+                "backoff_base": 2.0,
+                "retry_timeout": "2min"
+            }
+        })
+        .to_string();
+
+        let config: Config = serde_json::from_str(&json_cfg).unwrap();
+        let retry = config.retry.unwrap();
+
+        assert_eq!(retry.max_retries, 10);
+        assert_eq!(retry.init_backoff, Duration::from_millis(200));
+        assert_eq!(retry.max_backoff, Duration::from_secs(30));
+        assert_eq!(retry.backoff_base, 2.0);
+        assert_eq!(retry.retry_timeout, Duration::from_secs(120));
     }
 
     #[test]
