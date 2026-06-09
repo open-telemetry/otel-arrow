@@ -36,8 +36,7 @@ config:
 
 ## Telemetry
 
-These tables list telemetry emitted directly by this node. Common engine
-runtime metric sets may also be attached by the pipeline telemetry policy.
+This node does not emit node-specific telemetry.
 
 ### Metric Sets
 

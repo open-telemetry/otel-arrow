@@ -144,12 +144,11 @@ observability pipeline is part of engine operation, not an independent workload.
 
 ### Strict Loading and Validation
 
-The model favors fail-fast loading. Configuration issues such as unknown fields, invalid schema versions,
-missing connection endpoints, graph cycles, invalid output selectors, unsupported
-policy placements, and invalid node configs are rejected before startup.
-
-This is intentional. A permissive configuration loader can hide mistakes until
-traffic flows; the engine favors early, actionable errors.
+The model favors fail-fast loading and early, actionable errors because a
+permissive configuration loader can hide mistakes until traffic flows.
+Configuration issues such as unknown fields, invalid schema versions, missing
+connection endpoints, graph cycles, invalid output selectors, unsupported policy
+placements, and invalid node configs are rejected before startup.
 
 ## Configuration File Spec
 
@@ -817,8 +816,8 @@ The following ideas are discussed and intentionally left for later steps:
   - policy-level `attributes`
 - Global defaults section (for example edge policy defaults).
 - Node-level lifecycle/tenancy/telemetry policies.
-- Topic receiver/exporter runtime wiring and additional topic policy families
-  (slow consumer handling, persistence, delivery guarantees).
+- Additional topic policy families, such as slow consumer handling,
+  persistence, and delivery guarantees.
 
 ## URN Reference
 

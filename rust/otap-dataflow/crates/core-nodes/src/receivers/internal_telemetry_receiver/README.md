@@ -18,6 +18,10 @@ observability pipeline rather than normal user ingest.
 
 Declare it with an empty config inside `engine.observability.pipeline`:
 
+The observability pipeline is defined under `engine.observability` rather than
+inside a user pipeline group, so it is owned by the engine and cannot be
+referenced from groups.
+
 ```yaml
 type: receiver:internal_telemetry
 config: {}

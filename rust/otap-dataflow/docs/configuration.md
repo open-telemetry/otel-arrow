@@ -69,7 +69,8 @@ Raw configuration text supports environment substitution before parsing:
 - `${env:VAR}`: replace with `$VAR`; error if the variable is unset.
 - `${env:VAR:-default}`: replace with `$VAR`, or `default` when unset.
 - `${env:VAR:-}`: replace with `$VAR`, or the empty string when unset.
-- `$$`: literal `$`.
+- `$$`: literal `$`; use it only when escaping a sequence that would otherwise
+  be treated as environment substitution, such as `$${env:VAR}`.
 
 ## Configuration Structure
 
@@ -142,7 +143,8 @@ groups:
 ## Receivers, Processors, and Exporters
 
 Receivers, processors, and exporters are configured as pipeline `nodes`. Each
-node has a pipeline-local id and a `type`:
+node has a pipeline-local id, such as `otlp/ingest`, `batch`, or `otlp/export`
+in the example below, and a `type`:
 
 ```yaml
 nodes:

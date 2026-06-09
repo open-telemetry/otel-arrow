@@ -51,8 +51,12 @@ config:
     flush_when_older_than: 300s
 ```
 
-The default build supports local file storage. Azure and S3 storage variants
-are compiled only when the corresponding crate features are enabled.
+The default build supports local file storage. Enable the top-level `azure`
+feature for Azure Blob Storage and the top-level `aws` feature for S3. See
+[`configs/fake-parquet-azure.yaml`](../../../../../configs/fake-parquet-azure.yaml)
+and
+[`configs/fake-parquet-s3.yaml`](../../../../../configs/fake-parquet-s3.yaml)
+for backend-specific configuration examples.
 
 ## Examples
 

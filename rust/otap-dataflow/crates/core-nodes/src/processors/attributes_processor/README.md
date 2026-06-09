@@ -132,6 +132,8 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 - `apply_to` values other than `signal`, `resource`, or `scope` are rejected.
 - Hashing supports scalar values and currently documents `sha256`.
+- The same key cannot currently be used by more than one action in a single
+  action list; see [issue #1036](https://github.com/open-telemetry/otel-arrow/issues/1036).
 - Unsupported actions deserialize but are ignored.
 
 ## Related Docs

@@ -14,7 +14,8 @@ The console exporter prints OTLP logs, metrics, and traces using a hierarchical
 text formatter. It ACKs each message after writing the formatted view.
 
 This node is intended for local inspection, demos, and debugging pipelines. It
-is not a durable export path.
+is not a production exporter, durable export path, or stable machine-readable
+format.
 
 ## Getting Started
 
