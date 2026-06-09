@@ -668,7 +668,7 @@ impl PipelinePlanner {
                         }
                     }
                 },
-                ScopedExpr::JoinAndEval { children, eval } => {
+                ScopedExpr::JoinAndEval { children, eval, .. } => {
                     let children_ref = children
                         .iter()
                         .any(|child| source_references_col_or_key(child, referenced));
