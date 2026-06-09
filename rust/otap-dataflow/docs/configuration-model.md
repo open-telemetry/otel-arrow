@@ -39,9 +39,9 @@ be read directly by humans and discovered by agents.
 ## Design Principles
 
 The configuration model is intentionally different from the OpenTelemetry
-Collector YAML model. The Arrow Dataflow Engine can interoperate with Collector
-protocols and concepts, but its configuration is shaped around the engine's
-runtime model rather than YAML shape parity.
+Collector YAML model. The OTel Arrow Dataflow Engine can interoperate with
+Collector protocols and concepts, but its configuration is shaped around the
+engine's runtime model rather than YAML shape parity.
 
 The main configuration principles are:
 
@@ -127,10 +127,10 @@ for example, the memory limiter is process-wide and only supported at top-level
 Topics are the supported way to decouple pipelines in the same process. A topic
 is declared once, then used by `exporter:topic` and `receiver:topic` nodes.
 
-This keeps each pipeline graph acyclic and locally understandable while still
+This keeps direct pipeline wiring local and understandable while still
 supporting worker-pool delivery, fan-out, taps, and staged ingest/processing/
-egress designs. Topic validation happens during startup so invalid
-cross-pipeline loops are rejected early.
+egress designs. Topic validation happens during startup so same-pipeline and
+cross-pipeline loops through topics are rejected early.
 
 ### Internal Observability Pipeline
 
@@ -226,7 +226,7 @@ groups:
           otlp/export:
             type: exporter:otlp_grpc
             config:
-              grpc_endpoint: "http://127.0.0.1:4318"
+              grpc_endpoint: "http://192.0.2.10:4317"
         connections:
           - from: otlp/ingest
             to: batcher
@@ -691,7 +691,7 @@ groups:
           logs_exporter:
             type: exporter:otlp_grpc
             config:
-              grpc_endpoint: "http://127.0.0.1:4318"
+              grpc_endpoint: "http://192.0.2.10:4317"
 
           metrics_exporter:
             type: exporter:noop

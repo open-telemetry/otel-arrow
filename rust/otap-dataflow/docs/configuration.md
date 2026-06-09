@@ -1,9 +1,9 @@
 # Configuration
 
-This guide is the practical starting point for writing and validating Arrow
-Dataflow Engine configuration. It walks from the file loaded by `df_engine` to
-the root structure, runtime defaults, pipeline topology, node configuration,
-policies, topics, observability, and validation workflow.
+This guide is the practical starting point for OTel Arrow Dataflow Engine
+configuration. It walks from the file loaded by `df_engine` to the root
+structure, runtime defaults, pipeline topology, node configuration, policies,
+topics, observability, and validation workflow.
 
 Read it sequentially if you are configuring the engine for the first time, or
 use the section headings as a checklist when reviewing YAML. For exact field
@@ -130,7 +130,7 @@ groups:
                     otlp/export:
                         type: exporter:otlp_grpc
                         config:
-                            grpc_endpoint: "http://127.0.0.1:4318"
+                            grpc_endpoint: "http://192.0.2.10:4317"
 
                 connections:
                     - from: otlp/ingest
