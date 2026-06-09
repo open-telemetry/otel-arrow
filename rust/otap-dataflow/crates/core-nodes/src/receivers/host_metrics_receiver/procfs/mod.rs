@@ -395,7 +395,11 @@ impl ProcfsSource {
         if host_cpuinfo.logical_count != 0 {
             self.process_cpu_count = host_cpuinfo.logical_count as f64;
         }
-        let cpuinfo = due.cpu.then_some(host_cpuinfo).unwrap_or_default();
+        let cpuinfo = if due.cpu {
+            host_cpuinfo
+        } else {
+            CpuInfo::default()
+        };
 
         let load = match due
             .load
