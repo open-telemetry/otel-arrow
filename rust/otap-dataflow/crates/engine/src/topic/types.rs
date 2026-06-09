@@ -274,7 +274,11 @@ impl TrackedPublishTracker {
     /// Lock order is map -> entry (matching the timeout worker); the entry mutex
     /// is the single linearization point for terminal resolution.
     #[must_use]
-    pub fn resolve_ack_from(&self, message_id: u64, subscriber_id: BroadcastSubscriberId) -> AckFromResult {
+    pub fn resolve_ack_from(
+        &self,
+        message_id: u64,
+        subscriber_id: BroadcastSubscriberId,
+    ) -> AckFromResult {
         let mut entries = self.inner.entries.lock();
         let Some(entry) = entries.get(&message_id).cloned() else {
             return AckFromResult::NotTracked;
@@ -297,7 +301,11 @@ impl TrackedPublishTracker {
     /// Called when a required subscriber disappears (lag-disconnect or
     /// drop/close) before acking outstanding messages. Idempotent and a no-op
     /// for entries that do not require the subscriber.
-    pub fn nack_pending_for_subscriber(&self, subscriber_id: BroadcastSubscriberId, reason: Arc<str>) {
+    pub fn nack_pending_for_subscriber(
+        &self,
+        subscriber_id: BroadcastSubscriberId,
+        reason: Arc<str>,
+    ) {
         let mut entries = self.inner.entries.lock();
         let to_remove: Vec<u64> = entries
             .iter()
@@ -617,7 +625,11 @@ impl TrackedPublishEntry {
     /// Used when a required subscriber disappears (lag-disconnect or drop/close)
     /// before acking. No-op for `First`-kind, already-resolved, or unrelated
     /// entries.
-    pub(crate) fn nack_if_requires(&self, subscriber_id: BroadcastSubscriberId, reason: Arc<str>) -> bool {
+    pub(crate) fn nack_if_requires(
+        &self,
+        subscriber_id: BroadcastSubscriberId,
+        reason: Arc<str>,
+    ) -> bool {
         let mut state = self.state.lock();
         let requires = matches!(
             &*state,
