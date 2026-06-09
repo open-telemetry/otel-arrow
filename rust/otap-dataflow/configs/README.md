@@ -72,6 +72,24 @@ Generates fake data and exports to Parquet files:
 
 - Generates fake data -> Parquet exporter to `/tmp`
 
+Parquet exporter configs can include an optional `retry` block for cloud-backed
+object stores. Any omitted fields use the `object_store` defaults.
+
+```yaml
+retry:
+  max_retries: 10
+  init_backoff: "200ms"
+  max_backoff: "30s"
+  backoff_base: 2.0
+  retry_timeout: "2min"
+```
+
+This configures the `object_store` layer request retry loop for transient
+storage requests. Local file storage accepts valid retry settings but ignores
+them; invalid retry values are still rejected during config validation. It does
+not replay consumed Parquet writers after `AsyncArrowWriter::close` fails, and
+it is separate from the retry processor's whole-batch redelivery policy.
+
 ### `fake-perf.yaml`
 
 Generates fake data with performance metrics:
