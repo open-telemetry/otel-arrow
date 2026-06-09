@@ -215,7 +215,6 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
 - [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
-- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
 
 For more information about the approver role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
