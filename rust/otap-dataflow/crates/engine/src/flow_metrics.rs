@@ -68,8 +68,9 @@ pub struct FlowAttributeSet {
     /// Name of the processor node where the measurement ends.
     #[attribute(key = "flow.node.end")]
     pub end_node: Cow<'static, str>,
-    /// Optional per-flow purpose differentiator (e.g. `filter`, `transform`).
-    /// Empty when the flow declares no purpose. Lets OTel View selectors target
+    /// Per-flow purpose differentiator (e.g. `filter`, `transform`). Always
+    /// emitted as the `flow.purpose` scope attribute; carries an empty value
+    /// when the flow declares no purpose. Lets OTel View selectors target
     /// distinct flavors of processor work while all flows share the single
     /// `flow` scope.
     #[attribute(key = "flow.purpose")]
@@ -1052,8 +1053,7 @@ mod tests {
             "expected flow.purpose=filter in {set:?}"
         );
 
-        // When unset, the key is still present but carries an empty value
-        // (preserving the single `flow` scope behavior).
+        // When unset, the key is still present but carries an empty value.
         let unset = FlowAttributeSet::default();
         let unset_set: Vec<(&str, AttributeValue)> = unset
             .iter_attributes()

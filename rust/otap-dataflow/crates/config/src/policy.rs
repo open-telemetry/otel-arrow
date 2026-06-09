@@ -292,8 +292,8 @@ pub struct FlowMetricConfig {
     /// selectors target distinct flavors of processor work (e.g. `filter`
     /// flows that keep/drop records vs `transform` flows that enrich and
     /// reshape them) even though all flows share the single `flow`
-    /// instrumentation scope. Omitted means no `flow.purpose` differentiation
-    /// (backward compatible).
+    /// instrumentation scope. When omitted, `flow.purpose` is still emitted
+    /// but carries an empty value (no purpose differentiation).
     #[serde(default)]
     pub purpose: Option<String>,
 }
