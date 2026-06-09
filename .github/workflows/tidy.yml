@@ -10,36 +10,39 @@ on:
 
 jobs:
   tidy:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     # This workflow is used to ensure Renovate and Dependabot PRs to Go code are 'tidy' and are reflected in the generated code produced by makefile command
-    # Note: fork PRs are blocked at the commit stage (tidy-commit.yml) via
-    # `workflow_run.head_repository.fork == false`. This run has no write
-    # permissions and no secrets, so executing PR code here is safe.
-    if: ${{ contains(fromJson('["renovate[bot]", "dependabot[bot]"]'), github.actor) }}
+    if: ${{ contains(fromJson('["renovate[bot]", "dependabot[bot]"]'), github.actor) && github.event.pull_request.head.repo.fork == false }}
     steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ vars.OTELBOT_ARROW_APP_ID }}
+          private-key: ${{ secrets.OTELBOT_ARROW_PRIVATE_KEY }}
+      - name: Get GitHub App User ID
+        id: get-user-id
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: echo "user-id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          ref: ${{ github.head_ref }}
+          token: ${{ steps.app-token.outputs.token }}
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
-          go-version: "1.26.2"
-      - name: make genotelarrowcol
-        # This also runs 'go mod tidy' as part of its process
-        run: make genotelarrowcol
-      - name: Check for changes
-        id: changes
+          go-version: "1.26.3"
+      - name: make gotidy
+        run: make gotidy
+      - name: Commit changes
         run: |
-          if git diff --quiet; then
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          git config user.name '${{ steps.app-token.outputs.app-slug }}[bot]'
+          git config user.email '${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
+
+          if ! git diff --exit-code; then
+            git add .
+            git commit -m "make gotidy"
+            git push
           fi
-      - name: Create patch
-        if: steps.changes.outputs.has_changes == 'true'
-        run: git diff > changes.patch
-      - name: Upload patch
-        if: steps.changes.outputs.has_changes == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: tidy-patch
-          path: changes.patch

@@ -40,81 +40,28 @@
 //!
 //! *Current status* - for now this only supports a small set of binary arithmetic operations.
 
-use std::borrow::Cow;
-use std::ops::Deref;
-use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 
-use arrow::array::{Array, ArrayRef, RecordBatch, StringArray, StructArray, UInt16Array};
-use arrow::compute::filter_record_batch;
-use arrow::compute::kernels::cmp::eq;
-use arrow::datatypes::{DataType, Field, Schema};
-use data_engine_expressions::{
-    BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
-    CoalesceScalarExpression, CollectionScalarExpression, CombineScalarExpression, DoubleValue,
-    Expression, IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression,
-    JoinTextScalarExpression, MathScalarExpression, PipelineFunction,
-    PipelineFunctionImplementation, ReplaceTextScalarExpression, ScalarExpression,
-    StaticScalarExpression, StringScalarExpression, StringValue, TextScalarExpression,
-};
-use datafusion::common::DFSchema;
-use datafusion::functions::core::coalesce::CoalesceFunc;
-use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::functions::crypto::{md5, sha256, sha512};
-use datafusion::functions::datetime::to_char;
-use datafusion::functions::encoding::encode;
-
-use datafusion::functions::math::log10;
-use datafusion::functions::string::{
-    concat, concat_ws, ends_with, lower, ltrim, replace, rtrim, starts_with, upper, uuid,
-};
-use datafusion::logical_expr::expr::ScalarFunction;
-use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
-use datafusion::logical_expr::{
-    BinaryExpr, ColumnarValue, Expr, Operator, ScalarUDF, ScalarUDFImpl, cast, col, lit,
-};
-use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
-use datafusion::prelude::SessionContext;
+use arrow::array::{ArrayRef, RecordBatch};
+use arrow::datatypes::{Field, Schema};
+use datafusion::logical_expr::{ColumnarValue, Expr};
+use datafusion::physical_expr::PhysicalExprRef;
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::arrays::{
-    get_optional_array_from_struct_array_from_record_batch, get_required_array,
-};
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otap_df_config::SignalType;
 use otap_df_pdata::schema::consts;
+use otap_df_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
-#[cfg(feature = "sha1-hash")]
-use crate::consts::SHA1_FUNC_NAME;
-use crate::consts::{
-    ENCODE_FUNC_NAME, ENDS_WITH_FUNC_NAME, FNV_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOG_FUNC_NAME,
-    LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME,
-    REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME,
-    STARTS_WITH_FUNC_NAME, UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME, UUIDV7_FUNC_NAME, XXH3_FUNC_NAME,
-    XXH128_FUNC_NAME,
-};
-use crate::error::{Error, Result};
-use crate::pipeline::expr::join::{join, multi_join};
-use crate::pipeline::expr::types::{
-    ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
-};
-use crate::pipeline::functions::is_type::IsTypeFunc;
-#[cfg(feature = "sha1-hash")]
-use crate::pipeline::functions::sha1_hash;
-use crate::pipeline::functions::{
-    arity_range, fnv_hash, murmur3_hash, regexp_substr, substring, uuidv7, xxh3_hash, xxh128_hash,
-};
+use crate::error::Result;
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
-use crate::pipeline::project::anyval::{
-    find_any_value_columns, project_any_value_columns, stitch_partitioned_results,
-};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
+mod bitmap;
+pub(crate) mod eval;
 pub(crate) mod join;
+pub(crate) mod planner;
 pub(crate) mod types;
 
 pub(crate) const VALUE_COLUMN_NAME: &str = "value";
-pub(crate) const LEFT_COLUMN_NAME: &str = "left";
-pub(crate) const RIGHT_COLUMN_NAME: &str = "right";
 
 /// Returns a column name for a multi-join argument at the given index.
 ///
@@ -146,7 +93,19 @@ pub(crate) enum DataScope {
     /// Attribute batch identified by [`AttributesIdentifier`] and filtered by some key.
     /// For example, (AttributesIdentifier::Root, "http.method") may refer to log attributes
     /// with key="http.method"
-    Attributes(AttributesIdentifier, String),
+    Attribute(AttributesIdentifier, String),
+
+    /// Raw (unfiltered) attribute batch identified by [`AttributesIdentifier`].
+    ///
+    /// Unlike [`Attribute`](Self::Attribute), this does NOT apply key filtering or value
+    /// projection. The expression receives the full attributes `RecordBatch` as-is (with all
+    /// columns: key, type, str, int, double, bool, bytes, ser, parent_id, id).
+    ///
+    /// Used when comparing attribute value for some key to a known type -- the planner builds
+    /// a single expression like `col("key").eq(lit("x")).and(col("str").eq(lit("y")))` that
+    /// operates directly on the raw attributes batch without an intermediate projection of the
+    /// filtered attribute record batch.
+    AttributesAll(AttributesIdentifier),
 
     /// A special data scope indicating the data is produced from a static scalar value defined
     /// in the input expression tree, rather than data from the OTAP batch.
@@ -166,6 +125,7 @@ impl DataScope {
     /// - Any scope can combine with StaticScalar (constants)
     /// - Same scopes can combine (e.g., Root + Root), because the row order is the same.
     /// - Root and RootParent can combine because both live in the root record batch.
+    /// - Two `AttributesAll` scopes with the same identifier can combine.
     pub(crate) fn can_combine(&self, other: &Self) -> bool {
         if self.is_scalar() || other.is_scalar() {
             return true;
@@ -173,6 +133,16 @@ impl DataScope {
         let self_in_root = matches!(self, Self::Root | Self::RootParent(_));
         let other_in_root = matches!(other, Self::Root | Self::RootParent(_));
         (self_in_root && other_in_root) || self == other
+    }
+
+    /// Returns the [`AttributesIdentifier`] if this is an attribute-related scope
+    /// (`Attribute` or `AttributesAll`).
+    #[allow(dead_code)]
+    pub(crate) fn attrs_id(&self) -> Option<&AttributesIdentifier> {
+        match self {
+            Self::Attribute(id, _) | Self::AttributesAll(id) => Some(id),
+            _ => None,
+        }
     }
 
     /// Returns true if this scope represents a static scalar value.
@@ -191,837 +161,246 @@ impl From<&ColumnAccessor> for DataScope {
                 _ => Self::Root,
             },
             ColumnAccessor::Attributes(attrs_id, attrs_key) => {
-                Self::Attributes(*attrs_id, attrs_key.clone())
+                Self::Attribute(*attrs_id, attrs_key.clone())
             }
         }
     }
 }
 
-/// Identifier of the incoming source data for some scoped expression.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum LogicalExprDataSource {
-    /// This indicates the input to the expression data from the incoming OTAP batch
-    DataSource(DataScope),
-
-    /// The input to the expression is the result of joining two child expressions.
-    ///
-    /// Used when there are binary expressions such as in arithmetic or comparing two columns.
-    /// The results are joined into a single record batch with columns named "left" and "right".
-    Join(Box<ScopedLogicalExpr>, Box<ScopedLogicalExpr>),
-
-    /// The input to the expression is the result of joining multiple child expressions.
-    ///
-    /// This is used when a function call has arguments from different data scopes. Each child
-    /// expression is evaluated independently, and the results are joined pairwise into a single
-    /// record batch with columns named "arg_0", "arg_1", ..., "arg_{N-1}".
-    MultiJoin(Vec<ScopedLogicalExpr>),
-}
-
-/// Represents an expression during the logical planning phase.
+/// An execution tree node for evaluating expressions on OTAP data.
 ///
-/// This combines a DataFusion logical expression with data source, result type and input type
-/// coercion information
-#[derive(Clone, Debug, PartialEq)]
-pub struct ScopedLogicalExpr {
-    /// the definition of the datafusion that should be applied to the input data
-    pub(crate) logical_expr: Expr,
-
-    /// the type that the expression will produce.
+/// Every node supports two execution methods:
+///
+/// - [`execute_as_value`](Self::execute_as_value) — produces a [`ScopedValue`] containing actual
+///   values. Used when the consumer needs materialized data (assignment, arithmetic, function
+///   arguments).
+///
+/// - [`execute_as_id_mask`](Self::execute_as_id_mask) — produces an
+///   [`IdMask`](crate::pipeline::id_mask::IdMask) bitmap of matching IDs. Used when the consumer
+///   only needs membership information (filtering, boolean combination).
+///
+/// The dual-mode design allows chains of boolean operations to stay in ID bitmap space without
+/// materializing intermediate arrays.
+#[derive(Debug)]
+pub(crate) enum ScopedExpr {
+    /// Leaf: evaluate an expression on a specific data scope (RecordBatch).
     ///
-    /// this is used during planning to check for cases where certain operations/expressions may be
-    /// invalid for a given input and to ensure any input types that require coercion are correctly
-    /// casted.
-    ///
-    /// note: type checking during planning is best-effort and there are some expressions where the
-    /// expression's type validity cannot be guaranteed before we see the data. this is especially
-    /// true for expressions involving AnyValues (attributes/logs body).
-    pub expr_type: ExprLogicalType,
+    /// For `LeafEval::DatafusionExpr`, this reads from the scope's RecordBatch and evaluates a
+    /// DataFusion expression. For `LeafEval::BatchPredicate`, the scope is conventionally
+    /// `Root` since the result applies to root rows.
+    Eval { scope: DataScope, eval: LeafEval },
 
-    /// identifies the source for the incoming data
-    pub(crate) source: LogicalExprDataSource,
-
-    /// flag for whether the type of expression requires that dictionary encoding is removed from
-    /// the input columns.
+    /// Join N children by materializing their results into a single RecordBatch (aligned
+    /// by ID columns), then evaluate a DataFusion expression on the joined result.
     ///
-    /// For example, arrow's numeric compute kernels do not work on dictionary encoded primitive
-    /// arrays, so arithmetic expressions require converting the columns to the non-dict encoded
-    /// arrow type.
-    //
-    // TODO: it would be cleaner to just have custom expression impl we could add to the plan to
-    // remove dictionary encoding from some column, instead of passing this flag down and doing it
-    // during projection.
-    pub(crate) requires_dict_downcast: bool,
+    /// Used for cross-scope arithmetic, cross-scope comparisons, and multi-arg function
+    /// calls where arguments come from different scopes.
+    JoinAndEval {
+        children: Vec<ScopedExpr>,
+        eval: LeafEval,
+
+        /// Whether to produce a null placeholder when some child evaluates to `None`, likely due
+        /// to some optional column used by an expression not being present.
+        ///
+        /// Ordinarily, we propagate what equates to a null value by having this expression node
+        /// also evaluate to `None`. However, some expressions may have special null handling
+        /// semantics where they expect the null value to be passed.
+        default_null_children: bool,
+
+        /// Whether to force the children to be aligned to the root row order before joining the
+        /// results.
+        ///
+        /// When this is false, the expression evaluation will attempt to choose the most
+        /// appropriate join type to avoid reordering the child results if possible. Setting this
+        /// flag overrides the dynamic join choice and forces root alignment when combining the
+        /// child results.
+        align_children_to_root: bool,
+    },
+
+    /// Combine two boolean-producing children via IdMask bitmap intersection (AND).
+    BitmapAnd(Box<ScopedExpr>, Box<ScopedExpr>),
+
+    /// Combine two boolean-producing children via IdMask bitmap union (OR).
+    BitmapOr(Box<ScopedExpr>, Box<ScopedExpr>),
+
+    /// Negate a boolean-producing child via IdMask bitmap inversion (NOT).
+    BitmapNot(Box<ScopedExpr>),
 }
 
-impl ScopedLogicalExpr {
-    /// Convert the logical expression (used during planning) into the physical expression
-    /// which is used during evaluation.
+/// A column of values together with scope metadata describing where those values came from
+/// and how they relate to other batches.
+///
+/// This is the result type for [`ScopedExpr::execute_as_value`].
+#[derive(Debug)]
+pub(crate) struct ScopedValue {
+    /// The computed values, either a columnar array or a scalar.
+    pub values: ColumnarValue,
+
+    /// Which scope this data belongs to (identifies the source RecordBatch and, for child
+    /// scopes, which key filter was applied).
+    pub scope: DataScope,
+
+    /// ID column from the source batch, used for joining or alignment with other scopes.
+    pub ids: Option<ArrayRef>,
+
+    /// Parent ID column from the source batch, used for joining child scopes back to their
+    /// parent scope.
+    pub parent_ids: Option<ArrayRef>,
+}
+
+impl ScopedValue {
+    /// Create a new `ScopedValue` by extracting ID columns from the source `RecordBatch`.
+    pub fn new(values: ColumnarValue, scope: DataScope, source_rb: &RecordBatch) -> Self {
+        Self {
+            values,
+            scope,
+            ids: source_rb.column_by_name(consts::ID).cloned(),
+            parent_ids: source_rb.column_by_name(consts::PARENT_ID).cloned(),
+        }
+    }
+
+    /// Create a `ScopedValue` representing a scalar result (e.g., from a static literal
+    /// or a batch predicate).
+    pub fn new_scalar(scalar_value: ScalarValue) -> Self {
+        Self {
+            values: ColumnarValue::Scalar(scalar_value),
+            scope: DataScope::StaticScalar,
+            ids: None,
+            parent_ids: None,
+        }
+    }
+}
+
+/// Expression evaluation performed at the root of the `ScopedExpr` expression tree, e.g. where
+/// the node type will be `Eval` or `JoinAndEval`.
+#[derive(Debug)]
+pub(crate) enum LeafEval {
+    /// A standard DataFusion expression, evaluated on the RecordBatch identified by the
+    /// enclosing node's scope.
     ///
-    /// Note that for now the actual conversion of the underlying datafusion [`Expr`] to the
-    /// `ScopedPhysicalExpr` happens lazily when we actually receive the incoming batch.
-    fn into_physical(self) -> Result<ScopedPhysicalExpr> {
-        let source = match self.source {
-            LogicalExprDataSource::DataSource(scope) => {
-                PhysicalExprDataSource::DataSource(Rc::new(scope))
-            }
-            LogicalExprDataSource::Join(left, right) => PhysicalExprDataSource::Join(
-                Box::new(left.into_physical()?),
-                Box::new(right.into_physical()?),
-            ),
-            LogicalExprDataSource::MultiJoin(children) => {
-                let physical_children = children
-                    .into_iter()
-                    .map(|child| child.into_physical())
-                    .collect::<Result<Vec<_>>>()?;
-                PhysicalExprDataSource::MultiJoin(physical_children)
-            }
-        };
-        let eval_anyval_as_struct = can_evaluate_anyval_as_struct(&self.logical_expr);
+    /// For `Eval` nodes, the expression reads directly from the scope's RecordBatch.
+    /// For `JoinAndEval` nodes, the expression reads from the joined RecordBatch produced
+    /// by aligning the children's results.
+    DatafusionExpr {
+        /// The DataFusion logical expression.
+        logical_expr: Expr,
 
-        let projection = Projection::try_new(&self.logical_expr)?;
+        /// Lazily initialized physical expression, created on first execution when the
+        /// actual Arrow schema is known.
+        physical_expr: Option<PhysicalExprRef>,
 
-        Ok(ScopedPhysicalExpr {
-            source,
-            logical_expr: self.logical_expr,
-            physical_expr: None, // computed when data received
-            eval_anyval_as_struct,
+        /// Column selection/reordering to match the physical expression's expected schema.
+        projection: Projection,
+
+        /// Options for projection (e.g., whether to remove dictionary encoding).
+        projection_opts: ProjectionOptions,
+
+        /// Whether to keep AnyValue columns as structs rather than splitting them into
+        /// concrete typed columns. True when the expression is a simple column reference
+        /// (e.g., `col("value")`).
+        eval_anyval_as_struct: bool,
+
+        /// Whether attribute key matching should be case-sensitive. Only relevant for
+        /// `DataScope::Attributes` scopes. When `false`, attribute key filtering uses
+        /// case-insensitive comparison. Defaults to `true`.
+        attr_key_case_sensitive: bool,
+
+        /// When true, absent data (missing columns, missing attribute keys) should be
+        /// treated as "passes" rather than "fails". This is set to true for `is_null()`
+        /// expressions, where a missing field means the field IS null — which is a match.
+        missing_data_passes: bool,
+    },
+
+    /// A batch-level predicate that evaluates a property of the entire `OtapArrowRecords`
+    /// batch rather than individual rows. The result is uniform across all rows (either all
+    /// pass or all fail).
+    ///
+    /// Examples: signal type check ("is this batch Logs / Metrics / Traces?").
+    BatchPredicate(Box<dyn BatchPredicate>),
+}
+
+impl LeafEval {
+    /// Create a new `DatafusionExpr` leaf from a DataFusion logical expression.
+    ///
+    pub fn new_df_expr(logical_expr: Expr, requires_dict_downcast: bool) -> Result<Self> {
+        Self::new_df_expr_with_key_case(logical_expr, requires_dict_downcast, true)
+    }
+
+    /// Create a new `DatafusionExpr` leaf that evaluates AnyValue columns as structs (no
+    /// partitioning). Use when the expression already accesses a specific sub-field
+    /// of an AnyValue column (e.g., `col("body").field("str")`).
+    pub fn new_df_expr_anyval_as_struct(
+        logical_expr: Expr,
+        requires_dict_downcast: bool,
+    ) -> Result<Self> {
+        let projection = Projection::try_new(&logical_expr)?;
+
+        Ok(Self::DatafusionExpr {
+            logical_expr,
+            physical_expr: None,
             projection,
             projection_opts: ProjectionOptions {
-                downcast_dicts: self.requires_dict_downcast,
+                downcast_dicts: requires_dict_downcast,
+                ..Default::default()
             },
-        })
-    }
-}
-
-/// Logical planner that converts AST expressions into ScopedLogicalExpr.
-#[derive(Default)]
-pub(crate) struct ExprLogicalPlanner {}
-
-impl ExprLogicalPlanner {
-    pub fn plan_scalar_expr(
-        &self,
-        scalar_expression: &ScalarExpression,
-        functions: &[PipelineFunction],
-    ) -> Result<ScopedLogicalExpr> {
-        match scalar_expression {
-            ScalarExpression::Source(source_scalar_expr) => {
-                let value_accessor = source_scalar_expr.get_value_accessor();
-                let column_accessor = ColumnAccessor::try_from(value_accessor)?;
-
-                match column_accessor {
-                    ColumnAccessor::ColumnName(column_name) => {
-                        let field_type = root_field_type(&column_name).ok_or_else(|| {
-                            Error::InvalidPipelineError {
-                                cause: format!("unknown field {column_name} on root record batch"),
-                                query_location: Some(
-                                    source_scalar_expr.get_query_location().clone(),
-                                ),
-                            }
-                        })?;
-                        Ok(ScopedLogicalExpr {
-                            logical_expr: col(column_name),
-                            requires_dict_downcast: false,
-                            source: LogicalExprDataSource::DataSource(DataScope::Root),
-                            expr_type: field_type,
-                        })
-                    }
-                    ColumnAccessor::StructCol(column_name, struct_field_name) => {
-                        let field_type =
-                            nested_struct_field_type(&struct_field_name).ok_or_else(|| Error::InvalidPipelineError {
-                                cause: format!("unknown field {struct_field_name} on {column_name} struct column"),
-                                query_location: Some(
-                                    source_scalar_expr.get_query_location().clone(),
-                                ),
-                            })?;
-                        let data_scope = match column_name {
-                            consts::RESOURCE => DataScope::RootParent(RootParentStruct::Resource),
-                            consts::SCOPE => DataScope::RootParent(RootParentStruct::Scope),
-                            _ => DataScope::Root,
-                        };
-                        Ok(ScopedLogicalExpr {
-                            logical_expr: col(column_name).field(struct_field_name),
-                            requires_dict_downcast: false,
-                            source: LogicalExprDataSource::DataSource(data_scope),
-                            expr_type: field_type,
-                        })
-                    }
-                    ColumnAccessor::Attributes(attrs_id, key) => Ok(ScopedLogicalExpr {
-                        logical_expr: col(VALUE_COLUMN_NAME),
-                        requires_dict_downcast: false,
-                        source: LogicalExprDataSource::DataSource(DataScope::Attributes(
-                            attrs_id, key,
-                        )),
-                        expr_type: ExprLogicalType::AnyValue,
-                    }),
-                }
-            }
-            ScalarExpression::Static(static_scalar_expr) => {
-                let (logical_expr, expr_type) = match static_scalar_expr {
-                    StaticScalarExpression::Integer(int_expr) => {
-                        (lit(int_expr.get_value()), ExprLogicalType::AnyInt)
-                    }
-                    StaticScalarExpression::Double(double_expr) => {
-                        (lit(double_expr.get_value()), ExprLogicalType::Float64)
-                    }
-                    StaticScalarExpression::Boolean(bool_expr) => {
-                        (lit(bool_expr.get_value()), ExprLogicalType::Boolean)
-                    }
-                    StaticScalarExpression::String(string_expr) => {
-                        (lit(string_expr.get_value()), ExprLogicalType::String)
-                    }
-                    StaticScalarExpression::Null(_) => {
-                        (Expr::default(), ExprLogicalType::AnyValue) // default is lit(null)
-                    }
-                    _ => {
-                        return Err(Error::NotYetSupportedError {
-                            message: format!(
-                                "static scalar expression type not yet supported: {:?}",
-                                static_scalar_expr
-                            ),
-                        });
-                    }
-                };
-
-                Ok(ScopedLogicalExpr {
-                    logical_expr,
-                    expr_type,
-                    source: LogicalExprDataSource::DataSource(DataScope::StaticScalar),
-                    requires_dict_downcast: false,
-                })
-            }
-            ScalarExpression::InvokeFunction(invoke_function_expression) => {
-                self.plan_function_invocation(invoke_function_expression, functions)
-            }
-            ScalarExpression::Math(math_scalar_expr) => match math_scalar_expr {
-                MathScalarExpression::Add(binary_math_expr) => {
-                    self.plan_binary_math_expr(binary_math_expr, Operator::Plus, functions)
-                }
-                MathScalarExpression::Subtract(binary_math_expr) => {
-                    self.plan_binary_math_expr(binary_math_expr, Operator::Minus, functions)
-                }
-                MathScalarExpression::Multiply(binary_math_expr) => {
-                    self.plan_binary_math_expr(binary_math_expr, Operator::Multiply, functions)
-                }
-                MathScalarExpression::Divide(binary_math_expr) => {
-                    self.plan_binary_math_expr(binary_math_expr, Operator::Divide, functions)
-                }
-                MathScalarExpression::Modulus(binary_math_expr) => {
-                    self.plan_binary_math_expr(binary_math_expr, Operator::Modulo, functions)
-                }
-                other_math_expr => Err(Error::NotYetSupportedError {
-                    message: format!("math expression not yet supported {other_math_expr:?}"),
-                }),
-            },
-            ScalarExpression::Slice(slice_scalar_expr) => {
-                // plan the expression for substring start
-                let start_scalar_expr = slice_scalar_expr.get_range_start().ok_or_else(|| {
-                    Error::InvalidPipelineError {
-                        cause: "start index is required for substring".into(),
-                        query_location: Some(slice_scalar_expr.get_query_location().clone()),
-                    }
-                })?;
-
-                let mut slice_arg_exprs: Vec<&ScalarExpression> =
-                    vec![slice_scalar_expr.get_source(), start_scalar_expr];
-
-                if let Some(end_scalar_expr) = slice_scalar_expr.get_range_length() {
-                    slice_arg_exprs.push(end_scalar_expr);
-                }
-
-                let (arg_exprs, source_scope, requires_dict_downcast) =
-                    self.plan_function_args(slice_arg_exprs.into_iter(), functions)?;
-
-                Ok(ScopedLogicalExpr {
-                    logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
-                        substring(),
-                        arg_exprs,
-                    )),
-                    expr_type: ExprLogicalType::String,
-                    source: source_scope,
-                    requires_dict_downcast,
-                })
-            }
-            ScalarExpression::Text(text) => self.plan_text_expr(text, functions),
-            ScalarExpression::Coalesce(coalesce_expr) => {
-                self.plan_coalesce_expr(coalesce_expr, functions)
-            }
-            other_expr => Err(Error::NotYetSupportedError {
-                message: format!("expression not yet supported {other_expr:?}"),
-            }),
-        }
-    }
-
-    fn plan_coalesce_expr(
-        &self,
-        coalesce_expr: &CoalesceScalarExpression,
-        functions: &[PipelineFunction],
-    ) -> Result<ScopedLogicalExpr> {
-        let (df_args, source_scope, _requires_dict_downcast) =
-            self.plan_function_args(coalesce_expr.get_expressions().iter(), functions)?;
-
-        // DataFusion's `coalesce` UDF does not support direct physical evaluation; the optimizer
-        // rewrites it via `CoalesceFunc::simplify`. Reuse that implementation here.
-        let coalesce_func = CoalesceFunc::new();
-        let simplify_result = coalesce_func
-            .simplify(df_args, &SimplifyContext::default())
-            .map_err(Error::from)?;
-        let case_expr = match simplify_result {
-            ExprSimplifyResult::Simplified(expr) => expr,
-            ExprSimplifyResult::Original(_) => {
-                return Err(Error::InvalidPipelineError {
-                    cause: "expected coalesce simplify to produce a single expression".into(),
-                    query_location: None,
-                });
-            }
-        };
-
-        Ok(ScopedLogicalExpr {
-            logical_expr: case_expr,
-            expr_type: ExprLogicalType::AnyValue,
-            source: source_scope,
-            // Like `concat`, mixed attribute columns (often dictionary-encoded) and literals need
-            // dictionary downcasting before CASE can build a single array.
-            requires_dict_downcast: true,
+            eval_anyval_as_struct: true,
+            attr_key_case_sensitive: true,
+            missing_data_passes: false,
         })
     }
 
-    fn plan_binary_math_expr(
-        &self,
-        binary_math_expr: &BinaryMathematicalScalarExpression,
-        operator: Operator,
-        functions: &[PipelineFunction],
-    ) -> Result<ScopedLogicalExpr> {
-        // Recursively plan left and right sub-expressions
-        let mut left = self.plan_scalar_expr(binary_math_expr.get_left_expression(), functions)?;
-        let mut right =
-            self.plan_scalar_expr(binary_math_expr.get_right_expression(), functions)?;
-
-        let expr_type = coerce_arithmetic(&mut left, &mut right).ok_or_else(|| {
-            Error::InvalidPipelineError {
-                cause: format!(
-                    "could not coerce types for arithmetic: left type {:?}, right type {:?}",
-                    left.expr_type, right.expr_type
-                ),
-                query_location: Some(binary_math_expr.get_query_location().clone()),
-            }
-        })?;
-
-        // determine if we can execute the binary expression without joining data from a different
-        // data scope. We'd be able to do this when the left/right side either have the same input
-        // RecordBatch & row order or if one/both sides are a scalar.
-        //
-        // for example, we had an expression like:
-        // `attributes["x"] * 2` or `observed_timestamp_unix_nano - timestamp_unix_nano`.
-        let possible_combined_expr_scope = match (&left.source, &right.source) {
-            (
-                LogicalExprDataSource::DataSource(left_scope),
-                LogicalExprDataSource::DataSource(right_scope),
-            ) => left_scope
-                .can_combine(right_scope)
-                .then_some(if !left_scope.is_scalar() {
-                    left_scope
-                } else {
-                    right_scope
-                }),
-            _ => None,
-        };
-
-        if let Some(combined_scope) = possible_combined_expr_scope {
-            Ok(ScopedLogicalExpr {
-                logical_expr: Expr::BinaryExpr(BinaryExpr::new(
-                    Box::new(left.logical_expr),
-                    operator,
-                    Box::new(right.logical_expr),
-                )),
-                source: LogicalExprDataSource::DataSource(combined_scope.clone()),
-                expr_type,
-                requires_dict_downcast: true,
-            })
-        } else {
-            Ok(ScopedLogicalExpr {
-                logical_expr: Expr::BinaryExpr(BinaryExpr::new(
-                    Box::new(col(LEFT_COLUMN_NAME)),
-                    operator,
-                    Box::new(col(RIGHT_COLUMN_NAME)),
-                )),
-                source: LogicalExprDataSource::Join(Box::new(left), Box::new(right)),
-                expr_type,
-                requires_dict_downcast: true,
-            })
-        }
-    }
-
-    fn plan_concat_expr(
-        &self,
-        combine_expr: &CombineScalarExpression,
-        functions: &[PipelineFunction],
-    ) -> Result<ScopedLogicalExpr> {
-        match combine_expr.get_values_expression() {
-            ScalarExpression::Collection(CollectionScalarExpression::List(list_expr)) => {
-                let (df_udf_args, source_scope, _) =
-                    self.plan_function_args(list_expr.get_value_expressions().iter(), functions)?;
-                Ok(ScopedLogicalExpr {
-                    logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
-                        concat(),
-                        df_udf_args,
-                    )),
-                    expr_type: ExprLogicalType::String,
-                    source: source_scope,
-                    requires_dict_downcast: true,
-                })
-            }
-            other => Err(Error::InvalidPipelineError {
-                cause: format!(
-                    "Unexpected scalar expression for CombineScalarExpression values {other:?}"
-                ),
-                query_location: Some(combine_expr.get_query_location().clone()),
-            }),
-        }
-    }
-
-    fn plan_function_invocation(
-        &self,
-        invoke_function_expression: &InvokeFunctionScalarExpression,
-        functions: &[PipelineFunction],
-    ) -> Result<ScopedLogicalExpr> {
-        // get function definition
-        let function_id = invoke_function_expression.get_function_id();
-        let function = functions
-            .get(function_id)
-            .ok_or_else(|| Error::InvalidPipelineError {
-                cause: format!("function id {function_id} not found"),
-                query_location: Some(invoke_function_expression.get_query_location().clone()),
-            })?;
-
-        // get function name
-        let PipelineFunctionImplementation::External(func_name) = function.get_implementation()
-        else {
-            return Err(Error::NotYetSupportedError {
-                message: "Only external functions currently supported in expression".into(),
-            });
-        };
-
-        // get function scalar UDF + metadata
-        let df_udf = DataFusionFunctionDef::from_func_name(func_name).ok_or_else(|| {
-            Error::InvalidPipelineError {
-                cause: format!("Unknown function '{func_name}"),
-                query_location: Some(invoke_function_expression.get_query_location().clone()),
-            }
-        })?;
-
-        let invoke_arg_exprs = invoke_function_expression.get_arguments();
-        let num_args = invoke_arg_exprs.len();
-
-        // check that we've been passed the correct number of arguments.
-        //
-        // TODO: in future we could also do some additional checking here on the types
-        if let Some(arity_range) = arity_range(&df_udf.scalar_udf.signature().type_signature) {
-            if !arity_range.contains(&num_args) {
-                return Err(Error::InvalidPipelineError {
-                    cause: format!(
-                        "function '{func_name}' expects {} arguments. Received {num_args}",
-                        if arity_range.len() > 1 {
-                            format!("{}-{}", arity_range.start, arity_range.end - 1)
-                        } else {
-                            format!("{}", arity_range.start)
-                        }
-                    ),
-                    query_location: Some(invoke_function_expression.get_query_location().clone()),
-                });
-            }
-        }
-
-        let (arg_exprs, source_scope, source_requires_dict_downcast) = if invoke_arg_exprs
-            .is_empty()
-        {
-            // For zero-arg functions (e.g. `uuid()`, `uuidv7()`), evaluate against the root
-            // batch so that volatile UDFs produce one value per row rather than a single
-            // scalar that gets broadcast across rows.
-            (
-                Vec::new(),
-                LogicalExprDataSource::DataSource(DataScope::Root),
-                false,
-            )
-        } else {
-            let scalar_arg_exprs = invoke_arg_exprs
-                .iter()
-                .map(|arg| match arg {
-                    InvokeFunctionArgument::Scalar(scalar_expr) => Ok(scalar_expr),
-                    InvokeFunctionArgument::MutableValue(_) => Err(Error::NotYetSupportedError {
-                        message:
-                            "Mutable value as function argument not yet supported in expression"
-                                .into(),
-                    }),
-                })
-                .collect::<Result<Vec<_>>>()?;
-
-            self.plan_function_args(scalar_arg_exprs.into_iter(), functions)?
-        };
-
-        let mut logical_expr =
-            Expr::ScalarFunction(ScalarFunction::new_udf(df_udf.scalar_udf, arg_exprs));
-
-        if let Some(data_type) = df_udf.cast_result_to {
-            logical_expr = cast(logical_expr, data_type)
-        }
-
-        // TODO: currently this will eagerly remove dictionary encoding when projecting the
-        // source if dictionary encoding is not supported by the function being invoked.
-        // However there may be cases where the overall expression may evaluate faster on
-        // dict-encoded data and we may wish to defer removing the dict encoding.
-        let requires_dict_downcast = source_requires_dict_downcast | df_udf.requires_dict_downcast;
-
-        Ok(ScopedLogicalExpr {
-            logical_expr,
-            expr_type: df_udf.return_type,
-            source: source_scope,
-            requires_dict_downcast,
-        })
-    }
-
-    fn plan_function_args<'a>(
-        &self,
-        arg_exprs: impl Iterator<Item = &'a ScalarExpression>,
-        functions: &[PipelineFunction],
-    ) -> Result<(Vec<Expr>, LogicalExprDataSource, bool)> {
-        let scoped_logical_args: Vec<ScopedLogicalExpr> = arg_exprs
-            .map(|arg| self.plan_scalar_expr(arg, functions))
-            .collect::<Result<Vec<_>>>()?;
-
-        if scoped_logical_args.is_empty() {
-            return Ok((
-                Vec::new(),
-                LogicalExprDataSource::DataSource(DataScope::StaticScalar),
-                false,
-            ));
-        }
-
-        // Check if all arguments can be combined into a single scope without joining.
-        let mut combined_scope: Option<DataScope> = None;
-        let mut all_combinable = true;
-        let mut requires_dict_downcast = false;
-
-        for scoped_logical_arg in &scoped_logical_args {
-            requires_dict_downcast |= scoped_logical_arg.requires_dict_downcast;
-
-            let arg_scope = match &scoped_logical_arg.source {
-                LogicalExprDataSource::DataSource(scope) => scope,
-                // If any arg already requires a join, we can't combine scopes so must multi join
-                _ => {
-                    all_combinable = false;
-                    break;
-                }
-            };
-
-            combined_scope = match combined_scope.take() {
-                None => Some(arg_scope.clone()),
-                Some(existing) => {
-                    if existing.can_combine(arg_scope) {
-                        Some(if !existing.is_scalar() {
-                            existing
-                        } else {
-                            arg_scope.clone()
-                        })
-                    } else {
-                        all_combinable = false;
-                        break;
-                    }
-                }
-            };
-        }
-
-        if all_combinable {
-            // All arguments share a compatible scope. Return their logical exprs directly.
-            let arg_logical_exprs = scoped_logical_args
-                .into_iter()
-                .map(|a| a.logical_expr)
-                .collect();
-            let scope = LogicalExprDataSource::DataSource(
-                combined_scope.unwrap_or(DataScope::StaticScalar),
-            );
-            Ok((arg_logical_exprs, scope, requires_dict_downcast))
-        } else {
-            // Arguments come from different scopes. Create a MultiJoin: each argument
-            // becomes a child expression in the join, and the function's argument Exprs
-            // are rewritten to reference the join result columns ("arg_0", "arg_1", ...).
-            let requires_dict_downcast =
-                scoped_logical_args.iter().any(|a| a.requires_dict_downcast);
-
-            let arg_col_exprs: Vec<Expr> = (0..scoped_logical_args.len())
-                .map(|i| col(arg_column_name(i)))
-                .collect();
-
-            let source = LogicalExprDataSource::MultiJoin(scoped_logical_args);
-            Ok((arg_col_exprs, source, requires_dict_downcast))
-        }
-    }
-
-    fn plan_join_text_expr(
-        &self,
-        join_text_expr: &JoinTextScalarExpression,
-        functions: &[PipelineFunction],
-    ) -> Result<ScopedLogicalExpr> {
-        match join_text_expr.get_values_expression() {
-            ScalarExpression::Collection(CollectionScalarExpression::List(list_expr)) => {
-                let (df_udf_args, source_scope, _) = self.plan_function_args(
-                    [join_text_expr.get_separator_expression()]
-                        .into_iter()
-                        .chain(list_expr.get_value_expressions().iter()),
-                    functions,
-                )?;
-
-                Ok(ScopedLogicalExpr {
-                    logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
-                        concat_ws(),
-                        df_udf_args,
-                    )),
-                    expr_type: ExprLogicalType::String,
-                    source: source_scope,
-                    requires_dict_downcast: true,
-                })
-            }
-            other => Err(Error::InvalidPipelineError {
-                cause: format!(
-                    "Unexpected scalar expression for JoinTextScalarExpression values {other:?}"
-                ),
-                query_location: Some(join_text_expr.get_query_location().clone()),
-            }),
-        }
-    }
-
-    fn plan_regex_capture_text_expr(
-        &self,
-        capture_text_expr: &CaptureTextScalarExpression,
-        functions: &[PipelineFunction],
-    ) -> Result<ScopedLogicalExpr> {
-        let capture_scalar_expr = match capture_text_expr.get_pattern() {
-            ScalarExpression::Static(StaticScalarExpression::Regex(regexp_expr)) => {
-                // the datafusion UDF for this expects a string, so if the arg is a scalar regex
-                // convert it into a string so it will be planed as a scalar string literal
-                Cow::Owned(ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(
-                        regexp_expr.get_query_location().clone(),
-                        regexp_expr.get_value().as_str(),
-                    ),
-                )))
-            }
-            other => Cow::Borrowed(other),
-        };
-
-        let (mut df_udf_args, source_scope, requires_dict_downcast) = self.plan_function_args(
-            [
-                capture_text_expr.get_haystack(),
-                &capture_scalar_expr,
-                capture_text_expr.get_capture_group(),
-            ]
-            .into_iter(),
-            functions,
-        )?;
-
-        Ok(ScopedLogicalExpr {
-            logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(
-                regexp_substr(),
-                vec![
-                    df_udf_args.remove(0), // source
-                    df_udf_args.remove(0), // pattern
-                    lit(1),                // start
-                    lit(1),                // occurrence
-                    Expr::default(),       // flags = literal Null
-                    df_udf_args.remove(0), // group
-                ],
-            )),
-            expr_type: ExprLogicalType::String,
-            source: source_scope,
-            requires_dict_downcast,
-        })
-    }
-
-    fn plan_replace_text_expr(
-        &self,
-        replace_text_expr: &ReplaceTextScalarExpression,
-        functions: &[PipelineFunction],
-    ) -> Result<ScopedLogicalExpr> {
-        let (df_udf_args, source_scope, _) = self.plan_function_args(
-            [
-                replace_text_expr.get_haystack_expression(),
-                replace_text_expr.get_needle_expression(),
-                replace_text_expr.get_replacement_expression(),
-            ]
-            .into_iter(),
-            functions,
-        )?;
-
-        Ok(ScopedLogicalExpr {
-            logical_expr: Expr::ScalarFunction(ScalarFunction::new_udf(replace(), df_udf_args)),
-            expr_type: ExprLogicalType::String,
-            source: source_scope,
-            requires_dict_downcast: true,
-        })
-    }
-
-    fn plan_text_expr(
-        &self,
-        text_expr: &TextScalarExpression,
-        functions: &[PipelineFunction],
-    ) -> Result<ScopedLogicalExpr> {
-        match text_expr {
-            TextScalarExpression::Concat(combine_expr) => {
-                self.plan_concat_expr(combine_expr, functions)
-            }
-            TextScalarExpression::Join(join_text_expr) => {
-                self.plan_join_text_expr(join_text_expr, functions)
-            }
-            TextScalarExpression::Replace(replace_text_expr) => {
-                self.plan_replace_text_expr(replace_text_expr, functions)
-            }
-            TextScalarExpression::Capture(capture_text_expr) => {
-                self.plan_regex_capture_text_expr(capture_text_expr, functions)
-            }
-        }
-    }
-}
-
-struct DataFusionFunctionDef {
-    scalar_udf: Arc<ScalarUDF>,
-    return_type: ExprLogicalType,
-    requires_dict_downcast: bool,
-    cast_result_to: Option<DataType>,
-}
-
-impl DataFusionFunctionDef {
-    fn new(
-        scalar_udf: Arc<ScalarUDF>,
-        return_type: ExprLogicalType,
+    /// Create a new `DatafusionExpr` leaf with explicit attribute key case sensitivity.
+    pub fn new_df_expr_with_key_case(
+        logical_expr: Expr,
         requires_dict_downcast: bool,
-        cast_result_to: Option<DataType>,
-    ) -> Self {
-        Self {
-            scalar_udf,
-            return_type,
-            requires_dict_downcast,
-            cast_result_to,
-        }
-    }
+        attr_key_case_sensitive: bool,
+    ) -> Result<Self> {
+        let eval_anyval_as_struct = matches!(logical_expr, Expr::Column(_));
+        let missing_data_passes = matches!(logical_expr, Expr::IsNull(_));
+        let projection = Projection::try_new(&logical_expr)?;
 
-    fn from_func_name(func_name: &str) -> Option<Self> {
-        // TODO: some functions may produce different result types depending on the input type.
-        // In these cases, we may wish to not have a hard-coded return type, and instead attempt
-        // to compute the return type from the types of the input expressions.
-        // TODO: some of these functions that involve expanding to dictionary, we may wish to
-        // implement our own versions that can operate directly on dictionary arrays (or fix this
-        // upstream in datafusion_functions)
-        Some(match func_name {
-            ENCODE_FUNC_NAME => Self::new(encode(), ExprLogicalType::String, false, None),
-            ENDS_WITH_FUNC_NAME => Self::new(ends_with(), ExprLogicalType::Boolean, true, None),
-            LOG_FUNC_NAME => Self::new(log10(), ExprLogicalType::Float64, true, None),
-            LTRIM_FUNC_NAME => Self::new(ltrim(), ExprLogicalType::String, true, None),
-            REGEXP_SUBSTR_FUNC_NAME => {
-                Self::new(regexp_substr(), ExprLogicalType::String, false, None)
-            }
-            FORMAT_DATETIME_FUNC_NAME => Self::new(to_char(), ExprLogicalType::String, false, None),
-            RTRIM_FUNC_NAME => Self::new(rtrim(), ExprLogicalType::String, true, None),
-            SHA256_FUNC_NAME => Self::new(sha256(), ExprLogicalType::Binary, true, None),
-            MD5_FUNC_NAME => Self::new(md5(), ExprLogicalType::String, true, Some(DataType::Utf8)),
-            FNV_FUNC_NAME => Self::new(fnv_hash(), ExprLogicalType::Int64, true, None),
-            MURMUR3_FUNC_NAME => Self::new(murmur3_hash(), ExprLogicalType::Int64, true, None),
-            #[cfg(feature = "sha1-hash")]
-            SHA1_FUNC_NAME => Self::new(sha1_hash(), ExprLogicalType::Binary, true, None),
-            SHA512_FUNC_NAME => Self::new(sha512(), ExprLogicalType::Binary, true, None),
-            STARTS_WITH_FUNC_NAME => Self::new(starts_with(), ExprLogicalType::Boolean, true, None),
-            XXH3_FUNC_NAME => Self::new(xxh3_hash(), ExprLogicalType::Int64, true, None),
-            XXH128_FUNC_NAME => Self::new(xxh128_hash(), ExprLogicalType::Binary, true, None),
-            UUID_FUNC_NAME => Self::new(uuid(), ExprLogicalType::String, false, None),
-            UUIDV7_FUNC_NAME => Self::new(uuidv7(), ExprLogicalType::String, false, None),
-            UPPER_CASE_FUNC_NAME => Self::new(upper(), ExprLogicalType::String, true, None),
-            LOWER_CASE_FUNC_NAME => Self::new(lower(), ExprLogicalType::String, true, None),
-            _ => return None,
+        Ok(Self::DatafusionExpr {
+            logical_expr,
+            physical_expr: None,
+            projection,
+            projection_opts: ProjectionOptions {
+                downcast_dicts: requires_dict_downcast,
+                ..Default::default()
+            },
+            eval_anyval_as_struct,
+            attr_key_case_sensitive,
+            missing_data_passes,
         })
     }
 }
 
-/// Physical planner that converts ScopedLogicalExpr into ScopedPhysicalExpr.
+/// A predicate that evaluates a property of the entire `OtapArrowRecords` batch.
 ///
-/// This is just a thin wrapper that delegates to ScopedLogicalExpr::into_physical().
-/// Could potentially be removed, but provides a clear separation of concerns.
-#[derive(Default)]
-pub(crate) struct ExprPhysicalPlanner {}
+/// Results are uniform across all rows: either all pass or all fail.
+pub(crate) trait BatchPredicate: std::fmt::Debug {
+    /// Evaluate the predicate against the entire batch.
+    ///
+    /// Returns true if the batch satisfies the predicate (all rows pass),
+    /// false otherwise (all rows fail).
+    fn evaluate(&self, otap_batch: &OtapArrowRecords) -> bool;
+}
 
-impl ExprPhysicalPlanner {
-    /// Converts a ScopedLogicalExpr into an executable ScopedPhysicalExpr.
-    pub fn plan(&self, logical_expr: ScopedLogicalExpr) -> Result<ScopedPhysicalExpr> {
-        logical_expr.into_physical()
+/// Checks whether the batch contains a specific signal type.
+#[derive(Debug)]
+pub(crate) struct SignalTypePredicate {
+    pub signal_type: SignalType,
+}
+
+impl SignalTypePredicate {
+    pub fn new(signal_type: SignalType) -> Self {
+        Self { signal_type }
     }
 }
 
-/// Determines if we can evaluate the AnyValue column as a struct column
-fn can_evaluate_anyval_as_struct(expr: &Expr) -> bool {
-    match expr {
-        // if we're simply returning the column, keep the column as an AnyValue struct and let
-        // consumers expressions project it into a concrete type if they need to
-        Expr::Column(_) => true,
-        // `is_type(col)` resolves the type check directly from the AnyValue discriminator
-        // column, so we want to keep the input as a struct rather than partition it by
-        // concrete subtype, evaluate, and stitch.
-        Expr::ScalarFunction(sf) => {
-            sf.args.len() == 1
-                && matches!(sf.args[0], Expr::Column(_))
-                && sf.func.inner().as_any().is::<IsTypeFunc>()
-        }
-        _ => false,
+impl BatchPredicate for SignalTypePredicate {
+    fn evaluate(&self, otap_batch: &OtapArrowRecords) -> bool {
+        otap_batch.signal_type() == self.signal_type
     }
-}
-
-/// A node in the expression tree used for expression evaluation.
-///
-/// This encapsulates a datafusion PhysicalExpr that evaluates some section of the overall
-/// expression tree (the section delineation being expressions where a single, scoped `RecordBatch`
-/// can be used as a source without doing any joins).
-///
-/// This type is responsible for organizing source data into this single input `RecordBatch`, which
-/// it does in one of three ways:
-/// - select the appropriate data from the incoming OTAP batch
-/// - recursively evaluate left/right child expressions and join them
-/// - create a dummy empty record batch (special case for scalar-only expressions)
-///
-pub(crate) struct ScopedPhysicalExpr {
-    /// Identifier of the data source from which the input to the PhysicalExpr will be crafted
-    source: PhysicalExprDataSource,
-
-    /// The datafusion PhysicalExpr that computes this segment of the expression tree. This is
-    /// planned lazily from the logical expression when we receive data (because an actual Arrow
-    /// is needed to do the planning)
-    physical_expr: Option<PhysicalExprRef>,
-
-    /// The logical representation of this segment of the expression tree. Used to lazily plan the
-    /// physical expression
-    logical_expr: Expr,
-
-    /// This projection will attempt to select the required columns from the input record batch in
-    /// the correct order before evaluating the physical expression. This is necessary because OTAP
-    /// record batches are not guaranteed to always have the same set of columns in the same order
-    /// across subsequent batches, but this consistent schema is expected by the physical expr.
-    pub(crate) projection: Projection,
-
-    /// Options for projection, including whether to remove dictionary encoding (which is required
-    /// for arrow numeric compute kernels).
-    pub(crate) projection_opts: ProjectionOptions,
-
-    /// Whether or not to evaluate the expression on AnyValue columns as structs, or otherwise
-    /// convert the AnyValue column into one or more simple columns representing the concrete type
-    eval_anyval_as_struct: bool,
-}
-
-/// Identifies the source for the input to the physical expression
-enum PhysicalExprDataSource {
-    /// Source the data from the incoming OTAP record batch
-    DataSource(Rc<DataScope>),
-
-    /// Source the data by evaluating left/right child expressions and joining the results
-    Join(Box<ScopedPhysicalExpr>, Box<ScopedPhysicalExpr>),
-
-    /// Source the data by evaluating multiple child expressions and joining the results
-    /// pairwise into a single record batch with columns named "arg_0", "arg_1", etc.
-    MultiJoin(Vec<ScopedPhysicalExpr>),
 }
 
 /// To evaluate expressions that only produce scalar values, we need to pass some RecordBatch into
@@ -1029,3218 +408,467 @@ enum PhysicalExprDataSource {
 pub(crate) static SCALAR_RECORD_BATCH_INPUT: LazyLock<RecordBatch> =
     LazyLock::new(|| RecordBatch::new_empty(Arc::new(Schema::new(Vec::<Field>::new()))));
 
-impl ScopedPhysicalExpr {
-    pub fn execute(
-        &mut self,
-        otap_batch: &OtapArrowRecords,
-        session_context: &SessionContext,
-    ) -> Result<Option<PhysicalExprEvalResult>> {
-        let (source_rb, result_data_scope) = match &mut self.source {
-            PhysicalExprDataSource::DataSource(data_scope_id) => {
-                let input_rb = match data_scope_id.as_ref() {
-                    DataScope::Root | DataScope::RootParent(_) => {
-                        otap_batch.root_record_batch().map(Cow::Borrowed)
-                    }
-                    DataScope::Attributes(attrs_id, key) => {
-                        let attrs_payload_type = match *attrs_id {
-                            AttributesIdentifier::Root => match otap_batch.root_payload_type() {
-                                ArrowPayloadType::Logs => ArrowPayloadType::LogAttrs,
-                                ArrowPayloadType::Spans => ArrowPayloadType::SpanAttrs,
-                                _ => ArrowPayloadType::MetricAttrs,
-                            },
-                            AttributesIdentifier::NonRoot(payload_type) => payload_type,
-                        };
-
-                        otap_batch
-                            .get(attrs_payload_type)
-                            .map(|rb| Self::try_project_attrs(rb, key.as_str()))
-                            .transpose()?
-                            .flatten()
-                            .map(Cow::Owned)
-                    }
-                    DataScope::StaticScalar => {
-                        Some(Cow::Borrowed(SCALAR_RECORD_BATCH_INPUT.deref()))
-                    }
-                };
-
-                (input_rb, Rc::clone(data_scope_id))
-            }
-            PhysicalExprDataSource::Join(left, right) => {
-                let left_result = left.execute(otap_batch, session_context)?;
-                let right_result = right.execute(otap_batch, session_context)?;
-                match (left_result, right_result) {
-                    (Some(left_result), Some(right_result)) => {
-                        let (joined_rb, result_data_scope) =
-                            join(&left_result, &right_result, otap_batch)?;
-                        (Some(Cow::Owned(joined_rb)), result_data_scope)
-                    }
-                    _ => return Ok(None),
-                }
-            }
-            PhysicalExprDataSource::MultiJoin(children) => {
-                let mut results = Vec::with_capacity(children.len());
-                for child in children.iter_mut() {
-                    match child.execute(otap_batch, session_context)? {
-                        Some(result) => results.push(result),
-                        None => return Ok(None),
-                    }
-                }
-                let (joined_rb, result_data_scope) = multi_join(&results, otap_batch)?;
-                (Some(Cow::Owned(joined_rb)), result_data_scope)
-            }
-        };
-
-        let (source_rb, projected_rb) = match source_rb {
-            Some(rb) => {
-                // project the source record batch into the schema expected by the physical expr
-                let projected = if *result_data_scope != DataScope::StaticScalar {
-                    match self
-                        .projection
-                        .project_with_options(&rb, &self.projection_opts)?
-                    {
-                        Some(projected) => projected,
-                        None => return Ok(None),
-                    }
-                } else {
-                    // don't project for scalar record batch, as it's just a placeholder with no columns
-                    rb.as_ref().clone()
-                };
-                (rb, projected)
-            }
-            None => {
-                // the source was not present, return None indicating the expression is evaluated
-                // as null for the entire input
-                return Ok(None);
-            }
-        };
-
-        // Check if the projected batch contains any AnyValue struct columns that need
-        // to be resolved to concrete types before expression evaluation.
-        let any_value_indices = find_any_value_columns(projected_rb.schema_ref());
-
-        let result_vals = if any_value_indices.is_empty() || self.eval_anyval_as_struct {
-            // Fast path: no need to project AnyValue columns to concrete type columns
-            self.evaluate_on_batch(session_context, &projected_rb)?
-        } else {
-            let partitions = project_any_value_columns(&projected_rb, &any_value_indices)?;
-
-            if partitions.len() == 1 {
-                // All AnyValue columns were uniform — single partition, evaluate directly
-                let partition = partitions.into_iter().next().expect("non-empty");
-                let batch = Self::maybe_downcast_dicts(partition.batch, &self.projection_opts)?;
-                self.evaluate_on_batch(session_context, &batch)?
-            } else {
-                // Multiple partitions — evaluate each and stitch results back together
-                let total_rows = projected_rb.num_rows();
-                let mut partition_results = Vec::with_capacity(partitions.len());
-
-                for partition in partitions {
-                    let batch = Self::maybe_downcast_dicts(partition.batch, &self.projection_opts)?;
-                    let result = self.evaluate_on_batch(session_context, &batch)?;
-                    let result_arr = result.into_array(batch.num_rows())?;
-                    partition_results.push((result_arr, partition.original_row_ranges));
-                }
-
-                let stitched = stitch_partitioned_results(partition_results, total_rows)?;
-                ColumnarValue::Array(stitched)
-            }
-        };
-
-        Ok(Some(PhysicalExprEvalResult::new(
-            result_vals,
-            result_data_scope,
-            &source_rb,
-        )))
-    }
-
-    pub(crate) fn evaluate_on_batch(
-        &mut self,
-        session_context: &SessionContext,
-        record_batch: &RecordBatch,
-    ) -> Result<ColumnarValue> {
-        // plan the physical expressions from logical expression. This happens lazily the first
-        // time we receive a non-null batch
-        if self.physical_expr.is_none() {
-            let session_state = session_context.state();
-            let df_schema = DFSchema::try_from(record_batch.schema_ref().as_ref().clone())?;
-            let physical_expr = create_physical_expr(
-                &self.logical_expr,
-                &df_schema,
-                session_state.execution_props(),
-            )?;
-            self.physical_expr = Some(physical_expr);
-        }
-
-        // evaluate the expression
-        // safety: we've just initialized physical_expr, so it's safe to expect here
-        let result_vals = self
-            .physical_expr
-            .as_ref()
-            .expect("physical expr initialized")
-            .evaluate(record_batch)?;
-
-        Ok(result_vals)
-    }
-
-    /// Apply dictionary downcasting to a RecordBatch if `downcast_dicts` option is enabled.
-    fn maybe_downcast_dicts(batch: RecordBatch, opts: &ProjectionOptions) -> Result<RecordBatch> {
-        if !opts.downcast_dicts {
-            return Ok(batch);
-        }
-
-        let schema = batch.schema();
-        let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
-        let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
-
-        Projection::try_downcast_dicts(&mut fields, &mut columns)?;
-
-        Ok(RecordBatch::try_new(
-            Arc::new(Schema::new(fields)),
-            columns,
-        )?)
-    }
-
-    /// Filters the record batch by key, and then projects the type and value columns into a
-    /// struct column named "value".
-    ///
-    /// For example, if we had an input batch like:
-    /// key:        ["a", "a", "b", "b"]
-    /// type:       [1, 1, 1, 1] // type 1 = str
-    /// str:        ["x", "x", "y", "z"]
-    /// parent_id:  [0, 1, 0, 1]
-    ///
-    /// If the "key" argument to this function was "b", the result would be:
-    /// parent_id: [0, 1]
-    /// value:     Struct { type: [1, 1], str: ["y", "z"], ... }  (tagged as AnyValue)
-    ///
-    /// The AnyValue struct column will later be resolved to a concrete typed column during
-    /// the split-evaluate-stitch phase in [`ScopedPhysicalExpr::execute`].
-    fn try_project_attrs(record_batch: &RecordBatch, key: &str) -> Result<Option<RecordBatch>> {
-        // Get the key column and create a mask for rows matching the specified key
-        let key_col = get_required_array(record_batch, consts::ATTRIBUTE_KEY).map_err(|e| {
-            Error::ExecutionError {
-                cause: e.to_string(),
-            }
-        })?;
-        let key_mask = eq(key_col, &StringArray::new_scalar(key))?;
-        let filtered_batch = filter_record_batch(record_batch, &key_mask)?;
-
-        // If no rows match the key, handle empty case
-        if filtered_batch.num_rows() == 0 {
-            return Ok(None);
-        }
-
-        // Build the parent_id column
-        let parent_id_col = filtered_batch
-            .column_by_name(consts::PARENT_ID)
-            .cloned()
-            .ok_or_else(|| Error::ExecutionError {
-                cause: "invalid attributes record batch: missing parent_id column".into(),
-            })?;
-
-        // Build the AnyValue struct from the type + value sub-columns
-        let any_value_struct = Self::build_any_value_struct(&filtered_batch)?;
-
-        let mut fields: Vec<Arc<Field>> = Vec::with_capacity(2);
-        let mut columns: Vec<ArrayRef> = Vec::with_capacity(2);
-
-        fields.push(Arc::new(Field::new(
-            consts::PARENT_ID,
-            parent_id_col.data_type().clone(),
-            false,
-        )));
-        columns.push(parent_id_col);
-
-        // The struct column is detected as AnyValue by its shape (struct containing a `type`
-        // sub-field of UInt8) — no explicit metadata tagging needed.
-        fields.push(Arc::new(Field::new(
-            VALUE_COLUMN_NAME,
-            any_value_struct.data_type().clone(),
-            true,
-        )));
-        columns.push(Arc::new(any_value_struct));
-
-        let schema = Arc::new(Schema::new(fields));
-        let projected_batch = RecordBatch::try_new(schema, columns)?;
-
-        Ok(Some(projected_batch))
-    }
-
-    /// Collect the `type` discriminant and all present value sub-columns from an attributes
-    /// record batch into a single [`StructArray`].
-    ///
-    /// The columns included are: `type` (required), plus whichever of `str`, `int`, `double`,
-    /// `bool`, `bytes`, `ser` are present in the batch.
-    fn build_any_value_struct(filtered_batch: &RecordBatch) -> Result<StructArray> {
-        let mut struct_fields: Vec<Arc<Field>> = Vec::new();
-        let mut struct_columns: Vec<ArrayRef> = Vec::new();
-
-        // The type column is required
-        let type_col = get_required_array(filtered_batch, consts::ATTRIBUTE_TYPE).map_err(|e| {
-            Error::ExecutionError {
-                cause: e.to_string(),
-            }
-        })?;
-        struct_fields.push(Arc::new(Field::new(
-            consts::ATTRIBUTE_TYPE,
-            type_col.data_type().clone(),
-            false,
-        )));
-        struct_columns.push(type_col.clone());
-
-        // Collect whichever value sub-columns are present
-        let value_col_names = [
-            consts::ATTRIBUTE_STR,
-            consts::ATTRIBUTE_INT,
-            consts::ATTRIBUTE_DOUBLE,
-            consts::ATTRIBUTE_BOOL,
-            consts::ATTRIBUTE_BYTES,
-            consts::ATTRIBUTE_SER,
-        ];
-
-        for col_name in value_col_names {
-            if let Some(col) = filtered_batch.column_by_name(col_name) {
-                struct_fields.push(Arc::new(Field::new(
-                    col_name,
-                    col.data_type().clone(),
-                    true,
-                )));
-                struct_columns.push(col.clone());
-            }
-        }
-
-        StructArray::try_new(struct_fields.into(), struct_columns, None).map_err(|e| {
-            Error::ExecutionError {
-                cause: format!("failed to build AnyValue struct: {e}"),
-            }
-        })
-    }
-}
-
-/// Result of evaluating some physical expression scoped to a given data scope.
-///
-/// This structure contains the resulting array of values, plus identifiers such as data scope and
-/// a set of IDs to help identify to which row the resulting values correspond.
-///
-/// For example, if we had
-/// - values: ["a", "b" ... ]
-/// - data_domain: DataDomain::Attributes,
-/// - parent_ids: Some([0, 1 ...])
-///
-/// This would indicate that log/trace/metric row with ID 0 corresponds to value "a", and the row
-/// with ID 1 corresponds to value "b", and so on.
-#[derive(Debug)]
-pub(crate) struct PhysicalExprEvalResult {
-    /// expression evaluation result values
-    pub values: ColumnarValue,
-
-    /// identifies with which arrow record batch should be associated, as well as which rows were
-    /// selected (in the case of attributes)
-    pub data_scope: Rc<DataScope>,
-
-    // ID columns populated from the source data
-    pub(crate) ids: Option<ArrayRef>,
-    pub(crate) parent_ids: Option<ArrayRef>,
-    pub(crate) scope_ids: Option<ArrayRef>,
-    pub(crate) resource_ids: Option<ArrayRef>,
-}
-
-impl PhysicalExprEvalResult {
-    pub fn new(values: ColumnarValue, data_scope: Rc<DataScope>, source: &RecordBatch) -> Self {
-        let is_root = matches!(*data_scope, DataScope::Root | DataScope::RootParent(_));
-
-        let mut result = Self {
-            values,
-            data_scope,
-            ids: source.column_by_name(consts::ID).cloned(),
-            parent_ids: source.column_by_name(consts::PARENT_ID).cloned(),
-            scope_ids: None,
-            resource_ids: None,
-        };
-
-        if is_root {
-            if let Ok(Some(resource_ids)) = get_optional_array_from_struct_array_from_record_batch(
-                source,
-                consts::RESOURCE,
-                consts::ID,
-            ) {
-                result.resource_ids = Some(Arc::clone(resource_ids))
-            }
-
-            if let Ok(Some(scope_ids)) = get_optional_array_from_struct_array_from_record_batch(
-                source,
-                consts::SCOPE,
-                consts::ID,
-            ) {
-                result.scope_ids = Some(Arc::clone(scope_ids))
-            }
-        }
-
-        result
-    }
-
-    pub fn new_with_parent_ids(
-        values: ColumnarValue,
-        data_scope: Rc<DataScope>,
-        parent_ids: &UInt16Array,
-    ) -> Self {
-        Self {
-            values,
-            data_scope,
-            ids: None,
-            parent_ids: Some(Arc::new(parent_ids.clone())),
-            scope_ids: None,
-            resource_ids: None,
-        }
-    }
-
-    pub fn new_scalar(scalar_value: ScalarValue) -> Self {
-        Self {
-            values: ColumnarValue::Scalar(scalar_value),
-            data_scope: Rc::new(DataScope::StaticScalar),
-            ids: None,
-            parent_ids: None,
-            scope_ids: None,
-            resource_ids: None,
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
-    use super::*;
-    use arrow::array::{
-        BinaryArray, BooleanArray, DictionaryArray, Float64Array, Int32Array, Int64Array,
-        StringArray, StructArray, UInt8Array,
-    };
-    use data_engine_expressions::{
-        BinaryMathematicalScalarExpression, IntegerScalarExpression,
-        InvokeFunctionScalarExpression, QueryLocation, SourceScalarExpression,
-        StaticScalarExpression, StringScalarExpression, ValueAccessor,
-    };
-    use otap_df_pdata::otlp::attributes::AttributeValueType;
-    use otap_df_pdata::{
-        otap::Logs,
-        proto::{
-            OtlpProtoMessage,
-            opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue},
-            opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
-            opentelemetry::resource::v1::Resource,
-        },
-        testing::round_trip::{otlp_to_otap, to_logs_data},
-    };
 
-    use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
+    use arrow::array::{Array, BooleanArray};
+    use arrow::buffer::BooleanBuffer;
+    use datafusion::common::cast::as_boolean_array;
+    use datafusion::logical_expr::{ColumnarValue, Expr, Operator, col, lit};
+    use datafusion::scalar::ScalarValue;
+    use otap_df_config::SignalType;
+    use otap_df_pdata::otap::filter::IdBitmapPool;
+    use otap_df_pdata::proto::OtlpProtoMessage;
+    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
+    use otap_df_pdata::schema::consts;
+    use otap_df_pdata::testing::round_trip::{otlp_to_otap, to_logs_data};
+
     use crate::pipeline::Pipeline;
+    use crate::pipeline::expr::{DataScope, VALUE_COLUMN_NAME, arg_column_name};
+    use crate::pipeline::expr::{LeafEval, ScopedExpr, ScopedValue, SignalTypePredicate};
+    use crate::pipeline::id_mask::IdMask;
+    use crate::pipeline::planner::AttributesIdentifier;
 
-    fn run_scalar_expr_test(
-        input_expr: ScalarExpression,
-        input_data: &OtapArrowRecords,
-    ) -> Option<ColumnarValue> {
-        let planner = ExprLogicalPlanner {};
-        let functions = [];
-        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(input_data, &session_ctx).unwrap();
-        result.map(|result| result.values)
-    }
-
-    fn run_scalar_expr_failure_test(
-        input_expr: ScalarExpression,
-        input_data: &OtapArrowRecords,
-    ) -> Error {
-        let planner = ExprLogicalPlanner {};
-        let functions = [];
-        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-        let session_ctx = Pipeline::create_session_context();
-        physical_expr.execute(input_data, &session_ctx).unwrap_err()
-    }
-
-    fn run_scalar_expr_success_test(
-        input_expr: ScalarExpression,
-        input_data: &OtapArrowRecords,
-        expected_result: ArrayRef,
-    ) {
-        let result = run_scalar_expr_test(input_expr, input_data);
-        match &result {
-            Some(ColumnarValue::Array(arr)) => {
-                assert_eq!(arr.as_ref(), expected_result.as_ref())
-            }
-            otherwise => {
-                panic!("expected Some(ColumnarValue({expected_result:?})), got {otherwise:?}")
-            }
+    /// Helper: create an `Eval(DatafusionExpr)` node for a root-scoped expression.
+    fn root_eval(expr: Expr) -> ScopedExpr {
+        ScopedExpr::Eval {
+            scope: DataScope::Root,
+            eval: LeafEval::new_df_expr(expr, false).unwrap(),
         }
     }
 
-    #[test]
-    fn test_expr_eval_static_scalar() {
-        // Plan the scalar expression
-        let planner = ExprLogicalPlanner {};
-        let static_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
-            IntegerScalarExpression::new(QueryLocation::new_fake(), 99),
-        ));
-
-        let functions = [];
-        let logical_expr = planner.plan_scalar_expr(&static_expr, &functions).unwrap();
-
-        // Convert to physical
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-
-        // Execute
-        let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx);
-
-        // Should successfully evaluate
-        assert!(result.is_ok());
-        let columnar_value = result.unwrap();
-        assert!(columnar_value.is_some());
-
-        // Verify it's a scalar value of 99
-        match columnar_value.unwrap().values {
-            ColumnarValue::Scalar(scalar) => {
-                assert_eq!(scalar, ScalarValue::Int64(Some(99)));
-            }
-            ColumnarValue::Array(_) => {
-                panic!("Expected scalar, got array");
-            }
+    /// Helper: create an `Eval(DatafusionExpr)` node for an attribute-scoped expression.
+    fn attrs_eval(attrs_id: AttributesIdentifier, key: &str, expr: Expr) -> ScopedExpr {
+        ScopedExpr::Eval {
+            scope: DataScope::Attribute(attrs_id, key.to_string()),
+            eval: LeafEval::new_df_expr(expr, false).unwrap(),
         }
     }
 
-    #[test]
-    fn test_expr_eval_source_column() {
-        let input_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_TEXT,
-                )),
-            )]),
-        ));
+    /// Helper: create an `Eval(DatafusionExpr)` node for an attribute-scoped expression
+    /// with dictionary downcast enabled.
+    fn attrs_eval_dict_downcast(
+        attrs_id: AttributesIdentifier,
+        key: &str,
+        expr: Expr,
+    ) -> ScopedExpr {
+        ScopedExpr::Eval {
+            scope: DataScope::Attribute(attrs_id, key.to_string()),
+            eval: LeafEval::new_df_expr(expr, true).unwrap(),
+        }
+    }
 
+    /// Helper: create a `Eval(BatchPredicate)` node for a signal type check.
+    fn signal_type_eval(signal_type: SignalType) -> ScopedExpr {
+        ScopedExpr::Eval {
+            scope: DataScope::Root,
+            eval: LeafEval::BatchPredicate(Box::new(SignalTypePredicate::new(signal_type))),
+        }
+    }
+
+    /// Helper: create test log data with severity and attributes.
+    fn test_logs_data() -> otap_df_pdata::OtapArrowRecords {
         let logs = to_logs_data(vec![
-            LogRecord::build().severity_text("ERROR").finish(),
-            LogRecord::build().severity_text("INFO").finish(),
-            LogRecord::build().severity_text("DEBUG").finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .severity_number(13)
+                .attributes(vec![
+                    KeyValue::new("code.namespace", AnyValue::new_string("main")),
+                    KeyValue::new("code.line.number", AnyValue::new_int(42)),
+                ])
+                .event_name("e1")
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .severity_number(17)
+                .attributes(vec![
+                    KeyValue::new("code.namespace", AnyValue::new_string("test")),
+                    KeyValue::new("code.line.number", AnyValue::new_int(100)),
+                ])
+                .event_name("e2")
+                .finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .severity_number(13)
+                .attributes(vec![
+                    KeyValue::new("code.namespace", AnyValue::new_string("main")),
+                    KeyValue::new("code.line.number", AnyValue::new_int(7)),
+                ])
+                .event_name("e3")
+                .finish(),
         ]);
+        otlp_to_otap(&OtlpProtoMessage::Logs(logs))
+    }
 
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        // get the expected column, which is the column we're accessing
-        let logs = otap_batch.get(ArrowPayloadType::Logs).unwrap();
-        let input_col = logs.column_by_name(consts::SEVERITY_TEXT).unwrap();
-        run_scalar_expr_success_test(input_expr, &otap_batch, input_col.clone());
+    /// Helper: extract a boolean array from a ScopedValue.
+    fn as_bool_arr(sv: &ScopedValue) -> BooleanArray {
+        match &sv.values {
+            ColumnarValue::Array(arr) => as_boolean_array(arr)
+                .cloned()
+                .expect("expected boolean array"),
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(b))) => BooleanArray::new(
+                if *b {
+                    BooleanBuffer::new_set(1)
+                } else {
+                    BooleanBuffer::new_unset(1)
+                },
+                None,
+            ),
+            other => panic!("expected boolean result, got {other:?}"),
+        }
     }
 
     #[test]
-    fn test_expr_eval_struct_source_column() {
-        let input_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), SCOPE_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), consts::NAME),
-                )),
-            ]),
-        ));
+    fn test_root_field_eval_as_value() {
+        let otap = test_logs_data();
+        let session_ctx = Pipeline::create_session_context();
 
-        let logs = LogsData::new(vec![ResourceLogs {
-            scope_logs: vec![
-                ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope1".into(),
-                        ..Default::default()
-                    },
-                    vec![LogRecord::build().severity_text("INFO").finish()],
-                ),
-                ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope2".into(),
-                        ..Default::default()
-                    },
-                    vec![LogRecord::build().severity_text("INFO").finish()],
-                ),
-            ],
-            ..Default::default()
-        }]);
+        // severity_number > 14
+        let mut op = root_eval(col(consts::SEVERITY_NUMBER).gt(lit(14i32)));
 
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        assert_eq!(result.scope, DataScope::Root);
 
-        // get the expected column
-        let logs = otap_batch.get(ArrowPayloadType::Logs).unwrap();
-        let scope_col = logs.column_by_name(consts::SCOPE).unwrap();
-        let input_col = scope_col
-            .as_any()
-            .downcast_ref::<StructArray>()
-            .unwrap()
-            .column_by_name(consts::NAME)
+        let bool_arr = as_bool_arr(&result);
+        // severity_numbers are [13, 17, 13], so only index 1 passes
+        assert!(!bool_arr.value(0));
+        assert!(bool_arr.value(1));
+        assert!(!bool_arr.value(2));
+    }
+
+    #[test]
+    fn test_root_field_eval_as_id_mask() {
+        let otap = test_logs_data();
+        let session_ctx = Pipeline::create_session_context();
+        let mut pool = IdBitmapPool::new();
+
+        // severity_number > 14
+        let mut op = root_eval(col(consts::SEVERITY_NUMBER).gt(lit(14i32)));
+
+        let result = op
+            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
-        run_scalar_expr_success_test(input_expr, &otap_batch, input_col.clone());
-    }
-
-    #[test]
-    fn test_expr_eval_attr_value() {
-        let input_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
-                )),
-            ]),
-        ));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_string("x")),
-                    KeyValue::new("k2", AnyValue::new_string("y")),
-                ])
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k2", AnyValue::new_string("x")),
-                    KeyValue::new("k3", AnyValue::new_string("y")),
-                ])
-                .severity_text("INFO")
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![KeyValue::new("k2", AnyValue::new_string("x"))])
-                .severity_text("DEBUG")
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(StructArray::new(
-            vec![
-                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-                Field::new(
-                    consts::ATTRIBUTE_STR,
-                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-                    true,
-                ),
-            ]
-            .into(),
-            vec![
-                Arc::new(UInt8Array::from_iter_values([
-                    AttributeValueType::Str as u8,
-                    AttributeValueType::Str as u8,
-                    AttributeValueType::Str as u8,
-                ])),
-                Arc::new(DictionaryArray::new(
-                    UInt16Array::from_iter_values([1, 0, 0]),
-                    Arc::new(StringArray::from_iter_values(["x", "y"])),
-                )),
-            ],
-            None,
-        ));
-
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
-    }
-
-    #[test]
-    fn test_expr_eval_arithmetic_column_scalar() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_NUMBER,
-                )),
-            )]),
-        ));
-
-        let right_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
-            IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build().severity_number(10).finish(),
-            LogRecord::build()
-                .severity_number(30)
-                .severity_text("INFO")
-                .finish(),
-            LogRecord::build()
-                .severity_number(20)
-                .severity_text("DEBUG")
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        let expected_col = Arc::new(Int32Array::from_iter_values(vec![12, 32, 22]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
-    }
-
-    #[test]
-    fn test_expr_eval_arithmetic_scalar_root_column() {
-        let left_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
-            IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_NUMBER,
-                )),
-            )]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build().severity_number(10).finish(),
-            LogRecord::build()
-                .severity_number(30)
-                .severity_text("INFO")
-                .finish(),
-            LogRecord::build()
-                .severity_number(20)
-                .severity_text("DEBUG")
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(Int32Array::from_iter_values(vec![12, 32, 22]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
-    }
-
-    #[test]
-    fn test_expr_eval_arithmetic_root_attributes() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
-                )),
-            ]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_int(3)),
-                    KeyValue::new("k2", AnyValue::new_int(1)),
-                ])
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k2", AnyValue::new_int(3)),
-                    KeyValue::new("k1", AnyValue::new_int(9)),
-                ])
-                .severity_text("INFO")
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k2", AnyValue::new_int(7)),
-                    KeyValue::new("k1", AnyValue::new_int(2)),
-                ])
-                .severity_text("DEBUG")
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(Int64Array::from(vec![4, 12, 9]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
-    }
-
-    #[test]
-    fn test_expr_eval_arithmetic_root_with_attribute() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_NUMBER,
-                )),
-            )]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_int(3)),
-                    KeyValue::new("k2", AnyValue::new_int(1)),
-                ])
-                .severity_number(10)
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k2", AnyValue::new_int(3)),
-                    KeyValue::new("k1", AnyValue::new_int(9)),
-                ])
-                .severity_number(20)
-                .severity_text("INFO")
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k2", AnyValue::new_int(7)),
-                    KeyValue::new("k1", AnyValue::new_int(2)),
-                ])
-                .severity_text("DEBUG")
-                .severity_number(30)
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(Int64Array::from(vec![13, 29, 32]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
-    }
-
-    #[test]
-    fn test_expr_eval_arithmetic_attribute_with_root() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_NUMBER,
-                )),
-            )]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_int(3)),
-                    KeyValue::new("k2", AnyValue::new_int(1)),
-                ])
-                .severity_number(10)
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k2", AnyValue::new_int(3)),
-                    KeyValue::new("k1", AnyValue::new_int(9)),
-                ])
-                .severity_number(20)
-                .severity_text("INFO")
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k2", AnyValue::new_int(7)),
-                    KeyValue::new("k1", AnyValue::new_int(2)),
-                ])
-                .severity_text("DEBUG")
-                .severity_number(30)
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(Int64Array::from(vec![13, 29, 32]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
-    }
-
-    #[test]
-    fn test_binary_arithmetic_expr_additional_operators_int_values() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
-                )),
-            ]),
-        ));
-
-        let binary_expr = BinaryMathematicalScalarExpression::new(
-            QueryLocation::new_fake(),
-            left_expr,
-            right_expr,
-        );
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_int(3)),
-                    KeyValue::new("k2", AnyValue::new_int(1)),
-                ])
-                .severity_number(10)
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_int(9)),
-                    KeyValue::new("k2", AnyValue::new_int(3)),
-                ])
-                .severity_number(20)
-                .severity_text("INFO")
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_int(2)),
-                    KeyValue::new("k2", AnyValue::new_int(7)),
-                ])
-                .severity_text("DEBUG")
-                .severity_number(30)
-                .finish(),
-        ]);
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        let test_cases = vec![
-            (
-                MathScalarExpression::Subtract(binary_expr.clone()),
-                vec![2, 6, -5],
-            ),
-            (
-                MathScalarExpression::Multiply(binary_expr.clone()),
-                vec![3, 27, 14],
-            ),
-            (
-                MathScalarExpression::Divide(binary_expr.clone()),
-                vec![3, 3, 0],
-            ),
-            (
-                MathScalarExpression::Modulus(binary_expr.clone()),
-                vec![0, 0, 2],
-            ),
-        ];
-        for (math_expr, expected) in test_cases {
-            let input_expr = ScalarExpression::Math(math_expr);
-            let expected_col = Arc::new(Int64Array::from(expected));
-            run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
+        // exactly one row (index 1) passes
+        match &result.mask {
+            IdMask::Some(bitmap) => {
+                // the root batch should have id values [0, 1, 2]
+                // only id=1 (severity_number=17) passes
+                assert!(bitmap.contains(1));
+                assert!(!bitmap.contains(0));
+                assert!(!bitmap.contains(2));
+            }
+            other => panic!("expected IdMask::Some, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_binary_arithmetic_expr_additional_operators_float_values() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
-                )),
-            ]),
-        ));
-
-        let binary_expr = BinaryMathematicalScalarExpression::new(
-            QueryLocation::new_fake(),
-            left_expr,
-            right_expr,
-        );
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_double(3)),
-                    KeyValue::new("k2", AnyValue::new_double(1)),
-                ])
-                .severity_number(10)
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_double(9)),
-                    KeyValue::new("k2", AnyValue::new_double(3)),
-                ])
-                .severity_number(20)
-                .severity_text("INFO")
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_double(2)),
-                    KeyValue::new("k2", AnyValue::new_double(7)),
-                ])
-                .severity_text("DEBUG")
-                .severity_number(30)
-                .finish(),
-        ]);
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        let test_cases = vec![
-            (
-                MathScalarExpression::Subtract(binary_expr.clone()),
-                vec![2.0, 6.0, -5.0],
-            ),
-            (
-                MathScalarExpression::Multiply(binary_expr.clone()),
-                vec![3.0, 27.0, 14.0],
-            ),
-            (
-                MathScalarExpression::Divide(binary_expr.clone()),
-                vec![3.0, 3.0, 2.0 / 7.0],
-            ),
-            (
-                MathScalarExpression::Modulus(binary_expr.clone()),
-                vec![0.0, 0.0, 2.0],
-            ),
-        ];
-        for (math_expr, expected) in test_cases {
-            let input_expr = ScalarExpression::Math(math_expr);
-            let expected_col = Arc::new(Float64Array::from(expected));
-            run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
-        }
-    }
-
-    #[test]
-    fn test_expr_eval_arithmetic_root_to_nonroot_attrs() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_NUMBER,
-                )),
-            )]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), RESOURCES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        let logs = LogsData::new(vec![
-            ResourceLogs {
-                resource: Some(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(10))])
-                        .finish(),
-                ),
-
-                scope_logs: vec![ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope1".into(),
-                        ..Default::default()
-                    },
-                    vec![
-                        LogRecord::build().severity_number(3).finish(),
-                        LogRecord::build().severity_number(5).finish(),
-                    ],
-                )],
-                ..Default::default()
-            },
-            ResourceLogs {
-                resource: Some(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(20))])
-                        .finish(),
-                ),
-
-                scope_logs: vec![ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope1".into(),
-                        ..Default::default()
-                    },
-                    vec![LogRecord::build().severity_number(7).finish()],
-                )],
-                ..Default::default()
-            },
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(Int64Array::from(vec![13, 15, 27]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
-    }
-
-    #[test]
-    fn test_expr_eval_arithmetic_nonroot_attrs_to_root() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), RESOURCES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_NUMBER,
-                )),
-            )]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        let logs = LogsData::new(vec![
-            ResourceLogs {
-                resource: Some(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(10))])
-                        .finish(),
-                ),
-
-                scope_logs: vec![ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope1".into(),
-                        ..Default::default()
-                    },
-                    vec![
-                        LogRecord::build().severity_number(3).finish(),
-                        LogRecord::build().severity_number(5).finish(),
-                    ],
-                )],
-                ..Default::default()
-            },
-            ResourceLogs {
-                resource: Some(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(20))])
-                        .finish(),
-                ),
-
-                scope_logs: vec![ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope1".into(),
-                        ..Default::default()
-                    },
-                    vec![LogRecord::build().severity_number(7).finish()],
-                )],
-                ..Default::default()
-            },
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(Int64Array::from(vec![13, 15, 27]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
-    }
-
-    #[test]
-    fn test_expr_eval_arithmetic_attrs_to_nonroot_attrs() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
-                )),
-            ]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), RESOURCES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        let logs = LogsData::new(vec![
-            ResourceLogs {
-                resource: Some(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(10))])
-                        .finish(),
-                ),
-
-                scope_logs: vec![ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope1".into(),
-                        ..Default::default()
-                    },
-                    vec![
-                        LogRecord::build()
-                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(1))])
-                            .severity_number(3)
-                            .finish(),
-                        LogRecord::build()
-                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(2))])
-                            .severity_number(5)
-                            .finish(),
-                    ],
-                )],
-                ..Default::default()
-            },
-            ResourceLogs {
-                resource: Some(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(20))])
-                        .finish(),
-                ),
-
-                scope_logs: vec![ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope1".into(),
-                        ..Default::default()
-                    },
-                    vec![
-                        LogRecord::build()
-                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(7))])
-                            .severity_number(7)
-                            .finish(),
-                    ],
-                )],
-                ..Default::default()
-            },
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(Int64Array::from(vec![11, 12, 27]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
-    }
-
-    #[test]
-    fn test_expr_eval_arithmetic_nonroot_attrs_to_root_attrs() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), RESOURCES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
-                )),
-            ]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        let logs = LogsData::new(vec![
-            ResourceLogs {
-                resource: Some(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(10))])
-                        .finish(),
-                ),
-
-                scope_logs: vec![ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope1".into(),
-                        ..Default::default()
-                    },
-                    vec![
-                        LogRecord::build()
-                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(1))])
-                            .severity_number(3)
-                            .finish(),
-                        LogRecord::build()
-                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(2))])
-                            .severity_number(5)
-                            .finish(),
-                    ],
-                )],
-                ..Default::default()
-            },
-            ResourceLogs {
-                resource: Some(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(20))])
-                        .finish(),
-                ),
-
-                scope_logs: vec![ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope1".into(),
-                        ..Default::default()
-                    },
-                    vec![
-                        LogRecord::build()
-                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(7))])
-                            .severity_number(7)
-                            .finish(),
-                    ],
-                )],
-                ..Default::default()
-            },
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(Int64Array::from(vec![11, 12, 27]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
-    }
-
-    #[test]
-    fn test_expr_eval_arithmetic_deeply_nested_expr() {
-        let resource_attrs_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), RESOURCES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let attrs_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
-                )),
-            ]),
-        ));
-
-        let root_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_NUMBER,
-                )),
-            )]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Math(MathScalarExpression::Add(
-                    BinaryMathematicalScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        resource_attrs_expr,
-                        attrs_expr,
-                    ),
-                )),
-                root_expr,
-            ),
-        ));
-
-        let logs = LogsData::new(vec![
-            ResourceLogs {
-                resource: Some(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(10))])
-                        .finish(),
-                ),
-
-                scope_logs: vec![ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope1".into(),
-                        ..Default::default()
-                    },
-                    vec![
-                        LogRecord::build()
-                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(1))])
-                            .severity_number(3)
-                            .finish(),
-                        LogRecord::build()
-                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(2))])
-                            .severity_number(5)
-                            .finish(),
-                    ],
-                )],
-                ..Default::default()
-            },
-            ResourceLogs {
-                resource: Some(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(20))])
-                        .finish(),
-                ),
-
-                scope_logs: vec![ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope1".into(),
-                        ..Default::default()
-                    },
-                    vec![
-                        LogRecord::build()
-                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(7))])
-                            .severity_number(7)
-                            .finish(),
-                    ],
-                )],
-                ..Default::default()
-            },
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        // get the expected column
-        let expected_col = Arc::new(Int64Array::from(vec![14, 17, 34]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
-    }
-
-    #[test]
-    fn test_arithmetic_expr_with_changing_column_orders() {
-        // basically this test is ensuring that we correctly project the input batches
-        // before evaluating the expression
-
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::DROPPED_ATTRIBUTES_COUNT,
-                )),
-            )]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .dropped_attributes_count(10u32)
-                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(3))])
-                .finish(),
-            LogRecord::build()
-                .dropped_attributes_count(20u32)
-                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(7))])
-                .finish(),
-        ]);
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        let logs_input_1 = otap_batch.get(ArrowPayloadType::Logs).unwrap();
-
-        run_scalar_expr_success_test(
-            input_expr.clone(),
-            &otap_batch,
-            Arc::new(Int64Array::from(vec![13, 27])),
-        );
-
-        // send a second batch where the column order will have changed
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .severity_text("info")
-                .dropped_attributes_count(30u32)
-                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(3))])
-                .finish(),
-            LogRecord::build()
-                .severity_text("debug")
-                .dropped_attributes_count(40u32)
-                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(7))])
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let logs_input_2 = otap_batch.get(ArrowPayloadType::Logs).unwrap();
-        // ensure the column isn't in the same location
-        assert_ne!(
-            logs_input_1
-                .schema()
-                .index_of(consts::DROPPED_ATTRIBUTES_COUNT)
-                .unwrap(),
-            logs_input_2
-                .schema()
-                .index_of(consts::DROPPED_ATTRIBUTES_COUNT)
-                .unwrap()
-        );
-
-        // ensure we succeed to evaluate the expression despite the column order changing
-        run_scalar_expr_success_test(
-            input_expr,
-            &otap_batch,
-            Arc::new(Int64Array::from(vec![33, 47])),
-        );
-    }
-
-    #[test]
-    fn test_two_subsequent_batches_with_attributes_same_name_different_types() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
-                )),
-            ]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        // batch 1 - attributes are ints
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_int(3)),
-                    KeyValue::new("k2", AnyValue::new_int(3)),
-                ])
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_int(7)),
-                    KeyValue::new("k2", AnyValue::new_int(7)),
-                ])
-                .finish(),
-        ]);
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        run_scalar_expr_success_test(
-            input_expr.clone(),
-            &otap_batch,
-            Arc::new(Int64Array::from(vec![6, 14])),
-        );
-
-        // batch 2 - attributes are floats
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_double(4.0)),
-                    KeyValue::new("k2", AnyValue::new_double(4.0)),
-                ])
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_double(5.0)),
-                    KeyValue::new("k2", AnyValue::new_double(7.0)),
-                ])
-                .finish(),
-        ]);
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        run_scalar_expr_success_test(
-            input_expr.clone(),
-            &otap_batch,
-            Arc::new(Float64Array::from(vec![8.0, 12.0])),
-        );
-    }
-
-    #[test]
-    fn test_deeply_nested_arithmetic_expr_that_forces_root_to_root_join() {
-        // in this expression, root+resource.attrs should evaluate first, then we
-        // which should produce an intermediate result with the same row order as
-        // the input root batch, which means we can do a special join that just concats
-        // the vec of columns together from both input sides
-
-        let resource_attrs_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), RESOURCES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let root_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_NUMBER,
-                )),
-            )]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Math(MathScalarExpression::Add(
-                    BinaryMathematicalScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        resource_attrs_expr,
-                        root_expr.clone(),
-                    ),
-                )),
-                root_expr,
-            ),
-        ));
-
-        let logs = LogsData::new(vec![
-            ResourceLogs {
-                resource: Some(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(10))])
-                        .finish(),
-                ),
-
-                scope_logs: vec![ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope1".into(),
-                        ..Default::default()
-                    },
-                    vec![
-                        LogRecord::build()
-                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(1))])
-                            .severity_number(3)
-                            .finish(),
-                        LogRecord::build()
-                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(2))])
-                            .severity_number(5)
-                            .finish(),
-                    ],
-                )],
-                ..Default::default()
-            },
-            ResourceLogs {
-                resource: Some(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(20))])
-                        .finish(),
-                ),
-
-                scope_logs: vec![ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope1".into(),
-                        ..Default::default()
-                    },
-                    vec![
-                        LogRecord::build()
-                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(7))])
-                            .severity_number(7)
-                            .finish(),
-                    ],
-                )],
-                ..Default::default()
-            },
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        // get the expected column
-        let expected_col = Arc::new(Int64Array::from(vec![16, 20, 34]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
-    }
-
-    #[test]
-    fn test_arithmetic_null_propagation_null_values_no_join() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_NUMBER,
-                )),
-            )]),
-        ));
-
-        let right_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
-            IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
-        ));
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build().severity_number(1).finish(),
-            LogRecord::build().finish(),
-            LogRecord::build()
-                .severity_number(6)
-                .severity_text("DEBUG")
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(Int32Array::from_iter([Some(4), None, Some(9)]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
-    }
-
-    #[test]
-    fn test_arithmetic_null_propagation_null_column_no_join() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_NUMBER,
-                )),
-            )]),
-        ));
-
-        let right_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
-            IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
-        ));
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        // no severity number column
-        let logs = to_logs_data(vec![
-            LogRecord::build().finish(),
-            LogRecord::build().finish(),
-            LogRecord::build().finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let result = run_scalar_expr_test(input_expr, &otap_batch);
-        assert!(result.is_none(), "expected result to be None")
-    }
-
-    #[test]
-    fn test_arithmetic_null_propagation_null_batch_no_join() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "x"),
-                )),
-            ]),
-        ));
-
-        let right_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
-            IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
-        ));
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        // no attributes record batch column
-        let logs = to_logs_data(vec![
-            LogRecord::build().finish(),
-            LogRecord::build().finish(),
-            LogRecord::build().finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
-        let result = run_scalar_expr_test(input_expr, &otap_batch);
-        assert!(result.is_none(), "expected result to be None")
-    }
-
-    #[test]
-    fn test_arithmetic_null_propagation_null_values_on_right_of_join() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
-                )),
-            ]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_int(3)),
-                    KeyValue::new("k2", AnyValue::new_int(1)),
-                ])
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(9))])
-                .severity_text("INFO")
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k2", AnyValue::new_int(7)),
-                    KeyValue::new("k1", AnyValue::new_int(2)),
-                ])
-                .severity_text("DEBUG")
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(Int64Array::from_iter([Some(4), None, Some(9)]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
-    }
-
-    #[test]
-    fn test_arithmetic_null_propagation_null_result_on_join() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_NUMBER,
-                )),
-            )]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
-                )),
-            ]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        // severity number not present
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_int(3)),
-                    KeyValue::new("k2", AnyValue::new_int(1)),
-                ])
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(9))])
-                .severity_text("INFO")
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k2", AnyValue::new_int(7)),
-                    KeyValue::new("k1", AnyValue::new_int(2)),
-                ])
-                .severity_text("DEBUG")
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let result = run_scalar_expr_test(input_expr, &otap_batch);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_null_propagation_no_attributes_existing() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "nonexist"),
-                )),
-            ]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
-                )),
-            ]),
-        ));
-
-        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
-                left_expr,
-                right_expr,
-            ),
-        ));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_int(3)),
-                    KeyValue::new("k2", AnyValue::new_int(1)),
-                ])
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(9))])
-                .severity_text("INFO")
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k2", AnyValue::new_int(7)),
-                    KeyValue::new("k1", AnyValue::new_int(2)),
-                ])
-                .severity_text("DEBUG")
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let result = run_scalar_expr_test(input_expr, &otap_batch);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_arithmetic_type_mismatch_caught_planning() {
-        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_TEXT,
-                )),
-            )]),
-        ));
-
-        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
-                )),
-            ]),
-        ));
-
-        // Check it returns an error when it detects at planning time that it won't be able to add
-        // these two fields.
-        let planner = ExprLogicalPlanner {};
-        let functions = [];
-        let err = planner
-            .plan_scalar_expr(
-                &ScalarExpression::Math(MathScalarExpression::Add(
-                    BinaryMathematicalScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        left_expr.clone(),
-                        right_expr.clone(),
-                    ),
-                )),
-                &functions,
-            )
-            .unwrap_err();
-
-        let err_msg = err.to_string();
-        assert!(
-            err_msg.contains(
-                "could not coerce types for arithmetic: left type String, right type AnyValue"
-            ),
-            "Unexpected error message: {:?}",
-            err_msg
-        );
-
-        // check it with swapped left/right arguments (for good measure):
-        let planner = ExprLogicalPlanner {};
-        let functions = [];
-        let err = planner
-            .plan_scalar_expr(
-                &ScalarExpression::Math(MathScalarExpression::Add(
-                    BinaryMathematicalScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        right_expr,
-                        left_expr,
-                    ),
-                )),
-                &functions,
-            )
-            .unwrap_err();
-
-        let err_msg = err.to_string();
-        assert!(
-            err_msg.contains(
-                "could not coerce types for arithmetic: left type AnyValue, right type String"
-            ),
-            "Unexpected error message: {:?}",
-            err_msg
-        )
-    }
-
-    #[test]
-    fn test_arithmetic_runtime_any_value_type_mismatches() {
-        // check that adding types that cannot be added fails ar runtime as a fallback for when
-        // we can't detect at compile time that the types are invalid. In this case, we're doing
-        // something like attributes["x"] + attributes["y"], where we don't know what type are
-        // these attribute values.
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_int(3)),
-                    KeyValue::new("k2", AnyValue::new_double(4.0)),
-                    KeyValue::new("k3", AnyValue::new_string("a")),
-                    KeyValue::new("k4", AnyValue::new_bool(false)),
-                    KeyValue::new("k5", AnyValue::new_bytes(b"a")),
-                ])
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        let test_cases = vec![
-            ("k1", "k2"),
-            ("k1", "k3"),
-            ("k1", "k4"),
-            ("k1", "k5"),
-            ("k2", "k3"),
-            ("k2", "k4"),
-            ("k2", "k5"),
-            ("k3", "k4"),
-            ("k3", "k5"),
-            ("k4", "k5"),
-        ];
-
-        fn check_arithmetic_fails(
-            left: &'static str,
-            right: &'static str,
-            otap_batch: &OtapArrowRecords,
-        ) {
-            let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
-                QueryLocation::new_fake(),
-                ValueAccessor::new_with_selectors(vec![
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            ATTRIBUTES_FIELD_NAME,
-                        ),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), left),
-                    )),
-                ]),
-            ));
-
-            let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
-                QueryLocation::new_fake(),
-                ValueAccessor::new_with_selectors(vec![
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            ATTRIBUTES_FIELD_NAME,
-                        ),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), right),
-                    )),
-                ]),
-            ));
-
-            let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
-                BinaryMathematicalScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    left_expr,
-                    right_expr,
-                ),
-            ));
-
-            let err = run_scalar_expr_failure_test(input_expr, otap_batch);
-            let err_msg = err.to_string();
-            assert!(
-                err_msg.contains("Invalid arithmetic operation"),
-                "unexpected error. left key = {left}, right key = {right}, error_msg = {err_msg:?}"
-            );
-        }
-
-        for (left, right) in test_cases {
-            check_arithmetic_fails(left, right, &otap_batch);
-            check_arithmetic_fails(right, left, &otap_batch);
-        }
-    }
-
-    #[test]
-    fn test_function_invocation_sha256() {
-        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-            QueryLocation::new_fake(),
-            None,
-            0,
-            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
-                SourceScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "event_name",
-                        )),
-                    )]),
-                ),
-            ))],
-        ));
-
-        let functions = [PipelineFunction::new_external("sha256", vec![], None)];
-
-        let logs = to_logs_data(vec![
-            LogRecord::build().finish(),
-            LogRecord::build().event_name("event1").finish(),
-            LogRecord::build().event_name("event2").finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        let planner = ExprLogicalPlanner {};
-        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
-        let mut physical_expr = logical_expr.into_physical().unwrap();
+    fn test_attribute_eval_as_value() {
+        let otap = test_logs_data();
         let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
-        let result_vals = result.map(|result| result.values);
-        let result_arr = match &result_vals {
-            Some(ColumnarValue::Array(arr)) => arr,
-            otherwise => {
-                panic!("expected arr, got scalar {otherwise:?}")
-            }
-        };
 
-        let expected = BinaryArray::from_iter([
-            None,
-            Some(&[
-                41, 102, 59, 154, 50, 238, 50, 194, 202, 90, 100, 81, 23, 105, 108, 224, 136, 140,
-                132, 179, 159, 143, 217, 28, 14, 196, 235, 205, 9, 2, 93, 244,
-            ]),
-            Some(&[
-                32, 45, 143, 65, 186, 8, 115, 18, 99, 6, 214, 10, 49, 12, 91, 194, 89, 140, 109,
-                30, 102, 152, 208, 151, 71, 205, 33, 139, 40, 71, 49, 226,
-            ]),
-        ]);
+        // attributes["code.namespace"] (returns the AnyValue struct as value column)
+        let mut op = attrs_eval(AttributesIdentifier::Root, "code.namespace", col("value"));
 
-        assert_eq!(result_arr.as_ref(), &expected)
-    }
-
-    #[test]
-    fn test_function_invocation_invalid_number_of_args_handled_during_planning() {
-        let invalid_args = vec![
-            vec![], // empty args,
-            vec![
-                InvokeFunctionArgument::Scalar(ScalarExpression::Source(
-                    SourceScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                            StaticScalarExpression::String(StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                "event_name",
-                            )),
-                        )]),
-                    ),
-                )),
-                InvokeFunctionArgument::Scalar(ScalarExpression::Source(
-                    SourceScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                            StaticScalarExpression::String(StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                "event_name",
-                            )),
-                        )]),
-                    ),
-                )),
-            ],
-        ];
-
-        for invalid_arg_set in invalid_args {
-            let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-                QueryLocation::new_fake(),
-                None,
-                0,
-                invalid_arg_set,
-            ));
-
-            // expects one argument ...
-            let functions = [PipelineFunction::new_external("sha256", vec![], None)];
-
-            let planner = ExprLogicalPlanner {};
-            let err = planner
-                .plan_scalar_expr(&input_expr, &functions)
-                .unwrap_err();
-            let err_message = err.to_string();
-            assert!(
-                err_message.contains("function 'sha256' expects 1 arguments. Received "),
-                "unexpected error message: {}",
-                err_message
-            );
-        }
-    }
-
-    #[test]
-    fn test_function_invocation_sha256_and_encode_to_hex() {
-        let sha_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-            QueryLocation::new_fake(),
-            None,
-            0,
-            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
-                SourceScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "event_name",
-                        )),
-                    )]),
-                ),
-            ))],
-        ));
-
-        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-            QueryLocation::new_fake(),
-            None,
-            1,
-            vec![
-                InvokeFunctionArgument::Scalar(sha_expr),
-                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::String(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "hex",
-                    )),
-                )),
-            ],
-        ));
-
-        let functions = [
-            PipelineFunction::new_external("sha256", vec![], None),
-            PipelineFunction::new_external("encode", vec![], None),
-        ];
-
-        let logs = to_logs_data(vec![
-            LogRecord::build().finish(),
-            LogRecord::build().event_name("event1").finish(),
-            LogRecord::build().event_name("event2").finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        let planner = ExprLogicalPlanner {};
-        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
-        let result_vals = result.map(|result| result.values);
-        let result_arr = match &result_vals {
-            Some(ColumnarValue::Array(arr)) => arr,
-            otherwise => {
-                panic!("expected arr, got scalar {otherwise:?}")
-            }
-        };
-
-        let expected = StringArray::from_iter([
-            None,
-            Some("29663b9a32ee32c2ca5a645117696ce0888c84b39f8fd91c0ec4ebcd09025df4"),
-            Some("202d8f41ba0873126306d60a310c5bc2598c6d1e6698d09747cd218b284731e2"),
-        ]);
-
-        assert_eq!(result_arr.as_ref(), &expected);
-    }
-
-    #[test]
-    fn test_function_invocation_sha256_and_encode_to_base64() {
-        let sha_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-            QueryLocation::new_fake(),
-            None,
-            0,
-            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
-                SourceScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "event_name",
-                        )),
-                    )]),
-                ),
-            ))],
-        ));
-
-        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-            QueryLocation::new_fake(),
-            None,
-            1,
-            vec![
-                InvokeFunctionArgument::Scalar(sha_expr),
-                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::String(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "base64",
-                    )),
-                )),
-            ],
-        ));
-
-        let functions = [
-            PipelineFunction::new_external("sha256", vec![], None),
-            PipelineFunction::new_external("encode", vec![], None),
-        ];
-
-        let logs = to_logs_data(vec![
-            LogRecord::build().finish(),
-            LogRecord::build().event_name("event1").finish(),
-            LogRecord::build().event_name("event2").finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        let planner = ExprLogicalPlanner {};
-        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
-        let result_vals = result.map(|result| result.values);
-        let result_arr = match &result_vals {
-            Some(ColumnarValue::Array(arr)) => arr,
-            otherwise => {
-                panic!("expected arr, got scalar {otherwise:?}")
-            }
-        };
-
-        let expected = StringArray::from_iter([
-            None,
-            Some("KWY7mjLuMsLKWmRRF2ls4IiMhLOfj9kcDsTrzQkCXfQ"),
-            Some("IC2PQboIcxJjBtYKMQxbwlmMbR5mmNCXR80hiyhHMeI"),
-        ]);
-
-        assert_eq!(result_arr.as_ref(), &expected);
-    }
-
-    #[test]
-    fn test_function_invocation_upper_case() {
-        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-            QueryLocation::new_fake(),
-            None,
-            0,
-            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
-                SourceScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "event_name",
-                        )),
-                    )]),
-                ),
-            ))],
-        ));
-
-        let functions = [PipelineFunction::new_external("upper_case", vec![], None)];
-
-        let logs = to_logs_data(vec![
-            LogRecord::build().finish(),
-            LogRecord::build().event_name("hello").finish(),
-            LogRecord::build().event_name("World").finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        let planner = ExprLogicalPlanner {};
-        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
-        let result_vals = result.map(|result| result.values);
-        let result_arr = match &result_vals {
-            Some(ColumnarValue::Array(arr)) => arr,
-            otherwise => {
-                panic!("expected arr, got scalar {otherwise:?}")
-            }
-        };
-
-        let expected = StringArray::from_iter([None, Some("HELLO"), Some("WORLD")]);
-
-        assert_eq!(result_arr.as_ref(), &expected);
-    }
-
-    #[test]
-    fn test_function_invocation_lower_case() {
-        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-            QueryLocation::new_fake(),
-            None,
-            0,
-            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
-                SourceScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "event_name",
-                        )),
-                    )]),
-                ),
-            ))],
-        ));
-
-        let functions = [PipelineFunction::new_external("lower_case", vec![], None)];
-
-        let logs = to_logs_data(vec![
-            LogRecord::build().finish(),
-            LogRecord::build().event_name("HELLO").finish(),
-            LogRecord::build().event_name("World").finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        let planner = ExprLogicalPlanner {};
-        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
-        let result_vals = result.map(|result| result.values);
-        let result_arr = match &result_vals {
-            Some(ColumnarValue::Array(arr)) => arr,
-            otherwise => {
-                panic!("expected arr, got scalar {otherwise:?}")
-            }
-        };
-
-        let expected = StringArray::from_iter([None, Some("hello"), Some("world")]);
-
-        assert_eq!(result_arr.as_ref(), &expected);
-    }
-
-    #[test]
-    fn test_function_invocation_starts_with() {
-        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-            QueryLocation::new_fake(),
-            None,
-            0,
-            vec![
-                InvokeFunctionArgument::Scalar(ScalarExpression::Source(
-                    SourceScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                            StaticScalarExpression::String(StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                "event_name",
-                            )),
-                        )]),
-                    ),
-                )),
-                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::String(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "ev",
-                    )),
-                )),
-            ],
-        ));
-
-        let functions = [PipelineFunction::new_external("starts_with", vec![], None)];
-
-        let logs = to_logs_data(vec![
-            LogRecord::build().finish(),
-            LogRecord::build().event_name("event1").finish(),
-            LogRecord::build().event_name("other").finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        let planner = ExprLogicalPlanner {};
-        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
-        let result_vals = result.map(|result| result.values);
-        let result_arr = match &result_vals {
-            Some(ColumnarValue::Array(arr)) => arr,
-            otherwise => {
-                panic!("expected arr, got scalar {otherwise:?}")
-            }
-        };
-
-        let expected = BooleanArray::from_iter([None, Some(true), Some(false)]);
-
-        assert_eq!(result_arr.as_ref(), &expected);
-    }
-
-    #[test]
-    fn test_function_invocation_ends_with() {
-        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-            QueryLocation::new_fake(),
-            None,
-            0,
-            vec![
-                InvokeFunctionArgument::Scalar(ScalarExpression::Source(
-                    SourceScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                            StaticScalarExpression::String(StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                "event_name",
-                            )),
-                        )]),
-                    ),
-                )),
-                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
-                    StaticScalarExpression::String(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "1",
-                    )),
-                )),
-            ],
-        ));
-
-        let functions = [PipelineFunction::new_external("ends_with", vec![], None)];
-
-        let logs = to_logs_data(vec![
-            LogRecord::build().finish(),
-            LogRecord::build().event_name("event1").finish(),
-            LogRecord::build().event_name("event2").finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        let planner = ExprLogicalPlanner {};
-        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
-        let result_vals = result.map(|result| result.values);
-        let result_arr = match &result_vals {
-            Some(ColumnarValue::Array(arr)) => arr,
-            otherwise => {
-                panic!("expected arr, got scalar {otherwise:?}")
-            }
-        };
-
-        let expected = BooleanArray::from_iter([None, Some(true), Some(false)]);
-
-        assert_eq!(result_arr.as_ref(), &expected);
-    }
-
-    // ----- Tests for multi-scope function arguments (MultiJoin) -----
-
-    /// Tests concat(severity_text, attributes["k1"]) where args come from Root and Attributes
-    /// scopes respectively.
-    #[test]
-    fn test_concat_with_root_and_attribute_args() {
-        use data_engine_expressions::ListScalarExpression;
-
-        let root_arg = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_TEXT,
-                )),
-            )]),
-        ));
-
-        let attr_arg = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let input_expr =
-            ScalarExpression::Text(TextScalarExpression::Concat(CombineScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Collection(CollectionScalarExpression::List(
-                    ListScalarExpression::new(QueryLocation::new_fake(), vec![root_arg, attr_arg]),
-                )),
-            )));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .severity_text("ERROR")
-                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("_a"))])
-                .finish(),
-            LogRecord::build()
-                .severity_text("INFO")
-                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("_b"))])
-                .finish(),
-            LogRecord::build()
-                .severity_text("DEBUG")
-                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("_c"))])
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(StringArray::from(vec!["ERROR_a", "INFO_b", "DEBUG_c"]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
-    }
-
-    /// `coalesce(attributes["k1"], "hello")` uses the literal when the attribute is absent.
-    #[test]
-    fn test_coalesce_attribute_with_string_fallback() {
-        use data_engine_expressions::CoalesceScalarExpression;
-
-        let attr_arg = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let fallback = ScalarExpression::Static(StaticScalarExpression::String(
-            StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
-        ));
-
-        let input_expr = ScalarExpression::Coalesce(CoalesceScalarExpression::new(
-            QueryLocation::new_fake(),
-            vec![attr_arg, fallback],
-        ));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .severity_text("ERROR")
-                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("from_attr"))])
-                .finish(),
-            LogRecord::build()
-                .severity_text("INFO")
-                .attributes(vec![KeyValue::new("k1", AnyValue { value: None })])
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(StringArray::from(vec!["from_attr", "hello"]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
-    }
-
-    /// Tests concat(attributes["k1"], attributes["k2"]) where both args come from different
-    /// attribute scopes (different keys from the same payload type). This triggers a multi-join
-    /// because the data scopes differ (different filtered rows).
-    #[test]
-    fn test_concat_with_two_different_attribute_args() {
-        use data_engine_expressions::ListScalarExpression;
-
-        let attr_k1 = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let attr_k2 = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
-                )),
-            ]),
-        ));
-
-        let input_expr =
-            ScalarExpression::Text(TextScalarExpression::Concat(CombineScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Collection(CollectionScalarExpression::List(
-                    ListScalarExpression::new(QueryLocation::new_fake(), vec![attr_k1, attr_k2]),
-                )),
-            )));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_string("hello")),
-                    KeyValue::new("k2", AnyValue::new_string("_world")),
-                ])
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k1", AnyValue::new_string("foo")),
-                    KeyValue::new("k2", AnyValue::new_string("_bar")),
-                ])
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(StringArray::from(vec!["hello_world", "foo_bar"]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
-    }
-
-    /// Tests concat with 3 args from different scopes: root, attribute, and resource attribute.
-    /// This validates that the pairwise multi-join correctly handles more than 2 children.
-    #[test]
-    fn test_concat_with_three_different_scope_args() {
-        use data_engine_expressions::ListScalarExpression;
-
-        let root_arg = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_TEXT,
-                )),
-            )]),
-        ));
-
-        let attr_arg = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let resource_attr_arg = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), RESOURCES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "rk"),
-                )),
-            ]),
-        ));
-
-        let input_expr =
-            ScalarExpression::Text(TextScalarExpression::Concat(CombineScalarExpression::new(
-                QueryLocation::new_fake(),
-                ScalarExpression::Collection(CollectionScalarExpression::List(
-                    ListScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        vec![root_arg, attr_arg, resource_attr_arg],
-                    ),
-                )),
-            )));
-
-        let logs = LogsData::new(vec![
-            ResourceLogs {
-                resource: Some(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new("rk", AnyValue::new_string("[R1]"))])
-                        .finish(),
-                ),
-                scope_logs: vec![ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope1".into(),
-                        ..Default::default()
-                    },
-                    vec![
-                        LogRecord::build()
-                            .severity_text("ERROR")
-                            .attributes(vec![KeyValue::new("k1", AnyValue::new_string("-a"))])
-                            .finish(),
-                        LogRecord::build()
-                            .severity_text("INFO")
-                            .attributes(vec![KeyValue::new("k1", AnyValue::new_string("-b"))])
-                            .finish(),
-                    ],
-                )],
-                ..Default::default()
-            },
-            ResourceLogs {
-                resource: Some(
-                    Resource::build()
-                        .attributes(vec![KeyValue::new("rk", AnyValue::new_string("[R2]"))])
-                        .finish(),
-                ),
-                scope_logs: vec![ScopeLogs::new(
-                    InstrumentationScope {
-                        name: "scope1".into(),
-                        ..Default::default()
-                    },
-                    vec![
-                        LogRecord::build()
-                            .severity_text("DEBUG")
-                            .attributes(vec![KeyValue::new("k1", AnyValue::new_string("-c"))])
-                            .finish(),
-                    ],
-                )],
-                ..Default::default()
-            },
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(StringArray::from(vec![
-            "ERROR-a[R1]",
-            "INFO-b[R1]",
-            "DEBUG-c[R2]",
-        ]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
-    }
-
-    /// Tests that join_text (concat_ws) works with args from different scopes.
-    /// This validates: concat_ws("-", severity_text, attributes["k1"])
-    #[test]
-    fn test_join_text_with_root_and_attribute_args() {
-        use data_engine_expressions::ListScalarExpression;
-
-        let separator = ScalarExpression::Static(StaticScalarExpression::String(
-            StringScalarExpression::new(QueryLocation::new_fake(), "-"),
-        ));
-
-        let root_arg = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_TEXT,
-                )),
-            )]),
-        ));
-
-        let attr_arg = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                )),
-            ]),
-        ));
-
-        let input_expr =
-            ScalarExpression::Text(TextScalarExpression::Join(JoinTextScalarExpression::new(
-                QueryLocation::new_fake(),
-                separator,
-                ScalarExpression::Collection(CollectionScalarExpression::List(
-                    ListScalarExpression::new(QueryLocation::new_fake(), vec![root_arg, attr_arg]),
-                )),
-            )));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .severity_text("ERROR")
-                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("a"))])
-                .finish(),
-            LogRecord::build()
-                .severity_text("INFO")
-                .attributes(vec![KeyValue::new("k1", AnyValue::new_string("b"))])
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(StringArray::from(vec!["ERROR-a", "INFO-b"]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
-    }
-
-    /// Verifies that InvokeFunction planning correctly produces a MultiJoin when child
-    /// InvokeFunction results come from different scopes.
-    ///
-    /// We build: encode(sha256(attributes["k1"]), "hex") which nests sha256 (Attributes scope)
-    /// inside encode with a scalar arg. Since Attributes + Scalar can combine, this should NOT
-    /// produce a MultiJoin. This serves as a sanity check that the planner doesn't over-eagerly
-    /// create MultiJoin nodes for same-scope function args.
-    ///
-    /// Note: a full end-to-end execution test for cross-scope InvokeFunction args is not
-    /// straightforward because DataFusion's built-in multi-arg functions (like encode) require
-    /// some arguments to be scalars. The concat/join_text/replace tests cover the cross-scope
-    /// MultiJoin execution path thoroughly.
-    #[test]
-    fn test_function_invocation_same_scope_does_not_produce_multi_join() {
-        // sha256(attributes["k1"]) - Attributes scope
-        let attr_sha_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-            QueryLocation::new_fake(),
-            None,
-            0,
-            vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
-                SourceScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ValueAccessor::new_with_selectors(vec![
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ATTRIBUTES_FIELD_NAME,
-                            ),
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-                        )),
-                    ]),
-                ),
-            ))],
-        ));
-
-        // encode(sha256(attributes["k1"]), "hex") - Attributes scope + Scalar = Attributes scope
-        let encode_attr_expr =
-            ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-                QueryLocation::new_fake(),
-                None,
-                1,
-                vec![
-                    InvokeFunctionArgument::Scalar(attr_sha_expr),
-                    InvokeFunctionArgument::Scalar(ScalarExpression::Static(
-                        StaticScalarExpression::String(StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "hex",
-                        )),
-                    )),
-                ],
-            ));
-
-        let functions = [
-            PipelineFunction::new_external("sha256", vec![], None),
-            PipelineFunction::new_external("encode", vec![], None),
-        ];
-
-        let planner = ExprLogicalPlanner {};
-
-        // Attributes + Scalar should combine without needing a MultiJoin
-        let planned = planner
-            .plan_scalar_expr(&encode_attr_expr, &functions)
-            .unwrap();
-        assert!(
-            !matches!(planned.source, LogicalExprDataSource::MultiJoin(_)),
-            "Expected non-MultiJoin for same-scope function args, got {:?}",
-            planned.source
-        );
-    }
-
-    /// Tests replace(severity_text, attributes["needle"], attributes["replacement"])
-    /// where the first arg is from Root scope and the other two are from different Attribute
-    /// scopes. This exercises a real 3-arg cross-scope function call via MultiJoin.
-    #[test]
-    fn test_replace_text_with_cross_scope_args() {
-        use data_engine_expressions::ReplaceTextScalarExpression;
-
-        let haystack = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    consts::SEVERITY_TEXT,
-                )),
-            )]),
-        ));
-
-        let needle = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "needle"),
-                )),
-            ]),
-        ));
-
-        let replacement = ScalarExpression::Source(SourceScalarExpression::new(
-            QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), "repl"),
-                )),
-            ]),
-        ));
-
-        let input_expr = ScalarExpression::Text(TextScalarExpression::Replace(
-            ReplaceTextScalarExpression::new(
-                QueryLocation::new_fake(),
-                haystack,
-                needle,
-                replacement,
-                false,
-            ),
-        ));
-
-        let logs = to_logs_data(vec![
-            LogRecord::build()
-                .severity_text("hello world")
-                .attributes(vec![
-                    KeyValue::new("needle", AnyValue::new_string("world")),
-                    KeyValue::new("repl", AnyValue::new_string("rust")),
-                ])
-                .finish(),
-            LogRecord::build()
-                .severity_text("foo bar baz")
-                .attributes(vec![
-                    KeyValue::new("needle", AnyValue::new_string("bar")),
-                    KeyValue::new("repl", AnyValue::new_string("qux")),
-                ])
-                .finish(),
-        ]);
-
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let expected_col = Arc::new(StringArray::from(vec!["hello rust", "foo qux baz"]));
-        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col);
-    }
-
-    fn run_uuid_function_test(func_name: &str, expected_version: usize) {
-        use std::collections::HashSet;
-
-        let input_expr = ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
-            QueryLocation::new_fake(),
-            None,
-            0,
-            vec![],
-        ));
-
-        let functions = [PipelineFunction::new_external(func_name, vec![], None)];
-
-        let logs = to_logs_data(vec![
-            LogRecord::build().finish(),
-            LogRecord::build().finish(),
-            LogRecord::build().finish(),
-        ]);
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-
-        let planner = ExprLogicalPlanner {};
-        let logical_expr = planner.plan_scalar_expr(&input_expr, &functions).unwrap();
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx).unwrap();
-        let result_arr = match result.map(|r| r.values) {
-            Some(ColumnarValue::Array(arr)) => arr,
-            otherwise => panic!("expected Array, got {otherwise:?}"),
-        };
-
-        let str_arr = result_arr
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap_or_else(|| panic!("expected StringArray, got {result_arr:?}"));
-        assert_eq!(str_arr.len(), 3);
-
-        let unique: HashSet<&str> = str_arr.iter().map(|v| v.unwrap()).collect();
+        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
         assert_eq!(
-            unique.len(),
-            3,
-            "expected one distinct UUID per row from {func_name}, got {unique:?}"
+            result.scope,
+            DataScope::Attribute(AttributesIdentifier::Root, "code.namespace".to_string())
         );
 
-        for value in str_arr.iter().flatten() {
-            let parsed = ::uuid::Uuid::parse_str(value)
-                .unwrap_or_else(|e| panic!("expected valid UUID from {func_name}: {value}: {e}"));
-            assert_eq!(
-                parsed.get_version_num(),
-                expected_version,
-                "expected v{expected_version} UUID from {func_name}, got {value}"
-            );
+        // should have 3 rows (one per log record)
+        match &result.values {
+            ColumnarValue::Array(arr) => assert_eq!(arr.len(), 3),
+            other => panic!("expected array, got {other:?}"),
+        }
+
+        // should have parent_ids
+        assert!(result.parent_ids.is_some());
+    }
+
+    #[test]
+    fn test_batch_predicate_logs_true() {
+        let otap = test_logs_data();
+        let session_ctx = Pipeline::create_session_context();
+        let mut pool = IdBitmapPool::new();
+
+        let mut op = signal_type_eval(SignalType::Logs);
+
+        // execute_as_value: should return true scalar
+        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        match &result.values {
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => {}
+            other => panic!("expected true scalar, got {other:?}"),
+        }
+
+        // execute_as_id_mask: should return IdMask::All
+        let result = op
+            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .unwrap();
+        assert_eq!(result.mask, IdMask::All);
+    }
+
+    #[test]
+    fn test_batch_predicate_wrong_type() {
+        let otap = test_logs_data();
+        let session_ctx = Pipeline::create_session_context();
+        let mut pool = IdBitmapPool::new();
+
+        // checking for Traces on a Logs batch → false
+        let mut op = signal_type_eval(SignalType::Traces);
+
+        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        match &result.values {
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(false))) => {}
+            other => panic!("expected false scalar, got {other:?}"),
+        }
+
+        let result = op
+            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .unwrap();
+        assert_eq!(result.mask, IdMask::None);
+    }
+
+    #[test]
+    fn test_join_and_eval_cross_scope() {
+        let otap = test_logs_data();
+        let session_ctx = Pipeline::create_session_context();
+
+        // severity_number > attributes["code.line.number"]
+        // This requires joining root (severity_number) with attributes (code.line.number value).
+        //
+        // Data:
+        //   row 0: severity_number=13, code.line.number=42  → 13 > 42 → false
+        //   row 1: severity_number=17, code.line.number=100 → 17 > 100 → false
+        //   row 2: severity_number=13, code.line.number=7   → 13 > 7 → true
+        //
+        // Note: severity_number is Int32 on the root batch, but the AnyValue int column is
+        // Int64. We cast the left side to Int64 to match.
+
+        use datafusion::logical_expr::cast;
+
+        // Left child: severity_number cast to Int64
+        let left_child = ScopedExpr::Eval {
+            scope: DataScope::Root,
+            eval: LeafEval::new_df_expr(
+                cast(
+                    col(consts::SEVERITY_NUMBER),
+                    arrow::datatypes::DataType::Int64,
+                ),
+                true,
+            )
+            .unwrap(),
+        };
+
+        // Right child: the int sub-column of the attributes value (already Int64)
+        let right_child = attrs_eval_dict_downcast(
+            AttributesIdentifier::Root,
+            "code.line.number",
+            col(VALUE_COLUMN_NAME),
+        );
+
+        let mut op = ScopedExpr::JoinAndEval {
+            children: vec![left_child, right_child],
+            default_null_children: false,
+            align_children_to_root: false,
+            eval: LeafEval::new_df_expr(
+                Expr::BinaryExpr(datafusion::logical_expr::BinaryExpr::new(
+                    Box::new(col(arg_column_name(0))),
+                    Operator::Gt,
+                    Box::new(col(arg_column_name(1))),
+                )),
+                true,
+            )
+            .unwrap(),
+        };
+
+        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+
+        let bool_arr = as_bool_arr(&result);
+        assert_eq!(bool_arr.len(), 3);
+        assert!(!bool_arr.value(0));
+        assert!(!bool_arr.value(1));
+        assert!(bool_arr.value(2));
+    }
+
+    #[test]
+    fn test_bitmap_and_root_and_attribute() {
+        let otap = test_logs_data();
+        let session_ctx = Pipeline::create_session_context();
+        let mut pool = IdBitmapPool::new();
+
+        // severity_text == "WARN" AND attributes["code.namespace"] == "main"
+        //
+        // Data:
+        //   row 0: severity_text="WARN", code.namespace="main" → true AND true → true
+        //   row 1: severity_text="ERROR", code.namespace="test" → false AND false → false
+        //   row 2: severity_text="WARN", code.namespace="main" → true AND true → true
+        //
+        // Note: attribute str values are dictionary-encoded, so we need dict downcast enabled.
+
+        let left = root_eval(col(consts::SEVERITY_TEXT).eq(lit("WARN")));
+        let right = attrs_eval_dict_downcast(
+            AttributesIdentifier::Root,
+            "code.namespace",
+            col(VALUE_COLUMN_NAME).eq(lit("main")),
+        );
+
+        let mut op = ScopedExpr::BitmapAnd(Box::new(left), Box::new(right));
+
+        // test execute_as_id_mask
+        let result = op
+            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .unwrap();
+
+        match &result.mask {
+            IdMask::Some(bitmap) => {
+                assert!(bitmap.contains(0));
+                assert!(!bitmap.contains(1));
+                assert!(bitmap.contains(2));
+            }
+            other => panic!("expected IdMask::Some, got {other:?}"),
+        }
+
+        // test execute_as_value
+        let mut op2 = ScopedExpr::BitmapAnd(
+            Box::new(root_eval(col(consts::SEVERITY_TEXT).eq(lit("WARN")))),
+            Box::new(attrs_eval_dict_downcast(
+                AttributesIdentifier::Root,
+                "code.namespace",
+                col(VALUE_COLUMN_NAME).eq(lit("main")),
+            )),
+        );
+
+        let result = op2.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        assert_eq!(result.scope, DataScope::Root);
+        let bool_arr = as_bool_arr(&result);
+        assert_eq!(bool_arr.len(), 3);
+        assert!(bool_arr.value(0));
+        assert!(!bool_arr.value(1));
+        assert!(bool_arr.value(2));
+    }
+
+    #[test]
+    fn test_bitmap_or_with_missing_data() {
+        let otap = test_logs_data();
+        let session_ctx = Pipeline::create_session_context();
+        let mut pool = IdBitmapPool::new();
+
+        // attributes["nonexistent"] == "x" OR severity_text == "WARN"
+        //
+        // Left side: "nonexistent" attribute doesn't exist → IdMask::None
+        // Right side: severity_text == "WARN" → rows 0 and 2 pass
+        // OR result: should be rows 0 and 2
+
+        let left = attrs_eval(
+            AttributesIdentifier::Root,
+            "nonexistent",
+            col(VALUE_COLUMN_NAME).eq(lit("x")),
+        );
+        let right = root_eval(col(consts::SEVERITY_TEXT).eq(lit("WARN")));
+
+        let mut op = ScopedExpr::BitmapOr(Box::new(left), Box::new(right));
+
+        let result = op
+            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .unwrap();
+
+        match &result.mask {
+            IdMask::Some(bitmap) => {
+                assert!(bitmap.contains(0));
+                assert!(!bitmap.contains(1));
+                assert!(bitmap.contains(2));
+            }
+            other => panic!("expected IdMask::Some, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_function_invocation_uuid_v4() {
-        run_uuid_function_test(UUID_FUNC_NAME, 4);
+    fn test_bitmap_not() {
+        let otap = test_logs_data();
+        let session_ctx = Pipeline::create_session_context();
+        let mut pool = IdBitmapPool::new();
+
+        // NOT(severity_text == "WARN")
+        //
+        // severity_text == "WARN" matches rows 0 and 2
+        // NOT of that should match only row 1
+
+        let inner = root_eval(col(consts::SEVERITY_TEXT).eq(lit("WARN")));
+        let mut op = ScopedExpr::BitmapNot(Box::new(inner));
+
+        let result = op
+            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .unwrap();
+
+        match &result.mask {
+            IdMask::NotSome(bitmap) => {
+                // NotSome means "everything except what's in the bitmap"
+                // The inner produced Some({0, 2}), so NOT is NotSome({0, 2})
+                assert!(bitmap.contains(0));
+                assert!(!bitmap.contains(1));
+                assert!(bitmap.contains(2));
+            }
+            other => panic!("expected IdMask::NotSome, got {other:?}"),
+        }
+
+        // Also verify via execute_as_value
+        let mut op2 = ScopedExpr::BitmapNot(Box::new(root_eval(
+            col(consts::SEVERITY_TEXT).eq(lit("WARN")),
+        )));
+        let result = op2.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+        let bool_arr = as_bool_arr(&result);
+        assert_eq!(bool_arr.len(), 3);
+        assert!(!bool_arr.value(0));
+        assert!(bool_arr.value(1));
+        assert!(!bool_arr.value(2));
     }
 
     #[test]
-    fn test_function_invocation_uuid_v7() {
-        run_uuid_function_test(UUIDV7_FUNC_NAME, 7);
+    fn test_compound_bitmap_and_chain() {
+        let otap = test_logs_data();
+        let session_ctx = Pipeline::create_session_context();
+        let mut pool = IdBitmapPool::new();
+
+        // attributes["code.namespace"] == "main"
+        //   AND attributes["code.line.number"] == 42  (int comparison)
+        //   AND severity_text == "WARN"
+        //
+        // Data:
+        //   row 0: namespace="main", line=42, severity="WARN" → true
+        //   row 1: namespace="test", line=100, severity="ERROR" → false
+        //   row 2: namespace="main", line=7, severity="WARN" → false (line != 42)
+
+        // Note: attribute str values are dictionary-encoded, so we need dict downcast.
+        // Attribute int values are stored in the "int" column (Int64).
+        let attr_namespace = attrs_eval_dict_downcast(
+            AttributesIdentifier::Root,
+            "code.namespace",
+            col(VALUE_COLUMN_NAME).eq(lit("main")),
+        );
+        let attr_line = attrs_eval_dict_downcast(
+            AttributesIdentifier::Root,
+            "code.line.number",
+            col(VALUE_COLUMN_NAME).eq(lit(42i64)),
+        );
+        let severity = root_eval(col(consts::SEVERITY_TEXT).eq(lit("WARN")));
+
+        // Build: (namespace == "main" AND line == 42) AND severity == "WARN"
+        let inner_and = ScopedExpr::BitmapAnd(Box::new(attr_namespace), Box::new(attr_line));
+        let mut op = ScopedExpr::BitmapAnd(Box::new(inner_and), Box::new(severity));
+
+        let result = op
+            .execute_as_id_mask(&otap, &session_ctx, &mut pool)
+            .unwrap();
+
+        match &result.mask {
+            IdMask::Some(bitmap) => {
+                assert!(bitmap.contains(0), "row 0 should match");
+                assert!(!bitmap.contains(1), "row 1 should not match");
+                assert!(!bitmap.contains(2), "row 2 should not match (line != 42)");
+            }
+            other => panic!("expected IdMask::Some, got {other:?}"),
+        }
     }
 }

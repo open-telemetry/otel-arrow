@@ -8,7 +8,7 @@ nodes:
   transform:
     type: "urn:otel:processor:transform"
     config:
-      opl_query: 'logs | rename attributes["new_thread_id"] = attributes["thread.id"]'
+      opl_query: 'logs | rename attributes "thread.id" as "new_thread_id"'
   exporter:
     type: "urn:otel:exporter:otap"
     config:

@@ -79,7 +79,7 @@ tests:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
       variables:
         result_dir: "nightly_filter"
-        engine_config_template: test_suites/integration/templates/configs/engine/filter/otlp-filter-otlp.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/filter/otlp-filter-otlp.yaml.j2
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
         observation_interval: 60
@@ -88,7 +88,7 @@ tests:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
       variables:
         result_dir: "nightly_filter"
-        engine_config_template: test_suites/integration/templates/configs/engine/filter/otlp-filter-otap.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/filter/otlp-filter-otap.yaml.j2
         loadgen_exporter_type: otlp
         backend_receiver_type: otap
         observation_interval: 60
@@ -97,7 +97,7 @@ tests:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
       variables:
         result_dir: "nightly_filter"
-        engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otap.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otap.yaml.j2
         loadgen_exporter_type: otap
         backend_receiver_type: otap
         observation_interval: 60
@@ -106,7 +106,7 @@ tests:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
       variables:
         result_dir: "nightly_filter"
-        engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otlp.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otlp.yaml.j2
         loadgen_exporter_type: otap
         backend_receiver_type: otlp
         observation_interval: 60

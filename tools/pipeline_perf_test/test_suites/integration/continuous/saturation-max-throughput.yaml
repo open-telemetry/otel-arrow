@@ -77,10 +77,10 @@ tests:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
         result_dir: "continuous_saturation_max_throughput_otlp"
-        engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otlp.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otlp.yaml.j2
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
         observation_interval: 60
         signals_per_second: null
-        max_batch_size: 1000
+        max_batch_size: 512
         num_connections: 4

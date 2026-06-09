@@ -1,0 +1,4 @@
+change_type: enhancement
+component: query-engine
+note: Adds small application that serves an interactive playground for crafting OPL programs
+issues: [3214]

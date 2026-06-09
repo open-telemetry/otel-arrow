@@ -34,6 +34,13 @@ Demonstrates the filter processor:
 
 - Generates fake data -> filter processor -> debug processor -> noop exporter
 
+### `fake-metric-filter-debug-noop.yaml`
+
+Demonstrates metric-name filtering:
+
+- Generates fake metrics -> filter processor by metric name -> debug processor
+  -> noop exporter
+
 ### `fake-transform-debug-noop.yaml`
 
 Demonstrate using the transform processor to transform data
@@ -61,6 +68,24 @@ Generates fake data and exports to Parquet files:
 
 - Generates fake data -> Parquet exporter to `/tmp`
 
+Parquet exporter configs can include an optional `retry` block for cloud-backed
+object stores. Any omitted fields use the `object_store` defaults.
+
+```yaml
+retry:
+  max_retries: 10
+  init_backoff: "200ms"
+  max_backoff: "30s"
+  backoff_base: 2.0
+  retry_timeout: "2min"
+```
+
+This configures the `object_store` layer request retry loop for transient
+storage requests. Local file storage accepts valid retry settings but ignores
+them; invalid retry values are still rejected during config validation. It does
+not replay consumed Parquet writers after `AsyncArrowWriter::close` fails, and
+it is separate from the retry processor's whole-batch redelivery policy.
+
 ### `fake-perf.yaml`
 
 Generates fake data with performance metrics:
@@ -80,11 +105,10 @@ Generates mixed-tenant traffic using weighted resource attribute rotation:
 
 The `resource_attributes` field accepts three forms:
 
-| Form | Description |
-| ---- | ----------- |
-| Single map | All batches carry the same attributes (weight 1) |
-| List of maps | Equal round-robin rotation across entries (weight 1 each) |
-| List of weighted entries (`attrs` + `weight`) | Each entry receives batches proportional to its weight |
+- Single map: all batches carry the same attributes (weight 1).
+- List of maps: equal round-robin rotation across entries (weight 1 each).
+- List of weighted entries (`attrs` + `weight`): each entry receives batches
+  proportional to its weight.
 
 > **Note:** `resource_attributes` only applies to `data_source: synthetic`.
 > With `generation_strategy: pre_generated`, only the first attribute set is used.
@@ -163,14 +187,21 @@ Syslog/CEF receiver with performance metrics:
 To send a quick test message (UDP):
 
 ```bash
-echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message" | nc -u -w1 127.0.0.1 5140
+echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message" \
+  | nc -u -w1 127.0.0.1 5140
 ```
 
-For sustained load testing, see the [load generator](../../tools/pipeline_perf_test/load_generator/readme.md):
+For sustained load testing, see the
+[load generator](../../tools/pipeline_perf_test/load_generator/readme.md):
 
 ```bash
 cd tools/pipeline_perf_test/load_generator
-python loadgen.py --load-type syslog --syslog-server 127.0.0.1 --syslog-port 5140 --syslog-transport udp --duration 15
+python loadgen.py \
+  --load-type syslog \
+  --syslog-server 127.0.0.1 \
+  --syslog-port 5140 \
+  --syslog-transport udp \
+  --duration 15
 ```
 
 > **Note:** The default `syslog-perf.yaml` config only enables UDP.
