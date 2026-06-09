@@ -101,6 +101,26 @@ The `is` check works with any attribute scope:
 logs | where resource.attributes["service.version"] is String
 ```
 
+## Drop (`drop`)
+
+The `drop` operator unconditionally discards all telemetry data. It is
+equivalent to `where false`.
+
+```text
+// drop all logs
+logs | drop
+```
+
+This is most useful inside conditional branches to selectively discard records
+based on a condition:
+
+```text
+// drop debug logs, keep everything else
+logs | if (severity_number < 9) {
+    drop
+}
+```
+
 ## Assign (`set`)
 
 The `set` operator modifies or assigns a field value:
