@@ -144,7 +144,7 @@ observability pipeline is part of engine operation, not an independent workload.
 
 ### Strict Loading and Validation
 
-The model favors fail-fast loading. Unknown fields, invalid schema versions,
+The model favors fail-fast loading. Configuration issues such as unknown fields, invalid schema versions,
 missing connection endpoints, graph cycles, invalid output selectors, unsupported
 policy placements, and invalid node configs are rejected before startup.
 
