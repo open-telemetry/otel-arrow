@@ -27,7 +27,7 @@ use crate::error::Error;
 use crate::topic::backend::{InMemoryBackend, SubscriptionBackend};
 use crate::topic::subscription::{DeliveryBackend, DeliveryStorageKind};
 use crate::topic::types::{
-    AckFromResult, Envelope, PublishOutcome, RecvItem, SubscriberId, SubscriberOptions,
+    AckFromResult, Envelope, PublishOutcome, RecvItem, BroadcastSubscriberId, SubscriberOptions,
     SubscriptionMode, TopicOptions, TopicPublishOutcomeConfig, TrackedPublishOutcome,
     TrackedPublishPermit, TrackedPublishTracker, TrackedTryPublishOutcome,
 };
@@ -2199,8 +2199,8 @@ fn quorum_permit() -> TrackedPublishPermit {
     quorum_permit_from(&Arc::new(Semaphore::new(1)))
 }
 
-fn subscriber_set(ids: impl IntoIterator<Item = u64>) -> HashSet<SubscriberId> {
-    ids.into_iter().map(SubscriberId).collect()
+fn subscriber_set(ids: impl IntoIterator<Item = u64>) -> HashSet<BroadcastSubscriberId> {
+    ids.into_iter().map(BroadcastSubscriberId).collect()
 }
 
 // A quorum entry resolves as Ack only once every required subscriber has acked,
@@ -2216,17 +2216,17 @@ async fn quorum_resolves_ack_only_after_all_subscribers_ack() {
     );
 
     assert_eq!(
-        tracker.resolve_ack_from(7, SubscriberId(1)),
+        tracker.resolve_ack_from(7, BroadcastSubscriberId(1)),
         AckFromResult::StillPending
     );
     assert_eq!(
-        tracker.resolve_ack_from(7, SubscriberId(2)),
+        tracker.resolve_ack_from(7, BroadcastSubscriberId(2)),
         AckFromResult::Resolved
     );
     assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
 
     assert_eq!(
-        tracker.resolve_ack_from(7, SubscriberId(1)),
+        tracker.resolve_ack_from(7, BroadcastSubscriberId(1)),
         AckFromResult::NotTracked
     );
 }
@@ -2243,15 +2243,15 @@ async fn quorum_duplicate_ack_does_not_complete() {
     );
 
     assert_eq!(
-        tracker.resolve_ack_from(1, SubscriberId(1)),
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
         AckFromResult::StillPending
     );
     assert_eq!(
-        tracker.resolve_ack_from(1, SubscriberId(1)),
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
         AckFromResult::StillPending
     );
     assert_eq!(
-        tracker.resolve_ack_from(1, SubscriberId(2)),
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(2)),
         AckFromResult::Resolved
     );
 }
@@ -2265,7 +2265,7 @@ async fn quorum_empty_set_resolves_ack_immediately() {
 
     assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
     assert_eq!(
-        tracker.resolve_ack_from(1, SubscriberId(1)),
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
         AckFromResult::NotTracked
     );
 }
@@ -2275,7 +2275,7 @@ async fn quorum_empty_set_resolves_ack_immediately() {
 async fn quorum_resolve_ack_from_unknown_message_not_tracked() {
     let tracker = TrackedPublishTracker::new();
     assert_eq!(
-        tracker.resolve_ack_from(99, SubscriberId(1)),
+        tracker.resolve_ack_from(99, BroadcastSubscriberId(1)),
         AckFromResult::NotTracked
     );
 }
@@ -2291,14 +2291,14 @@ async fn quorum_subscriber_disappearance_nacks_outstanding() {
         subscriber_set([1, 2]),
     );
 
-    tracker.nack_pending_for_subscriber(SubscriberId(2), Arc::from("subscriber disconnected"));
+    tracker.nack_pending_for_subscriber(BroadcastSubscriberId(2), Arc::from("subscriber disconnected"));
 
     match receipt.wait_for_outcome().await {
         TrackedPublishOutcome::Nack { reason } => assert_eq!(&*reason, "subscriber disconnected"),
         other => panic!("expected Nack, got {other:?}"),
     }
     assert_eq!(
-        tracker.resolve_ack_from(5, SubscriberId(1)),
+        tracker.resolve_ack_from(5, BroadcastSubscriberId(1)),
         AckFromResult::NotTracked
     );
 }
@@ -2320,14 +2320,14 @@ async fn quorum_disappearance_only_nacks_entries_requiring_subscriber() {
         subscriber_set([2]),
     );
 
-    tracker.nack_pending_for_subscriber(SubscriberId(1), Arc::from("gone"));
+    tracker.nack_pending_for_subscriber(BroadcastSubscriberId(1), Arc::from("gone"));
 
     assert!(matches!(
         r1.wait_for_outcome().await,
         TrackedPublishOutcome::Nack { .. }
     ));
     assert_eq!(
-        tracker.resolve_ack_from(2, SubscriberId(2)),
+        tracker.resolve_ack_from(2, BroadcastSubscriberId(2)),
         AckFromResult::Resolved
     );
     assert_eq!(r2.wait_for_outcome().await, TrackedPublishOutcome::Ack);
@@ -2345,7 +2345,7 @@ async fn quorum_single_resolve_nack_overrides_quorum() {
     );
 
     assert_eq!(
-        tracker.resolve_ack_from(1, SubscriberId(1)),
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
         AckFromResult::StillPending
     );
     assert!(tracker.resolve(
@@ -2359,7 +2359,7 @@ async fn quorum_single_resolve_nack_overrides_quorum() {
         TrackedPublishOutcome::Nack { .. }
     ));
     assert_eq!(
-        tracker.resolve_ack_from(1, SubscriberId(2)),
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(2)),
         AckFromResult::NotTracked
     );
 }
@@ -2377,10 +2377,10 @@ async fn quorum_ack_completion_beats_late_disconnect() {
     );
 
     assert_eq!(
-        tracker.resolve_ack_from(1, SubscriberId(1)),
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
         AckFromResult::Resolved
     );
-    tracker.nack_pending_for_subscriber(SubscriberId(1), Arc::from("late"));
+    tracker.nack_pending_for_subscriber(BroadcastSubscriberId(1), Arc::from("late"));
     assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
 }
 
@@ -2415,7 +2415,7 @@ async fn quorum_releases_permit_on_resolution() {
 
     assert_eq!(sem.available_permits(), 0);
     assert_eq!(
-        tracker.resolve_ack_from(1, SubscriberId(1)),
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
         AckFromResult::Resolved
     );
     let _ = receipt.wait_for_outcome().await;

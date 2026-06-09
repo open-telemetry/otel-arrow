@@ -219,7 +219,7 @@ impl TrackedPublishTracker {
         message_id: u64,
         timeout: Duration,
         permit: TrackedPublishPermit,
-        pending: HashSet<SubscriberId>,
+        pending: HashSet<BroadcastSubscriberId>,
     ) -> TrackedPublishReceipt {
         if self.inner.closed.load(Ordering::Acquire) {
             let entry = Arc::new(TrackedPublishEntry::new_quorum(
@@ -274,17 +274,20 @@ impl TrackedPublishTracker {
     /// Lock order is map -> entry (matching the timeout worker); the entry mutex
     /// is the single linearization point for terminal resolution.
     #[must_use]
-    pub fn resolve_ack_from(&self, message_id: u64, subscriber_id: SubscriberId) -> AckFromResult {
+    pub fn resolve_ack_from(&self, message_id: u64, subscriber_id: BroadcastSubscriberId) -> AckFromResult {
         let mut entries = self.inner.entries.lock();
         let Some(entry) = entries.get(&message_id).cloned() else {
             return AckFromResult::NotTracked;
         };
         let result = entry.resolve_ack_from(subscriber_id);
-        if matches!(result, AckFromResult::Resolved) {
+        let resolved = matches!(result, AckFromResult::Resolved);
+        if resolved {
             let _ = entries.remove(&message_id);
         }
         drop(entries);
-        self.inner.wakeups.notify_one();
+        if resolved {
+            self.inner.wakeups.notify_one();
+        }
         result
     }
 
@@ -294,7 +297,7 @@ impl TrackedPublishTracker {
     /// Called when a required subscriber disappears (lag-disconnect or
     /// drop/close) before acking outstanding messages. Idempotent and a no-op
     /// for entries that do not require the subscriber.
-    pub fn nack_pending_for_subscriber(&self, subscriber_id: SubscriberId, reason: Arc<str>) {
+    pub fn nack_pending_for_subscriber(&self, subscriber_id: BroadcastSubscriberId, reason: Arc<str>) {
         let mut entries = self.inner.entries.lock();
         let to_remove: Vec<u64> = entries
             .iter()
@@ -489,7 +492,7 @@ impl TrackedPublishReceipt {
 /// Allocated by the broadcast-only topic's subscriber registry and used by the
 /// tracked publish tracker to drive `all`-mode quorum aggregation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SubscriberId(pub u64);
+pub struct BroadcastSubscriberId(pub u64);
 
 /// Outcome of applying a single broadcast subscriber's Ack to a tracked publish
 /// in `all` (quorum) mode.
@@ -513,7 +516,7 @@ enum PendingKind {
     /// resolves it as Nack.
     All {
         /// Subscribers eligible at publish time that have not yet acked.
-        pending: HashSet<SubscriberId>,
+        pending: HashSet<BroadcastSubscriberId>,
     },
 }
 
@@ -544,7 +547,7 @@ impl TrackedPublishEntry {
     pub(crate) fn new_quorum(
         deadline: Instant,
         permit: TrackedPublishPermit,
-        pending: HashSet<SubscriberId>,
+        pending: HashSet<BroadcastSubscriberId>,
     ) -> Self {
         Self {
             state: Mutex::new(TrackedPublishState::Pending(PendingKind::All { pending })),
@@ -582,7 +585,7 @@ impl TrackedPublishEntry {
     /// entry resolves as Ack. A `First`-kind entry resolves as Ack on the first
     /// call. Already-resolved entries are left untouched. Idempotent: a repeated
     /// Ack from the same subscriber never falsely completes the quorum.
-    pub(crate) fn resolve_ack_from(&self, subscriber_id: SubscriberId) -> AckFromResult {
+    pub(crate) fn resolve_ack_from(&self, subscriber_id: BroadcastSubscriberId) -> AckFromResult {
         let mut state = self.state.lock();
         match &mut *state {
             TrackedPublishState::Resolved(_) => AckFromResult::NotTracked,
@@ -614,7 +617,7 @@ impl TrackedPublishEntry {
     /// Used when a required subscriber disappears (lag-disconnect or drop/close)
     /// before acking. No-op for `First`-kind, already-resolved, or unrelated
     /// entries.
-    pub(crate) fn nack_if_requires(&self, subscriber_id: SubscriberId, reason: Arc<str>) -> bool {
+    pub(crate) fn nack_if_requires(&self, subscriber_id: BroadcastSubscriberId, reason: Arc<str>) -> bool {
         let mut state = self.state.lock();
         let requires = matches!(
             &*state,

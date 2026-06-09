@@ -28,7 +28,7 @@ pub use otap_df_config::{SubscriptionGroupName, TopicName};
 pub use subscription::{Delivery, RecvDelivery, Subscription};
 pub use topic_set::TopicSet;
 pub use types::{
-    AckFromResult, Envelope, PublishOutcome, RecvItem, SubscriberId, SubscriberOptions,
+    AckFromResult, Envelope, PublishOutcome, RecvItem, BroadcastSubscriberId, SubscriberOptions,
     SubscriptionMode, TopicOptions, TopicPublishOutcomeConfig, TrackedPublishOutcome,
     TrackedPublishPermit, TrackedPublishReceipt, TrackedPublishTracker, TrackedTryPublishOutcome,
 };
