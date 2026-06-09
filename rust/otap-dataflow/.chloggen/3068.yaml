@@ -8,7 +8,7 @@ change_type: enhancement
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: This PR updates the Rust controller observer API to provide a richer startup callback context that includes metrics handle
+note: Adds context-based observer callbacks that expose both state and telemetry handles, while retaining state-only observer callbacks as deprecated compatibility wrappers.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3068]
@@ -16,4 +16,4 @@ issues: [3068]
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
-subtext: Replaces the observer callback payload from only state to a new EngineObserverContext that includes both pipeline state and telemetry registry handles.
+subtext: Existing observer callbacks continue to work; migrate to context observer callbacks for telemetry access.
