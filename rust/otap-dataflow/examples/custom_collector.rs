@@ -138,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // checks and metrics access.
     let poll_status = args.poll_status;
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
-    let result = controller.run_forever_with_observer(engine_cfg, |ctx| {
+    let result = controller.run_forever_with_context_observer(engine_cfg, |ctx| {
         eprintln!("[observer] EngineObserverContext obtained");
         if poll_status {
             let state_handle = ctx.state_handle().clone();

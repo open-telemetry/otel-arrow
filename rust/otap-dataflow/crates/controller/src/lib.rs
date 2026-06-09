@@ -422,7 +422,7 @@ impl<
     /// zero-overhead, in-process access to pipeline liveness, readiness,
     /// health, and internal metrics without going through the admin HTTP
     /// server.
-    pub fn run_forever_with_observer<F>(
+    pub fn run_forever_with_context_observer<F>(
         &self,
         engine_config: OtelDataflowSpec,
         observer: F,
@@ -431,6 +431,65 @@ impl<
         F: FnOnce(EngineObserverContext),
     {
         self.run_with_mode(engine_config, RunMode::ParkMainThread, Some(observer))
+    }
+
+    /// Starts the controller and invokes `observer` with an
+    /// [`ObservedStateHandle`] as soon as the pipeline state store is ready.
+    ///
+    /// Deprecated: prefer
+    /// [`run_forever_with_context_observer`](Self::run_forever_with_context_observer)
+    /// to also access internal telemetry handles.
+    #[deprecated(
+        since = "0.24.0",
+        note = "Use run_forever_with_context_observer to access both state and telemetry handles"
+    )]
+    pub fn run_forever_with_observer<F>(
+        &self,
+        engine_config: OtelDataflowSpec,
+        observer: F,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce(ObservedStateHandle),
+    {
+        self.run_forever_with_context_observer(engine_config, move |ctx| {
+            observer(ctx.state_handle().clone());
+        })
+    }
+
+    /// Like [`run_till_shutdown`](Self::run_till_shutdown), but invokes
+    /// `observer` with an [`EngineObserverContext`] before blocking.
+    pub fn run_till_shutdown_with_context_observer<F>(
+        &self,
+        engine_config: OtelDataflowSpec,
+        observer: F,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce(EngineObserverContext),
+    {
+        self.run_with_mode(engine_config, RunMode::ShutdownWhenDone, Some(observer))
+    }
+
+    /// Like [`run_till_shutdown`](Self::run_till_shutdown), but invokes
+    /// `observer` with an [`ObservedStateHandle`] before blocking.
+    ///
+    /// Deprecated: prefer
+    /// [`run_till_shutdown_with_context_observer`](Self::run_till_shutdown_with_context_observer)
+    /// to also access internal telemetry handles.
+    #[deprecated(
+        since = "0.24.0",
+        note = "Use run_till_shutdown_with_context_observer to access both state and telemetry handles"
+    )]
+    pub fn run_till_shutdown_with_observer<F>(
+        &self,
+        engine_config: OtelDataflowSpec,
+        observer: F,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce(ObservedStateHandle),
+    {
+        self.run_till_shutdown_with_context_observer(engine_config, move |ctx| {
+            observer(ctx.state_handle().clone());
+        })
     }
 
     /// Starts the controller with the given engine configurations.
@@ -442,19 +501,6 @@ impl<
             RunMode::ShutdownWhenDone,
             None::<fn(EngineObserverContext)>,
         )
-    }
-
-    /// Like [`run_till_shutdown`](Self::run_till_shutdown), but invokes
-    /// `observer` with an [`EngineObserverContext`] before blocking.
-    pub fn run_till_shutdown_with_observer<F>(
-        &self,
-        engine_config: OtelDataflowSpec,
-        observer: F,
-    ) -> Result<(), Error>
-    where
-        F: FnOnce(EngineObserverContext),
-    {
-        self.run_with_mode(engine_config, RunMode::ShutdownWhenDone, Some(observer))
     }
 
     fn map_topic_spec_to_options(
