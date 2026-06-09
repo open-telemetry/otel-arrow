@@ -88,7 +88,9 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 - The transformation query surface is still evolving.
 - `skip_sanitize_result: true` can leave removed data in unused Arrow buffers;
   keep the default when transformations redact sensitive data.
-- OTTL support currently documents log statements only.
+- OTTL currently supports only updating setting log fields to literal values. Additional
+  operations such as filtering, function evaluation, and other expression types, as well as
+  applying OTTL transforms to spans and metrics are not yet supported.
 
 ## Related Docs
 
