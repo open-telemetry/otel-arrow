@@ -27,7 +27,7 @@ use crate::error::Error;
 use crate::topic::backend::{InMemoryBackend, SubscriptionBackend};
 use crate::topic::subscription::{DeliveryBackend, DeliveryStorageKind};
 use crate::topic::types::{
-    AckFromResult, Envelope, PublishOutcome, RecvItem, BroadcastSubscriberId, SubscriberOptions,
+    AckFromResult, BroadcastSubscriberId, Envelope, PublishOutcome, RecvItem, SubscriberOptions,
     SubscriptionMode, TopicOptions, TopicPublishOutcomeConfig, TrackedPublishOutcome,
     TrackedPublishPermit, TrackedPublishTracker, TrackedTryPublishOutcome,
 };
@@ -2291,7 +2291,10 @@ async fn quorum_subscriber_disappearance_nacks_outstanding() {
         subscriber_set([1, 2]),
     );
 
-    tracker.nack_pending_for_subscriber(BroadcastSubscriberId(2), Arc::from("subscriber disconnected"));
+    tracker.nack_pending_for_subscriber(
+        BroadcastSubscriberId(2),
+        Arc::from("subscriber disconnected"),
+    );
 
     match receipt.wait_for_outcome().await {
         TrackedPublishOutcome::Nack { reason } => assert_eq!(&*reason, "subscriber disconnected"),
