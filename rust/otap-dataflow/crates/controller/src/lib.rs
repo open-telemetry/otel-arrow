@@ -50,6 +50,7 @@ use otap_df_config::engine::{
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use otap_df_config::node::{NodeKind, NodeUserConfig};
+use otap_df_config::pipeline_group::PipelineGroupConfig;
 use otap_df_config::policy::MemoryLimiterMode;
 use otap_df_config::policy::{
     ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, TelemetryPolicy,

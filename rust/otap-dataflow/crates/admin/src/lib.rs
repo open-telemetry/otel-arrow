@@ -33,6 +33,7 @@ use tower::ServiceBuilder;
 use crate::error::Error;
 use otap_df_config::engine::{HttpAdminSettings, OtelDataflowSpec};
 use otap_df_config::pipeline::telemetry::AttributeValue as ResourceAttributeValue;
+use otap_df_config::pipeline_group::PipelineGroupConfig;
 use otap_df_engine::memory_limiter::MemoryPressureState;
 use otap_df_state::store::ObservedStateHandle;
 use otap_df_telemetry::log_tap::InternalLogTapHandle;
@@ -45,6 +46,8 @@ use otap_df_telemetry::{otel_info, otel_warn};
 pub enum ControlPlaneError {
     /// The requested pipeline group does not exist.
     GroupNotFound,
+    /// The requested pipeline group already exists.
+    GroupAlreadyExists,
     /// The requested pipeline does not exist.
     PipelineNotFound,
     /// Another incompatible live operation is active in the current consistency scope.
@@ -71,6 +74,7 @@ impl ControlPlaneError {
     pub fn as_operation_error(&self) -> OperationError {
         match self {
             Self::GroupNotFound => OperationError::new(OperationErrorKind::GroupNotFound),
+            Self::GroupAlreadyExists => OperationError::new(OperationErrorKind::Conflict),
             Self::PipelineNotFound => OperationError::new(OperationErrorKind::PipelineNotFound),
             Self::RolloutConflict => OperationError::new(OperationErrorKind::Conflict),
             Self::InvalidRequest { message } => {
@@ -129,6 +133,29 @@ pub trait ControlPlane: Send + Sync {
         pipeline_id: &str,
         shutdown_id: &str,
     ) -> Result<Option<ShutdownStatus>, ControlPlaneError>;
+
+    /// Returns the committed configuration for one pipeline group.
+    fn group_details(
+        &self,
+        _pipeline_group_id: &str,
+    ) -> Result<Option<PipelineGroupConfig>, ControlPlaneError> {
+        let _ = self;
+        Err(ControlPlaneError::Internal {
+            message: "pipeline group details are not supported by this control plane".to_owned(),
+        })
+    }
+
+    /// Creates one empty pipeline group in the controller-owned configuration.
+    fn create_group(
+        &self,
+        _pipeline_group_id: &str,
+        _group: PipelineGroupConfig,
+    ) -> Result<PipelineGroupConfig, ControlPlaneError> {
+        let _ = self;
+        Err(ControlPlaneError::Internal {
+            message: "pipeline group creation is not supported by this control plane".to_owned(),
+        })
+    }
 
     /// Returns the full current engine configuration known to the controller.
     fn engine_config_snapshot(&self) -> Result<OtelDataflowSpec, ControlPlaneError> {

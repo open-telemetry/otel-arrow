@@ -1,4 +1,4 @@
 change_type: enhancement
 component: engine
-note: Add full-engine live reconciliation and delete primitives to the controller control plane.
+note: Add full-engine live reconciliation primitives plus Admin API/SDK endpoints for pipeline group creation and pipeline/group deletion.
 issues: []

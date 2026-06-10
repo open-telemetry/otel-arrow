@@ -232,6 +232,11 @@ groups:
     .expect("engine config should parse")
 }
 
+fn empty_engine_config() -> OtelDataflowSpec {
+    OtelDataflowSpec::from_yaml("version: otel_dataflow/v1\n")
+        .expect("empty engine config should parse")
+}
+
 fn simple_pipeline_yaml() -> &'static str {
     r#"
         nodes:
@@ -1653,6 +1658,72 @@ fn request_shutdown_pipeline_rejects_missing_pipeline() {
         .expect_err("missing pipeline should be rejected");
 
     assert_eq!(err, ControlPlaneError::PipelineNotFound);
+}
+
+/// Scenario: a control-plane caller creates a new empty pipeline group after
+/// the controller has started with no groups.
+/// Guarantees: the group is added to committed live config and can be read
+/// back without registering any logical pipelines.
+#[test]
+fn create_group_adds_empty_group_to_live_config() {
+    let config = empty_engine_config();
+    let runtime = test_runtime(&config);
+    let group = PipelineGroupConfig::new();
+
+    let created = runtime
+        .create_group("g1", group.clone())
+        .expect("empty group should be created");
+
+    let group_id: PipelineGroupId = "g1".to_string().into();
+    assert_eq!(created, group);
+    assert_eq!(runtime.group_details_snapshot(&group_id), Some(group));
+    let snapshot = runtime.engine_config_snapshot();
+    assert!(snapshot.groups.contains_key(&group_id));
+    assert!(snapshot.groups[&group_id].pipelines.is_empty());
+}
+
+/// Scenario: a control-plane caller attempts to create a group that is already
+/// present in committed live config.
+/// Guarantees: the runtime rejects the request with a conflict-level error and
+/// leaves the existing group unchanged.
+#[test]
+fn create_group_rejects_duplicate_group() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+
+    let err = runtime
+        .create_group("g1", PipelineGroupConfig::new())
+        .expect_err("duplicate group should be rejected");
+
+    assert_eq!(err, ControlPlaneError::GroupAlreadyExists);
+    let group_id: PipelineGroupId = "g1".to_string().into();
+    assert!(runtime.group_details_snapshot(&group_id).is_some());
+}
+
+/// Scenario: a control-plane caller submits a group-create payload that already
+/// contains pipelines.
+/// Guarantees: PR1's endpoint boundary stays scoped to empty group creation,
+/// leaving pipeline creation to the existing pipeline reconfigure endpoint.
+#[test]
+fn create_group_rejects_payload_with_pipelines() {
+    let config = empty_engine_config();
+    let runtime = test_runtime(&config);
+    let pipeline = PipelineConfig::from_yaml("g1".into(), "p1".into(), simple_pipeline_yaml())
+        .expect("pipeline should parse");
+    let mut group = PipelineGroupConfig::new();
+    _ = group.pipelines.insert("p1".to_string().into(), pipeline);
+
+    let err = runtime
+        .create_group("g1", group)
+        .expect_err("non-empty group should be rejected");
+
+    assert!(matches!(
+        err,
+        ControlPlaneError::InvalidRequest { ref message }
+            if message == "pipeline group creation only supports empty groups"
+    ));
+    let group_id: PipelineGroupId = "g1".to_string().into();
+    assert!(runtime.group_details_snapshot(&group_id).is_none());
 }
 
 /// Scenario: a detached shutdown worker panics before it reaches the normal
