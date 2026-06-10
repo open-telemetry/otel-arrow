@@ -42,7 +42,7 @@
 //!         level: verbose
 //!     batching:
 //!       max_size: 100
-//!       max_duration: "50ms"
+//!       max_duration: "100ms"
 //! ```
 
 mod arrow_records_encoder;
@@ -71,13 +71,14 @@ use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_info;
+use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::{self, MissedTickBehavior};
 
 use std::cell::RefCell;
+use std::num::NonZeroU16;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -87,8 +88,16 @@ pub const ETW_RECEIVER_URN: &str = "urn:otel:receiver:etw";
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_BATCH_MAX_SIZE: u16 = 512;
-const DEFAULT_BATCH_MAX_DURATION: Duration = Duration::from_millis(50);
+// 512 is non-zero, so `unwrap()` never panics (evaluated at compile time).
+const DEFAULT_BATCH_MAX_SIZE: NonZeroU16 = NonZeroU16::new(512).unwrap();
+const DEFAULT_BATCH_MAX_DURATION: Duration = Duration::from_millis(100);
+
+/// Upper bound on the time spent draining queued events during `DrainIngress`.
+///
+/// The drain budget is computed as 90% of the remaining time until the
+/// deadline, but capped at this value so that a generous deadline does not
+/// stall shutdown while a busy provider keeps producing events.
+const MAX_DRAIN_BUDGET: Duration = Duration::from_secs(1);
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -142,8 +151,9 @@ struct ProviderConfig {
 #[serde(deny_unknown_fields)]
 struct BatchConfig {
     /// Maximum number of log records per emitted OTAP batch.
+    /// Must be greater than zero; `0` is rejected at deserialization time.
     #[serde(default = "default_batch_max_size")]
-    max_size: u16,
+    max_size: NonZeroU16,
     /// Maximum time to hold a non-empty batch before flushing it downstream.
     #[serde(default = "default_batch_max_duration")]
     #[serde(with = "humantime_serde")]
@@ -228,7 +238,7 @@ fn default_session_name() -> String {
     "OtelArrowETW".to_string()
 }
 
-const fn default_batch_max_size() -> u16 {
+const fn default_batch_max_size() -> NonZeroU16 {
     DEFAULT_BATCH_MAX_SIZE
 }
 
@@ -293,37 +303,124 @@ impl EtwReceiver {
 
 // ── Batch flush helpers ──────────────────────────────────────────────────────
 
-/// Flush the current Arrow batch downstream via the effect handler.
+/// Build the pending Arrow batch from `builder`, recording the failure metric
+/// on error.
 ///
-/// Resets `builder` to a fresh empty builder on success.  On failure the
-/// builder is consumed by `build()` and the error is returned.
+/// `builder` is always reset to a fresh empty builder (its contents are taken
+/// via [`std::mem::take`]) regardless of outcome. Returns `Ok(None)` when the
+/// builder is empty (nothing to flush). On a `build()` failure the
+/// `received_events_forward_failed` metric is recorded and the error is
+/// returned — a build failure indicates an encoding bug rather than a transient
+/// downstream condition, so it is surfaced to the caller.
+fn build_pending_batch(
+    effect_handler: &local::EffectHandler<OtapPdata>,
+    metrics: &Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
+    builder: &mut EtwArrowRecordsBuilder,
+) -> Result<Option<(OtapPdata, u64)>, Error> {
+    if builder.is_empty() {
+        return Ok(None);
+    }
+
+    let item_count = u64::from(builder.len());
+
+    let payload = match std::mem::take(builder).build() {
+        Ok(payload) => payload,
+        Err(error) => {
+            metrics
+                .borrow_mut()
+                .received_events_forward_failed
+                .add(item_count);
+            return Err(Error::ReceiverError {
+                receiver: effect_handler.receiver_id(),
+                kind: ReceiverErrorKind::Transport,
+                error: "failed to build ETW Arrow batch".to_owned(),
+                source_detail: format_error_sources(&error),
+            });
+        }
+    };
+
+    Ok(Some((
+        OtapPdata::new_todo_context(payload.into()),
+        item_count,
+    )))
+}
+
+/// Flush the current Arrow batch downstream via the awaiting effect handler.
+///
+/// `builder` is always reset to a fresh empty builder regardless of outcome.
+///
+/// A forward failure is treated as a **per-batch loss event**, not a fatal
+/// error: the `received_events_forward_failed` metric is incremented, a warning
+/// is logged, and `Ok(())` is returned so the receiver stays alive. On the
+/// awaiting path the only reachable send failure is the downstream channel
+/// being closed (backpressure parks rather than failing), which can happen
+/// transiently while a downstream node restarts; the control plane
+/// (`DrainIngress`/`Shutdown`) decides when the receiver actually stops.
+/// A `build()` failure still propagates, since it signals an encoding bug.
 async fn flush_batch(
     effect_handler: &local::EffectHandler<OtapPdata>,
     metrics: &Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
     builder: &mut EtwArrowRecordsBuilder,
 ) -> Result<(), Error> {
-    if builder.is_empty() {
+    let Some((pdata, item_count)) = build_pending_batch(effect_handler, metrics, builder)? else {
         return Ok(());
-    }
+    };
 
-    let item_count = u64::from(builder.len());
-
-    let payload = std::mem::take(builder)
-        .build()
-        .map_err(|error| Error::ReceiverError {
-            receiver: effect_handler.receiver_id(),
-            kind: ReceiverErrorKind::Transport,
-            error: "failed to build ETW Arrow batch".to_owned(),
-            source_detail: format_error_sources(&error),
-        })?;
-
-    let pdata = OtapPdata::new_todo_context(payload.into());
     if let Err(error) = effect_handler.send_message_with_source_node(pdata).await {
         metrics
             .borrow_mut()
             .received_events_forward_failed
             .add(item_count);
-        return Err(error.into());
+        let error_msg = error.to_string();
+        otel_warn!(
+            "etw_receiver.forward_failed",
+            message = "failed to forward ETW Arrow batch downstream; dropping batch",
+            dropped_events = item_count,
+            error = error_msg.as_str(),
+        );
+        return Ok(());
+    }
+
+    metrics
+        .borrow_mut()
+        .received_events_forwarded
+        .add(item_count);
+    Ok(())
+}
+
+/// Non-blocking sibling of [`flush_batch`] used during shutdown/teardown paths
+/// (`DrainIngress` and the channel-closed branch).
+///
+/// `builder` is always reset to a fresh empty builder regardless of outcome.
+/// The flush uses `try_send_message_with_source_node` so a slow or
+/// shutting-down downstream cannot park the task past the drain deadline.
+///
+/// Like [`flush_batch`], a forward failure (downstream channel full or closed)
+/// is treated as a per-batch loss event: the `received_events_forward_failed`
+/// metric is incremented, a warning is logged, and `Ok(())` is returned so the
+/// receiver stays alive. A `build()` failure still propagates.
+fn try_flush_batch(
+    effect_handler: &local::EffectHandler<OtapPdata>,
+    metrics: &Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
+    builder: &mut EtwArrowRecordsBuilder,
+) -> Result<(), Error> {
+    let Some((pdata, item_count)) = build_pending_batch(effect_handler, metrics, builder)? else {
+        return Ok(());
+    };
+
+    if let Err(error) = effect_handler.try_send_message_with_source_node(pdata) {
+        metrics
+            .borrow_mut()
+            .received_events_forward_failed
+            .add(item_count);
+        let error_msg = error.to_string();
+        otel_warn!(
+            "etw_receiver.forward_failed",
+            message = "failed to forward ETW Arrow batch downstream; dropping batch",
+            dropped_events = item_count,
+            error = error_msg.as_str(),
+        );
+        return Ok(());
     }
 
     metrics
@@ -349,9 +446,15 @@ impl EtwReceiver {
     ) -> Result<TerminalState, Error> {
         let mut channel_alive = true;
         let mut builder = EtwArrowRecordsBuilder::new();
-        let batch_max_size = self.batching.max_size;
+        let batch_max_size = self.batching.max_size.get();
 
-        let mut flush_interval = time::interval(self.batching.max_duration);
+        // Use `interval_at` so the first tick fires one `max_duration` from now
+        // rather than immediately (which `interval` would do, causing a
+        // pointless flush of an empty batch at startup).
+        let mut flush_interval = time::interval_at(
+            time::Instant::now() + self.batching.max_duration,
+            self.batching.max_duration,
+        );
         flush_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         loop {
@@ -362,16 +465,41 @@ impl EtwReceiver {
                     match ctrl_msg {
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             let _ = telemetry_timer_handle.cancel().await;
-                            // Drain remaining events from the channel before
-                            // flushing the final batch.
-                            while let Ok(event) = self.event_rx.try_recv() {
-                                self.metrics.borrow_mut().received_events_total.inc();
-                                builder.append(&event);
-                                if builder.len() >= batch_max_size {
-                                    flush_batch(effect_handler, &self.metrics, &mut builder).await?;
+
+                            // Drain remaining events before flushing the final
+                            // batch, but bound the work by a deadline.  The ETW
+                            // `ProcessTrace` producer thread keeps round-robining
+                            // events into this core's channel, so a busy provider
+                            // would otherwise let `try_recv` spin past the
+                            // deadline indefinitely and risk a forced kill.
+                            let now = std::time::Instant::now();
+                            let remaining = deadline.saturating_duration_since(now);
+                            let drain_budget =
+                                std::cmp::min(remaining * 9 / 10, MAX_DRAIN_BUDGET);
+                            let drain_deadline = now + drain_budget;
+
+                            while std::time::Instant::now() < drain_deadline {
+                                match self.event_rx.try_recv() {
+                                    Ok(event) => {
+                                        self.metrics.borrow_mut().received_events_total.inc();
+                                        builder.append(&event);
+                                        if builder.len() >= batch_max_size {
+                                            try_flush_batch(
+                                                effect_handler,
+                                                &self.metrics,
+                                                &mut builder,
+                                            )?;
+                                        }
+                                    }
+                                    // Empty or Disconnected — nothing more to do.
+                                    Err(_) => break,
                                 }
                             }
-                            flush_batch(effect_handler, &self.metrics, &mut builder).await?;
+
+                            // Flush the trailing partial batch (no-op if empty).
+                            // Use the non-blocking flush so a slow downstream
+                            // cannot park us past the deadline.
+                            try_flush_batch(effect_handler, &self.metrics, &mut builder)?;
                             effect_handler.notify_receiver_drained().await?;
                             let snapshot = self.metrics.borrow().snapshot();
                             return Ok(TerminalState::new(deadline, [snapshot]));
@@ -401,8 +529,10 @@ impl EtwReceiver {
                     }
                 }
 
-                // Timer-based batch flush
-                _ = flush_interval.tick() => {
+                // Timer-based batch flush. Skip once the channel is closed:
+                // the final batch was already flushed when the channel ended,
+                // so there is nothing left to flush periodically.
+                _ = flush_interval.tick(), if channel_alive => {
                     flush_batch(effect_handler, &self.metrics, &mut builder).await?;
                 }
 
@@ -424,7 +554,10 @@ impl EtwReceiver {
                             // Channel closed — the ETW session thread has
                             // exited (process shutdown or unrecoverable error).
                             // Flush any remaining events, then stop polling.
-                            flush_batch(effect_handler, &self.metrics, &mut builder).await?;
+                            // Use the non-blocking flush so a slow or
+                            // already-closed downstream cannot park us while
+                            // the session is tearing down.
+                            try_flush_batch(effect_handler, &self.metrics, &mut builder)?;
                             channel_alive = false;
                             otel_info!(
                                 "etw_receiver.session_ended",
@@ -479,7 +612,7 @@ impl local::Receiver<OtapPdata> for EtwReceiver {
             "etw_receiver.start",
             session_name = self.config.session_name.as_str(),
             provider_count = self.config.providers.len(),
-            batch_max_size = self.batching.max_size,
+            batch_max_size = self.batching.max_size.get(),
             batch_max_duration_ms = self.batching.max_duration.as_millis() as u64,
         );
 
@@ -506,7 +639,9 @@ pub struct EtwReceiverMetrics {
     #[metric(unit = "{event}")]
     pub received_events_invalid: Counter<u64>,
 
-    /// Number of ETW events refused by downstream (backpressure/unavailable).
+    /// Number of ETW events that could not be forwarded downstream and were
+    /// therefore dropped. Counts both batch `build()` failures (an encoding
+    /// bug) and send failures (the downstream channel was full or closed).
     #[metric(unit = "{event}")]
     pub received_events_forward_failed: Counter<u64>,
 
@@ -636,7 +771,7 @@ mod tests {
             session_name: "test".to_string(),
             providers: vec![provider_with_guid("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716")],
             batching: Some(BatchConfig {
-                max_size: 100,
+                max_size: NonZeroU16::new(100).expect("100 is non-zero"),
                 max_duration: Duration::ZERO,
             }),
         };

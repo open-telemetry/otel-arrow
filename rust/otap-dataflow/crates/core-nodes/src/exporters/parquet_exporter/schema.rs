@@ -387,6 +387,7 @@ static LOGS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
         ),
         Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, false),
         Field::new(consts::FLAGS, DataType::UInt32, false),
+        Field::new(consts::EVENT_NAME, DataType::Utf8, true),
     ])
 });
 
@@ -763,6 +764,7 @@ mod test {
                 ),
                 Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, false),
                 Field::new(consts::FLAGS, DataType::UInt32, false),
+                Field::new(consts::EVENT_NAME, DataType::Utf8, true),
             ])),
             vec![
                 // ensure it kept the original IDs column:
@@ -811,6 +813,8 @@ mod test {
                 )),
                 Arc::new(UInt32Array::from_iter_values(repeat_n(0, 3))),
                 Arc::new(UInt32Array::from_iter_values(repeat_n(0, 3))),
+                // event_name is absent from the input, so it's filled with nulls
+                Arc::new(StringArray::new_null(3)),
             ],
         )
         .unwrap();

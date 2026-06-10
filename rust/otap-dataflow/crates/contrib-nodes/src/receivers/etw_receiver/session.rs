@@ -60,7 +60,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use one_collect::Guid;
-use one_collect::etw::tdh::{TdhDecodeError, TdhDecoder};
+use one_collect::etw::tdh::TdhDecoder;
 use one_collect::etw::{self, EtwSession};
 use otap_df_engine::error::Error;
 use otap_df_telemetry::{otel_error, otel_info, otel_warn};
@@ -224,15 +224,6 @@ pub struct EtwEventData {
     /// can be discovered via TDH.  Empty for manifest-based events (which
     /// will be supported in a future extension) or when decoding fails.
     pub decoded_fields: Vec<DecodedField>,
-    /// Raw copy of the event's `UserData` payload.
-    ///
-    /// Provided for consumers that need access to the full uninterpreted
-    /// event bytes (e.g. for binary-level forwarding or custom decoding).
-    #[expect(
-        dead_code,
-        reason = "retained for future binary-level forwarding or manifest decoding"
-    )]
-    pub user_data: Vec<u8>,
 }
 
 // ── GUID parsing ─────────────────────────────────────────────────────────────
@@ -418,18 +409,12 @@ fn interpret_field_value(type_name: &str, data: &[u8]) -> EtwAttributeValue {
             EtwAttributeValue::Double(f64::from_ne_bytes(data.try_into().expect("matched len==8")))
         }
 
-        // ANSI/UTF-8 strings (null-terminated or not).
-        ("string", _) => {
-            let s = String::from_utf8_lossy(data);
-            EtwAttributeValue::Str(s.trim_end_matches('\0').to_owned())
-        }
-        // Counted ANSI/UTF-8 strings (TDH_INTYPE_COUNTEDANSISTRING, in_type 301).
-        // The u16 byte-count prefix has already been consumed by the framework's
-        // StaticLenPrefixArray — `data` contains only the UTF-8 content bytes.
-        ("counted_string", _) => {
-            let s = String::from_utf8_lossy(data);
-            EtwAttributeValue::Str(s.trim_end_matches('\0').to_owned())
-        }
+        // ANSI/UTF-8 strings (null-terminated or not) and counted ANSI/UTF-8
+        // strings (TDH_INTYPE_COUNTEDANSISTRING, in_type 301).  For the
+        // counted form the u16 byte-count prefix has already been consumed by
+        // the framework's StaticLenPrefixArray, so `data` is just the content
+        // bytes in both cases.
+        ("string" | "counted_string", _) => EtwAttributeValue::Str(decode_ansi(data)),
         // Counted UTF-16 strings (TDH_INTYPE_COUNTEDSTRING, in_type 300).
         ("counted_wstring", _) if data.len() >= 2 => EtwAttributeValue::Str(decode_utf16le(data)),
         ("counted_wstring", _) => EtwAttributeValue::Str(String::new()),
@@ -453,16 +438,57 @@ fn interpret_field_value(type_name: &str, data: &[u8]) -> EtwAttributeValue {
     }
 }
 
+/// Decode an ANSI/UTF-8 byte slice into a `String`, stopping at the first NUL
+/// byte and substituting U+FFFD for invalid UTF-8 sequences.
+///
+/// The NUL is trimmed from the byte slice *before* the lossy UTF-8 conversion
+/// so the invalid-input path allocates only once (`into_owned`) instead of
+/// twice (a `from_utf8_lossy` `String` followed by a `to_owned` of the trimmed
+/// slice).  The valid-ASCII path is unchanged at a single allocation.
+fn decode_ansi(data: &[u8]) -> String {
+    let trimmed = data.split(|&b| b == 0).next().unwrap_or(data);
+    String::from_utf8_lossy(trimmed).into_owned()
+}
+
 /// Decode a UTF-16LE byte slice into a `String`, stopping at the first NUL
 /// code unit and substituting U+FFFD for invalid surrogate pairs.
+///
+/// This runs on the `ProcessTrace` hot path, so it is tuned for the common
+/// case: most ETW string fields (paths, identifiers, English log lines) are
+/// pure ASCII, where every high byte is zero.  An initial scan detects that
+/// case and copies the low bytes directly, skipping the surrogate-decode
+/// state machine and pre-sizing the output to avoid reallocation.
 fn decode_utf16le(data: &[u8]) -> String {
-    let u16_iter = data
+    // Round down to whole 16-bit code units; ignore a trailing odd byte.
+    let len = data.len() & !1;
+    let bytes = &data[..len];
+
+    // ASCII fast path: find the first NUL or first non-ASCII code unit.
+    let ascii_end = bytes
         .chunks_exact(2)
-        .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+        .position(|c| c[0] == 0 || c[1] != 0)
+        .map(|i| i * 2)
+        .unwrap_or(len);
+
+    if ascii_end == len {
+        // Entirely ASCII up to the end (or a terminating NUL): copy the low
+        // bytes directly, no surrogate logic needed.
+        let mut out = String::with_capacity(ascii_end / 2);
+        for chunk in bytes[..ascii_end].chunks_exact(2) {
+            out.push(chunk[0] as char);
+        }
+        return out;
+    }
+
+    // Mixed / non-ASCII: full UTF-16 decode, stopping at the first NUL and
+    // substituting U+FFFD for invalid surrogate pairs.
+    let mut out = String::with_capacity(len / 2);
+    let u16_iter = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .take_while(|&c| c != 0);
-    char::decode_utf16(u16_iter)
-        .map(|r| r.unwrap_or('\u{FFFD}'))
-        .collect()
+    out.extend(char::decode_utf16(u16_iter).map(|r| r.unwrap_or('\u{FFFD}')));
+    out
 }
 
 /// Extract decoded fields from a TDH-decoded event.
@@ -484,19 +510,19 @@ fn extract_decoded_fields(
     let mut fields = Vec::with_capacity(format.fields().len());
 
     for field in format.fields() {
-        // `try_get_field_data_closure` may panic with `todo!()` for
-        // unsupported LocationType variants (e.g. DynAbsolute).
-        // Since we're called from an `extern "system"` ETW callback
-        // that cannot unwind, we must catch any panic here to prevent
-        // the process from aborting.
-        let data = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if let Some(mut data_fn) = format.try_get_field_data_closure(&field.name) {
-                data_fn(event_data).to_vec()
-            } else {
-                Vec::new()
-            }
-        }))
-        .unwrap_or_default();
+        // The data closure is allocated only for the `LocationType` variants
+        // that TDH produces — `Static`, `StaticString`, `StaticUTF16String`,
+        // and `StaticLenPrefixArray` — all of which are handled without
+        // panicking.  The `todo!()` paths in `get_data_with_offset_direct`
+        // are reached only for `DynRelative`/`DynAbsolute`, which are a Linux
+        // tracefs (`__rel_loc`) concept that `intype_to_field_info` never
+        // emits for ETW.  So no panic can occur here, and no `catch_unwind`
+        // is needed in this `extern "system"` (non-unwinding) callback.
+        let data = if let Some(mut data_fn) = format.try_get_field_data_closure(&field.name) {
+            data_fn(event_data).to_vec()
+        } else {
+            Vec::new()
+        };
 
         // Interpret the raw bytes into a typed value once, here on the
         // decode thread, so the encoder never re-parses bytes or string-
@@ -641,64 +667,45 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                     let opcode = anc.op_code();
                     let version = anc.version();
 
-                    let (level, keywords) = match anc.record() {
-                        Some(record) => (
-                            record.EventHeader.EventDescriptor.Level,
-                            record.EventHeader.EventDescriptor.Keyword,
-                        ),
-                        None => (0, 0),
-                    };
+                    // All EVENT_RECORD-derived fields are read in a single
+                    // `if let Some(record)` below; `anc.record()` returns the
+                    // same `Option<&EVENT_RECORD>` each call, so folding the
+                    // reads together avoids redundant lookups and the tuple
+                    // shuffle.  When the record is absent every field keeps its
+                    // default value declared here.
+                    let mut level = 0u8;
+                    let mut keywords = 0u64;
+                    let mut activity_id = [0u8; 16];
+                    let mut event_name = String::new();
+                    let mut decoded_fields = Vec::new();
 
-                    // TDH decode: attempt to decode TraceLogging event schema.
-                    // For manifest-based events (NotFound) we proceed with
-                    // empty decoded_fields — future work will add manifest
-                    // decoding with a (Provider, Id, Version) cache key.
-                    let (decoded_fields, event_name, user_data) = if let Some(record) = anc.record()
-                    {
-                        let ud = if record.UserData.is_null() || record.UserDataLength == 0 {
-                            Vec::new()
-                        } else {
-                            unsafe {
-                                std::slice::from_raw_parts(
-                                    record.UserData as *const u8,
-                                    record.UserDataLength as usize,
-                                )
-                            }
-                            .to_vec()
-                        };
+                    if let Some(record) = anc.record() {
+                        level = record.EventHeader.EventDescriptor.Level;
+                        keywords = record.EventHeader.EventDescriptor.Keyword;
 
-                        let (fields, tdh_name) = match decoder.borrow_mut().decode(record) {
-                            Ok(result) => {
-                                let name = result.event_name.unwrap_or("").to_owned();
-                                let fields = extract_decoded_fields(
-                                    result.event_data.format(),
-                                    result.event_data.event_data(),
-                                );
-                                (fields, name)
-                            }
-                            Err(TdhDecodeError::NotFound) => (Vec::new(), String::new()),
-                            Err(_e) => (Vec::new(), String::new()),
-                        };
-                        (fields, tdh_name, ud)
-                    } else {
-                        (Vec::new(), String::new(), Vec::new())
-                    };
+                        // Extract Activity ID from the EVENT_RECORD header.
+                        // The GUID is {data1: u32, data2: u16, data3: u16,
+                        // data4: [u8;8]} which we flatten to 16 bytes in
+                        // standard GUID byte order.
+                        let g = &record.EventHeader.ActivityId;
+                        activity_id[0..4].copy_from_slice(&g.data1.to_ne_bytes());
+                        activity_id[4..6].copy_from_slice(&g.data2.to_ne_bytes());
+                        activity_id[6..8].copy_from_slice(&g.data3.to_ne_bytes());
+                        activity_id[8..16].copy_from_slice(&g.data4);
 
-                    // Extract Activity ID from the EVENT_RECORD header.
-                    // The GUID is {data1: u32, data2: u16, data3: u16, data4: [u8;8]}
-                    // which we flatten to 16 bytes in standard GUID byte order.
-                    let activity_id = anc
-                        .record()
-                        .map(|r| {
-                            let g = &r.EventHeader.ActivityId;
-                            let mut bytes = [0u8; 16];
-                            bytes[0..4].copy_from_slice(&g.data1.to_ne_bytes());
-                            bytes[4..6].copy_from_slice(&g.data2.to_ne_bytes());
-                            bytes[6..8].copy_from_slice(&g.data3.to_ne_bytes());
-                            bytes[8..16].copy_from_slice(&g.data4);
-                            bytes
-                        })
-                        .unwrap_or([0u8; 16]);
+                        // TDH decode: attempt to decode TraceLogging event
+                        // schema.  Any failure (NotFound for manifest-based
+                        // events, or other decode errors) leaves the empty
+                        // defaults in place — future work will add manifest
+                        // decoding with a (Provider, Id, Version) cache key.
+                        if let Ok(result) = decoder.borrow_mut().decode(record) {
+                            event_name = result.event_name.unwrap_or("").to_owned();
+                            decoded_fields = extract_decoded_fields(
+                                result.event_data.format(),
+                                result.event_data.event_data(),
+                            );
+                        }
+                    }
 
                     // Build EtwEventData with all available metadata.
                     // Convert QPC ticks to Unix epoch nanoseconds.
@@ -717,7 +724,6 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                         event_name,
                         activity_id,
                         decoded_fields,
-                        user_data,
                     };
 
                     // Drop the borrow before sending.

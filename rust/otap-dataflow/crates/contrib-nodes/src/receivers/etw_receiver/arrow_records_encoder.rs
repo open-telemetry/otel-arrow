@@ -64,6 +64,36 @@ enum AttrValue<'a> {
     Bytes(&'a [u8]),
 }
 
+/// Lowercase hex digits used when formatting GUID byte arrays.
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+/// Format a 16-byte GUID/UUID into a fixed 36-byte stack buffer as
+/// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, avoiding a heap allocation.
+///
+/// Returns the buffer; callers turn it into a `&str` (the output is always
+/// valid ASCII/UTF-8) for attribute encoding.
+fn format_guid(guid: &[u8; 16]) -> [u8; 36] {
+    // Positions of the four '-' separators in the canonical GUID layout.
+    const DASH_AT: [usize; 4] = [8, 13, 18, 23];
+
+    let mut out = [b'-'; 36];
+    let mut byte_idx = 0;
+    let mut out_idx = 0;
+    while out_idx < out.len() {
+        if DASH_AT.contains(&out_idx) {
+            // Leave the pre-filled '-' in place and advance past it.
+            out_idx += 1;
+            continue;
+        }
+        let byte = guid[byte_idx];
+        out[out_idx] = HEX_DIGITS[(byte >> 4) as usize];
+        out[out_idx + 1] = HEX_DIGITS[(byte & 0x0f) as usize];
+        byte_idx += 1;
+        out_idx += 2;
+    }
+    out
+}
+
 /// Map a decoder-produced [`EtwAttributeValue`] to the encoder's borrowing
 /// [`AttrValue`].
 ///
@@ -156,17 +186,6 @@ impl EtwArrowRecordsBuilder {
                 .append_event_name(Some(event.event_name.as_bytes()));
         }
 
-        // Duplicate the event name as an attribute so it is preserved in
-        // exporters whose schema does not include the OTel `event_name`
-        // log record field (e.g. the Parquet exporter writes only the
-        // standard OTAP columns and omits `event_name`).
-        if !event.event_name.is_empty() {
-            self.append_attr(
-                "etw.event_name",
-                AttrValue::Str(Cow::Borrowed(&event.event_name)),
-            );
-        }
-
         // Attributes: ETW header metadata
         self.append_attr("etw.event_id", AttrValue::Int(i64::from(event.event_id)));
         self.append_attr("etw.opcode", AttrValue::Int(i64::from(event.opcode)));
@@ -181,52 +200,24 @@ impl EtwArrowRecordsBuilder {
         );
         self.append_attr("etw.thread_id", AttrValue::Int(i64::from(event.thread_id)));
 
-        // Provider GUID as hex string (e.g. "d2387720-2907-5677-8625-c1bdc4155197")
-        let guid = &event.provider_id;
-        let provider_guid = format!(
-            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-            guid[0],
-            guid[1],
-            guid[2],
-            guid[3],
-            guid[4],
-            guid[5],
-            guid[6],
-            guid[7],
-            guid[8],
-            guid[9],
-            guid[10],
-            guid[11],
-            guid[12],
-            guid[13],
-            guid[14],
-            guid[15],
+        // Provider GUID as hex string (e.g. "d2387720-2907-5677-8625-c1bdc4155197").
+        // Format into a stack buffer to avoid a per-event heap allocation.
+        let provider_guid = format_guid(&event.provider_id);
+        // safety: `format_guid` only writes ASCII hex digits and '-'.
+        let provider_guid =
+            std::str::from_utf8(&provider_guid).expect("GUID buffer is valid ASCII");
+        self.append_attr(
+            "etw.provider_id",
+            AttrValue::Str(Cow::Borrowed(provider_guid)),
         );
-        self.append_attr("etw.provider_id", AttrValue::Str(Cow::Owned(provider_guid)));
 
         // Activity ID — only emit when non-zero (provider set a correlation ID)
         if event.activity_id != [0u8; 16] {
-            let aid = &event.activity_id;
-            let activity = format!(
-                "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-                aid[0],
-                aid[1],
-                aid[2],
-                aid[3],
-                aid[4],
-                aid[5],
-                aid[6],
-                aid[7],
-                aid[8],
-                aid[9],
-                aid[10],
-                aid[11],
-                aid[12],
-                aid[13],
-                aid[14],
-                aid[15],
-            );
-            self.append_attr("etw.activity_id", AttrValue::Str(Cow::Owned(activity)));
+            let activity = format_guid(&event.activity_id);
+            // safety: `format_guid` only writes ASCII hex digits and '-'.
+            let activity =
+                std::str::from_utf8(&activity).expect("activity id buffer is valid ASCII");
+            self.append_attr("etw.activity_id", AttrValue::Str(Cow::Borrowed(activity)));
         }
 
         // Attributes: TDH-decoded fields
@@ -250,9 +241,15 @@ impl EtwArrowRecordsBuilder {
             AttrValue::Double(d) => self.log_attrs.any_values_builder.append_double(d),
             AttrValue::Bool(b) => self.log_attrs.any_values_builder.append_bool(b),
             AttrValue::Bytes(b) => {
-                // Encode raw bytes as hex string for observability
-                let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
-                self.log_attrs.any_values_builder.append_str(hex.as_bytes());
+                // Encode raw bytes as a lowercase hex string for observability.
+                // Manual lookup into a single buffer avoids the per-byte
+                // `format!` allocation and the intermediate `String`.
+                let mut hex = Vec::with_capacity(b.len() * 2);
+                for &byte in b {
+                    hex.push(HEX_DIGITS[(byte >> 4) as usize]);
+                    hex.push(HEX_DIGITS[(byte & 0x0f) as usize]);
+                }
+                self.log_attrs.any_values_builder.append_str(&hex);
             }
         }
         self.log_attrs.append_parent_id(&self.curr_log_id);
@@ -338,7 +335,6 @@ mod tests {
                     value: EtwAttributeValue::Str("test.exe".to_string()),
                 },
             ],
-            user_data: vec![0u8; 16],
         }
     }
 
@@ -356,10 +352,12 @@ mod tests {
             .expect("attrs batch present");
 
         assert_eq!(logs_rb.num_rows(), 1);
-        // 8 header attrs (event_name, event_id, opcode, version, keywords,
-        // process_id, thread_id, provider_id) + 2 decoded fields = 10 rows.
-        // (activity_id is all zeros so it's omitted.)
-        assert_eq!(attrs_rb.num_rows(), 10);
+        // 7 header attrs (event_id, opcode, version, keywords, process_id,
+        // thread_id, provider_id) + 2 decoded fields = 9 rows.
+        // (event_name is carried in the OTAP `event_name` log-record column,
+        // not duplicated as an attribute; activity_id is all zeros so it's
+        // omitted.)
+        assert_eq!(attrs_rb.num_rows(), 9);
     }
 
     #[test]
@@ -401,10 +399,10 @@ mod tests {
         let attrs_rb = batch
             .get(ArrowPayloadType::LogAttrs)
             .expect("attrs batch present");
-        // 8 header attributes (event_name, event_id, opcode, version,
-        // keywords, process_id, thread_id, provider_id);
-        // activity_id is zero → omitted
-        assert_eq!(attrs_rb.num_rows(), 8);
+        // 7 header attributes (event_id, opcode, version, keywords,
+        // process_id, thread_id, provider_id); event_name is carried in the
+        // OTAP `event_name` log-record column; activity_id is zero → omitted
+        assert_eq!(attrs_rb.num_rows(), 7);
     }
 
     #[test]
@@ -421,7 +419,7 @@ mod tests {
         let attrs_rb = batch
             .get(ArrowPayloadType::LogAttrs)
             .expect("attrs batch present");
-        // 8 header attributes; the empty-named field is skipped
-        assert_eq!(attrs_rb.num_rows(), 8);
+        // 7 header attributes; the empty-named field is skipped
+        assert_eq!(attrs_rb.num_rows(), 7);
     }
 }
