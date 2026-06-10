@@ -253,8 +253,8 @@ mod test {
 
         // The outer expression should be a Conditional containing a Discard in the branch
         match &expressions[0] {
-            DataExpression::Conditional(cond) => {
-                let branches = cond.get_branches();
+            DataExpression::Branch(branch_expr) => {
+                let branches = branch_expr.get_branches();
                 assert_eq!(branches.len(), 1);
                 let branch_exprs = branches[0].get_expressions();
                 assert_eq!(branch_exprs.len(), 1);
