@@ -90,10 +90,9 @@ impl ExtensionLifecycle {
             let ext_id = ext_wrapper.name();
             let key = ExtensionKey::new(ext_id.clone(), ext_wrapper.variant());
             let control_sender = ext_wrapper.extension_control_sender();
-            let control_sender_keepalive = ext_wrapper.extension_control_sender();
             let shutdown_channel = ext_wrapper.take_shutdown_sender();
             let telemetry_guard = ext_wrapper.take_telemetry_guard();
-            monitor.register(ext_ctx, key.clone(), entity_key, control_sender);
+            monitor.register(ext_ctx, key.clone(), entity_key, control_sender.as_ref());
             if let Some(channel) = shutdown_channel {
                 shutdown_channels.push((key.clone(), channel));
             }
@@ -120,7 +119,7 @@ impl ExtensionLifecycle {
                     }
                 };
                 drop(telemetry_guard);
-                drop(control_sender_keepalive);
+                drop(control_sender);
                 (task_key, res)
             };
             let handle = local_tasks.spawn_local(fut);
@@ -828,8 +827,8 @@ mod tests {
             let key_b = ExtensionKey::new("b".into(), ExtensionVariant::Local);
             let ent_a = ctx_a.register_extension_entity("a".into(), ExtensionVariant::Local);
             let ent_b = ctx_b.register_extension_entity("b".into(), ExtensionVariant::Local);
-            monitor_a.register(&ctx_a, key_a.clone(), ent_a, Some(sender_a));
-            monitor_b.register(&ctx_b, key_b.clone(), ent_b, Some(sender_b));
+            monitor_a.register(&ctx_a, key_a.clone(), ent_a, Some(&sender_a));
+            monitor_b.register(&ctx_b, key_b.clone(), ent_b, Some(&sender_b));
 
             let (rep_tx, _rep_rx) = flume::bounded(8);
             let mut reporter = MetricsReporter::new(rep_tx);

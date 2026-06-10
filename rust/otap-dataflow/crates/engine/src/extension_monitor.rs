@@ -154,16 +154,13 @@ impl ExtensionMetricsMonitor {
         }
     }
 
-    /// Register an extension. `control_sender` is `Some` for active
-    /// extensions, `None` for passive. Active extensions are credited as
-    /// `Spawned` immediately; `ExtensionLifecycle::wait_all_spawned`
-    /// enforces the "polled before any host work" invariant externally.
+    /// Register an extension. Pass `None` for passive extensions.
     pub(crate) fn register(
         &mut self,
         host_ctx: &ExtensionContext,
         key: ExtensionKey,
         entity_key: EntityKey,
-        control_sender: Option<ExtensionControlSender>,
+        control_sender: Option<&ExtensionControlSender>,
     ) {
         if self.interval.is_none() {
             return;
@@ -174,7 +171,7 @@ impl ExtensionMetricsMonitor {
             key,
             state: ExtensionRuntimeState::Spawned,
             lifecycle_metrics,
-            control_sender,
+            control_sender: control_sender.cloned(),
             registry: self.registry.clone(),
         };
         entry.lifecycle_metrics.spawned.add(1);
@@ -434,7 +431,8 @@ mod tests {
         let (mut monitor, ctx) = fresh_monitor();
         let ext_key = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
         let key = ExtensionKey::local("ext1");
-        monitor.register(&ctx, key.clone(), ext_key, Some(make_sender()));
+        let sender = make_sender();
+        monitor.register(&ctx, key.clone(), ext_key, Some(&sender));
 
         monitor.refresh_state_gauges();
         assert_eq!(count_in_state(&monitor, ExtensionRuntimeState::Spawned), 1);
@@ -786,7 +784,7 @@ mod tests {
             &ctx,
             ExtensionKey::local("spawned"),
             e_spawned,
-            Some(sender_spawned),
+            Some(&sender_spawned),
         );
 
         let e_no_send = ctx.register_extension_entity("no_send".into(), ExtensionVariant::Local);
@@ -797,14 +795,14 @@ mod tests {
             &ctx,
             ExtensionKey::local("shutting"),
             e_shutting,
-            Some(sender_shutting),
+            Some(&sender_shutting),
         );
         monitor.apply_event(ExtensionLifecycleEvent::ShutdownSent {
             key: ExtensionKey::local("shutting"),
         });
 
         let e_done = ctx.register_extension_entity("done".into(), ExtensionVariant::Local);
-        monitor.register(&ctx, ExtensionKey::local("done"), e_done, Some(sender_done));
+        monitor.register(&ctx, ExtensionKey::local("done"), e_done, Some(&sender_done));
         monitor.apply_event(ExtensionLifecycleEvent::Completed {
             key: ExtensionKey::local("done"),
             outcome: ExtensionOutcome::Ok,
@@ -841,7 +839,7 @@ mod tests {
             sender: Sender::new_local_mpsc_sender(tx),
         };
         let ent = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
-        monitor.register(&ctx, ExtensionKey::local("ext1"), ent, Some(sender));
+        monitor.register(&ctx, ExtensionKey::local("ext1"), ent, Some(&sender));
 
         let (rep_tx, _rep_rx) = flume::bounded(1);
         let reporter = MetricsReporter::new(rep_tx);
@@ -918,7 +916,7 @@ mod tests {
             .expect("pre-fill should succeed");
 
         let ent = ctx.register_extension_entity("ext1".into(), ExtensionVariant::Local);
-        monitor.register(&ctx, ExtensionKey::local("ext1"), ent, Some(sender));
+        monitor.register(&ctx, ExtensionKey::local("ext1"), ent, Some(&sender));
 
         let spawned_before = monitor.entries[0].lifecycle_metrics.spawned.get();
         let completed_ok_before = monitor.entries[0].lifecycle_metrics.completed_ok.get();
