@@ -11,3 +11,6 @@ pub mod receivers;
 
 /// Processor implementations for contrib nodes.
 pub mod processors;
+
+/// Shared functions and data types for contrib node implementations
+pub mod common;
