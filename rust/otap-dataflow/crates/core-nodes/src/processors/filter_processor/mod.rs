@@ -201,16 +201,52 @@ impl local::Processor<OtapPdata> for FilterProcessor {
 
                 match signal {
                     SignalType::Metrics => {
+                        let has_include = self.config.metric_filters().has_include();
+                        let has_exclude = self.config.metric_filters().has_exclude();
+                        self.metrics.metric_batches_seen.inc();
                         self.metrics.metric_signals_consumed.add(signals_consumed);
                         self.metrics.metric_signals_filtered.add(signals_filtered);
+                        self.metrics
+                            .metric_signals_kept
+                            .add(signals_consumed.saturating_sub(signals_filtered));
+                        if has_include {
+                            self.metrics.metric_include_configured_batches.inc();
+                        }
+                        if has_exclude {
+                            self.metrics.metric_exclude_configured_batches.inc();
+                        }
                     }
                     SignalType::Logs => {
+                        let has_include = self.config.log_filters().has_include();
+                        let has_exclude = self.config.log_filters().has_exclude();
+                        self.metrics.log_batches_seen.inc();
                         self.metrics.log_signals_consumed.add(signals_consumed);
                         self.metrics.log_signals_filtered.add(signals_filtered);
+                        self.metrics
+                            .log_signals_kept
+                            .add(signals_consumed.saturating_sub(signals_filtered));
+                        if has_include {
+                            self.metrics.log_include_configured_batches.inc();
+                        }
+                        if has_exclude {
+                            self.metrics.log_exclude_configured_batches.inc();
+                        }
                     }
                     SignalType::Traces => {
+                        let has_include = self.config.trace_filters().has_include();
+                        let has_exclude = self.config.trace_filters().has_exclude();
+                        self.metrics.span_batches_seen.inc();
                         self.metrics.span_signals_consumed.add(signals_consumed);
                         self.metrics.span_signals_filtered.add(signals_filtered);
+                        self.metrics
+                            .span_signals_kept
+                            .add(signals_consumed.saturating_sub(signals_filtered));
+                        if has_include {
+                            self.metrics.span_include_configured_batches.inc();
+                        }
+                        if has_exclude {
+                            self.metrics.span_exclude_configured_batches.inc();
+                        }
                     }
                 }
 
@@ -1838,5 +1874,118 @@ mod tests {
             .set_processor(processor)
             .run_test(scenario_traces(expected_data))
             .validate(validation_procedure());
+    }
+
+    /// Reads a single counter value from the `processor.filter.pdata` metric set.
+    /// Returns 0 when the metric has not been reported.
+    fn read_filter_pdata_metric(
+        telemetry_registry: &TelemetryRegistryHandle,
+        metric_name: &str,
+    ) -> u64 {
+        let mut value = 0u64;
+        telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
+            if desc.name == "processor.filter.pdata" {
+                for (field, metric_value) in iter {
+                    if field.name == metric_name {
+                        value = metric_value.to_u64_lossy();
+                    }
+                }
+            }
+        });
+        value
+    }
+
+    #[test]
+    fn test_filter_processor_logs_path_and_kept_metrics() {
+        let test_runtime = TestRuntime::new();
+        let telemetry_registry = test_runtime.metrics_registry();
+        let metrics_reporter = test_runtime.metrics_reporter();
+
+        // Include-only log filter: the include path is configured, the exclude
+        // path is not. Keeps ERROR records only.
+        let include_props = LogMatchProperties::new(
+            MatchType::Strict,
+            Vec::new(),
+            Vec::new(),
+            vec!["ERROR".to_string()],
+            None,
+            Vec::new(),
+        );
+        let log_filter = LogFilter::new(Some(include_props), None, Vec::new());
+        let trace_filter = TraceFilter::new(None, None);
+
+        let config = Config::new(log_filter, trace_filter);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let controller_ctx = ControllerContext::new(telemetry_registry.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| {
+                Box::pin(async move {
+                    let mut bytes = vec![];
+                    build_logs_1()
+                        .encode(&mut bytes)
+                        .expect("failed to encode log data into bytes");
+                    let otlp_logs_bytes = OtapPdata::new_default(
+                        OtlpProtoBytes::ExportLogsRequest(bytes.into()).into(),
+                    );
+                    ctx.process(Message::PData(otlp_logs_bytes))
+                        .await
+                        .expect("failed to process");
+                    let _ = ctx.drain_pdata().await;
+
+                    ctx.process(Message::Control(
+                        otap_df_engine::control::NodeControlMsg::CollectTelemetry {
+                            metrics_reporter,
+                        },
+                    ))
+                    .await
+                    .expect("collect telemetry");
+                })
+            })
+            .validate(move |_ctx| {
+                Box::pin(async move {
+                    // The CollectTelemetry control message above is processed
+                    // asynchronously; give the collection loop time to drain.
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                    let batches_seen =
+                        read_filter_pdata_metric(&telemetry_registry, "log.batches.seen");
+                    let include_configured = read_filter_pdata_metric(
+                        &telemetry_registry,
+                        "log.include.configured.batches",
+                    );
+                    let exclude_configured = read_filter_pdata_metric(
+                        &telemetry_registry,
+                        "log.exclude.configured.batches",
+                    );
+                    let consumed =
+                        read_filter_pdata_metric(&telemetry_registry, "log.signals.consumed");
+                    let kept = read_filter_pdata_metric(&telemetry_registry, "log.signals.kept");
+                    let filtered =
+                        read_filter_pdata_metric(&telemetry_registry, "log.signals.filtered");
+                    let metric_batches_seen =
+                        read_filter_pdata_metric(&telemetry_registry, "metric.batches.seen");
+                    let span_batches_seen =
+                        read_filter_pdata_metric(&telemetry_registry, "span.batches.seen");
+
+                    assert_eq!(batches_seen, 1, "log.batches.seen");
+                    assert_eq!(include_configured, 1, "log.include.configured.batches");
+                    assert_eq!(exclude_configured, 0, "log.exclude.configured.batches");
+                    assert!(consumed >= 1, "log.signals.consumed should be >= 1");
+                    assert!(kept >= 1, "log.signals.kept should be >= 1");
+                    assert_eq!(consumed, kept + filtered, "consumed == kept + filtered");
+                    assert_eq!(metric_batches_seen, 0, "metric.batches.seen");
+                    assert_eq!(span_batches_seen, 0, "span.batches.seen");
+                })
+            });
     }
 }
