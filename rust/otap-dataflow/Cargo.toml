@@ -300,7 +300,6 @@ azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
 kafka-exporter = ["otap-df-contrib-nodes/kafka-exporter"]
 # Contrib receivers (opt-in) - now in contrib-nodes
 contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
-kafka-receiver = ["otap-df-contrib-nodes/kafka-receiver"]
 user_events-receiver = ["otap-df-contrib-nodes/user_events-receiver"]
 user_events-eventheader = ["otap-df-contrib-nodes/user_events-eventheader"]
 # Contrib processors (opt-in) - now in contrib-nodes
