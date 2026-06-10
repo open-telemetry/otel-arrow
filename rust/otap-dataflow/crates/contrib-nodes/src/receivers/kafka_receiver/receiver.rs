@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // ToDo: update tests to start broker in memory
+// ToDo: Possible optimization to improve how we determine signal type from a message
+//.      check every message against list of topics + excluded topics to get signal type
 
 use super::config::{HeaderExtraction, KafkaReceiverConfig};
 use super::errors::DecodeError;
