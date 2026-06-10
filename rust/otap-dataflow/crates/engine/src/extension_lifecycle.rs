@@ -90,7 +90,9 @@ impl ExtensionLifecycle {
             let ext_id = ext_wrapper.name();
             let key = ExtensionKey::new(ext_id.clone(), ext_wrapper.variant());
             let control_sender = ext_wrapper.extension_control_sender();
+            let control_sender_keepalive = ext_wrapper.extension_control_sender();
             let shutdown_channel = ext_wrapper.take_shutdown_sender();
+            let telemetry_guard = ext_wrapper.take_telemetry_guard();
             monitor.register(ext_ctx, key.clone(), entity_key, control_sender);
             if let Some(channel) = shutdown_channel {
                 shutdown_channels.push((key.clone(), channel));
@@ -117,6 +119,8 @@ impl ExtensionLifecycle {
                         Err(e)
                     }
                 };
+                drop(telemetry_guard);
+                drop(control_sender_keepalive);
                 (task_key, res)
             };
             let handle = local_tasks.spawn_local(fut);
@@ -1119,6 +1123,189 @@ mod tests {
                 other => panic!("expected JoinTaskError(is_panic), got {other:?}"),
             }
             assert!(lifecycle.pending_starts.is_empty());
+        }));
+    }
+
+    use crate::channel_metrics::ChannelMetricsRegistry;
+    use crate::extension::ExtensionWrapper;
+
+    #[derive(Clone)]
+    struct ShutdownAwaitExt {
+        observed_close: std::rc::Rc<std::cell::Cell<bool>>,
+        observed_shutdown: std::rc::Rc<std::cell::Cell<bool>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl crate::local::extension::Extension for ShutdownAwaitExt {
+        async fn start(
+            self: std::rc::Rc<Self>,
+            mut ctrl: crate::local::extension::ControlChannel,
+            _eh: crate::extension::wrapper::EffectHandler,
+        ) -> Result<crate::terminal_state::TerminalState, Error> {
+            loop {
+                match ctrl.recv().await {
+                    Ok(ExtensionControlMsg::Shutdown { .. }) => {
+                        self.observed_shutdown.set(true);
+                        break;
+                    }
+                    Ok(_) => continue,
+                    Err(_) => {
+                        self.observed_close.set(true);
+                        return Err(Error::ExtensionExitedBeforeShutdown {
+                            extension: "shutdown-await".into(),
+                        });
+                    }
+                }
+            }
+            Ok(crate::terminal_state::TerminalState::default())
+        }
+    }
+
+    #[test]
+    fn extension_control_channel_stays_open_with_pipeline_metrics_disabled() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+
+            let observed_close = std::rc::Rc::new(std::cell::Cell::new(false));
+            let observed_shutdown = std::rc::Rc::new(std::cell::Cell::new(false));
+            let ext = std::rc::Rc::new(ShutdownAwaitExt {
+                observed_close: observed_close.clone(),
+                observed_shutdown: observed_shutdown.clone(),
+            });
+
+            let cfg = crate::config::ExtensionConfig::new("disabled-monitor");
+            let user = std::sync::Arc::new(otap_df_config::extension::ExtensionUserConfig::new(
+                "urn:otap:extension:test".into(),
+                serde_json::Value::Null,
+            ));
+            let wrapper = ExtensionWrapper::builder("disabled-monitor".into(), user, &cfg)
+                .active()
+                .local(ext)
+                .build()
+                .unwrap()
+                .take_local()
+                .unwrap();
+            let entity_key = ext_ctx
+                .register_extension_entity("disabled-monitor".into(), ExtensionVariant::Local);
+
+            let monitor = ExtensionMetricsMonitor::disabled(ext_ctx.clone());
+            let (tx, _rx) = flume::bounded(1);
+            let reporter = MetricsReporter::new(tx);
+
+            let mut lifecycle = ExtensionLifecycle::spawn(
+                vec![(wrapper, entity_key)],
+                &local_tasks,
+                reporter,
+                &ext_ctx,
+                monitor,
+            );
+
+            let barrier =
+                tokio::time::timeout(Duration::from_secs(1), lifecycle.wait_all_spawned())
+                    .await
+                    .expect("spawn barrier must not hang");
+            barrier.expect("spawn barrier must succeed");
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(
+                !observed_close.get(),
+                "extension's control channel must not close before Shutdown is delivered"
+            );
+
+            lifecycle.initiate_shutdown(Some("test"));
+            lifecycle.drain_until_deadline().await;
+
+            assert!(
+                observed_shutdown.get(),
+                "extension must have observed exactly one Shutdown"
+            );
+            assert!(
+                !observed_close.get(),
+                "extension must not have seen RecvError::Closed before Shutdown"
+            );
+        }));
+    }
+
+    #[test]
+    fn extension_telemetry_guard_held_for_full_extension_lifetime() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, registry) = crate::testing::test_extension_ctx();
+
+            let observed_close = std::rc::Rc::new(std::cell::Cell::new(false));
+            let observed_shutdown = std::rc::Rc::new(std::cell::Cell::new(false));
+            let ext = std::rc::Rc::new(ShutdownAwaitExt {
+                observed_close: observed_close.clone(),
+                observed_shutdown: observed_shutdown.clone(),
+            });
+
+            let cfg = crate::config::ExtensionConfig::new("guarded");
+            let user = std::sync::Arc::new(otap_df_config::extension::ExtensionUserConfig::new(
+                "urn:otap:extension:test".into(),
+                serde_json::Value::Null,
+            ));
+            let mut bundle = ExtensionWrapper::builder("guarded".into(), user, &cfg)
+                .active()
+                .local(ext)
+                .build()
+                .unwrap();
+
+            let mut channel_metrics = ChannelMetricsRegistry::default();
+            let keys = bundle.wire_telemetry(
+                "guarded".into(),
+                &ext_ctx,
+                &mut channel_metrics,
+                false,
+            );
+            let entity_key = keys
+                .local
+                .expect("wire_telemetry must register the local variant's entity");
+            let wrapper = bundle.take_local().unwrap();
+
+            assert!(
+                registry.visit_entity(entity_key, |_| ()).is_some(),
+                "baseline: entity must be registered before spawn"
+            );
+
+            let monitor = ExtensionMetricsMonitor::disabled(ext_ctx.clone());
+            let (tx, _rx) = flume::bounded(1);
+            let reporter = MetricsReporter::new(tx);
+
+            let mut lifecycle = ExtensionLifecycle::spawn(
+                vec![(wrapper, entity_key)],
+                &local_tasks,
+                reporter,
+                &ext_ctx,
+                monitor,
+            );
+
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                lifecycle.wait_all_spawned(),
+            )
+            .await
+            .expect("spawn barrier must not hang")
+            .expect("spawn barrier must succeed");
+
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            assert!(
+                registry.visit_entity(entity_key, |_| ()).is_some(),
+                "entity must remain registered for the entire duration of the extension's start().await",
+            );
+
+            lifecycle.initiate_shutdown(Some("test"));
+            lifecycle.drain_until_deadline().await;
+
+            assert!(observed_shutdown.get(), "extension must have observed Shutdown");
+            assert!(!observed_close.get(), "extension control channel must not have closed early");
+
+            drop(lifecycle);
+
+            assert!(
+                registry.visit_entity(entity_key, |_| ()).is_none(),
+                "EntityTelemetryGuard must unregister the entity after start() returns",
+            );
         }));
     }
 }

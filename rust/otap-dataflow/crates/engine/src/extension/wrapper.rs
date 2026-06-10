@@ -354,6 +354,14 @@ impl ExtensionWrapper {
         self
     }
 
+    /// Extracts the wrapper's `EntityTelemetryGuard`, if one was wired.
+    pub(crate) fn take_telemetry_guard(&mut self) -> Option<EntityTelemetryGuard> {
+        match self {
+            ExtensionWrapper::Local { telemetry, .. }
+            | ExtensionWrapper::Shared { telemetry, .. } => telemetry.take(),
+        }
+    }
+
     pub(crate) fn with_control_channel_metrics(
         self,
         entity_handle: &EntityTelemetryHandle,
@@ -532,7 +540,10 @@ impl ExtensionWrapper {
     /// # Errors
     ///
     /// Returns an error if this is a passive extension (no active lifecycle).
-    pub async fn start(self, metrics_reporter: MetricsReporter) -> Result<TerminalState, Error> {
+    pub(crate) async fn start(
+        self,
+        metrics_reporter: MetricsReporter,
+    ) -> Result<TerminalState, Error> {
         match self {
             ExtensionWrapper::Local {
                 name,
