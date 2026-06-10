@@ -381,52 +381,48 @@ impl Context {
 /// existing pass over the input list (e.g. a processor's flush loop). Push
 /// each input's `peer_addr` exactly once with [`PeerAddrMerger::push`], then
 /// call [`PeerAddrMerger::finish`] to obtain the merged result.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct PeerAddrMerger {
-    candidate: Option<SocketAddr>,
-    started: bool,
-    poisoned: bool,
+///
+/// Modeled as an enum so illegal states (e.g. a peer address present
+/// alongside a poisoned flag) cannot be constructed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PeerAddrMerger {
+    /// No inputs pushed yet.
+    #[default]
+    Empty,
+    /// Every input pushed so far agreed on this address.
+    Single(SocketAddr),
+    /// At least one input was peerless or distinct from a prior agreed
+    /// address. The merge stays in this state regardless of later pushes.
+    Poisoned,
 }
 
 impl PeerAddrMerger {
     /// Create an empty merger. `finish` on an unused merger returns `None`.
     #[must_use]
     pub const fn new() -> Self {
-        Self {
-            candidate: None,
-            started: false,
-            poisoned: false,
-        }
+        Self::Empty
     }
 
     /// Fold one contributing input's `peer_addr` into the running merge.
     pub fn push(&mut self, peer_addr: Option<SocketAddr>) {
-        if self.poisoned {
-            return;
-        }
-        match peer_addr {
-            None => {
-                self.poisoned = true;
-                self.candidate = None;
-            }
-            Some(addr) if !self.started => {
-                self.started = true;
-                self.candidate = Some(addr);
-            }
-            Some(addr) => {
-                if self.candidate != Some(addr) {
-                    self.poisoned = true;
-                    self.candidate = None;
-                }
-            }
-        }
+        *self = match (*self, peer_addr) {
+            (Self::Empty, None) => Self::Poisoned,
+            (Self::Empty, Some(addr)) => Self::Single(addr),
+            (Self::Single(_), None) => Self::Poisoned,
+            (Self::Single(existing), Some(addr)) if existing == addr => Self::Single(existing),
+            (Self::Single(_), Some(_)) => Self::Poisoned,
+            (Self::Poisoned, _) => Self::Poisoned,
+        };
     }
 
     /// Return the merged peer address, or `None` if no inputs were pushed or
     /// the merge was poisoned by a peerless or distinct contributor.
     #[must_use]
     pub const fn finish(self) -> Option<SocketAddr> {
-        self.candidate
+        match self {
+            Self::Single(addr) => Some(addr),
+            Self::Empty | Self::Poisoned => None,
+        }
     }
 }
 
