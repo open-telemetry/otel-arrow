@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780965962796,
+  "lastUpdate": 1781052593595,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -4940,6 +4940,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 98.34,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Laurent Quérel",
+            "username": "lquerel",
+            "email": "l.querel@f5.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "cdaf6e876f6bbede75a07716197e0b03c4b848a8",
+          "message": "docs: document dataflow core node configuration (#3213)\n\n**Not ready for review yet**\n\n# Change Summary\n\nDocument the Arrow Dataflow Engine configuration model and core-node\ncatalog. This adds a single discovery path for users, creates per-node\nREADME files next to core-node implementations, and standardizes node\ndocumentation around metadata, configuration, examples, telemetry,\nlimits, stability, and related docs.\n\n## What issue does this PR close?\n\n* Closes #3212\n\n## How are these changes tested?\n\n* `npx markdownlint-cli2 ...`\n* `python3 tools/sanitycheck.py`\n* `cargo xtask check`\n\n## Are there any user-facing changes?\n\nYes. This PR adds user-facing documentation for Arrow Dataflow Engine\nconfiguration and core nodes.\n\n### Changelog\n\n* [x] Added a `.chloggen/*.yaml` entry, OR this PR is a `chore`\n(indicated in title).\n\n---------\n\nCo-authored-by: Cijo Thomas <cithomas@microsoft.com>\nCo-authored-by: albertlockett <a.lockett@f5.com>\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>",
+          "timestamp": "2026-06-09T23:39:05Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/cdaf6e876f6bbede75a07716197e0b03c4b848a8"
+        },
+        "date": 1781052582208,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 110.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 98.47,
             "unit": "MB"
           }
         ]
