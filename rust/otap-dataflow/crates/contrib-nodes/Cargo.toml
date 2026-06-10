@@ -40,9 +40,14 @@ humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
+futures-channel = { workspace = true, optional = true }
 data_engine_expressions = { workspace = true, optional = true }
 data_engine_kql_parser = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
+rdkafka = { workspace = true, features = ["zstd", "ssl"], optional = true }
+aws-config = { workspace = true, optional = true }
+aws-msk-iam-sasl-signer = { workspace = true, optional = true }
+smallvec = { workspace = true, optional = true }
 regex = { workspace = true, optional = true }
 ahash = { workspace = true, optional = true }
 azure_core = { workspace = true, optional = true, features = ["reqwest"] }
@@ -54,6 +59,9 @@ ryu = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 sysinfo = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
+
+[target.'cfg(target_env = "musl")'.dependencies]
+rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optional = true }
 
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 one_collect = { workspace = true, optional = true }
@@ -77,9 +85,16 @@ user_events-eventheader = [
     "user_events-receiver",
     "dep:tracepoint_decode",
 ]
+kafka-exporter = [
+    "dep:rdkafka",
+    "dep:aws-config",
+    "dep:aws-msk-iam-sasl-signer",
+    "dep:futures-channel",
+]
 contrib-exporters = [
     "geneva-exporter",
     "azure-monitor-exporter",
+    "kafka-exporter",
 ]
 geneva-exporter = [
     "dep:geneva-uploader",
@@ -134,6 +149,7 @@ otap-df-pdata = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true
+testcontainers.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock.workspace = true
 
