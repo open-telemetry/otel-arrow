@@ -4,15 +4,14 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use data_engine_expressions::{
-    ArgumentScalarExpression, ConditionalDataExpression, ConditionalDataExpressionBranch,
-    DataExpression, DiscardDataExpression, Expression, InvokeFunctionScalarExpression,
-    LogicalExpression, MapKeyRenameSelector, MapSelectionExpression, MapSelector,
-    MutableValueExpression, NotLogicalExpression, OutputDataExpression, OutputExpression,
-    PipelineFunction, PipelineFunctionExpression, PipelineFunctionParameter,
-    PipelineFunctionParameterType, QueryLocation, ReduceMapTransformExpression,
-    RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
-    SourceScalarExpression, StaticScalarExpression, StringScalarExpression, TransformExpression,
-    ValueAccessor, ValueType,
+    ArgumentScalarExpression, BranchDataExpression, DataExpression, DataExpressionBranch,
+    DiscardDataExpression, Expression, InvokeFunctionScalarExpression, LogicalExpression,
+    MapKeyRenameSelector, MapSelectionExpression, MapSelector, MutableValueExpression,
+    NotLogicalExpression, OutputDataExpression, OutputExpression, PipelineFunction,
+    PipelineFunctionExpression, PipelineFunctionParameter, PipelineFunctionParameterType,
+    QueryLocation, ReduceMapTransformExpression, RenameMapKeysTransformExpression,
+    ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
+    StringScalarExpression, TransformExpression, ValueAccessor, ValueType,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_string_literal, to_query_location,
@@ -33,6 +32,7 @@ pub(crate) fn parse_operator_call(
 ) -> Result<(), ParserError> {
     for rule in rule.into_inner() {
         match rule.as_rule() {
+            Rule::fork_operator_call => parse_fork_operator_call(rule, pipeline_builder)?,
             Rule::if_else_operator_call => parse_if_else_operator_call(rule, pipeline_builder)?,
             Rule::remove_map_keys_operator_call => {
                 parse_remove_map_keys_operator_call(rule, pipeline_builder)?
@@ -40,6 +40,7 @@ pub(crate) fn parse_operator_call(
             Rule::rename_operator_call => parse_rename_operator_call(rule, pipeline_builder)?,
             Rule::route_to_operator_call => parse_route_to_operator_call(rule, pipeline_builder)?,
             Rule::set_operator_call => parse_set_operator_call(rule, pipeline_builder)?,
+            Rule::drop_operator_call => parse_drop_operator_call(rule, pipeline_builder)?,
             Rule::where_operator_call => parse_where_operator_call(rule, pipeline_builder)?,
             Rule::apply_operator_call => parse_apply_operator_call(rule, pipeline_builder)?,
             invalid_rule => {
@@ -303,12 +304,51 @@ pub(crate) fn parse_set_operator_call(
     Ok(())
 }
 
+pub(crate) fn parse_fork_operator_call(
+    operator_call_rule: Pair<'_, Rule>,
+    mut pipeline_builder: &mut dyn PipelineBuilder,
+) -> Result<(), ParserError> {
+    let query_location = to_query_location(&operator_call_rule);
+    let mut fork_expr = BranchDataExpression::new(query_location, false);
+
+    for rule in operator_call_rule.into_inner() {
+        match rule.as_rule() {
+            Rule::fork_branch => {
+                let branch_query_location = to_query_location(&rule);
+                let mut next_branch = InnerPipelineBuilder::new(pipeline_builder);
+                for rule in rule.into_inner() {
+                    parse_pipeline_stage(rule, &mut next_branch)?;
+                }
+
+                let (curr_branch_data_exprs, parent) = next_branch.into_parts();
+                pipeline_builder = parent;
+
+                fork_expr = fork_expr.with_branch(DataExpressionBranch::new(
+                    branch_query_location,
+                    None,
+                    curr_branch_data_exprs,
+                ));
+            }
+            _ => {
+                return Err(ParserError::SyntaxError(
+                    fork_expr.get_query_location().clone(),
+                    format!("invalid rule found in fork operator call {rule}"),
+                ));
+            }
+        }
+    }
+
+    pipeline_builder.push_data_expression(DataExpression::Branch(fork_expr));
+
+    Ok(())
+}
+
 pub(crate) fn parse_if_else_operator_call(
     operator_call_rule: Pair<'_, Rule>,
     mut pipeline_builder: &mut dyn PipelineBuilder,
 ) -> Result<(), ParserError> {
     let query_location = to_query_location(&operator_call_rule);
-    let mut conditional_expr = ConditionalDataExpression::new(query_location);
+    let mut branch_expr = BranchDataExpression::new(query_location, true);
 
     // keep track of the location of the current branch (to fill in query location)
     let mut branch_location_start = 0;
@@ -378,12 +418,11 @@ pub(crate) fn parse_if_else_operator_call(
                     )
                 })?;
 
-                conditional_expr =
-                    conditional_expr.with_branch(ConditionalDataExpressionBranch::new(
-                        query_location,
-                        condition,
-                        curr_branch_data_exprs,
-                    ));
+                branch_expr = branch_expr.with_branch(DataExpressionBranch::new(
+                    query_location,
+                    Some(condition),
+                    curr_branch_data_exprs,
+                ));
             }
 
             // parse the data expressions for the else branch
@@ -393,7 +432,7 @@ pub(crate) fn parse_if_else_operator_call(
                     // under normal invocation of this function this shouldn't happen as this
                     // missing expression should be caught by the parser
                     ParserError::SyntaxError(
-                        else_query_location,
+                        else_query_location.clone(),
                         "expected else_expression to contain one inner if_else_branch_expression"
                             .to_string(),
                     )
@@ -410,19 +449,37 @@ pub(crate) fn parse_if_else_operator_call(
                 }
                 let (else_branch_data_exprs, parent) = else_branch_exprs.into_parts();
                 pipeline_builder = parent;
-                conditional_expr = conditional_expr.with_default_branch(else_branch_data_exprs);
+                branch_expr = branch_expr.with_branch(DataExpressionBranch::new(
+                    else_query_location,
+                    None,
+                    else_branch_data_exprs,
+                ));
             }
             _ => {
                 return Err(ParserError::SyntaxError(
-                    conditional_expr.get_query_location().clone(),
+                    branch_expr.get_query_location().clone(),
                     format!("invalid rule found in if_else_expression {rule}"),
                 ));
             }
         }
     }
 
-    pipeline_builder.push_data_expression(DataExpression::Conditional(conditional_expr));
+    pipeline_builder.push_data_expression(DataExpression::Branch(branch_expr));
 
+    Ok(())
+}
+
+/// Parses the `drop` operator, which unconditionally discards all data.
+///
+/// `drop` is equivalent to `where false` and produces a [`DiscardDataExpression`] with no
+/// predicate. The planner interprets a predicate-less discard as "reject all rows".
+pub(crate) fn parse_drop_operator_call(
+    operator_call_rule: Pair<'_, Rule>,
+    pipeline_builder: &mut dyn PipelineBuilder,
+) -> Result<(), ParserError> {
+    let query_location = to_query_location(&operator_call_rule);
+    let discard_expr = DiscardDataExpression::new(query_location);
+    pipeline_builder.push_data_expression(DataExpression::Discard(discard_expr));
     Ok(())
 }
 
@@ -512,7 +569,7 @@ pub(crate) fn parse_apply_operator_call(
                     ValueAccessor::new(),
                 )),
             )),
-            DataExpression::Conditional(c) => PipelineFunctionExpression::Conditional(c),
+            DataExpression::Branch(b) => PipelineFunctionExpression::Branch(b),
             DataExpression::Transform(t) => PipelineFunctionExpression::Transform(t),
             other => {
                 return Err(ParserError::SyntaxNotSupported(
@@ -560,15 +617,15 @@ pub(crate) fn parse_apply_operator_call(
 #[cfg(test)]
 mod tests {
     use data_engine_expressions::{
-        ArgumentScalarExpression, ConditionalDataExpression, ConditionalDataExpressionBranch,
-        DataExpression, DiscardDataExpression, EqualToLogicalExpression,
-        InvokeFunctionScalarExpression, LogicalExpression, MapKeyRenameSelector,
-        MapSelectionExpression, MapSelector, MutableValueExpression, NotLogicalExpression,
-        OutputDataExpression, OutputExpression, PipelineFunction, PipelineFunctionExpression,
-        PipelineFunctionParameter, PipelineFunctionParameterType, QueryLocation,
-        ReduceMapTransformExpression, RenameMapKeysTransformExpression, ScalarExpression,
-        SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
-        StringScalarExpression, TransformExpression, ValueAccessor, ValueType,
+        ArgumentScalarExpression, BranchDataExpression, DataExpression, DataExpressionBranch,
+        DiscardDataExpression, EqualToLogicalExpression, InvokeFunctionScalarExpression,
+        LogicalExpression, MapKeyRenameSelector, MapSelectionExpression, MapSelector,
+        MutableValueExpression, NotLogicalExpression, OutputDataExpression, OutputExpression,
+        PipelineFunction, PipelineFunctionExpression, PipelineFunctionParameter,
+        PipelineFunctionParameterType, QueryLocation, ReduceMapTransformExpression,
+        RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
+        SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
+        TransformExpression, ValueAccessor, ValueType,
     };
     use data_engine_parser_abstractions::{Parser, ParserOptions, ParserState};
     use pest::Parser as _;
@@ -751,27 +808,31 @@ mod tests {
         let expressions = pipeline.get_expressions();
         assert_eq!(expressions.len(), 1);
 
-        let expected = DataExpression::Conditional(
-            ConditionalDataExpression::new(QueryLocation::new_fake())
-                .with_branch(ConditionalDataExpressionBranch::new(
+        let expected = DataExpression::Branch(
+            BranchDataExpression::new(QueryLocation::new_fake(), true)
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    equals_logical_expr("severity_text", "ERROR"),
+                    Some(equals_logical_expr("severity_text", "ERROR")),
                     vec![
                         assign_attribute_expression("important", "very"),
                         assign_attribute_expression("triggers_alarm", "true"),
                     ],
                 ))
-                .with_branch(ConditionalDataExpressionBranch::new(
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    equals_logical_expr("severity_text", "WARN"),
+                    Some(equals_logical_expr("severity_text", "WARN")),
                     vec![assign_attribute_expression("important", "somewhat")],
                 ))
-                .with_branch(ConditionalDataExpressionBranch::new(
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    equals_logical_expr("severity_text", "INFO"),
+                    Some(equals_logical_expr("severity_text", "INFO")),
                     vec![assign_attribute_expression("important", "rarely")],
                 ))
-                .with_default_branch(vec![assign_attribute_expression("important", "no")]),
+                .with_branch(DataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    None,
+                    vec![assign_attribute_expression("important", "no")],
+                )),
         );
         assert_eq!(expressions[0], expected);
     }
@@ -793,19 +854,19 @@ mod tests {
         let expressions = pipeline.get_expressions();
         assert_eq!(expressions.len(), 1);
 
-        let expected = DataExpression::Conditional(
-            ConditionalDataExpression::new(QueryLocation::new_fake())
-                .with_branch(ConditionalDataExpressionBranch::new(
+        let expected = DataExpression::Branch(
+            BranchDataExpression::new(QueryLocation::new_fake(), true)
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    equals_logical_expr("severity_text", "ERROR"),
+                    Some(equals_logical_expr("severity_text", "ERROR")),
                     vec![
                         assign_attribute_expression("important", "very"),
                         assign_attribute_expression("triggers_alarm", "true"),
                     ],
                 ))
-                .with_branch(ConditionalDataExpressionBranch::new(
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    equals_logical_expr("severity_text", "WARN"),
+                    Some(equals_logical_expr("severity_text", "WARN")),
                     vec![assign_attribute_expression("important", "somewhat")],
                 )),
         );
@@ -829,17 +890,21 @@ mod tests {
         let expressions = pipeline.get_expressions();
         assert_eq!(expressions.len(), 1);
 
-        let expected = DataExpression::Conditional(
-            ConditionalDataExpression::new(QueryLocation::new_fake())
-                .with_branch(ConditionalDataExpressionBranch::new(
+        let expected = DataExpression::Branch(
+            BranchDataExpression::new(QueryLocation::new_fake(), true)
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    equals_logical_expr("severity_text", "ERROR"),
+                    Some(equals_logical_expr("severity_text", "ERROR")),
                     vec![
                         assign_attribute_expression("important", "very"),
                         assign_attribute_expression("triggers_alarm", "true"),
                     ],
                 ))
-                .with_default_branch(vec![assign_attribute_expression("important", "no")]),
+                .with_branch(DataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    None,
+                    vec![assign_attribute_expression("important", "no")],
+                )),
         );
         assert_eq!(expressions[0], expected);
     }
@@ -859,14 +924,57 @@ mod tests {
         let expressions = pipeline.get_expressions();
         assert_eq!(expressions.len(), 1);
 
-        let expected = DataExpression::Conditional(
-            ConditionalDataExpression::new(QueryLocation::new_fake()).with_branch(
-                ConditionalDataExpressionBranch::new(
+        let expected = DataExpression::Branch(
+            BranchDataExpression::new(QueryLocation::new_fake(), true).with_branch(
+                DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    equals_logical_expr("severity_text", "ERROR"),
+                    Some(equals_logical_expr("severity_text", "ERROR")),
                     vec![assign_attribute_expression("triggers_alarm", "true")],
                 ),
             ),
+        );
+        assert_eq!(expressions[0], expected);
+    }
+
+    #[test]
+    pub fn test_fork_operator_call() {
+        let query = r#"
+               logs | 
+               fork
+               {
+                   extend attributes["triggers_alarm"] = "true"
+               }
+               {
+                   extend attributes["is_duplicate"] = "true"
+               }
+               {
+                   extend attributes["is_duplicate_again"] = "true"
+               }
+           "#;
+        let result = OplParser::parse(query);
+        assert!(result.is_ok());
+
+        let pipeline = result.unwrap().pipeline;
+        let expressions = pipeline.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        let expected = DataExpression::Branch(
+            BranchDataExpression::new(QueryLocation::new_fake(), false)
+                .with_branch(DataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    None,
+                    vec![assign_attribute_expression("triggers_alarm", "true")],
+                ))
+                .with_branch(DataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    None,
+                    vec![assign_attribute_expression("is_duplicate", "true")],
+                ))
+                .with_branch(DataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    None,
+                    vec![assign_attribute_expression("is_duplicate_again", "true")],
+                )),
         );
         assert_eq!(expressions[0], expected);
     }
@@ -1227,11 +1335,11 @@ mod tests {
         let expressions = result.get_expressions();
         assert_eq!(expressions.len(), 1);
 
-        let expected = DataExpression::Conditional(
-            ConditionalDataExpression::new(QueryLocation::new_fake())
-                .with_branch(ConditionalDataExpressionBranch::new(
+        let expected = DataExpression::Branch(
+            BranchDataExpression::new(QueryLocation::new_fake(), true)
+                .with_branch(DataExpressionBranch::new(
                     QueryLocation::new_fake(),
-                    LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                         QueryLocation::new_fake(),
                         ScalarExpression::Source(SourceScalarExpression::new(
                             QueryLocation::new_fake(),
@@ -1246,7 +1354,7 @@ mod tests {
                             StringScalarExpression::new(QueryLocation::new_fake(), "ERROR"),
                         )),
                         false,
-                    )),
+                    ))),
                     vec![DataExpression::Transform(TransformExpression::Set(
                         SetTransformExpression::new(
                             QueryLocation::new_fake(),
@@ -1268,26 +1376,30 @@ mod tests {
                         ),
                     ))],
                 ))
-                .with_default_branch(vec![DataExpression::Transform(TransformExpression::Set(
-                    SetTransformExpression::new(
-                        QueryLocation::new_fake(),
-                        ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                .with_branch(DataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    None,
+                    vec![DataExpression::Transform(TransformExpression::Set(
+                        SetTransformExpression::new(
                             QueryLocation::new_fake(),
-                            None,
-                            1,
-                            Vec::new(),
-                        )),
-                        MutableValueExpression::Source(SourceScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                                StaticScalarExpression::String(StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "attributes",
-                                )),
-                            )]),
-                        )),
-                    ),
-                ))]),
+                            ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                None,
+                                1,
+                                Vec::new(),
+                            )),
+                            MutableValueExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                    StaticScalarExpression::String(StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "attributes",
+                                    )),
+                                )]),
+                            )),
+                        ),
+                    ))],
+                )),
         );
         assert_eq!(&expressions[0], &expected);
 
@@ -1373,5 +1485,82 @@ mod tests {
             )],
         );
         assert_eq!(&functions[1], &expected1);
+    }
+
+    #[test]
+    fn test_parse_drop_operator_call() {
+        let query = "drop";
+        let mut state = ParserState::new_with_options(query, ParserOptions::default());
+        let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
+        assert_eq!(parse_result.len(), 1);
+        let rule = parse_result.into_iter().next().unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
+
+        let result = state.build().unwrap();
+        let expressions = result.get_expressions();
+        assert_eq!(expressions.len(), 1);
+        let expected =
+            DataExpression::Discard(DiscardDataExpression::new(QueryLocation::new_fake()));
+
+        assert_eq!(&expressions[0], &expected);
+    }
+
+    #[test]
+    fn test_parse_apply_drop_operator_call() {
+        let query = r#"apply attributes { drop }"#;
+
+        let mut state = ParserState::new_with_options(query, ParserOptions::default());
+        let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
+        assert_eq!(parse_result.len(), 1);
+        let rule = parse_result.into_iter().next().unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
+
+        let result = state.build().unwrap();
+        let expressions = result.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        let expected =
+            DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    None,
+                    0,
+                    Vec::new(),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "attributes",
+                        )),
+                    )]),
+                )),
+            )));
+        assert_eq!(&expressions[0], &expected);
+
+        let functions = result.get_functions();
+        assert_eq!(functions.len(), 1);
+
+        let expected_fn = PipelineFunction::new_with_expressions(
+            QueryLocation::new_fake(),
+            vec![PipelineFunctionParameter::new(
+                QueryLocation::new_fake(),
+                PipelineFunctionParameterType::MutableValue(Some(ValueType::Map)),
+            )],
+            Some(ValueType::Map),
+            vec![PipelineFunctionExpression::Discard(
+                DiscardDataExpression::new(QueryLocation::new_fake()).with_target(
+                    MutableValueExpression::Argument(ArgumentScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        Some(ValueType::Map),
+                        0,
+                        ValueAccessor::new(),
+                    )),
+                ),
+            )],
+        );
+        assert_eq!(&functions[0], &expected_fn);
     }
 }
