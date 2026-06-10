@@ -21,6 +21,6 @@ subtext: |
   contributing input observed the same peer address and `None` otherwise.
   `batch_processor` and `temporal_reaggregation_processor` - the two processors
   that rebuild `OtapPdata` with a fresh `Context` when merging multiple inputs
-  — now apply this helper so single-peer streams retain the receiver-observed
+  - now apply this helper so single-peer streams retain the receiver-observed
   peer address end-to-end, while multi-peer merges keep `peer_addr` as `None`
   to avoid misattribution.
