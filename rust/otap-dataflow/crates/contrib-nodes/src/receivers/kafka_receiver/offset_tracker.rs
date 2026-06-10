@@ -57,7 +57,10 @@ impl PartitionTracker {
     /// committable watermark advanced), signalling that a commit may be
     /// warranted.
     fn acknowledge(&mut self, offset: i64) -> bool {
-        let _ = self.pending.remove(&offset);
+        if !self.pending.remove(&offset) {
+            // Offset was never tracked (or already acked) — no-op.
+            return false;
+        }
 
         // Update high-water mark.
         match self.high_water_mark {
@@ -326,10 +329,12 @@ mod tests {
         let mut pt = PartitionTracker::new();
 
         pt.track(100);
-        // Ack a non-existent offset.
+        // Ack a non-existent offset — nothing should change.
         assert!(!pt.acknowledge(999));
         assert_eq!(pt.pending_count(), 1);
         assert_eq!(pt.lowest_pending(), Some(100));
+        // HWM must not be set by an untracked offset.
+        assert_eq!(pt.high_water_mark(), None);
     }
 
     #[test]
