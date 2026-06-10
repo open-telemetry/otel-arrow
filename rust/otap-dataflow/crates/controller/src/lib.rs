@@ -43,12 +43,14 @@
 //! - TODO: Better resource control
 
 use crate::error::Error;
-use crate::thread_task::spawn_thread_local_task;
+use crate::thread_task::{ThreadLocalTaskHandle, spawn_thread_local_task};
 use core_affinity::CoreId;
+use otap_df_admin::ControlPlane;
 use otap_df_config::engine::{
     OtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
+use otap_df_config::extension::{ExtensionUrn, ExtensionUserConfig};
 use otap_df_config::node::{NodeKind, NodeUserConfig};
 use otap_df_config::policy::MemoryLimiterMode;
 use otap_df_config::policy::{
@@ -60,8 +62,8 @@ use otap_df_config::topic::{
 };
 use otap_df_config::transport_headers_policy::TransportHeadersPolicy;
 use otap_df_config::{
-    DeployedPipelineKey, PipelineGroupId, PipelineId, PipelineKey, SubscriptionGroupName,
-    TopicName, pipeline::PipelineConfig,
+    DeployedPipelineKey, ExtensionId, PipelineGroupId, PipelineId, PipelineKey,
+    SubscriptionGroupName, TopicName, pipeline::PipelineConfig,
 };
 use otap_df_engine::PipelineFactory;
 use otap_df_engine::ReceivedAtNode;
@@ -95,11 +97,14 @@ use otap_df_telemetry::{
 };
 use smallvec::smallvec;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 /// Error types and helpers for the controller module.
 pub mod error;
@@ -129,6 +134,73 @@ pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
 enum RunMode {
     ParkMainThread,
     ShutdownWhenDone,
+}
+
+/// Error type returned by controller extension startup and runtime tasks.
+pub type ControllerExtensionError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+/// Future returned by a running controller extension task.
+pub type ControllerExtensionTask =
+    Pin<Box<dyn Future<Output = Result<(), ControllerExtensionError>> + 'static>>;
+
+/// Factory for the async task that runs a configured controller extension.
+pub type ControllerExtensionTaskFactory =
+    Box<dyn FnOnce(CancellationToken) -> ControllerExtensionTask + Send + 'static>;
+
+type ControllerExtensionStartFn = dyn Fn(
+        ControllerExtensionContext,
+    ) -> Result<ControllerExtensionTaskFactory, ControllerExtensionError>
+    + Send
+    + Sync
+    + 'static;
+
+/// Context passed to controller extension factories.
+#[derive(Clone)]
+pub struct ControllerExtensionContext {
+    /// Configured extension instance identifier.
+    pub extension_id: ExtensionId,
+    /// Configured extension envelope, including type URN and opaque config.
+    pub extension: Arc<ExtensionUserConfig>,
+    /// Semantic control-plane handle for live engine operations.
+    pub control_plane: Arc<dyn ControlPlane>,
+    /// Read handle for observed runtime state.
+    pub observed_state: ObservedStateHandle,
+    /// Shared telemetry registry used by the engine and admin telemetry endpoints.
+    pub telemetry_registry: TelemetryRegistryHandle,
+    /// Initial bootstrap configuration used to start the controller.
+    pub engine_config: OtelDataflowSpec,
+}
+
+/// Registry of controller extension factories keyed by extension type URN.
+#[derive(Clone, Default)]
+pub struct ControllerExtensionRegistry {
+    factories: HashMap<ExtensionUrn, Arc<ControllerExtensionStartFn>>,
+}
+
+impl ControllerExtensionRegistry {
+    /// Registers a factory for an engine extension type.
+    pub fn register<F>(&mut self, extension_type: ExtensionUrn, factory: F)
+    where
+        F: Fn(
+                ControllerExtensionContext,
+            ) -> Result<ControllerExtensionTaskFactory, ControllerExtensionError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        _ = self.factories.insert(extension_type, Arc::new(factory));
+    }
+
+    fn get(&self, extension_type: &ExtensionUrn) -> Option<Arc<ControllerExtensionStartFn>> {
+        self.factories.get(extension_type).cloned()
+    }
+}
+
+/// Optional runtime integrations used when starting the controller.
+#[derive(Clone, Default)]
+pub struct ControllerRunOptions {
+    /// Controller extension factories available to configured engine extensions.
+    pub extensions: ControllerExtensionRegistry,
 }
 
 struct DeclaredTopics<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
@@ -404,10 +476,20 @@ impl<
 
     /// Starts the controller with the given engine configurations.
     pub fn run_forever(&self, engine_config: OtelDataflowSpec) -> Result<(), Error> {
+        self.run_forever_with_options(engine_config, ControllerRunOptions::default())
+    }
+
+    /// Starts the controller with the given engine configuration and runtime options.
+    pub fn run_forever_with_options(
+        &self,
+        engine_config: OtelDataflowSpec,
+        options: ControllerRunOptions,
+    ) -> Result<(), Error> {
         self.run_with_mode(
             engine_config,
             RunMode::ParkMainThread,
             None::<fn(ObservedStateHandle)>,
+            options,
         )
     }
 
@@ -425,17 +507,52 @@ impl<
     where
         F: FnOnce(ObservedStateHandle),
     {
-        self.run_with_mode(engine_config, RunMode::ParkMainThread, Some(observer))
+        self.run_forever_with_observer_and_options(
+            engine_config,
+            observer,
+            ControllerRunOptions::default(),
+        )
+    }
+
+    /// Like [`run_forever_with_observer`](Self::run_forever_with_observer), but
+    /// also accepts runtime options.
+    pub fn run_forever_with_observer_and_options<F>(
+        &self,
+        engine_config: OtelDataflowSpec,
+        observer: F,
+        options: ControllerRunOptions,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce(ObservedStateHandle),
+    {
+        self.run_with_mode(
+            engine_config,
+            RunMode::ParkMainThread,
+            Some(observer),
+            options,
+        )
     }
 
     /// Starts the controller with the given engine configurations.
     ///
     /// Runs until pipelines are shut down, then closes telemetry/admin services.
     pub fn run_till_shutdown(&self, engine_config: OtelDataflowSpec) -> Result<(), Error> {
+        self.run_till_shutdown_with_options(engine_config, ControllerRunOptions::default())
+    }
+
+    /// Starts the controller with the given engine configuration and runtime options.
+    ///
+    /// Runs until pipelines are shut down, then closes telemetry/admin services.
+    pub fn run_till_shutdown_with_options(
+        &self,
+        engine_config: OtelDataflowSpec,
+        options: ControllerRunOptions,
+    ) -> Result<(), Error> {
         self.run_with_mode(
             engine_config,
             RunMode::ShutdownWhenDone,
             None::<fn(ObservedStateHandle)>,
+            options,
         )
     }
 
@@ -449,7 +566,30 @@ impl<
     where
         F: FnOnce(ObservedStateHandle),
     {
-        self.run_with_mode(engine_config, RunMode::ShutdownWhenDone, Some(observer))
+        self.run_till_shutdown_with_observer_and_options(
+            engine_config,
+            observer,
+            ControllerRunOptions::default(),
+        )
+    }
+
+    /// Like [`run_till_shutdown_with_observer`](Self::run_till_shutdown_with_observer),
+    /// but also accepts runtime options.
+    pub fn run_till_shutdown_with_observer_and_options<F>(
+        &self,
+        engine_config: OtelDataflowSpec,
+        observer: F,
+        options: ControllerRunOptions,
+    ) -> Result<(), Error>
+    where
+        F: FnOnce(ObservedStateHandle),
+    {
+        self.run_with_mode(
+            engine_config,
+            RunMode::ShutdownWhenDone,
+            Some(observer),
+            options,
+        )
     }
 
     fn map_topic_spec_to_options(
@@ -1157,6 +1297,7 @@ impl<
         engine_config: OtelDataflowSpec,
         run_mode: RunMode,
         observer: Option<F>,
+        options: ControllerRunOptions,
     ) -> Result<(), Error>
     where
         F: FnOnce(ObservedStateHandle),
@@ -1541,6 +1682,49 @@ impl<
         drop(metrics_reporter);
 
         let control_plane = runtime.control_plane();
+        let mut controller_extension_handles: Vec<ThreadLocalTaskHandle<(), Error>> = Vec::new();
+        for (extension_id, extension) in engine.extensions.iter() {
+            let extension_type = extension.r#type.clone();
+            let factory = options.extensions.get(&extension_type).ok_or_else(|| {
+                Error::ControllerExtensionNotRegistered {
+                    extension_id: extension_id.to_string(),
+                    extension_type: extension_type.to_string(),
+                }
+            })?;
+            let extension_id = extension_id.clone();
+            let extension_config = Arc::clone(extension);
+            let context = ControllerExtensionContext {
+                extension_id: extension_id.clone(),
+                extension: extension_config,
+                control_plane: Arc::clone(&control_plane),
+                observed_state: obs_state_handle.clone(),
+                telemetry_registry: telemetry_registry.clone(),
+                engine_config: engine_config.clone(),
+            };
+            let task_factory =
+                factory(context).map_err(|source| Error::ControllerExtensionStartError {
+                    extension_id: extension_id.to_string(),
+                    source,
+                })?;
+            let thread_name = format!("controller-extension-{}", extension_id.as_ref());
+            let runtime_extension_id = extension_id.to_string();
+            controller_extension_handles.push(spawn_thread_local_task(
+                thread_name,
+                admin_tracing_setup.clone(),
+                move |cancellation_token| {
+                    let task = task_factory(cancellation_token);
+                    async move {
+                        task.await
+                            .map_err(|source| Error::ControllerExtensionRuntimeError {
+                                extension_id: runtime_extension_id,
+                                source,
+                            })
+                    }
+                },
+            )?);
+        }
+
+        let admin_control_plane = Arc::clone(&control_plane);
         let admin_server_handle = spawn_thread_local_task(
             "http-admin",
             admin_tracing_setup,
@@ -1548,7 +1732,7 @@ impl<
                 otap_df_admin::run(
                     admin_settings,
                     obs_state_handle,
-                    control_plane,
+                    admin_control_plane,
                     telemetry_registry,
                     memory_pressure_state,
                     log_tap_handle,
@@ -1570,6 +1754,9 @@ impl<
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
         engine_metrics_handle.shutdown_and_join()?;
         if let Some(handle) = memory_limiter_handle {
+            handle.shutdown_and_join()?;
+        }
+        for handle in controller_extension_handles {
             handle.shutdown_and_join()?;
         }
         admin_server_handle.shutdown_and_join()?;

@@ -7,8 +7,10 @@ mod io;
 mod resolve;
 mod validate;
 
+use crate::ExtensionId;
 use crate::PipelineGroupId;
 use crate::TopicName;
+use crate::extension::ExtensionUserConfig;
 use crate::health::HealthPolicy;
 use crate::observed_state::ObservedStateSettings;
 use crate::pipeline::telemetry::TelemetryConfig;
@@ -20,6 +22,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub use self::resolve::{
     ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
@@ -79,6 +82,10 @@ pub struct EngineConfig {
     #[serde(default)]
     pub observability: EngineObservabilityConfig,
 
+    /// Engine-level extensions started by the embedding application.
+    #[serde(default, skip_serializing_if = "EngineExtensions::is_empty")]
+    pub extensions: EngineExtensions,
+
     /// Opaque metadata for applications that embed the dataflow engine.
     ///
     /// The engine ignores this field entirely — embedding binaries can
@@ -87,6 +94,110 @@ pub struct EngineConfig {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[schemars(extend("x-kubernetes-preserve-unknown-fields" = true))]
     pub custom: HashMap<String, Value>,
+}
+
+/// A collection of engine-level extensions, keyed by extension ID.
+///
+/// Engine extensions are protocol-neutral bootstrap hooks for applications
+/// embedding the dataflow engine. The engine owns the common config envelope
+/// (`type`, optional `description`, opaque `config`), while the embedding
+/// application decides which extension factories to register for each type.
+#[derive(Debug, Clone, Serialize, JsonSchema, Default, PartialEq)]
+#[serde(transparent)]
+pub struct EngineExtensions(HashMap<ExtensionId, Arc<ExtensionUserConfig>>);
+
+impl<'de> Deserialize<'de> for EngineExtensions {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{MapAccess, Visitor};
+        use std::fmt;
+
+        struct NoDupExtensionVisitor;
+
+        impl<'de> Visitor<'de> for NoDupExtensionVisitor {
+            type Value = EngineExtensions;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a map of extension IDs to extension configs with no duplicate keys")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut result: HashMap<ExtensionId, Arc<ExtensionUserConfig>> = HashMap::new();
+                while let Some((key, value)) =
+                    map.next_entry::<ExtensionId, ExtensionUserConfig>()?
+                {
+                    if result.contains_key(&key) {
+                        return Err(serde::de::Error::custom(format!(
+                            "duplicate extension key '{}'",
+                            key.as_ref()
+                        )));
+                    }
+                    let _ = result.insert(key, Arc::new(value));
+                }
+                Ok(EngineExtensions(result))
+            }
+        }
+
+        deserializer.deserialize_map(NoDupExtensionVisitor)
+    }
+}
+
+impl EngineExtensions {
+    /// Returns true if the extensions collection is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns the number of extensions.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns a reference to the extension with the given ID, if it exists.
+    #[must_use]
+    pub fn get(&self, id: &str) -> Option<&Arc<ExtensionUserConfig>> {
+        self.0.get(id)
+    }
+
+    /// Returns true if an extension with the given ID exists.
+    #[must_use]
+    pub fn contains_key(&self, id: &str) -> bool {
+        self.0.contains_key(id)
+    }
+
+    /// Inserts an extension into the collection.
+    pub fn insert(&mut self, id: ExtensionId, config: ExtensionUserConfig) {
+        _ = self.0.insert(id, Arc::new(config));
+    }
+
+    /// Returns an iterator visiting all extensions.
+    pub fn iter(&self) -> impl Iterator<Item = (&ExtensionId, &Arc<ExtensionUserConfig>)> {
+        self.0.iter()
+    }
+
+    /// Returns an iterator over extension IDs.
+    pub fn keys(&self) -> impl Iterator<Item = &ExtensionId> {
+        self.0.keys()
+    }
+}
+
+impl IntoIterator for EngineExtensions {
+    type Item = (ExtensionId, Arc<ExtensionUserConfig>);
+    type IntoIter = std::collections::hash_map::IntoIter<ExtensionId, Arc<ExtensionUserConfig>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl FromIterator<(ExtensionId, Arc<ExtensionUserConfig>)> for EngineExtensions {
+    fn from_iter<T: IntoIterator<Item = (ExtensionId, Arc<ExtensionUserConfig>)>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
 }
 
 /// Engine-wide topic runtime settings.
@@ -283,6 +394,36 @@ groups:
     }
 
     #[test]
+    fn from_yaml_accepts_engine_extension_bootstrap_with_empty_groups() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  extensions:
+    remote_control:
+      type: "urn:test:extension:remote_control"
+      config:
+        endpoint: "https://controller.example.com"
+groups: {}
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("bootstrap config should parse");
+        assert!(config.groups.is_empty());
+        let extension = config
+            .engine
+            .extensions
+            .get("remote_control")
+            .expect("engine extension should be present");
+        assert_eq!(
+            extension.r#type.as_str(),
+            "urn:test:extension:remote_control"
+        );
+        assert_eq!(
+            extension.config["endpoint"],
+            "https://controller.example.com"
+        );
+    }
+
+    #[test]
     fn from_yaml_rejects_unsupported_version() {
         let yaml = valid_engine_yaml("otel_dataflow/v2");
         let err = OtelDataflowSpec::from_yaml(&yaml).unwrap_err();
@@ -384,6 +525,14 @@ groups:
     }
 
     #[test]
+    fn engine_extensions_default_to_empty() {
+        let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
+        let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
+        assert!(config.engine.extensions.is_empty());
+        assert!(!config.engine.extensions.contains_key("remote_control"));
+    }
+
+    #[test]
     fn custom_roundtrips_through_json() {
         let yaml = r#"
 version: otel_dataflow/v1
@@ -413,6 +562,90 @@ groups:
             serde_json::from_str(&json).expect("should deserialize from json");
         assert_eq!(roundtripped.engine.custom.len(), 1);
         assert_eq!(roundtripped.engine.custom["my_app"]["key"], "value");
+    }
+
+    #[test]
+    fn engine_extensions_roundtrip_through_json() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  extensions:
+    remote_control:
+      type: "urn:test:extension:remote_control"
+      config:
+        endpoint: "https://controller.example.com"
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        assert!(config.engine.extensions.contains_key("remote_control"));
+        assert!(!config.engine.extensions.contains_key("missing"));
+
+        let json = serde_json::to_string(&config).expect("should serialize to json");
+        let roundtripped: OtelDataflowSpec =
+            serde_json::from_str(&json).expect("should deserialize from json");
+        let extension = roundtripped
+            .engine
+            .extensions
+            .get("remote_control")
+            .expect("engine extension should roundtrip");
+        assert_eq!(
+            extension.config["endpoint"],
+            "https://controller.example.com"
+        );
+    }
+
+    #[test]
+    fn engine_extensions_collect_from_iterator() {
+        let extension = Arc::new(ExtensionUserConfig::new(
+            "urn:test:extension:remote_control".into(),
+            serde_json::json!({
+                "endpoint": "https://controller.example.com",
+            }),
+        ));
+
+        let extensions: EngineExtensions = vec![("remote_control".into(), Arc::clone(&extension))]
+            .into_iter()
+            .collect();
+
+        assert_eq!(extensions.len(), 1);
+        assert!(extensions.contains_key("remote_control"));
+        assert_eq!(
+            extensions
+                .get("remote_control")
+                .expect("extension should exist")
+                .config["endpoint"],
+            "https://controller.example.com"
+        );
+    }
+
+    #[test]
+    fn engine_extensions_reject_duplicate_keys_yaml() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  extensions:
+    remote_control:
+      type: "urn:test:extension:remote_control"
+    remote_control:
+      type: "urn:test:extension:other_remote_control"
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml).expect_err("duplicate key should fail");
+        assert!(err.to_string().contains("duplicate extension key"));
     }
 
     #[test]
