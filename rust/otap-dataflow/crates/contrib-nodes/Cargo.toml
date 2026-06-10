@@ -93,16 +93,9 @@ user_events-eventheader = [
     "user_events-receiver",
     "dep:tracepoint_decode",
 ]
-kafka-exporter = [
-    "dep:rdkafka",
-    "dep:aws-config",
-    "dep:aws-msk-iam-sasl-signer",
-    "dep:futures-channel",
-]
 contrib-exporters = [
     "geneva-exporter",
     "azure-monitor-exporter",
-    "kafka-exporter",
 ]
 geneva-exporter = [
     "dep:geneva-uploader",
