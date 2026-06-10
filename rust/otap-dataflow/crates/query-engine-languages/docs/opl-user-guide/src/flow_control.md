@@ -64,7 +64,7 @@ skipped for that record.
 ### Operators inside branches
 
 The body of each branch can contain any operators chained with `|`, just like a
-top-level pipeline. This includes `where`, `set`, `rename`, `remove`,
+top-level pipeline. This includes `where`, `drop`, `set`, `rename`, `remove`,
 `route_to`, and even nested `if` blocks:
 
 ```text
@@ -92,6 +92,20 @@ if (severity_text == "ERROR") {
 In this example, ERROR logs from the payments service are kept and tagged.
 ERROR logs from other services are dropped. All non-ERROR logs pass through
 unchanged.
+
+The `drop` operator unconditionally discards all records in a branch. This is
+useful when you want to discard an entire category of records:
+
+```text
+logs |
+if (severity_number < 9) {
+    // discard debug and trace logs
+    drop
+}
+```
+
+In this example, logs with a severity number below 9 are discarded. All other
+logs pass through unchanged.
 
 ### Row ordering
 
@@ -127,6 +141,19 @@ The `is` check can also be used in `where` filters:
 ```text
 // process only logs, drop metrics and spans
 signals | where is Log
+```
+
+Alternatively, `drop` can be used inside `if` branches to discard specific
+signal types:
+
+```text
+// drop metrics and spans, keep only logs
+signals |
+if (is Metric) {
+    drop
+} else if (is Span) {
+    drop
+}
 ```
 
 ## Route Output (`route_to`)
