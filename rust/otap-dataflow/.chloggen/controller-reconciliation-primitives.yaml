@@ -1,0 +1,4 @@
+change_type: enhancement
+component: engine
+note: Add full-engine live reconciliation and delete primitives to the controller control plane.
+issues: []
