@@ -544,6 +544,32 @@ mod test {
         test_simple_filter::<OplParser, _>(|dt| format!("timestamp\"{dt}\"")).await
     }
 
+    /// Tests the `drop` operator, which unconditionally discards all data (equivalent to
+    /// `where false`).
+    #[tokio::test]
+    async fn test_drop_operator_opl_parser() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .event_name("2")
+                .finish(),
+        ];
+
+        // `drop` should discard all records, same as `where false`
+        let result =
+            exec_logs_pipeline::<OplParser>("logs | drop", to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0);
+
+        // verify equivalence: `where false` should produce the same result
+        let result_where_false =
+            exec_logs_pipeline::<OplParser>("logs | where false", to_logs_data(log_records)).await;
+        assert_eq!(result_where_false.resource_logs.len(), 0);
+    }
+
     async fn test_simple_attrs_filter<P: Parser>() {
         let otap_batch = to_otap_logs(vec![
             LogRecord::build()

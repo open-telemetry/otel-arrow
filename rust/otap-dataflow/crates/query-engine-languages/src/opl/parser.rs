@@ -222,4 +222,47 @@ mod test {
             &gen_simple_equals_filter_expected("body", "example /* comment */")
         );
     }
+
+    #[test]
+    fn test_parse_drop() {
+        let result = OplParser::parse("logs | drop");
+        assert!(result.is_ok());
+
+        let pipeline = result.unwrap().pipeline;
+        let expressions = pipeline.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        let expected =
+            DataExpression::Discard(DiscardDataExpression::new(QueryLocation::new_fake()));
+        pretty_assertions::assert_eq!(&expressions[0], &expected);
+    }
+
+    #[test]
+    fn test_parse_drop_in_if_else() {
+        let query = r#"
+            logs | if (severity_text == "DEBUG") {
+                drop
+            }
+        "#;
+        let result = OplParser::parse(query);
+        assert!(result.is_ok());
+
+        let pipeline = result.unwrap().pipeline;
+        let expressions = pipeline.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        // The outer expression should be a Conditional containing a Discard in the branch
+        match &expressions[0] {
+            DataExpression::Branch(branch_expr) => {
+                let branches = branch_expr.get_branches();
+                assert_eq!(branches.len(), 1);
+                let branch_exprs = branches[0].get_expressions();
+                assert_eq!(branch_exprs.len(), 1);
+                let expected =
+                    DataExpression::Discard(DiscardDataExpression::new(QueryLocation::new_fake()));
+                pretty_assertions::assert_eq!(&branch_exprs[0], &expected);
+            }
+            other => panic!("expected Conditional, got {other:?}"),
+        }
+    }
 }
