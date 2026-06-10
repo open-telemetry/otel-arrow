@@ -517,8 +517,7 @@ Attribute projection rules:
 - a single occurrence of a field becomes a scalar attribute
 - the first `MESSAGE` value becomes the OTAP body; all `MESSAGE` values are
   also preserved in a native journal attribute
-- binary values are preserved as OTAP bytes when supported; otherwise they are
-  base64 encoded with an explicit encoding marker
+- binary values are preserved as OTAP bytes
 - field values must not be lossy-decoded
 
 In the first implementation, duplicate field names are emitted as repeated
