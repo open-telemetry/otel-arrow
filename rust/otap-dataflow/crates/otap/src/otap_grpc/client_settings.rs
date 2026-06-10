@@ -229,7 +229,7 @@ impl GrpcClientSettings {
     /// Validates the settings at config load time.
     ///
     /// Checks that `user_agent`, when set, is non-empty and contains only
-    /// characters valid in an HTTP header value (visible ASCII, 32–127).
+    /// characters valid in an HTTP header value (visible ASCII, 32-127).
     pub fn validate(&self) -> Result<(), GrpcEndpointError> {
         if let Some(ua) = &self.user_agent {
             if ua.trim().is_empty() {
