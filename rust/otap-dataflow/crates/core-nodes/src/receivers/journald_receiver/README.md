@@ -62,7 +62,8 @@ config:
     root_path: /
     # namespace: default
 
-  # Exact source filters. Empty entries are rejected and duplicates are removed.
+  # Exact source filters. Empty lists install no filter for that field.
+  # Empty entries are rejected and duplicates are removed.
   units: []
   identifiers: []
 
@@ -133,8 +134,8 @@ config:
 | `source_id` | string | `system` | Stable source identifier used for checkpoint paths and telemetry labels. |
 | `journal.root_path` | path | `/` | Local or mounted host root used for `sd-journal` access. |
 | `journal.namespace` | string | unset | Named namespaces are rejected in v1. |
-| `units` | list | `[]` | Exact `_SYSTEMD_UNIT` matches. |
-| `identifiers` | list | `[]` | Exact `SYSLOG_IDENTIFIER` matches. |
+| `units` | list | `[]` | Exact `_SYSTEMD_UNIT` matches. An empty list installs no unit filter. |
+| `identifiers` | list | `[]` | Exact `SYSLOG_IDENTIFIER` matches. An empty list installs no identifier filter. |
 | `priorities` | list | unset | Exact journald `PRIORITY` values to include. When unset, no priority filter is installed. |
 | `max_priority` | enum | unset | Shorthand for all priorities up to the selected level. Mutually exclusive with `priorities`. |
 | `start_at` | enum | `end` | `end` reads new entries only when no checkpoint exists; `beginning` reads existing entries. |
@@ -147,7 +148,7 @@ config:
 | `checkpoint.directory` | path | `${engine.state_dir}/journald` | Root directory for durable cursor checkpoints. `${engine.state_dir}` expands to `$OTAP_DF_STATE_DIR` or `.otap-state` when unset. |
 | `checkpoint.max_in_flight_batches` | integer | `1` | Must be `1` in v1. |
 | `checkpoint.on_nack` | enum | `rewind` | Either `rewind` or `fail`. |
-| `checkpoint.max_consecutive_failures` | integer | `5` | Consecutive checkpoint write failures before failing the source. |
+| `checkpoint.max_consecutive_failures` | integer | `5` | Consecutive checkpoint write failures before failing the source. Must be greater than zero; unbounded retries are not supported in v1. |
 | `wait_timeout` | duration | `1s` | Bounds idle wait and shutdown responsiveness. |
 | `drain_timeout` | duration | `5s` | Drain deadline budget; must exceed `wait_timeout`. |
 
@@ -178,7 +179,6 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 - Linux only.
 - Requires `libsystemd.so.0` and permission to read the selected journal.
-- Many `unsafe` regions, everywhere Rust calls the C library.
   Startup fails clearly when journal files are present but fully unreadable;
   failing closed on partially readable journal trees is planned for production
   hardening.

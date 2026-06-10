@@ -624,6 +624,11 @@ Deferred follow-ups include:
 - failing closed or warning clearly on partially readable journal trees
 - an initial durable resume anchor for `start_at: end` before the first
   checkpoint commit
+- configurable recovery for corrupt or unsupported checkpoint envelopes, such
+  as falling back to `start_at` and writing a fresh cursor when the operator
+  opts in
+- configurable recovery for stale or vacuumed cursors, such as accepting the
+  next available newer journal entry instead of failing closed
 - aggregate batch byte limits in addition to per-entry and per-field extraction
   limits
 - named systemd journal namespace support
