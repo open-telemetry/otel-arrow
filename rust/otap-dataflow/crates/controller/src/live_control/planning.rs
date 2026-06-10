@@ -781,6 +781,511 @@ impl<
         }))
     }
 
+    /// Returns a clone of the current controller-owned engine configuration.
+    pub(super) fn engine_config_snapshot(&self) -> OtelDataflowSpec {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.live_config.clone()
+    }
+
+    fn next_reconcile_id(&self) -> String {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let reconcile_id = format!("reconcile-{}", state.next_reconcile_id);
+        state.next_reconcile_id += 1;
+        reconcile_id
+    }
+
+    fn apply_reconcile_scaffold(&self, desired_config: &OtelDataflowSpec) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.live_config.version = desired_config.version.clone();
+        state.live_config.policies = desired_config.policies.clone();
+        state.live_config.topics = desired_config.topics.clone();
+        state.live_config.engine = desired_config.engine.clone();
+        for (pipeline_group_id, desired_group) in &desired_config.groups {
+            let group = state
+                .live_config
+                .groups
+                .entry(pipeline_group_id.clone())
+                .or_default();
+            group.policies = desired_group.policies.clone();
+            group.topics = desired_group.topics.clone();
+        }
+    }
+
+    fn live_pipeline_keys(&self) -> Vec<PipelineKey> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut keys: Vec<_> = state
+            .live_config
+            .groups
+            .iter()
+            .flat_map(|(pipeline_group_id, group)| {
+                group.pipelines.keys().map(|pipeline_id| {
+                    PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone())
+                })
+            })
+            .collect();
+        for pipeline_key in state.logical_pipelines.keys() {
+            if !keys.contains(pipeline_key) {
+                keys.push(pipeline_key.clone());
+            }
+        }
+        keys.sort_by(|left, right| {
+            left.pipeline_group_id()
+                .as_ref()
+                .cmp(right.pipeline_group_id().as_ref())
+                .then_with(|| {
+                    left.pipeline_id()
+                        .as_ref()
+                        .cmp(right.pipeline_id().as_ref())
+                })
+        });
+        keys
+    }
+
+    fn live_group_ids(&self) -> Vec<PipelineGroupId> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut ids: Vec<_> = state.live_config.groups.keys().cloned().collect();
+        ids.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
+        ids
+    }
+
+    fn remove_pipeline_record(&self, pipeline_key: &PipelineKey) -> Result<(), ControlPlaneError> {
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.active_rollouts.contains_key(pipeline_key)
+                || state.active_shutdowns.contains_key(pipeline_key)
+            {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+
+            for (deployed_key, instance) in &state.runtime_instances {
+                if deployed_key.pipeline_group_id == *pipeline_key.pipeline_group_id()
+                    && deployed_key.pipeline_id == *pipeline_key.pipeline_id()
+                    && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                {
+                    return Err(ControlPlaneError::InvalidRequest {
+                        message: format!(
+                            "pipeline {}:{} still has active runtime instances",
+                            pipeline_key.pipeline_group_id().as_ref(),
+                            pipeline_key.pipeline_id().as_ref()
+                        ),
+                    });
+                }
+            }
+
+            if let Some(group) = state
+                .live_config
+                .groups
+                .get_mut(pipeline_key.pipeline_group_id())
+            {
+                let _ = group.pipelines.remove(pipeline_key.pipeline_id());
+            }
+            let _ = state.logical_pipelines.remove(pipeline_key);
+            let _ = state.generation_counters.remove(pipeline_key);
+            state.runtime_instances.retain(|deployed_key, _| {
+                deployed_key.pipeline_group_id != *pipeline_key.pipeline_group_id()
+                    || deployed_key.pipeline_id != *pipeline_key.pipeline_id()
+            });
+            state.pending_instance_exits.retain(|deployed_key, _| {
+                deployed_key.pipeline_group_id != *pipeline_key.pipeline_group_id()
+                    || deployed_key.pipeline_id != *pipeline_key.pipeline_id()
+            });
+            if let Some(ids) = state.terminal_rollouts.remove(pipeline_key) {
+                for rollout_id in ids {
+                    let _ = state.rollouts.remove(&rollout_id);
+                }
+            }
+            if let Some(ids) = state.terminal_shutdowns.remove(pipeline_key) {
+                for shutdown_id in ids {
+                    let _ = state.shutdowns.remove(&shutdown_id);
+                }
+            }
+        }
+
+        self.observed_state_store.remove_pipeline(pipeline_key);
+        Ok(())
+    }
+
+    fn rollout_change_action(action: RolloutAction) -> ConfigChangeAction {
+        match action {
+            RolloutAction::Create => ConfigChangeAction::Create,
+            RolloutAction::NoOp => ConfigChangeAction::Noop,
+            RolloutAction::Replace => ConfigChangeAction::Replace,
+            RolloutAction::Resize => ConfigChangeAction::Resize,
+        }
+    }
+
+    fn rollout_terminal(status: &RolloutStatus) -> bool {
+        matches!(
+            status.state,
+            ApiPipelineRolloutState::Succeeded
+                | ApiPipelineRolloutState::Failed
+                | ApiPipelineRolloutState::RollbackFailed
+        )
+    }
+
+    fn rollout_succeeded(status: &RolloutStatus) -> bool {
+        status.state == ApiPipelineRolloutState::Succeeded
+    }
+
+    fn wait_for_rollout_terminal(&self, initial_status: RolloutStatus) -> RolloutStatus {
+        let mut status = initial_status;
+        while !Self::rollout_terminal(&status) {
+            thread::sleep(Duration::from_millis(50));
+            let Some(next_status) = self.rollout_status_snapshot(&status.rollout_id) else {
+                return status;
+            };
+            status = next_status;
+        }
+        status
+    }
+
+    fn wait_for_shutdown_terminal(&self, initial_status: ShutdownStatus) -> ShutdownStatus {
+        let mut status = initial_status;
+        while status.state != "succeeded" && status.state != "failed" {
+            thread::sleep(Duration::from_millis(50));
+            let Some(next_status) = self.shutdown_status_snapshot(&status.shutdown_id) else {
+                return status;
+            };
+            status = next_status;
+        }
+        status
+    }
+
+    /// Gracefully drains and removes one pipeline from live controller state.
+    pub(super) fn request_delete_pipeline(
+        self: &Arc<Self>,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        timeout_secs: u64,
+    ) -> Result<PipelineDeleteStatus, ControlPlaneError> {
+        let started_at = timestamp_now();
+        let pipeline_group_id: PipelineGroupId = pipeline_group_id.to_owned().into();
+        let pipeline_id: PipelineId = pipeline_id.to_owned().into();
+        let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
+        let has_active_runtime = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(group) = state.live_config.groups.get(&pipeline_group_id) else {
+                return Err(ControlPlaneError::GroupNotFound);
+            };
+            if !group.pipelines.contains_key(&pipeline_id)
+                && !state.logical_pipelines.contains_key(&pipeline_key)
+            {
+                return Err(ControlPlaneError::PipelineNotFound);
+            }
+            if state.active_rollouts.contains_key(&pipeline_key)
+                || state.active_shutdowns.contains_key(&pipeline_key)
+            {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+            state
+                .runtime_instances
+                .iter()
+                .any(|(deployed_key, instance)| {
+                    deployed_key.pipeline_group_id == pipeline_group_id
+                        && deployed_key.pipeline_id == pipeline_id
+                        && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                })
+        };
+
+        let shutdown = if has_active_runtime {
+            let initial_shutdown =
+                self.request_shutdown_pipeline(&pipeline_group_id, &pipeline_id, timeout_secs)?;
+            let terminal_shutdown = self.wait_for_shutdown_terminal(initial_shutdown);
+            if terminal_shutdown.state != "succeeded" {
+                return Ok(PipelineDeleteStatus {
+                    pipeline_group_id,
+                    pipeline_id,
+                    state: "failed".to_owned(),
+                    started_at,
+                    updated_at: timestamp_now(),
+                    shutdown: Some(terminal_shutdown.clone()),
+                    failure_reason: terminal_shutdown.failure_reason.clone().or_else(|| {
+                        Some("pipeline shutdown did not complete successfully".to_owned())
+                    }),
+                });
+            }
+            Some(terminal_shutdown)
+        } else {
+            None
+        };
+
+        self.remove_pipeline_record(&pipeline_key)?;
+        Ok(PipelineDeleteStatus {
+            pipeline_group_id,
+            pipeline_id,
+            state: "succeeded".to_owned(),
+            started_at,
+            updated_at: timestamp_now(),
+            shutdown,
+            failure_reason: None,
+        })
+    }
+
+    /// Gracefully drains and removes one group from live controller state.
+    pub(super) fn request_delete_group(
+        self: &Arc<Self>,
+        pipeline_group_id: &str,
+        timeout_secs: u64,
+    ) -> Result<GroupDeleteStatus, ControlPlaneError> {
+        let started_at = timestamp_now();
+        let pipeline_group_id: PipelineGroupId = pipeline_group_id.to_owned().into();
+        let pipeline_ids = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(group) = state.live_config.groups.get(&pipeline_group_id) else {
+                return Err(ControlPlaneError::GroupNotFound);
+            };
+            let mut ids: Vec<_> = group.pipelines.keys().cloned().collect();
+            for pipeline_key in state.logical_pipelines.keys() {
+                if pipeline_key.pipeline_group_id() == &pipeline_group_id
+                    && !ids.contains(pipeline_key.pipeline_id())
+                {
+                    ids.push(pipeline_key.pipeline_id().clone());
+                }
+            }
+            ids.sort_by(|left, right| left.as_ref().cmp(right.as_ref()));
+            ids
+        };
+
+        let mut pipelines = Vec::new();
+        for pipeline_id in pipeline_ids {
+            let delete = self.request_delete_pipeline(
+                &pipeline_group_id,
+                pipeline_id.as_ref(),
+                timeout_secs,
+            )?;
+            let failed = delete.state != "succeeded";
+            pipelines.push(delete);
+            if failed {
+                let failure_reason = pipelines
+                    .last()
+                    .and_then(|status| status.failure_reason.clone())
+                    .or_else(|| Some("pipeline deletion failed".to_owned()));
+                return Ok(GroupDeleteStatus {
+                    pipeline_group_id,
+                    state: "failed".to_owned(),
+                    started_at,
+                    updated_at: timestamp_now(),
+                    pipelines,
+                    failure_reason,
+                });
+            }
+        }
+
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(group) = state.live_config.groups.get(&pipeline_group_id) else {
+                return Err(ControlPlaneError::GroupNotFound);
+            };
+            if !group.pipelines.is_empty() {
+                return Err(ControlPlaneError::InvalidRequest {
+                    message: format!(
+                        "group `{}` still contains pipelines after delete",
+                        pipeline_group_id.as_ref()
+                    ),
+                });
+            }
+            let _ = state.live_config.groups.remove(&pipeline_group_id);
+        }
+
+        Ok(GroupDeleteStatus {
+            pipeline_group_id,
+            state: "succeeded".to_owned(),
+            started_at,
+            updated_at: timestamp_now(),
+            pipelines,
+            failure_reason: None,
+        })
+    }
+
+    /// Reconciles live controller state to a complete desired engine config.
+    pub(super) fn reconcile_engine_config(
+        self: &Arc<Self>,
+        request: EngineConfigReconcileRequest,
+    ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
+        let reconcile_id = self.next_reconcile_id();
+        let started_at = timestamp_now();
+        let mut status = EngineConfigReconcileStatus::new(
+            reconcile_id,
+            EngineConfigReconcileState::Running,
+            None,
+            started_at,
+        );
+
+        let live_config = self.engine_config_snapshot();
+        let desired_config = request.config;
+        desired_config
+            .validate()
+            .map_err(|err| ControlPlaneError::InvalidRequest {
+                message: err.to_string(),
+            })?;
+        Controller::<PData>::validate_engine_components_with_factory(
+            self.pipeline_factory,
+            &desired_config,
+        )
+        .map_err(|message| ControlPlaneError::InvalidRequest { message })?;
+
+        let current_profiles = Self::pipeline_topic_profiles(&live_config)?;
+        let desired_profiles = Self::pipeline_topic_profiles(&desired_config)?;
+        if current_profiles != desired_profiles {
+            return Err(ControlPlaneError::InvalidRequest {
+                message: "desired config would require runtime topic broker mutation".to_owned(),
+            });
+        }
+
+        self.apply_reconcile_scaffold(&desired_config);
+
+        let mut desired_keys = Vec::new();
+        for (pipeline_group_id, group) in &desired_config.groups {
+            for (pipeline_id, pipeline) in &group.pipelines {
+                desired_keys.push((
+                    PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone()),
+                    pipeline.clone(),
+                ));
+            }
+        }
+        desired_keys.sort_by(|(left, _), (right, _)| {
+            left.pipeline_group_id()
+                .as_ref()
+                .cmp(right.pipeline_group_id().as_ref())
+                .then_with(|| {
+                    left.pipeline_id()
+                        .as_ref()
+                        .cmp(right.pipeline_id().as_ref())
+                })
+        });
+        let desired_key_set: HashSet<_> = desired_keys
+            .iter()
+            .map(|(pipeline_key, _)| pipeline_key.clone())
+            .collect();
+
+        for (pipeline_key, pipeline) in desired_keys {
+            let request = ReconfigureRequest {
+                pipeline,
+                step_timeout_secs: request.step_timeout_secs,
+                drain_timeout_secs: request.drain_timeout_secs,
+            };
+            let plan = self.prepare_rollout_plan(
+                pipeline_key.pipeline_group_id(),
+                pipeline_key.pipeline_id(),
+                &request,
+            )?;
+            let action = Self::rollout_change_action(plan.action);
+            let initial_rollout = self.spawn_rollout(plan)?;
+            let terminal_rollout = self.wait_for_rollout_terminal(initial_rollout);
+            let succeeded = Self::rollout_succeeded(&terminal_rollout);
+            let failure_reason = terminal_rollout.failure_reason.clone();
+            status.changes.push(ConfigChangeStatus {
+                pipeline_group_id: Some(pipeline_key.pipeline_group_id().clone()),
+                pipeline_id: Some(pipeline_key.pipeline_id().clone()),
+                action,
+                state: if succeeded {
+                    "succeeded".to_owned()
+                } else {
+                    "failed".to_owned()
+                },
+                rollout: Some(terminal_rollout),
+                shutdown: None,
+                detail: failure_reason.clone(),
+            });
+            status.updated_at = timestamp_now();
+            if !succeeded {
+                status.state = EngineConfigReconcileState::Failed;
+                status.failure_reason = failure_reason
+                    .or_else(|| Some("pipeline rollout did not complete successfully".to_owned()));
+                return Ok(status);
+            }
+        }
+
+        if request.delete_missing {
+            for pipeline_key in self.live_pipeline_keys() {
+                if desired_key_set.contains(&pipeline_key) {
+                    continue;
+                }
+                let delete = self.request_delete_pipeline(
+                    pipeline_key.pipeline_group_id(),
+                    pipeline_key.pipeline_id(),
+                    request.delete_timeout_secs,
+                )?;
+                let succeeded = delete.state == "succeeded";
+                let failure_reason = delete.failure_reason.clone();
+                status.changes.push(ConfigChangeStatus {
+                    pipeline_group_id: Some(pipeline_key.pipeline_group_id().clone()),
+                    pipeline_id: Some(pipeline_key.pipeline_id().clone()),
+                    action: ConfigChangeAction::Delete,
+                    state: delete.state.clone(),
+                    rollout: None,
+                    shutdown: delete.shutdown.clone(),
+                    detail: failure_reason.clone(),
+                });
+                status.updated_at = timestamp_now();
+                if !succeeded {
+                    status.state = EngineConfigReconcileState::Failed;
+                    status.failure_reason =
+                        failure_reason.or_else(|| Some("pipeline deletion failed".to_owned()));
+                    return Ok(status);
+                }
+            }
+
+            let desired_group_ids: HashSet<_> = desired_config.groups.keys().cloned().collect();
+            for pipeline_group_id in self.live_group_ids() {
+                if desired_group_ids.contains(&pipeline_group_id) {
+                    continue;
+                }
+                let delete =
+                    self.request_delete_group(&pipeline_group_id, request.delete_timeout_secs)?;
+                let succeeded = delete.state == "succeeded";
+                let failure_reason = delete.failure_reason.clone();
+                status.changes.push(ConfigChangeStatus {
+                    pipeline_group_id: Some(pipeline_group_id.clone()),
+                    pipeline_id: None,
+                    action: ConfigChangeAction::Delete,
+                    state: delete.state,
+                    rollout: None,
+                    shutdown: None,
+                    detail: failure_reason.clone(),
+                });
+                status.updated_at = timestamp_now();
+                if !succeeded {
+                    status.state = EngineConfigReconcileState::Failed;
+                    status.failure_reason =
+                        failure_reason.or_else(|| Some("group deletion failed".to_owned()));
+                    return Ok(status);
+                }
+            }
+        }
+
+        status.state = EngineConfigReconcileState::Succeeded;
+        status.updated_at = timestamp_now();
+        Ok(status)
+    }
+
     /// Records a rollout and launches its background execution worker.
     pub(super) fn spawn_rollout(
         self: &Arc<Self>,

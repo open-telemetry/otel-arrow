@@ -17,7 +17,9 @@
 use super::*;
 use chrono::Utc;
 use otap_df_admin::{
-    ControlPlane, ControlPlaneError, PipelineDetails,
+    ConfigChangeAction, ConfigChangeStatus, ControlPlane, ControlPlaneError,
+    EngineConfigReconcileRequest, EngineConfigReconcileState, EngineConfigReconcileStatus,
+    GroupDeleteStatus, PipelineDeleteStatus, PipelineDetails,
     PipelineRolloutState as ApiPipelineRolloutState,
     PipelineRolloutSummary as ApiPipelineRolloutSummary, ReconfigureRequest, RolloutCoreStatus,
     RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
@@ -150,6 +152,7 @@ impl<
                 terminal_shutdowns: HashMap::new(),
                 generation_counters: HashMap::new(),
                 active_instances: 0,
+                next_reconcile_id: 0,
                 next_rollout_id: 0,
                 next_shutdown_id: 0,
                 next_thread_id: 1,
@@ -523,6 +526,36 @@ impl<
             return Err(ControlPlaneError::ShutdownNotFound);
         }
         Ok(Some(status))
+    }
+
+    fn engine_config_snapshot(&self) -> Result<OtelDataflowSpec, ControlPlaneError> {
+        Ok(self.runtime.engine_config_snapshot())
+    }
+
+    fn reconcile_engine_config(
+        &self,
+        request: EngineConfigReconcileRequest,
+    ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
+        self.runtime.reconcile_engine_config(request)
+    }
+
+    fn delete_pipeline(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        timeout_secs: u64,
+    ) -> Result<PipelineDeleteStatus, ControlPlaneError> {
+        self.runtime
+            .request_delete_pipeline(pipeline_group_id, pipeline_id, timeout_secs)
+    }
+
+    fn delete_group(
+        &self,
+        pipeline_group_id: &str,
+        timeout_secs: u64,
+    ) -> Result<GroupDeleteStatus, ControlPlaneError> {
+        self.runtime
+            .request_delete_group(pipeline_group_id, timeout_secs)
     }
 }
 
