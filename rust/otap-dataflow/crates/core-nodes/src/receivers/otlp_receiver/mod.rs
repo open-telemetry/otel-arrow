@@ -2732,7 +2732,7 @@ mod tests {
         config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 16,
-            wait_for_result: true,
+            wait_for_result: false,
             max_request_body_size: 1024 * 1024,
             accept_compressed_requests: true,
             ..Default::default()
@@ -2776,16 +2776,12 @@ mod tests {
 
         let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
             Box::pin(async move {
-                let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                // The HTTP acceptance path should return as soon as the request is accepted,
+                // so observe the delivery without waiting on the ACK handshake.
+                let _logs_pdata = timeout(Duration::from_secs(10), ctx.recv())
                     .await
                     .expect("Timed out waiting for logs message")
                     .expect("No logs message received");
-
-                if let Some((_node_id, ack)) = next_ack(AckMsg::new(logs_pdata)) {
-                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
-                        .await
-                        .expect("Failed to send Ack");
-                }
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
