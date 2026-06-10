@@ -8,13 +8,12 @@ use super::errors::DecodeError;
 use super::headers::HeaderExtractions;
 use super::metrics::KafkaReceiverMetrics;
 use super::offset_tracker::OffsetTracker;
+#[cfg(feature = "aws")]
+use crate::common::kafka::security::build_aws_msk_context;
+use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MessageFormat};
 use async_trait::async_trait;
 use bytes::Bytes;
-use crate::common::kafka_util::security::build_aws_msk_context;
-use crate::common::kafka_util::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MessageFormat};
 use linkme::distributed_slice;
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::transport_headers::TransportHeaders;
@@ -29,6 +28,8 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension, ReceiverFactory};
+use otap_df_otap::OTAP_RECEIVER_FACTORIES;
+use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_pdata::Consumer as PdataConsumer;
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
@@ -440,18 +441,18 @@ impl KafkaReceiver {
         let capture_policy = effect_handler.capture_policy();
 
         // Safety-net timer: periodically commit offsets even if no acks
-        // arrive for a while. Only created when manual commit is active
+        // arrive for a while. Only started when manual commit is active
         // *and* an explicit interval was configured. When no interval is
         // set in manual mode, offsets are committed purely via ack/nack.
-        let mut commit_interval = if manual_commit {
-            self.config.commit_interval_ms().map(|ms| {
-                let mut interval = tokio::time::interval(Duration::from_millis(ms));
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                interval
-            })
-        } else {
-            None
-        };
+        // The timer delivers `NodeControlMsg::TimerTick` on the control
+        // channel, which is handled in the main loop below.
+        if manual_commit {
+            if let Some(ms) = self.config.commit_interval_ms() {
+                let _commit_timer_handle = effect_handler
+                    .start_periodic_timer(Duration::from_millis(ms))
+                    .await?;
+            }
+        }
 
         loop {
             tokio::select! {
@@ -513,6 +514,11 @@ impl KafkaReceiver {
                             // Report current receiver metrics.
                             _ = metrics_reporter.report(&mut self.metrics);
                         },
+                        Ok(NodeControlMsg::TimerTick { .. }) => {
+                            // Periodic safety-net commit: flush any committable
+                            // offsets that haven't been committed via ack/nack yet.
+                            self.commit_offsets(&consumer, &receiver_id)?;
+                        },
                         Err(e) => {
                             return Err(EngineError::ChannelRecvError(e));
                         }
@@ -522,18 +528,7 @@ impl KafkaReceiver {
                     }
                 }
 
-                // 2. Periodic offset commit (safety-net timer)
-                // will only trigger if user provides a commit interval
-                _ = async {
-                    match commit_interval.as_mut() {
-                        Some(interval) => interval.tick().await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    self.commit_offsets(&consumer, &receiver_id)?;
-                }
-
-                // 3. Consume Kafka messages
+                // 2. Consume Kafka messages
                 result = consumer.recv() => {
                     match result {
                         Ok(data) => {
@@ -878,23 +873,25 @@ impl local::Receiver<OtapPdata> for KafkaReceiver {
             }
         };
 
-        // Build the Kafka consumer with the appropriate client context
-        match build_aws_msk_context(self.config.auth()) {
-            Some(client_ctx) => {
-                let consumer = client_config
-                    .create_with_context(client_ctx)
-                    .map_err(map_kafka_client_err)?;
-                self.as_mut()
-                    .run_receive_loop(ctrl_msg_recv, effect_handler, consumer)
-                    .await
-            }
-            None => {
-                let consumer = client_config.create().map_err(map_kafka_client_err)?;
-                self.as_mut()
-                    .run_receive_loop(ctrl_msg_recv, effect_handler, consumer)
-                    .await
-            }
+        // Build the Kafka consumer with the appropriate client context.
+        // When the `aws` feature is enabled, check whether AWS MSK IAM
+        // authentication is configured and, if so, create a consumer with
+        // the custom OAUTHBEARER token-refresh context.
+        #[cfg(feature = "aws")]
+        if let Some(client_ctx) = build_aws_msk_context(self.config.auth()) {
+            let consumer = client_config
+                .create_with_context(client_ctx)
+                .map_err(map_kafka_client_err)?;
+            return self
+                .as_mut()
+                .run_receive_loop(ctrl_msg_recv, effect_handler, consumer)
+                .await;
         }
+
+        let consumer = client_config.create().map_err(map_kafka_client_err)?;
+        self.as_mut()
+            .run_receive_loop(ctrl_msg_recv, effect_handler, consumer)
+            .await
     }
 }
 
@@ -906,7 +903,7 @@ mod tests {
         HeaderExtraction, IsolationLevel, KafkaReceiverConfigBuilder, SignalConfig,
     };
 
-    use crate::common::kafka_util::MessageFormat;
+    use crate::common::kafka::MessageFormat;
     use otap_df_channel::mpsc;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::runtime_ctrl_msg_channel;

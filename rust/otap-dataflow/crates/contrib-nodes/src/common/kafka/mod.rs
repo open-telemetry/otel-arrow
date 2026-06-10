@@ -1,7 +1,11 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use rdkafka::config::RDKafkaLogLevel;
 use serde::Deserialize;
 
 pub mod auth;
+#[cfg(feature = "aws")]
 pub mod aws;
 pub mod security;
 

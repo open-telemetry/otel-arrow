@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Per-offset tracking for Kafka consumer offset management.
 //!
 //! Tracks individual message offsets per topic-partition using a `BTreeSet`,

@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 /// Implementation of the config settings for the kafka receiver
 pub mod config;
 /// Error types for the Kafka Receiver.
@@ -8,5 +11,5 @@ pub mod headers;
 pub mod metrics;
 /// Per-offset tracking for Kafka consumer offset management.
 pub mod offset_tracker;
-/// Implementation of the main kakfa receiver
+/// Implementation of the main kafka receiver
 pub mod receiver;

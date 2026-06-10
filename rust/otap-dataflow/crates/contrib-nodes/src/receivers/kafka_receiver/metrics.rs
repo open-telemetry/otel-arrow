@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Metrics for the Kafka Receiver node.
 
 use otap_df_telemetry::instrument::Counter;

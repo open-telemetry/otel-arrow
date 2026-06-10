@@ -1,8 +1,9 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::common::kafka_util::auth::Auth;
-use crate::common::kafka_util::security::{apply_sasl_config, resolve_security_protocol};
-use crate::common::kafka_util::{
+use crate::common::kafka::auth::Auth;
+use crate::common::kafka::security::{apply_sasl_config, resolve_security_protocol};
+use crate::common::kafka::{
     DebugContext, LogLevel, MessageFormat, TlsConfig, debug_list_to_string,
     default_message_format_header, validate_kafka_topic,
 };

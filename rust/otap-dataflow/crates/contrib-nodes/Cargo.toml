@@ -73,10 +73,12 @@ tracepoint_decode = { workspace = true, optional = true }
 etw-receiver = ["dep:one_collect"]
 kafka-receiver = [
     "dep:rdkafka",
-    "dep:aws-config",
-    "dep:aws-msk-iam-sasl-signer",
     "dep:smallvec",
     "dep:regex",
+]
+aws = [
+    "dep:aws-config",
+    "dep:aws-msk-iam-sasl-signer",
 ]
 contrib-receivers = [
     "etw-receiver",
