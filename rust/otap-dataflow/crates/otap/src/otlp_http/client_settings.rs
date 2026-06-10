@@ -249,8 +249,103 @@ impl Default for HttpClientSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     use wiremock::matchers;
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+    /// Respond implementation that asserts User-Agent is absent.
+    struct AssertNoUserAgent {
+        saw_user_agent: Arc<AtomicBool>,
+    }
+
+    impl Respond for AssertNoUserAgent {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            if request.headers.get("user-agent").is_some() {
+                self.saw_user_agent.store(true, Ordering::SeqCst);
+            }
+            ResponseTemplate::new(200)
+        }
+    }
+
+    #[test]
+    fn validate_rejects_empty_user_agent() {
+        let settings = HttpClientSettings {
+            user_agent: Some(String::new()),
+            ..HttpClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(HttpClientError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_whitespace_only_user_agent() {
+        let settings = HttpClientSettings {
+            user_agent: Some("   ".to_string()),
+            ..HttpClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(HttpClientError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_non_ascii_user_agent() {
+        let settings = HttpClientSettings {
+            user_agent: Some("bad\nvalue".to_string()),
+            ..HttpClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(HttpClientError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_accepts_valid_user_agent() {
+        let settings = HttpClientSettings {
+            user_agent: Some("my-app/1.0".to_string()),
+            ..HttpClientSettings::default()
+        };
+
+        assert!(settings.validate().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_no_user_agent_on_wire_when_unset() {
+        crate::crypto::ensure_crypto_provider();
+
+        let settings = HttpClientSettings::default();
+        let mock_server = MockServer::start().await;
+
+        let saw_ua = Arc::new(AtomicBool::new(false));
+        Mock::given(matchers::method("POST"))
+            .respond_with(AssertNoUserAgent {
+                saw_user_agent: Arc::clone(&saw_ua),
+            })
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = settings.client_builder().await.unwrap().build().unwrap();
+        let _ = client
+            .post(format!("{}/v1/logs", mock_server.uri()))
+            .body("")
+            .send()
+            .await
+            .unwrap();
+
+        assert!(
+            !saw_ua.load(Ordering::SeqCst),
+            "Expected no User-Agent header when user_agent is unset, but one was sent"
+        );
+    }
 
     #[tokio::test]
     async fn test_user_agent_sent_on_wire() {

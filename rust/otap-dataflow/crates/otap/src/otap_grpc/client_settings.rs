@@ -611,6 +611,55 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_empty_user_agent() {
+        let settings = GrpcClientSettings {
+            user_agent: Some(String::new()),
+            ..GrpcClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(GrpcEndpointError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_whitespace_only_user_agent() {
+        let settings = GrpcClientSettings {
+            user_agent: Some("   ".to_string()),
+            ..GrpcClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(GrpcEndpointError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_non_ascii_user_agent() {
+        let settings = GrpcClientSettings {
+            user_agent: Some("bad\nvalue".to_string()),
+            ..GrpcClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(GrpcEndpointError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_accepts_valid_user_agent() {
+        let settings = GrpcClientSettings {
+            user_agent: Some("my-app/1.0".to_string()),
+            ..GrpcClientSettings::default()
+        };
+
+        assert!(settings.validate().is_ok());
+    }
+
+    #[test]
     fn effective_concurrency_limit_clamps_to_one() {
         let settings: GrpcClientSettings = serde_json::from_str(
             r#"{ "grpc_endpoint": "http://localhost:4317", "concurrency_limit": 0 }"#,
