@@ -186,11 +186,11 @@ fn validate_config(config: &Value) -> Result<(), otap_df_config::error::Error> {
             error: e.to_string(),
         }
     })?;
-    cfg.grpc.validate().map_err(|e| {
-        otap_df_config::error::Error::InvalidUserConfig {
+    cfg.grpc
+        .validate()
+        .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
             error: e.to_string(),
-        }
-    })?;
+        })?;
     Ok(())
 }
 

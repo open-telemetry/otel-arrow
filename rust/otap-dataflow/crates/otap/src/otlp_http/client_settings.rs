@@ -4,6 +4,7 @@
 //! Shared configuration for HTTP-based clients.
 
 use reqwest::ClientBuilder;
+use reqwest::header::HeaderValue;
 use serde::Deserialize;
 use std::io;
 use std::time::Duration;
@@ -73,6 +74,28 @@ pub struct HttpClientSettings {
 }
 
 impl HttpClientSettings {
+    /// Validates the settings at config load time.
+    ///
+    /// Checks that `user_agent`, when set, is non-empty and contains only
+    /// characters valid in an HTTP header value (visible ASCII, 32–127).
+    pub fn validate(&self) -> Result<(), HttpClientError> {
+        if let Some(ua) = &self.user_agent {
+            if ua.trim().is_empty() {
+                return Err(HttpClientError::InvalidConfig(
+                    "user_agent must be non-empty when set".to_string(),
+                ));
+            }
+            if HeaderValue::from_str(ua).is_err() {
+                return Err(HttpClientError::InvalidConfig(
+                    "user_agent contains characters that cannot be represented as an HTTP header \
+                     value (must be visible ASCII)"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Returns the configured request-body compression method, if any.
     #[must_use]
     pub fn compression(&self) -> Option<CompressionMethod> {
@@ -228,6 +251,10 @@ pub enum HttpClientError {
     /// IO Error occurred reading tls cert from file
     #[error("http client build io error: {0}")]
     Io(#[from] io::Error),
+
+    /// Invalid configuration value detected at validation time.
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
 }
 
 impl Default for HttpClientSettings {
@@ -249,8 +276,8 @@ impl Default for HttpClientSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use wiremock::matchers;
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -356,11 +383,12 @@ mod tests {
         assert_eq!(defaults.user_agent, None);
 
         // Verify deserialization
-        let settings: HttpClientSettings = serde_json::from_str(
-            r#"{ "user_agent": "otap-custom-agent/1.0" }"#,
-        )
-        .unwrap();
-        assert_eq!(settings.user_agent.as_deref(), Some("otap-custom-agent/1.0"));
+        let settings: HttpClientSettings =
+            serde_json::from_str(r#"{ "user_agent": "otap-custom-agent/1.0" }"#).unwrap();
+        assert_eq!(
+            settings.user_agent.as_deref(),
+            Some("otap-custom-agent/1.0")
+        );
 
         // Verify the header actually arrives on the wire
         let mock_server = MockServer::start().await;

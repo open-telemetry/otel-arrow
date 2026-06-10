@@ -89,11 +89,15 @@ pub static OTLP_HTTP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
 /// configuration is rejected fast and attributed to the offending node rather
 /// than surfacing as an opaque client error at startup.
 fn validate_config(config: &serde_json::Value) -> Result<(), ConfigError> {
-    let cfg: Config = serde_json::from_value(config.clone())
-        .map_err(|e| ConfigError::InvalidUserConfig { error: e.to_string() })?;
+    let cfg: Config =
+        serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
+            error: e.to_string(),
+        })?;
     cfg.http
         .validate()
-        .map_err(|e| ConfigError::InvalidUserConfig { error: e.to_string() })?;
+        .map_err(|e| ConfigError::InvalidUserConfig {
+            error: e.to_string(),
+        })?;
     Ok(())
 }
 

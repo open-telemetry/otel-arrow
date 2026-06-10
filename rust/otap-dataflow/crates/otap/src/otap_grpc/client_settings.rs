@@ -6,6 +6,7 @@
 use crate::compression::CompressionMethod;
 use crate::otap_grpc::proxy::ProxyConfig;
 use crate::tls_utils;
+use http::header::HeaderValue;
 use hyper_util::rt::TokioIo;
 use otap_df_config::byte_units;
 use otap_df_config::tls::TlsClientConfig;
@@ -173,6 +174,10 @@ pub enum GrpcEndpointError {
     #[error("invalid grpc_endpoint: {0}")]
     InvalidEndpoint(String),
 
+    /// Invalid configuration value detected at validation time.
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
+
     /// DNS resolution failed during a `startup_check: dns` check.
     #[error("startup dns check failed for \"{host}\": {source}")]
     DnsCheckFailed {
@@ -221,6 +226,28 @@ fn validate_grpc_endpoint(endpoint: &str) -> Result<(), String> {
 }
 
 impl GrpcClientSettings {
+    /// Validates the settings at config load time.
+    ///
+    /// Checks that `user_agent`, when set, is non-empty and contains only
+    /// characters valid in an HTTP header value (visible ASCII, 32–127).
+    pub fn validate(&self) -> Result<(), GrpcEndpointError> {
+        if let Some(ua) = &self.user_agent {
+            if ua.trim().is_empty() {
+                return Err(GrpcEndpointError::InvalidConfig(
+                    "user_agent must be non-empty when set".to_string(),
+                ));
+            }
+            if HeaderValue::from_str(ua).is_err() {
+                return Err(GrpcEndpointError::InvalidConfig(
+                    "user_agent contains characters that cannot be represented as an HTTP header \
+                     value (must be visible ASCII)"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Performs the configured startup check, if any.
     ///
     /// # Errors
