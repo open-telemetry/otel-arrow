@@ -174,6 +174,9 @@ Resolution semantics:
 Engine-wide runtime settings are configured under `engine.runtime`.
 
 - `engine.runtime.local_runtime.event_interval` is optional.
+- `engine.runtime.local_runtime.max_io_events_per_tick` is optional.
+- `engine.runtime.local_runtime.poll_time_histogram` is optional and requires a
+  `tokio_unstable` build when enabled.
 - When unset, Tokio's built-in `LocalRuntime` default is used.
 - When set, it must be greater than `0`.
 

@@ -386,6 +386,84 @@ pub struct TokioRuntimeMetrics {
     #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
     #[metric(unit = "{ready}")]
     pub io_driver_ready_count: ObserveCounter<u64>,
+
+    /// Whether Tokio task poll-time histogram collection is enabled.
+    ///
+    /// Reported as `1` when enabled and `0` otherwise.
+    /// This metric requires `tokio_unstable` and 64-bit atomics.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{1}")]
+    pub poll_time_histogram_enabled: ObserveUpDownCounter<u64>,
+
+    /// Number of task polls recorded in poll-time histogram bucket 0.
+    ///
+    /// With Tokio's default poll-time histogram, bucket 0 covers 0-100 us.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{poll}")]
+    pub poll_time_histogram_bucket_0_count: ObserveCounter<u64>,
+
+    /// Number of task polls recorded in poll-time histogram bucket 1.
+    ///
+    /// With Tokio's default poll-time histogram, bucket 1 covers 100-200 us.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{poll}")]
+    pub poll_time_histogram_bucket_1_count: ObserveCounter<u64>,
+
+    /// Number of task polls recorded in poll-time histogram bucket 2.
+    ///
+    /// With Tokio's default poll-time histogram, bucket 2 covers 200-300 us.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{poll}")]
+    pub poll_time_histogram_bucket_2_count: ObserveCounter<u64>,
+
+    /// Number of task polls recorded in poll-time histogram bucket 3.
+    ///
+    /// With Tokio's default poll-time histogram, bucket 3 covers 300-400 us.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{poll}")]
+    pub poll_time_histogram_bucket_3_count: ObserveCounter<u64>,
+
+    /// Number of task polls recorded in poll-time histogram bucket 4.
+    ///
+    /// With Tokio's default poll-time histogram, bucket 4 covers 400-500 us.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{poll}")]
+    pub poll_time_histogram_bucket_4_count: ObserveCounter<u64>,
+
+    /// Number of task polls recorded in poll-time histogram bucket 5.
+    ///
+    /// With Tokio's default poll-time histogram, bucket 5 covers 500-600 us.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{poll}")]
+    pub poll_time_histogram_bucket_5_count: ObserveCounter<u64>,
+
+    /// Number of task polls recorded in poll-time histogram bucket 6.
+    ///
+    /// With Tokio's default poll-time histogram, bucket 6 covers 600-700 us.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{poll}")]
+    pub poll_time_histogram_bucket_6_count: ObserveCounter<u64>,
+
+    /// Number of task polls recorded in poll-time histogram bucket 7.
+    ///
+    /// With Tokio's default poll-time histogram, bucket 7 covers 700-800 us.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{poll}")]
+    pub poll_time_histogram_bucket_7_count: ObserveCounter<u64>,
+
+    /// Number of task polls recorded in poll-time histogram bucket 8.
+    ///
+    /// With Tokio's default poll-time histogram, bucket 8 covers 800-900 us.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{poll}")]
+    pub poll_time_histogram_bucket_8_count: ObserveCounter<u64>,
+
+    /// Number of task polls recorded in poll-time histogram bucket 9.
+    ///
+    /// With Tokio's default poll-time histogram, bucket 9 covers 900-1000 us.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{poll}")]
+    pub poll_time_histogram_bucket_9_count: ObserveCounter<u64>,
 }
 
 /// Per-thread allocation counters.
@@ -714,6 +792,54 @@ impl PipelineMetricsMonitor {
             self.tokio_metrics
                 .worker_overflow_count
                 .observe(worker_overflow_sum);
+
+            let poll_time_histogram_enabled = tokio_rt.poll_time_histogram_enabled();
+            self.tokio_metrics
+                .poll_time_histogram_enabled
+                .observe(u64::from(poll_time_histogram_enabled));
+            let mut poll_time_histogram_buckets = [0u64; 10];
+            if poll_time_histogram_enabled {
+                let bucket_count = tokio_rt.poll_time_histogram_num_buckets();
+                for worker in 0..num_workers_usize {
+                    for (bucket, total) in poll_time_histogram_buckets.iter_mut().enumerate() {
+                        if bucket < bucket_count {
+                            *total = total.saturating_add(
+                                tokio_rt.poll_time_histogram_bucket_count(worker, bucket),
+                            );
+                        }
+                    }
+                }
+            }
+            self.tokio_metrics
+                .poll_time_histogram_bucket_0_count
+                .observe(poll_time_histogram_buckets[0]);
+            self.tokio_metrics
+                .poll_time_histogram_bucket_1_count
+                .observe(poll_time_histogram_buckets[1]);
+            self.tokio_metrics
+                .poll_time_histogram_bucket_2_count
+                .observe(poll_time_histogram_buckets[2]);
+            self.tokio_metrics
+                .poll_time_histogram_bucket_3_count
+                .observe(poll_time_histogram_buckets[3]);
+            self.tokio_metrics
+                .poll_time_histogram_bucket_4_count
+                .observe(poll_time_histogram_buckets[4]);
+            self.tokio_metrics
+                .poll_time_histogram_bucket_5_count
+                .observe(poll_time_histogram_buckets[5]);
+            self.tokio_metrics
+                .poll_time_histogram_bucket_6_count
+                .observe(poll_time_histogram_buckets[6]);
+            self.tokio_metrics
+                .poll_time_histogram_bucket_7_count
+                .observe(poll_time_histogram_buckets[7]);
+            self.tokio_metrics
+                .poll_time_histogram_bucket_8_count
+                .observe(poll_time_histogram_buckets[8]);
+            self.tokio_metrics
+                .poll_time_histogram_bucket_9_count
+                .observe(poll_time_histogram_buckets[9]);
         }
     }
 

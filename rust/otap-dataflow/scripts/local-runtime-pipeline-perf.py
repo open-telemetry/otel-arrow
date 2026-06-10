@@ -10,6 +10,7 @@ import argparse
 import csv
 import json
 import os
+import random
 import re
 import shlex
 import shutil
@@ -21,7 +22,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -37,7 +38,18 @@ DEFAULT_VARIANTS = {
 
 SCHEDULER_SWEEP = {
     "event31": 31,
+    "event61": 61,
+    "event95": 95,
     "event127": 127,
+    "event191": 191,
+    "event255": 255,
+}
+
+IO_EVENTS_SWEEP = {
+    "io128": 128,
+    "io256": 256,
+    "io512": 512,
+    "io1024": 1024,
 }
 
 LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -59,6 +71,8 @@ class RunCase:
     commit: str | None = None
     sut_env: dict[str, str] = field(default_factory=dict)
     sut_local_runtime_event_interval: int | None = None
+    sut_local_runtime_max_io_events_per_tick: int | None = None
+    sut_local_runtime_poll_time_histogram: bool = False
 
 
 @dataclass
@@ -282,6 +296,39 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--io-events-sweep",
+        action="store_true",
+        help=(
+            "Clone the local-runtime-optimized case into I/O driver experiments using "
+            "engine.runtime.local_runtime.max_io_events_per_tick in the SUT config."
+        ),
+    )
+    parser.add_argument(
+        "--sut-poll-time-histogram",
+        action="store_true",
+        help=(
+            "Enable engine.runtime.local_runtime.poll_time_histogram for SUT configs. "
+            "This requires --tokio-unstable for variants built by this script."
+        ),
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="Run each case this many times, adding -rNN labels when greater than 1.",
+    )
+    parser.add_argument(
+        "--shuffle",
+        action="store_true",
+        help="Shuffle case order after expansion to reduce run-order bias.",
+    )
+    parser.add_argument(
+        "--shuffle-seed",
+        type=int,
+        default=1,
+        help="Seed used with --shuffle.",
+    )
+    parser.add_argument(
         "--tokio-unstable",
         action="store_true",
         help="Build variants with RUSTFLAGS='--cfg tokio_unstable' for extra Tokio metrics.",
@@ -314,6 +361,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.repeat < 1:
+        raise ValueError("--repeat must be greater than 0")
     engine_root = Path(__file__).resolve().parents[1]
     git_root = find_git_root(engine_root)
     engine_rel = engine_root.relative_to(git_root)
@@ -329,12 +378,20 @@ def main() -> int:
     cases = collect_cases(args, git_root, engine_rel, output_dir)
     if args.scheduler_sweep:
         cases = expand_scheduler_sweep(cases)
+    if args.io_events_sweep:
+        cases = expand_io_events_sweep(cases)
 
     global_sut_env = parse_env_entries(args.sut_env)
     variant_sut_env = parse_variant_env_entries(args.variant_env)
     for case in cases:
         specific_env = variant_sut_env.get(case.label, {})
         case.sut_env = {**global_sut_env, **case.sut_env, **specific_env}
+        if args.sut_poll_time_histogram:
+            case.sut_local_runtime_poll_time_histogram = True
+
+    cases = expand_repetitions(cases, args.repeat)
+    if args.shuffle:
+        random.Random(args.shuffle_seed).shuffle(cases)
 
     if args.validate_only:
         validate_cases_only(args, output_dir, cases, core_layout)
@@ -358,6 +415,13 @@ def main() -> int:
                 "error": str(exc),
                 "binary": str(case.binary),
                 "commit": case.commit,
+                "sut_local_runtime_event_interval": case.sut_local_runtime_event_interval,
+                "sut_local_runtime_max_io_events_per_tick": (
+                    case.sut_local_runtime_max_io_events_per_tick
+                ),
+                "sut_local_runtime_poll_time_histogram": (
+                    case.sut_local_runtime_poll_time_histogram
+                ),
             }
             summaries.append(summary)
             write_json(output_dir / "runs" / case.label / "summary.json", summary)
@@ -521,9 +585,55 @@ def expand_scheduler_sweep(cases: list[RunCase]) -> list[RunCase]:
                 source=f"{base.source}+scheduler-sweep:{suffix}",
                 commit=base.commit,
                 sut_local_runtime_event_interval=event_interval,
+                sut_local_runtime_max_io_events_per_tick=base.sut_local_runtime_max_io_events_per_tick,
+                sut_local_runtime_poll_time_histogram=base.sut_local_runtime_poll_time_histogram,
             )
         )
     return expanded
+
+
+def expand_io_events_sweep(cases: list[RunCase]) -> list[RunCase]:
+    expanded = list(cases)
+    base = next((case for case in cases if case.label == "local-runtime-optimized"), None)
+    if base is None:
+        print(
+            "[warn] --io-events-sweep skipped: no local-runtime-optimized case",
+            file=sys.stderr,
+        )
+        return expanded
+    for suffix, max_io_events_per_tick in IO_EVENTS_SWEEP.items():
+        expanded.append(
+            RunCase(
+                label=f"{base.label}-{suffix}",
+                binary=base.binary,
+                source=f"{base.source}+io-events-sweep:{suffix}",
+                commit=base.commit,
+                sut_env=base.sut_env.copy(),
+                sut_local_runtime_event_interval=base.sut_local_runtime_event_interval,
+                sut_local_runtime_max_io_events_per_tick=max_io_events_per_tick,
+                sut_local_runtime_poll_time_histogram=base.sut_local_runtime_poll_time_histogram,
+            )
+        )
+    return expanded
+
+
+def expand_repetitions(cases: list[RunCase], repeat: int) -> list[RunCase]:
+    if repeat == 1:
+        return cases
+
+    repeated = []
+    width = len(str(repeat))
+    for index in range(1, repeat + 1):
+        for case in cases:
+            repeated.append(
+                replace(
+                    case,
+                    label=f"{case.label}-r{index:0{width}d}",
+                    source=f"{case.source}+repeat:{index}",
+                    sut_env=case.sut_env.copy(),
+                )
+            )
+    return repeated
 
 
 def parse_env_entries(entries: list[str]) -> dict[str, str]:
@@ -681,6 +791,8 @@ def write_pipeline_configs(
             core_layout.sut,
             args.admin_base_port + 2,
             None if case is None else case.sut_local_runtime_event_interval,
+            None if case is None else case.sut_local_runtime_max_io_events_per_tick,
+            False if case is None else case.sut_local_runtime_poll_time_histogram,
         ),
         encoding="utf-8",
     )
@@ -699,13 +811,24 @@ def render_common_header(
     core: int,
     admin_port: int,
     local_runtime_event_interval: int | None = None,
+    local_runtime_max_io_events_per_tick: int | None = None,
+    local_runtime_poll_time_histogram: bool = False,
 ) -> str:
     local_runtime_config = ""
+    local_runtime_settings = []
     if local_runtime_event_interval is not None:
-        local_runtime_config = f"""  runtime:
+        local_runtime_settings.append(f"      event_interval: {local_runtime_event_interval}")
+    if local_runtime_max_io_events_per_tick is not None:
+        local_runtime_settings.append(
+            f"      max_io_events_per_tick: {local_runtime_max_io_events_per_tick}"
+        )
+    if local_runtime_poll_time_histogram:
+        local_runtime_settings.append("      poll_time_histogram: true")
+    if local_runtime_settings:
+        local_runtime_config = """  runtime:
     local_runtime:
-      event_interval: {local_runtime_event_interval}
 """
+        local_runtime_config += "\n".join(local_runtime_settings) + "\n"
     return f"""version: otel_dataflow/v1
 
 policies:
@@ -793,12 +916,21 @@ def render_sut_config(
     core: int,
     admin_port: int,
     local_runtime_event_interval: int | None,
+    local_runtime_max_io_events_per_tick: int | None,
+    local_runtime_poll_time_histogram: bool,
 ) -> str:
     receiver_compression = render_receiver_compression(args)
     exporter_compression = render_exporter_compression(args)
     exporter_options = render_sut_exporter_options(args)
     return (
-        render_common_header("sut", core, admin_port, local_runtime_event_interval)
+        render_common_header(
+            "sut",
+            core,
+            admin_port,
+            local_runtime_event_interval,
+            local_runtime_max_io_events_per_tick,
+            local_runtime_poll_time_histogram,
+        )
         + f"""        nodes:
           receiver:
             type: receiver:otap
@@ -1182,6 +1314,8 @@ def summarize_case(
         "commit": case.commit,
         "sut_env": case.sut_env,
         "sut_local_runtime_event_interval": case.sut_local_runtime_event_interval,
+        "sut_local_runtime_max_io_events_per_tick": case.sut_local_runtime_max_io_events_per_tick,
+        "sut_local_runtime_poll_time_histogram": case.sut_local_runtime_poll_time_histogram,
         "proc": proc_summary,
         "metrics": metrics_summary,
         "epoll": epoll_summary,
@@ -1308,6 +1442,12 @@ def write_matrix_metadata(
                 "commit": case.commit,
                 "sut_env": case.sut_env,
                 "sut_local_runtime_event_interval": case.sut_local_runtime_event_interval,
+                "sut_local_runtime_max_io_events_per_tick": (
+                    case.sut_local_runtime_max_io_events_per_tick
+                ),
+                "sut_local_runtime_poll_time_histogram": (
+                    case.sut_local_runtime_poll_time_histogram
+                ),
             }
             for case in cases
         ],
@@ -1328,6 +1468,9 @@ def write_matrix_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> N
         "label",
         "status",
         "commit",
+        "sut_local_runtime_event_interval",
+        "sut_local_runtime_max_io_events_per_tick",
+        "sut_local_runtime_poll_time_histogram",
         "avg_cpu_pct",
         "max_cpu_pct",
         "max_rss_kb",
@@ -1337,6 +1480,10 @@ def write_matrix_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> N
         "tokio_worker_busy_time_delta",
         "tokio_worker_park_count_delta",
         "tokio_worker_poll_count_delta",
+        "tokio_budget_forced_yield_count_delta",
+        "tokio_remote_schedule_count_delta",
+        "tokio_io_driver_ready_count_delta",
+        "tokio_poll_time_histogram_bucket_9_count_delta",
         "epoll_wait_count",
         "epoll_wait_avg_s",
         "error",
@@ -1353,6 +1500,15 @@ def write_matrix_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> N
                     "label": summary.get("label"),
                     "status": summary.get("status"),
                     "commit": summary.get("commit"),
+                    "sut_local_runtime_event_interval": summary.get(
+                        "sut_local_runtime_event_interval"
+                    ),
+                    "sut_local_runtime_max_io_events_per_tick": summary.get(
+                        "sut_local_runtime_max_io_events_per_tick"
+                    ),
+                    "sut_local_runtime_poll_time_histogram": summary.get(
+                        "sut_local_runtime_poll_time_histogram"
+                    ),
                     "avg_cpu_pct": proc.get("avg_cpu_pct"),
                     "max_cpu_pct": proc.get("max_cpu_pct"),
                     "max_rss_kb": proc.get("max_rss_kb"),
@@ -1371,6 +1527,18 @@ def write_matrix_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> N
                     ),
                     "tokio_worker_poll_count_delta": metrics_delta.get(
                         "tokio.runtime.worker.poll.count"
+                    ),
+                    "tokio_budget_forced_yield_count_delta": metrics_delta.get(
+                        "tokio.runtime.budget.forced.yield.count"
+                    ),
+                    "tokio_remote_schedule_count_delta": metrics_delta.get(
+                        "tokio.runtime.remote.schedule.count"
+                    ),
+                    "tokio_io_driver_ready_count_delta": metrics_delta.get(
+                        "tokio.runtime.io.driver.ready.count"
+                    ),
+                    "tokio_poll_time_histogram_bucket_9_count_delta": metrics_delta.get(
+                        "tokio.runtime.poll.time.histogram.bucket.9.count"
                     ),
                     "epoll_wait_count": epoll.get("count"),
                     "epoll_wait_avg_s": epoll.get("avg_s"),

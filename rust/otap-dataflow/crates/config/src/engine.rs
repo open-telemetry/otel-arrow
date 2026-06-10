@@ -120,6 +120,19 @@ pub struct LocalRuntimeSettings {
     /// When omitted, Tokio's own default is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_interval: Option<u32>,
+
+    /// Maximum number of I/O events processed by Tokio per scheduler tick.
+    ///
+    /// When omitted, Tokio's own default is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_io_events_per_tick: Option<usize>,
+
+    /// Enables Tokio's task poll-time histogram.
+    ///
+    /// This is intended for performance diagnostics and requires a binary built
+    /// with `RUSTFLAGS="--cfg tokio_unstable"`.
+    #[serde(default)]
+    pub poll_time_histogram: bool,
 }
 
 impl LocalRuntimeSettings {
@@ -129,6 +142,11 @@ impl LocalRuntimeSettings {
         if matches!(self.event_interval, Some(0)) {
             errors.push(format!(
                 "{path_prefix}.event_interval must be greater than 0"
+            ));
+        }
+        if matches!(self.max_io_events_per_tick, Some(0)) {
+            errors.push(format!(
+                "{path_prefix}.max_io_events_per_tick must be greater than 0"
             ));
         }
         errors
@@ -425,16 +443,23 @@ groups:
         let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
         let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
         assert_eq!(config.engine.runtime.local_runtime.event_interval, None);
+        assert_eq!(
+            config.engine.runtime.local_runtime.max_io_events_per_tick,
+            None
+        );
+        assert!(!config.engine.runtime.local_runtime.poll_time_histogram);
     }
 
     #[test]
-    fn from_yaml_accepts_local_runtime_event_interval() {
+    fn from_yaml_accepts_local_runtime_settings() {
         let yaml = r#"
 version: otel_dataflow/v1
 engine:
   runtime:
     local_runtime:
       event_interval: 127
+      max_io_events_per_tick: 512
+      poll_time_histogram: true
 groups:
   default:
     pipelines:
@@ -456,16 +481,22 @@ groups:
             config.engine.runtime.local_runtime.event_interval,
             Some(127)
         );
+        assert_eq!(
+            config.engine.runtime.local_runtime.max_io_events_per_tick,
+            Some(512)
+        );
+        assert!(config.engine.runtime.local_runtime.poll_time_histogram);
     }
 
     #[test]
-    fn from_yaml_rejects_zero_local_runtime_event_interval() {
+    fn from_yaml_rejects_zero_local_runtime_intervals() {
         let yaml = r#"
 version: otel_dataflow/v1
 engine:
   runtime:
     local_runtime:
       event_interval: 0
+      max_io_events_per_tick: 0
 groups:
   default:
     pipelines:
@@ -487,6 +518,9 @@ groups:
             err.to_string()
                 .contains("engine.runtime.local_runtime.event_interval must be greater than 0")
         );
+        assert!(err.to_string().contains(
+            "engine.runtime.local_runtime.max_io_events_per_tick must be greater than 0"
+        ));
     }
 
     #[test]
