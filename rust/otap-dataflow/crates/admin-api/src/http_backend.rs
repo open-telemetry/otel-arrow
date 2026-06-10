@@ -5,7 +5,7 @@
 
 use crate::client::{AdminBackend, HttpAdminClientSettings};
 use crate::endpoint::{AdminAuth, AdminEndpoint, AdminScheme};
-use crate::{Error, engine, groups, operations, pipelines, telemetry};
+use crate::{Error, config, engine, groups, operations, pipelines, telemetry};
 use async_trait::async_trait;
 use reqwest::{Certificate, ClientBuilder, Identity, Method, Url};
 use serde::de::DeserializeOwned;
@@ -185,6 +185,78 @@ impl AdminBackend for HttpBackend {
         self.request_json(Method::GET, &["api", "v1", "groups", "status"], &[], &[200])
             .await
             .map(|(_, body)| body)
+    }
+
+    async fn group_details(
+        &self,
+        pipeline_group_id: &str,
+    ) -> Result<Option<config::pipeline_group::PipelineGroupConfig>, Error> {
+        let (status, body) = self
+            .request_raw(
+                Method::GET,
+                &["api", "v1", "groups", pipeline_group_id],
+                &[],
+                None,
+                &[200, 404],
+            )
+            .await?;
+        if status == 404 {
+            return Ok(None);
+        }
+        self.decode_json(&body).map(Some)
+    }
+
+    async fn create_group(
+        &self,
+        pipeline_group_id: &str,
+        group: &config::pipeline_group::PipelineGroupConfig,
+    ) -> Result<config::pipeline_group::PipelineGroupConfig, Error> {
+        let (status, body) = self
+            .request_raw(
+                Method::POST,
+                &["api", "v1", "groups", pipeline_group_id],
+                &[],
+                Some(
+                    serde_json::to_vec(group).map_err(|err| Error::ClientConfig {
+                        details: format!("failed to encode pipeline group config: {err}"),
+                    })?,
+                ),
+                &[200, 201, 409, 422, 500],
+            )
+            .await?;
+
+        match status {
+            200 | 201 => self.decode_json(&body),
+            409 | 422 | 500 => Err(self.decode_operation_error(status, &body)?),
+            _ => unreachable!("request_raw should have filtered unexpected statuses"),
+        }
+    }
+
+    async fn delete_group(
+        &self,
+        pipeline_group_id: &str,
+        options: &operations::DeleteOptions,
+    ) -> Result<engine::GroupDeleteStatus, Error> {
+        let query = options.to_query_pairs();
+        let (status, body) = self
+            .request_raw(
+                Method::DELETE,
+                &["api", "v1", "groups", pipeline_group_id],
+                &query,
+                None,
+                &[200, 404, 409, 422, 500],
+            )
+            .await?;
+
+        match status {
+            200 => self.decode_json(&body),
+            409 => match self.decode_json::<engine::GroupDeleteStatus>(&body) {
+                Ok(status) => Ok(status),
+                Err(_) => Err(self.decode_operation_error(status, &body)?),
+            },
+            404 | 422 | 500 => Err(self.decode_operation_error(status, &body)?),
+            _ => unreachable!("request_raw should have filtered unexpected statuses"),
+        }
     }
 
     async fn groups_shutdown(
@@ -446,6 +518,41 @@ impl AdminBackend for HttpBackend {
             return Ok(None);
         }
         self.decode_json(&body).map(Some)
+    }
+
+    async fn pipeline_delete(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        options: &operations::DeleteOptions,
+    ) -> Result<engine::PipelineDeleteStatus, Error> {
+        let query = options.to_query_pairs();
+        let (status, body) = self
+            .request_raw(
+                Method::DELETE,
+                &[
+                    "api",
+                    "v1",
+                    "groups",
+                    pipeline_group_id,
+                    "pipelines",
+                    pipeline_id,
+                ],
+                &query,
+                None,
+                &[200, 404, 409, 422, 500],
+            )
+            .await?;
+
+        match status {
+            200 => self.decode_json(&body),
+            409 => match self.decode_json::<engine::PipelineDeleteStatus>(&body) {
+                Ok(status) => Ok(status),
+                Err(_) => Err(self.decode_operation_error(status, &body)?),
+            },
+            404 | 422 | 500 => Err(self.decode_operation_error(status, &body)?),
+            _ => unreachable!("request_raw should have filtered unexpected statuses"),
+        }
     }
 
     async fn telemetry_logs(
@@ -940,6 +1047,84 @@ mod tests {
         assert_eq!(response.generated_at, "2026-01-01T00:00:00Z");
     }
 
+    /// Scenario: a caller requests a committed pipeline group config through
+    /// the SDK.
+    /// Guarantees: the HTTP backend targets `/api/v1/groups/{group}` and
+    /// decodes the direct group config payload.
+    #[tokio::test]
+    async fn group_details_returns_some_on_200() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/groups/default"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+
+        let response = client(&server)
+            .groups()
+            .details("default")
+            .await
+            .expect("group details should decode");
+
+        assert_eq!(
+            response,
+            Some(config::pipeline_group::PipelineGroupConfig::new())
+        );
+    }
+
+    /// Scenario: a caller creates an empty group with the SDK.
+    /// Guarantees: the backend serializes the group config body and accepts
+    /// the HTTP 201 response shape.
+    #[tokio::test]
+    async fn group_create_encodes_body_and_decodes_created() {
+        let server = MockServer::start().await;
+        let group = config::pipeline_group::PipelineGroupConfig::new();
+        Mock::given(method("POST"))
+            .and(path("/api/v1/groups/default"))
+            .and(body_json(
+                serde_json::to_value(&group).expect("group should serialize"),
+            ))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+
+        let response = client(&server)
+            .groups()
+            .create("default", &group)
+            .await
+            .expect("group create should decode");
+
+        assert_eq!(response, group);
+    }
+
+    /// Scenario: a caller deletes a group through the SDK.
+    /// Guarantees: the backend uses DELETE with terminal delete options and
+    /// decodes a successful group delete status.
+    #[tokio::test]
+    async fn group_delete_uses_delete_route_and_query() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/groups/default"))
+            .and(query_param("timeout_secs", "30"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "pipelineGroupId": "default",
+                "state": "succeeded",
+                "startedAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:01Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let response = client(&server)
+            .groups()
+            .delete("default", &operations::DeleteOptions { timeout_secs: 30 })
+            .await
+            .expect("group delete should decode");
+
+        assert_eq!(response.pipeline_group_id.as_ref(), "default");
+        assert_eq!(response.state, "succeeded");
+    }
+
     #[tokio::test]
     async fn pipeline_status_decodes_optional_payload() {
         let server = MockServer::start().await;
@@ -1263,6 +1448,42 @@ mod tests {
             .expect("shutdown status should decode");
 
         assert!(response.is_some());
+    }
+
+    /// Scenario: a pipeline delete operation reaches a terminal failed state
+    /// and the server reports it with HTTP 409.
+    /// Guarantees: the SDK treats the body as a delete result rather than a
+    /// request-rejection error when it matches the delete status schema.
+    #[tokio::test]
+    async fn pipeline_delete_decodes_failed_status_from_409_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/groups/default/pipelines/main"))
+            .and(query_param("timeout_secs", "45"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "pipelineGroupId": "default",
+                "pipelineId": "main",
+                "state": "failed",
+                "startedAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:45Z",
+                "failureReason": "pipeline shutdown did not complete successfully"
+            })))
+            .mount(&server)
+            .await;
+
+        let response = client(&server)
+            .pipelines()
+            .delete(
+                "default",
+                "main",
+                &operations::DeleteOptions { timeout_secs: 45 },
+            )
+            .await
+            .expect("pipeline delete status should decode");
+
+        assert_eq!(response.pipeline_group_id.as_ref(), "default");
+        assert_eq!(response.pipeline_id.as_ref(), "main");
+        assert_eq!(response.state, "failed");
     }
 
     #[tokio::test]

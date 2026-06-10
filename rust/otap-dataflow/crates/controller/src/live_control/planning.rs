@@ -781,6 +781,64 @@ impl<
         }))
     }
 
+    /// Returns the committed configuration for one pipeline group.
+    pub(super) fn group_details_snapshot(
+        &self,
+        pipeline_group_id: &PipelineGroupId,
+    ) -> Option<PipelineGroupConfig> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.live_config.groups.get(pipeline_group_id).cloned()
+    }
+
+    /// Creates an empty pipeline group in the controller-owned live config.
+    pub(super) fn create_group(
+        &self,
+        pipeline_group_id: &str,
+        group: PipelineGroupConfig,
+    ) -> Result<PipelineGroupConfig, ControlPlaneError> {
+        let pipeline_group_id: PipelineGroupId = pipeline_group_id.to_owned().into();
+
+        if !group.pipelines.is_empty() {
+            return Err(ControlPlaneError::InvalidRequest {
+                message: "pipeline group creation only supports empty groups".to_owned(),
+            });
+        }
+        if !group.topics.is_empty() {
+            return Err(ControlPlaneError::InvalidRequest {
+                message: "pipeline group creation with topic declarations is not supported yet"
+                    .to_owned(),
+            });
+        }
+        group
+            .validate(&pipeline_group_id)
+            .map_err(|err| ControlPlaneError::InvalidRequest {
+                message: err.to_string(),
+            })?;
+
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.live_config.groups.contains_key(&pipeline_group_id) {
+            return Err(ControlPlaneError::GroupAlreadyExists);
+        }
+
+        let mut candidate_config = state.live_config.clone();
+        _ = candidate_config
+            .groups
+            .insert(pipeline_group_id.clone(), group.clone());
+        candidate_config
+            .validate()
+            .map_err(|err| ControlPlaneError::InvalidRequest {
+                message: err.to_string(),
+            })?;
+        state.live_config = candidate_config;
+        Ok(group)
+    }
+
     /// Returns a clone of the current controller-owned engine configuration.
     pub(super) fn engine_config_snapshot(&self) -> OtelDataflowSpec {
         let state = self

@@ -528,6 +528,23 @@ impl<
         Ok(Some(status))
     }
 
+    fn group_details(
+        &self,
+        pipeline_group_id: &str,
+    ) -> Result<Option<PipelineGroupConfig>, ControlPlaneError> {
+        Ok(self
+            .runtime
+            .group_details_snapshot(&pipeline_group_id.to_owned().into()))
+    }
+
+    fn create_group(
+        &self,
+        pipeline_group_id: &str,
+        group: PipelineGroupConfig,
+    ) -> Result<PipelineGroupConfig, ControlPlaneError> {
+        self.runtime.create_group(pipeline_group_id, group)
+    }
+
     fn engine_config_snapshot(&self) -> Result<OtelDataflowSpec, ControlPlaneError> {
         Ok(self.runtime.engine_config_snapshot())
     }
