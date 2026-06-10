@@ -40,6 +40,7 @@ pub(crate) fn parse_operator_call(
             Rule::rename_operator_call => parse_rename_operator_call(rule, pipeline_builder)?,
             Rule::route_to_operator_call => parse_route_to_operator_call(rule, pipeline_builder)?,
             Rule::set_operator_call => parse_set_operator_call(rule, pipeline_builder)?,
+            Rule::drop_operator_call => parse_drop_operator_call(rule, pipeline_builder)?,
             Rule::where_operator_call => parse_where_operator_call(rule, pipeline_builder)?,
             Rule::apply_operator_call => parse_apply_operator_call(rule, pipeline_builder)?,
             invalid_rule => {
@@ -423,6 +424,20 @@ pub(crate) fn parse_if_else_operator_call(
 
     pipeline_builder.push_data_expression(DataExpression::Conditional(conditional_expr));
 
+    Ok(())
+}
+
+/// Parses the `drop` operator, which unconditionally discards all data.
+///
+/// `drop` is equivalent to `where false` and produces a [`DiscardDataExpression`] with no
+/// predicate. The planner interprets a predicate-less discard as "reject all rows".
+pub(crate) fn parse_drop_operator_call(
+    operator_call_rule: Pair<'_, Rule>,
+    pipeline_builder: &mut dyn PipelineBuilder,
+) -> Result<(), ParserError> {
+    let query_location = to_query_location(&operator_call_rule);
+    let discard_expr = DiscardDataExpression::new(query_location);
+    pipeline_builder.push_data_expression(DataExpression::Discard(discard_expr));
     Ok(())
 }
 
@@ -1373,5 +1388,82 @@ mod tests {
             )],
         );
         assert_eq!(&functions[1], &expected1);
+    }
+
+    #[test]
+    fn test_parse_drop_operator_call() {
+        let query = "drop";
+        let mut state = ParserState::new_with_options(query, ParserOptions::default());
+        let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
+        assert_eq!(parse_result.len(), 1);
+        let rule = parse_result.into_iter().next().unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
+
+        let result = state.build().unwrap();
+        let expressions = result.get_expressions();
+        assert_eq!(expressions.len(), 1);
+        let expected =
+            DataExpression::Discard(DiscardDataExpression::new(QueryLocation::new_fake()));
+
+        assert_eq!(&expressions[0], &expected);
+    }
+
+    #[test]
+    fn test_parse_apply_drop_operator_call() {
+        let query = r#"apply attributes { drop }"#;
+
+        let mut state = ParserState::new_with_options(query, ParserOptions::default());
+        let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
+        assert_eq!(parse_result.len(), 1);
+        let rule = parse_result.into_iter().next().unwrap();
+        parse_operator_call(rule, &mut RootPipelineBuilder::new(&mut state)).unwrap();
+
+        let result = state.build().unwrap();
+        let expressions = result.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        let expected =
+            DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    None,
+                    0,
+                    Vec::new(),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "attributes",
+                        )),
+                    )]),
+                )),
+            )));
+        assert_eq!(&expressions[0], &expected);
+
+        let functions = result.get_functions();
+        assert_eq!(functions.len(), 1);
+
+        let expected_fn = PipelineFunction::new_with_expressions(
+            QueryLocation::new_fake(),
+            vec![PipelineFunctionParameter::new(
+                QueryLocation::new_fake(),
+                PipelineFunctionParameterType::MutableValue(Some(ValueType::Map)),
+            )],
+            Some(ValueType::Map),
+            vec![PipelineFunctionExpression::Discard(
+                DiscardDataExpression::new(QueryLocation::new_fake()).with_target(
+                    MutableValueExpression::Argument(ArgumentScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        Some(ValueType::Map),
+                        0,
+                        ValueAccessor::new(),
+                    )),
+                ),
+            )],
+        );
+        assert_eq!(&functions[0], &expected_fn);
     }
 }

@@ -1,5 +1,15 @@
 # Signal Type Router Processor
 
+<!-- markdownlint-disable MD013 -->
+
+## Metadata
+
+- Type: `processor:type_router` (`urn:otel:processor:type_router`)
+- Feature gate: Default
+- Stability: Experimental
+
+## Overview
+
 The signal type router routes OTAP payloads to output ports based on signal
 type. It is an exclusive-routing processor: each inbound message selects at
 most one downstream output route.
@@ -9,14 +19,30 @@ The router recognizes the well-known named output ports `logs`, `metrics`, and
 type before sending each signal to specialized downstream processing or
 exporters.
 
+## Getting Started
+
+Declare the well-known output ports for the signal types you want to split:
+
+```yaml
+type: processor:type_router
+outputs:
+  - logs
+  - metrics
+  - traces
+config: {}
+```
+
 ## Configuration
 
 ```yaml
-processor:
-  urn: urn:otel:processor:type_router
-  config:
-    admission_policy:
-      on_full: reject_immediately # or "backpressure"
+type: processor:type_router
+outputs:
+  - logs
+  - metrics
+  - traces
+config:
+  admission_policy:
+    on_full: reject_immediately # or "backpressure"
 ```
 
 Configuration fields:
@@ -122,3 +148,55 @@ Selected-route NACKs include a machine-readable `NackCause`:
 - `RouteFull`
 - `RouteClosed`
 - `NodeShutdown`
+
+## Telemetry
+
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
+
+### Metric Sets
+
+#### `processor.signal_type_router`
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `processor.signal_type_router.signals_received_logs` | `{msg}` | Number of log messages received by the router. |
+| `processor.signal_type_router.signals_received_metrics` | `{msg}` | Number of metric messages received by the router. |
+| `processor.signal_type_router.signals_received_traces` | `{msg}` | Number of trace messages received by the router. |
+| `processor.signal_type_router.signals_routed_named_logs` | `{msg}` | Number of log messages routed to a named port. |
+| `processor.signal_type_router.signals_routed_named_metrics` | `{msg}` | Number of metric messages routed to a named port. |
+| `processor.signal_type_router.signals_routed_named_traces` | `{msg}` | Number of trace messages routed to a named port. |
+| `processor.signal_type_router.signals_routed_default_logs` | `{msg}` | Number of log messages routed via the default port. |
+| `processor.signal_type_router.signals_routed_default_metrics` | `{msg}` | Number of metric messages routed via the default port. |
+| `processor.signal_type_router.signals_routed_default_traces` | `{msg}` | Number of trace messages routed via the default port. |
+| `processor.signal_type_router.signals_nacked_logs` | `{msg}` | Number of log messages NACKed due to route-local rejection. |
+| `processor.signal_type_router.signals_nacked_metrics` | `{msg}` | Number of metric messages NACKed due to route-local rejection. |
+| `processor.signal_type_router.signals_nacked_traces` | `{msg}` | Number of trace messages NACKed due to route-local rejection. |
+| `processor.signal_type_router.signals_rejected_route_full_logs` | `{msg}` | Number of log messages rejected because the selected route was full. |
+| `processor.signal_type_router.signals_rejected_route_full_metrics` | `{msg}` | Number of metric messages rejected because the selected route was full. |
+| `processor.signal_type_router.signals_rejected_route_full_traces` | `{msg}` | Number of trace messages rejected because the selected route was full. |
+| `processor.signal_type_router.signals_rejected_route_closed_logs` | `{msg}` | Number of log messages rejected because the selected route was closed. |
+| `processor.signal_type_router.signals_rejected_route_closed_metrics` | `{msg}` | Number of metric messages rejected because the selected route was closed. |
+| `processor.signal_type_router.signals_rejected_route_closed_traces` | `{msg}` | Number of trace messages rejected because the selected route was closed. |
+| `processor.signal_type_router.signals_dropped_logs` | `{msg}` | Number of log messages dropped due to routing failure. |
+| `processor.signal_type_router.signals_dropped_metrics` | `{msg}` | Number of metric messages dropped due to routing failure. |
+| `processor.signal_type_router.signals_dropped_traces` | `{msg}` | Number of trace messages dropped due to routing failure. |
+
+### Events
+
+| Event | Severity | Description |
+| --- | --- | --- |
+| *None* | N/A | No node-specific events are emitted. |
+
+## Limits
+
+- Recognized named output ports are `logs`, `metrics`, and `traces`.
+- If a signal-specific named port is not connected, the router can use the
+  default output route.
+- `backpressure` parks at most one message per blocked output port.
+
+## Related Docs
+
+- [Configuration model](../../../../../docs/configuration-model.md)
+- [Processor taxonomy](../../../../../docs/processors.md)
+- [Core node catalog](../../../README.md)

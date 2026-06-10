@@ -77,6 +77,10 @@ impl ProcfsPaths {
             .unwrap_or(host_absolute_path);
         self.root.join(relative)
     }
+
+    pub(super) fn proc_path(&self) -> PathBuf {
+        self.root.join("proc")
+    }
 }
 
 #[derive(Copy, Clone)]
