@@ -12,6 +12,11 @@ mod pipeline_group;
 mod telemetry;
 
 use axum::Router;
+pub use otap_df_admin_types::engine::{
+    ConfigChangeAction, ConfigChangeStatus, EngineConfigReconcileRequest,
+    EngineConfigReconcileState, EngineConfigReconcileStatus, GroupDeleteStatus,
+    PipelineDeleteStatus,
+};
 use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
 pub use otap_df_admin_types::pipelines::{
     PipelineDetails, PipelineRolloutState, PipelineRolloutSummary, ReconfigureRequest,
@@ -26,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 
 use crate::error::Error;
-use otap_df_config::engine::HttpAdminSettings;
+use otap_df_config::engine::{HttpAdminSettings, OtelDataflowSpec};
 use otap_df_config::pipeline::telemetry::AttributeValue as ResourceAttributeValue;
 use otap_df_engine::memory_limiter::MemoryPressureState;
 use otap_df_state::store::ObservedStateHandle;
@@ -124,6 +129,51 @@ pub trait ControlPlane: Send + Sync {
         pipeline_id: &str,
         shutdown_id: &str,
     ) -> Result<Option<ShutdownStatus>, ControlPlaneError>;
+
+    /// Returns the full current engine configuration known to the controller.
+    fn engine_config_snapshot(&self) -> Result<OtelDataflowSpec, ControlPlaneError> {
+        let _ = self;
+        Err(ControlPlaneError::Internal {
+            message: "engine config snapshots are not supported by this control plane".to_owned(),
+        })
+    }
+
+    /// Reconciles the controller runtime to the supplied full desired configuration.
+    fn reconcile_engine_config(
+        &self,
+        _request: EngineConfigReconcileRequest,
+    ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
+        let _ = self;
+        Err(ControlPlaneError::Internal {
+            message: "full engine config reconciliation is not supported by this control plane"
+                .to_owned(),
+        })
+    }
+
+    /// Gracefully drains and removes one logical pipeline from the controller state.
+    fn delete_pipeline(
+        &self,
+        _pipeline_group_id: &str,
+        _pipeline_id: &str,
+        _timeout_secs: u64,
+    ) -> Result<PipelineDeleteStatus, ControlPlaneError> {
+        let _ = self;
+        Err(ControlPlaneError::Internal {
+            message: "pipeline deletion is not supported by this control plane".to_owned(),
+        })
+    }
+
+    /// Gracefully drains and removes one logical pipeline group from the controller state.
+    fn delete_group(
+        &self,
+        _pipeline_group_id: &str,
+        _timeout_secs: u64,
+    ) -> Result<GroupDeleteStatus, ControlPlaneError> {
+        let _ = self;
+        Err(ControlPlaneError::Internal {
+            message: "pipeline group deletion is not supported by this control plane".to_owned(),
+        })
+    }
 }
 
 /// Shared state for the HTTP admin server.

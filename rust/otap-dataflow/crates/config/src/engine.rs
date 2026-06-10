@@ -53,6 +53,7 @@ pub struct OtelDataflowSpec {
     pub engine: EngineConfig,
 
     /// All groups managed by this engine, keyed by group ID.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub groups: HashMap<PipelineGroupId, PipelineGroupConfig>,
 }
 
@@ -280,6 +281,17 @@ groups:
         let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
         let config = OtelDataflowSpec::from_yaml(&yaml).expect("v1 config should be accepted");
         assert_eq!(config.version, ENGINE_CONFIG_VERSION_V1);
+    }
+
+    #[test]
+    fn from_yaml_accepts_missing_groups() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine: {}
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("bootstrap config should parse");
+        assert!(config.groups.is_empty());
     }
 
     #[test]
