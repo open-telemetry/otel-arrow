@@ -68,13 +68,13 @@ data_engine_parser_abstractions = { path = "../experimental/query_engine/parser-
 ahash = "0.8.11"
 arc-swap = "1.7"
 arrayvec = "0.7.6"
-arrow = { version = "58.1", features=["prettyprint"] }
-arrow-buffer = { version = "58.1" }
-arrow-ipc = { version = "58.1", features=["zstd"] }
-arrow-schema = { version = "58.1" }
-arrow-array = { version = "58.1" }
-arrow-cast = { version = "58.1" }
-arrow-select = { version = "58.1" }
+arrow = { version = "58.3", features=["prettyprint"] }
+arrow-buffer = { version = "58.3" }
+arrow-ipc = { version = "58.3", features=["zstd"] }
+arrow-schema = { version = "58.3" }
+arrow-array = { version = "58.3" }
+arrow-cast = { version = "58.3" }
+arrow-select = { version = "58.3" }
 async-stream = "0.3.6"
 async-trait = "0.1.88"
 async-unsync = "0.3.0"
@@ -143,7 +143,7 @@ opentelemetry-otlp = { version = "0.31.1", default-features = false, features = 
 opentelemetry-prometheus = { version = "0.31.0", default-features = false, features = ["internal-logs"] }
 parking_lot = "0.12.5"
 paste = "1"
-parquet = { version = "58.1", default-features = false, features = ["arrow", "async", "object_store"]}
+parquet = { version = "58.3", default-features = false, features = ["arrow", "async", "object_store"]}
 pest = "2.8"
 pest_derive = "2.8"
 portpicker = "0.1.1"
@@ -218,7 +218,8 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
-one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "f655a30aec1d15467501ae9f735defb2d6b86581" }
+
+one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "5a9f381edf38e24bf583f25f7fce9def0c013173" }
 
 azure_core = {version = "1.0.0", default-features = false }
 azure_identity = {version = "1.0.0", default-features = false }
