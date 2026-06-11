@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781052593595,
+  "lastUpdate": 1781139050473,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -4972,6 +4972,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 98.47,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb",
+            "email": "lalit_fin@yahoo.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "08d1c48b986a0c52242901a2bcb8cfcfb46d00bb",
+          "message": "[Journald receiver] Implement journald ingestion (#3134)\n\n# Change Summary\n\nAdds the Rust `receiver:journald` implementation for Linux\n`systemd-journald` ingestion.\n\nThis includes `sd-journal` based log reading, batching, OTAP Arrow log\nprojection, Ack/Nack-driven checkpoint advancement, durable cursor\ncheckpointing, extraction limits, receiver metrics, documentation, and\nchangelog entry.\n\nThe README and design doc document current operational limits, including\none active owner per host journal source/checkpoint identity,\nprocess-local duplicate protection only, deferred cross-process locking,\nand deferred production hardening for partial journal access,\nfirst-checkpoint anchoring, and aggregate batch byte limits.\n\n  ## What issue does this PR close?\n\n  * Closes #2858 \n\n  ## How are these changes tested?\n\n* Added unit tests for config validation, checkpoint read/write, corrupt\ncheckpoint handling, log projection, extraction limits, lease behavior,\nand Ack/Nack/drain state handling.\n  * Ran targeted Rust checks locally:\n* `cargo check -p otap-df-core-nodes --features\notap-df-otap/crypto-ring`\n* `cargo test -p otap-df-core-nodes --features otap-df-otap/crypto-ring\njournald_receiver`\n* `cargo clippy -p otap-df-core-nodes --features\notap-df-otap/crypto-ring --all-targets -- -D warnings`\n  * Ran markdown and sanity checks for docs/changelog updates.\n* Manually validated on an Ubuntu VM using real `systemd-journald` input\nthrough the `df_engine` pipeline to local debug/noop output. Covered\nbasic ingestion, unit filtering, stdout/stderr, metadata mapping, start\npositions, checkpoint restart behavior, checkpoint deletion behavior,\ninvalid config, missing permissions smoke, lifecycle shutdown, and high\nvolume smoke.\n\n  ## Are there any user-facing changes?\n\nYes. This adds a Linux-only `receiver:journald` component for reading\nlogs from `systemd-journald`.\n\n  ### Changelog\n\n* [x] Added a `.chloggen/*.yaml` entry, OR this PR is a `chore`\n(indicated in title).\n\n---------\n\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
+          "timestamp": "2026-06-10T23:17:31Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/08d1c48b986a0c52242901a2bcb8cfcfb46d00bb"
+        },
+        "date": 1781139038916,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 98.72,
             "unit": "MB"
           }
         ]
