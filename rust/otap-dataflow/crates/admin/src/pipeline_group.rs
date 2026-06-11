@@ -449,6 +449,61 @@ mod tests {
         );
     }
 
+    /// Scenario: group deletion completes successfully.
+    /// Guarantees: the handler returns HTTP 200 with the terminal delete
+    /// status body.
+    #[tokio::test]
+    async fn delete_group_returns_terminal_success_status() {
+        let group = PipelineGroupConfig::new();
+        let response = delete_group(
+            Path("default".to_string()),
+            State(test_app_state(stub(
+                Ok(Some(group.clone())),
+                Ok(group),
+                Ok(delete_status("succeeded")),
+            ))),
+            Query(DeleteOptions { timeout_secs: 30 }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let status: GroupDeleteStatus =
+            serde_json::from_slice(&body).expect("delete body should deserialize");
+        assert_eq!(status.pipeline_group_id.as_ref(), "default");
+        assert_eq!(status.state, "succeeded");
+    }
+
+    /// Scenario: group deletion targets a missing group.
+    /// Guarantees: the handler returns HTTP 404 with the typed operation error
+    /// shape used by SDK callers.
+    #[tokio::test]
+    async fn delete_group_returns_not_found_for_missing_group() {
+        let group = PipelineGroupConfig::new();
+        let response = delete_group(
+            Path("missing".to_string()),
+            State(test_app_state(stub(
+                Ok(None),
+                Ok(group),
+                Err(ControlPlaneError::GroupNotFound),
+            ))),
+            Query(DeleteOptions { timeout_secs: 30 }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let error: OperationError =
+            serde_json::from_slice(&body).expect("error body should deserialize");
+        assert_eq!(error.kind, OperationErrorKind::GroupNotFound);
+    }
+
     /// Scenario: group deletion reaches a terminal failed state.
     /// Guarantees: the handler returns HTTP 409 with the delete status body.
     #[tokio::test]
