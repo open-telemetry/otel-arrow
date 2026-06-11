@@ -1256,6 +1256,7 @@ mod tests {
             flow_id: "auto_measure".into(),
             start_node: "auto_measure_processor".into(),
             end_node: "auto_measure_processor".into(),
+            purpose: "".into(),
             pipeline_attrs: pipeline_ctx.pipeline_attribute_set(),
         };
         let entity_key = pipeline_ctx.metrics_registry().register_entity(attrs);
