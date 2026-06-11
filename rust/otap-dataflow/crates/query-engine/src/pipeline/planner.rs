@@ -30,6 +30,7 @@ use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipeline
 use crate::pipeline::expr::planner::ExprPlanner;
 use crate::pipeline::expr::{DataScope, ScopedExpr};
 use crate::pipeline::filter::FilterPipelineStage;
+use crate::pipeline::fork::{ForkPipelineStage, ForkPipelineStageBranch};
 use crate::pipeline::routing::RouteToPipelineStage;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
@@ -237,42 +238,80 @@ impl PipelinePlanner {
                 }),
             },
 
-            DataExpression::Conditional(conditional_expr) => {
-                let expr_planner = if self.plan_for_attributes {
-                    ExprPlanner::for_attributes(self.filter_attribute_keys_case_sensitive)
+            DataExpression::Branch(branch_expr) => {
+                if !branch_expr.branches_consume_records() {
+                    // when branches get a copy of the record, we consider this to be a "fork"
+                    let mut branches = Vec::with_capacity(branch_expr.get_branches().len());
+                    for branch in branch_expr.get_branches() {
+                        if branch.get_condition().is_some() {
+                            // forking with filter not yet supported. This should be composed by
+                            // caller into a fork containing either a conditional data or a filter
+                            return Err(Error::NotYetSupportedError {
+                                message:  "copying data branch expression with condition not yet supported".into()
+                            });
+                        }
+
+                        let pipeline_stages = self.plan_data_exprs(
+                            branch.get_expressions(),
+                            functions,
+                            session_ctx,
+                            otap_batch,
+                        )?;
+                        branches.push(ForkPipelineStageBranch::new(pipeline_stages));
+                    }
+                    Ok(vec![Box::new(ForkPipelineStage::new(branches))])
                 } else {
-                    ExprPlanner::with_attr_key_case_sensitive(
-                        self.filter_attribute_keys_case_sensitive,
-                    )
-                };
+                    // If branches consume the records, we assume that each branch, except for
+                    // the last, must have a condition. If this were not the case, it would mean
+                    // that some branch consumes all records, leaving none for the subsequent
+                    // branches, which is non-sensible. Hence, we plan this into a the
+                    // "conditional" pipeline stage, while treating non-terminal branch as invalid
+                    // when a condition is missing and it's not the final branch.
 
-                let mut pipeline_branches = vec![];
-                for branch in conditional_expr.get_branches() {
-                    let predicate = expr_planner.plan_logical(branch.get_condition(), functions)?;
+                    let expr_planner = if self.plan_for_attributes {
+                        ExprPlanner::for_attributes(self.filter_attribute_keys_case_sensitive)
+                    } else {
+                        ExprPlanner::with_attr_key_case_sensitive(
+                            self.filter_attribute_keys_case_sensitive,
+                        )
+                    };
 
-                    let pipeline_stages = self.plan_data_exprs(
-                        branch.get_expressions(),
-                        functions,
-                        session_ctx,
-                        otap_batch,
-                    )?;
+                    let mut default_branch = None;
+                    let mut pipeline_branches = vec![];
+                    for (i, branch) in branch_expr.get_branches().iter().enumerate() {
+                        let pipeline_stages = self.plan_data_exprs(
+                            branch.get_expressions(),
+                            functions,
+                            session_ctx,
+                            otap_batch,
+                        )?;
 
-                    pipeline_branches.push(ConditionalPipelineStageBranch::new(
-                        predicate,
-                        pipeline_stages,
-                    ));
+                        match branch.get_condition() {
+                            Some(condition) => {
+                                let predicate = expr_planner.plan_logical(condition, functions)?;
+                                pipeline_branches.push(ConditionalPipelineStageBranch::new(
+                                    predicate,
+                                    pipeline_stages,
+                                ))
+                            }
+                            None => {
+                                let is_final_branch = i == branch_expr.get_branches().len() - 1;
+                                if !is_final_branch {
+                                    return Err(Error::InvalidPipelineError {
+                                        cause: "default branch found in consuming Branch data expression in invalid location".into(),
+                                         query_location: Some(branch_expr.get_query_location().clone()),
+                                    });
+                                } else {
+                                    default_branch = Some(pipeline_stages)
+                                }
+                            }
+                        };
+                    }
+
+                    let pipeline_stage =
+                        ConditionalPipelineStage::new(pipeline_branches, default_branch);
+                    Ok(vec![Box::new(pipeline_stage)])
                 }
-
-                let default_branch = conditional_expr
-                    .get_default_branch()
-                    .map(|data_exprs| {
-                        self.plan_data_exprs(data_exprs, functions, session_ctx, otap_batch)
-                    })
-                    .transpose()?;
-
-                let pipeline_stage =
-                    ConditionalPipelineStage::new(pipeline_branches, default_branch);
-                Ok(vec![Box::new(pipeline_stage)])
             }
 
             DataExpression::Output(output_expr) => match output_expr.get_output() {
@@ -281,9 +320,8 @@ impl PipelinePlanner {
                 }
             },
 
-            // TODO support other DataExpressions
-            other => Err(Error::NotYetSupportedError {
-                message: format!("data expression not yet supported {}", other.get_name()),
+            DataExpression::Summary(_) => Err(Error::NotYetSupportedError {
+                message: format!("data expression not yet supported {}", data_expr.get_name()),
             }),
         }
     }
@@ -740,8 +778,8 @@ impl PipelinePlanner {
                     let mut inner_pipeline_data_exprs = Vec::with_capacity(function_exprs.len());
                     for func_expr in function_exprs {
                         let data_expr = match func_expr {
-                            PipelineFunctionExpression::Conditional(c) => {
-                                DataExpression::Conditional(c.clone())
+                            PipelineFunctionExpression::Branch(c) => {
+                                DataExpression::Branch(c.clone())
                             }
                             PipelineFunctionExpression::Discard(d) => {
                                 DataExpression::Discard(d.clone())
