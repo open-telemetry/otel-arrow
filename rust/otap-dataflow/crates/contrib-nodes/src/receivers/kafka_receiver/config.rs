@@ -2444,6 +2444,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "aws")]
     fn build_client_config_tls_with_sasl_sets_sasl_ssl_protocol() {
         let json = json!({
             "brokers": "kafka:9093",
@@ -2470,6 +2471,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "aws")]
     fn build_client_config_aws_msk_without_tls_sets_sasl_ssl() {
         let json = json!({
             "brokers": "kafka:9093",
