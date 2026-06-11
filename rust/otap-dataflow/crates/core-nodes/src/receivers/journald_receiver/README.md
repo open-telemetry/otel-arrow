@@ -10,25 +10,42 @@
 
 ## Overview
 
-Linux-only receiver for local `systemd-journald` entries. It targets structured
-journal records, uses journald source selection such as units, identifiers, and
-priorities, and is designed around journald cursors for checkpointed progress.
+Linux-only receiver for local `systemd-journald` entries backed by the
+`sd-journal` API. It reads structured journal records through runtime-loaded
+`libsystemd.so.0`, uses journald source selection such as units, identifiers,
+and priorities, and emits OTAP log records for downstream processing.
 
-The current implementation is the first receiver slice: it registers the
-factory, validates configuration, enforces a process-local source lease, and
-handles lifecycle, drain, shutdown, and telemetry control messages. The blocking
-`sd-journal` worker, batch handoff, ACK/NACK tracking, and checkpoint
-persistence are follow-up work.
+The receiver does not exec `journalctl` and does not read `.journal` files
+directly. It uses journald cursors for progress tracking and advances the
+durable checkpoint only after downstream Ack.
 
 ## Getting Started
 
 Start at the end of the default system journal:
 
 ```yaml
-type: receiver:journald
-config:
-  source_id: system
-  start_at: end
+groups:
+  host:
+    pipelines:
+      collect:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          journald:
+            type: receiver:journald
+            config:
+              source_id: system
+              start_at: end
+          publish:
+            type: exporter:topic
+            config:
+              topic: journald_logs
+        connections:
+          - from: journald
+            to: publish
 ```
 
 ## Configuration
@@ -45,7 +62,8 @@ config:
     root_path: /
     # namespace: default
 
-  # Exact source filters. Empty entries are rejected and duplicates are removed.
+  # Exact source filters. Empty lists install no filter for that field.
+  # Empty entries are rejected and duplicates are removed.
   units: []
   identifiers: []
 
@@ -62,6 +80,16 @@ config:
     max_records: 1024
     # Maximum time to hold a partial batch before flushing (default: 200ms).
     max_flush_period: 200ms
+
+  extraction:
+    # Maximum copied bytes per journal entry (default: 1MiB).
+    max_entry_bytes: 1MiB
+    # Maximum copied bytes per field value (default: 256KiB).
+    max_field_bytes: 256KiB
+    # Maximum copied fields per journal entry (default: 256).
+    max_fields_per_entry: 256
+    # Behavior for oversized fields: "drop_and_count" (default).
+    large_field_policy: drop_and_count
 
   checkpoint:
     # Root directory for cursor checkpoint files (default:
@@ -99,6 +127,31 @@ config:
     on_nack: rewind
 ```
 
+## Configuration Options
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `source_id` | string | `system` | Stable source identifier used for checkpoint paths and telemetry labels. |
+| `journal.root_path` | path | `/` | Local or mounted host root used for `sd-journal` access. |
+| `journal.namespace` | string | unset | Named namespaces are rejected in v1. |
+| `units` | list | `[]` | Exact `_SYSTEMD_UNIT` matches. An empty list installs no unit filter. |
+| `identifiers` | list | `[]` | Exact `SYSLOG_IDENTIFIER` matches. An empty list installs no identifier filter. |
+| `priorities` | list | unset | Exact journald `PRIORITY` values to include. When unset, no priority filter is installed. |
+| `max_priority` | enum | unset | Shorthand for all priorities up to the selected level. Mutually exclusive with `priorities`. |
+| `start_at` | enum | `end` | `end` reads new entries only when no checkpoint exists; `beginning` reads existing entries. |
+| `batch.max_records` | integer | `1024` | Maximum log records per emitted batch. |
+| `batch.max_flush_period` | duration | `200ms` | Maximum time to hold a partial batch. |
+| `extraction.max_entry_bytes` | byte size | `1MiB` | Maximum copied bytes per journal entry. |
+| `extraction.max_field_bytes` | byte size | `256KiB` | Maximum copied bytes per field value. |
+| `extraction.max_fields_per_entry` | integer | `256` | Maximum copied fields per journal entry. |
+| `extraction.large_field_policy` | enum | `drop_and_count` | Oversized fields are dropped and counted. |
+| `checkpoint.directory` | path | `${engine.state_dir}/journald` | Root directory for durable cursor checkpoints. `${engine.state_dir}` expands to `$OTAP_DF_STATE_DIR` or `.otap-state` when unset. |
+| `checkpoint.max_in_flight_batches` | integer | `1` | Must be `1` in v1. |
+| `checkpoint.on_nack` | enum | `rewind` | Either `rewind` or `fail`. |
+| `checkpoint.max_consecutive_failures` | integer | `5` | Consecutive checkpoint write failures before failing the source. Must be greater than zero; unbounded retries are not supported in v1. |
+| `wait_timeout` | duration | `1s` | Bounds idle wait and shutdown responsiveness. |
+| `drain_timeout` | duration | `5s` | Drain deadline budget; must exceed `wait_timeout`. |
+
 ## Telemetry
 
 These tables list telemetry emitted directly by this node. Common engine
@@ -125,17 +178,36 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ## Limits
 
 - Linux only.
+- Requires `libsystemd.so.0` and permission to read the selected journal.
+  Startup fails clearly when journal files are present but fully unreadable;
+  failing closed on partially readable journal trees is planned for production
+  hardening.
 - Must run in a one-core source pipeline. Use `receiver:journald` followed by a
   topic exporter to fan out to multicore downstream processing.
+- Run one active journald receiver per host journal source
+  (`journal.root_path` + namespace) unless duplicate collection is intentional.
+  The receiver rejects duplicate journal sources inside one process, but v1 does
+  not coordinate ownership across separate collector processes.
+  Filters such as units, identifiers, and priorities do not define separate
+  source ownership; two receivers with different filters but the same journal
+  root/namespace still conflict in the same process.
 - Named journal namespaces are not supported in v1.
 - Kernel ring-buffer (`dmesg`) ingestion is not supported by this receiver.
 - `checkpoint.max_in_flight_batches` must be `1` in v1.
 - `wait_timeout` must be no more than `5s`, and `drain_timeout` must be greater
   than `wait_timeout`.
 - Only one receiver in a process can target the same concrete journal source.
-- The current implementation does not yet emit journal records; the blocking
-  `sd-journal` worker, batch handoff, ACK/NACK tracking, and checkpoint
-  persistence are follow-up work.
+- Duplicate journald fields are emitted as repeated same-key attributes in the
+  first implementation. Array coalescing is planned as a follow-up.
+- With `start_at: end`, a process crash before the first successful checkpoint
+  can skip entries already read from journald but not yet durably committed.
+- Extraction limits are per entry and per field. There is no aggregate batch
+  byte cap in v1, so tune `batch.max_records` and extraction limits for the
+  expected host log volume and memory budget.
+- Cross-process source locking is not implemented in v1; run one owner for a
+  checkpoint identity (`source_id` and checkpoint directory) to avoid cursor
+  races.
+- NUMA pinning and placement are future work.
 
 ## Related Docs
 
