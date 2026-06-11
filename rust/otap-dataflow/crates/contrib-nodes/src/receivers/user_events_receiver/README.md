@@ -300,9 +300,10 @@ downstream channel pressure by the engine's bounded local channel.
 Each subscription may also set `subscriptions[].limits.max_pending_events` and
 `subscriptions[].limits.max_pending_bytes`. When any subscription has limits,
 the receiver uses per-subscription pending queues and round-robin drain under
-the retained global `session.limits.max_pending_*` ceilings. This prevents one
-tracepoint from monopolizing receiver-side pending capacity and drain order, but
-does not isolate the shared perf ring or one_collect parse work. With no
+the retained global `session.limits.max_pending_*` ceilings. This prevents a
+tracepoint that has a configured cap from monopolizing receiver-side pending
+capacity and uses round-robin drain across non-empty subscriptions, but does
+not isolate the shared perf ring or one_collect parse work. With no
 subscription limits configured, the receiver keeps the existing single pending
 queue and FIFO drain behavior. To protect quiet tracepoints from admission drops
 under the shared global ceiling, set limits on the high-volume tracepoints;
