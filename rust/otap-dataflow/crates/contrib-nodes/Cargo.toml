@@ -41,6 +41,7 @@ itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 futures-channel = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 data_engine_expressions = { workspace = true, optional = true }
 data_engine_kql_parser = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
@@ -71,10 +72,10 @@ tracepoint_decode = { workspace = true, optional = true }
 
 [features]
 etw-receiver = ["dep:one_collect"]
-kafka-receiver = [
+kafka-exporter = [
     "dep:rdkafka",
-    "dep:smallvec",
-    "dep:regex",
+    "dep:futures-channel",
+    "dep:futures-util",
 ]
 aws = [
     "dep:aws-config",
@@ -97,6 +98,7 @@ user_events-eventheader = [
 contrib-exporters = [
     "geneva-exporter",
     "azure-monitor-exporter",
+    "kafka-exporter",
 ]
 geneva-exporter = [
     "dep:geneva-uploader",
