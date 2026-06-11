@@ -802,7 +802,12 @@ mod tests {
         });
 
         let e_done = ctx.register_extension_entity("done".into(), ExtensionVariant::Local);
-        monitor.register(&ctx, ExtensionKey::local("done"), e_done, Some(&sender_done));
+        monitor.register(
+            &ctx,
+            ExtensionKey::local("done"),
+            e_done,
+            Some(&sender_done),
+        );
         monitor.apply_event(ExtensionLifecycleEvent::Completed {
             key: ExtensionKey::local("done"),
             outcome: ExtensionOutcome::Ok,
