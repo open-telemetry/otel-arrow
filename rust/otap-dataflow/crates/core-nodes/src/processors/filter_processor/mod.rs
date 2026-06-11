@@ -115,6 +115,44 @@ impl FilterProcessor {
             metric_id_pool: IdBitmapPool::new(),
         })
     }
+
+    fn record_batch_path_metrics(&mut self, signal: SignalType) {
+        match signal {
+            SignalType::Metrics => {
+                let has_include = self.config.metric_filters().has_include();
+                let has_exclude = self.config.metric_filters().has_exclude();
+                self.metrics.metric_batches_seen.inc();
+                if has_include {
+                    self.metrics.metric_include_configured_batches.inc();
+                }
+                if has_exclude {
+                    self.metrics.metric_exclude_configured_batches.inc();
+                }
+            }
+            SignalType::Logs => {
+                let has_include = self.config.log_filters().has_include();
+                let has_exclude = self.config.log_filters().has_exclude();
+                self.metrics.log_batches_seen.inc();
+                if has_include {
+                    self.metrics.log_include_configured_batches.inc();
+                }
+                if has_exclude {
+                    self.metrics.log_exclude_configured_batches.inc();
+                }
+            }
+            SignalType::Traces => {
+                let has_include = self.config.trace_filters().has_include();
+                let has_exclude = self.config.trace_filters().has_exclude();
+                self.metrics.span_batches_seen.inc();
+                if has_include {
+                    self.metrics.span_include_configured_batches.inc();
+                }
+                if has_exclude {
+                    self.metrics.span_exclude_configured_batches.inc();
+                }
+            }
+        }
+    }
 }
 
 #[async_trait(?Send)]
@@ -142,6 +180,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
 
                 let mut arrow_records: OtapArrowRecords = payload.try_into_with_default()?;
                 arrow_records.decode_transport_optimized_ids()?;
+                self.record_batch_path_metrics(signal);
 
                 let (filtered_arrow_records, signals_consumed, signals_filtered): (
                     OtapArrowRecords,
@@ -201,52 +240,25 @@ impl local::Processor<OtapPdata> for FilterProcessor {
 
                 match signal {
                     SignalType::Metrics => {
-                        let has_include = self.config.metric_filters().has_include();
-                        let has_exclude = self.config.metric_filters().has_exclude();
-                        self.metrics.metric_batches_seen.inc();
                         self.metrics.metric_signals_consumed.add(signals_consumed);
                         self.metrics.metric_signals_filtered.add(signals_filtered);
                         self.metrics
                             .metric_signals_kept
                             .add(signals_consumed.saturating_sub(signals_filtered));
-                        if has_include {
-                            self.metrics.metric_include_configured_batches.inc();
-                        }
-                        if has_exclude {
-                            self.metrics.metric_exclude_configured_batches.inc();
-                        }
                     }
                     SignalType::Logs => {
-                        let has_include = self.config.log_filters().has_include();
-                        let has_exclude = self.config.log_filters().has_exclude();
-                        self.metrics.log_batches_seen.inc();
                         self.metrics.log_signals_consumed.add(signals_consumed);
                         self.metrics.log_signals_filtered.add(signals_filtered);
                         self.metrics
                             .log_signals_kept
                             .add(signals_consumed.saturating_sub(signals_filtered));
-                        if has_include {
-                            self.metrics.log_include_configured_batches.inc();
-                        }
-                        if has_exclude {
-                            self.metrics.log_exclude_configured_batches.inc();
-                        }
                     }
                     SignalType::Traces => {
-                        let has_include = self.config.trace_filters().has_include();
-                        let has_exclude = self.config.trace_filters().has_exclude();
-                        self.metrics.span_batches_seen.inc();
                         self.metrics.span_signals_consumed.add(signals_consumed);
                         self.metrics.span_signals_filtered.add(signals_filtered);
                         self.metrics
                             .span_signals_kept
                             .add(signals_consumed.saturating_sub(signals_filtered));
-                        if has_include {
-                            self.metrics.span_include_configured_batches.inc();
-                        }
-                        if has_exclude {
-                            self.metrics.span_exclude_configured_batches.inc();
-                        }
                     }
                 }
 
@@ -283,6 +295,8 @@ mod tests {
         metrics::{MetricFilter, MetricMatchProperties},
         traces::{TraceFilter, TraceMatchProperties},
     };
+    use otap_df_pdata::otap::{OtapArrowRecords, OtapBatchStore};
+    use otap_df_pdata::otlp::metrics::MetricType;
     use otap_df_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
@@ -297,6 +311,7 @@ mod tests {
             status::StatusCode,
         },
     };
+    use otap_df_pdata::{metrics, record_batch};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
     use serde_json::json;
@@ -1985,6 +2000,90 @@ mod tests {
                     assert_eq!(consumed, kept + filtered, "consumed == kept + filtered");
                     assert_eq!(metric_batches_seen, 0, "metric.batches.seen");
                     assert_eq!(span_batches_seen, 0, "span.batches.seen");
+                })
+            });
+    }
+
+    #[test]
+    fn test_filter_processor_records_path_metrics_when_filtering_fails() {
+        let test_runtime = TestRuntime::new();
+        let telemetry_registry = test_runtime.metrics_registry();
+        let metrics_reporter = test_runtime.metrics_reporter();
+
+        let metric_props = MetricMatchProperties::new(MatchType::Strict, vec!["keep".into()]);
+        let metric_filter = MetricFilter::new(Some(metric_props), None);
+        let log_filter = LogFilter::new(None, None, Vec::new());
+        let trace_filter = TraceFilter::new(None, None);
+
+        let config = Config::new_with_metrics(metric_filter, log_filter, trace_filter);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let controller_ctx = ControllerContext::new(telemetry_registry.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| {
+                Box::pin(async move {
+                    #[rustfmt::skip]
+                    let otap_metrics = OtapArrowRecords::Metrics(
+                        metrics!(
+                            (UnivariateMetrics,
+                                ("id", UInt16, [0u16, 1]),
+                                ("metric_type", UInt8, [MetricType::Gauge as u8, MetricType::Gauge as u8]),
+                                ("name", Utf8, ["keep", "drop"])),
+                            (ResourceAttrs,
+                                ("parent_id", UInt16, [0u16]))
+                        )
+                    );
+                    let otap_metrics = OtapPdata::new_default(otap_metrics.into());
+                    let result = ctx.process(Message::PData(otap_metrics)).await;
+                    assert!(
+                        result.is_err(),
+                        "missing resource.id for ResourceAttrs should fail"
+                    );
+
+                    ctx.process(Message::Control(
+                        otap_df_engine::control::NodeControlMsg::CollectTelemetry {
+                            metrics_reporter,
+                        },
+                    ))
+                    .await
+                    .expect("collect telemetry");
+                })
+            })
+            .validate(move |_ctx| {
+                Box::pin(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                    let batches_seen =
+                        read_filter_pdata_metric(&telemetry_registry, "metric.batches.seen");
+                    let include_configured = read_filter_pdata_metric(
+                        &telemetry_registry,
+                        "metric.include.configured.batches",
+                    );
+                    let exclude_configured = read_filter_pdata_metric(
+                        &telemetry_registry,
+                        "metric.exclude.configured.batches",
+                    );
+                    let consumed =
+                        read_filter_pdata_metric(&telemetry_registry, "metric.signals.consumed");
+                    let kept = read_filter_pdata_metric(&telemetry_registry, "metric.signals.kept");
+                    let filtered =
+                        read_filter_pdata_metric(&telemetry_registry, "metric.signals.filtered");
+
+                    assert_eq!(batches_seen, 1, "metric.batches.seen");
+                    assert_eq!(include_configured, 1, "metric.include.configured.batches");
+                    assert_eq!(exclude_configured, 0, "metric.exclude.configured.batches");
+                    assert_eq!(consumed, 0, "metric.signals.consumed");
+                    assert_eq!(kept, 0, "metric.signals.kept");
+                    assert_eq!(filtered, 0, "metric.signals.filtered");
                 })
             });
     }
