@@ -4,6 +4,7 @@
 //! Shared configuration for HTTP-based clients.
 
 use reqwest::ClientBuilder;
+use reqwest::header::HeaderValue;
 use serde::Deserialize;
 use std::io;
 use std::time::Duration;
@@ -64,9 +65,37 @@ pub struct HttpClientSettings {
         alias = "compression_method"
     )]
     pub compression: Option<CompressionMethod>,
+
+    /// Custom User-Agent header for outbound HTTP requests. When set, this
+    /// value is sent as the User-Agent header. When not set, no User-Agent
+    /// header is sent (reqwest does not add one by default).
+    #[serde(default)]
+    pub user_agent: Option<String>,
 }
 
 impl HttpClientSettings {
+    /// Validates the settings at config load time.
+    ///
+    /// Checks that `user_agent`, when set, is non-empty and contains only
+    /// characters valid in an HTTP header value (visible ASCII, 32-127).
+    pub fn validate(&self) -> Result<(), HttpClientError> {
+        if let Some(ua) = &self.user_agent {
+            if ua.trim().is_empty() {
+                return Err(HttpClientError::InvalidConfig(
+                    "user_agent must be non-empty when set".to_string(),
+                ));
+            }
+            if HeaderValue::from_str(ua).is_err() {
+                return Err(HttpClientError::InvalidConfig(
+                    "user_agent contains characters that cannot be represented as an HTTP header \
+                     value (must be visible ASCII)"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Returns the configured request-body compression method, if any.
     #[must_use]
     pub fn compression(&self) -> Option<CompressionMethod> {
@@ -88,6 +117,10 @@ impl HttpClientSettings {
             .connector_layer(ConcurrencyLimitLayer::new(
                 self.effective_concurrency_limit(),
             ));
+
+        if let Some(ua) = &self.user_agent {
+            client_builder = client_builder.user_agent(ua.as_str());
+        }
 
         if let Some(tcp_keepalive) = self.tcp_keepalive {
             client_builder = client_builder.tcp_keepalive(tcp_keepalive);
@@ -218,6 +251,10 @@ pub enum HttpClientError {
     /// IO Error occurred reading tls cert from file
     #[error("http client build io error: {0}")]
     Io(#[from] io::Error),
+
+    /// Invalid configuration value detected at validation time.
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
 }
 
 impl Default for HttpClientSettings {
@@ -231,6 +268,146 @@ impl Default for HttpClientSettings {
             timeout: None,
             tls: None,
             compression: None,
+            user_agent: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use wiremock::matchers;
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+    /// Respond implementation that asserts User-Agent is absent.
+    struct AssertNoUserAgent {
+        saw_user_agent: Arc<AtomicBool>,
+    }
+
+    impl Respond for AssertNoUserAgent {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            if request.headers.get("user-agent").is_some() {
+                self.saw_user_agent.store(true, Ordering::SeqCst);
+            }
+            ResponseTemplate::new(200)
+        }
+    }
+
+    #[test]
+    fn validate_rejects_empty_user_agent() {
+        let settings = HttpClientSettings {
+            user_agent: Some(String::new()),
+            ..HttpClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(HttpClientError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_whitespace_only_user_agent() {
+        let settings = HttpClientSettings {
+            user_agent: Some("   ".to_string()),
+            ..HttpClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(HttpClientError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_non_ascii_user_agent() {
+        let settings = HttpClientSettings {
+            user_agent: Some("bad\nvalue".to_string()),
+            ..HttpClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(HttpClientError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_accepts_valid_user_agent() {
+        let settings = HttpClientSettings {
+            user_agent: Some("my-app/1.0".to_string()),
+            ..HttpClientSettings::default()
+        };
+
+        assert!(settings.validate().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_no_user_agent_on_wire_when_unset() {
+        crate::crypto::ensure_crypto_provider();
+
+        let settings = HttpClientSettings::default();
+        let mock_server = MockServer::start().await;
+
+        let saw_ua = Arc::new(AtomicBool::new(false));
+        Mock::given(matchers::method("POST"))
+            .respond_with(AssertNoUserAgent {
+                saw_user_agent: Arc::clone(&saw_ua),
+            })
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = settings.client_builder().await.unwrap().build().unwrap();
+        let _ = client
+            .post(format!("{}/v1/logs", mock_server.uri()))
+            .body("")
+            .send()
+            .await
+            .unwrap();
+
+        assert!(
+            !saw_ua.load(Ordering::SeqCst),
+            "Expected no User-Agent header when user_agent is unset, but one was sent"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_user_agent_sent_on_wire() {
+        crate::crypto::ensure_crypto_provider();
+
+        // Verify default has no user_agent
+        let defaults = HttpClientSettings::default();
+        assert_eq!(defaults.user_agent, None);
+
+        // Verify deserialization
+        let settings: HttpClientSettings =
+            serde_json::from_str(r#"{ "user_agent": "otap-custom-agent/1.0" }"#).unwrap();
+        assert_eq!(
+            settings.user_agent.as_deref(),
+            Some("otap-custom-agent/1.0")
+        );
+
+        // Verify the header actually arrives on the wire
+        let mock_server = MockServer::start().await;
+
+        Mock::given(matchers::method("POST"))
+            .and(matchers::header("User-Agent", "otap-custom-agent/1.0"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = settings.client_builder().await.unwrap().build().unwrap();
+        let _ = client
+            .post(format!("{}/v1/logs", mock_server.uri()))
+            .body("")
+            .send()
+            .await
+            .unwrap();
+
+        // wiremock asserts the expectation on drop
     }
 }
