@@ -71,6 +71,15 @@ tracepoint_decode = { workspace = true, optional = true }
 
 [features]
 etw-receiver = ["dep:one_collect"]
+kafka-receiver = [
+    "dep:rdkafka",
+    "dep:smallvec",
+    "dep:regex",
+]
+aws = [
+    "dep:aws-config",
+    "dep:aws-msk-iam-sasl-signer",
+]
 contrib-receivers = [
     "etw-receiver",
     "user_events-receiver",
@@ -85,16 +94,9 @@ user_events-eventheader = [
     "user_events-receiver",
     "dep:tracepoint_decode",
 ]
-kafka-exporter = [
-    "dep:rdkafka",
-    "dep:aws-config",
-    "dep:aws-msk-iam-sasl-signer",
-    "dep:futures-channel",
-]
 contrib-exporters = [
     "geneva-exporter",
     "azure-monitor-exporter",
-    "kafka-exporter",
 ]
 geneva-exporter = [
     "dep:geneva-uploader",
@@ -146,6 +148,7 @@ opentelemetry-proto.workspace = true
 otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-otap = { workspace = true, features = ["test-utils"] }
 otap-df-pdata = { workspace = true, features = ["testing"] }
+portpicker.workspace = true
 pretty_assertions.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true

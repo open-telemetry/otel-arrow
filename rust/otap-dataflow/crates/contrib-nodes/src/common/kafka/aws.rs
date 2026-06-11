@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Utilities for connecting to AWS Managed Kafka (MSK)
 
 use aws_config::Region;

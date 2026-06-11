@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared authentication types for Kafka receiver and exporter.
 
 use serde::Deserialize;
@@ -23,6 +26,7 @@ pub enum SaslMechanism {
     ScramSha512,
 
     /// AWS MSK IAM via OAUTHBEARER token refresh.
+    #[cfg(feature = "aws")]
     #[serde(rename = "AWS_MSK_IAM_OAUTHBEARER")]
     AwsMskIamOauthbearer,
 }
@@ -40,6 +44,7 @@ impl SaslMechanism {
             Self::Plain => "PLAIN",
             Self::ScramSha256 => "SCRAM-SHA-256",
             Self::ScramSha512 => "SCRAM-SHA-512",
+            #[cfg(feature = "aws")]
             Self::AwsMskIamOauthbearer => "OAUTHBEARER",
         }
     }
@@ -75,6 +80,7 @@ pub struct SaslAuth {
     password: Option<String>,
 
     /// Optional AWS MSK-specific configuration.
+    #[cfg(feature = "aws")]
     #[serde(default)]
     aws_msk: Option<AwsMskAuth>,
 }
@@ -82,6 +88,7 @@ pub struct SaslAuth {
 impl SaslAuth {
     /// Create a new SASL authentication configuration for AWS MSK or other
     /// mechanisms that do not use username/password.
+    #[cfg(feature = "aws")]
     #[must_use]
     pub fn new(mechanism: SaslMechanism, aws_msk: Option<AwsMskAuth>) -> Self {
         Self {
@@ -89,6 +96,18 @@ impl SaslAuth {
             username: None,
             password: None,
             aws_msk,
+        }
+    }
+
+    /// Create a new SASL authentication configuration for mechanisms that do
+    /// not use username/password.
+    #[cfg(not(feature = "aws"))]
+    #[must_use]
+    pub fn new(mechanism: SaslMechanism) -> Self {
+        Self {
+            mechanism,
+            username: None,
+            password: None,
         }
     }
 
@@ -104,6 +123,7 @@ impl SaslAuth {
             mechanism,
             username: Some(username),
             password: Some(password),
+            #[cfg(feature = "aws")]
             aws_msk: None,
         }
     }
@@ -127,6 +147,7 @@ impl SaslAuth {
     }
 
     /// Optional AWS MSK-specific configuration.
+    #[cfg(feature = "aws")]
     #[must_use]
     pub fn aws_msk(&self) -> Option<&AwsMskAuth> {
         self.aws_msk.as_ref()
@@ -143,7 +164,8 @@ impl SaslAuth {
     ///
     /// Returns a human-readable description if:
     /// - A username/password mechanism is missing `username` or `password`.
-    /// - A username/password mechanism has an `aws_msk` block.
+    /// - A username/password mechanism has an `aws_msk` block (when the `aws`
+    ///   feature is enabled).
     /// - `AwsMskIamOauthbearer` is missing the `aws_msk` block or region.
     /// - `AwsMskIamOauthbearer` has `username` or `password` set.
     pub fn validate(&self) -> Result<(), String> {
@@ -159,6 +181,7 @@ impl SaslAuth {
             }
 
             // Reject aws_msk block for username/password mechanisms.
+            #[cfg(feature = "aws")]
             if self.aws_msk.is_some() {
                 return Err(format!(
                     "SASL mechanism '{}' does not support 'aws_msk' configuration",
@@ -167,6 +190,7 @@ impl SaslAuth {
             }
         }
 
+        #[cfg(feature = "aws")]
         if self.mechanism == SaslMechanism::AwsMskIamOauthbearer {
             match &self.aws_msk {
                 Some(msk) if !msk.region().is_empty() => {}
@@ -192,6 +216,7 @@ impl SaslAuth {
 }
 
 /// AWS MSK IAM authentication configuration.
+#[cfg(feature = "aws")]
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AwsMskAuth {
@@ -199,6 +224,7 @@ pub struct AwsMskAuth {
     region: String,
 }
 
+#[cfg(feature = "aws")]
 impl AwsMskAuth {
     /// Create a new AWS MSK authentication configuration.
     #[must_use]
@@ -215,6 +241,7 @@ impl AwsMskAuth {
 
 impl Auth {
     /// Convenience constructor for AWS MSK IAM OAUTHBEARER authentication.
+    #[cfg(feature = "aws")]
     #[must_use]
     pub fn new_aws_msk_iam(region: String) -> Self {
         Self::Sasl(SaslAuth::new(
@@ -257,6 +284,11 @@ mod tests {
         assert_eq!(SaslMechanism::Plain.as_rdkafka_str(), "PLAIN");
         assert_eq!(SaslMechanism::ScramSha256.as_rdkafka_str(), "SCRAM-SHA-256");
         assert_eq!(SaslMechanism::ScramSha512.as_rdkafka_str(), "SCRAM-SHA-512");
+    }
+
+    #[cfg(feature = "aws")]
+    #[test]
+    fn mechanism_as_rdkafka_str_aws() {
         assert_eq!(
             SaslMechanism::AwsMskIamOauthbearer.as_rdkafka_str(),
             "OAUTHBEARER"
@@ -268,6 +300,11 @@ mod tests {
         assert!(SaslMechanism::Plain.is_username_password());
         assert!(SaslMechanism::ScramSha256.is_username_password());
         assert!(SaslMechanism::ScramSha512.is_username_password());
+    }
+
+    #[cfg(feature = "aws")]
+    #[test]
+    fn mechanism_is_username_password_aws() {
         assert!(!SaslMechanism::AwsMskIamOauthbearer.is_username_password());
     }
 
@@ -309,6 +346,7 @@ mod tests {
             mechanism: SaslMechanism::Plain,
             username: None,
             password: Some("pass".to_string()),
+            #[cfg(feature = "aws")]
             aws_msk: None,
         };
         let err = sasl.validate().unwrap_err();
@@ -321,6 +359,7 @@ mod tests {
             mechanism: SaslMechanism::Plain,
             username: Some("user".to_string()),
             password: None,
+            #[cfg(feature = "aws")]
             aws_msk: None,
         };
         let err = sasl.validate().unwrap_err();
@@ -349,6 +388,7 @@ mod tests {
         assert!(err.contains("non-empty"), "unexpected error: {err}");
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn validate_plain_with_aws_msk_block_fails() {
         let sasl = SaslAuth {
@@ -364,6 +404,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn validate_scram_sha256_with_aws_msk_block_fails() {
         let sasl = SaslAuth {
@@ -379,6 +420,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn validate_aws_msk_with_username_fails() {
         let sasl = SaslAuth {
@@ -394,6 +436,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn validate_aws_msk_with_password_fails() {
         let sasl = SaslAuth {
@@ -409,6 +452,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn validate_aws_msk_with_both_credentials_fails() {
         let sasl = SaslAuth {
@@ -424,6 +468,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn validate_aws_msk_with_region_succeeds() {
         let sasl = SaslAuth::new(
@@ -433,6 +478,7 @@ mod tests {
         assert!(sasl.validate().is_ok());
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn validate_aws_msk_missing_aws_msk_block_fails() {
         let sasl = SaslAuth::new(SaslMechanism::AwsMskIamOauthbearer, None);
@@ -440,6 +486,7 @@ mod tests {
         assert!(err.contains("aws_msk"), "unexpected error: {err}");
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn validate_aws_msk_empty_region_fails() {
         let sasl = SaslAuth::new(
@@ -452,6 +499,7 @@ mod tests {
 
     // ── Auth::validate (delegates) ──────────────────────────
 
+    #[cfg(feature = "aws")]
     #[test]
     fn auth_validate_delegates_to_sasl() {
         let auth = Auth::new_aws_msk_iam("us-west-2".to_string());
@@ -487,6 +535,7 @@ mod tests {
         assert_eq!(m, SaslMechanism::ScramSha512);
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn deserialize_mechanism_aws_msk() {
         let json = r#""AWS_MSK_IAM_OAUTHBEARER""#;
@@ -516,6 +565,7 @@ mod tests {
                 assert_eq!(sasl.mechanism(), SaslMechanism::Plain);
                 assert_eq!(sasl.username(), Some("myuser"));
                 assert_eq!(sasl.password(), Some("mypass"));
+                #[cfg(feature = "aws")]
                 assert!(sasl.aws_msk().is_none());
             }
         }
@@ -542,6 +592,7 @@ mod tests {
         assert!(auth.validate().is_ok());
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn deserialize_aws_msk_backward_compatible() {
         let json = r#"{

@@ -1,21 +1,30 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared security configuration helpers for Kafka receiver and exporter.
 //!
 //! Both the Kafka receiver and exporter need to:
 //! 1. Determine the security protocol from TLS + Auth configuration
 //! 2. Apply TLS certificate paths to the rdkafka `ClientConfig`
 //! 3. Apply SASL mechanism settings for authentication
-//! 4. Optionally construct an AWS MSK IAM client context
+//! 4. Optionally construct an AWS MSK IAM client context (requires the `aws`
+//!    feature)
 //!
 //! This module extracts those common operations so they are defined once and
 //! used by both components, ensuring consistent behavior.
 
+#[cfg(feature = "aws")]
 use std::borrow::Cow;
 
+#[cfg(feature = "aws")]
 use aws_config::Region;
 use rdkafka::ClientConfig;
 
 use super::TlsConfig;
-use super::auth::{Auth, SaslMechanism};
+use super::auth::Auth;
+#[cfg(feature = "aws")]
+use super::auth::SaslMechanism;
+#[cfg(feature = "aws")]
 use super::aws::AwsMskAuthClientContext;
 
 /// Resolves the Kafka security protocol string from TLS and Auth configuration.
@@ -37,6 +46,7 @@ pub fn resolve_security_protocol(tls: Option<&TlsConfig>, auth: Option<&Auth>) -
     match (tls, auth) {
         (Some(_), Some(_)) => "SASL_SSL",
         (Some(_), None) => "SSL",
+        #[cfg(feature = "aws")]
         (None, Some(Auth::Sasl(sasl)))
             if sasl.mechanism() == SaslMechanism::AwsMskIamOauthbearer =>
         {
@@ -52,7 +62,8 @@ pub fn resolve_security_protocol(tls: Option<&TlsConfig>, auth: Option<&Auth>) -
 /// Supports:
 /// - **PLAIN / SCRAM-SHA-256 / SCRAM-SHA-512**: sets `sasl.mechanism`,
 ///   `sasl.username`, and `sasl.password`.
-/// - **AWS MSK IAM OAUTHBEARER**: sets `sasl.mechanism` to `OAUTHBEARER`.
+/// - **AWS MSK IAM OAUTHBEARER**: sets `sasl.mechanism` to `OAUTHBEARER`
+///   (requires the `aws` feature).
 pub fn apply_sasl_config(auth: Option<&Auth>, config: &mut ClientConfig) {
     if let Some(Auth::Sasl(sasl_auth)) = auth {
         let mechanism = sasl_auth.mechanism();
@@ -81,6 +92,7 @@ pub fn apply_sasl_config(auth: Option<&Auth>, config: &mut ClientConfig) {
 /// presence of the `aws_msk` block. Even if a misconfigured `SaslAuth` has an
 /// `aws_msk` block with a non-MSK mechanism (which `validate()` now rejects),
 /// this function will not create an OAUTHBEARER context for it.
+#[cfg(feature = "aws")]
 #[must_use]
 pub fn build_aws_msk_context(auth: Option<&Auth>) -> Option<AwsMskAuthClientContext> {
     if let Some(Auth::Sasl(sasl_auth)) = auth {
@@ -127,7 +139,7 @@ impl TlsConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::kafka_util::auth::SaslAuth;
+    use crate::common::kafka::auth::{SaslAuth, SaslMechanism};
 
     fn make_tls() -> TlsConfig {
         TlsConfig::new(
@@ -139,12 +151,19 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "aws")]
     fn make_aws_msk_auth() -> Auth {
         Auth::new_aws_msk_iam("us-east-1".to_string())
     }
 
+    #[cfg(feature = "aws")]
     fn make_generic_sasl_auth() -> Auth {
         Auth::Sasl(SaslAuth::new(SaslMechanism::Plain, None))
+    }
+
+    #[cfg(not(feature = "aws"))]
+    fn make_generic_sasl_auth() -> Auth {
+        Auth::Sasl(SaslAuth::new(SaslMechanism::Plain))
     }
 
     fn make_plain_auth() -> Auth {
@@ -173,6 +192,7 @@ mod tests {
 
     // ── resolve_security_protocol ───────────────────────────
 
+    #[cfg(feature = "aws")]
     #[test]
     fn protocol_tls_and_auth() {
         let tls = make_tls();
@@ -189,6 +209,7 @@ mod tests {
         assert_eq!(resolve_security_protocol(Some(&tls), None), "SSL");
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn protocol_aws_msk_without_tls() {
         let auth = make_aws_msk_auth();
@@ -230,6 +251,7 @@ mod tests {
 
     // ── apply_sasl_config ───────────────────────────────────
 
+    #[cfg(feature = "aws")]
     #[test]
     fn sasl_config_sets_oauthbearer_for_aws_msk() {
         let auth = make_aws_msk_auth();
@@ -298,29 +320,34 @@ mod tests {
 
     // ── build_aws_msk_context ───────────────────────────────
 
+    #[cfg(feature = "aws")]
     #[test]
     fn aws_msk_context_from_aws_auth() {
         let auth = make_aws_msk_auth();
         assert!(build_aws_msk_context(Some(&auth)).is_some());
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn aws_msk_context_none_for_generic_sasl() {
         let auth = make_generic_sasl_auth();
         assert!(build_aws_msk_context(Some(&auth)).is_none());
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn aws_msk_context_none_for_plain_auth() {
         let auth = make_plain_auth();
         assert!(build_aws_msk_context(Some(&auth)).is_none());
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn aws_msk_context_none_when_no_auth() {
         assert!(build_aws_msk_context(None).is_none());
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn aws_msk_context_none_for_plain_with_aws_msk_block() {
         // Defense-in-depth: even if a misconfigured SaslAuth has an aws_msk
