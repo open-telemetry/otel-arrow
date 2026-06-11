@@ -9,7 +9,7 @@
 
 use crate::Interests;
 use crate::channel_metrics::ChannelMetricsRegistry;
-use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
+use crate::channel_mode::{LocalMode, SharedMode, wrap_node_control_channel_metrics};
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
@@ -223,7 +223,7 @@ impl<PData> ExporterWrapper<PData> {
                 ..
             } => {
                 let (control_sender, control_receiver) =
-                    wrap_control_channel_metrics::<LocalMode, NodeControlMsg<PData>>(
+                    wrap_node_control_channel_metrics::<LocalMode, NodeControlMsg<PData>>(
                         node_id.name.as_ref(),
                         pipeline_ctx,
                         channel_metrics,
@@ -258,7 +258,7 @@ impl<PData> ExporterWrapper<PData> {
                 ..
             } => {
                 let (control_sender, control_receiver) =
-                    wrap_control_channel_metrics::<SharedMode, NodeControlMsg<PData>>(
+                    wrap_node_control_channel_metrics::<SharedMode, NodeControlMsg<PData>>(
                         node_id.name.as_ref(),
                         pipeline_ctx,
                         channel_metrics,

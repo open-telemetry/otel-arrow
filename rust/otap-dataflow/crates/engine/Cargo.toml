@@ -57,7 +57,7 @@ otap-df-engine = { workspace = true, features = ["test-utils"] }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "time", "test-util"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }
