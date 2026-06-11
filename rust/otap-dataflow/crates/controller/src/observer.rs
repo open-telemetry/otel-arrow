@@ -54,8 +54,8 @@ impl EngineObserverContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::observed_state::ObservedStateSettings;
     use otap_df_config::PipelineKey;
+    use otap_df_config::observed_state::ObservedStateSettings;
     use otap_df_state::store::ObservedStateStore;
     use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
     use otap_df_telemetry::descriptor::{
@@ -156,10 +156,7 @@ mod tests {
 
     fn make_context_with_store() -> (EngineObserverContext, ObservedStateStore) {
         let registry = TelemetryRegistryHandle::new();
-        let store = ObservedStateStore::new(
-            &ObservedStateSettings::default(),
-            registry.clone(),
-        );
+        let store = ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
         let ctx = EngineObserverContext::new(store.handle(), registry);
         (ctx, store)
     }
@@ -169,10 +166,7 @@ mod tests {
     }
 
     fn test_pipeline_key() -> PipelineKey {
-        PipelineKey::new(
-            Cow::Borrowed("test_group"),
-            Cow::Borrowed("test_pipeline"),
-        )
+        PipelineKey::new(Cow::Borrowed("test_group"), Cow::Borrowed("test_pipeline"))
     }
 
     // Basic accessor tests
@@ -257,9 +251,8 @@ mod tests {
         let telemetry = ctx.telemetry_handle();
 
         // Register a metric set.
-        let metric_set = telemetry.register_metric_set::<MockMetricSet>(
-            MockAttributeSet::new("node_a"),
-        );
+        let metric_set =
+            telemetry.register_metric_set::<MockMetricSet>(MockAttributeSet::new("node_a"));
         assert_eq!(telemetry.metric_set_count(), 1);
 
         // Accumulate a snapshot with known values.
@@ -289,9 +282,8 @@ mod tests {
         let handle_b = ctx.telemetry_handle().clone();
 
         // Register through one clone.
-        let _metric_set = handle_a.register_metric_set::<MockMetricSet>(
-            MockAttributeSet::new("shared_node"),
-        );
+        let _metric_set =
+            handle_a.register_metric_set::<MockMetricSet>(MockAttributeSet::new("shared_node"));
 
         // Visible through the other clone.
         assert_eq!(handle_b.metric_set_count(), 1);
@@ -311,9 +303,9 @@ mod tests {
         store.set_pipeline_serving_generation(key.clone(), 0, 2);
 
         // Register metrics before spawning.
-        let metric_set = ctx.telemetry_handle().register_metric_set::<MockMetricSet>(
-            MockAttributeSet::new("thread_node"),
-        );
+        let metric_set = ctx
+            .telemetry_handle()
+            .register_metric_set::<MockMetricSet>(MockAttributeSet::new("thread_node"));
         ctx.telemetry_handle().accumulate_metric_set_snapshot(
             metric_set.metrics_key(),
             &[MetricValue::from(100u64), MetricValue::from(5u64)],
@@ -326,17 +318,22 @@ mod tests {
             // Verify state handle works from another thread.
             let snapshot = ctx_clone.state_handle().snapshot();
             assert_eq!(snapshot.len(), 1);
-            let status = ctx_clone.state_handle().pipeline_status(&key_clone).unwrap();
+            let status = ctx_clone
+                .state_handle()
+                .pipeline_status(&key_clone)
+                .unwrap();
             assert_eq!(status.active_generation(), Some(2));
             assert_eq!(status.serving_generations().len(), 1);
 
             // Verify telemetry handle works from another thread.
             assert_eq!(ctx_clone.telemetry_handle().metric_set_count(), 1);
             let mut visited = false;
-            ctx_clone.telemetry_handle().visit_current_metrics(|desc, _attrs, _iter| {
-                assert_eq!(desc.name, "observer_test_metrics");
-                visited = true;
-            });
+            ctx_clone
+                .telemetry_handle()
+                .visit_current_metrics(|desc, _attrs, _iter| {
+                    assert_eq!(desc.name, "observer_test_metrics");
+                    visited = true;
+                });
             assert!(visited);
         });
         handle.join().expect("spawned thread panicked");
