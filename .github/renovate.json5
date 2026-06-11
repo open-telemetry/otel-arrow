@@ -84,10 +84,16 @@
       ]
     },
     {
-      // limit Go and Rust git/module digest-only updates to once a week
-      // these trickle in frequently, so consolidate them
-      "groupName": "go and rust digest updates",
-      "matchManagers": ["gomod", "cargo"],
+      // limit Go git/module digest-only updates to once a week
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["digest"],
+      "schedule": [
+        "before 8am on Monday"
+      ]
+    },
+    {
+      // limit Rust git/module digest-only updates to once a week
+      "matchManagers": ["cargo"],
       "matchUpdateTypes": ["digest"],
       "schedule": [
         "before 8am on Monday"
