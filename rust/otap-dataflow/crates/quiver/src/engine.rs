@@ -18,13 +18,14 @@
 //! 4. **WAL Consumer Cursor**: After segment finalization, the WAL cursor is
 //!    advanced to allow cleanup of consumed entries.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::config::{DurabilityMode, QuiverConfig, RetentionPolicy};
@@ -108,10 +109,14 @@ pub struct QuiverEngine {
     force_dropped_bundles: AtomicU64,
     /// Count of individual data items lost due to force-dropped segments.
     force_dropped_items: AtomicU64,
+    /// Per-slot count of individual data items lost due to force-dropped segments.
+    force_dropped_items_per_slot: RwLock<HashMap<crate::record_bundle::SlotId, u64>>,
     /// Count of bundles lost due to expired segments (max_age retention).
     expired_bundles: AtomicU64,
     /// Count of individual data items lost due to expired segments.
     expired_items: AtomicU64,
+    /// Per-slot count of individual data items lost due to expired segments.
+    expired_items_per_slot: RwLock<HashMap<crate::record_bundle::SlotId, u64>>,
     /// Segment store for finalized segment files.
     segment_store: Arc<SegmentStore>,
     /// Subscriber registry for tracking consumption progress.
@@ -399,8 +404,10 @@ impl QuiverEngine {
             force_dropped_segments: AtomicU64::new(0),
             force_dropped_bundles: AtomicU64::new(0),
             force_dropped_items: AtomicU64::new(0),
+            force_dropped_items_per_slot: RwLock::new(HashMap::new()),
             expired_bundles: AtomicU64::new(0),
             expired_items: AtomicU64::new(0),
+            expired_items_per_slot: RwLock::new(HashMap::new()),
             segment_store,
             registry: registry.clone(),
             budget: budget.clone(),
@@ -498,6 +505,17 @@ impl QuiverEngine {
         self.force_dropped_items.load(Ordering::Relaxed)
     }
 
+    /// Returns the number of individual data items lost due to force-dropped segments for a specific slot.
+    ///
+    /// This metric provides granular visibility into data loss by signal type.
+    pub fn force_dropped_items_for_slot(&self, slot: crate::record_bundle::SlotId) -> u64 {
+        self.force_dropped_items_per_slot
+            .read()
+            .get(&slot)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Returns the total number of bundles lost due to expired segments.
     ///
     /// This counter tracks data loss from segments deleted because they
@@ -516,6 +534,36 @@ impl QuiverEngine {
     /// losses that occurred *during the current engine lifetime* only.
     pub fn expired_items(&self) -> u64 {
         self.expired_items.load(Ordering::Relaxed)
+    }
+
+    /// Returns the number of individual data items lost due to expired segments for a specific slot.
+    ///
+    /// This metric provides granular visibility into data loss by signal type.
+    pub fn expired_items_for_slot(&self, slot: crate::record_bundle::SlotId) -> u64 {
+        self.expired_items_per_slot
+            .read()
+            .get(&slot)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Returns a snapshot of the per-slot force-dropped item counts.
+    ///
+    /// The returned map contains every slot that has recorded at least one
+    /// dropped item since engine startup. Callers can iterate the map and
+    /// translate slot IDs to signal types without coupling this layer to
+    /// OTel semantics.
+    pub fn force_dropped_items_per_slot_snapshot(
+        &self,
+    ) -> HashMap<crate::record_bundle::SlotId, u64> {
+        self.force_dropped_items_per_slot.read().clone()
+    }
+
+    /// Returns a snapshot of the per-slot expired item counts.
+    ///
+    /// See [`Self::force_dropped_items_per_slot_snapshot`] for usage notes.
+    pub fn expired_items_per_slot_snapshot(&self) -> HashMap<crate::record_bundle::SlotId, u64> {
+        self.expired_items_per_slot.read().clone()
     }
 
     /// Returns a snapshot of the open segment's bundle summaries.
@@ -1342,11 +1390,20 @@ impl QuiverEngine {
         let mut deleted = 0;
         let mut bundles_dropped: u64 = 0;
         let mut items_dropped: u64 = 0;
+        let mut items_dropped_per_slot: HashMap<crate::record_bundle::SlotId, u64> = HashMap::new();
+
         for seq in &to_drop {
             // Count bundles and items before deleting (single lock acquisition)
             if let Ok((bundles, items)) = self.segment_store.segment_drop_counts(*seq) {
                 bundles_dropped += bundles as u64;
                 items_dropped += items;
+            }
+            if let Ok(metadata) = self.segment_store.bundle_metadata(*seq) {
+                for bundle in metadata {
+                    if let Some(&slot) = bundle.slot_ids.first() {
+                        *items_dropped_per_slot.entry(slot).or_insert(0) += bundle.item_count;
+                    }
+                }
             }
             if let Err(e) = self.segment_store.delete_segment(*seq) {
                 otel_warn!("quiver.segment.drop", segment = seq.raw(), error = %e, error_type = "io", reason = "force_drop");
@@ -1370,6 +1427,13 @@ impl QuiverEngine {
         let _ = self
             .force_dropped_items
             .fetch_add(items_dropped, Ordering::Relaxed);
+
+        if !items_dropped_per_slot.is_empty() {
+            let mut global_map = self.force_dropped_items_per_slot.write();
+            for (slot, count) in items_dropped_per_slot {
+                *global_map.entry(slot).or_insert(0) += count;
+            }
+        }
 
         // Clean up registry internal state
         if let Some(&max_dropped) = to_drop.iter().max() {
@@ -1411,12 +1475,20 @@ impl QuiverEngine {
         let mut deleted = 0;
         let mut bundles_expired: u64 = 0;
         let mut items_expired: u64 = 0;
+        let mut items_expired_per_slot: HashMap<crate::record_bundle::SlotId, u64> = HashMap::new();
 
         for seq in &expired_segments {
             // Count bundles and items before deleting (single lock acquisition)
             if let Ok((bundles, items)) = self.segment_store.segment_drop_counts(*seq) {
                 bundles_expired += bundles as u64;
                 items_expired += items;
+            }
+            if let Ok(metadata) = self.segment_store.bundle_metadata(*seq) {
+                for bundle in metadata {
+                    if let Some(&slot) = bundle.slot_ids.first() {
+                        *items_expired_per_slot.entry(slot).or_insert(0) += bundle.item_count;
+                    }
+                }
             }
 
             if let Err(e) = self.segment_store.delete_segment(*seq) {
@@ -1453,6 +1525,12 @@ impl QuiverEngine {
             let _ = self
                 .expired_items
                 .fetch_add(items_expired, Ordering::Relaxed);
+        }
+        if !items_expired_per_slot.is_empty() {
+            let mut global_map = self.expired_items_per_slot.write();
+            for (slot, count) in items_expired_per_slot {
+                *global_map.entry(slot).or_insert(0) += count;
+            }
         }
 
         Ok(deleted)
