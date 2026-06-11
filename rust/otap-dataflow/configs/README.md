@@ -3,9 +3,13 @@
 This directory contains example engine configurations for the OTAP dataflow engine.
 Each file uses `version: otel_dataflow/v1` at the root.
 
+If you are learning how to write these files, start with
+[Configuration](../docs/configuration.md).
+
 Note: These configurations are based on the native OTAP dataflow engine
-configuration model, which is a superset of the Go Collector configuration
-model. Support for the Go Collector YAML format is planned for the future.
+configuration model, which is intentionally distinct from the OpenTelemetry Collector
+YAML model. Support for the OTel Collector YAML format will be explored in the
+future.
 
 ## Available Configurations
 
@@ -98,8 +102,8 @@ Generates fake data with performance metrics:
 Generates mixed-tenant traffic using weighted resource attribute rotation:
 
 - Uses `data_source: synthetic` with two resource attribute sets (`tenant.id:
-  prod` and `tenant.id: ppe`) weighted 3:1, producing a 75% / 25% batch split
-  per  pipeline.
+prod` and `tenant.id: ppe`) weighted 3:1, producing a 75% / 25% batch split
+  per pipeline.
 - Generates fake data -> performance exporter
 - View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
 

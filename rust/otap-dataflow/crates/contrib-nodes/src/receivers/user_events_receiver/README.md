@@ -2,7 +2,13 @@
 
 # Linux user_events Receiver
 
-**URN:** `urn:otel:receiver:user_events`
+## Metadata
+
+- Type: `receiver:user_events` (`urn:otel:receiver:user_events`)
+- Feature gate: `user_events-receiver`; `event_header` decoding requires `user_events-eventheader`
+- Stability: Experimental
+
+## Overview
 
 This receiver ingests Linux
 [`user_events`](https://docs.kernel.org/trace/user_events.html) tracepoints
@@ -19,6 +25,24 @@ It follows the OTAP Dataflow thread-per-core model:
 - one perf session per assigned CPU
 - one bounded drain loop per receiver
 - no shared hot-path state across pipeline threads
+
+## Getting Started
+
+Subscribe to at least one Linux `user_events` tracepoint:
+
+```yaml
+type: receiver:user_events
+config:
+  subscriptions:
+    - tracepoint: "myprovider_L2K1"
+      format:
+        type: tracefs
+  session:
+    per_cpu_buffer_size: 1048576
+  batching:
+    max_size: 512
+    max_duration: 50ms
+```
 
 ## Architecture
 
@@ -210,48 +234,44 @@ multiple list entries.
 ### Subscriptions
 
 ```yaml
-nodes:
-  ingest:
-    type: urn:otel:receiver:user_events
-    config:
-      subscriptions:
-        - tracepoint: "myprovider_L2K1"
-          format:
-            type: tracefs
-          limits:
-            max_pending_events: 1024
-            max_pending_bytes: 4194304
-      session:
-        per_cpu_buffer_size: 1048576  # bytes
-        limits:
-          max_pending_events: 4096
-          max_pending_bytes: 16777216
-        late_registration_poll_interval: 100ms
-      drain:
-        max_records_per_turn: 1024
-        max_bytes_per_turn: 1048576
-        max_drain_ns: 2ms  # duration string: 2ms, 500us, 1000000ns
-      batching:
-        max_size: 512
-        max_duration: 50ms
+type: receiver:user_events
+config:
+  subscriptions:
+    - tracepoint: "myprovider_L2K1"
+      format:
+        type: tracefs
+      limits:
+        max_pending_events: 1024
+        max_pending_bytes: 4194304
+  session:
+    per_cpu_buffer_size: 1048576  # bytes
+    limits:
+      max_pending_events: 4096
+      max_pending_bytes: 16777216
+    late_registration_poll_interval: 100ms
+  drain:
+    max_records_per_turn: 1024
+    max_bytes_per_turn: 1048576
+    max_drain_ns: 2ms  # duration string: 2ms, 500us, 1000000ns
+  batching:
+    max_size: 512
+    max_duration: 50ms
 ```
 
 Add another list entry when one receiver should listen to several tracepoints:
 
 ```yaml
-nodes:
-  ingest:
-    type: urn:otel:receiver:user_events
-    config:
-      subscriptions:
-        - tracepoint: "myprovider_L2K1"
-          format:
-            type: tracefs
-        - tracepoint: "app_L2K1"
-          format:
-            type: tracefs
-      session:
-        per_cpu_buffer_size: 1048576  # bytes
+type: receiver:user_events
+config:
+  subscriptions:
+    - tracepoint: "myprovider_L2K1"
+      format:
+        type: tracefs
+    - tracepoint: "app_L2K1"
+      format:
+        type: tracefs
+  session:
+    per_cpu_buffer_size: 1048576  # bytes
 ```
 
 With `subscriptions`, each per-CPU receiver instance still opens one
@@ -318,22 +338,72 @@ tracepoint sessions.
 
 ### Configuration Reference
 
-| Field | Default | Description |
-| --- | --- | --- |
-| `subscriptions` | none | Required non-empty list of `user_events` tracepoints. Each entry may be either `<event>` or `user_events:<event>`. |
-| `subscriptions[].format.type` | `tracefs` | Decode format for one subscription. `tracefs` is always supported; `event_header` requires the `user_events-eventheader` feature. |
-| `subscriptions[].limits.max_pending_events` | none | Optional per-subscription pending event cap. When `limits` is present, at least one pending cap must be set, and configured cap values must be greater than zero. |
-| `subscriptions[].limits.max_pending_bytes` | none | Optional per-subscription pending raw payload byte cap. Counts raw `event_data` bytes, matching `session.limits.max_pending_bytes`. When any subscription has effective limits (byte- and/or event-based), per-subscription queues and round-robin drain are enabled under the global session caps. |
-| `session.per_cpu_buffer_size` | `1048576` | Requested per-CPU perf ring size in bytes. Rounded up to at least one page and then to the next power of two. |
-| `session.wakeup_watermark` | `262144` | Reserved for future one_collect wakeup support; currently ignored. |
-| `session.limits.max_pending_events` | `4096` | Maximum parsed events buffered between one_collect callbacks and the receiver drain loop. New events are dropped when this cap is reached. |
-| `session.limits.max_pending_bytes` | `16777216` | Maximum raw event payload bytes buffered between one_collect callbacks and the receiver drain loop. New events are dropped when this cap would be exceeded. |
-| `session.late_registration_poll_interval` | none | Optional retry interval for late tracepoint registration. When absent, missing tracepoints fail startup immediately. |
-| `drain.max_records_per_turn` | `1024` | Maximum records popped from the receiver's pending queue per drain turn. |
-| `drain.max_bytes_per_turn` | `1048576` | Maximum payload bytes popped per drain turn. |
-| `drain.max_drain_ns` | `2ms` | Total drain-turn budget. Accepts duration strings such as `2ms`, `500us`, or `1000000ns`; must be greater than zero. |
-| `batching.max_size` | `512` | Flush once this many logs are buffered in the current Arrow batch. |
-| `batching.max_duration` | `50ms` | Flush interval for partially-filled batches. |
+```yaml
+type: receiver:user_events
+config:
+  # Required non-empty list of Linux user_events tracepoints. Each tracepoint
+  # may be either "<event>" or "user_events:<event>".
+  subscriptions:
+    - tracepoint: "myprovider_L2K1"
+      format:
+        # Decode format. "tracefs" is always supported; "event_header" requires
+        # the user_events-eventheader feature.
+        type: tracefs
+      limits:
+        # Optional per-subscription pending event cap. When "limits" is present,
+        # at least one pending cap must be set, and configured cap values must
+        # be greater than zero.
+        max_pending_events: 1024
+
+        # Optional per-subscription pending raw payload byte cap. Counts raw
+        # "event_data" bytes, matching session.limits.max_pending_bytes. When
+        # any subscription has effective limits, per-subscription queues and
+        # round-robin drain are enabled under the global session caps.
+        max_pending_bytes: 4194304
+
+  session:
+    # Requested per-CPU perf ring size in bytes (default: 1048576). The
+    # one_collect adapter rounds this up to at least one page and then to the
+    # next power of two.
+    per_cpu_buffer_size: 1048576
+
+    # Reserved for future one_collect wakeup support; currently ignored
+    # (default: 262144).
+    wakeup_watermark: 262144
+
+    limits:
+      # Maximum parsed events buffered between one_collect callbacks and the
+      # receiver drain loop (default: 4096).
+      max_pending_events: 4096
+
+      # Maximum raw event payload bytes buffered between one_collect callbacks
+      # and the receiver drain loop (default: 16777216).
+      max_pending_bytes: 16777216
+
+    # Optional retry interval for late tracepoint registration. When absent,
+    # missing tracepoints fail startup immediately.
+    late_registration_poll_interval: 100ms
+
+  drain:
+    # Maximum records popped from the pending queue per drain turn
+    # (default: 1024).
+    max_records_per_turn: 1024
+
+    # Maximum payload bytes popped per drain turn (default: 1048576).
+    max_bytes_per_turn: 1048576
+
+    # Total drain-turn budget (default: 2ms). Accepts duration strings such as
+    # "2ms", "500us", or "1000000ns"; must be greater than zero.
+    max_drain_ns: 2ms
+
+  batching:
+    # Flush once this many logs are buffered in the current Arrow batch
+    # (default: 512).
+    max_size: 512
+
+    # Flush interval for partially-filled batches (default: 50ms).
+    max_duration: 50ms
+```
 
 TODO: Add human-readable byte sizes such as `10KB`/`16MiB` if the dataflow
 configuration layer standardizes byte-size parsing.
