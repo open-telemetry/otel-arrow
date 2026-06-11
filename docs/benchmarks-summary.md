@@ -48,19 +48,20 @@ quantify what each of those choices costs and saves.
 
 The headline single-core numbers (multi-core scaling appears further below):
 
-- **Idle footprint:** ~14 MB of memory and 0.06% of one core.
+- **Idle footprint:** ~13.6 MB of memory and 0.06% of one core.
 - **100K logs/sec** (typical production load) sustained on one core at
-  **~23% CPU on OTAP** end-to-end, or **~65% CPU on OTLP** end-to-end.
+  **~38% CPU on OTAP** end-to-end, or **~65% CPU on OTLP** end-to-end.
 - **Peak throughput on one core, pass-through (forwarding only):**
-  **~2.64 million logs/sec on OTAP** vs ~625K logs/sec on OTLP — **~4.2x**.
+  **~1.87 million logs/sec on OTAP** vs ~385K logs/sec on OTLP — **~4.8x**.
 - **Peak throughput on one core, with attribute processing:**
-  **~2.58 million logs/sec on OTAP** vs ~360K logs/sec on OTLP — **~7.2x**.
-  Adding the processor costs OTAP less than 3% of its throughput, but costs
-  OTLP roughly 42%, because Arrow's columnar layout enables in-place
+  **~1.76 million logs/sec on OTAP** vs ~273K logs/sec on OTLP — **~6.4x**.
+  Adding the processor costs OTAP roughly 6%, but costs
+  OTLP roughly 29%, because Arrow's columnar layout enables in-place
   processing without deserialization.
-- **Multi-core scaling:** **~85–94% scaling efficiency** at 2, 4, and 8 cores
-  (1-core baseline runs at fully saturated 100% CPU), with memory growth of
-  roughly ~30 MB per added core. Capacity planning reduces to multiplication.
+- **Multi-core scaling (OTLP path):** **~81–91% scaling efficiency** at 2, 4,
+  8, and 16 cores (1-core baseline runs at fully saturated 100% CPU), with memory
+  growth of roughly ~25–35 MB per added core. Capacity planning reduces to
+  multiplication.
 
 The sections that follow back each of these numbers with full test
 parameters and conditions. For the complete set of automated performance
@@ -83,7 +84,7 @@ with the following specifications:
 [otlp-grpc]: https://opentelemetry.io/docs/specs/otlp/#otlpgrpc
 
 This consistent, high-performance environment ensures reproducible results and
-supports comprehensive testing across CPU-core configurations (1, 2, 4, and 8
+supports comprehensive testing across CPU-core configurations (1, 2, 4, 8, and 16
 cores) by constraining the engine to specific core allocations.
 
 ### Performance Metrics
@@ -97,7 +98,7 @@ overhead of a fully operational but unloaded engine.
 
 | CPU Utilization | Memory Usage |
 | --------------- | ------------ |
-| 0.06%           | 14 MB        |
+| 0.06%           | 13.6 MB      |
 
 *Note: CPU utilization is normalized to total system capacity (128 logical
 CPUs), so 0.06% corresponds to roughly 0.08 of one core — effectively idle.
@@ -111,6 +112,9 @@ idle, ensuring efficient operation in environments with highly variable
 telemetry loads — including edge agents that spend most of their time near
 zero load.
 
+TODO: Idle-state dashboard values are older than the other benchmark suites;
+refresh this section after the next continuous idle run is published.
+
 #### Standard Load Performance (Single Core)
 
 Resource utilization at 100,000 log records per second (100K logs/sec) on a
@@ -119,22 +123,26 @@ edge and gateway deployments.
 
 **Test Parameters:**
 
-- Ingress: ~100 MB/s (100,000 log records/second × ~1 KB average record size)
+- Ingress: target 100,000 log records/second (~30 MB/s uncompressed with the
+  current `semantic_conventions` profile at ~300 bytes/log)
 - Batch size: 512 records per request (the OpenTelemetry SDK default, and the
   most common production batch size)
 - Test duration: 60 seconds
 - *OTLP is [gRPC][otlp-grpc] with Protobuf encoding, no TLS.*
 
-| Protocol                | CPU Utilization | Memory Usage | Egress Bytes/Log  |
-| ----------------------- | --------------- | ------------ | ----------------- |
-| OTAP -> OTAP (Native)   | **23%**         | 20 MB        | **8.7 bytes/log** |
-| OTLP -> OTLP (Standard) | 65%             | 17 MB        | 31 bytes/log      |
+| Protocol                | CPU Utilization | Memory Usage | Egress Bytes/Log   |
+| ----------------------- | --------------- | ------------ | ------------------ |
+| OTAP -> OTAP (Native)   | **38%**         | 18.9 MB      | **12.7 bytes/log** |
+| OTLP -> OTLP (Standard) | 65%             | 19.4 MB      | 32.6 bytes/log     |
 
-At 100K logs/sec, end-to-end OTAP delivers a **~2.8x reduction in CPU
-utilization** and a **~3.6x reduction in network egress** compared to OTLP.
-Per-log network egress drops from 31 bytes (OTLP) to 8.7 bytes (OTAP) — a
+At 100K logs/sec, end-to-end OTAP delivers a **~1.7x reduction in CPU
+utilization** and a **~2.6x reduction in network egress** compared to OTLP.
+Per-log network egress drops from 32.6 bytes (OTLP) to 12.7 bytes (OTAP) — a
 direct result of Arrow's columnar layout with delta-dictionary encoding.
-Memory footprint stays under 25 MB in either configuration.
+Memory footprint stays under 20 MB in either configuration.
+
+TODO: Re-validate these 100kLRPS values after PR #2985 lands (it switches the
+rate-limited benchmark input profile and may shift egress/compression numbers).
 
 For batch-size sensitivity (10, 100, 512, 1024, 4096, 8192 records per
 request) across the same load, see the [detailed standard-load batch-size
@@ -165,11 +173,11 @@ materialize the in-memory representation of each record.
 
 | Protocol                | Max Throughput      | CPU Utilization | Memory Usage |
 | ----------------------- | ------------------- | --------------- | ------------ |
-| OTLP -> OTLP (Standard) | ~625K logs/sec      | ~100%           | ~27 MB       |
-| OTAP -> OTAP (Native)   | **~2.64M logs/sec** | ~100%           | ~47 MB       |
+| OTLP -> OTLP (Standard) | ~385K logs/sec      | ~81%            | ~24 MB       |
+| OTAP -> OTAP (Native)   | **~1.87M logs/sec** | ~100%           | ~41 MB       |
 
-OTAP pass-through is **~4.2x faster than OTLP** on the same core. A single core
-sustains over **2.6 million log records per second** end-to-end in the native
+OTAP pass-through is **~4.8x faster than OTLP** on the same core. A single core
+sustains over **1.8 million log records per second** end-to-end in the native
 protocol.
 
 ##### With Processing
@@ -181,19 +189,19 @@ renaming, or aggregation.
 
 | Protocol                | Max Throughput      | CPU Utilization | Memory Usage |
 | ----------------------- | ------------------- | --------------- | ------------ |
-| OTLP -> OTLP (Standard) | ~360K logs/sec      | ~100%           | ~23 MB       |
-| OTAP -> OTAP (Native)   | **~2.58M logs/sec** | ~100%           | ~48 MB       |
+| OTLP -> OTLP (Standard) | ~273K logs/sec      | ~90%            | ~25 MB       |
+| OTAP -> OTAP (Native)   | **~1.76M logs/sec** | ~100%           | ~41 MB       |
 
-OTAP with attribute processing is **~7.2x faster than OTLP** on the same core.
+OTAP with attribute processing is **~6.4x faster than OTLP** on the same core.
 Equally important is how little the processing step costs in OTAP: adding the
-attribute processor reduces OTAP throughput by less than 3% (2.64M -> 2.58M
+attribute processor reduces OTAP throughput by roughly 6% (1.87M -> 1.76M
 logs/sec), because Arrow's columnar layout enables in-place processing without
-deserialization. The equivalent OTLP path loses ~42% of its throughput (625K ->
-360K logs/sec) to the deserialize / mutate / reserialize cycle that row-oriented
+deserialization. The equivalent OTLP path loses ~29% of its throughput (385K ->
+273K logs/sec) to the deserialize / mutate / reserialize cycle that row-oriented
 Protobuf requires.
 
 The practical implication for capacity planning: **one OTel Arrow core
-processing OTAP traffic replaces roughly seven OTLP cores** doing the same
+processing OTAP traffic replaces roughly six OTLP cores** doing the same
 work.
 
 #### Multi-Core Scalability
@@ -217,19 +225,17 @@ pipeline with no cross-core locks or shared mutable state.
 | CPU Cores | Max Throughput  | CPU Utilization | Scaling Efficiency | Memory Usage |
 | --------- | --------------- | --------------- | ------------------ | ------------ |
 | 1 Core    | ~144K logs/sec  | ~100%           | 100% (baseline)    | ~31 MB       |
-| 2 Cores   | ~266K logs/sec  | ~91%            | 92%                | ~52 MB       |
-| 4 Cores   | ~543K logs/sec  | ~95%            | 94%                | ~98 MB       |
-| 8 Cores   | ~980K logs/sec  | ~91%            | 85%                | ~211 MB      |
+| 2 Cores   | ~264K logs/sec  | ~91%            | 91%                | ~52 MB       |
+| 4 Cores   | ~486K logs/sec  | ~87%            | 84%                | ~99 MB       |
+| 8 Cores   | ~937K logs/sec  | ~88%            | 81%                | ~209 MB      |
+| 16 Cores  | ~2.01M logs/sec | ~95%            | 87%                | ~479 MB      |
 
 Scaling Efficiency = (Throughput at N cores) / (N × Single-core throughput).
 
-Across the 2-, 4-, and 8-core configurations scaling efficiency holds at
-**~85–94%**, and the 1-core baseline runs at a fully saturated 100% CPU.
-Memory grows linearly at roughly **~30 MB per added core**, making capacity
-planning a straightforward multiplication. Validation of scaling beyond 8
-cores is an active workstream — pushing those runs to engine saturation
-requires removing a load-generator ceiling on the test harness, not changes
-to the engine itself.
+Across the 2-, 4-, 8-, and 16-core configurations scaling efficiency holds at
+**~81–91%**, and the 1-core baseline runs at a fully saturated 100% CPU.
+Memory grows roughly linearly at about **~25–35 MB per added core** in this
+range, making capacity planning a straightforward multiplication.
 
 ---
 
