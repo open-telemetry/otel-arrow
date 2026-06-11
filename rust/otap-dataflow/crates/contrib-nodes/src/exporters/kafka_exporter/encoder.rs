@@ -72,7 +72,7 @@ pub fn encode_to_batch_arrow_record_bytes(
         .map_err(|e| EncodingError::BatchArrowRecordConversionError(format!("{}", e)))?;
     producer
         .reset_streams()
-        .expect("Failed to reset producer streams");
+        .map_err(|e| EncodingError::BatchArrowRecordConversionError(format!("{}", e)))?;
     Ok(bar.encode_to_vec())
 }
 

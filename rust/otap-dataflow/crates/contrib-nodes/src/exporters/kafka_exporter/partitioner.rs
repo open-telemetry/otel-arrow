@@ -15,13 +15,13 @@ use otap_df_otap::transport_headers::TransportHeaders;
 
 /// Build a deterministic partition key from transport headers.
 ///
-/// All headers from the pdata context are serialized (by normalized name and
-/// raw value) into a length-prefixed byte buffer. This ensures that requests
+/// All headers from the pdata context are serialized (by transport header name
+/// and raw value) into a length-prefixed byte buffer. This ensures that requests
 /// carrying the same set of transport headers (e.g., same tenant ID, same auth
 /// token) produce the same key and are therefore routed to the same Kafka
 /// partition by librdkafka's partitioner.
 ///
-/// Using the normalized name (rather than the original wire name) means that
+/// Using the transport header name means that
 /// headers differing only in casing or formatting (e.g. `X-Tenant-Id` vs
 /// `x-tenant-id`) produce the same key.
 ///

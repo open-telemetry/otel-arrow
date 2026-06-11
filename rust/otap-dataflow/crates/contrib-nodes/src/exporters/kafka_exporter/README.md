@@ -66,13 +66,13 @@ permanently nack it (non-retryable).
 | `topic` | string | **required** | Kafka topic to produce messages to (static fallback). |
 | `encoding` | string | `"otlp_proto"` | Encoding format: `otlp_proto` or `otap_proto`. |
 | `topic_from_transport_header` | string | *none* | Transport header name for dynamic topic routing. When set and the header is present, its value overrides `topic`. See [Dynamic Topic Routing](#dynamic-topic-routing). |
-| `partition_by_transport_headers` | bool | `false` | Hash all transport headers into a partition key. See [Partitioning](#partitioning). |
+| `partition_by_transport_headers` | bool | `false` | Serialize all transport headers into a Kafka record key. See [Partitioning](#partitioning). |
 
 ### Dynamic Topic Routing
 
 Each signal can optionally specify a `topic_from_transport_header` field.
 When set, the exporter checks the incoming pdata context for a transport
-header matching the configured normalized name. If the header is present,
+header matching the configured transport header name. If the header is present,
 its value is used as the Kafka destination topic instead of the static
 `topic` field.
 
@@ -212,8 +212,8 @@ select a partition. This ensures that requests carrying the same set of
 transport headers (e.g., same tenant ID, same auth token) always produce
 the same key and are therefore routed to the same Kafka partition.
 
-The key format is order-independent (headers are sorted by normalized name
-and value before serialization) and unambiguous (each field is
+The key format is order-independent (headers are sorted by transport header
+name and value before serialization) and unambiguous (each field is
 length-prefixed with a big-endian `u32`, so distinct header sets always
 produce distinct keys with zero collision risk).
 

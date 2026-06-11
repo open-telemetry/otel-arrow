@@ -15,6 +15,7 @@
 //!
 
 // TODO: allow prefix or acl mechanism so the operator can have some control over where these messages wind up (e.g. topic must start with tenant_)
+// TODO: Consider adding an operator-controlled restriction (e.g., allowlist, prefix constraint, or regex)
 
 use super::config::SignalConfig;
 use super::metrics::KafkaExporterMetrics;
@@ -71,8 +72,7 @@ impl TopicRouter {
         Cow::Borrowed(signal_config.topic())
     }
 
-    /// Looks up the signal-specific header key in transport headers by
-    /// normalized name.
+    /// Looks up the signal-specific header key in transport headers
     ///
     /// Returns the first matching header's string value, or `None` if the
     /// header key is not configured for this signal or the header is absent.

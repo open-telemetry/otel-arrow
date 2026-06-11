@@ -133,7 +133,7 @@ impl<'a> AckNackReporter for EffectHandlerReporter<'a> {
 /// Exports telemetry data (traces, metrics, logs) to Apache Kafka topics using the rdkafka client.
 ///
 /// Supports dynamic topic routing via transport headers and resource attributes,
-/// with a priority hierarchy: transport header > resource attribute > static topic.
+/// with a priority hierarchy: transport header > static topic.
 ///
 /// Error handling follows a "log and continue" policy:
 /// - Export failures are logged via the effect handler and recorded in metrics.

@@ -87,7 +87,7 @@ where
                 .spawn(move || {
                     trace!("Polling thread loop started");
                     loop {
-                        // Running this in a tight loop results in non-negligable cpu utilization
+                        // Running this in a tight loop results in non-negligible cpu utilization
                         // for each thread (1-2% of a core while idle). We increase the duration to 1 second, and sacrifice
                         // potential delay in the stop signal in exchange for much lower resource use.
                         producer.poll(Duration::from_millis(1000));
