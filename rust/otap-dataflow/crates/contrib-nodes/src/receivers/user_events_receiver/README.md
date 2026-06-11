@@ -291,9 +291,9 @@ separate receiver nodes instead.
 The receiver bounds the in-process pending queue between one_collect perf
 callbacks and the drain loop with `session.limits.max_pending_events` and
 `session.limits.max_pending_bytes`. When parse rate exceeds drain rate and
-either cap is reached, new events are dropped before their payload is copied
-into user space and counted as `dropped_pending_overflow`. This cap covers only
-the adapter pending queue; kernel perf ring memory is governed by
+either cap is reached, new events are dropped before the adapter copies their
+payload into the pending queue and counted as `dropped_pending_overflow`. This
+cap covers only the adapter pending queue; kernel perf ring memory is governed by
 `session.per_cpu_buffer_size`, Arrow batch memory by `batching.*`, and
 downstream channel pressure by the engine's bounded local channel.
 
