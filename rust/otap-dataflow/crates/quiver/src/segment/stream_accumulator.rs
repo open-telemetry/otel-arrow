@@ -765,13 +765,13 @@ fn dict_values<'a>(col: &'a ArrayRef, key_type: &DataType) -> Result<&'a dyn Arr
 /// not 256).
 fn key_type_capacity(dt: &DataType) -> usize {
     match dt {
-        DataType::Int8 => i8::MAX as usize + 1,
-        DataType::Int16 => i16::MAX as usize + 1,
-        DataType::Int32 => i32::MAX as usize + 1,
-        DataType::Int64 => i64::MAX as usize + 1,
-        DataType::UInt8 => u8::MAX as usize + 1,
-        DataType::UInt16 => u16::MAX as usize + 1,
-        DataType::UInt32 => u32::MAX as usize + 1,
+        DataType::Int8 => (i8::MAX as usize).saturating_add(1),
+        DataType::Int16 => (i16::MAX as usize).saturating_add(1),
+        DataType::Int32 => (i32::MAX as usize).saturating_add(1),
+        DataType::Int64 => (i64::MAX as usize).saturating_add(1),
+        DataType::UInt8 => (u8::MAX as usize).saturating_add(1),
+        DataType::UInt16 => (u16::MAX as usize).saturating_add(1),
+        DataType::UInt32 => (u32::MAX as usize).saturating_add(1),
         DataType::UInt64 => usize::MAX, // effectively unlimited on 64-bit
         _ => 0,
     }

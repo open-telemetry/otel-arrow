@@ -112,6 +112,8 @@ struct SegmentHandle {
     bundle_count: u32,
     /// Total number of logical data items across all bundles.
     total_item_count: u64,
+    /// Number of items per slot, computed from stream metadata.
+    items_per_slot: Arc<HashMap<crate::record_bundle::SlotId, u64>>,
     /// Size of the segment file in bytes.
     file_size_bytes: u64,
     /// Time when the segment was finalized (from file modification time).
@@ -146,12 +148,18 @@ impl SegmentHandle {
             .map(|entry| entry.item_count())
             .sum::<u64>();
 
+        let mut items_per_slot = HashMap::new();
+        for stream in reader.streams() {
+            *items_per_slot.entry(stream.slot_id).or_insert(0) += stream.row_count;
+        }
+
         Ok(Self {
             seq,
             path,
             reader,
             bundle_count,
             total_item_count,
+            items_per_slot: Arc::new(items_per_slot),
             file_size_bytes,
             finalized_at,
         })
@@ -840,12 +848,19 @@ impl SegmentProvider for SegmentStore {
             .collect())
     }
 
-    fn segment_drop_counts(&self, segment_seq: SegmentSeq) -> Result<(u32, u64)> {
+    fn segment_drop_counts(
+        &self,
+        segment_seq: SegmentSeq,
+    ) -> Result<(u32, u64, Arc<HashMap<crate::record_bundle::SlotId, u64>>)> {
         let segments = self.segments.read();
         let handle = segments
             .get(&segment_seq)
             .ok_or_else(|| SubscriberError::segment_not_found(segment_seq.raw()))?;
-        Ok((handle.bundle_count, handle.total_item_count))
+        Ok((
+            handle.bundle_count,
+            handle.total_item_count,
+            handle.items_per_slot.clone(),
+        ))
     }
 
     fn read_bundle(&self, bundle_ref: BundleRef) -> Result<ReconstructedBundle> {

@@ -103,9 +103,12 @@ pub trait SegmentProvider: Send + Sync {
     /// Quiver needing to understand signal semantics.
     fn bundle_metadata(&self, segment_seq: SegmentSeq) -> Result<Vec<BundleMetadata>>;
 
-    /// Returns the bundle and total item counts for a segment in a single
-    /// lock acquisition.
-    fn segment_drop_counts(&self, segment_seq: SegmentSeq) -> Result<(u32, u64)>;
+    /// Returns the bundle and total item counts, plus per-slot item counts, for a segment
+    /// in a single lock acquisition.
+    fn segment_drop_counts(
+        &self,
+        segment_seq: SegmentSeq,
+    ) -> Result<(u32, u64, Arc<HashMap<SlotId, u64>>)>;
 
     /// Reads a bundle from a segment.
     fn read_bundle(&self, bundle_ref: BundleRef) -> Result<ReconstructedBundle>;
@@ -1112,12 +1115,15 @@ mod tests {
                 .collect())
         }
 
-        fn segment_drop_counts(&self, segment_seq: SegmentSeq) -> Result<(u32, u64)> {
+        fn segment_drop_counts(
+            &self,
+            segment_seq: SegmentSeq,
+        ) -> Result<(u32, u64, Arc<HashMap<SlotId, u64>>)> {
             let info = self.get_info(segment_seq)?;
-            Ok((
-                info.bundle_count,
-                info.bundle_count as u64 * info.items_per_bundle,
-            ))
+            let total_items = info.bundle_count as u64 * info.items_per_bundle;
+            // For tests, just return an empty per-slot count or mock it
+            let items_per_slot = Arc::new(HashMap::new());
+            Ok((info.bundle_count, total_items, items_per_slot))
         }
 
         fn read_bundle(&self, bundle_ref: BundleRef) -> Result<ReconstructedBundle> {
@@ -1980,7 +1986,8 @@ mod tests {
         let provider = Arc::new(MockSegmentProvider::new());
         provider.add_segment_with_items(1, 3, 100);
 
-        let (bundles, items) = provider.segment_drop_counts(SegmentSeq::new(1)).unwrap();
+        let (bundles, items, _slot_counts) =
+            provider.segment_drop_counts(SegmentSeq::new(1)).unwrap();
         assert_eq!(bundles, 3);
         assert_eq!(
             items, 300,
