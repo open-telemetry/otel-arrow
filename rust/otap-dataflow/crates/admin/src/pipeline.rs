@@ -872,4 +872,61 @@ mod tests {
         assert_eq!(status.state, "failed");
         assert_eq!(status.failure_reason.as_deref(), Some("delete failed"));
     }
+
+    /// Scenario: pipeline deletion targets a missing group.
+    /// Guarantees: the handler returns HTTP 404 with the typed operation error
+    /// shape used by SDK callers.
+    #[tokio::test]
+    async fn delete_pipeline_returns_not_found_for_missing_group() {
+        let response = delete_pipeline(
+            Path(("missing".to_string(), "main".to_string())),
+            Query(DeleteOptions { timeout_secs: 30 }),
+            State(test_app_state(Arc::new(StubControlPlane {
+                replace_result: Ok(rollout_status(PipelineRolloutState::Succeeded)),
+                rollout_status_result: Ok(None),
+                shutdown_result: Ok(shutdown_status("succeeded")),
+                shutdown_status_result: Ok(None),
+                delete_result: Err(ControlPlaneError::GroupNotFound),
+            }))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let error: OperationError =
+            serde_json::from_slice(&body).expect("error body should deserialize");
+        assert_eq!(error.kind, OperationErrorKind::GroupNotFound);
+    }
+
+    /// Scenario: pipeline deletion targets a missing logical pipeline in an
+    /// existing group.
+    /// Guarantees: the handler returns HTTP 404 with the pipeline-not-found
+    /// operation error kind.
+    #[tokio::test]
+    async fn delete_pipeline_returns_not_found_for_missing_pipeline() {
+        let response = delete_pipeline(
+            Path(("default".to_string(), "missing".to_string())),
+            Query(DeleteOptions { timeout_secs: 30 }),
+            State(test_app_state(Arc::new(StubControlPlane {
+                replace_result: Ok(rollout_status(PipelineRolloutState::Succeeded)),
+                rollout_status_result: Ok(None),
+                shutdown_result: Ok(shutdown_status("succeeded")),
+                shutdown_status_result: Ok(None),
+                delete_result: Err(ControlPlaneError::PipelineNotFound),
+            }))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let error: OperationError =
+            serde_json::from_slice(&body).expect("error body should deserialize");
+        assert_eq!(error.kind, OperationErrorKind::PipelineNotFound);
+    }
 }

@@ -1125,6 +1125,99 @@ mod tests {
         assert_eq!(response.state, "succeeded");
     }
 
+    /// Scenario: a group delete operation reaches a terminal failed state and
+    /// the server reports it with HTTP 409.
+    /// Guarantees: the SDK treats the body as a delete result rather than a
+    /// request-rejection error when it matches the delete status schema.
+    #[tokio::test]
+    async fn group_delete_decodes_failed_status_from_409_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/groups/default"))
+            .and(query_param("timeout_secs", "30"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "pipelineGroupId": "default",
+                "state": "failed",
+                "startedAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:30Z",
+                "failureReason": "pipeline deletion failed"
+            })))
+            .mount(&server)
+            .await;
+
+        let response = client(&server)
+            .groups()
+            .delete("default", &operations::DeleteOptions { timeout_secs: 30 })
+            .await
+            .expect("group delete status should decode");
+
+        assert_eq!(response.pipeline_group_id.as_ref(), "default");
+        assert_eq!(response.state, "failed");
+    }
+
+    /// Scenario: a group create request is rejected as invalid by the server.
+    /// Guarantees: the SDK decodes the shared operation error shape.
+    #[tokio::test]
+    async fn group_create_decodes_operation_error_from_422_body() {
+        let server = MockServer::start().await;
+        let group = config::pipeline_group::PipelineGroupConfig::new();
+        Mock::given(method("POST"))
+            .and(path("/api/v1/groups/default"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+                "kind": "invalid_request",
+                "message": "pipeline group creation only supports empty groups"
+            })))
+            .mount(&server)
+            .await;
+
+        let err = client(&server)
+            .groups()
+            .create("default", &group)
+            .await
+            .expect_err("invalid group create should fail");
+
+        match err {
+            Error::AdminOperation { status, error } => {
+                assert_eq!(status, 422);
+                assert_eq!(error.kind, operations::OperationErrorKind::InvalidRequest);
+                assert_eq!(
+                    error.message.as_deref(),
+                    Some("pipeline group creation only supports empty groups")
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// Scenario: a group delete request targets a missing group.
+    /// Guarantees: the SDK decodes the shared operation error shape.
+    #[tokio::test]
+    async fn group_delete_decodes_operation_error_from_404_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/groups/missing"))
+            .and(query_param("timeout_secs", "30"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "kind": "group_not_found"
+            })))
+            .mount(&server)
+            .await;
+
+        let err = client(&server)
+            .groups()
+            .delete("missing", &operations::DeleteOptions { timeout_secs: 30 })
+            .await
+            .expect_err("missing group delete should fail");
+
+        match err {
+            Error::AdminOperation { status, error } => {
+                assert_eq!(status, 404);
+                assert_eq!(error.kind, operations::OperationErrorKind::GroupNotFound);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn pipeline_status_decodes_optional_payload() {
         let server = MockServer::start().await;
@@ -1448,6 +1541,40 @@ mod tests {
             .expect("shutdown status should decode");
 
         assert!(response.is_some());
+    }
+
+    /// Scenario: a caller deletes a pipeline through the SDK.
+    /// Guarantees: the backend uses DELETE with terminal delete options and
+    /// decodes a successful pipeline delete status.
+    #[tokio::test]
+    async fn pipeline_delete_uses_delete_route_and_query() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/groups/default/pipelines/main"))
+            .and(query_param("timeout_secs", "45"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "pipelineGroupId": "default",
+                "pipelineId": "main",
+                "state": "succeeded",
+                "startedAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:01Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let response = client(&server)
+            .pipelines()
+            .delete(
+                "default",
+                "main",
+                &operations::DeleteOptions { timeout_secs: 45 },
+            )
+            .await
+            .expect("pipeline delete should decode");
+
+        assert_eq!(response.pipeline_group_id.as_ref(), "default");
+        assert_eq!(response.pipeline_id.as_ref(), "main");
+        assert_eq!(response.state, "succeeded");
     }
 
     /// Scenario: a pipeline delete operation reaches a terminal failed state
