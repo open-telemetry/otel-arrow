@@ -31,7 +31,7 @@ use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
@@ -154,6 +154,12 @@ impl LogSamplingProcessor {
         let dropped = total - kept;
         self.metrics.log_signals_dropped.add(dropped as u64);
 
+        // Record keep/drop flow-metric decisions. These are no-ops unless this
+        // node is a decision node in a flow that enables `signals.kept` /
+        // `signals.dropped`.
+        effect_handler.record_flow_signals_kept(kept as u64);
+        effect_handler.record_flow_signals_dropped(dropped as u64);
+
         let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(filtered));
         if kept == 0 {
             effect_handler.notify_ack(AckMsg::new(pdata)).await?;
@@ -167,6 +173,13 @@ impl LogSamplingProcessor {
 
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for LogSamplingProcessor {
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        // The log sampling processor makes keep/drop decisions on log records,
+        // so it records `signals.kept` / `signals.dropped` when it lies within
+        // a flow that enables them.
+        ProcessorRuntimeRequirements::none().with_keep_drop_decisions()
+    }
+
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,

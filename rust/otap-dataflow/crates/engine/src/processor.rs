@@ -21,7 +21,8 @@ use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
 use crate::flow_metrics::{
-    FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
+    FlowDurationMetrics, FlowSignalsDroppedMetrics, FlowSignalsIncomingMetrics,
+    FlowSignalsKeptMetrics, FlowSignalsOutgoingMetrics,
 };
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
@@ -130,6 +131,10 @@ pub struct ProcessorRuntimeRequirements {
     /// Processor-local wakeup requirements, if the processor uses the local
     /// wakeup API.
     pub local_wakeups: Option<LocalWakeupRequirements>,
+    /// Whether this processor makes keep/drop decisions on signal items and
+    /// therefore records `signals.kept` / `signals.dropped` flow metrics when
+    /// it lies within a flow that enables them. Defaults to `false`.
+    pub makes_keep_drop_decisions: bool,
 }
 
 impl ProcessorRuntimeRequirements {
@@ -139,6 +144,7 @@ impl ProcessorRuntimeRequirements {
     pub const fn none() -> Self {
         Self {
             local_wakeups: None,
+            makes_keep_drop_decisions: false,
         }
     }
 
@@ -147,7 +153,16 @@ impl ProcessorRuntimeRequirements {
     pub const fn with_local_wakeups(live_slots: usize) -> Self {
         Self {
             local_wakeups: Some(LocalWakeupRequirements::new(live_slots)),
+            makes_keep_drop_decisions: false,
         }
+    }
+
+    /// Declare that this processor makes keep/drop decisions, enabling
+    /// `signals.kept` / `signals.dropped` flow-metric recording.
+    #[must_use]
+    pub const fn with_keep_drop_decisions(mut self) -> Self {
+        self.makes_keep_drop_decisions = true;
+        self
     }
 }
 
@@ -569,6 +584,8 @@ impl<PData> ProcessorWrapper<PData> {
             None,
             None,
             None,
+            None,
+            None,
             false,
         )
         .await
@@ -586,6 +603,8 @@ impl<PData> ProcessorWrapper<PData> {
         flow_signals_incoming_metric: Option<MetricSet<FlowSignalsIncomingMetrics>>,
         flow_duration_metric: Option<MetricSet<FlowDurationMetrics>>,
         flow_signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>>,
+        flow_signals_kept_metric: Option<MetricSet<FlowSignalsKeptMetrics>>,
+        flow_signals_dropped_metric: Option<MetricSet<FlowSignalsDroppedMetrics>>,
         flow_metrics_active: bool,
     ) -> Result<(), Error>
     where
@@ -617,6 +636,8 @@ impl<PData> ProcessorWrapper<PData> {
                     flow_signals_incoming_metric.clone(),
                     flow_duration_metric.clone(),
                     flow_signals_outgoing_metric.clone(),
+                    flow_signals_kept_metric.clone(),
+                    flow_signals_dropped_metric.clone(),
                     flow_metrics_active,
                 );
 
@@ -625,7 +646,8 @@ impl<PData> ProcessorWrapper<PData> {
                         match &mut msg {
                             Message::Control(NodeControlMsg::CollectTelemetry { .. })
                                 if effect_handler.is_flow_start()
-                                    || effect_handler.is_flow_end() =>
+                                    || effect_handler.is_flow_end()
+                                    || effect_handler.is_flow_decision() =>
                             {
                                 effect_handler.report_flow_metrics();
                             }
@@ -639,7 +661,10 @@ impl<PData> ProcessorWrapper<PData> {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Collect final metrics before exiting
-                if effect_handler.is_flow_start() || effect_handler.is_flow_end() {
+                if effect_handler.is_flow_start()
+                    || effect_handler.is_flow_end()
+                    || effect_handler.is_flow_decision()
+                {
                     effect_handler.report_flow_metrics();
                 }
                 processor
@@ -670,6 +695,8 @@ impl<PData> ProcessorWrapper<PData> {
                     flow_signals_incoming_metric.clone(),
                     flow_duration_metric.clone(),
                     flow_signals_outgoing_metric.clone(),
+                    flow_signals_kept_metric.clone(),
+                    flow_signals_dropped_metric.clone(),
                     flow_metrics_active,
                 );
 
@@ -678,7 +705,8 @@ impl<PData> ProcessorWrapper<PData> {
                         match &mut msg {
                             Message::Control(NodeControlMsg::CollectTelemetry { .. })
                                 if effect_handler.is_flow_start()
-                                    || effect_handler.is_flow_end() =>
+                                    || effect_handler.is_flow_end()
+                                    || effect_handler.is_flow_decision() =>
                             {
                                 effect_handler.report_flow_metrics();
                             }
@@ -692,7 +720,10 @@ impl<PData> ProcessorWrapper<PData> {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Collect final metrics before exiting
-                if effect_handler.is_flow_start() || effect_handler.is_flow_end() {
+                if effect_handler.is_flow_start()
+                    || effect_handler.is_flow_end()
+                    || effect_handler.is_flow_decision()
+                {
                     effect_handler.report_flow_metrics();
                 }
                 processor
@@ -860,8 +891,8 @@ mod tests {
         pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
     use crate::flow_metrics::{
-        FlowAttributeSet, FlowDurationMetrics, FlowSignalsIncomingMetrics,
-        FlowSignalsOutgoingMetrics,
+        FlowAttributeSet, FlowDurationMetrics, FlowSignalsDroppedMetrics,
+        FlowSignalsIncomingMetrics, FlowSignalsKeptMetrics, FlowSignalsOutgoingMetrics,
     };
     use crate::local::message::{LocalReceiver, LocalSender};
     use crate::local::processor as local;
@@ -1181,7 +1212,16 @@ mod tests {
             None,
             metrics_reporter,
         );
-        handler.set_flow_roles(true, false, Some(incoming_metric), None, None, true);
+        handler.set_flow_roles(
+            true,
+            false,
+            Some(incoming_metric),
+            None,
+            None,
+            None,
+            None,
+            true,
+        );
 
         handler.record_flow_signals_incoming(3);
         handler.record_flow_duration(10);
@@ -1224,6 +1264,8 @@ mod tests {
             None,
             Some(duration_metric),
             Some(outgoing_metric),
+            None,
+            None,
             true,
         );
 
@@ -1249,6 +1291,61 @@ mod tests {
         assert!(metrics_rx.try_recv().is_err());
     }
 
+    #[test]
+    fn flow_decision_node_reports_kept_and_dropped() {
+        let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
+        let entity_key = pipeline_ctx
+            .metrics_registry()
+            .register_entity(FlowAttributeSet::default());
+        let kept_metric = pipeline_ctx
+            .metrics_registry()
+            .register_metric_set_for_entity::<FlowSignalsKeptMetrics>(entity_key);
+        let dropped_metric = pipeline_ctx
+            .metrics_registry()
+            .register_metric_set_for_entity::<FlowSignalsDroppedMetrics>(entity_key);
+        let (metrics_rx, metrics_reporter) =
+            otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+        let mut handler = local::EffectHandler::<TestMsg>::new(
+            test_node("proc"),
+            std::collections::HashMap::new(),
+            None,
+            metrics_reporter,
+        );
+        // A decision node that is neither start nor end of the flow range.
+        handler.set_flow_roles(
+            false,
+            false,
+            None,
+            None,
+            None,
+            Some(kept_metric),
+            Some(dropped_metric),
+            true,
+        );
+        assert!(handler.is_flow_decision());
+
+        handler.record_flow_signals_kept(7);
+        handler.record_flow_signals_dropped(3);
+        // Recording incoming/outgoing here must be a no-op (not a start/end node).
+        handler.record_flow_signals_incoming(99);
+        handler.record_flow_signals_outgoing(99);
+        handler.report_flow_metrics();
+
+        let kept_snapshot = metrics_rx.try_recv().expect("kept metric should report");
+        let [MetricValue::Mmsc(kept)] = kept_snapshot.get_metrics() else {
+            panic!("expected kept metric");
+        };
+        assert_eq!(kept.count, 1);
+        assert!((kept.sum - 7.0).abs() < f64::EPSILON);
+        let dropped_snapshot = metrics_rx.try_recv().expect("dropped metric should report");
+        let [MetricValue::Mmsc(dropped)] = dropped_snapshot.get_metrics() else {
+            panic!("expected dropped metric");
+        };
+        assert_eq!(dropped.count, 1);
+        assert!((dropped.sum - 3.0).abs() < f64::EPSILON);
+        assert!(metrics_rx.try_recv().is_err());
+    }
+
     #[tokio::test]
     async fn flow_metric_auto_measures_process_without_timed() {
         let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
@@ -1257,6 +1354,7 @@ mod tests {
             start_node: "auto_measure_processor".into(),
             end_node: "auto_measure_processor".into(),
             purpose: "".into(),
+            decision: "".into(),
             pipeline_attrs: pipeline_ctx.pipeline_attribute_set(),
         };
         let entity_key = pipeline_ctx.metrics_registry().register_entity(attrs);
@@ -1322,6 +1420,8 @@ mod tests {
                             Some(start_metric_set),
                             Some(duration_metric_set),
                             Some(outgoing_metric_set),
+                            None,
+                            None,
                             true,
                         )
                         .await
