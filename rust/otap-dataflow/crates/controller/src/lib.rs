@@ -267,13 +267,20 @@ impl ControllerExtensionRegistry {
             + Sync
             + 'static,
     {
-        _ = self.factories.insert(
-            extension_type,
+        let replaced = self.factories.insert(
+            extension_type.clone(),
             RegisteredControllerExtensionFactory {
                 start: Arc::new(factory),
                 validate_config,
             },
         );
+        if replaced.is_some() {
+            otel_warn!(
+                "controller.extension_factory.duplicate_registration",
+                extension_type = extension_type.as_str(),
+                message = "Controller extension factory registration overwrote an existing factory for the same extension type"
+            );
+        }
     }
 
     fn get(&self, extension_type: &ExtensionUrn) -> Option<RegisteredControllerExtensionFactory> {
@@ -2500,6 +2507,12 @@ connections:
         otap_df_config::validation::no_config(config)
     }
 
+    fn accept_any_controller_extension_config(
+        _config: &serde_json::Value,
+    ) -> Result<(), otap_df_config::error::Error> {
+        Ok(())
+    }
+
     #[allow(unsafe_code)]
     #[distributed_slice(CONTROLLER_EXTENSION_FACTORIES)]
     pub static TEST_LINKED_CONTROLLER_EXTENSION_FACTORY: ControllerExtensionFactory =
@@ -2664,6 +2677,31 @@ groups:
         let monitor_type = CONTROLLER_MONITOR_EXTENSION_URN.into();
 
         assert!(registry.get(&monitor_type).is_none());
+    }
+
+    #[test]
+    fn duplicate_controller_extension_registration_uses_latest_factory() {
+        const DUPLICATE_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:duplicate";
+
+        let extension_type = ExtensionUrn::parse(DUPLICATE_CONTROLLER_EXTENSION_URN)
+            .expect("test extension URN should parse");
+        let mut registry = ControllerExtensionRegistry::empty();
+        registry.register(
+            extension_type.clone(),
+            start_test_linked_controller_extension,
+            otap_df_config::validation::no_config,
+        );
+        registry.register(
+            extension_type.clone(),
+            start_test_linked_controller_extension,
+            accept_any_controller_extension_config,
+        );
+
+        let factory = registry
+            .get(&extension_type)
+            .expect("extension factory should be registered");
+        (factory.validate_config)(&serde_json::json!({ "accepted_by_latest": true }))
+            .expect("duplicate registration should keep the latest factory");
     }
 
     #[test]
