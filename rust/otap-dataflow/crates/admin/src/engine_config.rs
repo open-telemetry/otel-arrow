@@ -42,7 +42,10 @@ pub async fn reconcile_config(
 ) -> impl IntoResponse {
     otel_info!("config.reconcile.requested");
 
-    match state.controller.reconcile_engine_config(request) {
+    match state
+        .run_terminal_control_plane(move |controller| controller.reconcile_engine_config(request))
+        .await
+    {
         Ok(status) => match status.state {
             crate::EngineConfigReconcileState::Succeeded => {
                 (StatusCode::OK, Json(status)).into_response()
@@ -204,6 +207,7 @@ mod tests {
             observed_state_store: observed_state_store.handle(),
             metrics_registry,
             controller,
+            terminal_control_plane_permits: Arc::new(tokio::sync::Semaphore::new(1)),
             log_tap: None,
             memory_pressure_state: MemoryPressureState::default(),
             target_info: Arc::from(""),
@@ -354,6 +358,35 @@ mod tests {
         )
         .await
         .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let error: OperationError =
+            serde_json::from_slice(&body).expect("error body should deserialize");
+        assert_eq!(error.kind, OperationErrorKind::Conflict);
+    }
+
+    /// Scenario: another terminal control-plane operation is already running
+    /// through the HTTP admin server.
+    /// Guarantees: the handler rejects instead of dispatching another blocking
+    /// controller call onto the blocking worker pool.
+    #[tokio::test]
+    async fn reconcile_config_returns_conflict_when_terminal_permit_is_busy() {
+        let state = test_app_state(stub(
+            Ok(empty_engine_config()),
+            Ok(reconcile_status(EngineConfigReconcileState::Succeeded)),
+        ));
+        let _permit = state
+            .terminal_control_plane_permits
+            .clone()
+            .try_acquire_owned()
+            .expect("test should acquire the only terminal permit");
+
+        let response = reconcile_config(State(state), Json(reconcile_request()))
+            .await
+            .into_response();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
         let body = to_bytes(response.into_body(), usize::MAX)

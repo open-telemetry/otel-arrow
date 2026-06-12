@@ -117,8 +117,10 @@ pub async fn delete_group(
     );
 
     match state
-        .controller
-        .delete_group(&pipeline_group_id, params.timeout_secs)
+        .run_terminal_control_plane(move |controller| {
+            controller.delete_group(&pipeline_group_id, params.timeout_secs)
+        })
+        .await
     {
         Ok(status) if status.state == "succeeded" => (StatusCode::OK, Json(status)).into_response(),
         Ok(status) => (StatusCode::CONFLICT, Json(status)).into_response(),
@@ -336,6 +338,7 @@ mod tests {
             observed_state_store: observed_state_store.handle(),
             metrics_registry,
             controller,
+            terminal_control_plane_permits: Arc::new(tokio::sync::Semaphore::new(1)),
             log_tap: None,
             memory_pressure_state: MemoryPressureState::default(),
             target_info: Arc::from(""),

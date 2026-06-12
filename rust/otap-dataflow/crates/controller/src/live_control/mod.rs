@@ -152,6 +152,7 @@ impl<
                 terminal_shutdowns: HashMap::new(),
                 generation_counters: HashMap::new(),
                 active_instances: 0,
+                active_engine_operation: None,
                 next_reconcile_id: 0,
                 next_rollout_id: 0,
                 next_shutdown_id: 0,
