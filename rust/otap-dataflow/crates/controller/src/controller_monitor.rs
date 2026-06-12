@@ -25,13 +25,11 @@ use crate::{
 use otap_df_config::ExtensionId;
 use otap_df_config::extension::ExtensionUserConfig;
 use otap_df_state::store::ObservedStateHandle;
-use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-use otap_df_telemetry::descriptor::{AttributeField, AttributeValueType};
 use otap_df_telemetry::instrument::Gauge;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::{otel_info, otel_warn};
-use otap_df_telemetry_macros::metric_set;
+use otap_df_telemetry_macros::{attribute_set, metric_set};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
@@ -132,36 +130,19 @@ fn start_controller_monitor_extension(
     }))
 }
 
-static CONTROLLER_MONITOR_ATTRIBUTES_DESCRIPTOR:
-    otap_df_telemetry::descriptor::AttributesDescriptor =
-    otap_df_telemetry::descriptor::AttributesDescriptor {
-        name: "controller.monitor.attrs",
-        fields: &[AttributeField {
-            key: "extension.id",
-            r#type: AttributeValueType::String,
-            brief: "Configured controller monitor extension instance identifier.",
-        }],
-    };
-
+#[attribute_set(name = "controller.monitor.attrs")]
+#[derive(Debug, Clone)]
 struct ControllerMonitorAttributes {
-    values: [AttributeValue; 1],
+    /// Configured controller monitor extension instance identifier.
+    #[attribute(key = "extension.id")]
+    extension_id: String,
 }
 
 impl ControllerMonitorAttributes {
     fn new(extension_id: &ExtensionId) -> Self {
         Self {
-            values: [AttributeValue::String(extension_id.as_ref().to_owned())],
+            extension_id: extension_id.as_ref().to_owned(),
         }
-    }
-}
-
-impl AttributeSetHandler for ControllerMonitorAttributes {
-    fn descriptor(&self) -> &'static otap_df_telemetry::descriptor::AttributesDescriptor {
-        &CONTROLLER_MONITOR_ATTRIBUTES_DESCRIPTOR
-    }
-
-    fn attribute_values(&self) -> &[AttributeValue] {
-        &self.values
     }
 }
 
