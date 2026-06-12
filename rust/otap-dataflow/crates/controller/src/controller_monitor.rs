@@ -5,8 +5,24 @@
 //!
 //! This extension is a small reference implementation for controller-level
 //! extension hooks and a useful default monitor for the stock `df_engine`
-//! binary. It is enabled only when declared under `engine.extensions` with the
-//! [`CONTROLLER_MONITOR_EXTENSION_URN`] type.
+//! binary. It is enabled only when declared under
+//! `engine.controller.extensions` with the [`CONTROLLER_MONITOR_EXTENSION_URN`]
+//! type.
+//!
+//! Example engine configuration:
+//!
+//! ```yaml
+//! version: otel_dataflow/v1
+//! engine:
+//!   controller:
+//!     extensions:
+//!       controller_monitor:
+//!         type: "urn:otel:extension:controller_monitor"
+//!         config:
+//!           interval: "30s"
+//!           log_snapshots: true
+//! groups: {}
+//! ```
 //!
 //! The monitor periodically reads the shared observed-state handle and
 //! telemetry registry exposed through [`ControllerExtensionContext`]. It reports

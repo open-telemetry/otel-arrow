@@ -172,7 +172,7 @@ type ControllerExtensionStartFn = dyn Fn(
 /// automatically.
 #[derive(Clone, Copy)]
 pub struct ControllerExtensionFactory {
-    /// Extension type URN matched against `engine.extensions.<id>.type`.
+    /// Extension type URN matched against `engine.controller.extensions.<id>.type`.
     pub name: &'static str,
     /// Short human-readable extension description.
     pub description: &'static str,
@@ -241,7 +241,7 @@ impl ControllerExtensionRegistry {
         self.register(factory.name.into(), factory.start);
     }
 
-    /// Registers a factory for an engine extension type.
+    /// Registers a factory for a controller extension type.
     pub fn register<F>(&mut self, extension_type: ExtensionUrn, factory: F)
     where
         F: Fn(
@@ -262,7 +262,7 @@ impl ControllerExtensionRegistry {
 /// Optional runtime integrations used when starting the controller.
 #[derive(Clone, Default)]
 pub struct ControllerRunOptions {
-    /// Controller extension factories available to configured engine extensions.
+    /// Controller extension factories available to configured controller extensions.
     pub extensions: ControllerExtensionRegistry,
 }
 
@@ -1859,7 +1859,7 @@ impl<
         telemetry_registry: TelemetryRegistryHandle,
     ) -> Result<Vec<PreparedControllerExtension>, Error> {
         let mut prepared_extensions = Vec::new();
-        for (extension_id, extension) in engine_config.engine.extensions.iter() {
+        for (extension_id, extension) in engine_config.engine.controller.extensions.iter() {
             let extension_type = extension.r#type.clone();
             let factory = options.extensions.get(&extension_type).ok_or_else(|| {
                 Error::ControllerExtensionNotRegistered {
@@ -2546,9 +2546,10 @@ version: otel_dataflow/v1
 engine:
   http_admin:
     bind_address: "127.0.0.1:0"
-  extensions:
-    controller_monitor:
-      type: "{}"
+  controller:
+    extensions:
+      controller_monitor:
+        type: "{}"
 {}
 groups: {{}}
         "#,
@@ -2564,9 +2565,10 @@ version: otel_dataflow/v1
 engine:
   http_admin:
     bind_address: "127.0.0.1:0"
-  extensions:
-    controller_monitor:
-      type: "{}"
+  controller:
+    extensions:
+      controller_monitor:
+        type: "{}"
 {}
 groups:
   g:
@@ -2699,9 +2701,9 @@ groups:
         controller
             .run_till_shutdown_with_options(
                 controller_monitor_engine_config(
-                    r#"      config:
-        interval: "10ms"
-        log_snapshots: false"#,
+                    r#"        config:
+          interval: "10ms"
+          log_snapshots: false"#,
                 ),
                 ControllerRunOptions::default(),
             )
@@ -2738,8 +2740,8 @@ groups:
         let err = controller
             .run_till_shutdown_with_options(
                 controller_monitor_engine_config(
-                    r#"      config:
-        interval: "0s""#,
+                    r#"        config:
+          interval: "0s""#,
                 ),
                 ControllerRunOptions::default(),
             )
@@ -2767,8 +2769,8 @@ groups:
         let err = controller
             .run_till_shutdown_with_observer_and_options(
                 controller_monitor_engine_config_with_pipeline(
-                    r#"      config:
-        interval: "0s""#,
+                    r#"        config:
+          interval: "0s""#,
                 ),
                 |handle| observed_state = Some(handle),
                 ControllerRunOptions::default(),

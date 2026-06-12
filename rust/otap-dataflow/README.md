@@ -421,9 +421,10 @@ For a complete runnable example, see
 ### Developing Controller Extensions
 
 Controller extensions are trusted in-process tasks started by the controller
-from `engine.extensions`. They are intended for embedding binaries that need to
-integrate controller-level behavior such as remote management, monitoring, or
-fleet coordination.
+from `engine.controller.extensions`. They are intended for embedding binaries
+that need to integrate controller-level behavior such as remote management,
+monitoring, or fleet coordination. They are not exposed to pipeline nodes as
+extension capabilities.
 
 A downstream extension crate registers a statically linked factory with the
 controller's `linkme` distributed slice:
@@ -494,11 +495,12 @@ registered factory URN:
 
 ```yaml
 engine:
-  extensions:
-    remote_control:
-      type: "urn:example:extension:remote_control"
-      config:
-        endpoint: "https://controller.example.com"
+  controller:
+    extensions:
+      remote_control:
+        type: "urn:example:extension:remote_control"
+        config:
+          endpoint: "https://controller.example.com"
 ```
 
 `ControllerRunOptions::default()` loads all linked controller extension
