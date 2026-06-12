@@ -105,11 +105,14 @@ use std::time::Duration;
 /// Error types and helpers for the controller module.
 pub mod error;
 mod live_control;
+/// Observer context for embedders using the controller as a library.
+pub mod observer;
 /// Reusable startup helpers (validation, CLI overrides, system info).
 pub mod startup;
 /// Utilities to spawn async tasks on dedicated threads with graceful shutdown.
 pub mod thread_task;
 
+use crate::observer::EngineObserverContext;
 use live_control::{
     ControllerRuntime, LaunchedPipelineThread, PanicReport, RuntimeInstanceError,
     RuntimeInstanceExit,
@@ -408,23 +411,25 @@ impl<
         self.run_with_mode(
             engine_config,
             RunMode::ParkMainThread,
-            None::<fn(ObservedStateHandle)>,
+            None::<fn(EngineObserverContext)>,
         )
     }
 
     /// Starts the controller and invokes `observer` with an
-    /// [`ObservedStateHandle`] as soon as the pipeline state store is ready.
+    /// [`EngineObserverContext`] as soon as the pipeline state store and
+    /// telemetry registry are ready.
     ///
     /// The callback fires once, before the engine blocks. Use it to obtain
-    /// zero-overhead, in-process access to pipeline liveness, readiness, and
-    /// health without going through the admin HTTP server.
+    /// zero-overhead, in-process access to pipeline liveness, readiness,
+    /// health, and internal metrics without going through the admin HTTP
+    /// server.
     pub fn run_forever_with_observer<F>(
         &self,
         engine_config: OtelDataflowSpec,
         observer: F,
     ) -> Result<(), Error>
     where
-        F: FnOnce(ObservedStateHandle),
+        F: FnOnce(EngineObserverContext),
     {
         self.run_with_mode(engine_config, RunMode::ParkMainThread, Some(observer))
     }
@@ -436,19 +441,19 @@ impl<
         self.run_with_mode(
             engine_config,
             RunMode::ShutdownWhenDone,
-            None::<fn(ObservedStateHandle)>,
+            None::<fn(EngineObserverContext)>,
         )
     }
 
     /// Like [`run_till_shutdown`](Self::run_till_shutdown), but invokes
-    /// `observer` with an [`ObservedStateHandle`] before blocking.
+    /// `observer` with an [`EngineObserverContext`] before blocking.
     pub fn run_till_shutdown_with_observer<F>(
         &self,
         engine_config: OtelDataflowSpec,
         observer: F,
     ) -> Result<(), Error>
     where
-        F: FnOnce(ObservedStateHandle),
+        F: FnOnce(EngineObserverContext),
     {
         self.run_with_mode(engine_config, RunMode::ShutdownWhenDone, Some(observer))
     }
@@ -1160,7 +1165,7 @@ impl<
         observer: Option<F>,
     ) -> Result<(), Error>
     where
-        F: FnOnce(ObservedStateHandle),
+        F: FnOnce(EngineObserverContext),
     {
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
@@ -1216,9 +1221,13 @@ impl<
         );
         let obs_state_handle = obs_state_store.handle();
 
-        // Notify the caller with a clone of the observed-state handle, if requested.
+        // Notify the caller with clones of the observed-state and telemetry
+        // handles, if an observer was requested.
         if let Some(observer) = observer {
-            observer(obs_state_handle.clone());
+            observer(EngineObserverContext::new(
+                obs_state_handle.clone(),
+                telemetry_registry.clone(),
+            ));
         }
 
         let engine_evt_reporter =
