@@ -1689,47 +1689,14 @@ impl<
         drop(metrics_reporter);
 
         let control_plane = runtime.control_plane();
-        let mut controller_extension_handles: Vec<ThreadLocalTaskHandle<(), Error>> = Vec::new();
-        for (extension_id, extension) in engine.extensions.iter() {
-            let extension_type = extension.r#type.clone();
-            let factory = options.extensions.get(&extension_type).ok_or_else(|| {
-                Error::ControllerExtensionNotRegistered {
-                    extension_id: extension_id.to_string(),
-                    extension_type: extension_type.to_string(),
-                }
-            })?;
-            let extension_id = extension_id.clone();
-            let extension_config = Arc::clone(extension);
-            let context = ControllerExtensionContext {
-                extension_id: extension_id.clone(),
-                extension: extension_config,
-                control_plane: Arc::clone(&control_plane),
-                observed_state: obs_state_handle.clone(),
-                telemetry_registry: telemetry_registry.clone(),
-                engine_config: engine_config.clone(),
-            };
-            let task_factory =
-                factory(context).map_err(|source| Error::ControllerExtensionStartError {
-                    extension_id: extension_id.to_string(),
-                    source,
-                })?;
-            let thread_name = format!("controller-extension-{}", extension_id.as_ref());
-            let runtime_extension_id = extension_id.to_string();
-            controller_extension_handles.push(spawn_thread_local_task(
-                thread_name,
-                admin_tracing_setup.clone(),
-                move |cancellation_token| {
-                    let task = task_factory(cancellation_token);
-                    async move {
-                        task.await
-                            .map_err(|source| Error::ControllerExtensionRuntimeError {
-                                extension_id: runtime_extension_id,
-                                source,
-                            })
-                    }
-                },
-            )?);
-        }
+        let controller_extension_handles = Self::start_controller_extensions(
+            &engine_config,
+            &options,
+            Arc::clone(&control_plane),
+            obs_state_handle.clone(),
+            telemetry_registry.clone(),
+            admin_tracing_setup.clone(),
+        )?;
 
         let admin_control_plane = Arc::clone(&control_plane);
         let admin_server_handle = spawn_thread_local_task(
@@ -1779,6 +1746,62 @@ impl<
         }
 
         Ok(())
+    }
+
+    fn start_controller_extensions(
+        engine_config: &OtelDataflowSpec,
+        options: &ControllerRunOptions,
+        control_plane: Arc<dyn ControlPlane>,
+        observed_state: ObservedStateHandle,
+        telemetry_registry: TelemetryRegistryHandle,
+        tracing_setup: TracingSetup,
+    ) -> Result<Vec<ThreadLocalTaskHandle<(), Error>>, Error> {
+        // Controller extensions are initialized after the runtime has registered
+        // the bootstrap pipelines and exposed the semantic control-plane handle.
+        // This gives each extension a complete startup view plus live handles for
+        // control-plane operations, observed state reads, and telemetry access.
+        let mut handles = Vec::new();
+        for (extension_id, extension) in engine_config.engine.extensions.iter() {
+            let extension_type = extension.r#type.clone();
+            let factory = options.extensions.get(&extension_type).ok_or_else(|| {
+                Error::ControllerExtensionNotRegistered {
+                    extension_id: extension_id.to_string(),
+                    extension_type: extension_type.to_string(),
+                }
+            })?;
+            let extension_id = extension_id.clone();
+            let extension_config = Arc::clone(extension);
+            let context = ControllerExtensionContext {
+                extension_id: extension_id.clone(),
+                extension: extension_config,
+                control_plane: Arc::clone(&control_plane),
+                observed_state: observed_state.clone(),
+                telemetry_registry: telemetry_registry.clone(),
+                engine_config: engine_config.clone(),
+            };
+            let task_factory =
+                factory(context).map_err(|source| Error::ControllerExtensionStartError {
+                    extension_id: extension_id.to_string(),
+                    source,
+                })?;
+            let thread_name = format!("controller-extension-{}", extension_id.as_ref());
+            let runtime_extension_id = extension_id.to_string();
+            handles.push(spawn_thread_local_task(
+                thread_name,
+                tracing_setup.clone(),
+                move |cancellation_token| {
+                    let task = task_factory(cancellation_token);
+                    async move {
+                        task.await
+                            .map_err(|source| Error::ControllerExtensionRuntimeError {
+                                extension_id: runtime_extension_id,
+                                source,
+                            })
+                    }
+                },
+            )?);
+        }
+        Ok(handles)
     }
 
     fn log_memory_limiter_tick(tick: MemoryLimiterTick) {
