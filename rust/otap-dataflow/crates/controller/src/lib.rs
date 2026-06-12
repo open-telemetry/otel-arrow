@@ -266,6 +266,11 @@ pub struct ControllerRunOptions {
     pub extensions: ControllerExtensionRegistry,
 }
 
+struct PreparedControllerExtension {
+    extension_id: ExtensionId,
+    task_factory: ControllerExtensionTaskFactory,
+}
+
 struct DeclaredTopics<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     broker: TopicBroker<PData>,
     global_names: HashMap<TopicName, TopicName>,
@@ -1587,6 +1592,20 @@ impl<
             engine_config.clone(),
         ));
 
+        let control_plane = runtime.control_plane();
+        // Extension factories are invoked before any pipeline thread is spawned
+        // so missing registrations or synchronous config errors fail startup
+        // without leaving already launched pipeline threads behind. The returned
+        // extension tasks are spawned later, after bootstrap pipelines have been
+        // registered, to preserve the runtime lifecycle view exposed to them.
+        let prepared_controller_extensions = Self::prepare_controller_extensions(
+            &engine_config,
+            &options,
+            Arc::clone(&control_plane),
+            obs_state_handle.clone(),
+            telemetry_registry.clone(),
+        )?;
+
         // Pipeline threads receive only a Weak handle back to the controller runtime. That lets
         // them report their terminal exit without becoming owners that keep the runtime alive
         // during shutdown.
@@ -1765,15 +1784,22 @@ impl<
 
         drop(metrics_reporter);
 
-        let control_plane = runtime.control_plane();
-        let controller_extension_handles = Self::start_controller_extensions(
-            &engine_config,
-            &options,
-            Arc::clone(&control_plane),
-            obs_state_handle.clone(),
-            telemetry_registry.clone(),
+        let controller_extension_handles = match Self::spawn_controller_extensions(
+            prepared_controller_extensions,
             admin_tracing_setup.clone(),
-        )?;
+        ) {
+            Ok(handles) => handles,
+            Err(err) => {
+                if let Err(shutdown_err) = control_plane.shutdown_all(10) {
+                    otel_warn!(
+                        "controller.extension_startup_shutdown_failed",
+                        error = format!("{shutdown_err:?}"),
+                        message = "Failed to shut down launched pipelines after controller extension startup failed"
+                    );
+                }
+                return Err(err);
+            }
+        };
 
         let admin_control_plane = Arc::clone(&control_plane);
         let admin_server_handle = spawn_thread_local_task(
@@ -1825,19 +1851,14 @@ impl<
         Ok(())
     }
 
-    fn start_controller_extensions(
+    fn prepare_controller_extensions(
         engine_config: &OtelDataflowSpec,
         options: &ControllerRunOptions,
         control_plane: Arc<dyn ControlPlane>,
         observed_state: ObservedStateHandle,
         telemetry_registry: TelemetryRegistryHandle,
-        tracing_setup: TracingSetup,
-    ) -> Result<Vec<ThreadLocalTaskHandle<(), Error>>, Error> {
-        // Controller extensions are initialized after the runtime has registered
-        // the bootstrap pipelines and exposed the semantic control-plane handle.
-        // This gives each extension a complete startup view plus live handles for
-        // control-plane operations, observed state reads, and telemetry access.
-        let mut handles = Vec::new();
+    ) -> Result<Vec<PreparedControllerExtension>, Error> {
+        let mut prepared_extensions = Vec::new();
         for (extension_id, extension) in engine_config.engine.extensions.iter() {
             let extension_type = extension.r#type.clone();
             let factory = options.extensions.get(&extension_type).ok_or_else(|| {
@@ -1861,6 +1882,24 @@ impl<
                     extension_id: extension_id.to_string(),
                     source,
                 })?;
+            prepared_extensions.push(PreparedControllerExtension {
+                extension_id,
+                task_factory,
+            });
+        }
+        Ok(prepared_extensions)
+    }
+
+    fn spawn_controller_extensions(
+        prepared_extensions: Vec<PreparedControllerExtension>,
+        tracing_setup: TracingSetup,
+    ) -> Result<Vec<ThreadLocalTaskHandle<(), Error>>, Error> {
+        let mut handles = Vec::new();
+        for prepared_extension in prepared_extensions {
+            let PreparedControllerExtension {
+                extension_id,
+                task_factory,
+            } = prepared_extension;
             let thread_name = format!("controller-extension-{}", extension_id.as_ref());
             let runtime_extension_id = extension_id.to_string();
             handles.push(spawn_thread_local_task(
@@ -2518,6 +2557,42 @@ groups: {{}}
         .expect("controller monitor config should parse")
     }
 
+    fn controller_monitor_engine_config_with_pipeline(monitor_config: &str) -> OtelDataflowSpec {
+        OtelDataflowSpec::from_yaml(&format!(
+            r#"
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:0"
+  extensions:
+    controller_monitor:
+      type: "{}"
+{}
+groups:
+  g:
+    pipelines:
+      p:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+        "#,
+            CONTROLLER_MONITOR_EXTENSION_URN, monitor_config
+        ))
+        .expect("controller monitor config should parse")
+    }
+
     fn resolved_pipeline_with_core_allocation(
         pipeline_group_id: &str,
         pipeline_id: &str,
@@ -2683,6 +2758,44 @@ groups: {{}}
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn controller_extension_start_error_prevents_bootstrap_pipeline_registration() {
+        let controller = Controller::new(empty_pipeline_factory());
+        let mut observed_state = None;
+        let err = controller
+            .run_till_shutdown_with_observer_and_options(
+                controller_monitor_engine_config_with_pipeline(
+                    r#"      config:
+        interval: "0s""#,
+                ),
+                |handle| observed_state = Some(handle),
+                ControllerRunOptions::default(),
+            )
+            .expect_err("invalid controller extension config should fail startup");
+
+        match err {
+            Error::ControllerExtensionStartError {
+                extension_id,
+                source,
+            } => {
+                assert_eq!(extension_id, "controller_monitor");
+                assert!(
+                    source.to_string().contains("greater than zero"),
+                    "unexpected error: {source}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        let snapshot = observed_state
+            .expect("observer should receive observed-state handle")
+            .snapshot();
+        assert!(
+            snapshot.is_empty(),
+            "extension startup errors should happen before bootstrap pipelines are registered"
+        );
     }
 
     #[test]
