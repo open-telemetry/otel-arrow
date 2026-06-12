@@ -786,6 +786,16 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                     session_name = session_name.as_str(),
                     error = %e,
                 );
+                // Also surface to stderr so that contexts without a
+                // telemetry subscriber (most notably integration tests)
+                // can see why the kernel session never started.  The
+                // common causes are ERROR_ACCESS_DENIED (process not
+                // elevated) and ERROR_ALREADY_EXISTS (a stale session
+                // with the same name is still active).
+                #[allow(clippy::print_stderr)]
+                {
+                    eprintln!("etw.parse_until.failed: session_name={session_name}, error={e}");
+                }
             }
 
             // The session thread exits only on unrecoverable ETW errors or
