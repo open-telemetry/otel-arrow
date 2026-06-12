@@ -110,6 +110,7 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          prefix-key: v1-rust
           workspaces: ./rust/${{ matrix.folder }}
           cache-bin: false
       - name: Free disk space (Linux)
@@ -322,6 +323,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          prefix-key: v1-rust
           workspaces: ./rust/${{ matrix.folder }}
           cache-bin: false
       - name: cargo clippy ${{ matrix.folder }}
@@ -483,6 +485,7 @@ jobs:
         uses: ./.github/actions/install-symcrypt
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          prefix-key: v1-rust
           workspaces: ./rust/${{ matrix.folder }}
           cache-bin: false
       - name: Free disk space (Linux)
@@ -588,6 +591,7 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          prefix-key: v1-rust
           workspaces: ./rust/otap-dataflow
           cache-bin: false
       - name: Free disk space
@@ -652,6 +656,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          prefix-key: v1-rust
           workspaces: ./rust/${{ matrix.folder }}
           cache-bin: false
       - name: Install OpenSSL (Windows)
