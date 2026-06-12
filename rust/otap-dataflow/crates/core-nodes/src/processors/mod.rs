@@ -42,3 +42,6 @@ pub mod log_sampling_processor;
 
 /// Temporal reaggregation processor.
 pub mod temporal_reaggregation_processor;
+
+/// Probe sink processor (records end-to-end latency for synthetic probes).
+pub mod probe_sink_processor;

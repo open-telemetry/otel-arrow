@@ -1,0 +1,9 @@
+change_type: new_component
+component: pipeline
+note: |
+  Add `urn:otel:receiver:probe_emitter` and `urn:otel:processor:probe_sink` for
+  end-to-end pipeline latency measurement. The receiver periodically emits a
+  synthetic OTLP log record stamped with a probe id and Unix-nanos timestamp;
+  the sink processor detects those probes, records a latency histogram, and
+  (by default) drops them before they reach downstream exporters.
+issues: [2325]
