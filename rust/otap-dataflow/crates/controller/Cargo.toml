@@ -21,6 +21,7 @@ otap-df-config = { workspace = true }
 otap-df-state = { workspace = true }
 otap-df-engine = { workspace = true }
 otap-df-telemetry = { workspace = true }
+otap-df-telemetry-macros = { workspace = true }
 otap-df-admin = { workspace = true }
 
 sysinfo = { workspace = true }

@@ -26,14 +26,12 @@ use otap_df_config::ExtensionId;
 use otap_df_config::extension::ExtensionUserConfig;
 use otap_df_state::store::ObservedStateHandle;
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-use otap_df_telemetry::descriptor::{
-    AttributeField, AttributeValueType, Instrument, MetricValueType, MetricsDescriptor,
-    MetricsField,
-};
+use otap_df_telemetry::descriptor::{AttributeField, AttributeValueType};
 use otap_df_telemetry::instrument::Gauge;
-use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler, MetricValue};
+use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::{otel_info, otel_warn};
+use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
@@ -167,87 +165,24 @@ impl AttributeSetHandler for ControllerMonitorAttributes {
     }
 }
 
-static CONTROLLER_MONITOR_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
-    name: "controller.monitor",
-    metrics: &[
-        MetricsField {
-            name: "observed_pipelines.total",
-            unit: "{pipeline}",
-            brief: "Observed logical pipelines currently tracked by the controller.",
-            instrument: Instrument::Gauge,
-            temporality: None,
-            value_type: MetricValueType::U64,
-        },
-        MetricsField {
-            name: "observed_pipelines.live",
-            unit: "{pipeline}",
-            brief: "Observed logical pipelines currently considered live.",
-            instrument: Instrument::Gauge,
-            temporality: None,
-            value_type: MetricValueType::U64,
-        },
-        MetricsField {
-            name: "observed_pipelines.ready",
-            unit: "{pipeline}",
-            brief: "Observed logical pipelines currently considered ready.",
-            instrument: Instrument::Gauge,
-            temporality: None,
-            value_type: MetricValueType::U64,
-        },
-        MetricsField {
-            name: "telemetry.entities",
-            unit: "{entity}",
-            brief: "Registered telemetry entities visible to the controller monitor.",
-            instrument: Instrument::Gauge,
-            temporality: None,
-            value_type: MetricValueType::U64,
-        },
-        MetricsField {
-            name: "telemetry.metric_sets",
-            unit: "{metric_set}",
-            brief: "Registered telemetry metric sets visible to the controller monitor.",
-            instrument: Instrument::Gauge,
-            temporality: None,
-            value_type: MetricValueType::U64,
-        },
-    ],
-};
-
+#[metric_set(name = "controller.monitor")]
 #[derive(Debug, Default)]
 struct ControllerMonitorMetrics {
+    /// Observed logical pipelines currently tracked by the controller.
+    #[metric(name = "observed_pipelines.total", unit = "{pipeline}")]
     observed_pipelines_total: Gauge<u64>,
+    /// Observed logical pipelines currently considered live.
+    #[metric(name = "observed_pipelines.live", unit = "{pipeline}")]
     observed_pipelines_live: Gauge<u64>,
+    /// Observed logical pipelines currently considered ready.
+    #[metric(name = "observed_pipelines.ready", unit = "{pipeline}")]
     observed_pipelines_ready: Gauge<u64>,
+    /// Registered telemetry entities visible to the controller monitor.
+    #[metric(name = "telemetry.entities", unit = "{entity}")]
     telemetry_entities: Gauge<u64>,
+    /// Registered telemetry metric sets visible to the controller monitor.
+    #[metric(name = "telemetry.metric_sets", unit = "{metric_set}")]
     telemetry_metric_sets: Gauge<u64>,
-}
-
-impl MetricSetHandler for ControllerMonitorMetrics {
-    fn descriptor(&self) -> &'static MetricsDescriptor {
-        &CONTROLLER_MONITOR_METRICS_DESCRIPTOR
-    }
-
-    fn snapshot_values(&self) -> Vec<MetricValue> {
-        vec![
-            MetricValue::from(self.observed_pipelines_total.get()),
-            MetricValue::from(self.observed_pipelines_live.get()),
-            MetricValue::from(self.observed_pipelines_ready.get()),
-            MetricValue::from(self.telemetry_entities.get()),
-            MetricValue::from(self.telemetry_metric_sets.get()),
-        ]
-    }
-
-    fn clear_values(&mut self) {
-        self.observed_pipelines_total.reset();
-        self.observed_pipelines_live.reset();
-        self.observed_pipelines_ready.reset();
-        self.telemetry_entities.reset();
-        self.telemetry_metric_sets.reset();
-    }
-
-    fn needs_flush(&self) -> bool {
-        true
-    }
 }
 
 struct ControllerMonitor {
