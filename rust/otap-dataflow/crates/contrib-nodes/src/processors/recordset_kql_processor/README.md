@@ -180,11 +180,11 @@ cargo build --features recordset-kql-processor
 ## Running the Demo
 
 A complete demo configuration is available at
-`configs/fake-kql-debug-noop.yaml`. Run it with:
+`configs/trafficgen-kql-debug-noop.yaml`. Run it with:
 
 ```bash
 cargo run --features recordset-kql-processor --bin df_engine -- \
-  --config ./configs/fake-kql-debug-noop.yaml \
+  --config ./configs/trafficgen-kql-debug-noop.yaml \
   --num-cores 1
 ```
 
