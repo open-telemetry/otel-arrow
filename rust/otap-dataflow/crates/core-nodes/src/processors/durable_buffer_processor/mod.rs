@@ -1801,6 +1801,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
     fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
         ProcessorRuntimeRequirements {
             local_wakeups: Some(LocalWakeupRequirements::new(1)),
+            ..ProcessorRuntimeRequirements::none()
         }
     }
 

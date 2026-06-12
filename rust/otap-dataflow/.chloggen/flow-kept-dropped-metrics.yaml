@@ -1,0 +1,25 @@
+# Use this changelog template to create an entry for release notes.
+
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: enhancement
+
+# The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
+# Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
+component: engine
+
+# A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
+note: Add `signals.kept` / `signals.dropped` flow metrics recorded per keep/drop decision node
+
+# Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
+issues: [2859]
+
+# (Optional) One or more lines of additional information to render under the primary note.
+# These lines will be padded with 2 spaces and then inserted directly into the document.
+# Use pipe (|) for multiline entries.
+subtext: |
+  Flow metrics declared in the telemetry policy can now enable `signals_kept` and
+  `signals_dropped`. A processor that declares the keep/drop capability and lies
+  within such a flow records its kept/dropped counts, attributed per decision node
+  via the new `flow.node.decision` scope attribute (so a flow may contain multiple
+  decision nodes). `filter_processor` and `log_sampling_processor` are the first
+  consumers. Single-node flow ranges (`start == end`) are now supported.
