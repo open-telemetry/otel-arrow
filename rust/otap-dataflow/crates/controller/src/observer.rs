@@ -38,7 +38,8 @@ impl EngineObserverContext {
     ///
     /// Use this to read internal metrics snapshots (e.g. per-node throughput,
     /// queue depths, processing latencies) without enabling the admin HTTP
-    /// server.
+    /// server. The returned handle is shared and supports both read and write
+    /// operations; writes can affect what other readers observe.
     #[must_use]
     pub fn telemetry_handle(&self) -> &TelemetryRegistryHandle {
         &self.telemetry
