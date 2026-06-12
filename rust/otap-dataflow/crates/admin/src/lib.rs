@@ -5,6 +5,7 @@
 
 mod convert;
 mod dashboard;
+mod engine_config;
 pub mod error;
 mod health;
 mod pipeline;
@@ -253,6 +254,7 @@ pub async fn run(
     let api_routes = Router::new()
         .merge(health::routes())
         .merge(telemetry::routes())
+        .merge(engine_config::routes())
         .merge(pipeline_group::routes())
         .merge(pipeline::routes());
 
