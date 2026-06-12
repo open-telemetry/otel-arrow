@@ -157,6 +157,10 @@ pub type ControllerExtensionTask =
 pub type ControllerExtensionTaskFactory =
     Box<dyn FnOnce(CancellationToken) -> ControllerExtensionTask + Send + 'static>;
 
+/// Static validator for controller extension user configuration.
+pub type ControllerExtensionValidateFn =
+    fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>;
+
 type ControllerExtensionStartFn = dyn Fn(
         ControllerExtensionContext,
     ) -> Result<ControllerExtensionTaskFactory, ControllerExtensionError>
@@ -178,6 +182,8 @@ pub struct ControllerExtensionFactory {
     pub description: &'static str,
     /// URL to extension documentation, when available.
     pub documentation_url: &'static str,
+    /// Validates the extension-specific config statically, without starting the extension.
+    pub validate_config: ControllerExtensionValidateFn,
     /// Starts one configured controller extension instance.
     pub start: fn(
         ControllerExtensionContext,
@@ -205,10 +211,16 @@ pub struct ControllerExtensionContext {
     pub engine_config: OtelDataflowSpec,
 }
 
+#[derive(Clone)]
+struct RegisteredControllerExtensionFactory {
+    start: Arc<ControllerExtensionStartFn>,
+    validate_config: ControllerExtensionValidateFn,
+}
+
 /// Registry of controller extension factories keyed by extension type URN.
 #[derive(Clone)]
 pub struct ControllerExtensionRegistry {
-    factories: HashMap<ExtensionUrn, Arc<ControllerExtensionStartFn>>,
+    factories: HashMap<ExtensionUrn, RegisteredControllerExtensionFactory>,
 }
 
 impl Default for ControllerExtensionRegistry {
@@ -238,12 +250,16 @@ impl ControllerExtensionRegistry {
 
     /// Registers a statically linked controller extension factory.
     pub fn register_factory(&mut self, factory: ControllerExtensionFactory) {
-        self.register(factory.name.into(), factory.start);
+        self.register(factory.name.into(), factory.start, factory.validate_config);
     }
 
     /// Registers a factory for a controller extension type.
-    pub fn register<F>(&mut self, extension_type: ExtensionUrn, factory: F)
-    where
+    pub fn register<F>(
+        &mut self,
+        extension_type: ExtensionUrn,
+        factory: F,
+        validate_config: ControllerExtensionValidateFn,
+    ) where
         F: Fn(
                 ControllerExtensionContext,
             ) -> Result<ControllerExtensionTaskFactory, ControllerExtensionError>
@@ -251,10 +267,16 @@ impl ControllerExtensionRegistry {
             + Sync
             + 'static,
     {
-        _ = self.factories.insert(extension_type, Arc::new(factory));
+        _ = self.factories.insert(
+            extension_type,
+            RegisteredControllerExtensionFactory {
+                start: Arc::new(factory),
+                validate_config,
+            },
+        );
     }
 
-    fn get(&self, extension_type: &ExtensionUrn) -> Option<Arc<ControllerExtensionStartFn>> {
+    fn get(&self, extension_type: &ExtensionUrn) -> Option<RegisteredControllerExtensionFactory> {
         self.factories.get(extension_type).cloned()
     }
 }
@@ -1877,11 +1899,12 @@ impl<
                 telemetry_registry: telemetry_registry.clone(),
                 engine_config: engine_config.clone(),
             };
-            let task_factory =
-                factory(context).map_err(|source| Error::ControllerExtensionStartError {
+            let task_factory = (factory.start)(context).map_err(|source| {
+                Error::ControllerExtensionStartError {
                     extension_id: extension_id.to_string(),
                     source,
-                })?;
+                }
+            })?;
             prepared_extensions.push(PreparedControllerExtension {
                 extension_id,
                 task_factory,
@@ -2529,6 +2552,12 @@ connections:
         Ok(Box::new(|_cancellation_token| Box::pin(async { Ok(()) })))
     }
 
+    fn validate_test_linked_controller_extension_config(
+        config: &serde_json::Value,
+    ) -> Result<(), otap_df_config::error::Error> {
+        otap_df_config::validation::no_config(config)
+    }
+
     #[allow(unsafe_code)]
     #[distributed_slice(CONTROLLER_EXTENSION_FACTORIES)]
     pub static TEST_LINKED_CONTROLLER_EXTENSION_FACTORY: ControllerExtensionFactory =
@@ -2536,6 +2565,7 @@ connections:
             name: TEST_LINKED_CONTROLLER_EXTENSION_URN,
             description: "Test linked controller extension.",
             documentation_url: "",
+            validate_config: validate_test_linked_controller_extension_config,
             start: start_test_linked_controller_extension,
         };
 
@@ -2693,6 +2723,46 @@ groups:
         let monitor_type = CONTROLLER_MONITOR_EXTENSION_URN.into();
 
         assert!(registry.get(&monitor_type).is_none());
+    }
+
+    #[test]
+    fn validate_controller_extensions_accepts_valid_monitor_config() {
+        startup::validate_controller_extensions(
+            &controller_monitor_engine_config(
+                r#"        config:
+          interval: "10ms"
+          log_snapshots: false"#,
+            ),
+            &ControllerRunOptions::default().extensions,
+        )
+        .expect("valid controller monitor config should pass static validation");
+    }
+
+    #[test]
+    fn validate_controller_extensions_rejects_unknown_extension_type() {
+        let err = startup::validate_controller_extensions(
+            &controller_monitor_engine_config(""),
+            &ControllerExtensionRegistry::empty(),
+        )
+        .expect_err("unknown controller extension should fail static validation");
+        let message = err.to_string();
+        assert!(message.contains("Unknown controller extension"));
+        assert!(message.contains("controller_monitor"));
+    }
+
+    #[test]
+    fn validate_controller_extensions_rejects_invalid_monitor_config() {
+        let err = startup::validate_controller_extensions(
+            &controller_monitor_engine_config(
+                r#"        config:
+          interval: "0s""#,
+            ),
+            &ControllerRunOptions::default().extensions,
+        )
+        .expect_err("invalid controller monitor config should fail static validation");
+        let message = err.to_string();
+        assert!(message.contains("Invalid config for controller extension"));
+        assert!(message.contains("greater than zero"));
     }
 
     #[test]

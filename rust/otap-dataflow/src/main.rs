@@ -185,6 +185,7 @@ struct Args {
     /// - Structural validation (version, policies, connections, node references)
     /// - Component existence (every node URN maps to a registered component in this binary)
     /// - Component-specific config validation (when supported by the component)
+    /// - Controller extension existence and extension-specific config validation
     #[arg(long)]
     validate_and_exit: bool,
 
@@ -233,6 +234,15 @@ fn parse_core_id_range(s: &str) -> Result<CoreRange, String> {
     Ok(CoreRange { start, end })
 }
 
+fn validate_engine_config_for_startup(
+    engine_cfg: &OtelDataflowSpec,
+    run_options: &ControllerRunOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    startup::validate_engine_components(engine_cfg, &OTAP_PIPELINE_FACTORY)?;
+    startup::validate_controller_extensions(engine_cfg, &run_options.extensions)?;
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))]
     {
@@ -272,7 +282,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     startup::apply_cli_overrides(&mut engine_cfg, num_cores, core_id_range, http_admin_bind);
 
-    startup::validate_engine_components(&engine_cfg, &OTAP_PIPELINE_FACTORY)?;
+    let run_options = ControllerRunOptions::default();
+    validate_engine_config_for_startup(&engine_cfg, &run_options)?;
 
     if validate_and_exit {
         println!("Configuration '{}' is valid.", resolved.source);
@@ -280,7 +291,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
-    let result = controller.run_forever_with_options(engine_cfg, ControllerRunOptions::default());
+    let result = controller.run_forever_with_options(engine_cfg, run_options);
     #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))]
     {
         dhat_finish();
@@ -375,6 +386,32 @@ mod tests {
         ]);
         assert!(args.validate_and_exit);
         assert_eq!(args.config.as_deref(), Some("config.yaml"));
+    }
+
+    #[test]
+    fn validate_engine_config_for_startup_rejects_invalid_controller_extension_config() {
+        let engine_cfg = OtelDataflowSpec::from_yaml(&format!(
+            r#"
+version: otel_dataflow/v1
+engine:
+  controller:
+    extensions:
+      controller_monitor:
+        type: "{}"
+        config:
+          interval: "0s"
+groups: {{}}
+"#,
+            otap_df_controller::CONTROLLER_MONITOR_EXTENSION_URN
+        ))
+        .expect("config should parse");
+        let run_options = ControllerRunOptions::default();
+
+        let err = validate_engine_config_for_startup(&engine_cfg, &run_options)
+            .expect_err("validate-and-exit path should reject invalid controller extension config");
+        let message = err.to_string();
+        assert!(message.contains("Invalid config for controller extension"));
+        assert!(message.contains("greater than zero"));
     }
 
     #[test]

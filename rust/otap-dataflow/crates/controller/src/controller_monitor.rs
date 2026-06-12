@@ -40,6 +40,7 @@ use crate::{
     distributed_slice,
 };
 use otap_df_config::ExtensionId;
+use otap_df_config::error::Error as ConfigError;
 use otap_df_config::extension::ExtensionUserConfig;
 use otap_df_state::store::ObservedStateHandle;
 use otap_df_telemetry::instrument::Gauge;
@@ -64,6 +65,7 @@ pub static CONTROLLER_MONITOR_EXTENSION_FACTORY: ControllerExtensionFactory =
         name: CONTROLLER_MONITOR_EXTENSION_URN,
         description: "Read-only controller state and telemetry monitor.",
         documentation_url: "",
+        validate_config: validate_controller_monitor_config,
         start: start_controller_monitor_extension,
     };
 
@@ -131,6 +133,16 @@ pub enum ControllerMonitorError {
 /// Registers controller extension factories built into the controller crate.
 pub fn register_builtin_controller_extensions(registry: &mut ControllerExtensionRegistry) {
     registry.register_factory(CONTROLLER_MONITOR_EXTENSION_FACTORY);
+}
+
+fn validate_controller_monitor_config(config: &serde_json::Value) -> Result<(), ConfigError> {
+    let extension =
+        ExtensionUserConfig::new(CONTROLLER_MONITOR_EXTENSION_URN.into(), config.clone());
+    ControllerMonitorConfig::from_extension(&extension)
+        .map(|_| ())
+        .map_err(|source| ConfigError::InvalidUserConfig {
+            error: source.to_string(),
+        })
 }
 
 fn start_controller_monitor_extension(

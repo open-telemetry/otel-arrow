@@ -362,12 +362,15 @@ The engine crates are designed as reusable libraries. A custom binary can
 link the same controller, factory, and node crates and register its own
 components via `linkme` distributed slices -- exactly how `src/main.rs` works.
 
-The `otap_df_controller::startup` module provides three helpers that every
+The `otap_df_controller::startup` module provides common helpers that every
 embedding binary typically needs:
 
 - **`validate_engine_components`** -- Checks that every node URN in a
   config maps to a registered component and runs per-component config
   validation.
+- **`validate_controller_extensions`** -- Checks that every controller
+  extension URN maps to a registered controller extension and runs
+  extension-specific config validation.
 - **`apply_cli_overrides`** -- Merges core-allocation and HTTP-admin
   bind overrides into an `OtelDataflowSpec`.
 - **`system_info`** -- Returns a formatted string with CPU/memory info
@@ -378,7 +381,7 @@ A minimal custom binary looks like this:
 
 ```rust
 use otap_df_config::engine::OtelDataflowSpec;
-use otap_df_controller::{Controller, startup};
+use otap_df_controller::{Controller, ControllerRunOptions, startup};
 
 // Side-effect imports to register components via linkme.
 use otap_df_core_nodes as _;
@@ -396,8 +399,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Apply any CLI overrides (core count, admin bind address, etc.)
     startup::apply_cli_overrides(&mut cfg, Some(4), None, None);
 
-    // Validate that every node URN in the config is registered.
+    // Validate that every node and controller extension URN in the config is registered.
     startup::validate_engine_components(&cfg, &OTAP_PIPELINE_FACTORY)?;
+    startup::validate_controller_extensions(
+        &cfg,
+        &ControllerRunOptions::default().extensions,
+    )?;
 
     // Print diagnostics.
     // Pass "system" here for the minimal example; in practice, align this
@@ -435,8 +442,14 @@ use otap_df_controller::{
     ControllerExtensionError, ControllerExtensionFactory,
     ControllerExtensionTaskFactory, distributed_slice,
 };
+use otap_df_config::validation::validate_typed_config;
 
 pub const REMOTE_CONTROL_URN: &str = "urn:example:extension:remote_control";
+
+#[derive(serde::Deserialize)]
+struct RemoteControlConfig {
+    endpoint: String,
+}
 
 #[allow(unsafe_code)]
 #[distributed_slice(CONTROLLER_EXTENSION_FACTORIES)]
@@ -445,8 +458,15 @@ pub static REMOTE_CONTROL_EXTENSION: ControllerExtensionFactory =
         name: REMOTE_CONTROL_URN,
         description: "Remote controller integration.",
         documentation_url: "",
+        validate_config: validate_remote_control_config,
         start: start_remote_control,
     };
+
+fn validate_remote_control_config(
+    config: &serde_json::Value,
+) -> Result<(), otap_df_config::error::Error> {
+    validate_typed_config::<RemoteControlConfig>(config)
+}
 
 fn start_remote_control(
     context: ControllerExtensionContext,

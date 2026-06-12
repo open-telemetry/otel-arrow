@@ -16,10 +16,11 @@
 //! let mut cfg = OtelDataflowSpec::from_file(&path)?;
 //! startup::apply_cli_overrides(&mut cfg, num_cores, core_id_range, http_admin_bind);
 //! startup::validate_engine_components(&cfg, &MY_PIPELINE_FACTORY)?;
+//! startup::validate_controller_extensions(&cfg, &ControllerRunOptions::default().extensions)?;
 //! println!("{}", startup::system_info(&MY_PIPELINE_FACTORY, "system"));
 //! ```
 
-use crate::CONTROLLER_EXTENSION_FACTORIES;
+use crate::{CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionRegistry};
 use otap_df_config::engine::{
     HttpAdminSettings, OtelDataflowSpec, SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
@@ -214,6 +215,42 @@ pub fn validate_engine_components<PData: 'static + Clone + Debug>(
             &obs_pipeline_config,
             factory,
         )?;
+    }
+
+    Ok(())
+}
+
+/// Validates configured controller extensions against the supplied registry.
+///
+/// This is static validation only: it verifies that each configured controller
+/// extension type has a registered factory and that the extension-specific
+/// config validates without starting the extension.
+pub fn validate_controller_extensions(
+    engine_cfg: &OtelDataflowSpec,
+    registry: &ControllerExtensionRegistry,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (extension_id, extension) in engine_cfg.engine.controller.extensions.iter() {
+        let urn_str = extension.r#type.as_str();
+        match registry.get(&extension.r#type) {
+            None => {
+                return Err(std::io::Error::other(format!(
+                    "Unknown controller extension `{}` in engine.controller.extensions extension={}",
+                    urn_str,
+                    extension_id.as_ref()
+                ))
+                .into());
+            }
+            Some(factory) => {
+                (factory.validate_config)(&extension.config).map_err(|e| {
+                    std::io::Error::other(format!(
+                        "Invalid config for controller extension `{}` in engine.controller.extensions extension={}: {}",
+                        urn_str,
+                        extension_id.as_ref(),
+                        e
+                    ))
+                })?;
+            }
+        }
     }
 
     Ok(())

@@ -402,6 +402,10 @@ linking it with a side-effect import. See
 [Developing Controller Extensions](../README.md#developing-controller-extensions)
 for implementation guidance.
 
+Each controller extension factory provides static config validation, so
+`--validate-and-exit` rejects unknown controller extension types and invalid
+extension-specific config without starting the extension.
+
 The built-in read-only controller monitor is available in the stock
 `df_engine` binary:
 
