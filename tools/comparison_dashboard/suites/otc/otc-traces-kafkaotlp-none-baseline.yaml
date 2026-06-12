@@ -1,0 +1,22 @@
+name: OTC Kafka OTLP Baseline (Traces)
+slug: otc_traces_kafkaotlp_none_baseline
+description: OpenTelemetry Collector Kafka pipeline with OTLP protobuf encoding for traces, no compression
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/otc-kafka-single-core-multi-rate.yaml
+
+meta:
+  binary: otc
+  protocols: [kafkaotlp]
+  signals: [traces]
+  compression: none
+
+variables:
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_traces.yaml
+  kafka_producer_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/otelcol/kafka-producer-otlp.yaml.j2
+  kafka_consumer_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/otelcol/kafka-consumer-otlp.yaml.j2
+  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otlp.yaml.j2
+  backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/backend/otlp.yaml.j2
+  protocol: kafkaotlp
+  signal: traces
+  loadgen_max_batch_size: 1000
+  compression_method: none
+  otelcol_gomaxprocs: 1

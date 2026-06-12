@@ -16,5 +16,12 @@ else
 fi
 
 rustup target add "${RUST_TARGET}"
+
+# rdkafka (used by kafka-receiver/kafka-exporter) requires libclang for
+# bindgen at build time.
+if echo "${FEATURES:-}" | grep -q 'kafka'; then
+  apt-get update && apt-get install -y libclang-dev
+fi
+
 cargo build --release --features "$FEATURES" --target="${RUST_TARGET}"
 cp "target/${RUST_TARGET}/release/df_engine" .

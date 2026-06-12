@@ -1,0 +1,271 @@
+{%- set protocol = variables.protocol | default("kafkaotlp") %}
+{%- set compression = variables.compression_method | default("none") %}
+{%- set signal = variables.signal | default("logs") %}
+{%- if signal == "logs" %}
+{%- set log_weight = 100 %}{%- set metric_weight = 0 %}{%- set trace_weight = 0 %}
+{%- set kafka_topic = "otel-logs" %}
+{%- set receiver_flag = "--kafka-receiver-logs" %}
+{%- set exporter_topic_flag = "--kafka-exporter-logs-topic" %}
+{%- set receiver_topic_flag = "--kafka-receiver-logs-topic" %}
+{%- elif signal == "metrics" %}
+{%- set log_weight = 0 %}{%- set metric_weight = 100 %}{%- set trace_weight = 0 %}
+{%- set kafka_topic = "otel-metrics" %}
+{%- set receiver_flag = "--kafka-receiver-metrics" %}
+{%- set exporter_topic_flag = "--kafka-exporter-metrics-topic" %}
+{%- set receiver_topic_flag = "--kafka-receiver-metrics-topic" %}
+{%- elif signal == "traces" %}
+{%- set log_weight = 0 %}{%- set metric_weight = 0 %}{%- set trace_weight = 100 %}
+{%- set kafka_topic = "otel-spans" %}
+{%- set receiver_flag = "--kafka-receiver-traces" %}
+{%- set exporter_topic_flag = "--kafka-exporter-traces-topic" %}
+{%- set receiver_topic_flag = "--kafka-receiver-traces-topic" %}
+{%- endif %}
+name: {{suite_name}}
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: {{df_engine_image}}
+        network: testbed
+        ports:
+          - "8085:8080"
+        volumes:
+          - '{{data_dir}}/loadgen-config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
+  kafka-producer:
+    deployment:
+      docker:
+        image: {{rotel_image}}
+        network: testbed
+        cpuset_cpus: "0"
+        environment:
+          - RUST_LOG=info
+        command:
+          - "--exporter"
+          - "kafka"
+          - "--kafka-exporter-brokers"
+          - "kafka-broker:9092"
+          - "{{exporter_topic_flag}}"
+          - "{{kafka_topic}}"
+          - "--kafka-exporter-format"
+          - "protobuf"
+          - "--kafka-exporter-compression"
+          - "none"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+  kafka-broker:
+    deployment:
+      docker:
+        image: {{kafka_image}}
+        network: testbed
+        ports:
+          - "9094:9094"
+        environment:
+          - KAFKA_NODE_ID=1
+          - KAFKA_PROCESS_ROLES=broker,controller
+          - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka-broker:9093
+          - KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+          - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka-broker:9092,EXTERNAL://localhost:9094
+          - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+          - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+          - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+          - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+          - KAFKA_NUM_PARTITIONS=1
+          - KAFKA_LOG_RETENTION_MS=300000
+          - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+          - CLUSTER_ID=benchmark-kafka-cluster-id
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+  kafka-consumer:
+    deployment:
+      docker:
+        image: {{rotel_image}}
+        network: testbed
+        cpuset_cpus: "1"
+        environment:
+          - RUST_LOG=info
+        command:
+          - "{{receiver_flag}}"
+          - "--kafka-receiver-brokers"
+          - "kafka-broker:9092"
+          - "{{receiver_topic_flag}}"
+          - "{{kafka_topic}}"
+          - "--kafka-receiver-format"
+          - "protobuf"
+          - "--kafka-receiver-group-id"
+          - "rotel-benchmark"
+          - "--kafka-receiver-auto-offset-reset"
+          - "earliest"
+          - "--kafka-receiver-enable-auto-commit"
+          - "--exporter"
+          - "otlp"
+          - "--otlp-exporter-protocol"
+          - "grpc"
+          - "--otlp-exporter-endpoint"
+          - "backend-service:1235"
+          - "--otlp-exporter-compression"
+          - "{{compression}}"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+  backend-service:
+    deployment:
+      docker:
+        image: {{df_engine_image}}
+        network: testbed
+        ports:
+          - "8087:8080"
+        volumes:
+          - '{{data_dir}}/backend-config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8087/api/v1/telemetry/metrics?format=prometheus&reset=false
+
+{# Spread every suite-defined variable as a flat key (so step/leaf templates can
+reference them by bare name) and forward the whole `variables` dict so any
+downstream template can also use namespaced access (`variables.X`). Per-test
+overrides below the spread win on key collision. #}
+{% macro forward_variables() -%}
+{%- for k, v in variables.items() %}
+        {{ k }}: {{ v | tojson }}
+{%- endfor %}
+        variables: {{ variables | tojson }}
+{%- endmacro -%}
+
+tests:
+  - name: 100k
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/rotel-kafka.yaml
+      variables:{{ forward_variables() }}
+        data_dir: {{data_dir}}
+        test_dir: {{data_dir}}/tests/100k
+        report_name: "Rotel Kafka 100k - {{suite_name}}"
+        observation_interval: {{observation_interval}}
+        signals_per_second: 100000
+        log_weight: {{log_weight}}
+        metric_weight: {{metric_weight}}
+        trace_weight: {{trace_weight}}
+        backend_core_start: 2
+        backend_core_end: 2
+        loadgen_core_start: 3
+        loadgen_core_end: 3
+
+  - name: 200k
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/rotel-kafka.yaml
+      variables:{{ forward_variables() }}
+        data_dir: {{data_dir}}
+        test_dir: {{data_dir}}/tests/200k
+        report_name: "Rotel Kafka 200k - {{suite_name}}"
+        observation_interval: {{observation_interval}}
+        signals_per_second: 100000
+        log_weight: {{log_weight}}
+        metric_weight: {{metric_weight}}
+        trace_weight: {{trace_weight}}
+        backend_core_start: 2
+        backend_core_end: 2
+        loadgen_core_start: 3
+        loadgen_core_end: 4
+
+  - name: 300k
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/rotel-kafka.yaml
+      variables:{{ forward_variables() }}
+        data_dir: {{data_dir}}
+        test_dir: {{data_dir}}/tests/300k
+        report_name: "Rotel Kafka 300k - {{suite_name}}"
+        observation_interval: {{observation_interval}}
+        signals_per_second: 100000
+        log_weight: {{log_weight}}
+        metric_weight: {{metric_weight}}
+        trace_weight: {{trace_weight}}
+        backend_core_start: 2
+        backend_core_end: 2
+        loadgen_core_start: 3
+        loadgen_core_end: 5
+
+  - name: 400k
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/rotel-kafka.yaml
+      variables:{{ forward_variables() }}
+        data_dir: {{data_dir}}
+        test_dir: {{data_dir}}/tests/400k
+        report_name: "Rotel Kafka 400k - {{suite_name}}"
+        observation_interval: {{observation_interval}}
+        signals_per_second: 100000
+        log_weight: {{log_weight}}
+        metric_weight: {{metric_weight}}
+        trace_weight: {{trace_weight}}
+        backend_core_start: 2
+        backend_core_end: 2
+        loadgen_core_start: 3
+        loadgen_core_end: 6
+
+  - name: 600k
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/rotel-kafka.yaml
+      variables:{{ forward_variables() }}
+        data_dir: {{data_dir}}
+        test_dir: {{data_dir}}/tests/600k
+        report_name: "Rotel Kafka 600k - {{suite_name}}"
+        observation_interval: {{observation_interval}}
+        signals_per_second: 100000
+        log_weight: {{log_weight}}
+        metric_weight: {{metric_weight}}
+        trace_weight: {{trace_weight}}
+        backend_core_start: 2
+        backend_core_end: 2
+        loadgen_core_start: 3
+        loadgen_core_end: 8
+
+  - name: 800k
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/rotel-kafka.yaml
+      variables:{{ forward_variables() }}
+        data_dir: {{data_dir}}
+        test_dir: {{data_dir}}/tests/800k
+        report_name: "Rotel Kafka 800k - {{suite_name}}"
+        observation_interval: {{observation_interval}}
+        signals_per_second: 100000
+        log_weight: {{log_weight}}
+        metric_weight: {{metric_weight}}
+        trace_weight: {{trace_weight}}
+        backend_core_start: 2
+        backend_core_end: 2
+        loadgen_core_start: 3
+        loadgen_core_end: 10
+
+  - name: 1000k
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/rotel-kafka.yaml
+      variables:{{ forward_variables() }}
+        data_dir: {{data_dir}}
+        test_dir: {{data_dir}}/tests/1000k
+        report_name: "Rotel Kafka 1000k - {{suite_name}}"
+        observation_interval: {{observation_interval}}
+        signals_per_second: 100000
+        log_weight: {{log_weight}}
+        metric_weight: {{metric_weight}}
+        trace_weight: {{trace_weight}}
+        backend_core_start: 2
+        backend_core_end: 2
+        loadgen_core_start: 3
+        loadgen_core_end: 12

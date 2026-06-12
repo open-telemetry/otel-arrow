@@ -77,12 +77,20 @@ kafka-exporter = [
     "dep:futures-channel",
     "dep:futures-util",
 ]
+kafka-receiver = [
+    "dep:rdkafka",
+    "dep:futures-channel",
+    "dep:futures-util",
+    "dep:regex",
+    "dep:smallvec",
+]
 aws = [
     "dep:aws-config",
     "dep:aws-msk-iam-sasl-signer",
 ]
 contrib-receivers = [
     "etw-receiver",
+    "kafka-receiver",
     "user_events-receiver",
 ]
 user_events-receiver = [

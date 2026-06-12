@@ -1,0 +1,50 @@
+receivers:
+  kafka:
+    brokers:
+      - '{{kafka_hostname}}:9092'
+    protocol_version: '3.0.0'
+    group_id: 'otc-kafka-consumer'
+    initial_offset: earliest
+    autocommit:
+      enable: true
+      interval: 1s
+{%- if signal == "logs" %}
+    logs:
+      topic: otel-logs
+      encoding: otlp_proto
+{%- elif signal == "metrics" %}
+    metrics:
+      topic: otel-metrics
+      encoding: otlp_proto
+{%- elif signal == "traces" %}
+    traces:
+      topic: otel-spans
+      encoding: otlp_proto
+{%- endif %}
+
+exporters:
+  otlp:
+    endpoint: '{{backend_hostname}}:1235'
+    compression: {{ compression_method | default("none") }}
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: {{ sending_queue_enabled | default(true) }}
+      wait_for_result: {{ wait_for_result | default(true) }}
+      block_on_overflow: {{ block_on_overflow | default(true) }}
+      sizer: {{ sending_queue_sizer | default("requests") }}
+      queue_size: {{ sending_queue_size | default(100) }}
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: '0.0.0.0'
+                port: 8088
+  pipelines:
+    {{signal}}:
+      receivers: [kafka]
+      exporters: [otlp]
