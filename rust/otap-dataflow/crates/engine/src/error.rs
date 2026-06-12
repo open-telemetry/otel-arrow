@@ -332,7 +332,7 @@ pub enum Error {
         plugin_urn: NodeUrn,
     },
 
-    /// The specified extension already exists in the pipeline.
+    /// The specified extension already exists in its host scope.
     #[error("The extension `{extension}` already exists")]
     ExtensionAlreadyExists {
         /// The name of the extension that already exists.
@@ -421,6 +421,17 @@ pub enum Error {
         is_panic: bool,
         /// The error that occurred.
         error: String,
+    },
+
+    /// An active extension's `start()` returned `Ok(())` before shutdown was
+    /// initiated.
+    #[error(
+        "Active extension `{extension}` exited before shutdown was initiated; \
+         active extensions must run until they receive Shutdown"
+    )]
+    ExtensionExitedBeforeShutdown {
+        /// Id of the extension that exited.
+        extension: String,
     },
 
     /// An internal error that occurred in the pipeline engine.
@@ -561,6 +572,7 @@ impl Error {
             Error::InvalidHyperEdge { .. } => "InvalidHyperEdge",
             Error::IoError { .. } => "IoError",
             Error::JoinTaskError { .. } => "JoinTaskError",
+            Error::ExtensionExitedBeforeShutdown { .. } => "ExtensionExitedBeforeShutdown",
             Error::NoDefaultOutputPort { .. } => "NoDefaultOutputPort",
             Error::NodeControlMsgSendError { .. } => "NodeControlMsgSendError",
             Error::PDataError { .. } => "PDataError",

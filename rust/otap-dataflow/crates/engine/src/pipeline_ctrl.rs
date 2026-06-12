@@ -3102,7 +3102,7 @@ mod tests {
 
         let registry = pipeline_context.metrics_registry();
 
-        let recv_out_key = pipeline_context.register_channel_entity(
+        let recv_out_key = pipeline_context.register_node_channel_entity(
             "recv:out".into(),
             "output".into(),
             "pdata",
@@ -3110,7 +3110,7 @@ mod tests {
             "mpsc",
             "internal",
         );
-        let proc_in_key = pipeline_context.register_channel_entity(
+        let proc_in_key = pipeline_context.register_node_channel_entity(
             "proc:in".into(),
             "input".into(),
             "pdata",
@@ -3118,7 +3118,7 @@ mod tests {
             "mpsc",
             "internal",
         );
-        let proc_out_key = pipeline_context.register_channel_entity(
+        let proc_out_key = pipeline_context.register_node_channel_entity(
             "proc:out".into(),
             "output".into(),
             "pdata",
@@ -3126,7 +3126,7 @@ mod tests {
             "mpsc",
             "internal",
         );
-        let exp_in_key = pipeline_context.register_channel_entity(
+        let exp_in_key = pipeline_context.register_node_channel_entity(
             "exp:in".into(),
             "input".into(),
             "pdata",
