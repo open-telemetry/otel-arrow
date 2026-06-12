@@ -1,0 +1,4 @@
+change_type: enhancement
+component: engine
+note: Add the Phase 2 retained-work memory budgeting design.
+issues: [3272]
