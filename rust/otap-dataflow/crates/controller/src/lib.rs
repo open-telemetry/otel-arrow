@@ -1880,7 +1880,8 @@ impl<
         observed_state: ObservedStateHandle,
         telemetry_registry: TelemetryRegistryHandle,
     ) -> Result<Vec<PreparedControllerExtension>, Error> {
-        let mut prepared_extensions = Vec::new();
+        let mut prepared_extensions =
+            Vec::with_capacity(engine_config.engine.controller.extensions.len());
         for (extension_id, extension) in engine_config.engine.controller.extensions.iter() {
             let extension_type = extension.r#type.clone();
             let factory = options.extensions.get(&extension_type).ok_or_else(|| {
