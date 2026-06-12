@@ -528,6 +528,12 @@ factories automatically. `startup::system_info(...)` lists the linked
 controller extension URNs, which is the quickest way to verify that the final
 binary contains the extension factory.
 
+Controller extension task failures are treated as unrecoverable engine-level
+failures. Extensions should handle transient errors internally, for example
+with retry and backoff. Returning `Err` from the task requests global pipeline
+shutdown and causes the controller to exit with
+`ControllerExtensionRuntimeError`.
+
 Controller extensions are statically linked Rust code. The engine does not load
 controller extensions dynamically from shared libraries or configuration alone.
 

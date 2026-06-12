@@ -1,4 +1,4 @@
 change_type: enhancement
 component: engine
-note: Add controller extension hooks, static validation, and an opt-in read-only controller monitor extension.
+note: Add controller extension hooks, static validation, fail-fast runtime error handling, and an opt-in read-only controller monitor extension.
 issues: [3263]

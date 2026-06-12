@@ -1809,6 +1809,8 @@ impl<
         let controller_extension_handles = match Self::spawn_controller_extensions(
             prepared_controller_extensions,
             admin_tracing_setup.clone(),
+            Arc::clone(&control_plane),
+            thread::current(),
         ) {
             Ok(handles) => handles,
             Err(err) => {
@@ -1855,8 +1857,13 @@ impl<
         if let Some(handle) = memory_limiter_handle {
             handle.shutdown_and_join()?;
         }
+        let mut controller_extension_error = None;
         for handle in controller_extension_handles {
-            handle.shutdown_and_join()?;
+            if let Err(err) = handle.shutdown_and_join()
+                && controller_extension_error.is_none()
+            {
+                controller_extension_error = Some(err);
+            }
         }
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
@@ -1865,6 +1872,10 @@ impl<
         }
         obs_state_join_handle.shutdown_and_join()?;
         telemetry_system.shutdown_otel()?;
+
+        if let Some(err) = controller_extension_error {
+            return Err(err);
+        }
 
         if let Some(err) = runtime.take_runtime_error() {
             return Err(err);
@@ -1917,6 +1928,8 @@ impl<
     fn spawn_controller_extensions(
         prepared_extensions: Vec<PreparedControllerExtension>,
         tracing_setup: TracingSetup,
+        control_plane: Arc<dyn ControlPlane>,
+        controller_thread: thread::Thread,
     ) -> Result<Vec<ThreadLocalTaskHandle<(), Error>>, Error> {
         let mut handles = Vec::new();
         for prepared_extension in prepared_extensions {
@@ -1926,17 +1939,40 @@ impl<
             } = prepared_extension;
             let thread_name = format!("controller-extension-{}", extension_id.as_ref());
             let runtime_extension_id = extension_id.to_string();
+            let extension_control_plane = Arc::clone(&control_plane);
+            let extension_controller_thread = controller_thread.clone();
             handles.push(spawn_thread_local_task(
                 thread_name,
                 tracing_setup.clone(),
                 move |cancellation_token| {
                     let task = task_factory(cancellation_token);
                     async move {
-                        task.await
-                            .map_err(|source| Error::ControllerExtensionRuntimeError {
+                        match task.await {
+                            Ok(()) => Ok(()),
+                            Err(source) => {
+                                let error = source.to_string();
+                                otel_error!(
+                                    "controller.extension_runtime_failed",
+                                    extension_id = runtime_extension_id.as_str(),
+                                    error = error.as_str(),
+                                    message = "Controller extension failed at runtime; requesting engine shutdown"
+                                );
+                                if let Err(shutdown_err) = extension_control_plane.shutdown_all(10)
+                                {
+                                    otel_warn!(
+                                        "controller.extension_runtime_shutdown_failed",
+                                        extension_id = runtime_extension_id.as_str(),
+                                        error = format!("{shutdown_err:?}"),
+                                        message = "Failed to shut down pipelines after controller extension runtime failure"
+                                    );
+                                }
+                                extension_controller_thread.unpark();
+                                Err(Error::ControllerExtensionRuntimeError {
                                 extension_id: runtime_extension_id,
                                 source,
-                            })
+                                })
+                            }
+                        }
                     }
                 },
             )?);
@@ -2869,6 +2905,69 @@ groups:
             snapshot.is_empty(),
             "extension startup errors should happen before bootstrap pipelines are registered"
         );
+    }
+
+    #[test]
+    fn controller_extension_runtime_error_stops_parked_controller() {
+        const FAILING_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:failing";
+
+        let engine_config = OtelDataflowSpec::from_yaml(&format!(
+            r#"
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:0"
+  controller:
+    extensions:
+      failing:
+        type: "{}"
+groups: {{}}
+        "#,
+            FAILING_CONTROLLER_EXTENSION_URN
+        ))
+        .expect("failing controller extension config should parse");
+
+        let mut registry = ControllerExtensionRegistry::empty();
+        registry.register(
+            FAILING_CONTROLLER_EXTENSION_URN.into(),
+            |_context| {
+                Ok(Box::new(|_cancellation_token| {
+                    Box::pin(async {
+                        Err::<(), ControllerExtensionError>(Box::new(std::io::Error::other(
+                            "simulated controller extension failure",
+                        )))
+                    })
+                }))
+            },
+            otap_df_config::validation::no_config,
+        );
+
+        let (result_tx, result_rx) = std_mpsc::channel();
+        let controller_thread = thread::spawn(move || {
+            let controller = Controller::new(empty_pipeline_factory());
+            let result = controller
+                .run_forever_with_options(
+                    engine_config,
+                    ControllerRunOptions {
+                        extensions: registry,
+                    },
+                )
+                .map_err(|err| err.to_string());
+            result_tx
+                .send(result)
+                .expect("test receiver should remain open");
+        });
+
+        let err = result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("controller extension runtime error should unpark the controller")
+            .expect_err("controller should fail when a controller extension fails at runtime");
+        controller_thread
+            .join()
+            .expect("controller thread should not panic");
+
+        assert!(err.contains("Controller extension `failing` failed"));
+        assert!(err.contains("simulated controller extension failure"));
     }
 
     #[test]
