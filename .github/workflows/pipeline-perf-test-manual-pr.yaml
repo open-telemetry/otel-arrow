@@ -26,6 +26,14 @@ concurrency:
 jobs:
   pipeline-perf-test:
     runs-on: oracle-bare-metal-64cpu-1024gb-x86-64-ubuntu-24
+    # Route tool-created temp files to RUNNER_TEMP, which GitHub Actions empties
+    # at the start and end of every job. Required when running directly on the
+    # shared bare-metal host (no job-level container) per
+    # https://github.com/open-telemetry/community/blob/main/docs/how-to-use-bare-metal-runner.md
+    env:
+      TMPDIR: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
+      TEMP: ${{ runner.temp }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
@@ -136,3 +144,14 @@ jobs:
                 ? 'Manual pipeline performance tests ran'
                 : 'Manual pipeline performance tests failed'
             });
+
+      # Bare-metal host cleanup: remove only the Docker artifacts created by
+      # this job. Avoid broad commands (e.g. rm -rf /tmp/*) per the shared
+      # runner guidelines.
+      - name: Clean up Docker artifacts created by this job
+        if: always()
+        run: |
+          docker rmi -f df_engine 2>/dev/null || true
+          # Prune dangling (unused) build cache and images only.
+          docker builder prune -f 2>/dev/null || true
+          docker image prune -f 2>/dev/null || true

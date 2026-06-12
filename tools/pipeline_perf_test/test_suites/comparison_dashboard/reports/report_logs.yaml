@@ -88,7 +88,7 @@ queries:
         metrics_filtered AS (
             SELECT *,
             "metric_attributes.component_name" AS component_name,
-            COALESCE("metric_attributes.core_id", 'N/A') AS core_id,
+            COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
             FROM metrics
             WHERE metric_name IN (
               'logs_produced',
@@ -270,7 +270,7 @@ queries:
           FROM component_resource_metrics crm
           CROSS JOIN metadata_row
           LEFT JOIN component_core_counts ccc ON crm.component_name = ccc.component_name
-          WHERE crm.component_name IN ('df-engine', 'go-collector', 'fluent-bit') AND crm.metric_name IN ('container.cpu.usage', 'process.cpu.usage')
+          WHERE crm.component_name IN ('df-engine', 'go-collector', 'fluent-bit', 'rotel') AND crm.metric_name IN ('container.cpu.usage', 'process.cpu.usage')
 
           UNION ALL
 
@@ -280,7 +280,7 @@ queries:
           FROM component_resource_metrics crm
           CROSS JOIN metadata_row
           LEFT JOIN component_core_counts ccc ON crm.component_name = ccc.component_name
-          WHERE crm.component_name IN ('df-engine', 'go-collector', 'fluent-bit') AND crm.metric_name IN ('container.cpu.usage', 'process.cpu.usage')
+          WHERE crm.component_name IN ('df-engine', 'go-collector', 'fluent-bit', 'rotel') AND crm.metric_name IN ('container.cpu.usage', 'process.cpu.usage')
 
           UNION ALL
 
@@ -288,7 +288,7 @@ queries:
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - RAM (MiB)' AS extra
           FROM component_resource_metrics
           CROSS JOIN metadata_row
-          WHERE component_name IN ('df-engine', 'go-collector', 'fluent-bit') AND metric_name IN ('container.memory.usage', 'process.memory.usage')
+          WHERE component_name IN ('df-engine', 'go-collector', 'fluent-bit', 'rotel') AND metric_name IN ('container.memory.usage', 'process.memory.usage')
 
           UNION ALL
 
@@ -296,7 +296,7 @@ queries:
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - RAM (MiB)' AS extra
           FROM component_resource_metrics
           CROSS JOIN metadata_row
-          WHERE component_name IN ('df-engine', 'go-collector', 'fluent-bit') AND metric_name IN ('container.memory.usage', 'process.memory.usage')
+          WHERE component_name IN ('df-engine', 'go-collector', 'fluent-bit', 'rotel') AND metric_name IN ('container.memory.usage', 'process.memory.usage')
 
           UNION ALL
 
@@ -328,7 +328,7 @@ queries:
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
-          WHERE metric_name = 'container.network.tx' AND component_name IN ('df-engine', 'go-collector', 'fluent-bit')
+          WHERE metric_name = 'container.network.tx' AND component_name IN ('df-engine', 'go-collector', 'fluent-bit', 'rotel')
 
           UNION ALL
 
@@ -336,7 +336,7 @@ queries:
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
-          WHERE metric_name = 'container.network.rx' AND component_name IN ('df-engine', 'go-collector', 'fluent-bit')
+          WHERE metric_name = 'container.network.rx' AND component_name IN ('df-engine', 'go-collector', 'fluent-bit', 'rotel')
 
           UNION ALL
 
@@ -350,7 +350,7 @@ queries:
           CROSS JOIN log_throughput_rates ltr
           CROSS JOIN metadata_row
           WHERE cnr.metric_name = 'container.network.tx'
-            AND cnr.component_name IN ('df-engine', 'go-collector', 'fluent-bit')
+            AND cnr.component_name IN ('df-engine', 'go-collector', 'fluent-bit', 'rotel')
             AND ltr.metric_name = 'logs'
 
           UNION ALL
@@ -379,7 +379,7 @@ queries:
         CROSS JOIN observation_window ow
         LEFT JOIN component_core_counts ccc ON cr.component_name = ccc.component_name
         WHERE cr.metric_name IN ('container.cpu.usage', 'process.cpu.usage')
-          AND cr.component_name IN ('df-engine', 'go-collector', 'fluent-bit')
+          AND cr.component_name IN ('df-engine', 'go-collector', 'fluent-bit', 'rotel')
 
         UNION ALL
 
@@ -391,7 +391,7 @@ queries:
         FROM component_resource_with_values cr
         CROSS JOIN observation_window ow
         WHERE cr.metric_name IN ('container.memory.usage', 'process.memory.usage')
-          AND cr.component_name IN ('df-engine', 'go-collector', 'fluent-bit')
+          AND cr.component_name IN ('df-engine', 'go-collector', 'fluent-bit', 'rotel')
 
         UNION ALL
 
@@ -404,7 +404,7 @@ queries:
         JOIN observation_window ow ON nr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
         WHERE nr.rate IS NOT NULL
           AND nr.metric_name = 'container.network.tx'
-          AND nr.component_name IN ('df-engine', 'go-collector', 'fluent-bit')
+          AND nr.component_name IN ('df-engine', 'go-collector', 'fluent-bit', 'rotel')
 
         UNION ALL
 
@@ -417,7 +417,7 @@ queries:
         JOIN observation_window ow ON nr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
         WHERE nr.rate IS NOT NULL
           AND nr.metric_name = 'container.network.rx'
-          AND nr.component_name IN ('df-engine', 'go-collector', 'fluent-bit')
+          AND nr.component_name IN ('df-engine', 'go-collector', 'fluent-bit', 'rotel')
 
         UNION ALL
 

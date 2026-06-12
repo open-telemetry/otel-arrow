@@ -66,6 +66,13 @@ pub(crate) mod metric {
     pub(crate) const PAGING_UTILIZATION: &str = "system.paging.utilization";
     pub(crate) const PROCESS_COUNT: &str = "system.process.count";
     pub(crate) const PROCESS_CREATED: &str = "system.process.created";
+    pub(crate) const PROCESS_CPU_TIME: &str = "process.cpu.time";
+    pub(crate) const PROCESS_CPU_UTILIZATION: &str = "process.cpu.utilization";
+    pub(crate) const PROCESS_DISK_IO: &str = "process.disk.io";
+    pub(crate) const PROCESS_MEMORY_USAGE: &str = "process.memory.usage";
+    pub(crate) const PROCESS_MEMORY_VIRTUAL: &str = "process.memory.virtual";
+    pub(crate) const PROCESS_THREADS: &str = "process.thread.count";
+    pub(crate) const PROCESS_UPTIME: &str = "process.uptime";
     pub(crate) const UPTIME: &str = "system.uptime";
 }
 
@@ -80,6 +87,10 @@ pub(crate) mod attr {
     pub(crate) const NETWORK_IO_DIRECTION: &str = "network.io.direction";
     pub(crate) const OS_TYPE: &str = "os.type";
     pub(crate) const PROCESS_STATE: &str = "process.state";
+    pub(crate) const PROCESS_COMMAND: &str = "process.command";
+    pub(crate) const PROCESS_EXECUTABLE_NAME: &str = "process.executable.name";
+    pub(crate) const PROCESS_PARENT_PID: &str = "process.parent_pid";
+    pub(crate) const PROCESS_PID: &str = "process.pid";
     pub(crate) const SYSTEM_DEVICE: &str = "system.device";
     pub(crate) const SYSTEM_FILESYSTEM_MODE: &str = "system.filesystem.mode";
     pub(crate) const SYSTEM_FILESYSTEM_MOUNTPOINT: &str = "system.filesystem.mountpoint";

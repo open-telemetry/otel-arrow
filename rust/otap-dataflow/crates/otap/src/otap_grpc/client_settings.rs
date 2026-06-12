@@ -6,6 +6,7 @@
 use crate::compression::CompressionMethod;
 use crate::otap_grpc::proxy::ProxyConfig;
 use crate::tls_utils;
+use http::header::HeaderValue;
 use hyper_util::rt::TokioIo;
 use otap_df_config::byte_units;
 use otap_df_config::tls::TlsClientConfig;
@@ -145,6 +146,13 @@ pub struct GrpcClientSettings {
     #[serde(default)]
     #[doc(hidden)]
     pub proxy: Option<ProxyConfig>,
+
+    /// Custom User-Agent header for outbound gRPC requests. When set, tonic
+    /// **prepends** this value to its default `tonic/x.x.x` User-Agent (e.g.
+    /// `my-app/1.0 tonic/0.12.x`). When not set, only the default tonic
+    /// User-Agent is sent.
+    #[serde(default)]
+    pub user_agent: Option<String>,
 }
 
 /// Error returned when building a gRPC [`Endpoint`] (including TLS/mTLS setup).
@@ -165,6 +173,10 @@ pub enum GrpcEndpointError {
     /// Invalid gRPC endpoint.
     #[error("invalid grpc_endpoint: {0}")]
     InvalidEndpoint(String),
+
+    /// Invalid configuration value detected at validation time.
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
 
     /// DNS resolution failed during a `startup_check: dns` check.
     #[error("startup dns check failed for \"{host}\": {source}")]
@@ -214,6 +226,28 @@ fn validate_grpc_endpoint(endpoint: &str) -> Result<(), String> {
 }
 
 impl GrpcClientSettings {
+    /// Validates the settings at config load time.
+    ///
+    /// Checks that `user_agent`, when set, is non-empty and contains only
+    /// characters valid in an HTTP header value (visible ASCII, 32-127).
+    pub fn validate(&self) -> Result<(), GrpcEndpointError> {
+        if let Some(ua) = &self.user_agent {
+            if ua.trim().is_empty() {
+                return Err(GrpcEndpointError::InvalidConfig(
+                    "user_agent must be non-empty when set".to_string(),
+                ));
+            }
+            if HeaderValue::from_str(ua).is_err() {
+                return Err(GrpcEndpointError::InvalidConfig(
+                    "user_agent contains characters that cannot be represented as an HTTP header \
+                     value (must be visible ASCII)"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Performs the configured startup check, if any.
     ///
     /// # Errors
@@ -257,10 +291,10 @@ impl GrpcClientSettings {
             }
         });
 
-        // If a proxy is configured and the endpoint is not bypassed, the proxy performs DNS
-        // resolution -- skip the local check.
+        // If the actual connection path will use a proxy for this endpoint, the proxy performs
+        // DNS resolution -- skip the local check.
         let proxy = self.effective_proxy_config();
-        if proxy.has_proxy() && !proxy.should_bypass(&host, port) {
+        if proxy.get_proxy_for_uri(&uri).is_some() {
             return Ok(());
         }
 
@@ -341,6 +375,9 @@ impl GrpcClientSettings {
         }
         if let Some(timeout) = self.timeout {
             endpoint = endpoint.timeout(timeout);
+        }
+        if let Some(ua) = &self.user_agent {
+            endpoint = endpoint.user_agent(ua.as_str())?;
         }
 
         Ok(endpoint)
@@ -505,6 +542,7 @@ impl Default for GrpcClientSettings {
             buffer_size: None,
             startup_check: StartupCheck::default(),
             proxy: None,
+            user_agent: None,
         }
     }
 }
@@ -597,6 +635,55 @@ mod tests {
             settings.compression_encoding(),
             Some(CompressionEncoding::Gzip)
         );
+    }
+
+    #[test]
+    fn validate_rejects_empty_user_agent() {
+        let settings = GrpcClientSettings {
+            user_agent: Some(String::new()),
+            ..GrpcClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(GrpcEndpointError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_whitespace_only_user_agent() {
+        let settings = GrpcClientSettings {
+            user_agent: Some("   ".to_string()),
+            ..GrpcClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(GrpcEndpointError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_non_ascii_user_agent() {
+        let settings = GrpcClientSettings {
+            user_agent: Some("bad\nvalue".to_string()),
+            ..GrpcClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(GrpcEndpointError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_accepts_valid_user_agent() {
+        let settings = GrpcClientSettings {
+            user_agent: Some("my-app/1.0".to_string()),
+            ..GrpcClientSettings::default()
+        };
+
+        assert!(settings.validate().is_ok());
     }
 
     #[test]
@@ -1195,6 +1282,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_check_dns_not_skipped_when_proxy_does_not_apply_to_endpoint_scheme() {
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "http://this.host.definitely.does.not.exist.invalid:4317".to_string(),
+            startup_check: StartupCheck::Dns,
+            proxy: Some(ProxyConfig {
+                https_proxy: Some("http://my-proxy:3128".into()),
+                ..Default::default()
+            }),
+            ..GrpcClientSettings::default()
+        };
+
+        let err = settings.run_startup_check().await.unwrap_err();
+        assert!(
+            matches!(err, GrpcEndpointError::DnsCheckFailed { .. }),
+            "expected DnsCheckFailed, got: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn startup_check_dns_not_skipped_when_endpoint_bypasses_proxy() {
         // When the endpoint IS in no_proxy, DNS check should still run.
         let settings = GrpcClientSettings {
@@ -1259,5 +1365,100 @@ mod tests {
         };
         // localhost should resolve regardless of port.
         settings.run_startup_check().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_user_agent_sent_on_grpc_wire() {
+        use bytes::Bytes;
+        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
+        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::{
+            LogsService, LogsServiceServer,
+        };
+        use prost::Message;
+        use tokio::sync::mpsc;
+        use tonic::transport::Server;
+        use tonic::{Request, Response, Status};
+
+        use crate::otap_grpc::otlp::client::LogsServiceClient;
+
+        // Verify default has no user_agent
+        let defaults = GrpcClientSettings::default();
+        assert_eq!(defaults.user_agent, None);
+
+        // Verify deserialization
+        let deserialized: GrpcClientSettings = serde_json::from_str(
+            r#"{ "grpc_endpoint": "http://localhost:4317", "user_agent": "my-app/1.0" }"#,
+        )
+        .unwrap();
+        assert_eq!(deserialized.user_agent.as_deref(), Some("my-app/1.0"));
+
+        // Verify the header actually arrives on the wire
+        struct UserAgentCapture {
+            sender: mpsc::Sender<String>,
+        }
+
+        #[tonic::async_trait]
+        impl LogsService for UserAgentCapture {
+            async fn export(
+                &self,
+                request: Request<ExportLogsServiceRequest>,
+            ) -> Result<Response<ExportLogsServiceResponse>, Status> {
+                let ua = request
+                    .metadata()
+                    .get("user-agent")
+                    .map(|v| v.to_str().unwrap().to_string())
+                    .unwrap_or_default();
+                let _ = self.sender.send(ua).await;
+                Ok(Response::new(ExportLogsServiceResponse {
+                    partial_success: None,
+                }))
+            }
+        }
+
+        let (tx, mut rx) = mpsc::channel::<String>(1);
+        let service = LogsServiceServer::new(UserAgentCapture { sender: tx });
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+        let server_handle = tokio::spawn(async move {
+            Server::builder()
+                .add_service(service)
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+
+        let settings = GrpcClientSettings {
+            grpc_endpoint: format!("http://127.0.0.1:{}", addr.port()),
+            user_agent: Some("my-app/1.0".to_string()),
+            ..GrpcClientSettings::default()
+        };
+
+        let endpoint = settings.build_endpoint().unwrap();
+        let channel = endpoint.connect().await.unwrap();
+
+        let mut client = LogsServiceClient::new(channel);
+        let req = ExportLogsServiceRequest {
+            resource_logs: Vec::new(),
+        };
+        let mut buf = Vec::new();
+        req.encode(&mut buf).unwrap();
+        let _ = client.export(Bytes::from(buf)).await.unwrap();
+
+        let observed_ua = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Tonic prepends custom user-agent before its default
+        assert!(
+            observed_ua.contains("my-app/1.0"),
+            "Expected user-agent to contain 'my-app/1.0', got: {observed_ua}"
+        );
+
+        server_handle.abort();
     }
 }
