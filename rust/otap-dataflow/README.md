@@ -366,8 +366,8 @@ embedding binary typically needs:
 - **`apply_cli_overrides`** -- Merges core-allocation and HTTP-admin
   bind overrides into an `OtelDataflowSpec`.
 - **`system_info`** -- Returns a formatted string with CPU/memory info
-  and all registered component URNs, useful for `--help` banners or
-  diagnostics.
+  plus all registered component and controller extension URNs, useful for
+  `--help` banners or diagnostics.
 
 A minimal custom binary looks like this:
 
@@ -378,6 +378,7 @@ use otap_df_controller::{Controller, startup};
 // Side-effect imports to register components via linkme.
 use otap_df_core_nodes as _;
 // Bring your own contrib/custom nodes as needed.
+// Bring your own controller extension crates the same way.
 
 // Reference the pipeline factory (or define your own).
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
@@ -411,6 +412,97 @@ is itself a thin wrapper over these library calls.
 
 For a complete runnable example, see
 [`examples/custom_collector.rs`](examples/custom_collector.rs).
+
+### Developing Controller Extensions
+
+Controller extensions are trusted in-process tasks started by the controller
+from `engine.extensions`. They are intended for embedding binaries that need to
+integrate controller-level behavior such as remote management, monitoring, or
+fleet coordination.
+
+A downstream extension crate registers a statically linked factory with the
+controller's `linkme` distributed slice:
+
+```rust
+use otap_df_controller::{
+    CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionContext,
+    ControllerExtensionError, ControllerExtensionFactory,
+    ControllerExtensionTaskFactory, distributed_slice,
+};
+
+pub const REMOTE_CONTROL_URN: &str = "urn:example:extension:remote_control";
+
+#[allow(unsafe_code)]
+#[distributed_slice(CONTROLLER_EXTENSION_FACTORIES)]
+pub static REMOTE_CONTROL_EXTENSION: ControllerExtensionFactory =
+    ControllerExtensionFactory {
+        name: REMOTE_CONTROL_URN,
+        description: "Remote controller integration.",
+        documentation_url: "",
+        start: start_remote_control,
+    };
+
+fn start_remote_control(
+    context: ControllerExtensionContext,
+) -> Result<ControllerExtensionTaskFactory, ControllerExtensionError> {
+    // Parse context.extension.config here and build any client state needed by
+    // the running task.
+    let extension_id = context.extension_id.clone();
+    let control_plane = context.control_plane.clone();
+    let observed_state = context.observed_state.clone();
+    let telemetry_registry = context.telemetry_registry.clone();
+
+    Ok(Box::new(move |cancellation_token| {
+        Box::pin(async move {
+            loop {
+                tokio::select! {
+                    _ = cancellation_token.cancelled() => {
+                        return Ok(());
+                    }
+                    _ = tokio::time::sleep(
+                        std::time::Duration::from_secs(30),
+                    ) => {
+                        // Run extension work here.
+                        let _ = (
+                            &extension_id,
+                            &control_plane,
+                            &observed_state,
+                            &telemetry_registry,
+                        );
+                    }
+                }
+            }
+        })
+    }))
+}
+```
+
+The embedding binary must link the extension crate, just like custom node
+crates:
+
+```rust
+use my_remote_control_extension as _;
+```
+
+Then the engine configuration declares an instance whose `type` matches the
+registered factory URN:
+
+```yaml
+engine:
+  extensions:
+    remote_control:
+      type: "urn:example:extension:remote_control"
+      config:
+        endpoint: "https://controller.example.com"
+```
+
+`ControllerRunOptions::default()` loads all linked controller extension
+factories automatically. `startup::system_info(...)` lists the linked
+controller extension URNs, which is the quickest way to verify that the final
+binary contains the extension factory.
+
+Controller extensions are statically linked Rust code. The engine does not load
+controller extensions dynamically from shared libraries or configuration alone.
 
 ## Development Setup
 

@@ -106,6 +106,8 @@ use std::thread;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+pub use linkme::distributed_slice;
+
 /// Built-in controller-level extensions.
 pub mod controller_monitor;
 /// Error types and helpers for the controller module.
@@ -161,6 +163,30 @@ type ControllerExtensionStartFn = dyn Fn(
     + Sync
     + 'static;
 
+/// A statically linked controller extension factory.
+///
+/// Downstream extension crates can contribute instances to
+/// [`CONTROLLER_EXTENSION_FACTORIES`] with `linkme` distributed slices. The
+/// default [`ControllerExtensionRegistry`] loads those linked factories
+/// automatically.
+#[derive(Clone, Copy)]
+pub struct ControllerExtensionFactory {
+    /// Extension type URN matched against `engine.extensions.<id>.type`.
+    pub name: &'static str,
+    /// Short human-readable extension description.
+    pub description: &'static str,
+    /// URL to extension documentation, when available.
+    pub documentation_url: &'static str,
+    /// Starts one configured controller extension instance.
+    pub start: fn(
+        ControllerExtensionContext,
+    ) -> Result<ControllerExtensionTaskFactory, ControllerExtensionError>,
+}
+
+/// Statically linked controller extension factories.
+#[distributed_slice]
+pub static CONTROLLER_EXTENSION_FACTORIES: [ControllerExtensionFactory] = [..];
+
 /// Context passed to controller extension factories.
 #[derive(Clone)]
 pub struct ControllerExtensionContext {
@@ -179,12 +205,41 @@ pub struct ControllerExtensionContext {
 }
 
 /// Registry of controller extension factories keyed by extension type URN.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ControllerExtensionRegistry {
     factories: HashMap<ExtensionUrn, Arc<ControllerExtensionStartFn>>,
 }
 
+impl Default for ControllerExtensionRegistry {
+    fn default() -> Self {
+        Self::from_factories(&CONTROLLER_EXTENSION_FACTORIES)
+    }
+}
+
 impl ControllerExtensionRegistry {
+    /// Creates an empty registry without auto-discovered linked factories.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            factories: HashMap::new(),
+        }
+    }
+
+    /// Creates a registry from statically linked controller extension factories.
+    #[must_use]
+    pub fn from_factories(factories: &'static [ControllerExtensionFactory]) -> Self {
+        let mut registry = Self::empty();
+        for factory in factories {
+            registry.register_factory(*factory);
+        }
+        registry
+    }
+
+    /// Registers a statically linked controller extension factory.
+    pub fn register_factory(&mut self, factory: ControllerExtensionFactory) {
+        self.register(factory.name.into(), factory.start);
+    }
+
     /// Registers a factory for an engine extension type.
     pub fn register<F>(&mut self, extension_type: ExtensionUrn, factory: F)
     where
@@ -2405,6 +2460,24 @@ connections:
         Box::leak(Box::new(PipelineFactory::new(&[], &[], &[], &[])))
     }
 
+    const TEST_LINKED_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:controller_linked";
+
+    fn start_test_linked_controller_extension(
+        _context: ControllerExtensionContext,
+    ) -> Result<ControllerExtensionTaskFactory, ControllerExtensionError> {
+        Ok(Box::new(|_cancellation_token| Box::pin(async { Ok(()) })))
+    }
+
+    #[allow(unsafe_code)]
+    #[distributed_slice(CONTROLLER_EXTENSION_FACTORIES)]
+    pub static TEST_LINKED_CONTROLLER_EXTENSION_FACTORY: ControllerExtensionFactory =
+        ControllerExtensionFactory {
+            name: TEST_LINKED_CONTROLLER_EXTENSION_URN,
+            description: "Test linked controller extension.",
+            documentation_url: "",
+            start: start_test_linked_controller_extension,
+        };
+
     fn controller_monitor_engine_config(monitor_config: &str) -> OtelDataflowSpec {
         OtelDataflowSpec::from_yaml(&format!(
             r#"
@@ -2506,9 +2579,25 @@ groups: {{}}
     }
 
     #[test]
-    fn built_in_controller_monitor_runs_with_registered_factory() {
-        let mut registry = ControllerExtensionRegistry::default();
-        register_builtin_controller_extensions(&mut registry);
+    fn default_controller_extension_registry_loads_linked_factories() {
+        let registry = ControllerExtensionRegistry::default();
+        let monitor_type = CONTROLLER_MONITOR_EXTENSION_URN.into();
+        let test_type = TEST_LINKED_CONTROLLER_EXTENSION_URN.into();
+
+        assert!(registry.get(&monitor_type).is_some());
+        assert!(registry.get(&test_type).is_some());
+    }
+
+    #[test]
+    fn empty_controller_extension_registry_omits_linked_factories() {
+        let registry = ControllerExtensionRegistry::empty();
+        let monitor_type = CONTROLLER_MONITOR_EXTENSION_URN.into();
+
+        assert!(registry.get(&monitor_type).is_none());
+    }
+
+    #[test]
+    fn built_in_controller_monitor_runs_with_default_registry() {
         let controller = Controller::new(empty_pipeline_factory());
         controller
             .run_till_shutdown_with_options(
@@ -2517,9 +2606,7 @@ groups: {{}}
         interval: "10ms"
         log_snapshots: false"#,
                 ),
-                ControllerRunOptions {
-                    extensions: registry,
-                },
+                ControllerRunOptions::default(),
             )
             .expect("controller should run built-in monitor extension");
     }
@@ -2530,7 +2617,9 @@ groups: {{}}
         let err = controller
             .run_till_shutdown_with_options(
                 controller_monitor_engine_config(""),
-                ControllerRunOptions::default(),
+                ControllerRunOptions {
+                    extensions: ControllerExtensionRegistry::empty(),
+                },
             )
             .expect_err("missing controller extension factory should fail startup");
 
@@ -2548,8 +2637,6 @@ groups: {{}}
 
     #[test]
     fn controller_monitor_rejects_invalid_config_at_startup() {
-        let mut registry = ControllerExtensionRegistry::default();
-        register_builtin_controller_extensions(&mut registry);
         let controller = Controller::new(empty_pipeline_factory());
         let err = controller
             .run_till_shutdown_with_options(
@@ -2557,9 +2644,7 @@ groups: {{}}
                     r#"      config:
         interval: "0s""#,
                 ),
-                ControllerRunOptions {
-                    extensions: registry,
-                },
+                ControllerRunOptions::default(),
             )
             .expect_err("invalid controller monitor config should fail startup");
 

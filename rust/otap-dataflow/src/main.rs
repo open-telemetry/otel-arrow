@@ -13,9 +13,7 @@ use otap_df_config::policy::{CoreAllocation, CoreRange};
 // in `OTAP_PIPELINE_FACTORY` at runtime.
 use otap_df_contrib_nodes as _;
 use otap_df_controller::startup;
-use otap_df_controller::{
-    Controller, ControllerRunOptions, register_builtin_controller_extensions,
-};
+use otap_df_controller::{Controller, ControllerRunOptions};
 // Keep this side-effect import so the crate is linked and its `linkme`
 // distributed-slice registrations (core nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
@@ -282,9 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
-    let mut run_options = ControllerRunOptions::default();
-    register_builtin_controller_extensions(&mut run_options.extensions);
-    let result = controller.run_forever_with_options(engine_cfg, run_options);
+    let result = controller.run_forever_with_options(engine_cfg, ControllerRunOptions::default());
     #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))]
     {
         dhat_finish();

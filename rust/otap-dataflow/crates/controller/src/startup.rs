@@ -19,6 +19,7 @@
 //! println!("{}", startup::system_info(&MY_PIPELINE_FACTORY, "system"));
 //! ```
 
+use crate::CONTROLLER_EXTENSION_FACTORIES;
 use otap_df_config::engine::{
     HttpAdminSettings, OtelDataflowSpec, SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
@@ -218,8 +219,9 @@ pub fn validate_engine_components<PData: 'static + Clone + Debug>(
     Ok(())
 }
 
-/// Returns a human-readable string with system information and all component
-/// URNs registered in the given [`PipelineFactory`].
+/// Returns a human-readable string with system information, all component URNs
+/// registered in the given [`PipelineFactory`], and linked controller extension
+/// URNs.
 ///
 /// `memory_allocator` should describe the active global allocator (e.g.
 /// `"jemalloc"`, `"mimalloc"`, or `"system"`).  The library cannot detect this
@@ -265,9 +267,14 @@ pub fn system_info<PData: 'static + Clone + Debug>(
         .collect();
     let mut exporters_sorted: Vec<&str> =
         factory.get_exporter_factory_map().keys().copied().collect();
+    let mut controller_extensions_sorted: Vec<&str> = CONTROLLER_EXTENSION_FACTORIES
+        .iter()
+        .map(|f| f.name)
+        .collect();
     receivers_sorted.sort();
     processors_sorted.sort();
     exporters_sorted.sort();
+    controller_extensions_sorted.sort();
 
     format!(
         "System Information:
@@ -280,6 +287,7 @@ Available Component URNs:
   Receivers: {}
   Processors: {}
   Exporters: {}
+  Controller Extensions: {}
 
 Example configuration files can be found in the configs/ directory.{}",
         available_cores,
@@ -290,6 +298,7 @@ Example configuration files can be found in the configs/ directory.{}",
         receivers_sorted.join(", "),
         processors_sorted.join(", "),
         exporters_sorted.join(", "),
+        controller_extensions_sorted.join(", "),
         debug_warning
     )
 }
@@ -388,6 +397,21 @@ extensions:
             "unexpected error: {msg}"
         );
         assert!(msg.contains("not-registered"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn system_info_lists_controller_extensions() {
+        let factory: PipelineFactory<()> = PipelineFactory::new(&[], &[], &[], &[]);
+        let info = system_info(&factory, "system");
+
+        assert!(
+            info.contains("Controller Extensions:"),
+            "system info should include controller extension URNs: {info}"
+        );
+        assert!(
+            info.contains(crate::CONTROLLER_MONITOR_EXTENSION_URN),
+            "system info should include linked controller monitor extension: {info}"
+        );
     }
 
     #[test]

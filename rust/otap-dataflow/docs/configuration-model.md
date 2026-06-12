@@ -215,6 +215,13 @@ Trusted in-process controller extensions can be declared at `engine.extensions`.
 Each entry uses a standard extension envelope with a `type` URN and optional
 extension-specific `config`.
 
+Controller extension implementations are discovered from statically linked Rust
+factories registered with `linkme` distributed slices. Custom distributions can
+add proprietary controller extensions by depending on the extension crate and
+linking it with a side-effect import. See
+[Developing Controller Extensions](../README.md#developing-controller-extensions)
+for implementation guidance.
+
 The built-in read-only controller monitor is available in the stock
 `df_engine` binary:
 

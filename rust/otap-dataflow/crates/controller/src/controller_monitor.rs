@@ -19,8 +19,9 @@
 //! shutdown.
 
 use crate::{
-    ControllerExtensionContext, ControllerExtensionError, ControllerExtensionRegistry,
-    ControllerExtensionTaskFactory,
+    CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionContext, ControllerExtensionError,
+    ControllerExtensionFactory, ControllerExtensionRegistry, ControllerExtensionTaskFactory,
+    distributed_slice,
 };
 use otap_df_config::ExtensionId;
 use otap_df_config::extension::ExtensionUserConfig;
@@ -38,6 +39,17 @@ use tokio_util::sync::CancellationToken;
 
 /// Built-in controller monitor extension type URN.
 pub const CONTROLLER_MONITOR_EXTENSION_URN: &str = "urn:otel:extension:controller_monitor";
+
+/// Statically linked controller monitor extension factory.
+#[allow(unsafe_code)]
+#[distributed_slice(CONTROLLER_EXTENSION_FACTORIES)]
+pub static CONTROLLER_MONITOR_EXTENSION_FACTORY: ControllerExtensionFactory =
+    ControllerExtensionFactory {
+        name: CONTROLLER_MONITOR_EXTENSION_URN,
+        description: "Read-only controller state and telemetry monitor.",
+        documentation_url: "",
+        start: start_controller_monitor_extension,
+    };
 
 const fn default_monitor_interval() -> Duration {
     Duration::from_secs(30)
@@ -102,10 +114,7 @@ pub enum ControllerMonitorError {
 
 /// Registers controller extension factories built into the controller crate.
 pub fn register_builtin_controller_extensions(registry: &mut ControllerExtensionRegistry) {
-    registry.register(
-        CONTROLLER_MONITOR_EXTENSION_URN.into(),
-        start_controller_monitor_extension,
-    );
+    registry.register_factory(CONTROLLER_MONITOR_EXTENSION_FACTORY);
 }
 
 fn start_controller_monitor_extension(
