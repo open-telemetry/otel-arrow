@@ -7,9 +7,9 @@ keepalive settings, too.
 To run this setup, start the three collectors as follows:
 
 ```shell
-$COLLECTOR --config saas-collector.yaml
-$COLLECTOR --config middle-collector.yaml
-$COLLECTOR --config edge-collector.yaml
+collector --config saas-collector.yaml
+collector --config middle-collector.yaml
+collector --config edge-collector.yaml
 ```
 
 You may use the

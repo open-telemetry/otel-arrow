@@ -29,6 +29,7 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -199,12 +200,14 @@ pub fn create_condense_attributes_processor(
 pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
         name: CONDENSE_ATTRIBUTES_PROCESSOR_URN,
-        create: |pipeline_ctx: PipelineContext,
-                 node: NodeId,
-                 node_config: Arc<NodeUserConfig>,
-                 proc_cfg: &ProcessorConfig| {
-            create_condense_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
-        },
+        create:
+            |pipeline_ctx: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             proc_cfg: &ProcessorConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+                create_condense_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
+            },
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: |config| Config::from_config(config).map(|_| ()),
     };
@@ -623,7 +626,7 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
                     OtapPayload::empty(signal)
                 };
 
-                let mut records: OtapArrowRecords = payload.try_into()?;
+                let mut records: OtapArrowRecords = payload.try_into_with_default()?;
 
                 let input_items = records.num_items() as u64;
 
@@ -758,7 +761,8 @@ mod condense_tests {
                 let out = ctx.drain_pdata().await;
                 let (_, first) = out.into_iter().next().expect("one output").into_parts();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -880,7 +884,8 @@ mod condense_tests {
         let mut bytes = BytesMut::new();
         input.encode(&mut bytes).expect("encode input");
         let payload: OtapPayload = OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into();
-        let mut records: OtapArrowRecords = payload.try_into().expect("convert to records");
+        let mut records: OtapArrowRecords =
+            payload.try_into_with_default().expect("convert to records");
 
         let before_batch = records
             .get(ArrowPayloadType::LogAttrs)
@@ -1292,7 +1297,9 @@ mod condense_tests {
 
                 let out = ctx.drain_pdata().await;
                 let (_, first_payload) = out.into_iter().next().expect("one output").into_parts();
-                let otlp_bytes: OtlpProtoBytes = first_payload.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes = first_payload
+                    .try_into_with_default()
+                    .expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
@@ -1334,8 +1341,9 @@ mod condense_tests {
 
                 let out = ctx.drain_pdata().await;
                 let (_, second_payload) = out.into_iter().next().expect("one output").into_parts();
-                let otlp_bytes: OtlpProtoBytes =
-                    second_payload.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes = second_payload
+                    .try_into_with_default()
+                    .expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),

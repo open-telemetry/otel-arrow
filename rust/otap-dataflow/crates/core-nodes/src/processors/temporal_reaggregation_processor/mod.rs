@@ -32,7 +32,7 @@ use otap_df_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
 use otap_df_engine::{ConsumerEffectHandlerExtension, Interests};
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
-use otap_df_otap::pdata::{Context, OtapPdata};
+use otap_df_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::views::otap::OtapMetricsView;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
@@ -125,12 +125,14 @@ pub const TEMPORAL_REAGGREGATION_PROCESSOR_URN: &str = "urn:otel:processor:tempo
 pub static TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
         name: TEMPORAL_REAGGREGATION_PROCESSOR_URN,
-        create: |pipeline_ctx: PipelineContext,
-                 node: NodeId,
-                 node_config: Arc<NodeUserConfig>,
-                 proc_cfg: &ProcessorConfig| {
-            create_temporal_reaggregation_processor(pipeline_ctx, node, node_config, proc_cfg)
-        },
+        create:
+            |pipeline_ctx: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             proc_cfg: &ProcessorConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+                create_temporal_reaggregation_processor(pipeline_ctx, node, node_config, proc_cfg)
+            },
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: otap_df_config::validation::validate_typed_config::<Config>,
     };
@@ -237,6 +239,13 @@ pub struct TemporalReaggregationProcessor {
     /// point to the batches contibuting to aggregated data which has not been
     /// flushed.
     pending_flush: Vec<CallData>,
+
+    /// Running merge of the receiver-observed peer addresses of every input
+    /// whose data contributed to [Self::builder]. Tracked independently of
+    /// subscriber state so that flushes from no-subscriber inputs can also
+    /// forward `peer_addr` when all contributing inputs agreed. Reset on
+    /// every flush alongside the builder.
+    aggregated_peer: PeerAddrMerger,
 
     /// A map of all passthrough and aggregated batches sent by this processor.
     /// The CallData returned to this processor in ack/nack messages can be
@@ -351,6 +360,7 @@ impl TemporalReaggregationProcessor {
             inbound_batches: SlotState::new(config.inbound_request_limit.get()),
             pending_flush: Vec::new(),
             outbound_batches: SlotState::new(config.outbound_request_limit.get()),
+            aggregated_peer: PeerAddrMerger::new(),
         })
     }
 
@@ -633,6 +643,10 @@ impl TemporalReaggregationProcessor {
                     Ok(effect_handler.send_message_with_source_node(pdata).await?)
                 }
                 AggregationResult::SomeAggregations(records) => {
+                    // The aggregated portion of this input has been folded into
+                    // the in-progress builder; remember its peer_addr so the
+                    // next flush can compute the merged output peer_addr.
+                    self.aggregated_peer.push(pdata.peer_addr());
                     // Pass data through if there are no subscribers — but we
                     // still need a wakeup to flush the aggregated portion.
                     let (inbound_ctx, _) = pdata.into_parts();
@@ -646,6 +660,10 @@ impl TemporalReaggregationProcessor {
                             .await?;
                         return Ok(());
                     }
+
+                    // The partial-passthrough output represents exactly one
+                    // input, so forward its peer_addr unconditionally.
+                    let passthrough_peer = inbound_ctx.peer_addr();
 
                     // One ref for the passthrough, we will bump the ack count again
                     // when we actually flush the batch.
@@ -669,6 +687,9 @@ impl TemporalReaggregationProcessor {
                     let context = Context::with_capacity(1);
                     let mut pt_pdata =
                         OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
+                    if let Some(addr) = passthrough_peer {
+                        pt_pdata.set_peer_addr(addr);
+                    }
 
                     effect_handler.subscribe_to(
                         Interests::ACKS | Interests::NACKS,
@@ -681,6 +702,9 @@ impl TemporalReaggregationProcessor {
                         .await?)
                 }
                 AggregationResult::AllAggregated => {
+                    // The full input was folded into the in-progress builder;
+                    // remember its peer_addr for the next flush.
+                    self.aggregated_peer.push(pdata.peer_addr());
                     // Nothing to passthrough and no subscribers so we don't
                     // care about ack/nack — but we still need a wakeup to
                     // flush the aggregated data.
@@ -735,6 +759,10 @@ impl TemporalReaggregationProcessor {
         checkpoint: Option<Checkpoint>,
     ) -> Result<(), Error> {
         let records = self.builder.finish(checkpoint);
+        // Snapshot the merged peer_addr from every input that contributed to
+        // this aggregate before clear_state resets the running merger.
+        // Returns None when contributing inputs disagreed or any were peerless.
+        let merged_peer = self.aggregated_peer.finish();
         self.clear_state();
         // Whenever we flush we cancel the current wakeup if any. Wakeups are
         // scheduled whenever we start aggregating a new batch
@@ -749,7 +777,10 @@ impl TemporalReaggregationProcessor {
         // Nobody was subscribed to anything here
         if pending_flush_calldata.is_empty() {
             let context = Context::default();
-            let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
+            let mut pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
+            if let Some(addr) = merged_peer {
+                pdata.set_peer_addr(addr);
+            }
             effect_handler.send_message_with_source_node(pdata).await?;
             return Ok(());
         }
@@ -774,6 +805,9 @@ impl TemporalReaggregationProcessor {
         let outbound_calldata: CallData = outbound_key.into();
         let outbound_ctx = Context::with_capacity(1);
         let mut pdata = OtapPdata::new(outbound_ctx, OtapPayload::OtapArrowRecords(records));
+        if let Some(addr) = merged_peer {
+            pdata.set_peer_addr(addr);
+        }
         effect_handler.subscribe_to(
             Interests::ACKS | Interests::NACKS,
             outbound_calldata,
@@ -1321,6 +1355,7 @@ impl TemporalReaggregationProcessor {
     fn clear_state(&mut self) {
         self.identities.clear();
         self.builder.clear();
+        self.aggregated_peer = PeerAddrMerger::new();
     }
 }
 
@@ -1388,6 +1423,7 @@ mod tests {
     use super::testing::*;
     use super::*;
     use std::future::Future;
+    use std::net::SocketAddr;
 
     use otap_df_engine::testing::processor::TestContext;
     use otap_df_pdata::otap::OtapBatchStore;
@@ -3535,5 +3571,98 @@ mod tests {
             );
             assert!(ctx.drain_pdata().await.is_empty());
         });
+    }
+
+    /// AllAggregated flush path: all contributing inputs share one peer.
+    /// Guarantee: the flushed aggregate's `peer_addr` equals that peer.
+    #[test]
+    fn test_flush_peer_addr_preserved_when_single_peer() {
+        let peer: SocketAddr = "10.0.0.1:5000".parse().unwrap();
+        let config = json!({});
+        let actions = vec![
+            Action::SendPdataWithPeer {
+                interests: Interests::empty(),
+                payload: make_otap_payload_from_metrics(make_n_gauge_metrics(1)),
+                peer_addr: peer,
+            },
+            Action::SendPdataWithPeer {
+                interests: Interests::empty(),
+                payload: make_otap_payload_from_metrics(make_n_gauge_metrics_with_offset(1, 1)),
+                peer_addr: peer,
+            },
+            Action::FireWakeup,
+            Action::DrainPdata {
+                actions: vec![PdataAction::AssertCustom(Box::new(move |out| {
+                    assert_eq!(
+                        out.peer_addr(),
+                        Some(peer),
+                        "single-peer aggregate must preserve peer_addr"
+                    );
+                }))],
+            },
+        ];
+        run_test(config, actions);
+    }
+
+    /// AllAggregated flush path: contributing inputs came from distinct peers.
+    /// Guarantee: the flushed aggregate's `peer_addr` is `None`.
+    #[test]
+    fn test_flush_peer_addr_dropped_when_mixed_peers() {
+        let peer_a: SocketAddr = "10.0.0.1:5000".parse().unwrap();
+        let peer_b: SocketAddr = "10.0.0.2:5000".parse().unwrap();
+        let config = json!({});
+        let actions = vec![
+            Action::SendPdataWithPeer {
+                interests: Interests::empty(),
+                payload: make_otap_payload_from_metrics(make_n_gauge_metrics(1)),
+                peer_addr: peer_a,
+            },
+            Action::SendPdataWithPeer {
+                interests: Interests::empty(),
+                payload: make_otap_payload_from_metrics(make_n_gauge_metrics_with_offset(1, 1)),
+                peer_addr: peer_b,
+            },
+            Action::FireWakeup,
+            Action::DrainPdata {
+                actions: vec![PdataAction::AssertCustom(Box::new(|out| {
+                    assert_eq!(
+                        out.peer_addr(),
+                        None,
+                        "mixed-peer aggregate must not be attributed to one peer"
+                    );
+                }))],
+            },
+        ];
+        run_test(config, actions);
+    }
+
+    /// Partial-passthrough subscriber path: forwards the single input's
+    /// peer address directly to the passthrough output.
+    #[test]
+    fn test_passthrough_subscriber_forwards_peer_addr() {
+        let peer: SocketAddr = "10.0.0.1:5000".parse().unwrap();
+        let config = json!({});
+        let actions = vec![
+            Action::SendPdataWithPeer {
+                interests: Interests::ACKS | Interests::NACKS,
+                payload: make_mixed_metrics_payload(),
+                peer_addr: peer,
+            },
+            // First drained output is the partial passthrough.
+            Action::DrainPdata {
+                actions: vec![
+                    PdataAction::AssertSubscribers(true),
+                    PdataAction::AssertCustom(Box::new(move |out| {
+                        assert_eq!(
+                            out.peer_addr(),
+                            Some(peer),
+                            "single-input passthrough must forward peer_addr"
+                        );
+                    })),
+                    PdataAction::Ack,
+                ],
+            },
+        ];
+        run_test(config, actions);
     }
 }

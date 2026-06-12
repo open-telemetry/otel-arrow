@@ -105,7 +105,7 @@ mod tests {
         let yaml_str = r#"
             selector:
               instrument_name: "successful_rows"
-              scope_name: "azure_monitor_exporter.metrics"
+              scope_name: "exporter.azure_monitor"
             stream:
               name: "exporter_sent_log_records"
               description: "Number of log records successfully sent by the exporter."
@@ -117,7 +117,7 @@ mod tests {
         );
         assert_eq!(
             config.selector.scope_name.as_deref(),
-            Some("azure_monitor_exporter.metrics")
+            Some("exporter.azure_monitor")
         );
         assert_eq!(
             config.stream.name.as_deref(),

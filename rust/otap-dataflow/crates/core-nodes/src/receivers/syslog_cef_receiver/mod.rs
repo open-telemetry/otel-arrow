@@ -269,7 +269,8 @@ pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig| {
+             receiver_config: &ReceiverConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         Ok(ReceiverWrapper::local(
             SyslogCefReceiver::from_config(pipeline, &node_config.config)?,
             node,
@@ -288,11 +289,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        // Start periodic telemetry collection (1s), similar to other nodes
-        let telemetry_timer_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         match &self.config.protocol {
             Protocol::Tcp(tcp_config) => {
                 otel_info!(
@@ -347,7 +343,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // for TCP we still wait for already accepted connection tasks
                                     // to flush their per-connection buffers before reporting
                                     // ReceiverDrained to the runtime.
-                                    let _ = telemetry_timer_handle.cancel().await;
                                     shutdown_flag.set(true); // Signal all connection tasks to flush and exit
 
                                     // Wait for active tasks to finish flushing.
@@ -377,7 +372,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                    let _ = telemetry_timer_handle.cancel().await;
                                     shutdown_flag.set(true);
                                     let snapshot = self.metrics.borrow().snapshot();
                                     return Ok(TerminalState::new(deadline, [snapshot]));
@@ -467,9 +461,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                             Box::new(BufReader::new(socket))
                                         };
 
-                                        // Suppress unused variable warning when TLS is disabled
-                                        let _ = peer_addr;
-
                                         let mut line_bytes = Vec::with_capacity(INITIAL_MSG_BUFFER_CAPACITY);
 
                                         let mut arrow_records_builder = ArrowRecordsBuilder::new();
@@ -485,7 +476,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                     match arrow_records_builder.build() {
                                                         Ok(arrow_records) => {
                                                             let res = effect_handler.try_send_message_with_source_node(
-                                                                OtapPdata::new_todo_context(arrow_records.into())
+                                                                OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)
                                                             );
                                                             let mut m = metrics.borrow_mut();
                                                             match &res {
@@ -569,7 +560,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 let items = u64::from(arrow_records_builder.len());
                                                                 match arrow_records_builder.build() {
                                                                     Ok(arrow_records) => {
-                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
 
                                                                         {
                                                                             let mut m = metrics.borrow_mut();
@@ -660,7 +651,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                         // Reset the timer since we already built an arrow record batch due to size constraint
                                                                         interval.reset();
 
-                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
                                                                         {
                                                                             let mut m = metrics.borrow_mut();
                                                                             match &res {
@@ -684,7 +675,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 let items = u64::from(arrow_records_builder.len());
                                                                 match arrow_records_builder.build() {
                                                                     Ok(arrow_records) => {
-                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
 
                                                                         {
                                                                             let mut m = metrics.borrow_mut();
@@ -719,7 +710,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 // Reset the builder for the next batch
                                                                 arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
                                                                     match &res {
@@ -783,7 +774,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // UDP has no long-lived connection tasks, so receiver-first
                                     // drain just means: stop ingesting new packets, flush the
                                     // current batch buffer once, then report ReceiverDrained.
-                                    let _ = telemetry_timer_handle.cancel().await;
 
                                     if arrow_records_builder.len() > 0 {
                                         let items = u64::from(arrow_records_builder.len());
@@ -811,7 +801,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                    let _ = telemetry_timer_handle.cancel().await;
                                     let snapshot = self.metrics.borrow().snapshot();
                                     return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
@@ -953,14 +942,14 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 }
 
 /// RFC-aligned metrics for Syslog CEF receiver.
-#[metric_set(name = "syslog_cef.receiver.metrics")]
+#[metric_set(name = "receiver.syslog_cef")]
 #[derive(Debug, Default, Clone)]
 pub struct SyslogCefReceiverMetrics {
     /// Number of log records successfully forwarded downstream
     #[metric(unit = "{item}")]
     pub received_logs_forwarded: Counter<u64>,
 
-    /// Number of log records that failed to be parsed
+    /// Number of log records rejected because their payload is zero-length
     #[metric(unit = "{item}")]
     pub received_logs_invalid: Counter<u64>,
 

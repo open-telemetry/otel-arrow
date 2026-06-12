@@ -22,6 +22,7 @@ test-utils = []
 otap-df-channel = { workspace = true }
 otap-df-pdata = { workspace = true }
 otap-df-config = { workspace = true }
+otap-df-engine-macros = { workspace = true }
 otap-df-state = { workspace = true }
 otap-df-telemetry = { workspace = true }
 otap-df-telemetry-macros = { workspace = true }
@@ -53,6 +54,10 @@ tikv-jemalloc-sys = { workspace = true, optional = true }
 
 [dev-dependencies]
 otap-df-engine = { workspace = true, features = ["test-utils"] }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "time", "test-util"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }

@@ -91,10 +91,11 @@ queries:
         metrics_filtered AS (
             SELECT *,
             "metric_attributes.component_name" AS component_name,
-            COALESCE("metric_attributes.core_id", 'N/A') AS core_id,
+            COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
             FROM metrics
             WHERE metric_name IN (
               'logs_produced',
+              'logs_bytes_produced',
               'failed',
               'bytes_sent',
               'sent',
@@ -338,7 +339,36 @@ queries:
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
-          WHERE metric_name = 'container.network.rx' AND component_name IN ('go-collector', 'df-engine');
+          WHERE metric_name = 'container.network.rx' AND component_name IN ('go-collector', 'df-engine')
+
+          UNION ALL
+
+          SELECT 'egress_bytes_per_log' AS name, 'bytes/log' AS unit,
+                CASE WHEN ltr.logs_per_second > 0
+                  THEN cnr.average_rate / ltr.logs_per_second
+                  ELSE NULL
+                END AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Egress Bytes Per Log' AS extra
+          FROM container_network_rates cnr
+          CROSS JOIN log_throughput_rates ltr
+          CROSS JOIN metadata_row
+          WHERE cnr.metric_name = 'container.network.tx'
+            AND cnr.component_name IN ('go-collector', 'df-engine')
+            AND ltr.metric_name = 'logs'
+
+          UNION ALL
+
+          SELECT 'uncompressed_bytes_per_log' AS name, 'bytes/log' AS unit,
+                CASE WHEN logs.total_increase > 0
+                  THEN bytes.total_increase / logs.total_increase
+                  ELSE NULL
+                END AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Uncompressed Bytes Per Log' AS extra
+          FROM aggregate_send_receive_rates bytes
+          JOIN aggregate_send_receive_rates logs ON logs.metric_name = 'logs_produced'
+            AND logs.component_name = bytes.component_name
+          CROSS JOIN metadata_row
+          WHERE bytes.metric_name = 'logs_bytes_produced';
 
 result_tables:
   - name: metadata_filtered

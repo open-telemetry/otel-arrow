@@ -143,6 +143,10 @@ class DockerDeploymentConfig(DeploymentStrategyConfig):
     ports: Optional[List[Union[str, DockerPortMapping]]] = None
     volumes: Optional[List[Union[str, DockerVolumeMapping]]] = None
     network: Optional[str] = None
+    cpuset_cpus: Optional[str] = Field(
+        None,
+        description="CPUs the container may run on (docker --cpuset-cpus), e.g. '0' or '0-2'",
+    )
 
 
 @deployment_registry.register_class(STRATEGY_NAME)
@@ -227,17 +231,21 @@ components:
         runtime = get_component_docker_runtime(ctx)
         client = get_or_create_docker_client(ctx)
 
+        run_kwargs = dict(
+            image=self.config.image,
+            name=sanitize_docker_name(component.name),
+            detach=True,
+            network=sanitize_docker_name(self.config.network),
+            ports=build_port_bindings(self.config.ports),
+            volumes=build_volume_bindings(self.config.volumes),
+            environment=self.config.environment,
+            command=self.config.command,
+        )
+        if self.config.cpuset_cpus is not None:
+            run_kwargs["cpuset_cpus"] = self.config.cpuset_cpus
+
         try:
-            container = client.containers.run(
-                image=self.config.image,
-                name=sanitize_docker_name(component.name),
-                detach=True,
-                network=sanitize_docker_name(self.config.network),
-                ports=build_port_bindings(self.config.ports),
-                volumes=build_volume_bindings(self.config.volumes),
-                environment=self.config.environment,
-                command=self.config.command,
-            )
+            container = client.containers.run(**run_kwargs)
         except DockerException as e:
             logger.error(f"Error launching Docker container: {e}")
             raise

@@ -27,10 +27,13 @@ use crate::table::RecordBatchPartitionStream;
 mod apply_attrs;
 mod assign;
 mod attributes;
+mod concat;
 mod conditional;
 mod expr;
 mod filter;
+mod fork;
 mod functions;
+pub(crate) mod id_mask;
 mod planner;
 mod project;
 
@@ -63,7 +66,7 @@ pub trait PipelineStage {
         session_context: &SessionContext,
         config_options: &ConfigOptions,
         task_context: Arc<TaskContext>,
-        exec_options: &mut ExecutionState,
+        exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords>;
 
     /// Execute this stage of the pipeline on a [`RecordBatch`] containing a set of attributes.
@@ -242,6 +245,7 @@ impl PlannedPipeline {
 }
 
 /// Options for pipeline
+#[derive(Clone)]
 pub struct PipelineOptions {
     /// Whether to treat attribute key match as case sensitive during filtering stages
     pub filter_attribute_keys_case_sensitive: bool,
@@ -388,25 +392,26 @@ mod test {
     use crate::parser::default_parser_options;
 
     use super::*;
+    use otap_df_pdata::TryIntoWithOptions;
 
     /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
     pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {
         let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into_with_default().unwrap();
         LogsData::decode(otlp_bytes.as_bytes()).unwrap()
     }
 
     /// helper function for converting [`OtapArrowRecords`] to [`TracesData`]
     pub fn otap_to_traces_data(otap_batch: OtapArrowRecords) -> TracesData {
         let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into_with_default().unwrap();
         TracesData::decode(otlp_bytes.as_bytes()).unwrap()
     }
 
     /// helper function for converting [`OtapArrowRecords`] to [`MetricsData`]
     pub fn otap_to_metrics_data(otap_batch: OtapArrowRecords) -> MetricsData {
         let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
+        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into_with_default().unwrap();
         MetricsData::decode(otlp_bytes.as_bytes()).unwrap()
     }
 

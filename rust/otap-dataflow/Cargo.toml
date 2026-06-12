@@ -7,7 +7,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.48.0"
 authors = ["OpenTelemetry"]
 edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
@@ -17,7 +17,7 @@ rust-version = "1.87.0"
 
 [package]
 name = "otap-df"
-version = "0.1.0"
+version = "0.48.0"
 description = "OpenTelemetry Rust Dataflow Engine supporting natively OTLP and OTAP Data Formats"
 edition.workspace = true
 repository.workspace = true
@@ -68,13 +68,13 @@ data_engine_parser_abstractions = { path = "../experimental/query_engine/parser-
 ahash = "0.8.11"
 arc-swap = "1.7"
 arrayvec = "0.7.6"
-arrow = { version = "58.1", features=["prettyprint"] }
-arrow-buffer = { version = "58.1" }
-arrow-ipc = { version = "58.1", features=["zstd"] }
-arrow-schema = { version = "58.1" }
-arrow-array = { version = "58.1" }
-arrow-cast = { version = "58.1" }
-arrow-select = { version = "58.1" }
+arrow = { version = "58.3", features=["prettyprint"] }
+arrow-buffer = { version = "58.3" }
+arrow-ipc = { version = "58.3", features=["zstd"] }
+arrow-schema = { version = "58.3" }
+arrow-array = { version = "58.3" }
+arrow-cast = { version = "58.3" }
+arrow-select = { version = "58.3" }
 async-stream = "0.3.6"
 async-trait = "0.1.88"
 async-unsync = "0.3.0"
@@ -116,12 +116,13 @@ local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
 mimalloc = { version = "0.1.48", features = ["extended", "v3", "debug"] }
 libmimalloc-sys = { version = "0.1.44", features = ["extended", "v3"] }
-tikv-jemallocator = { version = "0.6.1" }
-tikv-jemalloc-ctl = { version = "0.6.1", features = ["stats"] }
-tikv-jemalloc-sys = "0.6.1"
+tikv-jemallocator = { version = "0.7.0" }
+tikv-jemalloc-ctl = { version = "0.7.0", features = ["stats"] }
+tikv-jemalloc-sys = "0.7.0"
 memchr = "2.8.0"
 memmap2 = "0.9"
 memory-stats = "1"
+libc = "0.2"
 nix = { version = "0.31.0", features = ["process", "signal", "fs", "mman"] }
 notify = "8.0"  # Uses platform-native backend: inotify (Linux), kqueue (macOS), ReadDirectoryChanges (Windows)
 num_enum = "0.7"
@@ -142,7 +143,7 @@ opentelemetry-otlp = { version = "0.31.1", default-features = false, features = 
 opentelemetry-prometheus = { version = "0.31.0", default-features = false, features = ["internal-logs"] }
 parking_lot = "0.12.5"
 paste = "1"
-parquet = { version = "58.1", default-features = false, features = ["arrow", "async", "object_store"]}
+parquet = { version = "58.3", default-features = false, features = ["arrow", "async", "object_store"]}
 pest = "2.8"
 pest_derive = "2.8"
 portpicker = "0.1.1"
@@ -152,7 +153,7 @@ prometheus = "0.14.0"
 prost = "0.14"
 prost-types = "0.14"
 quote = "1.0"
-rand = "0.10.0"
+rand = "0.10.1"
 rcgen = "0.14"
 regex = "1.12"
 roaring = "0.11.2"
@@ -172,12 +173,12 @@ crc32fast = "1.4.2"
 replace_with = "0.1.8"
 simdutf8 = "0.1.5"
 slotmap = "1.0.7"
-smallvec = { version = "1.15" , features = ["union"] }
+smallvec = { version = "1.15" , features = ["union", "const_new"] }
 socket2 = { version = "0.6.1", features = ["all"] }
 ipnet = "2.11.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 zstd = "0.13"
-sysinfo = "0.38"
+sysinfo = "0.39"
 tempfile = "3"
 thiserror = "2.0.17"
 tracing = { version = ">=0.1.40", default-features = false }
@@ -206,37 +207,41 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2" }
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2"}
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0" }
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
+sha1 = { version = "0.11" }
+sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
 
-azure_core = {version = "0.35.0", default-features = false }
-azure_identity = {version = "0.35.0", default-features = false }
+one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "5a9f381edf38e24bf583f25f7fce9def0c013173" }
+
+azure_core = {version = "1.0.0", default-features = false }
+azure_identity = {version = "1.0.0", default-features = false }
 flate2 = "1.1.5"
 
 # Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).
 # TLS remains enabled through rustls-no-provider, with the provider installed at startup via crypto-* features.
 reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no-provider", "json", "query", "http2", "stream", "charset", "system-proxy"] }
 
-time = "0.3.44"
+time = ">=0.3.47, <0.3.48"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
 data_engine_recordset = { path = '../experimental/query_engine/engine-recordset' }
-data_engine_recordset_otlp_bridge = { path = '../experimental/query_engine/engine-recordset-otlp-bridge' }
+eventheader_dynamic = "0.5.0"
 include_dir = "0.7.4"
 mime_guess = "2.0.5"
 minijinja = "2"
 otap-df-admin = { path = 'crates/admin' }
 otap-df-channel = { path = 'crates/channel' }
 otap-df-engine-macros = { path = 'crates/engine-macros' }
-otap-df-opl = { path = 'crates/opl' }
+otap-df-query-engine-languages = { path = 'crates/query-engine-languages' }
 otap-df-query-engine = { path = 'crates/query-engine' }
 otap-df-quiver = { path = 'crates/quiver' }
 otap-df-state = { path = 'crates/state' }
@@ -246,12 +251,18 @@ ratatui = "0.30"
 testcontainers = "0.27"
 toml = "1.0.0"
 tonic-prost-build = "0.14"
+tracepoint = { version = "0.5.0", features = ["user_events"] }
+tracepoint_decode = "0.5.0"
 urlencoding = "2"
-geneva-uploader = "0.4.0"
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "47ece283fa10334cca14c2dd6311824c052c08e3" }
+
+[patch."https://github.com/open-telemetry/otel-arrow"]
+otap-df-pdata = { path = "crates/pdata" }
+otap-df-pdata-views = { path = "crates/pdata-views" }
 
 [features]
 # ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof
-default = ["jemalloc", "crypto-ring", "dev-tools"]
+default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws"]
 jemalloc = ["dep:tikv-jemallocator", "otap-df-engine/jemalloc"]
 mimalloc = ["dep:mimalloc"]
 azure = ["otap-df-otap/azure"]
@@ -263,8 +274,15 @@ dhat-heap = [
     "dep:dhat",
 ]
 
-# Dev/test tooling (fake data generator).
-dev-tools = ["otap-df-core-nodes/dev-tools"]
+# Dev/test tooling (traffic generator) and the otap integration tests
+# that exercise it. Activating this from the workspace default keeps
+# `cargo test` running the full suite locally; CI jobs that drop
+# `dev-tools` (e.g. the Linux ARM `build_nonrequired` job) avoid the
+# weaver / gix / reqwest / native-tls / openssl-sys C build.
+dev-tools = ["otap-df-core-nodes/dev-tools", "otap-df-otap/integration-tests"]
+
+# Admin UI live log streaming over WebSocket.
+admin-live-logs-ws = ["otap-df-controller/admin-live-logs-ws"]
 
 # Cryptographic provider selection (mutually exclusive).
 # Exactly one must be enabled when using TLS or any rustls-backed dependency (e.g. reqwest).
@@ -277,11 +295,17 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
 geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
 azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
+# Contrib receivers (opt-in) - now in contrib-nodes
+contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
+user_events-receiver = ["otap-df-contrib-nodes/user_events-receiver"]
+user_events-eventheader = ["otap-df-contrib-nodes/user_events-eventheader"]
 # Contrib processors (opt-in) - now in contrib-nodes
 contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
 condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]
 recordset-kql-processor = ["otap-df-contrib-nodes/recordset-kql-processor"]
 resource-validator-processor = ["otap-df-contrib-nodes/resource-validator-processor"]
+# Contrib receivers (opt-in) - Windows-only
+etw-receiver = ["otap-df-contrib-nodes/etw-receiver"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

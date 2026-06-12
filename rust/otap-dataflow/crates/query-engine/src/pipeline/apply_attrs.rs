@@ -95,7 +95,6 @@ impl PipelineStage for ApplyToAttributesPipelineStage {
 mod test {
     use arrow::{array::UInt8Array, datatypes::DataType};
     use data_engine_kql_parser::Parser;
-    use otap_df_opl::parser::OplParser;
     use otap_df_pdata::{
         OtapArrowRecords,
         otap::Logs,
@@ -115,6 +114,7 @@ mod test {
             round_trip::{otap_to_otlp, otlp_to_otap, to_logs_data},
         },
     };
+    use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline};
 
@@ -334,7 +334,7 @@ mod test {
     fn test_pipeline_stages_that_dont_support_attribute_exec_is_planning_error() {
         let query = r#"
             logs | apply attributes {
-                project-rename attributes["x"] = attributes["y"]
+                rename attributes "y" as "x"
             }"#;
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
         let planner = PipelinePlanner::new();

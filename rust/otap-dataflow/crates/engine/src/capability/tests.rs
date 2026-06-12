@@ -19,7 +19,6 @@ use crate::capability::factory::{LocalInstanceFactory, SharedInstanceFactory};
 use otap_df_config::{CapabilityId, ExtensionId};
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
 // ── Test capability (mirrors what `#[capability]` generates) ─────────
 
@@ -36,14 +35,14 @@ impl ExtensionCapability for MacroTestCap {
     const NAME: &'static str = "macro_test_cap";
     type Local = dyn MacroTestCapLocal;
     type Shared = dyn MacroTestCapShared;
-    fn wrap_shared_as_local(shared: Box<Self::Shared>) -> Rc<Self::Local> {
+    fn wrap_shared_as_local(shared: Box<Self::Shared>) -> Box<Self::Local> {
         struct Adapter(Box<dyn MacroTestCapShared>);
         impl MacroTestCapLocal for Adapter {
             fn value(&self) -> &str {
                 self.0.value()
             }
         }
-        Rc::new(Adapter(shared))
+        Box::new(Adapter(shared))
     }
 }
 
@@ -70,10 +69,10 @@ impl MacroTestCap {
             let shared: Box<dyn MacroTestCapShared> = concrete;
             Box::new(shared) as Box<dyn Any + Send>
         };
-        let adapt_as_local: fn(Box<dyn Any + Send>) -> Rc<dyn Any> = |erased| {
+        let adapt_as_local: fn(Box<dyn Any + Send>) -> Box<dyn Any> = |erased| {
             let shared: Box<Box<dyn MacroTestCapShared>> = erased.downcast().expect("envelope");
-            let rc_local = <MacroTestCap as ExtensionCapability>::wrap_shared_as_local(*shared);
-            Rc::new(rc_local) as Rc<dyn Any>
+            let boxed_local = <MacroTestCap as ExtensionCapability>::wrap_shared_as_local(*shared);
+            Box::new(boxed_local) as Box<dyn Any>
         };
         SharedCapabilityEntry::new(ext_id, produce, adapt_as_local)
     }
@@ -82,11 +81,11 @@ impl MacroTestCap {
     where
         E: MacroTestCapLocal + 'static,
     {
-        let produce = move || -> Rc<dyn Any> {
+        let produce = move || -> Box<dyn Any> {
             let erased = factory.produce();
-            let concrete: Rc<E> = erased.downcast().expect("instance factory");
-            let local: Rc<dyn MacroTestCapLocal> = concrete;
-            Rc::new(local) as Rc<dyn Any>
+            let concrete: Box<E> = erased.downcast().expect("instance factory");
+            let local: Box<dyn MacroTestCapLocal> = concrete;
+            Box::new(local) as Box<dyn Any>
         };
         LocalCapabilityEntry::new(ext_id, produce)
     }
@@ -102,6 +101,7 @@ impl MacroTestCapShared for Shared {
     }
 }
 
+#[derive(Clone)]
 struct Local(&'static str);
 impl MacroTestCapLocal for Local {
     fn value(&self) -> &str {
@@ -113,8 +113,7 @@ fn shared_factory(val: &'static str) -> SharedInstanceFactory {
     SharedInstanceFactory::new(move || Box::new(Shared(val)) as Box<dyn Any + Send>)
 }
 fn local_factory(val: &'static str) -> LocalInstanceFactory {
-    let shared: Rc<Local> = Rc::new(Local(val));
-    LocalInstanceFactory::new(move || Rc::clone(&shared) as Rc<dyn Any>)
+    LocalInstanceFactory::new(move || Box::new(Local(val)) as Box<dyn Any>)
 }
 
 fn bindings() -> HashMap<CapabilityId, ExtensionId> {

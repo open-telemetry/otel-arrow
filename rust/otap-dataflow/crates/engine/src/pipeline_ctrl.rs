@@ -295,7 +295,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
         node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
     ) -> Self {
-        Self {
+        let mut result = Self {
             runtime_control_metrics: RuntimeControlMetricsState::new(
                 &pipeline_context,
                 metrics_reporter.clone(),
@@ -319,7 +319,19 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             node_metric_handles,
             telemetry: telemetry_policy,
             pending_sends: VecDeque::new(),
+        };
+
+        // Register telemetry timers for all nodes centrally, using the
+        // configured reporting interval. This replaces per-node
+        // start_periodic_telemetry calls and ensures a single, consistent
+        // collection cadence across all nodes.
+        for node_id in result.control_senders.node_ids() {
+            result
+                .telemetry_timers
+                .start(node_id, result.control_plane_metrics_flush_interval);
         }
+
+        result
     }
 
     /// Runs the runtime-control manager event loop.
@@ -1248,7 +1260,7 @@ mod tests {
     use tokio::task::LocalSet;
     use tokio::time::timeout;
 
-    const TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL: Duration = Duration::from_millis(10);
+    const TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL: Duration = Duration::from_secs(3600);
 
     fn empty_node_metric_handles() -> Rc<RefCell<Vec<Option<NodeMetricHandles>>>> {
         Rc::new(RefCell::new(Vec::new()))
@@ -2000,8 +2012,8 @@ mod tests {
 
         let telemetry_count = manager.test_telemetry_count();
         assert_eq!(
-            telemetry_count, 0,
-            "Telemetry timer queue should be empty initially"
+            telemetry_count, 3,
+            "Telemetry timers should be pre-registered for all 3 nodes"
         );
 
         assert_eq!(
@@ -3047,7 +3059,7 @@ mod tests {
 
         let registry = pipeline_context.metrics_registry();
 
-        let recv_out_key = pipeline_context.register_channel_entity(
+        let recv_out_key = pipeline_context.register_node_channel_entity(
             "recv:out".into(),
             "output".into(),
             "pdata",
@@ -3055,7 +3067,7 @@ mod tests {
             "mpsc",
             "internal",
         );
-        let proc_in_key = pipeline_context.register_channel_entity(
+        let proc_in_key = pipeline_context.register_node_channel_entity(
             "proc:in".into(),
             "input".into(),
             "pdata",
@@ -3063,7 +3075,7 @@ mod tests {
             "mpsc",
             "internal",
         );
-        let proc_out_key = pipeline_context.register_channel_entity(
+        let proc_out_key = pipeline_context.register_node_channel_entity(
             "proc:out".into(),
             "output".into(),
             "pdata",
@@ -3071,7 +3083,7 @@ mod tests {
             "mpsc",
             "internal",
         );
-        let exp_in_key = pipeline_context.register_channel_entity(
+        let exp_in_key = pipeline_context.register_node_channel_entity(
             "exp:in".into(),
             "input".into(),
             "pdata",
@@ -3389,6 +3401,7 @@ mod tests {
                 pipeline_metrics: false,
                 tokio_metrics: false,
                 runtime_metrics: metric_level,
+                flow_metrics: Vec::new(),
             },
             Vec::new(),
             empty_node_metric_handles(),
@@ -3466,6 +3479,7 @@ mod tests {
                 pipeline_metrics: false,
                 tokio_metrics: false,
                 runtime_metrics: MetricLevel::None,
+                flow_metrics: Vec::new(),
             },
             Vec::new(),
             empty_node_metric_handles(),
@@ -3574,6 +3588,7 @@ mod tests {
                 pipeline_metrics: false,
                 tokio_metrics: false,
                 runtime_metrics: metric_level,
+                flow_metrics: Vec::new(),
             },
         );
         let completion_metrics_key = dispatcher.completion_metrics.metric_set_key();

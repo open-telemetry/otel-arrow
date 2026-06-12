@@ -23,6 +23,8 @@ use otap_df_otap::otap_grpc::otlp::server_new::{
 };
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
+#[cfg(test)]
+use otap_df_pdata::TryIntoWithOptions;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -64,9 +66,6 @@ use tower::util::Either;
 
 /// URN for the OTLP Receiver
 pub const OTLP_RECEIVER_URN: &str = "urn:otel:receiver:otlp";
-
-/// Interval for periodic telemetry collection.
-const TELEMETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Configuration for OTLP Receiver.
 ///
@@ -199,7 +198,8 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig| {
+             receiver_config: &ReceiverConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         let mut receiver = OTLPReceiver::from_config(pipeline, &node_config.config)?;
         receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
 
@@ -388,9 +388,6 @@ impl OTLPReceiver {
         &mut self,
         msg: NodeControlMsg<OtapPdata>,
         registry: &AckRegistry,
-        _telemetry_cancel_handle: &mut Option<
-            otap_df_engine::effect_handler::TelemetryTimerCancelHandle<OtapPdata>,
-        >,
     ) -> Result<(), Error> {
         match msg {
             NodeControlMsg::CollectTelemetry {
@@ -620,19 +617,12 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 None
             };
 
-        let mut telemetry_cancel_handle = Some(
-            effect_handler
-                .start_periodic_telemetry(TELEMETRY_INTERVAL)
-                .await?,
-        );
-
         // Run the event loop based on which protocols are enabled.
         let terminal_state = self
             .run_event_loop(
                 &mut ctrl_msg_recv,
                 &effect_handler,
                 &ack_registry,
-                &mut telemetry_cancel_handle,
                 grpc_task,
                 grpc_shutdown,
                 http_task,
@@ -657,9 +647,6 @@ impl OTLPReceiver {
         ctrl_msg_recv: &mut shared::ControlChannel<OtapPdata>,
         effect_handler: &shared::EffectHandler<OtapPdata>,
         ack_registry: &AckRegistry,
-        telemetry_cancel_handle: &mut Option<
-            otap_df_engine::effect_handler::TelemetryTimerCancelHandle<OtapPdata>,
-        >,
         grpc_task: Option<GrpcServerTask>,
         grpc_shutdown: CancellationToken,
         http_task: Option<HttpServerTask>,
@@ -701,9 +688,6 @@ impl OTLPReceiver {
                 }
 
                 if grpc_task_done && http_task_done && ack_registry.is_empty() {
-                    if let Some(handle) = telemetry_cancel_handle.take() {
-                        _ = handle.cancel().await;
-                    }
                     effect_handler.notify_receiver_drained().await?;
                     terminal_state = TerminalState::new(deadline, [self.metrics.lock().snapshot()]);
                     break;
@@ -747,9 +731,6 @@ impl OTLPReceiver {
                                     grpc_shutdown.cancel();
                                     http_shutdown.cancel();
                                     ack_registry.force_shutdown(&reason);
-                                    if let Some(handle) = telemetry_cancel_handle.take() {
-                                        _ = handle.cancel().await;
-                                    }
                                     terminal_state = TerminalState::new(deadline, [self.metrics.lock().snapshot()]);
                                     break;
                                 }
@@ -757,16 +738,12 @@ impl OTLPReceiver {
                                     self.handle_control_message(
                                         other,
                                         ack_registry,
-                                        telemetry_cancel_handle,
                                     )
                                     .await?;
                                 }
                             }
                         }
                         Err(e) => {
-                            if let Some(handle) = telemetry_cancel_handle.take() {
-                                _ = handle.cancel().await;
-                            }
                             return Err(Error::ChannelRecvError(e));
                         }
                     }
@@ -1110,13 +1087,11 @@ mod tests {
             };
 
             let receiver_handle = tokio::task::spawn_local(async move {
-                let mut telemetry_cancel_handle = None;
                 receiver
                     .run_event_loop(
                         &mut ctrl_chan,
                         &effect_handler,
                         &ack_registry,
-                        &mut telemetry_cancel_handle,
                         None,
                         CancellationToken::new(),
                         Some(http_task),
@@ -1789,7 +1764,7 @@ mod tests {
                 let logs_proto: OtlpProtoBytes = logs_pdata
                     .clone()
                     .payload()
-                    .try_into()
+                    .try_into_with_default()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
 
@@ -1815,7 +1790,7 @@ mod tests {
                 let metrics_proto: OtlpProtoBytes = metrics_pdata
                     .clone()
                     .payload()
-                    .try_into()
+                    .try_into_with_default()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(
                     metrics_proto,
@@ -1844,7 +1819,7 @@ mod tests {
                 let trace_proto: OtlpProtoBytes = trace_pdata
                     .clone()
                     .payload()
-                    .try_into()
+                    .try_into_with_default()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(
                     trace_proto,
@@ -1981,7 +1956,7 @@ mod tests {
                 let logs_proto: OtlpProtoBytes = logs_pdata
                     .clone()
                     .payload()
-                    .try_into()
+                    .try_into_with_default()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
 
@@ -2074,7 +2049,7 @@ mod tests {
                 let logs_proto: OtlpProtoBytes = logs_pdata
                     .clone()
                     .payload()
-                    .try_into()
+                    .try_into_with_default()
                     .expect("can convert to OtlpProtoBytes");
                 assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
 
@@ -2757,7 +2732,7 @@ mod tests {
         config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 16,
-            wait_for_result: true,
+            wait_for_result: false,
             max_request_body_size: 1024 * 1024,
             accept_compressed_requests: true,
             ..Default::default()
@@ -2801,16 +2776,12 @@ mod tests {
 
         let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
             Box::pin(async move {
-                let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                // The HTTP acceptance path should return as soon as the request is accepted,
+                // so observe the delivery without waiting on the ACK handshake.
+                let _logs_pdata = timeout(Duration::from_secs(10), ctx.recv())
                     .await
                     .expect("Timed out waiting for logs message")
                     .expect("No logs message received");
-
-                if let Some((_node_id, ack)) = next_ack(AckMsg::new(logs_pdata)) {
-                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
-                        .await
-                        .expect("Failed to send Ack");
-                }
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 

@@ -68,6 +68,13 @@ impl ObservedEventReporter {
         self
     }
 
+    /// Returns the configured send policy. Test-only accessor used to verify
+    /// that the policy was threaded through correctly during construction.
+    #[cfg(test)]
+    pub(crate) fn policy(&self) -> &SendPolicy {
+        &self.policy
+    }
+
     /// Report an engine event.
     ///
     /// When a dedicated engine sender is configured, the event is delivered
@@ -77,7 +84,8 @@ impl ObservedEventReporter {
         if let Some(engine_sender) = &self.engine_sender {
             if let Err(e) = engine_sender.send(event) {
                 crate::raw_error!(
-                    "Engine channel disconnected, dropping engine event",
+                    "engine.channel.disconnected",
+                    message = "Engine channel disconnected, dropping engine event",
                     event = ?e.into_inner()
                 );
             }
@@ -108,10 +116,10 @@ impl ObservedEventReporter {
                     }
                     match err {
                         flume::TrySendError::Full(event) => {
-                            crate::raw_error!("Channel full, dropping observed event", event = ?event);
+                            crate::raw_error!("observed.channel.full", message = "Channel full, dropping observed event", event = ?event);
                         }
                         flume::TrySendError::Disconnected(event) => {
-                            crate::raw_error!("Disconnect, dropping observed event", event = ?event);
+                            crate::raw_error!("observed.channel.disconnected", message = "Disconnect, dropping observed event", event = ?event);
                         }
                     }
                 }
@@ -129,10 +137,10 @@ impl ObservedEventReporter {
                     }
                     match err {
                         flume::SendTimeoutError::Timeout(event) => {
-                            crate::raw_error!("Timeout, dropping observed event", event = ?event);
+                            crate::raw_error!("observed.channel.timeout", message = "Timeout, dropping observed event", event = ?event);
                         }
                         flume::SendTimeoutError::Disconnected(event) => {
-                            crate::raw_error!("Disconnect, dropping observed event", event = ?event);
+                            crate::raw_error!("observed.channel.disconnected", message = "Disconnect, dropping observed event", event = ?event);
                         }
                     }
                 }

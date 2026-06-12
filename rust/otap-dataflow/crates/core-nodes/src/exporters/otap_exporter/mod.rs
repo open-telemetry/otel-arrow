@@ -8,6 +8,7 @@
 
 use async_stream::stream;
 use async_trait::async_trait;
+use futures::stream::{FuturesUnordered, StreamExt};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
@@ -26,9 +27,10 @@ use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::Producer;
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::encode::producer::ProducerOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::{BatchArrowRecords, BatchStatus};
+use otap_df_pdata::proto::opentelemetry::arrow::v1::{BatchArrowRecords, BatchStatus, StatusCode};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     arrow_logs_service_client::ArrowLogsServiceClient,
     arrow_metrics_service_client::ArrowMetricsServiceClient,
@@ -36,9 +38,10 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
 };
 use otap_df_telemetry::instrument::{Gauge, Mmsc};
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_error, otel_info};
+use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -159,7 +162,8 @@ pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
+             exporter_config: &ExporterConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         Ok(ExporterWrapper::local(
             OTAPExporter::from_config(pipeline, &node_config.config)?,
             node,
@@ -168,8 +172,27 @@ pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    validate_config,
 };
+
+/// Validates the OTAP exporter configuration at config load time.
+///
+/// Runs before any node is started (initial load and live reconfigure), so bad
+/// configuration is rejected fast and attributed to the offending node rather
+/// than surfacing as an opaque client error at startup.
+fn validate_config(config: &Value) -> Result<(), otap_df_config::error::Error> {
+    let cfg: Config = serde_json::from_value(config.clone()).map_err(|e| {
+        otap_df_config::error::Error::InvalidUserConfig {
+            error: e.to_string(),
+        }
+    })?;
+    cfg.grpc
+        .validate()
+        .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+            error: e.to_string(),
+        })?;
+    Ok(())
+}
 
 impl OTAPExporter {
     /// Creates a new OTAPExporter
@@ -195,6 +218,7 @@ impl OTAPExporter {
                 error: e.to_string(),
             }
         })?;
+
         Ok(OTAPExporter::new(pipeline_ctx, config))
     }
 
@@ -317,6 +341,42 @@ impl OTAPExporter {
             }
         }
     }
+
+    async fn drain_pdata_metrics_updates(
+        &mut self,
+        pdata_metrics_rx: &mut Receiver<PDataMetricsUpdate>,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        while let Ok(update) = pdata_metrics_rx.try_recv() {
+            self.handle_pdata_metrics_update(update, effect_handler)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn await_stream_handles_and_drain_metrics(
+        &mut self,
+        handles: Vec<JoinHandle<()>>,
+        pdata_metrics_rx: &mut Receiver<PDataMetricsUpdate>,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        let mut handles = handles.into_iter().collect::<FuturesUnordered<_>>();
+
+        while !handles.is_empty() {
+            tokio::select! {
+                _ = handles.next() => {}
+                update = pdata_metrics_rx.recv() => {
+                    let Some(update) = update else {
+                        break;
+                    };
+                    self.handle_pdata_metrics_update(update, effect_handler).await?;
+                }
+            }
+        }
+
+        self.drain_pdata_metrics_updates(pdata_metrics_rx, effect_handler)
+            .await
+    }
 }
 
 /// Implement the local exporter trait for a OTAP Exporter
@@ -334,6 +394,19 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         );
 
         let exporter_id = effect_handler.exporter_id();
+
+        // Run the optional startup check (dns resolution or eager connect) before creating the
+        // lazy channel used for normal runtime traffic.
+        self.config.grpc.run_startup_check().await.map_err(|e| {
+            let source_detail = format_error_sources(&e);
+            Error::ExporterError {
+                exporter: exporter_id.clone(),
+                kind: ExporterErrorKind::Connect,
+                error: format!("startup check failed: {e}"),
+                source_detail,
+            }
+        })?;
+
         let channel = self
             .config
             .grpc
@@ -348,10 +421,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     source_detail,
                 }
             })?;
-
-        let timer_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
 
         // start a grpc client and connect to the server
         let mut arrow_metrics_client = ArrowMetricsServiceClient::new(channel.clone());
@@ -448,10 +517,17 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             message = "OTAP Exporter shutting down"
                         );
                         _ = shutdown_tx.send_replace(true);
-                        await_stream_handles(logs_handles).await;
-                        await_stream_handles(metrics_handles).await;
-                        await_stream_handles(traces_handles).await;
-                        _ = timer_cancel_handle.cancel().await;
+                        drop(pdata_metrics_tx);
+                        self.await_stream_handles_and_drain_metrics(
+                            logs_handles
+                                .into_iter()
+                                .chain(metrics_handles)
+                                .chain(traces_handles)
+                                .collect(),
+                            &mut pdata_metrics_rx,
+                            &effect_handler,
+                        )
+                        .await?;
                         self.export_latency_window
                             .report_into(&mut self.async_metrics);
                         return Ok(TerminalState::new(
@@ -466,7 +542,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         self.pdata_metrics.inc_consumed(signal_type);
                         let payload = pdata.take_payload();
 
-                        let message: OtapArrowRecords = match payload.try_into() {
+                        let message: OtapArrowRecords = match payload.try_into_with_default() {
                             Ok(m) => m,
                             Err(e) => {
                                 self.pdata_metrics.inc_failed(signal_type);
@@ -564,17 +640,6 @@ fn least_loaded_stream_sender(senders: &[Sender<StreamBatch>]) -> &Sender<Stream
         .expect("streams_per_signal validation must create at least one stream")
 }
 
-/// Waits for all stream workers belonging to one signal type.
-///
-/// Worker errors are already represented through pdata ACK/NACK updates where
-/// possible; a join failure during shutdown should not prevent the exporter
-/// from completing its terminal-state path.
-async fn await_stream_handles(handles: Vec<JoinHandle<()>>) {
-    for handle in handles {
-        _ = handle.await;
-    }
-}
-
 #[async_trait]
 trait StreamingArrowService {
     async fn handle_req_stream(
@@ -622,6 +687,7 @@ enum PDataMetricsUpdate {
 }
 
 struct CorrelatedPdata {
+    batch_id: i64,
     pdata: OtapPdata,
     sent_at: Instant,
 }
@@ -777,6 +843,7 @@ fn create_req_stream(
                                 depth: correlation_depth,
                             });
                         permit.send(CorrelatedPdata {
+                            batch_id: bar.batch_id,
                             pdata: first_pdata,
                             sent_at: Instant::now(),
                         });
@@ -820,6 +887,7 @@ fn create_req_stream(
                                 },
                             );
                             permit.send(CorrelatedPdata {
+                                batch_id: bar.batch_id,
                                 pdata,
                                 sent_at: Instant::now(),
                             });
@@ -848,6 +916,7 @@ async fn handle_res_stream(
     mut correlation_rx: Receiver<CorrelatedPdata>,
 ) -> bool {
     let mut shutdown = false;
+    let mut correlated_by_batch_id = HashMap::new();
 
     // handle streaming responses until shutdown
     while !shutdown {
@@ -860,45 +929,125 @@ async fn handle_res_stream(
                 let (res, duration_ns) = res;
                 _ = pdata_metrics_tx.try_send(PDataMetricsUpdate::RecordResponseWait {
                     duration_ns,
-                    inflight: correlation_rx.len(),
+                    inflight: correlated_by_batch_id.len() + correlation_rx.len(),
                 });
                 match res {
-                    Ok(Some(_val)) => {
-                        if let Some(correlated) = correlation_rx.recv().await {
-                            _ = pdata_metrics_tx
-                                .send(PDataMetricsUpdate::IncExported(
-                                    signal_type,
-                                    correlated.pdata,
-                                    elapsed_nanos(correlated.sent_at),
-                                ))
-                                .await;
+                    Ok(Some(status)) => {
+                        drain_correlation_rx(&mut correlation_rx, &mut correlated_by_batch_id);
+                        if let Some(correlated) = correlated_by_batch_id.remove(&status.batch_id) {
+                            if batch_status_is_ok(&status) {
+                                _ = pdata_metrics_tx
+                                    .send(PDataMetricsUpdate::IncExported(
+                                        signal_type,
+                                        correlated.pdata,
+                                        elapsed_nanos(correlated.sent_at),
+                                    ))
+                                    .await;
+                            } else {
+                                otel_warn!(
+                                    "otap_exporter.batch_status_failed",
+                                    batch_id = status.batch_id,
+                                    status_code = status.status_code,
+                                    status_message = status.status_message.as_str(),
+                                    message = "OTAP server rejected exported batch"
+                                );
+                                _ = pdata_metrics_tx
+                                    .send(PDataMetricsUpdate::IncFailed(
+                                        signal_type,
+                                        correlated.pdata,
+                                        Some(elapsed_nanos(correlated.sent_at)),
+                                    ))
+                                    .await;
+                            }
+                        } else {
+                            otel_warn!(
+                                "otap_exporter.batch_status_unmatched",
+                                batch_id = status.batch_id,
+                                status_code = status.status_code,
+                                status_message = status.status_message.as_str(),
+                                message = "Received OTAP batch status without a correlated request"
+                            );
                         }
                     },
                     Ok(None) => {
                         // sender disconnected
+                        fail_correlated_pdata(
+                            &pdata_metrics_tx,
+                            signal_type,
+                            &mut correlation_rx,
+                            &mut correlated_by_batch_id,
+                        )
+                        .await;
                         break
                     }
-                    Err(_grpc_status) => {
-                        if let Some(correlated) = correlation_rx.recv().await {
-                            _ = pdata_metrics_tx
-                                .send(PDataMetricsUpdate::IncFailed(
-                                    signal_type,
-                                    correlated.pdata,
-                                    Some(elapsed_nanos(correlated.sent_at)),
-                                ))
-                                .await;
-                        }
+                    Err(grpc_status) => {
+                        otel_warn!(
+                            "otap_exporter.response_stream_failed",
+                            status = %grpc_status,
+                            message = "OTAP response stream failed"
+                        );
+                        fail_correlated_pdata(
+                            &pdata_metrics_tx,
+                            signal_type,
+                            &mut correlation_rx,
+                            &mut correlated_by_batch_id,
+                        )
+                        .await;
                         break
                     }
                 };
             }
             _ = shutdown_rx.changed() => {
                 shutdown = *shutdown_rx.borrow();
+                if shutdown {
+                    fail_correlated_pdata(
+                        &pdata_metrics_tx,
+                        signal_type,
+                        &mut correlation_rx,
+                        &mut correlated_by_batch_id,
+                    )
+                    .await;
+                }
             }
         }
     }
 
     shutdown
+}
+
+const fn batch_status_is_ok(status: &BatchStatus) -> bool {
+    status.status_code == StatusCode::Ok as i32
+}
+
+fn drain_correlation_rx(
+    correlation_rx: &mut Receiver<CorrelatedPdata>,
+    correlated_by_batch_id: &mut HashMap<i64, CorrelatedPdata>,
+) {
+    while let Ok(correlated) = correlation_rx.try_recv() {
+        _ = correlated_by_batch_id.insert(correlated.batch_id, correlated);
+    }
+}
+
+async fn fail_correlated_pdata(
+    pdata_metrics_tx: &Sender<PDataMetricsUpdate>,
+    signal_type: SignalType,
+    correlation_rx: &mut Receiver<CorrelatedPdata>,
+    correlated_by_batch_id: &mut HashMap<i64, CorrelatedPdata>,
+) {
+    correlation_rx.close();
+    while let Some(correlated) = correlation_rx.recv().await {
+        _ = correlated_by_batch_id.insert(correlated.batch_id, correlated);
+    }
+
+    for (_, correlated) in correlated_by_batch_id.drain() {
+        _ = pdata_metrics_tx
+            .send(PDataMetricsUpdate::IncFailed(
+                signal_type,
+                correlated.pdata,
+                Some(elapsed_nanos(correlated.sent_at)),
+            ))
+            .await;
+    }
 }
 
 #[cfg(test)]
@@ -916,6 +1065,7 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::control::CallData;
     use otap_df_engine::control::Controllable;
     use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::control::PipelineCompletionMsg;
@@ -936,9 +1086,10 @@ mod tests {
         test_node,
     };
     use otap_df_otap::compression::CompressionMethod;
+    use otap_df_pdata::TryIntoWithOptions;
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::{
-        ArrowPayloadType, BatchArrowRecords, BatchStatus,
+        ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
         arrow_logs_service_server::ArrowLogsServiceServer,
         arrow_metrics_service_server::ArrowMetricsServiceServer,
         arrow_traces_service_server::ArrowTracesServiceServer,
@@ -961,6 +1112,18 @@ mod tests {
     const METRIC_BATCH_ID: i64 = 0;
     const LOG_BATCH_ID: i64 = 1;
     const TRACE_BATCH_ID: i64 = 2;
+
+    fn calldata_with_id(id: u64) -> CallData {
+        smallvec::smallvec!(id.into())
+    }
+
+    fn calldata_id(pdata: &OtapPdata) -> u64 {
+        pdata
+            .source_route()
+            .expect("test pdata should retain route calldata")
+            .calldata[0]
+            .into()
+    }
 
     #[test]
     fn export_latency_quantile_uses_nearest_rank() {
@@ -1025,7 +1188,7 @@ mod tests {
                         .expect("Timed out waiting for message")
                         .expect("No message received")
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .expect("Could convert pdata to OTAPData");
 
                 // Assert that the message received is what the exporter sent
@@ -1039,7 +1202,7 @@ mod tests {
                         .expect("Timed out waiting for message")
                         .expect("No message received")
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .expect("Could convert pdata to OTAPData");
                 let _expected_logs_message =
                     create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
@@ -1051,7 +1214,7 @@ mod tests {
                         .expect("Timed out waiting for message")
                         .expect("No message received")
                         .payload()
-                        .try_into()
+                        .try_into_with_default()
                         .expect("Could convert pdata to OTAPData");
 
                 let _expected_trace_message =
@@ -1584,7 +1747,7 @@ mod tests {
         let pdata = OtapPdata::new_default(log_message.into());
         let payload = pdata.clone();
         batches_tx
-            .send((pdata, payload.payload().try_into().unwrap()))
+            .send((pdata, payload.payload().try_into_with_default().unwrap()))
             .await
             .unwrap();
         // Drop sender so the function exits after processing
@@ -1644,7 +1807,7 @@ mod tests {
             let pdata = OtapPdata::new_default(log_message.into());
             let payload = pdata.clone();
             batches_tx
-                .send((pdata, payload.payload().try_into().unwrap()))
+                .send((pdata, payload.payload().try_into_with_default().unwrap()))
                 .await
                 .unwrap();
         }
@@ -1671,6 +1834,380 @@ mod tests {
             .await
             .expect("shutdown should interrupt reconnect backoff promptly")
             .unwrap();
+    }
+
+    /// gRPC service mock that returns statuses out of request order.
+    struct ArrowLogsServiceOutOfOrderStatusMock;
+
+    #[tonic::async_trait]
+    impl otap_df_pdata::proto::opentelemetry::arrow::v1::arrow_logs_service_server::ArrowLogsService
+        for ArrowLogsServiceOutOfOrderStatusMock
+    {
+        type ArrowLogsStream = std::pin::Pin<
+            Box<dyn tokio_stream::Stream<Item = Result<BatchStatus, Status>> + Send + 'static>,
+        >;
+
+        async fn arrow_logs(
+            &self,
+            request: tonic::Request<Streaming<BatchArrowRecords>>,
+        ) -> Result<Response<Self::ArrowLogsStream>, Status> {
+            let mut input_stream = request.into_inner();
+            let (tx, rx) = tokio::sync::mpsc::channel(2);
+
+            _ = tokio::spawn(async move {
+                let first_batch = input_stream
+                    .message()
+                    .await
+                    .expect("first request should decode")
+                    .expect("first request should be present");
+                let second_batch = input_stream
+                    .message()
+                    .await
+                    .expect("second request should decode")
+                    .expect("second request should be present");
+
+                let _ = tx
+                    .send(Ok(BatchStatus {
+                        batch_id: second_batch.batch_id,
+                        status_code: StatusCode::Unavailable as i32,
+                        status_message: "second batch rejected".into(),
+                    }))
+                    .await;
+                let _ = tx
+                    .send(Ok(BatchStatus {
+                        batch_id: first_batch.batch_id,
+                        status_code: StatusCode::Ok as i32,
+                        status_message: "first batch accepted".into(),
+                    }))
+                    .await;
+            });
+
+            Ok(Response::new(
+                Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)) as Self::ArrowLogsStream,
+            ))
+        }
+    }
+
+    /// When one OTAP stream has multiple in-flight requests, wait-for-result
+    /// responses can arrive out of order. The exporter must use batch_id for
+    /// correlation, and a non-OK BatchStatus must NACK the matched pdata.
+    #[test]
+    fn test_out_of_order_batch_status_uses_batch_id_correlation() {
+        use otap_df_pdata::proto::opentelemetry::arrow::v1::arrow_logs_service_server::ArrowLogsServiceServer;
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let tokio_rt = Runtime::new().unwrap();
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let node_id = test_node(test_runtime.config().name.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut exporter = ExporterWrapper::local(
+            OTAPExporter::from_config(
+                pipeline_ctx,
+                &json!({
+                    "grpc_endpoint": grpc_endpoint,
+                    "compression_method": "none",
+                    "streams_per_signal": 1,
+                    "stream_queue_capacity": 4
+                }),
+            )
+            .unwrap(),
+            node_id.clone(),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(2);
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(16);
+        let (pipeline_completion_msg_tx, mut pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(16);
+        exporter
+            .set_pdata_receiver(node_id.clone(), pdata_rx)
+            .expect("Failed to set PData Receiver");
+
+        let (server_shutdown_tx, server_shutdown_rx) = tokio::sync::oneshot::channel();
+        let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
+
+        let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let server_handle = tokio_rt.spawn(async move {
+            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let _ = server_ready_tx.send(());
+            let tcp_stream = TcpListenerStream::new(tcp_listener);
+            let service = ArrowLogsServiceServer::new(ArrowLogsServiceOutOfOrderStatusMock);
+
+            Server::builder()
+                .add_service(service)
+                .serve_with_incoming_shutdown(tcp_stream, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("server failed");
+        });
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+
+        let _ = tokio_rt.block_on(async move {
+            let local_set = tokio::task::LocalSet::new();
+            let mr = metrics_reporter.clone();
+            let _exporter_fut = local_set.spawn_local(async move {
+                let _ = exporter
+                    .start(
+                        runtime_ctrl_msg_tx,
+                        pipeline_completion_msg_tx,
+                        mr,
+                        Interests::empty(),
+                    )
+                    .await;
+            });
+
+            tokio::join!(local_set, async {
+                server_ready_rx
+                    .await
+                    .expect("server should bind before exporter traffic starts");
+
+                let first_id = 11_u64;
+                let first_message = create_otap_batch(LOG_BATCH_ID + 10, ArrowPayloadType::Logs);
+                let first_pdata = OtapPdata::new_default(first_message.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    calldata_with_id(first_id),
+                    0,
+                );
+
+                let second_id = 21_u64;
+                let second_message = create_otap_batch(LOG_BATCH_ID + 20, ArrowPayloadType::Logs);
+                let second_pdata = OtapPdata::new_default(second_message.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    calldata_with_id(second_id),
+                    0,
+                );
+
+                pdata_tx.send(first_pdata).await.expect("send first pdata");
+                pdata_tx
+                    .send(second_pdata)
+                    .await
+                    .expect("send second pdata");
+
+                let mut ack_id = None;
+                let mut nack_id = None;
+                timeout(Duration::from_secs(5), async {
+                    while ack_id.is_none() || nack_id.is_none() {
+                        match pipeline_completion_msg_rx.recv().await {
+                            Ok(PipelineCompletionMsg::DeliverAck { ack }) => {
+                                ack_id = Some(calldata_id(&ack.accepted));
+                            }
+                            Ok(PipelineCompletionMsg::DeliverNack { nack }) => {
+                                nack_id = Some(calldata_id(&nack.refused));
+                            }
+                            Err(_) => panic!("pipeline result channel closed"),
+                        }
+                    }
+                })
+                .await
+                .expect("timed out waiting for ACK and NACK");
+
+                assert_eq!(ack_id, Some(first_id));
+                assert_eq!(nack_id, Some(second_id));
+
+                control_sender
+                    .send(NodeControlMsg::Shutdown {
+                        deadline: Instant::now().add(Duration::from_millis(10)),
+                        reason: "test done".into(),
+                    })
+                    .await
+                    .unwrap();
+                server_shutdown_tx.send(true).unwrap();
+            })
+        });
+
+        tokio_rt
+            .block_on(server_handle)
+            .expect("server shutdown success");
+    }
+
+    /// gRPC service mock that accepts a request batch but leaves the response
+    /// stream pending until the test releases it.
+    struct ArrowLogsServicePendingStatusMock {
+        sender: tokio::sync::mpsc::Sender<()>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[tonic::async_trait]
+    impl otap_df_pdata::proto::opentelemetry::arrow::v1::arrow_logs_service_server::ArrowLogsService
+        for ArrowLogsServicePendingStatusMock
+    {
+        type ArrowLogsStream = std::pin::Pin<
+            Box<dyn tokio_stream::Stream<Item = Result<BatchStatus, Status>> + Send + 'static>,
+        >;
+
+        async fn arrow_logs(
+            &self,
+            request: tonic::Request<Streaming<BatchArrowRecords>>,
+        ) -> Result<Response<Self::ArrowLogsStream>, Status> {
+            let mut input_stream = request.into_inner();
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            let notify = self.sender.clone();
+            let release = Arc::clone(&self.release);
+
+            _ = tokio::spawn(async move {
+                if let Ok(Some(_batch)) = input_stream.message().await {
+                    let _ = notify.send(()).await;
+                    let _keep_response_open = tx;
+                    release.notified().await;
+                }
+            });
+
+            Ok(Response::new(
+                Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)) as Self::ArrowLogsStream,
+            ))
+        }
+    }
+
+    /// Tests that exporter shutdown NACKs a batch already yielded to the OTAP
+    /// request stream when no corresponding BatchStatus has arrived yet.
+    #[test]
+    fn test_shutdown_nacks_correlated_pdata() {
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let tokio_rt = Runtime::new().unwrap();
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let node_id = test_node(test_runtime.config().name.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut exporter = ExporterWrapper::local(
+            OTAPExporter::from_config(
+                pipeline_ctx,
+                &json!({
+                    "grpc_endpoint": grpc_endpoint,
+                    "compression_method": "none",
+                    "streams_per_signal": 1,
+                    "stream_queue_capacity": 4
+                }),
+            )
+            .unwrap(),
+            node_id.clone(),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(16);
+        let (pipeline_completion_msg_tx, mut pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(16);
+        exporter
+            .set_pdata_receiver(node_id.clone(), pdata_rx)
+            .expect("Failed to set PData Receiver");
+
+        let (batch_received_tx, mut batch_received_rx) = tokio::sync::mpsc::channel(1);
+        let release_response = Arc::new(tokio::sync::Notify::new());
+        let release_response_for_service = Arc::clone(&release_response);
+        let release_response_for_test = Arc::clone(&release_response);
+        let (server_shutdown_tx, server_shutdown_rx) = tokio::sync::oneshot::channel();
+        let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
+
+        let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let server_handle = tokio_rt.spawn(async move {
+            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let _ = server_ready_tx.send(());
+            let tcp_stream = TcpListenerStream::new(tcp_listener);
+            let pending_service = ArrowLogsServiceServer::new(ArrowLogsServicePendingStatusMock {
+                sender: batch_received_tx,
+                release: release_response_for_service,
+            });
+
+            Server::builder()
+                .add_service(pending_service)
+                .serve_with_incoming_shutdown(tcp_stream, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("server failed");
+        });
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+
+        let _ = tokio_rt.block_on(async move {
+            let local_set = tokio::task::LocalSet::new();
+            let mr = metrics_reporter.clone();
+            let _exporter_fut = local_set.spawn_local(async move {
+                let _ = exporter
+                    .start(
+                        runtime_ctrl_msg_tx,
+                        pipeline_completion_msg_tx,
+                        mr,
+                        Interests::empty(),
+                    )
+                    .await;
+            });
+
+            tokio::join!(local_set, async {
+                server_ready_rx
+                    .await
+                    .expect("server should bind before exporter traffic starts");
+
+                let pdata_id = 31_u64;
+                let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
+                let pdata = OtapPdata::new_default(log_message.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    calldata_with_id(pdata_id),
+                    0,
+                );
+                pdata_tx.send(pdata).await.expect("send pdata");
+
+                _ = timeout(Duration::from_secs(5), batch_received_rx.recv())
+                    .await
+                    .expect("timed out waiting for server to receive batch");
+
+                control_sender
+                    .send(NodeControlMsg::Shutdown {
+                        deadline: Instant::now().add(Duration::from_millis(10)),
+                        reason: "test done".into(),
+                    })
+                    .await
+                    .unwrap();
+
+                let nack_id = timeout(Duration::from_secs(5), async {
+                    loop {
+                        match pipeline_completion_msg_rx.recv().await {
+                            Ok(PipelineCompletionMsg::DeliverNack { nack }) => {
+                                break calldata_id(&nack.refused);
+                            }
+                            Ok(PipelineCompletionMsg::DeliverAck { .. }) => continue,
+                            Err(_) => panic!("pipeline result channel closed"),
+                        }
+                    }
+                })
+                .await
+                .expect("Timed out waiting for shutdown NACK");
+
+                assert_eq!(nack_id, pdata_id);
+
+                release_response_for_test.notify_waiters();
+                server_shutdown_tx.send(true).unwrap();
+            })
+        });
+
+        tokio_rt
+            .block_on(server_handle)
+            .expect("server shutdown success");
     }
 
     /// gRPC service mock that returns a gRPC error in the response stream

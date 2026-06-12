@@ -4,6 +4,7 @@
 //! Declarative test framework for temporal reaggregation processor ack/nack
 //! scenarios.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use otap_df_config::SignalType;
@@ -49,6 +50,14 @@ pub(super) enum Action {
     SendPdata {
         interests: Interests,
         payload: OtapPayload,
+    },
+
+    /// Send pdata with optional ack/nack subscriber interest and an attached
+    /// peer socket address — mirrors what receivers do at request acceptance.
+    SendPdataWithPeer {
+        interests: Interests,
+        payload: OtapPayload,
+        peer_addr: SocketAddr,
     },
 
     /// Send a message to the processor
@@ -116,6 +125,24 @@ pub(super) fn run_test(config: serde_json::Value, actions: Vec<Action>) {
                 match action {
                     Action::SendPdata { interests, payload } => {
                         let mut pdata = OtapPdata::new_default(payload);
+                        if !interests.is_empty() {
+                            pdata = pdata.test_subscribe_to(
+                                interests,
+                                TestCallData::new_with(input_idx, 0).into(),
+                                1,
+                            );
+                        }
+                        ctx.process(Message::PData(pdata))
+                            .await
+                            .expect("process pdata");
+                        input_idx += 1;
+                    }
+                    Action::SendPdataWithPeer {
+                        interests,
+                        payload,
+                        peer_addr,
+                    } => {
+                        let mut pdata = OtapPdata::new_default(payload).with_peer_addr(peer_addr);
                         if !interests.is_empty() {
                             pdata = pdata.test_subscribe_to(
                                 interests,
@@ -271,6 +298,7 @@ pub(super) fn try_create_processor(
         node,
         Arc::new(node_config),
         rt.config(),
+        &otap_df_engine::capability::registry::Capabilities::empty(),
     )
     .map(|proc| (rt, proc))
 }

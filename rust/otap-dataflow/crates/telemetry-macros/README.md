@@ -34,7 +34,7 @@ use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry_macros::metric_set;
 
 /// Pdata-oriented metrics for the OTAP PerfExporter.
-#[metric_set(name = "perf.exporter.pdata.metrics")]
+#[metric_set(name = "exporter.perf.pdata")]
 #[derive(Debug, Default, Clone)]
 pub struct PerfExporterPdataMetrics {
     /// Number of pdata batches received.
@@ -81,7 +81,7 @@ implementation roughly like this:
 ```rust
 #[repr(C, align(64))]
 #[derive(Debug, Default, Clone, otap_df_telemetry_macros::MetricSetHandler)]
-#[metric_set(name = "perf.exporter.pdata.metrics")]
+#[metric_set(name = "exporter.perf.pdata")]
 pub struct PerfExporterPdataMetrics {
     // same fields as above
     pub batches: otap_df_telemetry::instrument::Counter<u64>,
@@ -92,7 +92,7 @@ pub struct PerfExporterPdataMetrics {
 impl otap_df_telemetry::metrics::MetricSetHandler for PerfExporterPdataMetrics {
     fn descriptor(&self) -> &'static otap_df_telemetry::descriptor::MetricsDescriptor {
         static DESCRIPTOR: otap_df_telemetry::descriptor::MetricsDescriptor = otap_df_telemetry::descriptor::MetricsDescriptor {
-            name: "perf.exporter.pdata.metrics",
+            name: "exporter.perf.pdata",
                 metrics: &[
                     otap_df_telemetry::descriptor::MetricsField {
                         name: "batches",

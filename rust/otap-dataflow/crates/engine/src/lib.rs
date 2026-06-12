@@ -26,6 +26,7 @@ use crate::{
 };
 use async_trait::async_trait;
 pub use channel_metrics::RequestOutcome;
+use context::ExtensionContext;
 use context::NodeNameIndex;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
@@ -51,15 +52,14 @@ use std::{
     sync::OnceLock,
 };
 
-// TODO: remove `dead_code` once the capability system is wired into the
-// pipeline build.
-#[allow(dead_code)]
 pub mod capability;
 #[doc(hidden)]
 pub mod clock;
 pub mod error;
 pub mod exporter;
 pub mod extension;
+mod extension_lifecycle;
+mod extension_monitor;
 pub mod message;
 pub mod processor;
 pub mod receiver;
@@ -75,6 +75,7 @@ mod control_plane_metrics;
 pub mod effect_handler;
 pub mod engine_metrics;
 pub mod entity_context;
+pub mod flow_metrics;
 pub(crate) mod indexed_min_heap;
 pub mod local;
 pub mod memory_limiter;
@@ -109,11 +110,16 @@ pub struct ReceiverFactory<PData> {
     /// The name of the receiver.
     pub name: &'static str,
     /// A function that creates a new receiver instance.
+    ///
+    /// `capabilities` is a per-node, one-shot view of the extension capabilities
+    /// bound to this receiver in the pipeline configuration. Factories that
+    /// don't depend on any extension can ignore the parameter.
     pub create: fn(
         pipeline_ctx: PipelineContext,
         node: NodeId,
         node_config: Arc<NodeUserConfig>,
         receiver_config: &ReceiverConfig,
+        capabilities: &capability::registry::Capabilities,
     ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
@@ -148,11 +154,16 @@ pub struct ProcessorFactory<PData> {
     /// The name of the processor.
     pub name: &'static str,
     /// A function that creates a new processor instance.
+    ///
+    /// `capabilities` is a per-node, one-shot view of the extension capabilities
+    /// bound to this processor in the pipeline configuration. Factories that
+    /// don't depend on any extension can ignore the parameter.
     pub create: fn(
         pipeline: PipelineContext,
         node: NodeId,
         node_config: Arc<NodeUserConfig>,
         processor_config: &ProcessorConfig,
+        capabilities: &capability::registry::Capabilities,
     ) -> Result<ProcessorWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
@@ -187,11 +198,16 @@ pub struct ExporterFactory<PData> {
     /// The name of the receiver.
     pub name: &'static str,
     /// A function that creates a new exporter instance.
+    ///
+    /// `capabilities` is a per-node, one-shot view of the extension capabilities
+    /// bound to this exporter in the pipeline configuration. Factories that
+    /// don't depend on any extension can ignore the parameter.
     pub create: fn(
         pipeline: PipelineContext,
         node: NodeId,
         node_config: Arc<NodeUserConfig>,
         exporter_config: &ExporterConfig,
+        capabilities: &capability::registry::Capabilities,
     ) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
@@ -242,7 +258,7 @@ pub struct ExtensionFactory {
     pub capabilities: Option<capability::ExtensionCapabilities>,
     /// A function that creates a new extension instance.
     pub create: fn(
-        pipeline: PipelineContext,
+        ext_ctx: &ExtensionContext,
         name: otap_df_config::ExtensionId,
         ext_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
         extension_config: &ExtensionConfig,
@@ -382,6 +398,13 @@ impl ReceivedAtNode for () {
 impl ReceivedAtNode for String {
     fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
 }
+// `FlowMetricHook` is a bound on the `PData` generic of `ProcessorWrapper::start*`,
+// `RuntimePipeline`, and the controller. Test code uses `()` and `String` as stand-in PData
+// types (e.g. `Controller<()>`); these blanket no-op impls let those tests compile without
+// requiring every test PData type to define hook behavior. Real PData types (e.g. `OtapPdata`)
+// override these methods to drive flow_metric signal counting and compute-duration accumulation.
+impl processor::FlowMetricHook for () {}
+impl processor::FlowMetricHook for String {}
 
 /// Trait for setting exit information in the Context, for PData consumers.
 pub trait StampOutputPort {
@@ -395,6 +418,23 @@ impl StampOutputPort for () {
 
 impl StampOutputPort for String {
     fn stamp_output_port_index(&mut self, _index: u16) {}
+}
+
+/// Trait for forward-path flow_metric compute accumulation on PData.
+///
+/// At most one flow_metric range can be active on a given message at a
+/// time (non-overlapping ranges).
+pub trait FlowMetricAccumulation {
+    /// Initialise a fresh flow_metric accumulator (set to 0).
+    /// Called at the start node.
+    fn start_flow_metric(&mut self);
+
+    /// Add `ns` nanoseconds to the active flow_metric accumulator, if any.
+    fn add_flow_compute(&mut self, ns: u64);
+
+    /// Remove and return the accumulated total.
+    /// Returns `None` if no accumulator was active.
+    fn take_flow_compute(&mut self) -> Option<u64>;
 }
 
 /// Effect handler extensions for producers specific to data type.
@@ -743,9 +783,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         kind: "ProcessorChain".into(),
                     });
                 }
-                otap_df_config::node::NodeKind::Extension => {
-                    return Err(Error::ExtensionInNodesSection { node: name.clone() });
-                }
             };
             let node_id = build_state.next_node_id(name.clone(), node_type, pipe_node)?;
             let _ = node_ids.insert(name.clone(), node_id);
@@ -759,9 +796,94 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
         pipeline_ctx.set_node_names(node_names);
 
+        // ── Extension instantiation + capability registry build ─────────────
+        //
+        // Run before node-wrapper creation so resolve_bindings can validate
+        // each node's `node_config.capabilities` against the populated
+        // registry, and so factories that call `require_local::<C>()` /
+        // `require_shared::<C>()` see a fully-populated `Capabilities`.
+        // Capabilities are resolved EAGERLY at build time — node create()
+        // bodies run inside this same `build` call, so extension `start()`
+        // side effects (which happen later, in `run_forever`) cannot be
+        // observed by capability construction.
+        let known_extensions: HashSet<otap_df_config::ExtensionId> =
+            config.extensions().keys().cloned().collect();
+        let mut capability_registry = capability::registry::CapabilityRegistry::new();
+        // Each entry tracks (extension id, bundle, is_background). The
+        // `is_background` flag is captured here while we still have the
+        // factory in hand — Background extensions register zero
+        // capabilities (`factory.capabilities == None`), and the
+        // post-build pruning step uses this flag to keep them
+        // unconditionally (they are engine-driven and do not need a
+        // node binding to be useful).
+        let mut extension_bundles: Vec<(
+            otap_df_config::ExtensionId,
+            ExtensionBundle,
+            bool,
+            extension::wrapper::ExtensionEntityKeys,
+        )> = Vec::new();
+        for (ext_id, ext_user_config) in config.extension_iter() {
+            let raw_urn = ext_user_config.r#type.as_str();
+            let factory = self
+                .get_extension_factory_map()
+                .get(raw_urn)
+                .ok_or_else(|| Error::UnknownExtension {
+                    plugin_urn: raw_urn.to_string(),
+                })?;
+            let runtime_config = ExtensionConfig::with_control_channel_capacity(
+                ext_id.clone(),
+                channel_capacity_policy.control.node,
+            );
+            let ext_ctx = pipeline_ctx.extension_context();
+            let bundle = (factory.create)(
+                &ext_ctx,
+                ext_id.clone(),
+                ext_user_config.clone(),
+                &runtime_config,
+            )
+            .map_err(|e| Error::ConfigError(Box::new(e)))?;
+            let mut bundle = bundle;
+            let entity_keys = bundle.wire_telemetry(
+                ext_id.clone(),
+                &ext_ctx,
+                &mut build_state.channel_metrics,
+                channel_metrics_enabled,
+            );
+            bundle
+                .register_into(factory.capabilities.as_ref(), &mut capability_registry)
+                .map_err(|e| Error::CapabilityRegistrationFailed {
+                    extension: ext_id.clone(),
+                    message: format!("{e}"),
+                })?;
+            let is_background = factory.capabilities.is_none();
+            extension_bundles.push((ext_id.clone(), bundle, is_background, entity_keys));
+        }
+
+        // Resolve each node's bindings against the populated registry. A
+        // single shared `ConsumedTracker` records consumption across all
+        // nodes so the engine can prune unused extension variants after
+        // the build phase.
+        let mut consumed_tracker = capability::registry::ConsumedTracker::new();
+        let mut per_node_capabilities: HashMap<NodeName, capability::registry::Capabilities> =
+            HashMap::new();
+        for (name, node_config) in config.node_iter() {
+            let caps = capability::registry::resolve_bindings(
+                &node_config.capabilities,
+                &capability_registry,
+                &known_extensions,
+                &mut consumed_tracker,
+            )
+            .map_err(|e| Error::CapabilityResolutionFailed {
+                node: name.clone(),
+                message: format!("{e}"),
+            })?;
+            let _ = per_node_capabilities.insert(name.clone(), caps);
+        }
+
         // Second pass: create runtime nodes.  Node IDs were pre-assigned above,
         // so we look them up from `node_ids` instead of calling `next_node_id`.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
+        let empty_capabilities = capability::registry::Capabilities::empty();
         for (name, node_config) in config.node_iter() {
             let node_kind = node_config.kind();
             let node_id = node_ids.get(name).expect("allocated in first pass").clone();
@@ -771,6 +893,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 node_kind,
                 node_config.identity_attributes(),
             );
+            // Per-node Capabilities resolved in the build-time pass above.
+            // Falls back to empty for nodes that declared no bindings (the
+            // resolver populates the map for every node, including those
+            // with no `capabilities` block, so this fallback is defensive).
+            let node_capabilities = per_node_capabilities
+                .get(name)
+                .unwrap_or(&empty_capabilities);
 
             match node_kind {
                 otap_df_config::node::NodeKind::Receiver => {
@@ -797,6 +926,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 channel_capacity_policy.control.node,
                                 channel_capacity_policy.pdata,
                                 &transport_headers_policy,
+                                node_capabilities,
                             )
                         },
                     )?;
@@ -816,6 +946,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 node_config.clone(),
                                 channel_capacity_policy.control.node,
                                 channel_capacity_policy.pdata,
+                                node_capabilities,
                             )
                         },
                     )?;
@@ -836,6 +967,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 channel_capacity_policy.control.node,
                                 channel_capacity_policy.pdata,
                                 &transport_headers_policy,
+                                node_capabilities,
                             )
                         },
                     )?;
@@ -845,11 +977,163 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
                     unreachable!("rejected in first pass");
                 }
-                otap_df_config::node::NodeKind::Extension => {
-                    return Err(Error::ExtensionInNodesSection { node: name.clone() });
-                }
             }
         }
+
+        // ── Decide which extension variants to keep ────────────────────
+        //
+        // Three categories of extension-level decision are handled here.
+        // Per-variant decisions (drop a single local or shared variant
+        // because nothing consumes it while the other variant *is*
+        // consumed) are made silently — no warning, since the extension
+        // as a whole is serving its purpose.
+        //
+        //   1. **Background extension** (`factory.capabilities == None`):
+        //      always kept. Background extensions are engine-driven and
+        //      register zero capabilities, so they cannot appear in any
+        //      node's binding map and cannot show up in the consumed
+        //      tracker. Pruning them based on consumption would silently
+        //      drop their event loop, which is exactly the work they
+        //      exist to do. They're spawned in `run_forever` like Active.
+        //
+        //   2. **Defined but unbound** (no node references this extension
+        //      from `node_config.capabilities`): warn + drop the entire
+        //      bundle. The author wrote an extension into the pipeline
+        //      config but no node references it — keeping it would
+        //      waste the resources of an active lifecycle (or hold
+        //      passive state) for nothing. The warning helps debug
+        //      "why isn't my extension running?" by surfacing the
+        //      missing binding.
+        //
+        //   3. **Bound but neither variant consumed**: warn + drop the
+        //      entire bundle. At least one node declared a binding to
+        //      this extension but no node's `create()` actually called
+        //      `require_*` / `optional_*` for *any* of its variants.
+        //      The warning surfaces node factories that declared a
+        //      binding but forgot to consume it.
+        //
+        //   3a. **Bound and at least one variant consumed**: keep each
+        //       consumed variant; silently drop the variant(s) that
+        //       weren't consumed. Dropping an unused variant when the
+        //       other is in use is a normal optimization (no node ever
+        //       wanted that path), not an error condition.
+        //
+        // A bundle's two variants (local + shared) are evaluated
+        // independently in 3/3a — a SharedAsLocal-fallback bundle
+        // (shared-only) only ever populates the consumed_shared set,
+        // so the local check naturally fails for it (and the bundle's
+        // missing local variant is dropped accordingly).
+        let bound_extensions: HashSet<otap_df_config::ExtensionId> = config
+            .node_iter()
+            .flat_map(|(_, node_config)| node_config.capabilities.values().cloned())
+            .collect();
+        // Per-variant consumption: an extension's local (resp. shared)
+        // variant is considered "in use" iff at least one of the
+        // capabilities it exposes for that variant was bound by some
+        // node. Tracking presence-of-consumed (rather than
+        // presence-of-unconsumed) is required because an extension may
+        // expose multiple capabilities of the same variant — under the
+        // unconsumed view, a single unbound capability would mask the
+        // bound ones and the whole variant would be incorrectly dropped.
+        let consumed_local: HashSet<otap_df_config::ExtensionId> =
+            consumed_tracker.consumed_local();
+        let consumed_shared: HashSet<otap_df_config::ExtensionId> =
+            consumed_tracker.consumed_shared();
+        let extension_wrappers: Vec<(
+            extension::ExtensionWrapper,
+            otap_df_telemetry::registry::EntityKey,
+        )> = extension_bundles
+            .into_iter()
+            .flat_map(|(ext_id, mut bundle, is_background, entity_keys)| {
+                let mut kept: Vec<(
+                    extension::ExtensionWrapper,
+                    otap_df_telemetry::registry::EntityKey,
+                )> = Vec::new();
+
+                // Category 1: Background — always kept, no warning.
+                if is_background {
+                    if let Some(local) = bundle.take_local() {
+                        kept.push((
+                            local,
+                            entity_keys
+                                .local
+                                .expect("wire_telemetry mints a key for every present variant"),
+                        ));
+                    }
+                    if let Some(shared) = bundle.take_shared() {
+                        kept.push((
+                            shared,
+                            entity_keys
+                                .shared
+                                .expect("wire_telemetry mints a key for every present variant"),
+                        ));
+                    }
+                    return kept;
+                }
+
+                // Category 2: defined but no node binds to it. Warn and
+                // drop the whole bundle (both variants if present).
+                if !bound_extensions.contains(&ext_id) {
+                    otel_warn!(
+                        "extension.unbound",
+                        message = "extension defined in pipeline config but no node binds to any of its capabilities; dropping",
+                        pipeline_group_id = pipeline_group_id.as_ref(),
+                        pipeline_id = pipeline_id.as_ref(),
+                        core_id = core_id,
+                        extension = ext_id.as_ref(),
+                    );
+                    return kept;
+                }
+
+                // Category 3 / 3a: per-variant consumption.
+                // A variant is "consumed" iff it exists in the bundle
+                // AND at least one of the extension's capabilities for
+                // that variant was bound by a node (i.e., ext_id is
+                // present in the corresponding consumed set).
+                let local_present = bundle.local().is_some();
+                let shared_present = bundle.shared().is_some();
+                let local_consumed = local_present && consumed_local.contains(&ext_id);
+                let shared_consumed = shared_present && consumed_shared.contains(&ext_id);
+
+                // Category 3: bound but no variant consumed → warn + drop.
+                if !local_consumed && !shared_consumed {
+                    otel_warn!(
+                        "extension.unconsumed",
+                        message = "node bindings reference this extension but no node called require_*/optional_* for any of its variants; dropping",
+                        pipeline_group_id = pipeline_group_id.as_ref(),
+                        pipeline_id = pipeline_id.as_ref(),
+                        core_id = core_id,
+                        extension = ext_id.as_ref(),
+                    );
+                    return kept;
+                }
+
+                // Category 3a: at least one variant consumed. Keep the
+                // consumed variant(s); silently drop the unused one — no
+                // warning, since the extension as a whole is in use.
+                if let Some(local) = bundle.take_local()
+                    && local_consumed
+                {
+                    kept.push((
+                        local,
+                        entity_keys
+                            .local
+                            .expect("wire_telemetry mints a key for every present variant"),
+                    ));
+                }
+                if let Some(shared) = bundle.take_shared()
+                    && shared_consumed
+                {
+                    kept.push((
+                        shared,
+                        entity_keys
+                            .shared
+                            .expect("wire_telemetry mints a key for every present variant"),
+                    ));
+                }
+                kept
+            })
+            .collect();
 
         let edges = collect_hyper_edges_runtime_from_connections(&config, &build_state)?;
 
@@ -862,6 +1146,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             receivers,
             processors,
             exporters,
+            extension_wrappers,
             nodes,
             telemetry_policy,
         );
@@ -939,10 +1224,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     return Err(Error::UnsupportedNodeKind {
                         kind: "ProcessorChain".into(),
                     });
-                }
-                otap_df_config::node::NodeKind::Extension => {
-                    // Extensions don't participate in wiring contracts.
-                    continue;
                 }
             };
 
@@ -1073,7 +1354,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1098,7 +1379,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .iter()
                         .zip(dest_telemetries.iter())
                         .map(|(ctx, telemetry)| {
-                            let receiver_entity_key = ctx.register_channel_entity(
+                            let receiver_entity_key = ctx.register_node_channel_entity(
                                 channel_id.clone(),
                                 "input".into(),
                                 channel_kind,
@@ -1135,7 +1416,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1158,7 +1439,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     }
                     let ctx = dest_contexts.first().expect("dest_contexts is empty");
                     let telemetry = dest_telemetries.first().expect("dest_telemetries is empty");
-                    let receiver_entity_key = ctx.register_channel_entity(
+                    let receiver_entity_key = ctx.register_node_channel_entity(
                         channel_id.clone(),
                         "input".into(),
                         channel_kind,
@@ -1193,7 +1474,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1218,7 +1499,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .iter()
                         .zip(dest_telemetries.iter())
                         .map(|(ctx, telemetry)| {
-                            let receiver_entity_key = ctx.register_channel_entity(
+                            let receiver_entity_key = ctx.register_node_channel_entity(
                                 channel_id.clone(),
                                 "input".into(),
                                 channel_kind,
@@ -1256,7 +1537,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1279,7 +1560,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     }
                     let ctx = dest_contexts.first().expect("dest_contexts is empty");
                     let telemetry = dest_telemetries.first().expect("dest_telemetries is empty");
-                    let receiver_entity_key = ctx.register_channel_entity(
+                    let receiver_entity_key = ctx.register_node_channel_entity(
                         channel_id.clone(),
                         "input".into(),
                         channel_kind,
@@ -1315,7 +1596,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1331,7 +1612,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .iter()
                         .zip(dest_telemetries.iter())
                         .map(|(ctx, telemetry)| {
-                            let receiver_entity_key = ctx.register_channel_entity(
+                            let receiver_entity_key = ctx.register_node_channel_entity(
                                 channel_id.clone(),
                                 "input".into(),
                                 channel_kind,
@@ -1357,7 +1638,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1371,7 +1652,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     }
                     let ctx = dest_contexts.first().expect("dest_contexts is empty");
                     let telemetry = dest_telemetries.first().expect("dest_telemetries is empty");
-                    let receiver_entity_key = ctx.register_channel_entity(
+                    let receiver_entity_key = ctx.register_node_channel_entity(
                         channel_id.clone(),
                         "input".into(),
                         channel_kind,
@@ -1398,7 +1679,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1414,7 +1695,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .iter()
                         .zip(dest_telemetries.iter())
                         .map(|(ctx, telemetry)| {
-                            let receiver_entity_key = ctx.register_channel_entity(
+                            let receiver_entity_key = ctx.register_node_channel_entity(
                                 channel_id.clone(),
                                 "input".into(),
                                 channel_kind,
@@ -1441,7 +1722,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         .zip(source_telemetries.iter())
                         .zip(source_ports.iter())
                     {
-                        let sender_entity_key = ctx.register_channel_entity(
+                        let sender_entity_key = ctx.register_node_channel_entity(
                             channel_id.clone(),
                             port.clone(),
                             channel_kind,
@@ -1455,7 +1736,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     }
                     let ctx = dest_contexts.first().expect("dest_contexts is empty");
                     let telemetry = dest_telemetries.first().expect("dest_telemetries is empty");
-                    let receiver_entity_key = ctx.register_channel_entity(
+                    let receiver_entity_key = ctx.register_node_channel_entity(
                         channel_id.clone(),
                         "input".into(),
                         channel_kind,
@@ -1482,6 +1763,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         control_channel_capacity: usize,
         pdata_channel_capacity: usize,
         transport_headers_policy: &Option<TransportHeadersPolicy>,
+        capabilities: &capability::registry::Capabilities,
     ) -> Result<ReceiverWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
@@ -1523,6 +1805,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             node_id.clone(),
             node_config,
             &runtime_config,
+            capabilities,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
         .with_capture_policy(capture_policy);
@@ -1546,6 +1829,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         control_channel_capacity: usize,
         pdata_channel_capacity: usize,
+        capabilities: &capability::registry::Capabilities,
     ) -> Result<ProcessorWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
@@ -1585,6 +1869,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             node_id.clone(),
             node_config.clone(),
             &processor_config,
+            capabilities,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
 
@@ -1610,6 +1895,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         control_channel_capacity: usize,
         pdata_channel_capacity: usize,
         transport_headers_policy: &Option<TransportHeadersPolicy>,
+        capabilities: &capability::registry::Capabilities,
     ) -> Result<ExporterWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
@@ -1651,6 +1937,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             node_id.clone(),
             node_config,
             &exporter_config,
+            capabilities,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
         .with_propagation_policy(propagation_policy);
@@ -2380,7 +2667,7 @@ mod test {
     #[test]
     fn test_extension_factory_named_factory() {
         fn dummy_create(
-            _: PipelineContext,
+            _: &ExtensionContext,
             _: otap_df_config::ExtensionId,
             _: Arc<otap_df_config::extension::ExtensionUserConfig>,
             _: &ExtensionConfig,
@@ -2420,7 +2707,7 @@ mod test {
     #[test]
     fn test_extension_factory_validate_config() {
         fn dummy_create(
-            _: PipelineContext,
+            _: &ExtensionContext,
             _: otap_df_config::ExtensionId,
             _: Arc<otap_df_config::extension::ExtensionUserConfig>,
             _: &ExtensionConfig,
@@ -2448,5 +2735,68 @@ mod test {
 
         assert!((factory.validate_config)(&serde_json::Value::Null).is_ok());
         assert!((factory.validate_config)(&serde_json::json!({"key": "val"})).is_err());
+    }
+
+    #[otap_df_telemetry_macros::metric_set(name = "test.extension.factory")]
+    #[derive(Debug, Default, Clone)]
+    struct FactoryTestMetrics {
+        #[metric(unit = "{tick}")]
+        ticks: otap_df_telemetry::instrument::Counter<u64>,
+    }
+
+    #[test]
+    fn test_extension_factory_create_receives_extension_context() {
+        use crate::extension::wrapper::ExtensionVariant;
+        use crate::testing::test_extension_ctx;
+        use otap_df_config::extension::{ExtensionUrn, ExtensionUserConfig};
+        use otap_df_telemetry::registry::EntityKey;
+        use std::cell::Cell;
+
+        thread_local! {
+            static REGISTERED_ENTITY: Cell<Option<EntityKey>> = const { Cell::new(None) };
+        }
+
+        fn entity_registering_create(
+            ext_ctx: &ExtensionContext,
+            name: otap_df_config::ExtensionId,
+            _: Arc<ExtensionUserConfig>,
+            _: &ExtensionConfig,
+        ) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+            let entity = ext_ctx.register_extension_entity(name, ExtensionVariant::Local);
+            REGISTERED_ENTITY.with(|cell| cell.set(Some(entity)));
+            Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "no-op factory".into(),
+            })
+        }
+        fn dummy_validate(_: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+            Ok(())
+        }
+
+        let factory = ExtensionFactory {
+            name: "urn:otel:extension:test_ext",
+            description: "test extension that registers an entity via ext_ctx",
+            documentation_url: "",
+            capabilities: None,
+            create: entity_registering_create,
+            validate_config: dummy_validate,
+        };
+
+        let (ctx, registry) = test_extension_ctx();
+        let entities_before = registry.entity_count();
+        let metrics_before = registry.metric_set_count();
+        let user_config = Arc::new(ExtensionUserConfig::with_type(ExtensionUrn::from(
+            "urn:otel:extension:test_ext",
+        )));
+        let ext_config = ExtensionConfig::with_control_channel_capacity("test_ext", 16);
+
+        let result = (factory.create)(&ctx, "test_ext".into(), user_config, &ext_config);
+        assert!(result.is_err());
+        assert_eq!(registry.entity_count(), entities_before + 1);
+
+        let entity_key = REGISTERED_ENTITY
+            .with(|cell| cell.take())
+            .expect("factory should have registered an entity via ext_ctx");
+        let _metrics = ctx.register_metric_set_for_entity::<FactoryTestMetrics>(entity_key);
+        assert_eq!(registry.metric_set_count(), metrics_before + 1);
     }
 }

@@ -15,6 +15,7 @@ use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest
 use arrow::array::RecordBatch;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
+use otap_df_config::ConversionOptions;
 use prost::Message;
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -55,6 +56,15 @@ pub struct Consumer {
 }
 
 impl Consumer {
+    /// Construct a consumer with conversion options.
+    #[must_use]
+    pub fn with_options(opts: ConversionOptions) -> Self {
+        Self {
+            proto_buffer: ProtoBuffer::new(opts),
+            ..Self::default()
+        }
+    }
+
     /// consume and deserialize record batches
     pub fn consume_bar(&mut self, bar: &mut BatchArrowRecords) -> Result<Vec<RecordMessage>> {
         let mut records = Vec::with_capacity(bar.arrow_payloads.len());
@@ -112,25 +122,27 @@ impl Consumer {
         &mut self,
         records: &mut BatchArrowRecords,
     ) -> Result<ExportMetricsServiceRequest> {
-        match get_main_payload_type(records)? {
-            ArrowPayloadType::UnivariateMetrics => {
-                let record_messages = self.consume_bar(records)?;
-                let mut otap_batch =
-                    OtapArrowRecords::Metrics(from_record_messages(record_messages)?);
-                self.proto_buffer.clear();
-                self.metrics_proto_encoder
-                    .encode(&mut otap_batch, &mut self.proto_buffer)?;
+        let record_messages = self.consume_bar(records)?;
+        let mut otap_batch = OtapArrowRecords::Metrics(from_record_messages(record_messages)?);
 
-                ExportMetricsServiceRequest::decode(self.proto_buffer.as_ref()).map_err(|e| {
-                    Error::UnexpectedRecordBatchState {
-                        reason: format!("error decoding proto serialization: {e:?}"),
-                    }
-                })
-            }
-            main_record_type => Err(Error::UnsupportedPayloadType {
-                actual: main_record_type.into(),
-            }),
+        if otap_batch
+            .get(ArrowPayloadType::UnivariateMetrics)
+            .is_none()
+        {
+            return Err(Error::RecordBatchNotFound {
+                payload_type: ArrowPayloadType::UnivariateMetrics,
+            });
         }
+
+        self.proto_buffer.clear();
+        self.metrics_proto_encoder
+            .encode(&mut otap_batch, &mut self.proto_buffer)?;
+
+        ExportMetricsServiceRequest::decode(self.proto_buffer.as_ref()).map_err(|e| {
+            Error::UnexpectedRecordBatchState {
+                reason: format!("error decoding proto serialization: {e:?}"),
+            }
+        })
     }
 
     /// Consumes all the arrow payloads in the passed OTAP `BatchArrayRecords` and decodes them
@@ -140,24 +152,24 @@ impl Consumer {
         &mut self,
         records: &mut BatchArrowRecords,
     ) -> Result<ExportLogsServiceRequest> {
-        match get_main_payload_type(records)? {
-            ArrowPayloadType::Logs => {
-                let record_messages = self.consume_bar(records)?;
-                let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages)?);
-                self.proto_buffer.clear();
-                self.logs_proto_encoder
-                    .encode(&mut otap_batch, &mut self.proto_buffer)?;
+        let record_messages = self.consume_bar(records)?;
+        let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages)?);
 
-                ExportLogsServiceRequest::decode(self.proto_buffer.as_ref()).map_err(|e| {
-                    Error::UnexpectedRecordBatchState {
-                        reason: format!("error decoding proto serialization: {e:?}"),
-                    }
-                })
-            }
-            main_record_type => Err(Error::UnsupportedPayloadType {
-                actual: main_record_type.into(),
-            }),
+        if otap_batch.get(ArrowPayloadType::Logs).is_none() {
+            return Err(Error::RecordBatchNotFound {
+                payload_type: ArrowPayloadType::Logs,
+            });
         }
+
+        self.proto_buffer.clear();
+        self.logs_proto_encoder
+            .encode(&mut otap_batch, &mut self.proto_buffer)?;
+
+        ExportLogsServiceRequest::decode(self.proto_buffer.as_ref()).map_err(|e| {
+            Error::UnexpectedRecordBatchState {
+                reason: format!("error decoding proto serialization: {e:?}"),
+            }
+        })
     }
 
     /// Consumes record batches in [BatchArrowRecords] to [ExportTraceServiceRequest].
@@ -165,39 +177,25 @@ impl Consumer {
         &mut self,
         records: &mut BatchArrowRecords,
     ) -> Result<ExportTraceServiceRequest> {
-        match get_main_payload_type(records)? {
-            ArrowPayloadType::Spans => {
-                let record_messages = self.consume_bar(records)?;
-                let mut otap_batch =
-                    OtapArrowRecords::Traces(from_record_messages(record_messages)?);
-                self.proto_buffer.clear();
-                self.traces_proto_encoder
-                    .encode(&mut otap_batch, &mut self.proto_buffer)?;
+        let record_messages = self.consume_bar(records)?;
+        let mut otap_batch = OtapArrowRecords::Traces(from_record_messages(record_messages)?);
 
-                ExportTraceServiceRequest::decode(self.proto_buffer.as_ref()).map_err(|e| {
-                    Error::UnexpectedRecordBatchState {
-                        reason: format!("error decoding proto serialization {e:?}"),
-                    }
-                })
-            }
-            main_record_type => Err(Error::UnsupportedPayloadType {
-                actual: main_record_type.into(),
-            }),
+        if otap_batch.get(ArrowPayloadType::Spans).is_none() {
+            return Err(Error::RecordBatchNotFound {
+                payload_type: ArrowPayloadType::Spans,
+            });
         }
-    }
-}
 
-/// Get the main logs, metrics, or traces from a received BatchArrowRecords message.
-fn get_main_payload_type(records: &BatchArrowRecords) -> Result<ArrowPayloadType> {
-    if records.arrow_payloads.is_empty() {
-        return Err(Error::EmptyBatch);
-    }
+        self.proto_buffer.clear();
+        self.traces_proto_encoder
+            .encode(&mut otap_batch, &mut self.proto_buffer)?;
 
-    // Per the specification, the main record type is the first payload
-    let main_record_type = records.arrow_payloads[0].r#type;
-    ArrowPayloadType::try_from(main_record_type).map_err(|_| Error::UnsupportedPayloadType {
-        actual: main_record_type,
-    })
+        ExportTraceServiceRequest::decode(self.proto_buffer.as_ref()).map_err(|e| {
+            Error::UnexpectedRecordBatchState {
+                reason: format!("error decoding proto serialization {e:?}"),
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -294,6 +292,178 @@ mod tests {
                 unimplemented!()
             }
         }
+    }
+
+    use super::Consumer;
+    use crate::Producer;
+    use crate::error::Error;
+    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use crate::testing::fixtures::{
+        logs_with_full_resource_and_scope, metrics_sum_with_full_resource_and_scope,
+        traces_with_full_resource_and_scope,
+    };
+    use crate::testing::round_trip::{encode_logs, encode_metrics, encode_traces};
+
+    /// Helper: produce BatchArrowRecords from OTAP data using the Producer.
+    fn produce_bar(
+        otap: &mut crate::otap::OtapArrowRecords,
+    ) -> crate::proto::opentelemetry::arrow::v1::BatchArrowRecords {
+        let mut producer = Producer::new();
+        producer
+            .produce_bar(otap)
+            .expect("produce_bar should succeed")
+    }
+
+    #[test]
+    fn test_consume_logs_root_not_at_position_zero() {
+        let logs_data = logs_with_full_resource_and_scope();
+        let mut otap = encode_logs(&logs_data);
+        let mut bar = produce_bar(&mut otap);
+
+        // Ensure there are multiple payloads and move the root (Logs) to the end
+        assert!(
+            bar.arrow_payloads.len() > 1,
+            "need multiple payloads to test reordering"
+        );
+        let logs_idx = bar
+            .arrow_payloads
+            .iter()
+            .position(|p| p.r#type == ArrowPayloadType::Logs as i32)
+            .expect("Logs payload should exist");
+        let logs_payload = bar.arrow_payloads.remove(logs_idx);
+        bar.arrow_payloads.push(logs_payload);
+        // Root payload is now at the last position, not position 0
+        assert_ne!(
+            bar.arrow_payloads[0].r#type,
+            ArrowPayloadType::Logs as i32,
+            "root payload should not be at position 0 for this test"
+        );
+
+        let mut consumer = Consumer::default();
+        let result = consumer.consume_logs_batches(&mut bar);
+        assert!(
+            result.is_ok(),
+            "should decode logs even when root is not at position 0: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_consume_metrics_root_not_at_position_zero() {
+        let metrics_data = metrics_sum_with_full_resource_and_scope();
+        let mut otap = encode_metrics(&metrics_data);
+        let mut bar = produce_bar(&mut otap);
+
+        assert!(
+            bar.arrow_payloads.len() > 1,
+            "need multiple payloads to test reordering"
+        );
+        let metrics_idx = bar
+            .arrow_payloads
+            .iter()
+            .position(|p| p.r#type == ArrowPayloadType::UnivariateMetrics as i32)
+            .expect("UnivariateMetrics payload should exist");
+        let metrics_payload = bar.arrow_payloads.remove(metrics_idx);
+        bar.arrow_payloads.push(metrics_payload);
+        assert_ne!(
+            bar.arrow_payloads[0].r#type,
+            ArrowPayloadType::UnivariateMetrics as i32,
+            "root payload should not be at position 0 for this test"
+        );
+
+        let mut consumer = Consumer::default();
+        let result = consumer.consume_metrics_batches(&mut bar);
+        assert!(
+            result.is_ok(),
+            "should decode metrics even when root is not at position 0: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_consume_traces_root_not_at_position_zero() {
+        let traces_data = traces_with_full_resource_and_scope();
+        let mut otap = encode_traces(&traces_data);
+        let mut bar = produce_bar(&mut otap);
+
+        assert!(
+            bar.arrow_payloads.len() > 1,
+            "need multiple payloads to test reordering"
+        );
+        let spans_idx = bar
+            .arrow_payloads
+            .iter()
+            .position(|p| p.r#type == ArrowPayloadType::Spans as i32)
+            .expect("Spans payload should exist");
+        let spans_payload = bar.arrow_payloads.remove(spans_idx);
+        bar.arrow_payloads.push(spans_payload);
+        assert_ne!(
+            bar.arrow_payloads[0].r#type,
+            ArrowPayloadType::Spans as i32,
+            "root payload should not be at position 0 for this test"
+        );
+
+        let mut consumer = Consumer::default();
+        let result = consumer.consume_traces_batches(&mut bar);
+        assert!(
+            result.is_ok(),
+            "should decode traces even when root is not at position 0: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_consume_logs_missing_root_payload() {
+        let logs_data = logs_with_full_resource_and_scope();
+        let mut otap = encode_logs(&logs_data);
+        let mut bar = produce_bar(&mut otap);
+
+        // Remove the Logs root payload entirely
+        bar.arrow_payloads
+            .retain(|p| p.r#type != ArrowPayloadType::Logs as i32);
+
+        let mut consumer = Consumer::default();
+        let result = consumer.consume_logs_batches(&mut bar);
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), Error::RecordBatchNotFound { payload_type } if payload_type == ArrowPayloadType::Logs),
+            "should return RecordBatchNotFound for Logs"
+        );
+    }
+
+    #[test]
+    fn test_consume_metrics_missing_root_payload() {
+        let metrics_data = metrics_sum_with_full_resource_and_scope();
+        let mut otap = encode_metrics(&metrics_data);
+        let mut bar = produce_bar(&mut otap);
+
+        // Remove the UnivariateMetrics root payload entirely
+        bar.arrow_payloads
+            .retain(|p| p.r#type != ArrowPayloadType::UnivariateMetrics as i32);
+
+        let mut consumer = Consumer::default();
+        let result = consumer.consume_metrics_batches(&mut bar);
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), Error::RecordBatchNotFound { payload_type } if payload_type == ArrowPayloadType::UnivariateMetrics),
+            "should return RecordBatchNotFound for UnivariateMetrics"
+        );
+    }
+
+    #[test]
+    fn test_consume_traces_missing_root_payload() {
+        let traces_data = traces_with_full_resource_and_scope();
+        let mut otap = encode_traces(&traces_data);
+        let mut bar = produce_bar(&mut otap);
+
+        // Remove the Spans root payload entirely
+        bar.arrow_payloads
+            .retain(|p| p.r#type != ArrowPayloadType::Spans as i32);
+
+        let mut consumer = Consumer::default();
+        let result = consumer.consume_traces_batches(&mut bar);
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), Error::RecordBatchNotFound { payload_type } if payload_type == ArrowPayloadType::Spans),
+            "should return RecordBatchNotFound for Spans"
+        );
     }
 
     #[test]

@@ -35,6 +35,7 @@ use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otap_df_telemetry::metrics::MetricSet;
@@ -48,12 +49,14 @@ const LOG_SAMPLING_PROCESSOR_URN: &str = "urn:otel:processor:log_sampling";
 static LOG_SAMPLING_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
         name: LOG_SAMPLING_PROCESSOR_URN,
-        create: |pipeline_ctx: PipelineContext,
-                 node: NodeId,
-                 node_config: Arc<NodeUserConfig>,
-                 proc_cfg: &ProcessorConfig| {
-            create_log_sampling_processor(pipeline_ctx, node, node_config, proc_cfg)
-        },
+        create:
+            |pipeline_ctx: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             proc_cfg: &ProcessorConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+                create_log_sampling_processor(pipeline_ctx, node, node_config, proc_cfg)
+            },
         validate_config: otap_df_config::validation::validate_typed_config::<Config>,
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     };
@@ -100,7 +103,7 @@ impl LogSamplingProcessor {
 
         // Convert to Arrow records (no-op if already Arrow)
         let (context, payload) = pdata.into_parts();
-        let mut records: OtapArrowRecords = payload.try_into()?;
+        let mut records: OtapArrowRecords = payload.try_into_with_default()?;
         records.decode_transport_optimized_ids()?;
 
         // Prepare the filter buffer.

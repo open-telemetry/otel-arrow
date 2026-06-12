@@ -1,32 +1,23 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
-# This Dockerfile builds the OpenTelemetry Protocol with Apache Arrow
-# Collector from the code in this repository.  It builds using the
-# "otelarrowcol" configuration.  See collector/otelarrowcol-build.yaml
-# for the components that are included in the build, which are all of
-# those with sources in this repository plus a few commonly useful
-# accessories (e.g., the profiler extension).
-FROM golang:1.26@sha256:595c7847cff97c9a9e76f015083c481d26078f961c9c8dca3923132f51fe12f1 AS sandbox
-
-WORKDIR /otel-arrow
-COPY . .
-ENV CGO_ENABLED=0
-
-# Note the version should match the builder version referenced in the Makefile.
-# The version is overridden when running `make builder`.
-RUN go install go.opentelemetry.io/collector/cmd/builder@v0.149.0
-
-# This command generates main.go, go.mod but does not update deps.
-RUN builder --skip-compilation --skip-get-modules --config=collector/otelarrowcol-build.yaml
-
-# Build from within the collector module directory where go.mod exists.
-WORKDIR /otel-arrow/collector/cmd/otelarrowcol
-RUN go mod tidy && go build -o /otel-arrow/otelarrowcol .
-
-# This build uses an Alpine Linux container.
-FROM alpine@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659 AS release
-COPY --from=sandbox /otel-arrow/otelarrowcol /
+# This image provides an OpenTelemetry Collector with the OpenTelemetry
+# Protocol with Apache Arrow (OTAP) components for testing and evaluation.
+#
+# Rather than building a bespoke collector in this repository, we use the
+# upstream OpenTelemetry Collector Contrib distribution, which already ships
+# the `otelarrow` receiver and exporter alongside the OTLP components and the
+# other accessories exercised by the examples (see collector/BUILDING.md and
+# collector/examples/).
+#
+# This image is consumed in two ways:
+#   * directly, as the `otelarrowcol` image used by the pipeline perf tests; and
+#   * as the source of the `/otelcol-contrib` binary, which `make otelarrowcol`
+#     extracts to `bin/otelarrowcol` for the Rust validation test harness.
+#
+# The pinned tag and digest are kept up to date automatically by Renovate
+# (see .github/renovate.json5, `docker:pinDigests`).
+FROM otel/opentelemetry-collector-contrib:0.153.0@sha256:93aad750175cbf1a973ae1c5886c3371f4d800f61be25cdd26870b8441ffe9fa
 
 # Network ports
 # 4317 - OpenTelemetry gRPC services:
@@ -34,5 +25,3 @@ COPY --from=sandbox /otel-arrow/otelarrowcol /
 #      - OpenTelemetry Protocol (OTLP)
 # 1777 - Profiling support
 EXPOSE 4317/tcp 1777/tcp
-
-ENTRYPOINT ["/otelarrowcol"]

@@ -9,7 +9,7 @@ use crate::ValidationInstructions;
 use crate::error::ValidationError;
 use crate::template::render_jinja;
 use minijinja::context;
-use otap_df_core_nodes::receivers::fake_data_generator::config::DataSource;
+use otap_df_core_nodes::receivers::traffic_generator::config::DataSource;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use std::collections::HashMap;
@@ -228,7 +228,7 @@ pub struct Generator {
     ///
     /// Keys are header names. Values are optional fixed strings; when left
     /// empty (`None`), a random value is generated once at startup by the
-    /// fake data generator.
+    /// traffic generator.
     pub(crate) transport_headers: HashMap<String, Option<String>>,
 
     /// Optional connection to a test container. When set, the generator's
@@ -346,7 +346,7 @@ impl Generator {
     /// set the traffic generator to use static as source
     #[must_use]
     pub fn static_signals(mut self) -> Self {
-        self.data_source = DataSource::Static;
+        self.data_source = DataSource::Synthetic;
         self
     }
 
@@ -367,7 +367,7 @@ impl Generator {
     /// Configure transport headers to inject into generated traffic.
     ///
     /// Each key is a header name; the value is an optional fixed string.
-    /// When the value is `None`, the fake data generator assigns a random
+    /// When the value is `None`, the traffic generator assigns a random
     /// value at startup.
     #[must_use]
     pub fn with_transport_headers(
@@ -413,7 +413,7 @@ impl Default for Generator {
             metric_weight: DEFAULT_WEIGHT_ZERO,
             trace_weight: DEFAULT_WEIGHT_ZERO,
             log_weight: DEFAULT_LOG_WEIGHT,
-            data_source: DataSource::Static,
+            data_source: DataSource::Synthetic,
             tls: None,
             transport_headers: HashMap::new(),
             container_connection: None,
@@ -545,7 +545,7 @@ mod tests {
         assert_eq!(g.metric_weight, 0);
         assert_eq!(g.trace_weight, 0);
         assert_eq!(g.log_weight, 100);
-        assert_eq!(g.data_source, DataSource::Static);
+        assert_eq!(g.data_source, DataSource::Synthetic);
         assert_eq!(g.core_start, 2);
         assert_eq!(g.core_end, 2);
         assert!(g.transport_headers.is_empty());

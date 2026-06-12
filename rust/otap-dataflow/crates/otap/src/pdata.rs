@@ -13,14 +13,19 @@
 //! encountered issues (Nack) downstream, optionally preserving the payload for retry or logging.
 //! This functionality is exposed through various traits implemented by effect handlers.
 
+use std::net::SocketAddr;
+use std::num::NonZeroU64;
+
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth};
 use otap_df_engine::error::{Error, TypedError};
+use otap_df_engine::processor::{FlowMetricEffectHandler, FlowMetricHook};
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
-    MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
+    ConsumerEffectHandlerExtension, FlowMetricAccumulation, Interests,
+    MessageSourceLocalEffectHandlerExtension, MessageSourceSharedEffectHandlerExtension,
+    ProducerEffectHandlerExtension,
 };
 use otap_df_pdata::OtapPayload;
 
@@ -28,11 +33,16 @@ use crate::transport_headers::TransportHeaders;
 
 /// Context for OTAP requests.
 ///
-/// Carries two independent concerns:
+/// Carries three independent concerns:
 /// - **Routing stack**: Ack/Nack routing frames used by the pipeline engine
 ///   for result notification. Reset at transport boundaries (topic hops).
 /// - **Transport headers**: Protocol-neutral request-scoped metadata captured
 ///   from inbound transport headers. Preserved across transport boundaries.
+/// - **Peer address**: Optional socket address observed by the receiving
+///   socket at request acceptance time. Populated by receivers that have a
+///   real socket (OTLP gRPC/HTTP, OTAP gRPC, syslog/CEF) and left `None` by
+///   sourceless receivers (file-based, journald). Preserved across transport
+///   boundaries.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Context {
     stack: Vec<Frame>,
@@ -41,6 +51,18 @@ pub struct Context {
     /// `None` when no headers have been captured (the common case, zero
     /// additional allocation).
     transport_headers: Option<TransportHeaders>,
+    /// Peer address observed by the receiving socket at request acceptance
+    /// time. `None` for receivers without a real socket.
+    peer_addr: Option<SocketAddr>,
+    /// Active flow_metric accumulator (nanoseconds).
+    ///
+    /// `Some(ns)` when a message is inside a flow_metric range (between
+    /// start and end nodes). Stored value equals the real accumulated
+    /// nanoseconds. `start_flow_metric` initializes to 1ns as an "active"
+    /// sentinel — duration measurements are required to be >0 ns, so the
+    /// 1ns sentinel is acceptable drift. At most one flow_metric can be
+    /// active at a time (non-overlapping ranges).
+    flow_compute_ns: Option<NonZeroU64>,
 }
 
 impl Context {
@@ -51,6 +73,8 @@ impl Context {
         Self {
             stack: Vec::with_capacity(capacity),
             transport_headers: None,
+            peer_addr: None,
+            flow_compute_ns: None,
         }
     }
 
@@ -83,7 +107,7 @@ impl Context {
             route: RouteData {
                 calldata,
                 entry_time_ns,
-                output_port_index: 0,
+                ..Default::default()
             },
         });
     }
@@ -297,6 +321,35 @@ impl Context {
         self.transport_headers = Some(headers);
     }
 
+    /// Returns the peer address observed by the receiving socket, if any.
+    #[must_use]
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        self.peer_addr
+    }
+
+    /// Set the peer address for this context.
+    pub fn set_peer_addr(&mut self, addr: SocketAddr) {
+        self.peer_addr = Some(addr);
+    }
+
+    /// Merge peer addresses from a set of contributing inputs.
+    ///
+    /// Returns `Some(addr)` only when every contributing input observed the
+    /// same peer address. Returns `None` if any input was peerless or if
+    /// distinct peers contributed — merging processors must use this to
+    /// avoid attributing a multi-peer output to one arbitrary contributor.
+    #[must_use]
+    pub fn merge_peer_addr<I>(inputs: I) -> Option<SocketAddr>
+    where
+        I: IntoIterator<Item = Option<SocketAddr>>,
+    {
+        let mut merger = PeerAddrMerger::new();
+        for next in inputs {
+            merger.push(next);
+        }
+        merger.finish()
+    }
+
     /// Get the source node for this context.
     #[must_use]
     pub fn source_node(&self) -> Option<usize> {
@@ -320,6 +373,59 @@ impl Context {
 
 // Frame is defined in otap_df_engine::control (imported above).
 
+/// Incremental builder applying the same merge rule as
+/// [`Context::merge_peer_addr`] without allocating a `Vec` of intermediate
+/// peer addresses.
+///
+/// Use when contributing inputs are observed one-at-a-time as part of an
+/// existing pass over the input list (e.g. a processor's flush loop). Push
+/// each input's `peer_addr` exactly once with [`PeerAddrMerger::push`], then
+/// call [`PeerAddrMerger::finish`] to obtain the merged result.
+///
+/// Modeled as an enum so illegal states (e.g. a peer address present
+/// alongside a poisoned flag) cannot be constructed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PeerAddrMerger {
+    /// No inputs pushed yet.
+    #[default]
+    Empty,
+    /// Every input pushed so far agreed on this address.
+    Single(SocketAddr),
+    /// At least one input was peerless or distinct from a prior agreed
+    /// address. The merge stays in this state regardless of later pushes.
+    Poisoned,
+}
+
+impl PeerAddrMerger {
+    /// Create an empty merger. `finish` on an unused merger returns `None`.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self::Empty
+    }
+
+    /// Fold one contributing input's `peer_addr` into the running merge.
+    pub fn push(&mut self, peer_addr: Option<SocketAddr>) {
+        *self = match (*self, peer_addr) {
+            (Self::Empty, None) => Self::Poisoned,
+            (Self::Empty, Some(addr)) => Self::Single(addr),
+            (Self::Single(_), None) => Self::Poisoned,
+            (Self::Single(existing), Some(addr)) if existing == addr => Self::Single(existing),
+            (Self::Single(_), Some(_)) => Self::Poisoned,
+            (Self::Poisoned, _) => Self::Poisoned,
+        };
+    }
+
+    /// Return the merged peer address, or `None` if no inputs were pushed or
+    /// the merge was poisoned by a peerless or distinct contributor.
+    #[must_use]
+    pub const fn finish(self) -> Option<SocketAddr> {
+        match self {
+            Self::Single(addr) => Some(addr),
+            Self::Empty | Self::Poisoned => None,
+        }
+    }
+}
+
 impl otap_df_engine::Unwindable for OtapPdata {
     fn has_frames(&self) -> bool {
         self.context.has_context_frames()
@@ -337,6 +443,49 @@ impl otap_df_engine::Unwindable for OtapPdata {
 impl otap_df_engine::StampOutputPort for OtapPdata {
     fn stamp_output_port_index(&mut self, index: u16) {
         self.context.stamp_output_port_index(index);
+    }
+}
+
+impl FlowMetricAccumulation for OtapPdata {
+    fn start_flow_metric(&mut self) {
+        // Build-time validation in `build_flow_metric_state` rejects flow_metrics
+        // that share a start or end node, but it does NOT yet detect
+        // interleaved ranges with distinct endpoints (e.g. 1→3 + 2→4 on the
+        // path 1→2→3→4). Until that gap is closed (see TODO(flow_metric-interleave)
+        // in engine/src/flow_metrics.rs), keep a defensive runtime warning so a
+        // misconfigured pipeline is diagnosable instead of silently producing
+        // truncated histograms.
+        if self.context.flow_compute_ns.is_some() {
+            otap_df_telemetry::otel_warn!(
+                "flow_metrics.overlap",
+                "start_flow_metric called while another flow_metric is active; \
+                 overlapping ranges are not supported — previous accumulator discarded"
+            );
+        }
+        // Use a 1ns active sentinel because flow_metric duration measurements
+        // are required to be greater than 0ns.
+        self.context.flow_compute_ns = Some(NonZeroU64::new(1).expect("1 is non-zero"));
+    }
+
+    fn add_flow_compute(&mut self, ns: u64) {
+        if let Some(acc) = &mut self.context.flow_compute_ns {
+            // The 1ns initialization sentinel from start_flow_metric is included
+            // in the total.
+            *acc = NonZeroU64::new(acc.get().saturating_add(ns))
+                .expect("flow_metric accumulator is non-zero");
+        }
+    }
+
+    fn take_flow_compute(&mut self) -> Option<u64> {
+        self.context.flow_compute_ns.take().map(|acc| acc.get() - 1)
+    }
+}
+
+impl OtapPdata {
+    /// Returns `true` if a flow_metric accumulator is currently active.
+    #[must_use]
+    fn has_active_flow_metric(&self) -> bool {
+        self.context.flow_compute_ns.is_some()
     }
 }
 
@@ -423,15 +572,17 @@ impl OtapPdata {
     /// pipelines) where in-process Ack/Nack routing state must not leak across
     /// boundaries.
     ///
-    /// Transport headers are **preserved** because they represent
-    /// request-scoped metadata (tenant ID, auth, trace context) that should
-    /// survive cross-pipeline hops.
+    /// Transport headers and peer address are **preserved** because they
+    /// represent request-scoped metadata (tenant ID, auth, trace context,
+    /// originating peer) that should survive cross-pipeline hops.
     #[must_use]
     pub fn clone_without_context(&self) -> Self {
         Self {
             context: Context {
                 stack: Vec::new(),
                 transport_headers: self.context.transport_headers.clone(),
+                peer_addr: self.context.peer_addr,
+                flow_compute_ns: None,
             },
             payload: self.payload.clone(),
         }
@@ -564,6 +715,29 @@ impl OtapPdata {
         self.context.set_transport_headers(headers);
         self
     }
+
+    /// Returns the peer address observed by the receiving socket, if any.
+    ///
+    /// Receivers backed by a real socket (OTLP gRPC/HTTP, OTAP gRPC,
+    /// syslog/CEF) populate this at request acceptance time. Receivers
+    /// without a socket (file-based, journald) leave it `None`. Processors
+    /// and exporters that do not consult the peer address pay nothing.
+    #[must_use]
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        self.context.peer_addr()
+    }
+
+    /// Set the peer address on this pdata's context.
+    pub fn set_peer_addr(&mut self, addr: SocketAddr) {
+        self.context.set_peer_addr(addr);
+    }
+
+    /// Builder-style method to attach a peer address.
+    #[must_use]
+    pub fn with_peer_addr(mut self, addr: SocketAddr) -> Self {
+        self.context.set_peer_addr(addr);
+        self
+    }
 }
 
 /* -------- Producer effect handler extensions (shared, local) -------- */
@@ -641,6 +815,54 @@ impl_consumer_ext!(otap_df_engine::shared::exporter::EffectHandler<OtapPdata>);
 
 /* --------  effect handler extensions (shared, local) -------- */
 
+/// Forward-path flow_metric accumulation for non-overlapping ranges.
+/// Invoked by local and shared processor handlers (via `FlowMetricHook`);
+/// receivers and exporters do not measure flow_metrics.
+fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata) {
+    let is_start = handler.is_flow_start();
+    let is_end = handler.is_flow_end();
+    if !is_start && !is_end && !data.has_active_flow_metric() {
+        return;
+    }
+    let delta_ns = handler.take_elapsed_since_send_marker_ns();
+
+    if is_start {
+        data.start_flow_metric();
+    }
+    data.add_flow_compute(delta_ns);
+    if is_end {
+        if let Some(total) = data.take_flow_compute() {
+            handler.record_flow_duration(total);
+        }
+        // num_items() is only called at flow_metric boundaries to keep
+        // overhead off the per-node hot path. At the end node this
+        // reflects the post-process count — what is actually leaving
+        // the flow_metric range. Recorded unconditionally (including 0)
+        // so signals.outgoing.count stays in lockstep with
+        // compute.duration.count and 0-out traversals stay visible.
+        handler.record_flow_signals_outgoing(data.num_items() as u64);
+    }
+}
+
+impl FlowMetricHook for OtapPdata {
+    fn before_processor_send<H: FlowMetricEffectHandler>(&mut self, handler: &H) {
+        flow_accumulate(handler, self);
+    }
+
+    /// At the flow_metric start node, count items *entering* the range —
+    /// i.e. before `process()` runs and may filter or drop them. This
+    /// gives the true input volume to compare against the end-node
+    /// output volume recorded in [`flow_accumulate`]. Recorded
+    /// unconditionally (including 0) so signals.incoming.count stays in
+    /// lockstep with compute.duration.count and 0-in traversals stay
+    /// visible.
+    fn after_processor_receive<H: FlowMetricEffectHandler>(&mut self, handler: &H) {
+        if handler.is_flow_start() {
+            handler.record_flow_signals_incoming(self.num_items() as u64);
+        }
+    }
+}
+
 /// Implements a `MessageSource{Local,Shared}EffectHandlerExtension` for an EffectHandler type.
 ///
 /// Parameters:
@@ -648,8 +870,17 @@ impl_consumer_ext!(otap_df_engine::shared::exporter::EffectHandler<OtapPdata>);
 ///   $trait_name   – `MessageSourceLocalEffectHandlerExtension` or `MessageSourceSharedEffectHandlerExtension`
 ///   $handler      – fully-qualified EffectHandler type
 ///   $id_method    – `processor_id` or `receiver_id`
+///   $hook         – `with_hook` (processors: invokes `before_processor_send`)
+///                   or `no_hook` (receivers: no per-send bookkeeping)
+macro_rules! maybe_processor_send_hook {
+    (with_hook, $handler:expr, $data:expr) => {
+        $data.before_processor_send($handler);
+    };
+    (no_hook, $handler:expr, $data:expr) => {};
+}
+
 macro_rules! impl_message_source_ext {
-    ($async_attr:meta, $trait_name:ident, $handler:ty, $id_method:ident) => {
+    ($async_attr:meta, $trait_name:ident, $handler:ty, $id_method:ident, $hook:ident) => {
         #[$async_attr]
         impl $trait_name<OtapPdata> for $handler {
             async fn send_message_with_source_node(
@@ -657,6 +888,7 @@ macro_rules! impl_message_source_ext {
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.send_default_stamped(data).await
             }
 
@@ -665,6 +897,7 @@ macro_rules! impl_message_source_ext {
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.try_send_default_stamped(data)
             }
 
@@ -677,6 +910,7 @@ macro_rules! impl_message_source_ext {
                 P: Into<PortName> + Send + 'static,
             {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.send_to_stamped(port, data).await
             }
 
@@ -689,6 +923,7 @@ macro_rules! impl_message_source_ext {
                 P: Into<PortName> + Send + 'static,
             {
                 data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.try_send_to_stamped(port, data)
             }
         }
@@ -699,25 +934,29 @@ impl_message_source_ext!(
     async_trait(?Send),
     MessageSourceLocalEffectHandlerExtension,
     otap_df_engine::local::processor::EffectHandler<OtapPdata>,
-    processor_id
+    processor_id,
+    with_hook
 );
 impl_message_source_ext!(
     async_trait(?Send),
     MessageSourceLocalEffectHandlerExtension,
     otap_df_engine::local::receiver::EffectHandler<OtapPdata>,
-    receiver_id
+    receiver_id,
+    no_hook
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
     otap_df_engine::shared::processor::EffectHandler<OtapPdata>,
-    processor_id
+    processor_id,
+    with_hook
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
     otap_df_engine::shared::receiver::EffectHandler<OtapPdata>,
-    receiver_id
+    receiver_id,
+    no_hook
 );
 
 /* -------- ReceivedAtNode implementation -------- */
@@ -732,7 +971,9 @@ impl otap_df_engine::ReceivedAtNode for OtapPdata {
 mod test {
     use super::*;
 
-    use crate::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
+    use crate::testing::{
+        TestCallData, create_empty_test_pdata, create_test_pdata, next_ack, next_nack,
+    };
     use otap_df_channel::mpsc::Channel as LocalChannel;
     use otap_df_engine::ConsumerEffectHandlerExtension;
     use otap_df_engine::control::{
@@ -751,11 +992,139 @@ mod test {
     use otap_df_engine::shared::receiver::EffectHandler as SharedReceiverEffectHandler;
     use otap_df_telemetry::reporter::MetricsReporter;
     use pretty_assertions::assert_eq;
+    use std::cell::Cell;
     use std::collections::HashMap;
     use tokio::sync::mpsc;
 
     fn create_test() -> (TestCallData, OtapPdata) {
         (TestCallData::default(), create_test_pdata())
+    }
+
+    struct FakeFlowMetricHandler {
+        is_start: bool,
+        is_end: bool,
+        elapsed_ns: u64,
+        stop_total: Cell<u64>,
+        stop_total_calls: Cell<u32>,
+        start_signals: Cell<u64>,
+        start_signals_calls: Cell<u32>,
+        stop_signals: Cell<u64>,
+        stop_signals_calls: Cell<u32>,
+    }
+
+    impl FakeFlowMetricHandler {
+        fn start(elapsed_ns: u64) -> Self {
+            Self {
+                is_start: true,
+                is_end: false,
+                elapsed_ns,
+                stop_total: Cell::new(0),
+                stop_total_calls: Cell::new(0),
+                start_signals: Cell::new(0),
+                start_signals_calls: Cell::new(0),
+                stop_signals: Cell::new(0),
+                stop_signals_calls: Cell::new(0),
+            }
+        }
+
+        fn end(elapsed_ns: u64) -> Self {
+            Self {
+                is_start: false,
+                is_end: true,
+                elapsed_ns,
+                stop_total: Cell::new(0),
+                stop_total_calls: Cell::new(0),
+                start_signals: Cell::new(0),
+                start_signals_calls: Cell::new(0),
+                stop_signals: Cell::new(0),
+                stop_signals_calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl FlowMetricEffectHandler for FakeFlowMetricHandler {
+        fn is_flow_start(&self) -> bool {
+            self.is_start
+        }
+
+        fn is_flow_end(&self) -> bool {
+            self.is_end
+        }
+
+        fn take_elapsed_since_send_marker_ns(&self) -> u64 {
+            self.elapsed_ns
+        }
+
+        fn record_flow_duration(&self, total: u64) {
+            self.stop_total.set(total);
+            self.stop_total_calls.set(self.stop_total_calls.get() + 1);
+        }
+
+        fn record_flow_signals_incoming(&self, signals: u64) {
+            self.start_signals.set(signals);
+            self.start_signals_calls
+                .set(self.start_signals_calls.get() + 1);
+        }
+
+        fn record_flow_signals_outgoing(&self, signals: u64) {
+            self.stop_signals.set(signals);
+            self.stop_signals_calls
+                .set(self.stop_signals_calls.get() + 1);
+        }
+    }
+
+    #[test]
+    fn flow_hooks_record_start_and_end_signal_counts() {
+        let mut pdata = create_test_pdata();
+        let signals = pdata.num_items() as u64;
+        assert!(signals > 0, "test pdata must contain signal items");
+
+        let start_handler = FakeFlowMetricHandler::start(5);
+        // Incoming count is recorded by after_processor_receive (pre-process).
+        pdata.after_processor_receive(&start_handler);
+        // The send hook still drives compute-duration accumulation.
+        pdata.before_processor_send(&start_handler);
+        assert_eq!(start_handler.start_signals.get(), signals);
+        assert_eq!(start_handler.stop_signals.get(), 0);
+
+        let end_handler = FakeFlowMetricHandler::end(7);
+        pdata.after_processor_receive(&end_handler);
+        pdata.before_processor_send(&end_handler);
+        assert_eq!(end_handler.stop_signals.get(), signals);
+        assert!(end_handler.stop_total.get() > 0);
+    }
+
+    /// A 0-item batch must still produce one record() call on each MMSC,
+    /// so signals.incoming.count, signals.outgoing.count, and
+    /// compute.duration.count stay in lockstep with the number of
+    /// traversals. Hiding 0-item batches would diverge the counts and
+    /// erase a useful starvation/over-filter signal.
+    #[test]
+    fn flow_hooks_record_zero_item_batches() {
+        let mut pdata = create_empty_test_pdata();
+        assert_eq!(pdata.num_items(), 0);
+
+        // Start node: after_processor_receive must record (incoming = 0)
+        // even though the batch is empty.
+        let start_handler = FakeFlowMetricHandler::start(5);
+        pdata.after_processor_receive(&start_handler);
+        pdata.before_processor_send(&start_handler);
+        assert_eq!(start_handler.start_signals_calls.get(), 1);
+        assert_eq!(start_handler.start_signals.get(), 0);
+        assert_eq!(start_handler.stop_signals_calls.get(), 0);
+
+        // Stop node: before_processor_send must record both
+        // compute.duration AND outgoing = 0, in lockstep.
+        let end_handler = FakeFlowMetricHandler::end(7);
+        pdata.after_processor_receive(&end_handler);
+        pdata.before_processor_send(&end_handler);
+        assert_eq!(
+            end_handler.stop_total_calls.get(),
+            end_handler.stop_signals_calls.get(),
+            "compute.duration and signals.outgoing must record together for parity"
+        );
+        assert_eq!(end_handler.stop_signals.get(), 0);
+        assert!(end_handler.stop_total.get() > 0);
     }
 
     #[tokio::test]
@@ -1980,5 +2349,163 @@ mod test {
             }
             other => panic!("expected DeliverNack, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // FlowMetric accumulation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn flow_metric_basic_accumulate_and_take() {
+        let mut pdata = create_test_pdata();
+
+        // No accumulator active initially.
+        assert!(!pdata.has_active_flow_metric());
+        assert_eq!(pdata.take_flow_compute(), None);
+
+        // Start → accumulate → take.
+        pdata.start_flow_metric();
+        assert!(pdata.has_active_flow_metric());
+        pdata.add_flow_compute(100);
+        pdata.add_flow_compute(200);
+        assert_eq!(pdata.take_flow_compute(), Some(300));
+
+        // Accumulator consumed.
+        assert!(!pdata.has_active_flow_metric());
+    }
+
+    #[test]
+    fn flow_metric_add_without_start_is_noop() {
+        let mut pdata = create_test_pdata();
+
+        // add_flow_compute without start should be harmless.
+        pdata.add_flow_compute(999);
+        assert!(!pdata.has_active_flow_metric());
+        assert_eq!(pdata.take_flow_compute(), None);
+    }
+
+    #[test]
+    fn flow_metric_runtime_overlap_overwrites_accumulator() {
+        let mut pdata = create_test_pdata();
+
+        // First flow_metric starts and accumulates.
+        pdata.start_flow_metric();
+        pdata.add_flow_compute(100);
+
+        // Second flow_metric starts while first is still active — this is
+        // the interleaved 1→3 + 2→4 scenario that build-time validation
+        // does not yet detect. The runtime warning fires and the accumulator
+        // is reset to the 1ns active sentinel.
+        pdata.start_flow_metric();
+        assert!(pdata.has_active_flow_metric());
+
+        // Only the second flow_metric's compute should be present.
+        pdata.add_flow_compute(50);
+        assert_eq!(pdata.take_flow_compute(), Some(50));
+    }
+
+    #[test]
+    fn flow_metric_clone_without_context_clears_accumulator() {
+        let mut pdata = create_test_pdata();
+        pdata.start_flow_metric();
+        pdata.add_flow_compute(42);
+
+        let cloned = pdata.clone_without_context();
+        assert!(!cloned.has_active_flow_metric());
+    }
+
+    #[test]
+    fn peer_addr_default_is_none_and_round_trips() {
+        let pdata = create_test_pdata();
+        assert!(pdata.peer_addr().is_none());
+
+        let addr: SocketAddr = "10.0.0.1:5005".parse().unwrap();
+        let pdata = create_test_pdata().with_peer_addr(addr);
+        assert_eq!(pdata.peer_addr(), Some(addr));
+
+        let mut pdata = create_test_pdata();
+        pdata.set_peer_addr(addr);
+        assert_eq!(pdata.peer_addr(), Some(addr));
+    }
+
+    #[test]
+    fn peer_addr_survives_clone_without_context() {
+        let addr: SocketAddr = "[2001:db8::1]:9999".parse().unwrap();
+        let pdata = create_test_pdata().with_peer_addr(addr);
+
+        let cloned = pdata.clone_without_context();
+        assert_eq!(
+            cloned.peer_addr(),
+            Some(addr),
+            "peer_addr must survive transport-boundary clone"
+        );
+    }
+
+    #[test]
+    fn merge_peer_addr_rules() {
+        let a: SocketAddr = "10.0.0.1:1".parse().unwrap();
+        let b: SocketAddr = "10.0.0.2:2".parse().unwrap();
+
+        // Empty input → None.
+        assert_eq!(Context::merge_peer_addr(std::iter::empty()), None);
+
+        // Single Some → that address.
+        assert_eq!(Context::merge_peer_addr([Some(a)]), Some(a));
+
+        // All identical → that address.
+        assert_eq!(
+            Context::merge_peer_addr([Some(a), Some(a), Some(a)]),
+            Some(a)
+        );
+
+        // Any None → None.
+        assert_eq!(Context::merge_peer_addr([Some(a), None]), None);
+        assert_eq!(Context::merge_peer_addr([None, Some(a)]), None);
+        assert_eq!(Context::merge_peer_addr([None, None]), None);
+
+        // Distinct Somes → None (refuse to misattribute).
+        assert_eq!(Context::merge_peer_addr([Some(a), Some(b)]), None);
+    }
+
+    #[test]
+    fn peer_addr_merger_matches_merge_peer_addr() {
+        let a: SocketAddr = "10.0.0.1:1".parse().unwrap();
+        let b: SocketAddr = "10.0.0.2:2".parse().unwrap();
+
+        // Empty.
+        let m = PeerAddrMerger::new();
+        assert_eq!(m.finish(), None);
+
+        // Single Some.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        assert_eq!(m.finish(), Some(a));
+
+        // All identical.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(Some(a));
+        m.push(Some(a));
+        assert_eq!(m.finish(), Some(a));
+
+        // Any None poisons subsequent pushes.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(None);
+        m.push(Some(a));
+        assert_eq!(m.finish(), None);
+
+        // Distinct Somes.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(Some(b));
+        assert_eq!(m.finish(), None);
+
+        // After conflict, further identical pushes do not "heal" the result.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(Some(b));
+        m.push(Some(a));
+        assert_eq!(m.finish(), None);
     }
 }

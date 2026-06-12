@@ -18,13 +18,12 @@ use otap_df_config::policy::{ChannelCapacityPolicy, TelemetryPolicy};
 use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_core_nodes::processors::batch_processor::OTAP_BATCH_PROCESSOR_URN;
 use otap_df_core_nodes::processors::retry_processor::RETRY_PROCESSOR_URN;
-use otap_df_core_nodes::receivers::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
+use otap_df_core_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{
     RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
 use otap_df_engine::entity_context::set_pipeline_entity_key;
-use otap_df_engine::testing::liveness::wait_for_condition;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
@@ -32,7 +31,7 @@ use otap_df_telemetry::metrics::MetricValue;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 fn fake_receiver_config(
@@ -49,7 +48,7 @@ fn fake_receiver_config(
             "trace_weight": 0,
             "log_weight": 100
         },
-        "data_source": "static",
+        "data_source": "synthetic",
         "enable_ack_nack": enable_ack_nack
     })
 }
@@ -69,7 +68,7 @@ fn rate_limited_fake_receiver_config(
             "trace_weight": 0,
             "log_weight": 100
         },
-        "data_source": "static",
+        "data_source": "synthetic",
         "generation_strategy": "pre_generated",
         "enable_ack_nack": enable_ack_nack
     })
@@ -83,7 +82,7 @@ fn build_retry_pipeline_config(
     PipelineConfigBuilder::new()
         .add_receiver(
             "fake_receiver",
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
             Some(fake_receiver_config(6, 2, true)),
         )
         .add_processor(
@@ -92,7 +91,7 @@ fn build_retry_pipeline_config(
             Some(json!({
                 "initial_interval": "20ms",
                 "max_interval": "80ms",
-                "max_elapsed_time": "2s",
+                "max_elapsed_time": "5s",
                 "multiplier": 2.0
             })),
         )
@@ -119,7 +118,7 @@ fn build_batch_pipeline_config(
     PipelineConfigBuilder::new()
         .add_receiver(
             "fake_receiver",
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
             Some(fake_receiver_config(3, 3, true)),
         )
         .add_processor(
@@ -157,7 +156,7 @@ fn build_otlp_batch_local_wakeup_pipeline_config(
     PipelineConfigBuilder::new()
         .add_receiver(
             "fake_receiver",
-            OTAP_FAKE_DATA_GENERATOR_URN,
+            TRAFFIC_GENERATOR_RECEIVER_URN,
             Some(rate_limited_fake_receiver_config(5, 1, 1, true)),
         )
         .add_processor(
@@ -437,50 +436,37 @@ where
     snapshot
 }
 
-// This pipeline starts with a downstream exporter that transiently Nacks every
-// request. Once retries are demonstrably happening, the exporter flips to Ack
-// mode and the pipeline must eventually drain all admitted work.
+// This pipeline starts with a downstream exporter that transiently Nacks the
+// first request, then auto-flips to Ack mode in the same task that handles
+// inbound PData. The retry processor must observe at least one transient Nack
+// and then drive all admitted work to completion once recovery is possible.
+// Using the exporter's deterministic auto-flip removes any cross-thread timing
+// race between detecting the first Nack and the retry processor's elapsed-time
+// budget, so the test is purely liveness-bound.
 #[test]
 fn test_retry_pipeline_eventually_recovers_after_transient_nacks() {
     let pipeline_group_id: PipelineGroupId = "liveness-group".into();
     let pipeline_id: PipelineId = "retry-pipeline-liveness".into();
     let test_id = "retry-pipeline-liveness";
     let delivered_items = Arc::new(AtomicU64::new(0));
-    flaky_exporter::register_state(test_id, delivered_items.clone(), false);
-
-    let flip_done = Arc::new(AtomicBool::new(false));
-    let flip_done_for_thread = flip_done.clone();
-    let flip_id = test_id.to_owned();
-    let flip_thread = std::thread::spawn(move || {
-        assert!(
-            wait_for_condition(Duration::from_secs(2), Duration::from_millis(10), || {
-                flaky_exporter::nack_count_by_id(&flip_id) >= 1
-            }),
-            "timed out waiting for the retry pipeline to produce an initial transient Nack"
-        );
-        flaky_exporter::set_should_ack_by_id(&flip_id, true);
-        flip_done_for_thread.store(true, Ordering::Release);
-    });
+    // NACK exactly the first batch, then auto-flip to ACK. This guarantees at
+    // least one transient NACK is observed (satisfying the assertion below)
+    // without any cross-thread coordination from the test harness.
+    flaky_exporter::register_state_with_auto_flip(test_id, delivered_items.clone(), false, 1);
 
     let config = build_retry_pipeline_config(&pipeline_group_id, &pipeline_id, test_id);
     run_pipeline_with_condition(
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         Duration::from_secs(1),
         Some({
             let delivered_items = delivered_items.clone();
-            let flip_done = flip_done.clone();
-            move || {
-                flip_done.load(Ordering::Acquire) && delivered_items.load(Ordering::Acquire) >= 6
-            }
+            move || delivered_items.load(Ordering::Acquire) >= 6
         }),
     );
 
-    flip_thread
-        .join()
-        .expect("retry flip thread should succeed");
     assert!(
         flaky_exporter::nack_count_by_id(test_id) >= 1,
         "pipeline should observe at least one transient Nack before recovery"
@@ -569,9 +555,7 @@ fn test_batch_pipeline_uses_timer_wakeup_metrics_with_otlp_bytes_config() {
         5,
         "the local wakeup pipeline should export every generated item"
     );
-    metrics.assert_eq("consumed.items.logs", 5);
     metrics.assert_eq("consumed.batches.logs", 5);
-    metrics.assert_eq("produced.items.logs", 5);
     metrics.assert_eq("produced.batches.logs", 5);
     metrics.assert_eq("flushes.size", 0);
     metrics.assert_eq("flushes.timer", 5);

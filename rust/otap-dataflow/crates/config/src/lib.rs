@@ -19,6 +19,7 @@ use std::hash::Hash;
 pub mod byte_units;
 /// Config URI providers for resolving configuration from file:, env:, or bare paths.
 pub mod config_provider;
+pub mod conversion;
 pub mod engine;
 /// Environment variable substitution for raw config text.
 pub mod env_substitution;
@@ -43,12 +44,16 @@ pub mod topic;
 pub mod transport_headers;
 /// Transport header capture and propagation policy declarations.
 pub mod transport_headers_policy;
+/// Shared URN parsing primitives used by [`node_urn`] and [`extension_urn`].
+mod urn;
 pub use topic::{
     SubscriptionGroupName, TopicAckPropagationMode, TopicAckPropagationPolicies, TopicBackendKind,
     TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy, TopicName,
 };
 /// Validation helpers for node configuration.
 pub mod validation;
+
+pub use conversion::ConversionOptions;
 
 /// Signal types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

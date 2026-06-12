@@ -5,13 +5,13 @@ use super::config::RecordsetKqlProcessorConfig;
 use super::create_recordset_kql_processor;
 use otap_df_otap::pdata::OtapPdata;
 
-use async_trait::async_trait;
-use data_engine_recordset::RecordSetEngineDiagnosticLevel;
-use data_engine_recordset_otlp_bridge::{
+use super::otlp_bridge::{
     BridgeDiagnosticOptions, BridgeError, BridgeOptions, BridgePipeline,
     parse_kql_logs_query_into_pipeline,
     process_protobuf_otlp_export_logs_service_request_using_pipeline,
 };
+use async_trait::async_trait;
+use data_engine_recordset::RecordSetEngineDiagnosticLevel;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
@@ -24,6 +24,7 @@ use otap_df_engine::{
     message::Message,
     process_duration::ComputeDuration,
 };
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
 
 /// URN identifier for the processor
@@ -129,7 +130,7 @@ impl RecordsetKqlProcessor {
 
         // Extract context and payload, convert to OTLP bytes
         let (ctx, payload) = data.into_parts();
-        let otlp_bytes: OtlpProtoBytes = payload.try_into()?;
+        let otlp_bytes: OtlpProtoBytes = payload.try_into_with_default()?;
 
         // Process based on signal type (timed).
         let result = effect_handler.timed(&self.compute_duration, || match otlp_bytes {
@@ -294,6 +295,7 @@ mod tests {
     use super::*;
     use bytes::BytesMut;
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::capability;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
@@ -370,9 +372,14 @@ mod tests {
             json!({ "query": query })
         };
 
-        let proc =
-            create_recordset_kql_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
-                .expect("create processor");
+        let proc = create_recordset_kql_processor(
+            pipeline_ctx,
+            node,
+            Arc::new(node_config),
+            rt.config(),
+            &capability::registry::Capabilities::empty(),
+        )
+        .expect("create processor");
         let phase = rt.set_processor(proc);
 
         phase
@@ -389,7 +396,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),

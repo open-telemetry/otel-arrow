@@ -2,12 +2,30 @@
 
 <!-- markdownlint-disable MD013 -->
 
-**URN:** `urn:otel:receiver:syslog_cef`
+## Metadata
+
+- Type: `receiver:syslog_cef` (`urn:otel:receiver:syslog_cef`)
+- Feature gate: Default
+- Stability: Experimental
+
+## Overview
 
 A high-performance receiver for ingesting syslog messages (RFC 3164 and RFC 5424)
 and Common Event Format (CEF) security logs. The receiver automatically detects
 the message format and converts them into `OtapPdata` using the efficient
 Apache Arrow columnar format for downstream processing.
+
+## Getting Started
+
+Start with a TCP listener:
+
+```yaml
+type: receiver:syslog_cef
+config:
+  protocol:
+    tcp:
+      listening_addr: "0.0.0.0:514"
+```
 
 ## Supported Formats
 
@@ -23,28 +41,28 @@ The receiver automatically detects and parses the following message formats:
 ## Configuration
 
 ```yaml
-receivers:
-  syslog_cef:
-    protocol:
-      tcp:
-        listening_addr: "0.0.0.0:514"
+type: receiver:syslog_cef
+config:
+  protocol:
+    tcp:
+      listening_addr: "0.0.0.0:514"
 
-        # Optional: TLS configuration
-        tls:
-          cert_file: "/path/to/server.crt"
-          key_file: "/path/to/server.key"
-          client_ca_file: "/path/to/ca.crt"    # Optional: client cert verification
-          handshake_timeout: "10s"             # Optional: default 10s
+      # Optional: TLS configuration
+      tls:
+        cert_file: "/path/to/server.crt"
+        key_file: "/path/to/server.key"
+        client_ca_file: "/path/to/ca.crt"    # Optional client verification
+        handshake_timeout: "10s"             # Optional, default 10s
 ```
 
 Or for UDP:
 
 ```yaml
-receivers:
-  syslog_cef:
-    protocol:
-      udp:
-        listening_addr: "0.0.0.0:514"
+type: receiver:syslog_cef
+config:
+  protocol:
+    udp:
+      listening_addr: "0.0.0.0:514"
 ```
 
 Optionally, batching parameters can be tuned to control how messages are
@@ -52,27 +70,20 @@ accumulated before being sent downstream. Reducing these values limits the
 scope of in-memory data loss at the cost of higher per-batch overhead:
 
 ```yaml
-receivers:
-  syslog_cef:
-    protocol:
-      tcp:
-        listening_addr: "0.0.0.0:514"
-    batch:
-      max_batch_duration_ms: 50    # Flush after 50 ms (default: 100)
-      max_size: 25       # Flush after 25 messages (default: 100)
+type: receiver:syslog_cef
+config:
+  protocol:
+    tcp:
+      listening_addr: "0.0.0.0:514"
+  batch:
+    max_batch_duration_ms: 50    # Flush after 50 ms (default: 100)
+    max_size: 25                 # Flush after 25 messages (default: 100)
 ```
 
-### Configuration Options
-
-| Field | Type | Required | Description |
-| ----- | ---- | -------- | ----------- |
-| `protocol` | `object` | Yes | Exactly one of `tcp` or `udp` |
-| `protocol.tcp.listening_addr` | `string` | Yes | Socket address (e.g., `"0.0.0.0:514"`) |
-| `protocol.tcp.tls` | `object` | No | TLS config for secure TCP (RFC 5425) |
-| `protocol.udp.listening_addr` | `string` | Yes | Socket address (e.g., `"0.0.0.0:514"`) |
-| `batch` | `object` | No | Batching configuration (see below) |
-| `batch.max_batch_duration_ms` | `integer` | No | Max ms before flushing a batch (default: `100`) |
-| `batch.max_size` | `integer` | No | Max messages per batch (default: `100`) |
+Exactly one of `protocol.tcp` or `protocol.udp` must be configured.
+`protocol.*.listening_addr` is required for the selected transport.
+`protocol.tcp.tls` enables secure TCP (RFC 5425). `batch.max_batch_duration_ms`
+defaults to `100`, and `batch.max_size` defaults to `100`.
 
 ## Transport Protocols
 
@@ -399,46 +410,64 @@ format, which provides:
   directly
 - **Vectorized operations**: Enables SIMD-optimized batch processing
 
-## Telemetry Metrics
+## Telemetry
 
-The receiver exposes the following internal metrics:
+<!-- markdownlint-disable MD013 -->
 
-| Metric | Type | Description |
-| ------- | ------ | ------------- |
-| `received_logs_total` | Counter | Total logs observed at socket |
-| `received_logs_forwarded` | Counter | Logs successfully sent downstream |
-| `received_logs_invalid` | Counter | Logs that failed to parse |
-| `received_logs_forward_failed` | Counter | Logs refused by downstream |
-| `tcp_connections_active` | UpDownCounter | Active TCP connections |
-| `tls_handshake_failures` | Counter | TLS handshake failures (TLS only) |
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
 
-## Example Pipeline Configuration
+### Metric Sets
 
-```yaml
-receivers:
-  syslog_cef:
-    protocol:
-      tcp:
-        listening_addr: "0.0.0.0:1514"
+#### `receiver.syslog_cef`
 
-processors:
-  batch:
-    timeout: 1s
-    send_batch_size: 1000
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `receiver.syslog_cef.received_logs_forwarded` | `{item}` | Number of log records successfully forwarded downstream. |
+| `receiver.syslog_cef.received_logs_invalid` | `{item}` | Number of log records rejected because their payload is zero-length. |
+| `receiver.syslog_cef.received_logs_truncated` | `{item}` | Number of log records whose raw message exceeded `MAX_MESSAGE_SIZE` and were truncated before parsing. For TCP, truncation is detected precisely when a newline-delimited message exceeds the size limit. For UDP, it is a heuristic - a datagram that fills the entire receive buffer is assumed truncated, though a message exactly `MAX_MESSAGE_SIZE` bytes would also trigger this. |
+| `receiver.syslog_cef.received_logs_forward_failed` | `{item}` | Number of log records refused by downstream (backpressure/unavailable) |
+| `receiver.syslog_cef.received_logs_total` | `{item}` | Total number of log records observed at the socket before parsing. |
+| `receiver.syslog_cef.tcp_connections_active` | `{conn}` | Number of active TCP connections. |
+| `receiver.syslog_cef.tls_handshake_failures` | `{error}` | Number of TLS handshake failures. |
+| `receiver.syslog_cef.received_logs_rejected_memory_pressure` | `{item}` | Number of log records dropped due to process-wide memory pressure. |
+| `receiver.syslog_cef.tcp_connections_rejected_memory_pressure` | `{conn}` | Number of TCP connections rejected or closed due to process-wide memory pressure. |
 
-exporters:
-  otlp:
-    endpoint: "otel-collector:4317"
+### Events
 
-pipelines:
-  logs:
-    receivers: [syslog_cef]
-    processors: [batch]
-    exporters: [otlp]
-```
+| Event | Severity | Description |
+| --- | --- | --- |
+| `syslog_cef_receiver.start` | `info` | Receiver startup with protocol and listening address. |
+| `syslog_cef_receiver.tls_enabled` | `info` | TLS was enabled for the TCP listener. |
+| `syslog_cef_receiver.drain_ingress.timeout` | `warn` | Ingress drain timed out while connection tasks were still active. |
+| `syslog_cef_receiver.tls.handshake.success` | `debug` | TLS handshake completed for an incoming connection. |
+| `syslog_cef_receiver.tls.handshake.failed` | `warn` | TLS handshake failed and the connection was closed. |
+| `syslog_cef_receiver.arrow_records.build_failed` | `warn` | Arrow records could not be built from a parsed batch; the batch was dropped. |
+| `syslog_cef_receiver.memory_pressure.disconnect` | `warn` | A TCP connection was closed because process-wide memory pressure was active. |
+
+<!-- markdownlint-enable MD013 -->
 
 ## Feature Flags
 
 | Feature | Description |
 | ------- | ----------- |
 | Built-in TLS support | Enables TLS support for secure TCP connections |
+
+## Examples
+
+See [Configuration](#configuration).
+
+## Limits
+
+- Exactly one protocol variant, `tcp` or `udp`, is configured per receiver.
+- UDP payloads are bounded by datagram size.
+- TCP buffers are flushed by batch size, batch duration, connection close, or
+  shutdown.
+- Partially parsed messages can still be emitted with parser metadata.
+
+## Related Docs
+
+- [Configuration model](../../../../../docs/configuration-model.md)
+- [Parsing behavior](syslog-parsing-behavior.md)
+- [Telemetry](telemetry.md)
+- [Core node catalog](../../../README.md)

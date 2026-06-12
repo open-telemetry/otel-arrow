@@ -41,13 +41,11 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataMetrics;
 use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::otel_info;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::time::Duration;
 
 /// The URN for the OTAP Perf exporter
 pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:exporter:perf";
@@ -70,7 +68,8 @@ pub static PERF_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
+             exporter_config: &ExporterConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         Ok(ExporterWrapper::local(
             PerfExporter::from_config(pipeline, &node_config.config)?,
             node,
@@ -142,11 +141,6 @@ impl local::Exporter<OtapPdata> for PerfExporter {
             message = "Starting Perf Exporter"
         );
 
-        // Start telemetry collection tick as a dedicated control message.
-        let timer_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_millis(self.config.frequency()))
-            .await?;
-
         // Loop until a Shutdown event is received.
         loop {
             let msg = msg_chan.recv().await?;
@@ -160,7 +154,6 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 // ToDo: Handle configuration changes
                 Message::Control(NodeControlMsg::Config { .. }) => {}
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
-                    _ = timer_cancel_handle.cancel().await;
                     return Ok(self.terminal_state(deadline));
                 }
                 Message::PData(mut pdata) => {
@@ -173,24 +166,18 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     let payload = pdata.take_payload();
                     let _ = effect_handler.notify_ack(AckMsg::new(pdata)).await?;
 
-                    let batch: OtapArrowRecords = match payload.try_into() {
-                        Ok(batch) => batch,
-                        Err(_) => {
-                            self.pdata_metrics.inc_failed(signal_type);
-                            continue;
-                        }
-                    };
+                    let num_items = payload.num_items() as u64;
 
                     // Increment counters per type of OTLP signals
                     match signal_type {
                         SignalType::Metrics => {
-                            self.metrics.metrics.add(batch.num_items() as u64);
+                            self.metrics.metrics.add(num_items);
                         }
                         SignalType::Logs => {
-                            self.metrics.logs.add(batch.num_items() as u64);
+                            self.metrics.logs.add(num_items);
                         }
                         SignalType::Traces => {
-                            self.metrics.spans.add(batch.num_items() as u64);
+                            self.metrics.spans.add(num_items);
                         }
                     }
 

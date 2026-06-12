@@ -6,17 +6,13 @@
 //! This exporter sends telemetry data to an OTLP server using the HTTP Protocol.
 //!
 //! ToDo:
-//! - TLS/mTLS
 //! - Proxy settings
-//! - Compression (payloads and accepting compressed responses)
 //! - JSON encoding payloads (currently only proto is supported and it's not configurable)
-//! - Allow endpoint overrides for each signal type (similar to Go collector implementation)
 //! - Unit test metrics reporting
 
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -37,6 +33,8 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::wiring_contract::WiringContract;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+#[cfg(test)]
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
 use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
@@ -82,14 +80,33 @@ pub static OTLP_HTTP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTLP_HTTP_EXPORTER_URN,
     create: factory_create,
     wiring_contract: WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    validate_config,
 };
+
+/// Validates the OTLP HTTP exporter configuration at config load time.
+///
+/// Runs before any node is started (initial load and live reconfigure), so bad
+/// configuration is rejected fast and attributed to the offending node rather
+/// than surfacing as an opaque client error at startup.
+fn validate_config(config: &serde_json::Value) -> Result<(), ConfigError> {
+    let cfg: Config =
+        serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
+            error: e.to_string(),
+        })?;
+    cfg.http
+        .validate()
+        .map_err(|e| ConfigError::InvalidUserConfig {
+            error: e.to_string(),
+        })?;
+    Ok(())
+}
 
 fn factory_create(
     pipeline: PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     exporter_config: &ExporterConfig,
+    _capabilities: &otap_df_engine::capability::registry::Capabilities,
 ) -> Result<ExporterWrapper<OtapPdata>, ConfigError> {
     Ok(ExporterWrapper::local(
         OtlpHttpExporter::from_config(pipeline, &node_config.config)?,
@@ -225,10 +242,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             traces_endpoint = traces_endpoint.as_str(),
         );
 
-        let telemetry_timer_cancel = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
-
         let max_in_flight = self.config.max_in_flight.max(1);
         let mut client_pool =
             HttpClientPool::try_new(&self.config.http, self.config.client_pool_size)
@@ -245,8 +258,21 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         let mut logs_proto_encoder = LogsProtoBytesEncoder::new();
         let mut metrics_proto_encoder = MetricsProtoBytesEncoder::new();
         let mut traces_proto_encoder = TracesProtoBytesEncoder::new();
-        let mut proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
+        let mut proto_buffer = ProtoBuffer::default();
 
+        let compression = self.config.http.compression();
+        // Buffer to hold compressed bytes. We re-use this scratch space to place
+        // the compressed bytes and then allocate an exact sized Bytes to copy
+        // them into for exporting.
+        //
+        // The rationale is that this buffer will eventually settle on a size
+        // that fits our requests and we won't have to constantly realloc while
+        // compressing. So in theory we always do one alloc + copy.
+        //
+        // We could alternatively create a new buffer every time, but then
+        // we'll do some number of reallocs + copy to find the right final
+        // buffer size.
+        let mut compressed_buffer: Vec<u8> = Vec::new();
         loop {
             // Opportunistically drain completions before we park on a recv.
             while let Some(completed) = inflight_exports.next_completion().now_or_never().flatten()
@@ -307,7 +333,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             .await;
                         }
                     }
-                    _ = telemetry_timer_cancel.cancel().await;
                     return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
@@ -317,18 +342,29 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     let signal_type = pdata.signal_type();
                     let (context, payload) = pdata.into_parts();
 
+                    // For the OtapArrowRecords path we keep the uncompressed bytes in
+                    // `proto_buffer` rather than materializing them into a `Bytes` up front: when
+                    // compression is enabled we feed the slice directly into the encoder, avoiding
+                    // an alloc+memcpy of the full uncompressed payload.
+                    enum Uncompressed {
+                        // Already a refcounted Bytes (OtlpBytes path).
+                        Bytes(Bytes),
+                        // Lives in `proto_buffer` (OtapArrowRecords path).
+                        InProtoBuffer,
+                    }
+
                     // proto encode the payload into the request body, while keeping a copy of the
-                    // original payload if the context allows it to be returned
-                    let (body, saved_payload) = match payload {
+                    // original payload if the context allows it to be returned.
+                    let (uncompressed, saved_payload) = match payload {
                         OtapPayload::OtlpBytes(mut otlp_bytes) => {
                             if context.may_return_payload() {
                                 // use cheap clone of bytes as the request body
                                 let body = otlp_bytes.clone_bytes();
-                                (body, otlp_bytes.into())
+                                (Uncompressed::Bytes(body), otlp_bytes.into())
                             } else {
                                 // take the bytes and replace with empty bytes in original payload
                                 let body = otlp_bytes.replace_bytes(Bytes::new());
-                                (body, otlp_bytes.into())
+                                (Uncompressed::Bytes(body), otlp_bytes.into())
                             }
                         }
                         OtapPayload::OtapArrowRecords(mut otap_batch) => {
@@ -350,7 +386,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 _ = otap_batch.take_payload();
                             }
 
-                            let body = if let Err(e) = encode_result {
+                            if let Err(e) = encode_result {
                                 // encoding error, we must have received an invalid structured batch
                                 let mut nack = NackMsg::new(
                                     e.to_string(),
@@ -360,12 +396,38 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 _ = effect_handler.notify_nack(nack).await;
                                 self.pdata_metrics.add_failed(signal_type, 1);
                                 continue;
-                            } else {
-                                Bytes::copy_from_slice(proto_buffer.as_ref())
-                            };
+                            }
 
-                            (body, otap_batch.into())
+                            (Uncompressed::InProtoBuffer, otap_batch.into())
                         }
+                    };
+
+                    let body = match compression {
+                        Some(method) => {
+                            let uncompressed_slice: &[u8] = match &uncompressed {
+                                Uncompressed::Bytes(b) => b.as_ref(),
+                                Uncompressed::InProtoBuffer => proto_buffer.as_ref(),
+                            };
+                            if let Err(e) =
+                                method.encode(uncompressed_slice, &mut compressed_buffer)
+                            {
+                                let mut nack = NackMsg::new(
+                                    e.to_string(),
+                                    OtapPdata::new(context, saved_payload),
+                                );
+                                nack.permanent = true;
+                                _ = effect_handler.notify_nack(nack).await;
+                                self.pdata_metrics.add_failed(signal_type, 1);
+                                continue;
+                            }
+                            Bytes::copy_from_slice(&compressed_buffer)
+                        }
+                        None => match uncompressed {
+                            Uncompressed::Bytes(b) => b,
+                            Uncompressed::InProtoBuffer => {
+                                Bytes::copy_from_slice(proto_buffer.as_ref())
+                            }
+                        },
                     };
 
                     let endpoint: Rc<String> = Rc::clone(match signal_type {
@@ -378,7 +440,14 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
 
                     let client = client_pool.get_client();
                     inflight_exports.push(async move {
-                        let result = client.post(endpoint.as_str()).body(body).send().await;
+                        let mut req = client.post(endpoint.as_str()).body(body);
+                        if let Some(method) = compression {
+                            req = req.header(
+                                http::header::CONTENT_ENCODING,
+                                method.as_http_content_encoding(),
+                            );
+                        }
+                        let result = req.send().await;
 
                         CompletedExport {
                             result: query_result_to_service_response(
@@ -814,6 +883,11 @@ mod test {
             .await
         });
 
+        // Wait for the server to be ready to accept connections. Without this,
+        // the exporter may attempt to connect before the server has bound,
+        // leading to a retryable NACK and the test hanging in validation.
+        wait_for_port_ready(endpoint_addr);
+
         (pdata_rx, server_cancellation_token2)
     }
 
@@ -921,6 +995,21 @@ mod test {
         let _ = tracker.close();
     }
 
+    /// Polls a TCP port until it accepts connections, or panics after 5 seconds.
+    fn wait_for_port_ready(addr: &str) {
+        let addr: std::net::SocketAddr = addr.parse().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if Instant::now() >= deadline {
+                panic!("Server did not become ready within 5 seconds on {addr}");
+            }
+            match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(50)) {
+                Ok(_) => return,
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+    }
+
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
     /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
     /// the test is finished), and a receiver that will emit any pdata that the server produces.
@@ -971,6 +1060,11 @@ mod test {
             )
             .await;
         });
+
+        // Wait for the server to be ready to accept connections. Without this,
+        // the exporter may attempt to connect before the server has bound,
+        // leading to a retryable NACK and the test hanging in validation.
+        wait_for_port_ready(endpoint_addr);
 
         (pdata_rx, server_cancellation_token2)
     }
@@ -1217,7 +1311,7 @@ mod test {
                         match pdata.signal_type() {
                             SignalType::Logs => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Logs(pdata_decoded)],
@@ -1226,7 +1320,7 @@ mod test {
                             }
                             SignalType::Metrics => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = MetricsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Metrics(pdata_decoded)],
@@ -1235,7 +1329,7 @@ mod test {
                             }
                             SignalType::Traces => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = TracesData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Traces(pdata_decoded)],
@@ -1878,7 +1972,7 @@ mod test {
                         match pdata.signal_type() {
                             SignalType::Logs => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Logs(pdata_decoded)],
@@ -1887,7 +1981,7 @@ mod test {
                             }
                             SignalType::Metrics => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = MetricsData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Metrics(pdata_decoded)],
@@ -1896,7 +1990,7 @@ mod test {
                             }
                             SignalType::Traces => {
                                 let pdata: OtlpProtoBytes =
-                                    pdata.take_payload().try_into().unwrap();
+                                    pdata.take_payload().try_into_with_default().unwrap();
                                 let pdata_decoded = TracesData::decode(pdata.as_bytes()).unwrap();
                                 assert_equivalent(
                                     &[OtlpProtoMessage::Traces(pdata_decoded)],
@@ -1998,7 +2092,8 @@ mod test {
                     // ensure we got back all the signals we expected, from the correct servers.
 
                     let mut pdata = logs_pdata_rx.recv().await.unwrap();
-                    let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into().unwrap();
+                    let otlp_bytes: OtlpProtoBytes =
+                        pdata.take_payload().try_into_with_default().unwrap();
                     let pdata_decoded = LogsData::decode(otlp_bytes.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Logs(pdata_decoded)],
@@ -2006,7 +2101,8 @@ mod test {
                     );
 
                     let mut pdata = metrics_pdata_rx.recv().await.unwrap();
-                    let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into().unwrap();
+                    let otlp_bytes: OtlpProtoBytes =
+                        pdata.take_payload().try_into_with_default().unwrap();
                     let pdata_decoded = MetricsData::decode(otlp_bytes.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Metrics(pdata_decoded)],
@@ -2014,7 +2110,8 @@ mod test {
                     );
 
                     let mut pdata = traces_pdata_rx.recv().await.unwrap();
-                    let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into().unwrap();
+                    let otlp_bytes: OtlpProtoBytes =
+                        pdata.take_payload().try_into_with_default().unwrap();
                     let pdata_decoded = TracesData::decode(otlp_bytes.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Traces(pdata_decoded)],
@@ -2078,18 +2175,26 @@ mod test {
 
                     let num_expected_pdatas = 1;
                     let mut pdatas_received = Vec::new();
-                    while let Some(pdata) = pdata_rx.recv().await {
-                        pdatas_received.push(pdata);
-                        if pdatas_received.len() >= num_expected_pdatas {
-                            break;
+                    let recv_deadline = tokio::time::timeout(Duration::from_secs(10), async {
+                        while let Some(pdata) = pdata_rx.recv().await {
+                            pdatas_received.push(pdata);
+                            if pdatas_received.len() >= num_expected_pdatas {
+                                break;
+                            }
                         }
-                    }
+                    });
+                    recv_deadline.await.expect(
+                        "timed out waiting for server to receive pdata; \
+                         server may not have been ready in time",
+                    );
 
                     server_cancellation_token.cancel();
 
                     // assert the pdata sent was the pdata received
-                    let pdata: OtlpProtoBytes =
-                        pdatas_received[0].take_payload().try_into().unwrap();
+                    let pdata: OtlpProtoBytes = pdatas_received[0]
+                        .take_payload()
+                        .try_into_with_default()
+                        .unwrap();
                     let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
                     assert_equivalent(
                         &[OtlpProtoMessage::Logs(pdata_decoded)],
@@ -2809,5 +2914,190 @@ mod test {
                     )
                 })
             });
+    }
+
+    /// Captured snapshot of a single HTTP request received by the compression test server.
+    #[derive(Debug)]
+    struct CapturedRequest {
+        content_encoding: Option<String>,
+        body: Vec<u8>,
+    }
+
+    fn decode_with(encoding: Option<&str>, body: &[u8]) -> Vec<u8> {
+        use std::io::Read;
+        match encoding {
+            None => body.to_vec(),
+            Some("gzip") => {
+                let mut out = Vec::new();
+                _ = flate2::read::GzDecoder::new(body)
+                    .read_to_end(&mut out)
+                    .unwrap();
+                out
+            }
+            Some("deflate") => {
+                // Match the OTLP/HTTP receiver: zlib-wrapped DEFLATE, not raw.
+                let mut out = Vec::new();
+                _ = flate2::read::ZlibDecoder::new(body)
+                    .read_to_end(&mut out)
+                    .unwrap();
+                out
+            }
+            Some("zstd") => {
+                let mut out = Vec::new();
+                zstd::stream::copy_decode(body, &mut out).unwrap();
+                out
+            }
+            Some(other) => panic!("unexpected content-encoding: {other}"),
+        }
+    }
+
+    fn run_compression_round_trip(
+        compression: Option<otap_df_otap::compression::CompressionMethod>,
+        expected_encoding: Option<&'static str>,
+    ) {
+        let port = pick_unused_port().unwrap();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let mut config = default_test_config(endpoint);
+        config.http.compression = compression;
+
+        let tokio_rt = Runtime::new().unwrap();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (_, exporter) = setup_exporter(&test_runtime, config);
+
+        // Bind the capture server. We do not use the run_capture_server helper above
+        // because we need to hand the precise bound address to the wait_for_port_ready
+        // helper - simpler to inline.
+        let (tx, mut captured_rx) = tokio::sync::mpsc::channel::<CapturedRequest>(8);
+        let server_cancellation_token = CancellationToken::new();
+        let server_cancellation_token2 = server_cancellation_token.clone();
+        let bind_addr = endpoint_addr.clone();
+        _ = tokio_rt.spawn(async move {
+            use http_body_util::BodyExt;
+            let listener = tokio::net::TcpListener::bind(bind_addr).await.unwrap();
+            let tracker = TaskTracker::new();
+            loop {
+                tokio::select! {
+                    _ = server_cancellation_token.cancelled() => break,
+                    accept_result = listener.accept() => {
+                        let (stream, _peer_addr) = accept_result.unwrap();
+                        let shutdown_token = server_cancellation_token.clone();
+                        let tx = tx.clone();
+                        drop(tracker.spawn(async move {
+                            let io = TokioIo::new(stream);
+                            let conn = http1::Builder::new().serve_connection(io, service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                                let tx = tx.clone();
+                                async move {
+                                    let content_encoding = req
+                                        .headers()
+                                        .get(http::header::CONTENT_ENCODING)
+                                        .and_then(|v| v.to_str().ok())
+                                        .map(|s| s.to_string());
+                                    let body_bytes = req.into_body().collect().await.unwrap().to_bytes();
+                                    _ = tx.send(CapturedRequest {
+                                        content_encoding,
+                                        body: body_bytes.to_vec(),
+                                    }).await;
+
+                                    let resp = ExportLogsServiceResponse::default();
+                                    let mut body = Vec::new();
+                                    resp.encode(&mut body).unwrap();
+                                    Ok::<_, hyper::Error>(Response::builder()
+                                        .status(200)
+                                        .body(Full::new(Bytes::from(body)))
+                                        .unwrap())
+                                }
+                            }));
+                            let mut conn = std::pin::pin!(conn);
+                            tokio::select! {
+                                _ = shutdown_token.cancelled() => {
+                                    conn.as_mut().graceful_shutdown();
+                                    let _ = conn.await;
+                                }
+                                conn_result = &mut conn => {
+                                    if let Err(e) = conn_result {
+                                        eprintln!("capture server error: {e}");
+                                    }
+                                }
+                            }
+                        }));
+                    }
+                }
+            }
+            let _ = tracker.close();
+        });
+        wait_for_port_ready(&endpoint_addr);
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
+        ))];
+        let pdatas = subscribe_pdatas(pdatas, false);
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(500), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|_ctx, result| {
+                Box::pin(async move {
+                    result.unwrap();
+                    let captured = captured_rx.recv().await.expect("no request captured");
+                    assert_eq!(
+                        captured.content_encoding.as_deref(),
+                        expected_encoding,
+                        "unexpected content-encoding header"
+                    );
+                    let decoded = decode_with(captured.content_encoding.as_deref(), &captured.body);
+                    let decoded_req = otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest::decode(decoded.as_slice())
+                        .expect("body did not decode as ExportLogsServiceRequest");
+                    let received_logs = LogsData {
+                        resource_logs: decoded_req.resource_logs,
+                    };
+                    assert_equivalent(
+                        &[OtlpProtoMessage::Logs(received_logs)],
+                        &[OtlpProtoMessage::Logs(logs_batch.clone())],
+                    );
+
+                    server_cancellation_token2.cancel();
+                })
+            });
+    }
+
+    #[test]
+    fn test_export_with_gzip_compression() {
+        run_compression_round_trip(
+            Some(otap_df_otap::compression::CompressionMethod::Gzip),
+            Some("gzip"),
+        );
+    }
+
+    #[test]
+    fn test_export_with_zstd_compression() {
+        run_compression_round_trip(
+            Some(otap_df_otap::compression::CompressionMethod::Zstd),
+            Some("zstd"),
+        );
+    }
+
+    #[test]
+    fn test_export_with_deflate_compression() {
+        run_compression_round_trip(
+            Some(otap_df_otap::compression::CompressionMethod::Deflate),
+            Some("deflate"),
+        );
+    }
+
+    #[test]
+    fn test_export_without_compression_omits_content_encoding() {
+        run_compression_round_trip(None, None);
     }
 }

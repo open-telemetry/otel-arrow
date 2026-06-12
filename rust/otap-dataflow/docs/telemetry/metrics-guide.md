@@ -68,9 +68,9 @@ they aggregate differently.
   summing deltas over time.
 
 In this project, ObserveUpDownCounter is used for observed totals like
-`otelcol.pipeline.metrics.memory_usage` and
+`otelcol.pipeline.memory_usage` and
 `otelcol.tokio.runtime.task_active_count`, while Gauge is used for instantaneous
-values like `otelcol.pipeline.metrics.cpu_utilization` and
+values like `otelcol.pipeline.cpu_utilization` and
 `channel.receiver.capacity`.
 
 Guideline:

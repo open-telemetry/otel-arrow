@@ -7,7 +7,7 @@
 # with the arrow enabled go collector build files in the repo root, the image
 # must be built with additional --build-context flags as follows:
 # docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
-FROM --platform=$BUILDPLATFORM docker.io/rust:1.95@sha256:4a7e3a0c309c9bab658e469f842711bd595fae484936bc5d605e08ca0c631bf4 AS dataflow-build
+FROM --platform=$BUILDPLATFORM docker.io/rust:1.96@sha256:fb328f0f58becb23ba1719940a2c94ece8b0b48afa837d05b79ef64bc1e18f6e AS dataflow-build
 WORKDIR /build/rust/dataflow
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
@@ -37,21 +37,11 @@ ENV FEATURES=${FEATURES}
 # Build dataflow engine
 RUN ./cross-arch-build.sh
 
-# The runtime image
-FROM docker.io/alpine:3.23@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
+# Runtime image
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e1fd250ce83d94603e9887ec991156a6c26905a6b0001039b7a43699018c0733
 LABEL maintainer="The OpenTelemetry Authors"
 
-# Passing --build-arg BUILD=1 adds additional debugging features to the image.
-ARG DEBUG="0"
-RUN if [ "$DEBUG" = "1" ]; then apk add --no-cache gdb; fi
-
-RUN addgroup dataflow \
-  && adduser \
-  --ingroup dataflow \
-  --disabled-password \
-  dataflow
-WORKDIR /home/dataflow
-
-COPY --from=dataflow-build --chown=dataflow:dataflow /build/rust/dataflow/df_engine .
-USER dataflow
-ENTRYPOINT ["/home/dataflow/df_engine"]
+WORKDIR /home/nonroot
+COPY --from=dataflow-build --chown=nonroot:nonroot /build/rust/dataflow/df_engine .
+USER nonroot
+ENTRYPOINT ["/home/nonroot/df_engine"]

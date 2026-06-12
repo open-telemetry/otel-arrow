@@ -1,0 +1,81 @@
+# Passthrough test OTAP variant (no processor in middle)
+# NUMA-aware layout: SUT on NUMA node 0, loadgen+backend on NUMA node 1
+# Uses more loadgen/backend cores than OTLP variant since OTAP is much faster.
+name: Continuous - Passthrough OTAP
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8085:8080"
+        volumes:
+          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "32-39"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 8
+      prometheus:
+        endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
+  df-engine:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8086:8080"
+        volumes:
+          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "0-0"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8086/api/v1/telemetry/metrics?format=prometheus&reset=false
+  backend-service:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8087:8080"
+        volumes:
+          - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "40-43"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 4
+      prometheus:
+        endpoint: http://localhost:8087/api/v1/telemetry/metrics?format=prometheus&reset=false
+
+tests:
+  - name: OTAP-OTAP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: continuous_passthrough
+        engine_config_template: test_suites/integration/templates/configs/engine/passthrough/otap-otap.yaml.j2
+        loadgen_exporter_type: otap
+        backend_receiver_type: otap
+        observation_interval: 60
+        signals_per_second: null
+        max_batch_size: 512

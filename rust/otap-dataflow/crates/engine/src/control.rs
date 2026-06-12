@@ -607,6 +607,12 @@ impl<PData> ControlSenders<PData> {
             .collect()
     }
 
+    /// Returns all registered node ids.
+    #[must_use]
+    pub fn node_ids(&self) -> Vec<usize> {
+        self.senders.keys().copied().collect()
+    }
+
     /// Returns the registered non-receiver ids.
     #[must_use]
     pub fn non_receiver_ids(&self) -> Vec<usize> {
@@ -783,10 +789,8 @@ impl ExtensionControlMsg {
 ///
 /// Stored separately from [`ControlSenders`] because extensions use
 /// [`ExtensionControlMsg`] (PData-free) rather than [`NodeControlMsg<PData>`].
+#[derive(Clone)]
 pub struct ExtensionControlSender {
-    /// Unique identifier of the extension.
-    #[allow(dead_code)] // Used by runtime pipeline in a follow-up PR.
-    pub(crate) name: otap_df_config::ExtensionId,
     /// The control message sender for the extension.
     pub(crate) sender: Sender<ExtensionControlMsg>,
 }
@@ -803,6 +807,36 @@ impl ExtensionControlSender {
     ) -> Result<(), SendError<ExtensionControlMsg>> {
         self.sender.send(msg).await
     }
+}
+
+/// Payload delivered on an extension's dedicated shutdown channel.
+///
+/// Decoupled from [`ExtensionControlMsg::Shutdown`] so it can travel on
+/// a priority oneshot path (see [`ExtensionShutdownChannel`]) while the
+/// extension's `recv()` API still surfaces it as the same
+/// `ExtensionControlMsg::Shutdown` variant downstream code matches on.
+#[derive(Debug, Clone)]
+pub struct ShutdownPayload {
+    /// Deadline by which the extension is expected to finish shutting down.
+    pub deadline: Instant,
+    /// Human-readable reason for the shutdown.
+    pub reason: String,
+}
+
+/// Owning, single-use sender for an extension's dedicated shutdown
+/// channel.
+///
+/// Modelled as a [`tokio::sync::oneshot::Sender`] so the type system
+/// enforces that `Shutdown` can be broadcast at most once per
+/// extension. Held only by [`crate::extension_lifecycle::ExtensionLifecycle`];
+/// the monitor's `CollectTelemetry` path uses the cloneable
+/// [`ExtensionControlSender`] on the regular control channel instead.
+pub(crate) struct ExtensionShutdownChannel {
+    /// Unique identifier of the extension (used for diagnostic logs).
+    pub(crate) name: otap_df_config::ExtensionId,
+    /// The shutdown signal sender. Consuming the sender on `send` is
+    /// the type-level expression of "shutdown is a one-shot event".
+    pub(crate) sender: tokio::sync::oneshot::Sender<ShutdownPayload>,
 }
 
 #[cfg(test)]

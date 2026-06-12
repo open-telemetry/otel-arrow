@@ -1,0 +1,9 @@
+groups:
+  - id: event.otap.otlp.exporter.http.export_error
+    type: event
+    name: otlp.exporter.http.export_error
+    stability: development
+    brief: >
+      Emitted by the OTLP gRPC exporter when an export request to its
+      configured endpoint fails (e.g. the endpoint is unreachable or
+      returns a non-success status).

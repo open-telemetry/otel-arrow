@@ -1,0 +1,86 @@
+# Single-core saturation test: measures maximum throughput per core
+# Uses semantic_conventions (~300 byte logs) -- same payload as other benchmarks
+# for direct comparability. Loadgen is unleashed (no rate cap) with enough cores
+# to fully saturate the single SUT core.
+#
+# NUMA-aware layout: SUT on NUMA node 0, loadgen+backend on NUMA node 1
+# Layout: SUT=1 core, Backend=2 cores, Loadgen=4 cores (7 total)
+name: Continuous - Saturation - Max Throughput
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8085:8080"
+        volumes:
+          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "32-35"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 4
+      prometheus:
+        endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
+  df-engine:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8086:8080"
+        volumes:
+          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "0-0"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8086/api/v1/telemetry/metrics?format=prometheus&reset=false
+  backend-service:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8087:8080"
+        volumes:
+          - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "36-37"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 2
+      prometheus:
+        endpoint: http://localhost:8087/api/v1/telemetry/metrics?format=prometheus&reset=false
+
+tests:
+  - name: OTLP-ATTR-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: "continuous_saturation_max_throughput_otlp"
+        engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otlp.yaml.j2
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otlp
+        observation_interval: 60
+        signals_per_second: null
+        max_batch_size: 512
+        num_connections: 4

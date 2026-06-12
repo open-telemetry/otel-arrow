@@ -69,7 +69,7 @@ export function updateNodeSeries({
       if (
         set.name === "channel.sender" ||
         set.name === "channel.receiver" ||
-        set.name === "pipeline.metrics" ||
+        set.name === "pipeline" ||
         set.name === "tokio.runtime"
       ) {
         return;
