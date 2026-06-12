@@ -1960,11 +1960,17 @@ mod tests {
                     Err(_) => panic!("Timed out waiting for node2 timer tick at 60ms"),
                 }
                 assert!(
-                    receiver1.try_recv().is_err(),
+                    matches!(
+                        receiver1.try_recv(),
+                        Err(otap_df_channel::error::RecvError::Empty)
+                    ),
                     "node1 (120ms) must not fire at 60ms"
                 );
                 assert!(
-                    receiver3.try_recv().is_err(),
+                    matches!(
+                        receiver3.try_recv(),
+                        Err(otap_df_channel::error::RecvError::Empty)
+                    ),
                     "node3 (90ms) must not fire at 60ms"
                 );
 
@@ -1978,7 +1984,10 @@ mod tests {
                     Err(_) => panic!("Timed out waiting for node3 timer tick at 90ms"),
                 }
                 assert!(
-                    receiver1.try_recv().is_err(),
+                    matches!(
+                        receiver1.try_recv(),
+                        Err(otap_df_channel::error::RecvError::Empty)
+                    ),
                     "node1 (120ms) must not fire at 90ms"
                 );
 
