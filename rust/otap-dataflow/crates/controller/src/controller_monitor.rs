@@ -2,6 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Built-in read-only controller monitor extension.
+//!
+//! This extension is a small reference implementation for controller-level
+//! extension hooks and a useful default monitor for the stock `df_engine`
+//! binary. It is enabled only when declared under `engine.extensions` with the
+//! [`CONTROLLER_MONITOR_EXTENSION_URN`] type.
+//!
+//! The monitor periodically reads the shared observed-state handle and
+//! telemetry registry exposed through [`ControllerExtensionContext`]. It reports
+//! aggregate controller gauges under the `controller.monitor` metric set and,
+//! when configured, emits compact internal snapshot logs.
+//!
+//! The extension is intentionally non-mutating: it does not invoke rollout,
+//! shutdown, or reconfiguration operations on the control-plane handle. It exits
+//! through the standard controller extension cancellation token during engine
+//! shutdown.
 
 use crate::{
     ControllerExtensionContext, ControllerExtensionError, ControllerExtensionRegistry,

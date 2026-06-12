@@ -106,6 +106,11 @@ pub struct EngineConfig {
 #[serde(transparent)]
 pub struct EngineExtensions(HashMap<ExtensionId, Arc<ExtensionUserConfig>>);
 
+// Keep a custom deserializer instead of deriving `Deserialize` so YAML/JSON
+// bootstrap configs get the same duplicate-key protection as pipeline-level
+// extension maps. The inner storage uses `Arc<ExtensionUserConfig>` so
+// controller extensions can share the parsed config envelope without cloning
+// potentially large opaque payloads.
 impl<'de> Deserialize<'de> for EngineExtensions {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
