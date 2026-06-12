@@ -26,6 +26,7 @@ use crate::{
 };
 use async_trait::async_trait;
 pub use channel_metrics::RequestOutcome;
+use context::ExtensionContext;
 use context::NodeNameIndex;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
@@ -257,6 +258,7 @@ pub struct ExtensionFactory {
     pub capabilities: Option<capability::ExtensionCapabilities>,
     /// A function that creates a new extension instance.
     pub create: fn(
+        ext_ctx: &ExtensionContext,
         name: otap_df_config::ExtensionId,
         ext_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
         extension_config: &ExtensionConfig,
@@ -832,10 +834,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 ext_id.clone(),
                 channel_capacity_policy.control.node,
             );
-            let bundle = (factory.create)(ext_id.clone(), ext_user_config.clone(), &runtime_config)
-                .map_err(|e| Error::ConfigError(Box::new(e)))?;
-            let mut bundle = bundle;
             let ext_ctx = pipeline_ctx.extension_context();
+            let bundle = (factory.create)(
+                &ext_ctx,
+                ext_id.clone(),
+                ext_user_config.clone(),
+                &runtime_config,
+            )
+            .map_err(|e| Error::ConfigError(Box::new(e)))?;
+            let mut bundle = bundle;
             let entity_keys = bundle.wire_telemetry(
                 ext_id.clone(),
                 &ext_ctx,
@@ -2660,6 +2667,7 @@ mod test {
     #[test]
     fn test_extension_factory_named_factory() {
         fn dummy_create(
+            _: &ExtensionContext,
             _: otap_df_config::ExtensionId,
             _: Arc<otap_df_config::extension::ExtensionUserConfig>,
             _: &ExtensionConfig,
@@ -2699,6 +2707,7 @@ mod test {
     #[test]
     fn test_extension_factory_validate_config() {
         fn dummy_create(
+            _: &ExtensionContext,
             _: otap_df_config::ExtensionId,
             _: Arc<otap_df_config::extension::ExtensionUserConfig>,
             _: &ExtensionConfig,

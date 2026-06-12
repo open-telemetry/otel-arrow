@@ -37,7 +37,7 @@ use otap_df_engine::ExtensionFactory;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::capability::registry::Capabilities;
 use otap_df_engine::config::{ExporterConfig, ExtensionConfig, ReceiverConfig};
-use otap_df_engine::context::{ControllerContext, PipelineContext};
+use otap_df_engine::context::{ControllerContext, ExtensionContext, PipelineContext};
 use otap_df_engine::control::{
     ExtensionControlMsg, RuntimeControlMsg, pipeline_completion_msg_channel,
     runtime_ctrl_msg_channel,
@@ -561,6 +561,7 @@ impl LocalNoOpStateless for NoOpStatelessImplLocal {
 // ─────────────────────────────────────────────────────────────────────
 
 fn passive_extension_create(
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -593,6 +594,7 @@ const PASSIVE_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
 // ─────────────────────────────────────────────────────────────────────
 
 fn dual_extension_create(
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -700,6 +702,7 @@ fn lookup_active_ext_probe(key: &str) -> ActiveExtProbe {
 }
 
 fn active_extension_create(
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -795,6 +798,7 @@ const ACTIVE_SHARED_COUNTER_EXTENSION_URN: &str =
     "urn:test:extension:active_shared_counter_extension";
 
 fn active_shared_counter_extension_create(
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -870,6 +874,7 @@ impl otap_df_engine::shared::extension::Extension for FailingExtImpl {
 }
 
 fn failing_extension_create(
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -930,6 +935,7 @@ impl otap_df_engine::shared::extension::Extension for ImmediateOkExtImpl {
 }
 
 fn immediate_ok_extension_create(
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1031,6 +1037,7 @@ fn lookup_shutdown_recording_probe(key: &str) -> ShutdownRecordingProbe {
 }
 
 fn shutdown_recording_extension_create(
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1122,6 +1129,7 @@ impl otap_df_engine::local::extension::Extension for ActiveLocalExtImpl {
 const DUAL_ACTIVE_EXTENSION_URN: &str = "urn:test:extension:dual_active_extension";
 
 fn dual_active_extension_create(
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1235,6 +1243,7 @@ fn lookup_background_probe(key: &str) -> BackgroundProbe {
 }
 
 fn background_extension_create(
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1354,6 +1363,7 @@ fn lookup_shared_counter_probe(key: &str) -> SharedCounterProbe {
 }
 
 fn shared_counter_extension_create(
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1402,6 +1412,7 @@ const SHARED_COUNTER_SHARED_EXTENSION_URN: &str =
     "urn:test:extension:shared_counter_shared_extension";
 
 fn shared_counter_shared_extension_create(
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1495,6 +1506,7 @@ fn lookup_constructed_probe(key: &str) -> ConstructedProbe {
 }
 
 fn constructed_extension_create(
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1571,6 +1583,7 @@ impl LocalNoOpStateful for RcCounterImpl {
 const RC_COUNTER_EXTENSION_URN: &str = "urn:test:extension:rc_counter_extension";
 
 fn rc_counter_extension_create(
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
