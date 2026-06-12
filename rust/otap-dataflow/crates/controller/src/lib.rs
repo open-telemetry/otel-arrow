@@ -2333,6 +2333,11 @@ mod tests {
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResourcesPolicy};
     use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
+    use otap_df_telemetry::testing::EmptyAttributes;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
@@ -2369,6 +2374,28 @@ connections:
 "#,
         )
         .expect("minimal test pipeline config should parse")
+    }
+
+    fn empty_pipeline_factory() -> &'static PipelineFactory<()> {
+        Box::leak(Box::new(PipelineFactory::new(&[], &[], &[], &[])))
+    }
+
+    fn demo_extension_engine_config() -> OtelDataflowSpec {
+        OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:0"
+  extensions:
+    demo_controller:
+      type: "urn:test:extension:demo_controller"
+      config:
+        greeting: "hello"
+groups: {}
+"#,
+        )
+        .expect("demo extension config should parse")
     }
 
     fn resolved_pipeline_with_core_allocation(
@@ -2451,6 +2478,97 @@ connections:
             .map(|c| c.id)
             .collect();
         assert_eq!(to_ids(&result), expected_ids);
+    }
+
+    #[test]
+    fn controller_extension_receives_context_and_stops_on_shutdown() {
+        let factory_called = Arc::new(AtomicBool::new(false));
+        let task_started = Arc::new(AtomicBool::new(false));
+        let task_stopped = Arc::new(AtomicBool::new(false));
+
+        let mut registry = ControllerExtensionRegistry::default();
+        registry.register("urn:test:extension:demo_controller".into(), {
+            let factory_called = Arc::clone(&factory_called);
+            let task_started = Arc::clone(&task_started);
+            let task_stopped = Arc::clone(&task_stopped);
+            move |context| {
+                factory_called.store(true, Ordering::SeqCst);
+                assert_eq!(context.extension_id.as_ref(), "demo_controller");
+                assert_eq!(
+                    context.extension.r#type.as_str(),
+                    "urn:test:extension:demo_controller"
+                );
+                assert_eq!(context.extension.config["greeting"], "hello");
+                assert!(context.engine_config.groups.is_empty());
+
+                let entity_key = context
+                    .telemetry_registry
+                    .register_entity(EmptyAttributes());
+                let has_extension_entity = context
+                    .telemetry_registry
+                    .visit_entity(entity_key, |attrs| attrs.schema_name() == "empty_metrics")
+                    .unwrap_or(false);
+                assert!(has_extension_entity);
+
+                assert!(context.observed_state.snapshot().is_empty());
+                assert!(
+                    matches!(
+                        context
+                            .control_plane
+                            .pipeline_details("missing", "pipeline"),
+                        Err(otap_df_admin::ControlPlaneError::GroupNotFound)
+                    ),
+                    "extension should be able to use the control-plane handle"
+                );
+
+                let task_started = Arc::clone(&task_started);
+                let task_stopped = Arc::clone(&task_stopped);
+                Ok(Box::new(move |cancellation_token| {
+                    Box::pin(async move {
+                        task_started.store(true, Ordering::SeqCst);
+                        cancellation_token.cancelled().await;
+                        task_stopped.store(true, Ordering::SeqCst);
+                        Ok(())
+                    })
+                }))
+            }
+        });
+
+        let controller = Controller::new(empty_pipeline_factory());
+        controller
+            .run_till_shutdown_with_options(
+                demo_extension_engine_config(),
+                ControllerRunOptions {
+                    extensions: registry,
+                },
+            )
+            .expect("controller should run demo extension");
+
+        assert!(factory_called.load(Ordering::SeqCst));
+        assert!(task_started.load(Ordering::SeqCst));
+        assert!(task_stopped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn configured_controller_extension_requires_registered_factory() {
+        let controller = Controller::new(empty_pipeline_factory());
+        let err = controller
+            .run_till_shutdown_with_options(
+                demo_extension_engine_config(),
+                ControllerRunOptions::default(),
+            )
+            .expect_err("missing controller extension factory should fail startup");
+
+        match err {
+            Error::ControllerExtensionNotRegistered {
+                extension_id,
+                extension_type,
+            } => {
+                assert_eq!(extension_id, "demo_controller");
+                assert_eq!(extension_type, "urn:test:extension:demo_controller");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]
