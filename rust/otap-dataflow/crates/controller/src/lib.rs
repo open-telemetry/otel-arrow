@@ -2177,11 +2177,6 @@ mod tests {
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResourcesPolicy};
     use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
-    use std::sync::mpsc;
-    use std::thread;
-    use std::time::Duration;
-
-    static EMPTY_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(&[], &[], &[], &[]);
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
@@ -2218,19 +2213,6 @@ connections:
 "#,
         )
         .expect("minimal test pipeline config should parse")
-    }
-
-    fn observer_test_engine_config() -> OtelDataflowSpec {
-        OtelDataflowSpec::from_yaml(
-            r#"
-version: otel_dataflow/v1
-engine:
-  http_admin:
-    bind_address: "127.0.0.1:0"
-groups: {}
-"#,
-        )
-        .expect("observer test config should parse")
     }
 
     fn resolved_pipeline_with_core_allocation(
@@ -3414,96 +3396,5 @@ groups:
             }
         }
         assert_eq!(broadcast_messages, 1);
-    }
-
-    #[test]
-    fn run_till_shutdown_with_context_observer_invokes_callback() {
-        let controller = Controller::new(&EMPTY_TEST_PIPELINE_FACTORY);
-        let (tx, rx) = mpsc::channel();
-
-        controller
-            .run_till_shutdown_with_context_observer(observer_test_engine_config(), move |ctx| {
-                tx.send((
-                    ctx.state_handle().snapshot().len(),
-                    ctx.telemetry_handle().metric_set_count(),
-                    ctx.telemetry_handle().entity_count(),
-                ))
-                .expect("observer callback should report context state");
-            })
-            .expect("controller should stop cleanly without pipelines");
-
-        assert_eq!(rx.recv().expect("observer callback should run"), (0, 0, 0));
-    }
-
-    #[test]
-    fn run_forever_with_context_observer_invokes_callback() {
-        let (ready_tx, ready_rx) = mpsc::channel();
-
-        let handle = thread::spawn(move || {
-            let controller = Controller::new(&EMPTY_TEST_PIPELINE_FACTORY);
-            controller
-                .run_forever_with_context_observer(observer_test_engine_config(), move |ctx| {
-                    ready_tx
-                        .send((
-                            ctx.state_handle().snapshot().len(),
-                            ctx.telemetry_handle().metric_set_count(),
-                        ))
-                        .expect("observer callback should report parked thread state");
-                })
-                .expect("controller should stop cleanly after unpark");
-        });
-
-            let (pipeline_count, metric_sets) = ready_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("observer callback should run");
-        assert_eq!(pipeline_count, 0);
-        assert_eq!(metric_sets, 0);
-            handle.thread().unpark();
-        handle
-            .join()
-            .expect("run_forever observer thread should join cleanly");
-    }
-
-    #[test]
-    fn run_till_shutdown_with_observer_invokes_callback() {
-        let controller = Controller::new(&EMPTY_TEST_PIPELINE_FACTORY);
-        let (tx, rx) = mpsc::channel();
-
-        #[allow(deprecated)]
-        controller
-            .run_till_shutdown_with_observer(observer_test_engine_config(), move |state| {
-                tx.send(state.snapshot().len())
-                    .expect("observer callback should report observed state");
-            })
-            .expect("controller should stop cleanly without pipelines");
-
-        assert_eq!(rx.recv().expect("observer callback should run"), 0);
-    }
-
-    #[test]
-    fn run_forever_with_observer_invokes_callback() {
-        let (ready_tx, ready_rx) = mpsc::channel();
-
-        let handle = thread::spawn(move || {
-            let controller = Controller::new(&EMPTY_TEST_PIPELINE_FACTORY);
-
-            #[allow(deprecated)]
-            controller
-                .run_forever_with_observer(observer_test_engine_config(), move |state| {
-                    ready_tx
-                        .send(state.snapshot().len())
-                        .expect("observer callback should report parked observed state");
-                })
-                .expect("controller should stop cleanly after unpark");
-        });
-
-        let pipeline_count = ready_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("observer callback should run");
-        assert_eq!(pipeline_count, 0);
-        handle.thread().unpark();
-        handle
-            .join()
-            .expect("run_forever observer thread should join cleanly");
     }
 }
