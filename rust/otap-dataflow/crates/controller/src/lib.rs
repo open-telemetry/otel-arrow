@@ -1805,7 +1805,14 @@ impl<
     ) -> Result<Vec<PreparedControllerExtension>, Error> {
         let mut prepared_extensions =
             Vec::with_capacity(engine_config.engine.controller.extensions.len());
-        for (extension_id, extension) in engine_config.engine.controller.extensions.iter() {
+        // ControllerExtensions stores entries in a HashMap. Sort by extension
+        // ID so startup order is stable across runs and platforms.
+        let mut configured_extensions: Vec<_> =
+            engine_config.engine.controller.extensions.iter().collect();
+        configured_extensions
+            .sort_by(|(left_id, _), (right_id, _)| left_id.as_ref().cmp(right_id.as_ref()));
+
+        for (extension_id, extension) in configured_extensions {
             let extension_type = extension.r#type.clone();
             let factory = options.extensions.get(&extension_type).ok_or_else(|| {
                 Error::ControllerExtensionNotRegistered {
@@ -2579,6 +2586,26 @@ groups:
         .expect("controller extension config should parse")
     }
 
+    fn controller_extensions_engine_config(extension_type: &str) -> OtelDataflowSpec {
+        OtelDataflowSpec::from_yaml(&format!(
+            r#"
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:0"
+  controller:
+    extensions:
+      beta:
+        type: "{}"
+      alpha:
+        type: "{}"
+groups: {{}}
+        "#,
+            extension_type, extension_type
+        ))
+        .expect("controller extension config should parse")
+    }
+
     fn resolved_pipeline_with_core_allocation(
         pipeline_group_id: &str,
         pipeline_id: &str,
@@ -2702,6 +2729,43 @@ groups:
             .expect("extension factory should be registered");
         (factory.validate_config)(&serde_json::json!({ "accepted_by_latest": true }))
             .expect("duplicate registration should keep the latest factory");
+    }
+
+    #[test]
+    fn controller_extensions_start_in_extension_id_order() {
+        const ORDERED_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:ordered";
+
+        let observed_order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_order_for_factory = Arc::clone(&observed_order);
+        let mut registry = ControllerExtensionRegistry::empty();
+        registry.register(
+            ORDERED_CONTROLLER_EXTENSION_URN.into(),
+            move |context| {
+                observed_order_for_factory
+                    .lock()
+                    .expect("observed order mutex should not be poisoned")
+                    .push(context.extension_id.to_string());
+                Ok(Box::new(|_cancellation_token| Box::pin(async { Ok(()) })))
+            },
+            otap_df_config::validation::no_config,
+        );
+
+        let controller = Controller::new(empty_pipeline_factory());
+        controller
+            .run_till_shutdown_with_options(
+                controller_extensions_engine_config(ORDERED_CONTROLLER_EXTENSION_URN),
+                ControllerRunOptions {
+                    extensions: registry,
+                },
+            )
+            .expect("controller should run ordered test extensions");
+
+        assert_eq!(
+            *observed_order
+                .lock()
+                .expect("observed order mutex should not be poisoned"),
+            vec!["alpha".to_owned(), "beta".to_owned()]
+        );
     }
 
     #[test]
