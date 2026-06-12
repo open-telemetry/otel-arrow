@@ -1902,12 +1902,14 @@ mod tests {
     /// 1. Timers are registered in non-chronological order
     /// 2. They fire in chronological order (shortest duration first)
     /// 3. This tests the BinaryHeap priority queue implementation
-    /// 4. Uses select! to handle timers in any order while validating proper sequencing
+    /// 4. Uses SimClock to avoid wall-clock jitter in CI
     #[tokio::test]
     async fn test_run_timer_ordering_integration() {
         let local = LocalSet::new();
 
         local.run_until(async {
+            let clock = clock::SimClock::new();
+            let _clock_guard = clock.install();
             let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
                 setup_test_manager::<()>();
 
@@ -1943,84 +1945,49 @@ mod tests {
             let mut receiver2 = control_receivers.remove(&node2.index).unwrap();
             let mut receiver3 = control_receivers.remove(&node3.index).unwrap();
 
-            // Track which timers have fired and in what order
-            let mut node1_received = false;
-            let mut node2_received = false;
-            let mut node3_received = false;
+            // Let the manager ingest StartTimer messages before advancing the simulated clock.
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+
             let mut firing_order = Vec::new();
-            let start_time = Instant::now();
 
-            // Use select! to handle whichever timer fires first, validating the order
-            while (!node1_received || !node2_received || !node3_received) && start_time.elapsed() < Duration::from_millis(400) {
-                tokio::select! {
-                    // Node1 timer tick (120ms - should be last)
-                    result1 = receiver1.recv(), if !node1_received => {
-                        match result1 {
-                            Ok(NodeControlMsg::TimerTick {}) => {
-                                node1_received = true;
-                                firing_order.push((node1.index, start_time.elapsed()));
-                                // Verify node1 fired within expected timeframe (should be ~120ms)
-                                let elapsed = start_time.elapsed();
-                                assert!(elapsed >= Duration::from_millis(100) && elapsed <= Duration::from_millis(180),
-                                       "Node1 timer should fire around 120ms, but fired after {elapsed:?}");
-                            }
-                            Ok(other) => panic!("Expected TimerTick for node1, got {other:?}"),
-                            Err(e) => panic!("Failed to receive message for node1: {e:?}"),
-                        }
-                    }
+            // Advance to 60ms: only node2 (60ms timer) should fire.
+            clock.advance(Duration::from_millis(60));
+            tokio::task::yield_now().await;
+            match timeout(Duration::from_secs(1), async { receiver2.recv().await }).await {
+                Ok(Ok(NodeControlMsg::TimerTick {})) => firing_order.push(node2.index),
+                Ok(Ok(other)) => panic!("Expected TimerTick for node2, got {other:?}"),
+                Ok(Err(e)) => panic!("Failed to receive message for node2: {e:?}"),
+                Err(_) => panic!("Timed out waiting for node2 timer tick at 60ms"),
+            }
+            assert!(receiver1.try_recv().is_err(), "node1 (120ms) must not fire at 60ms");
+            assert!(receiver3.try_recv().is_err(), "node3 (90ms) must not fire at 60ms");
 
-                    // Node2 timer tick (60ms - should be first)
-                    result2 = receiver2.recv(), if !node2_received => {
-                        match result2 {
-                            Ok(NodeControlMsg::TimerTick {}) => {
-                                node2_received = true;
-                                firing_order.push((node2.index, start_time.elapsed()));
-                                // Verify node2 fired within expected timeframe (should be ~60ms)
-                                let elapsed = start_time.elapsed();
-                                assert!(elapsed >= Duration::from_millis(40) && elapsed <= Duration::from_millis(100),
-                                       "Node2 timer should fire around 60ms, but fired after {elapsed:?}");
-                            }
-                            Ok(other) => panic!("Expected TimerTick for node2, got {other:?}"),
-                            Err(e) => panic!("Failed to receive message for node2: {e:?}"),
-                        }
-                    }
+            // Advance to 90ms: only node3 (90ms timer) should fire.
+            clock.advance(Duration::from_millis(30));
+            tokio::task::yield_now().await;
+            match timeout(Duration::from_secs(1), async { receiver3.recv().await }).await {
+                Ok(Ok(NodeControlMsg::TimerTick {})) => firing_order.push(node3.index),
+                Ok(Ok(other)) => panic!("Expected TimerTick for node3, got {other:?}"),
+                Ok(Err(e)) => panic!("Failed to receive message for node3: {e:?}"),
+                Err(_) => panic!("Timed out waiting for node3 timer tick at 90ms"),
+            }
+            assert!(receiver1.try_recv().is_err(), "node1 (120ms) must not fire at 90ms");
 
-                    // Node3 timer tick (90ms - should be second)
-                    result3 = receiver3.recv(), if !node3_received => {
-                        match result3 {
-                            Ok(NodeControlMsg::TimerTick {}) => {
-                                node3_received = true;
-                                firing_order.push((node3.index, start_time.elapsed()));
-                                // Verify node3 fired within expected timeframe (should be ~90ms)
-                                let elapsed = start_time.elapsed();
-                                assert!(elapsed >= Duration::from_millis(70) && elapsed <= Duration::from_millis(130),
-                                       "Node3 timer should fire around 90ms, but fired after {elapsed:?}");
-                            }
-                            Ok(other) => panic!("Expected TimerTick for node3, got {other:?}"),
-                            Err(e) => panic!("Failed to receive message for node3: {e:?}"),
-                        }
-                    }
-
-                    // Timeout protection
-                    _ = tokio::time::sleep(Duration::from_millis(30)) => {
-                        // Continue the loop - this prevents infinite blocking
-                    }
-                }
+            // Advance to 120ms: node1 (120ms timer) should fire.
+            clock.advance(Duration::from_millis(30));
+            tokio::task::yield_now().await;
+            match timeout(Duration::from_secs(1), async { receiver1.recv().await }).await {
+                Ok(Ok(NodeControlMsg::TimerTick {})) => firing_order.push(node1.index),
+                Ok(Ok(other)) => panic!("Expected TimerTick for node1, got {other:?}"),
+                Ok(Err(e)) => panic!("Failed to receive message for node1: {e:?}"),
+                Err(_) => panic!("Timed out waiting for node1 timer tick at 120ms"),
             }
 
-            // Verify all timers fired
-            assert!(node1_received, "Node1 should have received TimerTick");
-            assert!(node2_received, "Node2 should have received TimerTick");
-            assert!(node3_received, "Node3 should have received TimerTick");
-
-            // Verify the firing order is correct (node2 first, node3 second, node1 third)
-            // Sort by elapsed time to get the actual firing order
-            firing_order.sort_by_key(|&(_, elapsed)| elapsed);
-
             assert_eq!(firing_order.len(), 3, "Should have received exactly 3 timer events");
-            assert_eq!(firing_order[0].0, node2.index, "Node2 (60ms) should fire first");
-            assert_eq!(firing_order[1].0, node3.index, "Node3 (90ms) should fire second");
-            assert_eq!(firing_order[2].0, node1.index, "Node1 (120ms) should fire third");
+            assert_eq!(firing_order[0], node2.index, "Node2 (60ms) should fire first");
+            assert_eq!(firing_order[1], node3.index, "Node3 (90ms) should fire second");
+            assert_eq!(firing_order[2], node1.index, "Node1 (120ms) should fire third");
 
             // Clean shutdown
             pipeline_tx.send(RuntimeControlMsg::Shutdown {
