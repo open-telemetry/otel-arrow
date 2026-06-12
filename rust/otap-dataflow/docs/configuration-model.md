@@ -343,7 +343,7 @@ Important behavior:
 - `telemetry`
 - `observed_state`
 - `observability`
-- `extensions`
+- `controller/extensions`
 - `custom`
 
 ### Engine Topic Settings
