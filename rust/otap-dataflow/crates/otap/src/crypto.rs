@@ -89,7 +89,15 @@ pub fn ensure_crypto_provider() {
             feature = "crypto-openssl"
         )))]
         {
-            let _ = rustls::crypto::ring::default_provider().install_default();
+            // `rustls::crypto::ring` only exists when the rustls `ring` feature is
+            // enabled. With no `crypto-*` feature selected, the only thing that
+            // turns it on is `test-utils`, so the ring fallback must be gated to
+            // match, otherwise a plain lib check (e.g. a dependent crate built
+            // without any crypto feature) fails with E0433.
+            #[cfg(feature = "test-utils")]
+            {
+                let _ = rustls::crypto::ring::default_provider().install_default();
+            }
         }
     });
 }
