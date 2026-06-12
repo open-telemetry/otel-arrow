@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781139050473,
+  "lastUpdate": 1781225487163,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -4999,6 +4999,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 111.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 98.72,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Gokhan Uslu",
+            "username": "gouslu",
+            "email": "geukhanuslu@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "877dd362a5547ce59c0243a1f0203cc85cd3d892",
+          "message": "feat(engine): Add extension lifecycle monitor + metrics, decouple from PipelineContext (#3143)\n\n## Change Summary\n\nAdds per-extension lifecycle telemetry and decouples the extension\nsubsystem\nfrom `PipelineContext` so extensions can be hosted at any scope.\n\n- **Scope-agnostic extensions.** New `ExtensionContext` carrying only\n  `ControllerContext`; `ExtensionFactory::create` no longer takes\n`PipelineContext`. `broadcast_shutdown` now takes a caller-supplied\nreason.\n- **Per-variant telemetry.** `ExtensionAttributeSet` gains\n`extension_variant` (`local` | `shared`); dual-variant extensions\nregister\ntwo distinct entities with independent `EntityTelemetryGuard` ownership\nso\n  dropping one variant only tears down its own entity tree.\n- **Per-scope attribution.** `ExtensionAttributeSet` carries a nested\n`ExtensionScopeAttributeSet` (today: `pipeline(group, pipeline_id, core,\nnum_cores)`) so the same extension `id+variant` hosted at different\nscopes\nmints distinct `EntityKey`s. Same shape will extend cleanly to\nengine/group\n  scopes.\n- **Channel attribute split.** `ChannelAttributeSet` split into\n`NodeChannelAttributeSet` and `ExtensionChannelAttributeSet`; fixes a\nleak\nwhere extension channel `MetricSet` keys were never tracked via the\nentity\n  handle.\n- **`ExtensionMetricsMonitor`.** New monitor wired into the lifecycle\npump\n  emits counters (`spawned` / `completed` / `shutdown_sent` / errors /\n  timeouts) and a state gauge per extension entity. Hardening:\n- `register()` is the single source of `spawned` credit — it\nsynchronously\nsets `state = Spawned` and increments the `spawned` counter, eliminating\n    a class of undercount bugs by construction (no transient pre-Spawned\n    state to drop events against).\n- `wait_all_spawned()` is preserved as a pure scheduling barrier so node\n    tasks cannot observe partially-initialized extensions.\n  - Biased `select!` ordering (started → completions → ticks); sticky-\n    terminal monotonic state machine; `mark_stragglers_as_timeout`\n    reconciles non-terminal entries at shutdown; `Drop`-time registry\n    unregister. Each scope owns its own monitor + lifecycle so ticks and\n    shutdowns never cross scopes.\n  - State gauge discriminants pinned (`Spawned=1, ShutdownSent=2,\nCompletedOk=3, Failed=4, TimedOut=5`) with `0` reserved as vacant for\n    dashboard compatibility; enforced by an exhaustive-match test that\n    fails to compile if a new variant is added without updating the\n    contract.\n\n## What issue does this PR close?\n\nCloses \"Per-extension lifecycle metrics.\" on Extension lifecycle\nfollow-ups\n#3039.\n\n## How are these changes tested?\n\n- ~30+ new unit tests across `extension/tests.rs`,\n`extension_lifecycle.rs`,\nand `extension_monitor.rs` covering per-variant isolation,\n`CollectTelemetry`\nround-trip and interval gating, `mark_stragglers_as_timeout`\nreconciliation,\nsticky-terminal `Completed`, state-gauge refresh, `Drop`-time\nunregister,\ncross-scope isolation (distinct scopes — pipelines / cores / groups\ntoday —\n  for both shutdown broadcast and collect-telemetry fanout), live\n  two-pipelines-through-shared-reporter, panicking `CollectTelemetry`\n  handler, snapshot-after-`Drop` identity, `wire_telemetry` dual\n  register/release cycle, `broadcast_shutdown` idempotency, passive\nextensions excluded from monitor, state-gauge integer encoding\nstability,\n  `try_send` failure non-skew, panic-before-`notify_started` surfaced\n  through `wait_all_spawned`, and structural invariants ensuring\n  `ShutdownSent` and fast completions never undercount `spawned`.\n- Existing extension lifecycle and `extension_e2e` integration tests\n  updated and passing.\n- `cargo test -p otap-df-engine` green (446 lib + 28 e2e).\n- `cargo fmt --all` and `cargo clippy -p otap-df-engine --all-targets\n  -- -D warnings` clean.\n\n## Are there any user-facing changes?\n\n**Breaking** (out-of-tree consumers will get compile errors):\n\n- `ExtensionFactory::create` signature changed: no longer receives\n  `PipelineContext`; it now receives `ExtensionContext`. Out-of-tree\n  extensions need to be updated.\n- `PipelineContext::register_channel_entity` renamed to\n  `register_node_channel_entity`; `channel_attribute_set` renamed to\n`node_channel_attribute_set`. The `ChannelAttributeSet` struct is split\n  into `NodeChannelAttributeSet` and `ExtensionChannelAttributeSet`.\n\n**New telemetry surface:** `extension.lifecycle.*` metrics with\n`extension_id` + `extension_variant` attributes.\n\n**No config or wire-format changes.**\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-06-11T23:18:24Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/877dd362a5547ce59c0243a1f0203cc85cd3d892"
+        },
+        "date": 1781225475898,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.36,
             "unit": "MB"
           },
           {
