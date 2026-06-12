@@ -2386,6 +2386,7 @@ mod tests {
             observed_state_store: observed_state_store.handle(),
             metrics_registry,
             controller: Arc::new(NoopControlPlane),
+            terminal_control_plane_permits: Arc::new(tokio::sync::Semaphore::new(1)),
             log_tap: None,
             memory_pressure_state: MemoryPressureState::default(),
             target_info: Arc::from(""),

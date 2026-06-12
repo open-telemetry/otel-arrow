@@ -10,10 +10,93 @@
 
 use super::*;
 
+struct EngineOperationGuard<'a, PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
+    runtime: &'a ControllerRuntime<PData>,
+    operation_id: String,
+}
+
+impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> EngineOperationGuard<'_, PData> {
+    fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+}
+
+impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Drop
+    for EngineOperationGuard<'_, PData>
+{
+    fn drop(&mut self) {
+        let mut state = self
+            .runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state
+            .active_engine_operation
+            .as_deref()
+            .is_some_and(|operation_id| operation_id == self.operation_id)
+        {
+            state.active_engine_operation = None;
+        }
+    }
+}
+
 impl<
     PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
 > ControllerRuntime<PData>
 {
+    fn engine_operation_allows(state: &ControllerRuntimeState, operation_id: Option<&str>) -> bool {
+        match (state.active_engine_operation.as_deref(), operation_id) {
+            (None, None) => true,
+            (Some(active), Some(operation_id)) if active == operation_id => true,
+            _ => false,
+        }
+    }
+
+    fn begin_named_engine_operation(
+        &self,
+        operation_id: String,
+    ) -> Result<EngineOperationGuard<'_, PData>, ControlPlaneError> {
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.active_engine_operation.is_some() {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+            state.active_engine_operation = Some(operation_id.clone());
+        }
+        Ok(EngineOperationGuard {
+            runtime: self,
+            operation_id,
+        })
+    }
+
+    fn begin_reconcile_operation(
+        &self,
+    ) -> Result<(String, EngineOperationGuard<'_, PData>), ControlPlaneError> {
+        let reconcile_id = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.active_engine_operation.is_some() {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+            let reconcile_id = format!("reconcile-{}", state.next_reconcile_id);
+            state.next_reconcile_id += 1;
+            state.active_engine_operation = Some(reconcile_id.clone());
+            reconcile_id
+        };
+        Ok((
+            reconcile_id.clone(),
+            EngineOperationGuard {
+                runtime: self,
+                operation_id: reconcile_id,
+            },
+        ))
+    }
+
     /// Resolves the concrete core ids selected by a pipeline resource policy.
     pub(super) fn assigned_cores_for_resolved(
         &self,
@@ -158,6 +241,23 @@ impl<
         pipeline_id: &str,
         request: &ReconfigureRequest,
     ) -> Result<CandidateRolloutPlan, ControlPlaneError> {
+        self.prepare_rollout_plan_for_engine_operation(
+            pipeline_group_id,
+            pipeline_id,
+            request,
+            None,
+            None,
+        )
+    }
+
+    fn prepare_rollout_plan_for_engine_operation(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        request: &ReconfigureRequest,
+        planning_config: Option<&OtelDataflowSpec>,
+        engine_operation_id: Option<&str>,
+    ) -> Result<CandidateRolloutPlan, ControlPlaneError> {
         let pipeline_group_id: PipelineGroupId = pipeline_group_id.to_owned().into();
         let pipeline_id: PipelineId = pipeline_id.to_owned().into();
         let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
@@ -167,7 +267,11 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if !state.live_config.groups.contains_key(&pipeline_group_id) {
+            if !Self::engine_operation_allows(&state, engine_operation_id) {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+            let plan_config = planning_config.unwrap_or(&state.live_config);
+            if !plan_config.groups.contains_key(&pipeline_group_id) {
                 return Err(ControlPlaneError::GroupNotFound);
             }
             if state.active_rollouts.contains_key(&pipeline_key)
@@ -188,7 +292,9 @@ impl<
                 message: err.to_string(),
             })?;
 
-        let mut candidate_config = live_config.clone();
+        let mut candidate_config = planning_config
+            .cloned()
+            .unwrap_or_else(|| live_config.clone());
         let group_cfg = candidate_config
             .groups
             .get_mut(&pipeline_group_id)
@@ -425,10 +531,20 @@ impl<
     }
 
     /// Registers a newly accepted rollout and publishes its initial summary.
+    #[cfg(test)]
     pub(super) fn insert_rollout(
         &self,
         pipeline_key: &PipelineKey,
         rollout: RolloutRecord,
+    ) -> Result<(), ControlPlaneError> {
+        self.insert_rollout_for_engine_operation(pipeline_key, rollout, None)
+    }
+
+    fn insert_rollout_for_engine_operation(
+        &self,
+        pipeline_key: &PipelineKey,
+        rollout: RolloutRecord,
+        engine_operation_id: Option<&str>,
     ) -> Result<(), ControlPlaneError> {
         self.prune_retained_operation_history();
         {
@@ -436,6 +552,9 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !Self::engine_operation_allows(&state, engine_operation_id) {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
             if state.active_rollouts.contains_key(pipeline_key)
                 || state.active_shutdowns.contains_key(pipeline_key)
             {
@@ -559,12 +678,16 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(group_cfg) = state.live_config.groups.get_mut(&plan.pipeline_group_id) {
-                _ = group_cfg.pipelines.insert(
+            _ = state
+                .live_config
+                .groups
+                .entry(plan.pipeline_group_id.clone())
+                .or_default()
+                .pipelines
+                .insert(
                     plan.pipeline_id.clone(),
                     plan.resolved_pipeline.pipeline.clone(),
                 );
-            }
             _ = state.logical_pipelines.insert(
                 plan.pipeline_key.clone(),
                 LogicalPipelineRecord {
@@ -582,11 +705,27 @@ impl<
     }
 
     /// Selects the active instances targeted by a per-pipeline shutdown request.
+    #[cfg(test)]
     pub(super) fn prepare_shutdown_plan(
         &self,
         pipeline_group_id: &str,
         pipeline_id: &str,
         timeout_secs: u64,
+    ) -> Result<CandidateShutdownPlan, ControlPlaneError> {
+        self.prepare_shutdown_plan_for_engine_operation(
+            pipeline_group_id,
+            pipeline_id,
+            timeout_secs,
+            None,
+        )
+    }
+
+    pub(super) fn prepare_shutdown_plan_for_engine_operation(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        timeout_secs: u64,
+        engine_operation_id: Option<&str>,
     ) -> Result<CandidateShutdownPlan, ControlPlaneError> {
         let pipeline_group_id: PipelineGroupId = pipeline_group_id.to_owned().into();
         let pipeline_id: PipelineId = pipeline_id.to_owned().into();
@@ -597,6 +736,9 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !Self::engine_operation_allows(&state, engine_operation_id) {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
             if !state.live_config.groups.contains_key(&pipeline_group_id) {
                 return Err(ControlPlaneError::GroupNotFound);
             }
@@ -640,6 +782,9 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !Self::engine_operation_allows(&state, engine_operation_id) {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
             if state.active_rollouts.contains_key(&pipeline_key)
                 || state.active_shutdowns.contains_key(&pipeline_key)
             {
@@ -675,16 +820,29 @@ impl<
     }
 
     /// Registers a newly accepted shutdown operation.
+    #[cfg(test)]
     pub(super) fn insert_shutdown(
         &self,
         pipeline_key: &PipelineKey,
         shutdown: ShutdownRecord,
+    ) -> Result<(), ControlPlaneError> {
+        self.insert_shutdown_for_engine_operation(pipeline_key, shutdown, None)
+    }
+
+    fn insert_shutdown_for_engine_operation(
+        &self,
+        pipeline_key: &PipelineKey,
+        shutdown: ShutdownRecord,
+        engine_operation_id: Option<&str>,
     ) -> Result<(), ControlPlaneError> {
         self.prune_retained_operation_history();
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !Self::engine_operation_allows(&state, engine_operation_id) {
+            return Err(ControlPlaneError::RolloutConflict);
+        }
         if state.active_rollouts.contains_key(pipeline_key)
             || state.active_shutdowns.contains_key(pipeline_key)
         {
@@ -799,6 +957,8 @@ impl<
         pipeline_group_id: &str,
         group: PipelineGroupConfig,
     ) -> Result<PipelineGroupConfig, ControlPlaneError> {
+        let guard =
+            self.begin_named_engine_operation(format!("create-group:{pipeline_group_id}"))?;
         let pipeline_group_id: PipelineGroupId = pipeline_group_id.to_owned().into();
 
         if !group.pipelines.is_empty() {
@@ -822,6 +982,9 @@ impl<
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !Self::engine_operation_allows(&state, Some(guard.operation_id())) {
+            return Err(ControlPlaneError::RolloutConflict);
+        }
         if state.live_config.groups.contains_key(&pipeline_group_id) {
             return Err(ControlPlaneError::GroupAlreadyExists);
         }
@@ -848,21 +1011,16 @@ impl<
         state.live_config.clone()
     }
 
-    fn next_reconcile_id(&self) -> String {
+    fn apply_reconcile_success(&self, desired_config: &OtelDataflowSpec, delete_missing: bool) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let reconcile_id = format!("reconcile-{}", state.next_reconcile_id);
-        state.next_reconcile_id += 1;
-        reconcile_id
-    }
+        if delete_missing {
+            state.live_config = desired_config.clone();
+            return;
+        }
 
-    fn apply_reconcile_scaffold(&self, desired_config: &OtelDataflowSpec) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.live_config.version = desired_config.version.clone();
         state.live_config.policies = desired_config.policies.clone();
         state.live_config.topics = desired_config.topics.clone();
@@ -875,6 +1033,11 @@ impl<
                 .or_default();
             group.policies = desired_group.policies.clone();
             group.topics = desired_group.topics.clone();
+            for (pipeline_id, pipeline) in &desired_group.pipelines {
+                _ = group
+                    .pipelines
+                    .insert(pipeline_id.clone(), pipeline.clone());
+            }
         }
     }
 
@@ -921,12 +1084,19 @@ impl<
         ids
     }
 
-    fn remove_pipeline_record(&self, pipeline_key: &PipelineKey) -> Result<(), ControlPlaneError> {
+    fn remove_pipeline_record_for_engine_operation(
+        &self,
+        pipeline_key: &PipelineKey,
+        engine_operation_id: Option<&str>,
+    ) -> Result<(), ControlPlaneError> {
         {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !Self::engine_operation_allows(&state, engine_operation_id) {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
             if state.active_rollouts.contains_key(pipeline_key)
                 || state.active_shutdowns.contains_key(pipeline_key)
             {
@@ -1034,6 +1204,23 @@ impl<
         pipeline_id: &str,
         timeout_secs: u64,
     ) -> Result<PipelineDeleteStatus, ControlPlaneError> {
+        let operation_id = format!("delete-pipeline:{pipeline_group_id}:{pipeline_id}");
+        let guard = self.begin_named_engine_operation(operation_id)?;
+        self.request_delete_pipeline_for_engine_operation(
+            pipeline_group_id,
+            pipeline_id,
+            timeout_secs,
+            Some(guard.operation_id()),
+        )
+    }
+
+    fn request_delete_pipeline_for_engine_operation(
+        self: &Arc<Self>,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        timeout_secs: u64,
+        engine_operation_id: Option<&str>,
+    ) -> Result<PipelineDeleteStatus, ControlPlaneError> {
         let started_at = timestamp_now();
         let pipeline_group_id: PipelineGroupId = pipeline_group_id.to_owned().into();
         let pipeline_id: PipelineId = pipeline_id.to_owned().into();
@@ -1043,6 +1230,9 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !Self::engine_operation_allows(&state, engine_operation_id) {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
             let Some(group) = state.live_config.groups.get(&pipeline_group_id) else {
                 return Err(ControlPlaneError::GroupNotFound);
             };
@@ -1067,8 +1257,12 @@ impl<
         };
 
         let shutdown = if has_active_runtime {
-            let initial_shutdown =
-                self.request_shutdown_pipeline(&pipeline_group_id, &pipeline_id, timeout_secs)?;
+            let initial_shutdown = self.request_shutdown_pipeline_for_engine_operation(
+                &pipeline_group_id,
+                &pipeline_id,
+                timeout_secs,
+                engine_operation_id,
+            )?;
             let terminal_shutdown = self.wait_for_shutdown_terminal(initial_shutdown);
             if terminal_shutdown.state != "succeeded" {
                 return Ok(PipelineDeleteStatus {
@@ -1088,7 +1282,7 @@ impl<
             None
         };
 
-        self.remove_pipeline_record(&pipeline_key)?;
+        self.remove_pipeline_record_for_engine_operation(&pipeline_key, engine_operation_id)?;
         Ok(PipelineDeleteStatus {
             pipeline_group_id,
             pipeline_id,
@@ -1106,6 +1300,21 @@ impl<
         pipeline_group_id: &str,
         timeout_secs: u64,
     ) -> Result<GroupDeleteStatus, ControlPlaneError> {
+        let operation_id = format!("delete-group:{pipeline_group_id}");
+        let guard = self.begin_named_engine_operation(operation_id)?;
+        self.request_delete_group_for_engine_operation(
+            pipeline_group_id,
+            timeout_secs,
+            Some(guard.operation_id()),
+        )
+    }
+
+    fn request_delete_group_for_engine_operation(
+        self: &Arc<Self>,
+        pipeline_group_id: &str,
+        timeout_secs: u64,
+        engine_operation_id: Option<&str>,
+    ) -> Result<GroupDeleteStatus, ControlPlaneError> {
         let started_at = timestamp_now();
         let pipeline_group_id: PipelineGroupId = pipeline_group_id.to_owned().into();
         let pipeline_ids = {
@@ -1113,6 +1322,9 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !Self::engine_operation_allows(&state, engine_operation_id) {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
             let Some(group) = state.live_config.groups.get(&pipeline_group_id) else {
                 return Err(ControlPlaneError::GroupNotFound);
             };
@@ -1130,10 +1342,11 @@ impl<
 
         let mut pipelines = Vec::new();
         for pipeline_id in pipeline_ids {
-            let delete = self.request_delete_pipeline(
+            let delete = self.request_delete_pipeline_for_engine_operation(
                 &pipeline_group_id,
                 pipeline_id.as_ref(),
                 timeout_secs,
+                engine_operation_id,
             )?;
             let failed = delete.state != "succeeded";
             pipelines.push(delete);
@@ -1158,6 +1371,9 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !Self::engine_operation_allows(&state, engine_operation_id) {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
             let Some(group) = state.live_config.groups.get(&pipeline_group_id) else {
                 return Err(ControlPlaneError::GroupNotFound);
             };
@@ -1187,7 +1403,7 @@ impl<
         self: &Arc<Self>,
         request: EngineConfigReconcileRequest,
     ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
-        let reconcile_id = self.next_reconcile_id();
+        let (reconcile_id, guard) = self.begin_reconcile_operation()?;
         let started_at = timestamp_now();
         let mut status = EngineConfigReconcileStatus::new(
             reconcile_id,
@@ -1216,8 +1432,6 @@ impl<
                 message: "desired config would require runtime topic broker mutation".to_owned(),
             });
         }
-
-        self.apply_reconcile_scaffold(&desired_config);
 
         let mut desired_keys = Vec::new();
         for (pipeline_group_id, group) in &desired_config.groups {
@@ -1249,13 +1463,16 @@ impl<
                 step_timeout_secs: request.step_timeout_secs,
                 drain_timeout_secs: request.drain_timeout_secs,
             };
-            let plan = self.prepare_rollout_plan(
+            let plan = self.prepare_rollout_plan_for_engine_operation(
                 pipeline_key.pipeline_group_id(),
                 pipeline_key.pipeline_id(),
                 &request,
+                Some(&desired_config),
+                Some(guard.operation_id()),
             )?;
             let action = Self::rollout_change_action(plan.action);
-            let initial_rollout = self.spawn_rollout(plan)?;
+            let initial_rollout =
+                self.spawn_rollout_for_engine_operation(plan, Some(guard.operation_id()))?;
             let terminal_rollout = self.wait_for_rollout_terminal(initial_rollout);
             let succeeded = Self::rollout_succeeded(&terminal_rollout);
             let failure_reason = terminal_rollout.failure_reason.clone();
@@ -1286,10 +1503,11 @@ impl<
                 if desired_key_set.contains(&pipeline_key) {
                     continue;
                 }
-                let delete = self.request_delete_pipeline(
+                let delete = self.request_delete_pipeline_for_engine_operation(
                     pipeline_key.pipeline_group_id(),
                     pipeline_key.pipeline_id(),
                     request.delete_timeout_secs,
+                    Some(guard.operation_id()),
                 )?;
                 let succeeded = delete.state == "succeeded";
                 let failure_reason = delete.failure_reason.clone();
@@ -1316,8 +1534,11 @@ impl<
                 if desired_group_ids.contains(&pipeline_group_id) {
                     continue;
                 }
-                let delete =
-                    self.request_delete_group(&pipeline_group_id, request.delete_timeout_secs)?;
+                let delete = self.request_delete_group_for_engine_operation(
+                    &pipeline_group_id,
+                    request.delete_timeout_secs,
+                    Some(guard.operation_id()),
+                )?;
                 let succeeded = delete.state == "succeeded";
                 let failure_reason = delete.failure_reason.clone();
                 status.changes.push(ConfigChangeStatus {
@@ -1339,6 +1560,7 @@ impl<
             }
         }
 
+        self.apply_reconcile_success(&desired_config, request.delete_missing);
         status.state = EngineConfigReconcileState::Succeeded;
         status.updated_at = timestamp_now();
         Ok(status)
@@ -1349,9 +1571,21 @@ impl<
         self: &Arc<Self>,
         plan: CandidateRolloutPlan,
     ) -> Result<RolloutStatus, ControlPlaneError> {
+        self.spawn_rollout_for_engine_operation(plan, None)
+    }
+
+    fn spawn_rollout_for_engine_operation(
+        self: &Arc<Self>,
+        plan: CandidateRolloutPlan,
+        engine_operation_id: Option<&str>,
+    ) -> Result<RolloutStatus, ControlPlaneError> {
         let rollout_id = plan.rollout.rollout_id.clone();
         let pipeline_key = plan.pipeline_key.clone();
-        self.insert_rollout(&pipeline_key, plan.rollout.clone())?;
+        self.insert_rollout_for_engine_operation(
+            &pipeline_key,
+            plan.rollout.clone(),
+            engine_operation_id,
+        )?;
         if matches!(plan.action, RolloutAction::NoOp) {
             self.commit_pipeline_record(&plan, plan.target_generation);
             self.update_rollout(&pipeline_key, &rollout_id, |rollout| {
@@ -1400,15 +1634,19 @@ impl<
         Ok(initial_status)
     }
 
-    /// Records a shutdown and launches its background execution worker.
-    pub(super) fn spawn_shutdown(
+    pub(super) fn spawn_shutdown_for_engine_operation(
         self: &Arc<Self>,
         plan: CandidateShutdownPlan,
+        engine_operation_id: Option<&str>,
     ) -> Result<ShutdownStatus, ControlPlaneError> {
         let shutdown_id = plan.shutdown.shutdown_id.clone();
         let pipeline_key = plan.pipeline_key.clone();
         let initial_status = plan.shutdown.status();
-        self.insert_shutdown(&pipeline_key, plan.shutdown.clone())?;
+        self.insert_shutdown_for_engine_operation(
+            &pipeline_key,
+            plan.shutdown.clone(),
+            engine_operation_id,
+        )?;
         let runtime = Arc::clone(self);
         let shutdown_runtime = Arc::clone(&runtime);
         let shutdown_cleanup_runtime = Arc::clone(&runtime);

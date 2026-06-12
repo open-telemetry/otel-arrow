@@ -1815,6 +1815,47 @@ fn delete_pipeline_rejects_active_operation_conflict() {
     assert_eq!(err, ControlPlaneError::RolloutConflict);
 }
 
+/// Scenario: an engine-scoped lifecycle operation is already active.
+/// Guarantees: public config mutation entry points reject instead of
+/// interleaving with the active full-engine operation.
+#[test]
+fn engine_scoped_operation_rejects_public_lifecycle_mutations() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.active_engine_operation = Some("reconcile-42".to_owned());
+    }
+
+    let create_err = runtime
+        .create_group("g2", PipelineGroupConfig::new())
+        .expect_err("active engine operation should block group creation");
+    assert_eq!(create_err, ControlPlaneError::RolloutConflict);
+
+    let delete_err = runtime
+        .request_delete_pipeline("g1", "p1", 5)
+        .expect_err("active engine operation should block pipeline deletion");
+    assert_eq!(delete_err, ControlPlaneError::RolloutConflict);
+
+    let rollout_err = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: config.groups[&PipelineGroupId::from("g1")].pipelines
+                    [&PipelineId::from("p1")]
+                    .clone(),
+                step_timeout_secs: 5,
+                drain_timeout_secs: 5,
+            },
+        )
+        .expect_err("active engine operation should block rollout planning");
+    assert_eq!(rollout_err, ControlPlaneError::RolloutConflict);
+}
+
 /// Scenario: a control-plane caller deletes an empty group.
 /// Guarantees: the group is removed from committed live config without
 /// requiring pipeline shutdown work.
@@ -1994,6 +2035,39 @@ fn reconcile_engine_config_preserves_missing_resources_when_requested() {
             .pipelines
             .contains_key(&PipelineId::from("p1"))
     );
+}
+
+/// Scenario: full-config reconciliation is rejected after validation because a
+/// target pipeline already has an active rollout.
+/// Guarantees: desired engine-level scaffold fields are not committed when the
+/// reconcile request fails before applying all requested changes.
+#[test]
+fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        _ = state
+            .active_rollouts
+            .insert(pipeline_key, "rollout-42".to_owned());
+    }
+
+    let mut desired = config.clone();
+    _ = desired
+        .engine
+        .custom
+        .insert("desired".to_owned(), serde_json::json!({"enabled": true}));
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("active rollout should reject full-config reconciliation");
+
+    assert_eq!(err, ControlPlaneError::RolloutConflict);
+    assert!(runtime.engine_config_snapshot().engine.custom.is_empty());
 }
 
 /// Scenario: full-config reconciliation would change an existing topic

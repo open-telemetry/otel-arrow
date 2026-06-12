@@ -28,6 +28,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 
@@ -40,6 +41,8 @@ use otap_df_state::store::ObservedStateHandle;
 use otap_df_telemetry::log_tap::InternalLogTapHandle;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::{otel_info, otel_warn};
+
+const TERMINAL_CONTROL_PLANE_PERMITS: usize = 1;
 
 /// Control-plane error surfaced to admin handlers.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -216,6 +219,10 @@ struct AppState {
     /// Resident controller control plane for runtime mutations.
     controller: Arc<dyn ControlPlane>,
 
+    /// Bounds long synchronous terminal control-plane operations dispatched
+    /// from async HTTP handlers.
+    terminal_control_plane_permits: Arc<Semaphore>,
+
     /// Optional internal log tap for querying retained internal logs.
     log_tap: Option<InternalLogTapHandle>,
 
@@ -228,6 +235,29 @@ struct AppState {
     /// of every Prometheus scrape so we don't re-sort and re-escape on each
     /// request.
     target_info: Arc<str>,
+}
+
+impl AppState {
+    async fn run_terminal_control_plane<T, F>(&self, operation: F) -> Result<T, ControlPlaneError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<dyn ControlPlane>) -> Result<T, ControlPlaneError> + Send + 'static,
+    {
+        let permit = self
+            .terminal_control_plane_permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| ControlPlaneError::RolloutConflict)?;
+        let controller = Arc::clone(&self.controller);
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            operation(controller)
+        })
+        .await
+        .map_err(|err| ControlPlaneError::Internal {
+            message: format!("terminal control-plane operation failed to join: {err}"),
+        })?
+    }
 }
 
 /// Run the admin HTTP server until shutdown is requested.
@@ -246,6 +276,7 @@ pub async fn run(
         observed_state_store: observed_store,
         metrics_registry,
         controller,
+        terminal_control_plane_permits: Arc::new(Semaphore::new(TERMINAL_CONTROL_PLANE_PERMITS)),
         log_tap,
         memory_pressure_state,
         target_info,
