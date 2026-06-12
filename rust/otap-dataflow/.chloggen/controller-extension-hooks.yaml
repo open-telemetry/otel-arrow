@@ -1,4 +1,4 @@
 change_type: enhancement
 component: engine
 note: Add controller extension hooks and an opt-in read-only controller monitor extension.
-issues: []
+issues: [3263]
