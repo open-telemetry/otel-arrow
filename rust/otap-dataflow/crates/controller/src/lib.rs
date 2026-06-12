@@ -575,52 +575,7 @@ impl<
         engine_config: OtelDataflowSpec,
         options: ControllerRunOptions,
     ) -> Result<(), Error> {
-        self.run_with_mode(
-            engine_config,
-            RunMode::ParkMainThread,
-            None::<fn(ObservedStateHandle)>,
-            options,
-        )
-    }
-
-    /// Starts the controller and invokes `observer` with an
-    /// [`ObservedStateHandle`] as soon as the pipeline state store is ready.
-    ///
-    /// The callback fires once, before the engine blocks. Use it to obtain
-    /// zero-overhead, in-process access to pipeline liveness, readiness, and
-    /// health without going through the admin HTTP server.
-    pub fn run_forever_with_observer<F>(
-        &self,
-        engine_config: OtelDataflowSpec,
-        observer: F,
-    ) -> Result<(), Error>
-    where
-        F: FnOnce(ObservedStateHandle),
-    {
-        self.run_forever_with_observer_and_options(
-            engine_config,
-            observer,
-            ControllerRunOptions::default(),
-        )
-    }
-
-    /// Like [`run_forever_with_observer`](Self::run_forever_with_observer), but
-    /// also accepts runtime options.
-    pub fn run_forever_with_observer_and_options<F>(
-        &self,
-        engine_config: OtelDataflowSpec,
-        observer: F,
-        options: ControllerRunOptions,
-    ) -> Result<(), Error>
-    where
-        F: FnOnce(ObservedStateHandle),
-    {
-        self.run_with_mode(
-            engine_config,
-            RunMode::ParkMainThread,
-            Some(observer),
-            options,
-        )
+        self.run_with_mode(engine_config, RunMode::ParkMainThread, options)
     }
 
     /// Starts the controller with the given engine configurations.
@@ -638,48 +593,7 @@ impl<
         engine_config: OtelDataflowSpec,
         options: ControllerRunOptions,
     ) -> Result<(), Error> {
-        self.run_with_mode(
-            engine_config,
-            RunMode::ShutdownWhenDone,
-            None::<fn(ObservedStateHandle)>,
-            options,
-        )
-    }
-
-    /// Like [`run_till_shutdown`](Self::run_till_shutdown), but invokes
-    /// `observer` with an [`ObservedStateHandle`] before blocking.
-    pub fn run_till_shutdown_with_observer<F>(
-        &self,
-        engine_config: OtelDataflowSpec,
-        observer: F,
-    ) -> Result<(), Error>
-    where
-        F: FnOnce(ObservedStateHandle),
-    {
-        self.run_till_shutdown_with_observer_and_options(
-            engine_config,
-            observer,
-            ControllerRunOptions::default(),
-        )
-    }
-
-    /// Like [`run_till_shutdown_with_observer`](Self::run_till_shutdown_with_observer),
-    /// but also accepts runtime options.
-    pub fn run_till_shutdown_with_observer_and_options<F>(
-        &self,
-        engine_config: OtelDataflowSpec,
-        observer: F,
-        options: ControllerRunOptions,
-    ) -> Result<(), Error>
-    where
-        F: FnOnce(ObservedStateHandle),
-    {
-        self.run_with_mode(
-            engine_config,
-            RunMode::ShutdownWhenDone,
-            Some(observer),
-            options,
-        )
+        self.run_with_mode(engine_config, RunMode::ShutdownWhenDone, options)
     }
 
     fn map_topic_spec_to_options(
@@ -1382,16 +1296,12 @@ impl<
         Ok(set)
     }
 
-    fn run_with_mode<F>(
+    fn run_with_mode(
         &self,
         engine_config: OtelDataflowSpec,
         run_mode: RunMode,
-        observer: Option<F>,
         options: ControllerRunOptions,
-    ) -> Result<(), Error>
-    where
-        F: FnOnce(ObservedStateHandle),
-    {
+    ) -> Result<(), Error> {
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
         let (mut engine, pipelines, observability_pipeline) = resolved_config.into_parts();
@@ -1445,11 +1355,6 @@ impl<
             log_tap_handle.clone(),
         );
         let obs_state_handle = obs_state_store.handle();
-
-        // Notify the caller with a clone of the observed-state handle, if requested.
-        if let Some(observer) = observer {
-            observer(obs_state_handle.clone());
-        }
 
         let engine_evt_reporter =
             obs_state_store.engine_reporter(engine.observed_state.engine_events);
@@ -2625,7 +2530,7 @@ groups: {{}}
         .expect("controller monitor config should parse")
     }
 
-    fn controller_monitor_engine_config_with_pipeline(monitor_config: &str) -> OtelDataflowSpec {
+    fn controller_extension_engine_config_with_pipeline(extension_type: &str) -> OtelDataflowSpec {
         OtelDataflowSpec::from_yaml(&format!(
             r#"
 version: otel_dataflow/v1
@@ -2634,9 +2539,8 @@ engine:
     bind_address: "127.0.0.1:0"
   controller:
     extensions:
-      controller_monitor:
+      test_extension:
         type: "{}"
-{}
 groups:
   g:
     pipelines:
@@ -2657,9 +2561,9 @@ groups:
           - from: receiver
             to: exporter
         "#,
-            CONTROLLER_MONITOR_EXTENSION_URN, monitor_config
+            extension_type
         ))
-        .expect("controller monitor config should parse")
+        .expect("controller extension config should parse")
     }
 
     fn resolved_pipeline_with_core_allocation(
@@ -2871,16 +2775,35 @@ groups:
 
     #[test]
     fn controller_extension_start_error_prevents_bootstrap_pipeline_registration() {
+        const START_FAILING_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:start_failing";
+
         let controller = Controller::new(empty_pipeline_factory());
-        let mut observed_state = None;
+        let observed_pipeline_count = Arc::new(std::sync::Mutex::new(None));
+        let observed_pipeline_count_for_factory = Arc::clone(&observed_pipeline_count);
+        let mut registry = ControllerExtensionRegistry::empty();
+        registry.register(
+            START_FAILING_CONTROLLER_EXTENSION_URN.into(),
+            move |context| {
+                let snapshot = context.observed_state.snapshot();
+                *observed_pipeline_count_for_factory
+                    .lock()
+                    .expect("observed pipeline count mutex should not be poisoned") =
+                    Some(snapshot.len());
+                Err::<ControllerExtensionTaskFactory, ControllerExtensionError>(Box::new(
+                    std::io::Error::other("simulated controller extension start failure"),
+                ))
+            },
+            otap_df_config::validation::no_config,
+        );
+
         let err = controller
-            .run_till_shutdown_with_observer_and_options(
-                controller_monitor_engine_config_with_pipeline(
-                    r#"        config:
-          interval: "0s""#,
+            .run_till_shutdown_with_options(
+                controller_extension_engine_config_with_pipeline(
+                    START_FAILING_CONTROLLER_EXTENSION_URN,
                 ),
-                |handle| observed_state = Some(handle),
-                ControllerRunOptions::default(),
+                ControllerRunOptions {
+                    extensions: registry,
+                },
             )
             .expect_err("invalid controller extension config should fail startup");
 
@@ -2889,20 +2812,22 @@ groups:
                 extension_id,
                 source,
             } => {
-                assert_eq!(extension_id, "controller_monitor");
+                assert_eq!(extension_id, "test_extension");
                 assert!(
-                    source.to_string().contains("greater than zero"),
+                    source
+                        .to_string()
+                        .contains("simulated controller extension start failure"),
                     "unexpected error: {source}"
                 );
             }
             other => panic!("unexpected error: {other:?}"),
         }
 
-        let snapshot = observed_state
-            .expect("observer should receive observed-state handle")
-            .snapshot();
-        assert!(
-            snapshot.is_empty(),
+        assert_eq!(
+            *observed_pipeline_count
+                .lock()
+                .expect("observed pipeline count mutex should not be poisoned"),
+            Some(0),
             "extension startup errors should happen before bootstrap pipelines are registered"
         );
     }
