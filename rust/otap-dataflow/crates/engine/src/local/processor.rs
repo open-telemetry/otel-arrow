@@ -41,7 +41,8 @@ use crate::effect_handler::{
 };
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
-    EndFlowMetrics, FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
+    DecisionFlowMetrics, EndFlowMetrics, FlowDurationMetrics, FlowSignalsDroppedMetrics,
+    FlowSignalsIncomingMetrics, FlowSignalsKeptMetrics, FlowSignalsOutgoingMetrics,
     IncomingFlowMetrics, LocalFlowMetricState, nanos_u64,
 };
 use crate::message::{Message, Sender};
@@ -230,10 +231,13 @@ impl<PData> EffectHandler<PData> {
         signals_incoming_metric: Option<MetricSet<FlowSignalsIncomingMetrics>>,
         duration_metric: Option<MetricSet<FlowDurationMetrics>>,
         signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>>,
+        signals_kept_metric: Option<MetricSet<FlowSignalsKeptMetrics>>,
+        signals_dropped_metric: Option<MetricSet<FlowSignalsDroppedMetrics>>,
         flow_metrics_active: bool,
     ) {
         self.flow.is_start = is_start;
         self.flow.is_end = is_end;
+        self.flow.is_decision = signals_kept_metric.is_some() || signals_dropped_metric.is_some();
         self.flow.active = flow_metrics_active;
         self.flow.incoming = IncomingFlowMetrics {
             signals_incoming: signals_incoming_metric
@@ -242,6 +246,11 @@ impl<PData> EffectHandler<PData> {
         self.flow.end = EndFlowMetrics {
             duration: duration_metric.map(|metrics| (metrics, Cell::new(Mmsc::default()))),
             signals_outgoing: signals_outgoing_metric
+                .map(|metrics| (metrics, Cell::new(Mmsc::default()))),
+        };
+        self.flow.decision = DecisionFlowMetrics {
+            signals_kept: signals_kept_metric.map(|metrics| (metrics, Cell::new(Mmsc::default()))),
+            signals_dropped: signals_dropped_metric
                 .map(|metrics| (metrics, Cell::new(Mmsc::default()))),
         };
     }
@@ -256,6 +265,12 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn is_flow_end(&self) -> bool {
         self.flow.is_end
+    }
+
+    /// Returns whether this node is a keep/drop decision node for some flow.
+    #[must_use]
+    pub fn is_flow_decision(&self) -> bool {
+        self.flow.is_decision
     }
 
     /// Record `total` nanoseconds into the local flow_metric accumulator.
@@ -293,6 +308,34 @@ impl<PData> EffectHandler<PData> {
         acc_cell.set(acc);
     }
 
+    /// Record the count of signal items this decision node chose to keep.
+    ///
+    /// No-op unless this node is wired as a keep/drop decision node for a flow
+    /// that enables `signals.kept`. The observation accumulates into a local
+    /// `Mmsc` drained on the next [`report_flow_metrics`] call.
+    pub fn record_flow_signals_kept(&self, signals: u64) {
+        let Some((_, acc_cell)) = self.flow.decision.signals_kept.as_ref() else {
+            return;
+        };
+        let mut acc = acc_cell.get();
+        acc.record(signals as f64);
+        acc_cell.set(acc);
+    }
+
+    /// Record the count of signal items this decision node chose to drop.
+    ///
+    /// No-op unless this node is wired as a keep/drop decision node for a flow
+    /// that enables `signals.dropped`. The observation accumulates into a local
+    /// `Mmsc` drained on the next [`report_flow_metrics`] call.
+    pub fn record_flow_signals_dropped(&self, signals: u64) {
+        let Some((_, acc_cell)) = self.flow.decision.signals_dropped.as_ref() else {
+            return;
+        };
+        let mut acc = acc_cell.get();
+        acc.record(signals as f64);
+        acc_cell.set(acc);
+    }
+
     /// Drain accumulated flow_metric observations into the MetricSet and
     /// report to the telemetry collector.
     ///
@@ -312,6 +355,16 @@ impl<PData> EffectHandler<PData> {
         if let Some((metrics, acc_cell)) = self.flow.end.signals_outgoing.as_mut() {
             let acc = acc_cell.replace(Mmsc::default());
             metrics.signals_outgoing.merge(acc);
+            let _ = self.core.metrics_reporter.report(metrics);
+        }
+        if let Some((metrics, acc_cell)) = self.flow.decision.signals_kept.as_mut() {
+            let acc = acc_cell.replace(Mmsc::default());
+            metrics.signals_kept.merge(acc);
+            let _ = self.core.metrics_reporter.report(metrics);
+        }
+        if let Some((metrics, acc_cell)) = self.flow.decision.signals_dropped.as_mut() {
+            let acc = acc_cell.replace(Mmsc::default());
+            metrics.signals_dropped.merge(acc);
             let _ = self.core.metrics_reporter.report(metrics);
         }
     }
@@ -1037,6 +1090,8 @@ mod tests {
             Some(start_metric_set),
             Some(duration_metric_set),
             Some(outgoing_metric_set),
+            None,
+            None,
             true,
         );
 
@@ -1128,7 +1183,7 @@ mod tests {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
-        eh.set_flow_roles(true, false, None, None, None, true);
+        eh.set_flow_roles(true, false, None, None, None, None, None, true);
         assert!(eh.flow.active);
 
         eh.begin_process_timing();
@@ -1155,7 +1210,7 @@ mod tests {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
-        eh.set_flow_roles(true, false, None, None, None, true);
+        eh.set_flow_roles(true, false, None, None, None, None, None, true);
         assert_eq!(eh.take_elapsed_since_send_marker_ns(), 0);
     }
 }
