@@ -68,6 +68,13 @@ pub struct FlowAttributeSet {
     /// Name of the processor node where the measurement ends.
     #[attribute(key = "flow.node.end")]
     pub end_node: Cow<'static, str>,
+    /// Per-flow purpose differentiator (e.g. `filter`, `transform`). Always
+    /// emitted as the `flow.purpose` scope attribute; carries an empty value
+    /// when the flow declares no purpose. Lets OTel View selectors target
+    /// distinct flavors of processor work while all flows share the single
+    /// `flow` scope.
+    #[attribute(key = "flow.purpose")]
+    pub purpose: Cow<'static, str>,
     /// Pipeline attributes.
     #[compose]
     pub pipeline_attrs: PipelineAttributeSet,
@@ -275,6 +282,10 @@ pub(crate) fn build_flow_metric_state(
             flow_id: Cow::Owned(flow_config.id.clone()),
             start_node: Cow::Owned(flow_config.bounds.start_node.clone()),
             end_node: Cow::Owned(flow_config.bounds.end_node.clone()),
+            purpose: flow_config
+                .purpose
+                .clone()
+                .map_or(Cow::Borrowed(""), Cow::Owned),
             pipeline_attrs: pipeline_attrs.clone(),
         };
 
@@ -451,6 +462,7 @@ impl PipelineFlowMetricState {
 mod tests {
     use super::*;
     use crate::testing::test_pipeline_ctx;
+    use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 
     fn one_flow_metric_state() -> PipelineFlowMetricState {
         let (ctx, _) = test_pipeline_ctx();
@@ -572,6 +584,7 @@ mod tests {
                 end_node: stop.to_string(),
             },
             metrics: None,
+            purpose: None,
         }
     }
 
@@ -1011,5 +1024,44 @@ mod tests {
             .expect("diamond-reachable flow metric should build");
 
         assert_eq!(state.duration_metrics.len(), 1);
+    }
+
+    #[test]
+    fn flow_attribute_set_exposes_purpose_scope_attribute() {
+        // Descriptor must declare the `flow.purpose` key so View selectors can
+        // match on it as a scope attribute.
+        let descriptor = FlowAttributeSet::default().descriptor();
+        assert!(
+            descriptor.fields.iter().any(|f| f.key == "flow.purpose"),
+            "flow.purpose missing from FlowAttributeSet descriptor"
+        );
+
+        // When set, the value is emitted under the `flow.purpose` key.
+        let attrs = FlowAttributeSet {
+            flow_id: "sampling".into(),
+            start_node: "log_sampler".into(),
+            end_node: "log_sampler".into(),
+            purpose: "filter".into(),
+            ..FlowAttributeSet::default()
+        };
+        let set: Vec<(&str, AttributeValue)> = attrs
+            .iter_attributes()
+            .map(|(key, value)| (key, value.clone()))
+            .collect();
+        assert!(
+            set.contains(&("flow.purpose", AttributeValue::String("filter".to_string()))),
+            "expected flow.purpose=filter in {set:?}"
+        );
+
+        // When unset, the key is still present but carries an empty value.
+        let unset = FlowAttributeSet::default();
+        let unset_set: Vec<(&str, AttributeValue)> = unset
+            .iter_attributes()
+            .map(|(key, value)| (key, value.clone()))
+            .collect();
+        assert!(
+            unset_set.contains(&("flow.purpose", AttributeValue::String(String::new()))),
+            "expected empty flow.purpose in {unset_set:?}"
+        );
     }
 }
