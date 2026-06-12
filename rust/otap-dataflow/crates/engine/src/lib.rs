@@ -2736,4 +2736,67 @@ mod test {
         assert!((factory.validate_config)(&serde_json::Value::Null).is_ok());
         assert!((factory.validate_config)(&serde_json::json!({"key": "val"})).is_err());
     }
+
+    #[otap_df_telemetry_macros::metric_set(name = "test.extension.factory")]
+    #[derive(Debug, Default, Clone)]
+    struct FactoryTestMetrics {
+        #[metric(unit = "{tick}")]
+        ticks: otap_df_telemetry::instrument::Counter<u64>,
+    }
+
+    #[test]
+    fn test_extension_factory_create_receives_extension_context() {
+        use crate::extension::wrapper::ExtensionVariant;
+        use crate::testing::test_extension_ctx;
+        use otap_df_config::extension::{ExtensionUrn, ExtensionUserConfig};
+        use otap_df_telemetry::registry::EntityKey;
+        use std::cell::Cell;
+
+        thread_local! {
+            static REGISTERED_ENTITY: Cell<Option<EntityKey>> = const { Cell::new(None) };
+        }
+
+        fn entity_registering_create(
+            ext_ctx: &ExtensionContext,
+            name: otap_df_config::ExtensionId,
+            _: Arc<ExtensionUserConfig>,
+            _: &ExtensionConfig,
+        ) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+            let entity = ext_ctx.register_extension_entity(name, ExtensionVariant::Local);
+            REGISTERED_ENTITY.with(|cell| cell.set(Some(entity)));
+            Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "no-op factory".into(),
+            })
+        }
+        fn dummy_validate(_: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+            Ok(())
+        }
+
+        let factory = ExtensionFactory {
+            name: "urn:otel:extension:test_ext",
+            description: "test extension that registers an entity via ext_ctx",
+            documentation_url: "",
+            capabilities: None,
+            create: entity_registering_create,
+            validate_config: dummy_validate,
+        };
+
+        let (ctx, registry) = test_extension_ctx();
+        let entities_before = registry.entity_count();
+        let metrics_before = registry.metric_set_count();
+        let user_config = Arc::new(ExtensionUserConfig::with_type(ExtensionUrn::from(
+            "urn:otel:extension:test_ext",
+        )));
+        let ext_config = ExtensionConfig::with_control_channel_capacity("test_ext", 16);
+
+        let result = (factory.create)(&ctx, "test_ext".into(), user_config, &ext_config);
+        assert!(result.is_err());
+        assert_eq!(registry.entity_count(), entities_before + 1);
+
+        let entity_key = REGISTERED_ENTITY
+            .with(|cell| cell.take())
+            .expect("factory should have registered an entity via ext_ctx");
+        let _metrics = ctx.register_metric_set_for_entity::<FactoryTestMetrics>(entity_key);
+        assert_eq!(registry.metric_set_count(), metrics_before + 1);
+    }
 }
