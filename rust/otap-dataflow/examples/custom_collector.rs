@@ -142,7 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("[observer] EngineObserverContext obtained");
         if poll_status {
             let state_handle = ctx.state_handle().clone();
-            let _telemetry_handle = ctx.telemetry_handle().clone();
+            let telemetry_handle = ctx.telemetry_handle().clone();
             std::thread::spawn(move || {
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(5));
@@ -155,6 +155,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             status
                         );
                     }
+
+                    let metric_set_count = telemetry_handle.metric_set_count();
+                    let entity_count = telemetry_handle.entity_count();
+                    eprintln!(
+                        "[observer] telemetry -> metric_sets={}, entities={}",
+                        metric_set_count, entity_count
+                    );
                 }
             });
         }
