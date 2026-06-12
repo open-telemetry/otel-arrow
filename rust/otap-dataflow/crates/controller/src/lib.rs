@@ -106,6 +106,8 @@ use std::thread;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+/// Built-in controller-level extensions.
+pub mod controller_monitor;
 /// Error types and helpers for the controller module.
 pub mod error;
 mod live_control;
@@ -113,6 +115,11 @@ mod live_control;
 pub mod startup;
 /// Utilities to spawn async tasks on dedicated threads with graceful shutdown.
 pub mod thread_task;
+
+pub use controller_monitor::{
+    CONTROLLER_MONITOR_EXTENSION_URN, ControllerMonitorConfig,
+    register_builtin_controller_extensions,
+};
 
 use live_control::{
     ControllerRuntime, LaunchedPipelineThread, PanicReport, RuntimeInstanceError,
@@ -2333,11 +2340,6 @@ mod tests {
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResourcesPolicy};
     use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
-    use otap_df_telemetry::testing::EmptyAttributes;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
@@ -2380,22 +2382,22 @@ connections:
         Box::leak(Box::new(PipelineFactory::new(&[], &[], &[], &[])))
     }
 
-    fn demo_extension_engine_config() -> OtelDataflowSpec {
-        OtelDataflowSpec::from_yaml(
+    fn controller_monitor_engine_config(monitor_config: &str) -> OtelDataflowSpec {
+        OtelDataflowSpec::from_yaml(&format!(
             r#"
 version: otel_dataflow/v1
 engine:
   http_admin:
     bind_address: "127.0.0.1:0"
   extensions:
-    demo_controller:
-      type: "urn:test:extension:demo_controller"
-      config:
-        greeting: "hello"
-groups: {}
-"#,
-        )
-        .expect("demo extension config should parse")
+    controller_monitor:
+      type: "{}"
+{}
+groups: {{}}
+        "#,
+            CONTROLLER_MONITOR_EXTENSION_URN, monitor_config
+        ))
+        .expect("controller monitor config should parse")
     }
 
     fn resolved_pipeline_with_core_allocation(
@@ -2481,80 +2483,30 @@ groups: {}
     }
 
     #[test]
-    fn controller_extension_receives_context_and_stops_on_shutdown() {
-        let factory_called = Arc::new(AtomicBool::new(false));
-        let task_started = Arc::new(AtomicBool::new(false));
-        let task_stopped = Arc::new(AtomicBool::new(false));
-
+    fn built_in_controller_monitor_runs_with_registered_factory() {
         let mut registry = ControllerExtensionRegistry::default();
-        registry.register("urn:test:extension:demo_controller".into(), {
-            let factory_called = Arc::clone(&factory_called);
-            let task_started = Arc::clone(&task_started);
-            let task_stopped = Arc::clone(&task_stopped);
-            move |context| {
-                factory_called.store(true, Ordering::SeqCst);
-                assert_eq!(context.extension_id.as_ref(), "demo_controller");
-                assert_eq!(
-                    context.extension.r#type.as_str(),
-                    "urn:test:extension:demo_controller"
-                );
-                assert_eq!(context.extension.config["greeting"], "hello");
-                assert!(context.engine_config.groups.is_empty());
-
-                let entity_key = context
-                    .telemetry_registry
-                    .register_entity(EmptyAttributes());
-                let has_extension_entity = context
-                    .telemetry_registry
-                    .visit_entity(entity_key, |attrs| attrs.schema_name() == "empty_metrics")
-                    .unwrap_or(false);
-                assert!(has_extension_entity);
-
-                assert!(context.observed_state.snapshot().is_empty());
-                assert!(
-                    matches!(
-                        context
-                            .control_plane
-                            .pipeline_details("missing", "pipeline"),
-                        Err(otap_df_admin::ControlPlaneError::GroupNotFound)
-                    ),
-                    "extension should be able to use the control-plane handle"
-                );
-
-                let task_started = Arc::clone(&task_started);
-                let task_stopped = Arc::clone(&task_stopped);
-                Ok(Box::new(move |cancellation_token| {
-                    Box::pin(async move {
-                        task_started.store(true, Ordering::SeqCst);
-                        cancellation_token.cancelled().await;
-                        task_stopped.store(true, Ordering::SeqCst);
-                        Ok(())
-                    })
-                }))
-            }
-        });
-
+        register_builtin_controller_extensions(&mut registry);
         let controller = Controller::new(empty_pipeline_factory());
         controller
             .run_till_shutdown_with_options(
-                demo_extension_engine_config(),
+                controller_monitor_engine_config(
+                    r#"      config:
+        interval: "10ms"
+        log_snapshots: false"#,
+                ),
                 ControllerRunOptions {
                     extensions: registry,
                 },
             )
-            .expect("controller should run demo extension");
-
-        assert!(factory_called.load(Ordering::SeqCst));
-        assert!(task_started.load(Ordering::SeqCst));
-        assert!(task_stopped.load(Ordering::SeqCst));
+            .expect("controller should run built-in monitor extension");
     }
 
     #[test]
-    fn configured_controller_extension_requires_registered_factory() {
+    fn configured_controller_monitor_requires_registered_factory() {
         let controller = Controller::new(empty_pipeline_factory());
         let err = controller
             .run_till_shutdown_with_options(
-                demo_extension_engine_config(),
+                controller_monitor_engine_config(""),
                 ControllerRunOptions::default(),
             )
             .expect_err("missing controller extension factory should fail startup");
@@ -2564,8 +2516,40 @@ groups: {}
                 extension_id,
                 extension_type,
             } => {
-                assert_eq!(extension_id, "demo_controller");
-                assert_eq!(extension_type, "urn:test:extension:demo_controller");
+                assert_eq!(extension_id, "controller_monitor");
+                assert_eq!(extension_type, CONTROLLER_MONITOR_EXTENSION_URN);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn controller_monitor_rejects_invalid_config_at_startup() {
+        let mut registry = ControllerExtensionRegistry::default();
+        register_builtin_controller_extensions(&mut registry);
+        let controller = Controller::new(empty_pipeline_factory());
+        let err = controller
+            .run_till_shutdown_with_options(
+                controller_monitor_engine_config(
+                    r#"      config:
+        interval: "0s""#,
+                ),
+                ControllerRunOptions {
+                    extensions: registry,
+                },
+            )
+            .expect_err("invalid controller monitor config should fail startup");
+
+        match err {
+            Error::ControllerExtensionStartError {
+                extension_id,
+                source,
+            } => {
+                assert_eq!(extension_id, "controller_monitor");
+                assert!(
+                    source.to_string().contains("greater than zero"),
+                    "unexpected error: {source}"
+                );
             }
             other => panic!("unexpected error: {other:?}"),
         }

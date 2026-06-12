@@ -165,6 +165,7 @@ Important behavior:
 - `telemetry`
 - `observed_state`
 - `observability`
+- `extensions`
 - `custom`
 
 ### Engine Topic Settings
@@ -207,6 +208,30 @@ Optional observability policies are supported at:
 - `telemetry`
 
 `resources` is intentionally not supported for observability and is rejected.
+
+### Engine Extensions
+
+Trusted in-process controller extensions can be declared at `engine.extensions`.
+Each entry uses a standard extension envelope with a `type` URN and optional
+extension-specific `config`.
+
+The built-in read-only controller monitor is available in the stock
+`df_engine` binary:
+
+```yaml
+engine:
+  extensions:
+    controller_monitor:
+      type: "urn:otel:extension:controller_monitor"
+      config:
+        interval: "30s"
+        log_snapshots: true
+```
+
+The monitor periodically records controller-level metrics under
+`controller.monitor` and can emit compact internal snapshot logs. It only reads
+observed state and telemetry registry state; it does not reconfigure or shut
+down pipelines.
 
 ### Custom Embedder Configuration
 
