@@ -1572,9 +1572,9 @@ mod tests {
 
     #[test]
     fn nullable_f64_direct() {
-        let arr = Float64Array::from(vec![Some(3.14), None]);
+        let arr = Float64Array::from(vec![Some(123.456), None]);
         let r: &Float64Array = &arr;
-        assert_eq!(r.f64_at(0).unwrap(), Some(3.14));
+        assert_eq!(r.f64_at(0).unwrap(), Some(123.456));
         assert_eq!(r.f64_at(1).unwrap(), None);
     }
 

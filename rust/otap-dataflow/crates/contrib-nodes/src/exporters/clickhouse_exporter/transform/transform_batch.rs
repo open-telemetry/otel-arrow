@@ -1171,6 +1171,7 @@ mod multi_plus_single_tests {
 mod realistic_otap_tests {
     #![allow(unused_results)]
 
+    use otap_df_pdata::TryIntoWithOptions;
     use std::collections::HashMap;
 
     use arrow::array::{Array, ListArray, MapArray, RecordBatch, StringArray, UInt64Array};
@@ -1209,7 +1210,9 @@ mod realistic_otap_tests {
         let mut buf = Vec::new();
         request.encode(&mut buf).expect("encode OTLP logs request");
         let payload: OtapPayload = OtlpProtoBytes::ExportLogsRequest(Bytes::from(buf)).into();
-        payload.try_into().expect("convert OTLP logs to OTAP Arrow")
+        payload
+            .try_into_with_default()
+            .expect("convert OTLP logs to OTAP Arrow")
     }
 
     fn traces_to_arrow_records(request: ExportTraceServiceRequest) -> OtapArrowRecords {
@@ -1219,7 +1222,7 @@ mod realistic_otap_tests {
             .expect("encode OTLP traces request");
         let payload: OtapPayload = OtlpProtoBytes::ExportTracesRequest(Bytes::from(buf)).into();
         payload
-            .try_into()
+            .try_into_with_default()
             .expect("convert OTLP traces to OTAP Arrow")
     }
 

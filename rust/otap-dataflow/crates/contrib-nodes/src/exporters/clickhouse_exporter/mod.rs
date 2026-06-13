@@ -44,6 +44,7 @@ use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::metrics::MetricSetHandler;
@@ -149,7 +150,8 @@ pub static CLICKHOUSE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig| {
+             exporter_config: &ExporterConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         Ok(ExporterWrapper::local(
             ClickhouseExporter::from_config(pipeline, &node_config.config)?,
             node,
@@ -222,15 +224,15 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
 
                     let (_context, payload) = pdata.into_parts();
 
-                    let mut arrow_records: OtapArrowRecords = match payload.try_into() {
+                    let mut arrow_records: OtapArrowRecords = match payload.try_into_with_default()
+                    {
                         Ok(arrow_records) => arrow_records,
                         Err(e) => {
                             self.pdata_metrics.inc_failed(signal_type);
                             otap_df_telemetry::otel_warn!(
                                 "clickhouse.exporter.convert.error",
-                                message = format!(
-                                    "Failed to convert payload to OtapArrowRecords: {e:?}"
-                                ),
+                                message =
+                                    format!("Failed to convert payload to OtapArrowRecords: {e:?}"),
                                 signal_type = format!("{:?}", signal_type),
                             );
                             continue;
