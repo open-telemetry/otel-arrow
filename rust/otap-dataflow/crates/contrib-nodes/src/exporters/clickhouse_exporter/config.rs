@@ -45,8 +45,7 @@ pub struct ConfigPatch {
 /// Configuration for the Clickhouse Exporter
 #[derive(Debug, Clone, Default)]
 pub struct Config {
-    /// ClickHouse HTTP(S) endpoint URL (e.g. "http://localhost:8123"). The official client speaks
-    /// the HTTP protocol, so this must be the HTTP interface, not the native TCP port.
+    /// ClickHouse HTTP(S) endpoint URL (e.g. "http://localhost:8123"). TCP is not supported for now.
     pub endpoint: String,
     /// Database to write to (e.g., "otap")
     pub database: String,

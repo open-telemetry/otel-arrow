@@ -126,27 +126,26 @@ There is currently no automated testing to ensure schema drift relative to the g
 ## Verified Arrow → ClickHouse Type Mapping
 
 Inserts go out as `FORMAT ArrowStream` (Arrow IPC over HTTP); ClickHouse performs the
-Arrow → column coercion server-side. The mappings below were validated end-to-end against a live
+Arrow column coercion server-side. The mappings below were validated end-to-end against a live
 ClickHouse by the `e2e_*` integration tests in `transform/transform_batch.rs` (inserting the
 realistic fixtures and reading every column back). Columns bind **by name**, so column order is
 irrelevant, missing columns are server-defaulted, and an unknown column name errors on `end()`.
 
-| Emitted Arrow type | ClickHouse column type | Example columns | Status |
-|---|---|---|---|
-| `Map<Utf8, Utf8>` | `Map(LowCardinality(String), String)` | ResourceAttributes, ScopeAttributes, LogAttributes, SpanAttributes | ✅ verified |
-| `Dictionary<_, Utf8>` | `LowCardinality(String)` | ServiceName, SpanName, SpanKind, StatusCode | ✅ verified |
-| `Timestamp(Nanosecond)` | `DateTime64(9)` | Timestamp, Events.Timestamp (as `Array(DateTime64(9))`) | ✅ verified |
-| `Int*` → `UInt8` | `UInt8` | SeverityNumber | ✅ verified |
-| `*` → `UInt64` | `UInt64` | Duration | ✅ verified |
-| hex `Utf8` | `String` | TraceId, SpanId, ParentSpanId (top-level) | ✅ verified |
-| `Utf8` | `String` | Body, EventName, StatusMessage, TraceState | ✅ verified |
-| `List<Utf8>` | `Array(LowCardinality(String))` / `Array(String)` | Events.Name, Links.TraceState | ✅ verified |
-| `List<Timestamp(ns)>` | `Array(DateTime64(9))` | Events.Timestamp | ✅ verified |
-| `List<hex Utf8>` | `Array(String)` | Links.TraceId, Links.SpanId (and event equivalents), hex-encoded like the top-level ids | ✅ emitted (re-run e2e to verify) |
-| `List<Map<Utf8,Utf8>>` | `Array(Map(LowCardinality(String), String))` | Events.Attributes, Links.Attributes (one map per event/link) | ✅ emitted (re-run e2e to verify) |
+| Emitted Arrow type | ClickHouse column type | Example columns |
+|---|---|---|
+| `Map<Utf8, Utf8>` | `Map(LowCardinality(String), String)` | ResourceAttributes, ScopeAttributes, LogAttributes, SpanAttributes |
+| `Dictionary<_, Utf8>` | `LowCardinality(String)` | ServiceName, SpanName, SpanKind, StatusCode |
+| `Timestamp(Nanosecond)` | `DateTime64(9)` | Timestamp, Events.Timestamp (as `Array(DateTime64(9))`) |
+| `Int*` → `UInt8` | `UInt8` | SeverityNumber |
+| `*` → `UInt64` | `UInt64` | Duration |
+| hex `Utf8` | `String` | TraceId, SpanId, ParentSpanId (top-level) |
+| `Utf8` | `String` | Body, EventName, StatusMessage, TraceState |
+| `List<Utf8>` | `Array(LowCardinality(String))` / `Array(String)` | Events.Name, Links.TraceState |
+| `List<Timestamp(ns)>` | `Array(DateTime64(9))` | Events.Timestamp |
+| `List<hex Utf8>` | `Array(String)` | Links.TraceId, Links.SpanId (and event equivalents), hex-encoded like the top-level ids |
+| `List<Map<Utf8,Utf8>>` | `Array(Map(LowCardinality(String), String))` | Events.Attributes, Links.Attributes (one map per event/link) |
 
-No special `input_format_arrow_*` settings were required for a clean insert. `async_insert` is left
-as the server-side safety net; the e2e tests disable it so reads are immediately consistent.
+No special `input_format_arrow_*` settings were required for a clean insert.
 
 ## Attribute Representation
 
@@ -156,8 +155,7 @@ Inline attributes are stored as:
 Map(LowCardinality(String), String)
 ```
 
-Nested attribute values (Map/Slice) are transcoded from CBOR into a JSON string stored as the
-map value.
+Nested attribute values (Map/Slice) are transcoded from binary/CBOR into a JSON string stored as the map value.
 
 ## Transform Pipeline
 
@@ -221,18 +219,3 @@ INSTA_UPDATE=always cargo test -p otap-df-contrib-nodes --features clickhouse-ex
 
 - metrics remain stubbed in DDL generation
 - unit testing against realistic otap payloads is currently limited
-
-## E2E (live ClickHouse) validation
-
-The `e2e_*` tests are `#[ignore]`d (they need a live server). To run them:
-
-```bash
-docker run -d --name ch-otel -p 8123:8123 -p 9000:9000 \
-  -e CLICKHOUSE_PASSWORD=test clickhouse/clickhouse-server
-
-CLICKHOUSE_URL=http://localhost:8123 cargo test -p otap-df-contrib-nodes \
-  --features clickhouse-exporter,otap-df-otap/crypto-ring -- --ignored e2e
-```
-
-Honors `CLICKHOUSE_URL` / `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD` (defaults target the container
-above). Each test resets its own database, so it is safe to re-run.

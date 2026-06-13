@@ -76,9 +76,9 @@ impl Iterator for RowRunIter<'_> {
 /// Group row indices by their parent ID (so we can convert to a map representation).
 ///
 /// OTAP attribute rows arrive sorted ascending by `parent_id`, so equal ids are contiguous. The
-/// fast path is a single linear pass that emits `(id, start..end)` runs — no hashing and no
+/// fast path is a single linear pass that emits `(id, start..end)` runs, no hashing and no
 /// per-group `Vec` allocations, with deterministic ordering. If the "sorted & contiguous" invariant
-/// is violated (a previously-seen id reappears, or ids are out of order — e.g. when nulls split a
+/// is violated (a previously-seen id reappears, or ids are out of order, e.g. when nulls split a
 /// group), it falls back to the order-independent `HashMap` grouping.
 pub(crate) fn group_rows_by_id(ids: &UInt16Array) -> Vec<(u16, RowRun)> {
     let len = ids.len();
