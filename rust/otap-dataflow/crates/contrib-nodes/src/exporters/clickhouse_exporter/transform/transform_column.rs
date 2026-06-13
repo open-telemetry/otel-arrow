@@ -556,8 +556,6 @@ fn build_child_attr_list(
     child_payload: ArrowPayloadType,
     to_col: &str,
 ) -> Result<(), ClickhouseExporterError> {
-    // Copy the shared `multi` reference out of `ctx` so the child borrow is independent of the
-    // mutable `take`/`put` below.
     let multi = ctx.multi;
     let child = multi.get(&child_payload);
 
@@ -625,8 +623,6 @@ fn build_child_attr_list(
         })?;
 
         for j in 0..ids.len() {
-            // Copy this child's attribute entries; leave the map empty if the id is null, has no
-            // remap entry, or the compact row is null.
             if !ids.is_null(j) {
                 if let (Some((map, keys, vals)), Some(remap)) = (compact, remap) {
                     if let Some(&src) = remap.get(&ids.value(j)) {
@@ -647,6 +643,7 @@ fn build_child_attr_list(
                     }
                 }
             }
+
             out.values().append(true)?; // close this (possibly empty) map element
         }
 
@@ -685,6 +682,7 @@ fn inline_child_lists(
     }
     Ok(())
 }
+
 /// Resolve the parent id column and the child payload's remap table for an inline op.
 ///
 /// Returns:
@@ -693,7 +691,7 @@ fn inline_child_lists(
 /// - `remap` and `child`: borrows into `ctx.multi`'s underlying data (`'b`), NOT into the `&ctx`
 ///   borrow. We copy the `multi` shared reference out of `ctx` first, so these borrows are
 ///   independent of `ctx` and the caller can still mutate `ctx.columns` (e.g. `ctx.put`) while
-///   holding them — without deep-copying the `HashMap` remap or the whole `MultiColumnOpResult`.
+///   holding them without deep-copying the `HashMap` remap or the whole `MultiColumnOpResult`.
 fn parent_ids_and_child_remap<'b>(
     ctx: &ColumnOpCtx<'b>,
     parent_id_col: &str,

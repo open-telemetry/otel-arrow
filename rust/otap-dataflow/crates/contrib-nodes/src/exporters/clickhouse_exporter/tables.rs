@@ -125,11 +125,6 @@ impl CHTableBuilder {
     }
 
     /// Validate the user-supplied inputs to the table construction for basic SQL validity/safety.
-    ///
-    /// Database/table/engine NAMES are strict identifiers (`validate_identifier`). The `ttl` and
-    /// `engine_params` clauses are richer expressions, so they get purpose-built validators that
-    /// permit their legitimate syntax (spaces, interval units, replicated-engine macros) while
-    /// still rejecting statement terminators and comment sequences.
     pub fn validate(self) -> Result<(), ClickhouseExporterError> {
         validate_identifier(&self.database, "database")?;
         validate_identifier(&self.table, "table")?;
@@ -145,9 +140,6 @@ impl CHTableBuilder {
 }
 
 /// Validate user supplied identifiers for basic sql validity.
-///
-/// Use for database/table/engine NAMES only. For `ttl`/`engine_params` use the dedicated
-/// validators ([`validate_ttl`]/[`validate_engine_params`]) which permit richer syntax.
 pub fn validate_identifier(name: &str, section: &str) -> Result<(), ClickhouseExporterError> {
     if name.is_empty() {
         return Err(ClickhouseExporterError::TableCreationError {
@@ -191,8 +183,6 @@ fn validate_ttl(ttl: &str) -> Result<(), ClickhouseExporterError> {
     }
     reject_injection(trimmed, "ttl")?;
 
-    // Allowed charset: identifiers/units, whitespace, digits, and the punctuation that appears in
-    // interval / column expressions.
     if !trimmed.chars().all(|c| {
         c.is_ascii_alphanumeric()
             || c.is_ascii_whitespace()
@@ -203,7 +193,6 @@ fn validate_ttl(ttl: &str) -> Result<(), ClickhouseExporterError> {
         });
     }
 
-    // Must reference a recognised time unit so a bare/garbage value can't slip through.
     let upper = trimmed.to_ascii_uppercase();
     if !TTL_UNITS.iter().any(|unit| upper.contains(unit)) {
         return Err(ClickhouseExporterError::TableCreationError {
@@ -367,7 +356,7 @@ fn build_table_sql(
                 schema::SCOPE_NAME_COLUMN.clone(),
                 schema::SCOPE_VERSION_COLUMN.clone(),
             ]);
-            // Traces have no ScopeAttributes column
+
             builder
                 .columns
                 .push(schema::INLINE_SPAN_ATTR_COLUMN.clone());
@@ -762,8 +751,6 @@ mod tests {
         assert!(builder.validate().is_err());
     }
 
-    // --- Bug 1: global ttl_interval is honored ---
-
     #[test]
     fn test_global_ttl_interval_applied_to_ddl() {
         // No per-table `ttl`, but a global `ttl_interval` default — it should appear in the DDL.
@@ -808,8 +795,6 @@ mod tests {
         assert!(sql.contains("TTL Timestamp + INTERVAL 12 HOUR"), "{sql}");
         assert!(!sql.contains("48 HOUR"), "{sql}");
     }
-
-    // --- Bug 2: ttl / engine_params validation ---
 
     #[test]
     fn test_validate_ttl_accepts_interval_with_space() {

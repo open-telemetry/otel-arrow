@@ -353,7 +353,7 @@ fn build_list_arrays(
 ) -> Result<(HashMap<u32, u32>, HashMap<String, ArrayRef>), ClickhouseExporterError> {
     // Trace/span id columns arrive as FixedSizeBinary (possibly dictionary-encoded). Hex-encode
     // them to Utf8 up front so the grouped list becomes `Array(String)` of hex — matching the
-    // top-level TraceId/SpanId — rather than `Array(FixedSizeBinary)`, which ClickHouse would
+    // top-level TraceId/SpanId rather than `Array(FixedSizeBinary)`, which ClickHouse would
     // otherwise coerce to `Array(String)` as raw bytes.
     let targets: HashMap<String, ArrayRef> = targets
         .iter()
@@ -607,7 +607,7 @@ fn apply_column_ops(
         return Ok(None);
     }
 
-    // Snapshot of starting names. A set so the second pass can test membership in O(1).
+    // Snapshot of starting names.
     let original_names: HashSet<String> = these_results.columns.keys().cloned().collect();
 
     {
@@ -643,7 +643,7 @@ fn apply_column_ops(
         //
         // The set of "synthetic" candidates (ops planned for columns that were not in the original
         // batch) is fixed up front, so each loop iteration only re-checks which candidates have
-        // since appeared in `ctx` and have not yet been processed — no full rescan of `column_ops`
+        // since appeared in `ctx` and have not yet been processed, no full re-scan of `column_ops`
         // and no per-iteration cloning of the op vectors.
         let synthetic_candidates: Vec<(&String, &Vec<ColumnTransformOp>)> = ops
             .column_ops
@@ -889,9 +889,9 @@ mod apply_column_ops_tests {
         assert_eq!(attrs.len(), 2);
     }
 
-    /// Regression: when an attribute group's child payload is absent (e.g. every scope had empty
+    /// When an attribute group's child payload is absent (e.g. every scope had empty
     /// attributes), the foreign-key id column (`scope_id`) must be DROPPED, not leaked into the
-    /// output — otherwise the bind-by-name INSERT references a column the table lacks and
+    /// output. Otherwise the bind-by-name INSERT references a column the table lacks and
     /// ClickHouse rejects it with NO_SUCH_COLUMN_IN_TABLE.
     #[test]
     fn apply_column_ops_drops_id_column_when_child_attr_payload_missing() {
@@ -1772,26 +1772,8 @@ mod realistic_otap_tests {
         }
     }
 
-    // =======================================================================
-    // Live insert validation against a running ClickHouse.
-    //
-    // These tests are `#[ignore]`d so they never run in normal CI; they require
-    // a live ClickHouse reachable over HTTP. Start one and run them with:
-    //
-    //   docker run -d --name ch-otel -p 8123:8123 -p 9000:9000 \
-    //     -e CLICKHOUSE_PASSWORD=test clickhouse/clickhouse-server
-    //
-    //   CLICKHOUSE_URL=http://localhost:8123 cargo test -p otap-df-contrib-nodes \
-    //     --features clickhouse-exporter,otap-df-otap/crypto-ring -- --ignored e2e
-    //
-    // They prove the one thing reading code cannot: that each Arrow column type
-    // the exporter emits coerces into the corresponding ClickHouse column type
-    // over `FORMAT ArrowStream`. We drive the real fixtures through
-    // `BatchTransformer::apply_plan` → `ClickHouseWriter::write_batches` against
-    // the Go-exporter-shaped tables, then read every row back and assert the
-    // values round-tripped. A type that does not coerce surfaces as a failed
-    // INSERT (on `end()`); a value mismatch surfaces in the read-back asserts.
-    // =======================================================================
+    // These tests require a live ClickHouse reachable over HTTP
+
     #[cfg(test)]
     mod e2e_live {
         use super::*;
