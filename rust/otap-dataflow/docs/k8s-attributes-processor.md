@@ -43,32 +43,27 @@ The processor responsibility is split into two pieces:
 
 The split is driven by two engine constraints that have no Go analog:
 
-- **Per-core duplication is unacceptable.** If the watcher and cache lived
-  inside the processor, an N-core collector would open N independent
-  watches to the apiserver and hold N copies of the same pod metadata in
-  RAM. Declaring the extension at pipeline-group scope means the framework
-  guarantees exactly one instance per group, so one watcher and one cache
-  serve every per-core processor instance in that group with no
-  per-extension deduplication work in the implementation.
+- **Per-core duplication is unacceptable.** Processors are per-core; if
+  the watcher and cache lived inside the processor, an N-core collector
+  would open N watches and hold N copies of the cache. The extension
+  hosts both, once per group.
 - **Hot-path safety.** The processor's `process()` runs on the per-core
   async runtime. Kubernetes client I/O, watcher reconnects, and cache
   rebuilds all introduce scheduling points. Keeping that work behind a
   synchronous, non-blocking capability surface (`KubernetesMetadataLookup`)
   makes it impossible to accidentally call Kubernetes API code from the
   data path -- the surface exposes no such method, and the processor crate
-  has no direct Kubernetes client dependency. See the "Hot-path contract"
-  row in [Core Decisions](#core-decisions) for the lookup guarantees.
+  has no direct Kubernetes client dependency.
 
 The extension boundary is where blocking and async work belongs; the
 processor stays a synchronous reader of a published snapshot.
 
 The sharing unit is the pipeline group, not the engine. Different groups
-in the same collector may watch the cluster at different scopes (one group
-filtering to the local node for agent telemetry, another watching a single
-namespace for control-plane telemetry). Each group gets its own extension
-instance with its own watcher, client, and cache; pipelines in a group share
-that one instance. This bounds the reload blast radius and the `RequestIndexShape`
-rebuild blast radius to a group rather than the whole process.
+in the same collector may watch the cluster at different scopes (one
+filtering to the local node for agent telemetry, another watching a
+single namespace for control-plane telemetry). Each group gets its own
+extension instance; pipelines in a group share that one instance. See
+[Why group scope rather than engine scope](#why-group-scope-rather-than-engine-scope).
 
 ## Goals
 
@@ -106,10 +101,12 @@ The v1 capability does not include:
   ReplicaSet-name heuristic;
 - multi-container-instance disambiguation via `k8s.container.restart_count`
   (latest instance is used);
-- `wait_for_metadata` startup blocking. The extension
-  instance signals readiness once and the engine gates every pipeline in
-  the group on that signal -- but the readiness-probe hook itself is
-  future work in the extension framework. See [Open Questions](#open-questions);
+- `wait_for_metadata` startup blocking. The architecture cannot
+  guarantee "cache fully warm for this processor's shapes before
+  `process()` runs" -- the processor's own `start()` is what tells the
+  extension which non-default shapes to populate, so gating on that
+  deadlocks. A partial form may become possible once the framework
+  gains a readiness-probe hook; see [Open Questions](#open-questions);
 - Job-informer-based CronJob name resolution (v1 uses the
   Job-name-suffix heuristic);
 - `service.namespace` / `service.name` / `service.version` /
@@ -139,7 +136,7 @@ contract must say so.
 | Pod-delete grace | Default 120s |
 | Watch resync | Default `0s` (disabled); event-driven only, matches large-cluster guidance |
 | Live reconfiguration | Receives `NodeControlMsg::Config { config }` like `attributes_processor`. Extension and per-pipeline processor reloads are independent units of change since the extension lives outside the pipeline. See [Live Reconfiguration](#live-reconfiguration). |
-| Index-shape extension | When a per-core processor's config references a new association source shape, the processor sends a `RequestIndexShape` message on the extension's control channel; the extension extends the composite index over the existing reflector contents and acknowledges. Adding a shape is idempotent. |
+| Index-shape registration | The extension cannot see processor configs at its own `start()` (the framework wires extensions and consumers in one direction; see [Index-shape registration](#index-shape-registration)). Each processor calls `register_shape()` on its capability handle at its own `start()` and on every `NodeControlMsg::Config` reload. The first lookup for a newly-registered shape may miss until the extension's writer back-fills it over the existing reflector contents; registration is idempotent. |
 | Startup readiness | Processor is always ready; cache fill is asynchronous and reported via metrics |
 | Telemetry | `MetricSet`-backed counters and gauges for cache size, lookup hit/miss, watch errors |
 | Semantic conventions version | Emit v1 K8s conventions (`k8s.pod.label.*` singular form); no feature gate for v0 |
@@ -157,7 +154,7 @@ processor.
 | `context` | Preserve | Forwarded to `KubeConfigOptions::context` when `kube_config` |
 | `kube_api_qps` / `kube_api_burst` | Preserve | Implemented as a token-bucket rate limiter on the Kubernetes client; covers both list and watch requests |
 | `passthrough: true` | Preserve | When enabled, stamps `k8s.pod.ip` from `OtapPdata::peer_addr()` without further enrichment; rejected at config validation if the bound source pipeline cannot supply a peer address. See [Connection-IP Association](#connection-ip-association). |
-| `wait_for_metadata` | Defer | Not in v1; blocked on the extension framework supporting opt-in readiness probes that gate data-path node startup. Once that capability exists, this extension would signal "cache initially synced" via the probe, the engine would delay starting the data-path nodes bound to this extension until the signal arrives, and `wait_for_metadata` becomes a small local config option here. See [Open Questions](#open-questions). |
+| `wait_for_metadata` | Defer (partial when hook lands) | Not in v1. Blocked on the extension framework supporting opt-in readiness probes that gate data-path node startup. Even with that hook, the guarantee would only cover initial list + default shapes -- not non-default shapes or lazy workload kinds, because gating processor `start()` on those would deadlock with the processor's own `register_shape()` / `register_workload_kind()` calls. See [Open Questions](#open-questions). |
 | `wait_for_metadata_timeout` | Defer | Tied to `wait_for_metadata` |
 | `watch_sync_period` | Improve | Default `0s` instead of Go's `5m`; matches large-cluster recommendation |
 | `pod_delete_grace_period` | Preserve | Default 120s |
@@ -172,7 +169,7 @@ processor.
 | `extract.labels` (`key`, `key_regex`, `from`) | Preserve | All seven `from` values |
 | `extract.otel_annotations` | Preserve | Default `false` in Go; v1 default `false` |
 | `deployment_name_from_replicaset: false` | Reject | Always use the ReplicaSet-name heuristic; explicit Deployment informer is future work |
-| `from: deployment / statefulset / daemonset / job` extraction | Improve | Informers started lazily, only when extraction or `*.uid` references them |
+| `from: deployment / statefulset / daemonset / job` extraction | Improve | Informers started lazily via `register_workload_kind()` capability calls from processors that reference the kind (see [Lazy informers](#lazy-informers)) |
 | CronJob-name Job-suffix heuristic | Preserve | Default; Job informer not started for name-only use |
 | `pod_association` `from: resource_attribute` | Preserve | Same shape; composite keys preserved (see [Pod Identifier Index Model](#pod-identifier-index-model)) |
 | `pod_association` `from: connection` | Preserve | Reads `OtapPdata::peer_addr()`; the rule is treated as not-matching for batches with no peer address (file-based or non-socket receivers). See [Connection-IP Association](#connection-ip-association). |
@@ -285,12 +282,16 @@ The extension owns nothing that depends on a specific pipeline's data
 schema. The processor owns nothing that depends on the cluster's runtime
 state.
 
-### `KubernetesMetadataLookup` capability
+## `KubernetesMetadataLookup` capability
 
 The capability is intentionally narrow: a generic composite-key pod
 lookup, a handful of convenience methods for the well-known per-kind
-shapes, and a per-batch snapshot accessor that gives the processor one
-stable view across an entire `process()` call.
+shapes, a per-batch snapshot accessor that gives the processor one
+stable view across an entire `process()` call, and a config-time
+`register_shape()` method that processors use to tell the extension
+which composite shapes its writer must populate (see
+[Index-shape registration](#index-shape-registration) for why this
+lives on the capability surface rather than inside extension config).
 
 ```rust
 /// One configured association attribute -- the pair the user wrote in
@@ -303,6 +304,10 @@ struct PodIdentifierAttribute {
 
 /// AND of up to 4 attributes (matches the `pod_association` source cap).
 type PodIdentifier = Vec<PodIdentifierAttribute>;
+
+/// The schema portion of a `PodIdentifier` -- attribute names only, no
+/// values. Defines a row shape the writer must build per pod.
+type PodIdentifierShape = Vec<String>;
 
 trait KubernetesMetadataLookup {
     /// Composite-key pod lookup. Returns `None` if no pod matches the
@@ -319,6 +324,35 @@ trait KubernetesMetadataLookup {
     /// is used for every resource in the batch so the hot path never
     /// re-loads the published snapshot pointer.
     fn snapshot(&self) -> MetadataSnapshot;
+
+    /// Config-time only. Tell the extension to populate `pod_index`
+    /// entries for `shape` on every pod apply. Idempotent (second call
+    /// with the same shape is a no-op). Called once per per-core
+    /// processor instance at `start()` and on reload, so the extension
+    /// sees N redundant calls for the same shape on an N-core engine;
+    /// dedup at the extension's writer collapses them into a single
+    /// back-fill (see [Per-core fan-in](#per-core-fan-in)). The
+    /// extension walks its existing reflector stores to back-fill
+    /// entries for `shape` over pods already in the cache; that work
+    /// runs on the extension's runtime and finishes asynchronously.
+    /// Lookups using `shape` may miss until the back-fill completes
+    /// (observable via `k8s.index.shape_rebuild_pending`). Returns
+    /// immediately; never called from `process()`.
+    fn register_shape(&self, shape: PodIdentifierShape);
+
+    /// Config-time only. Tell the extension to start a watcher /
+    /// reflector for `kind` so subsequent `workload()` lookups for that
+    /// kind can hit. Idempotent. Called once per per-core processor
+    /// instance at `start()` and on reload; dedup at the extension
+    /// collapses N redundant calls into a single watcher per kind (see
+    /// [Per-core fan-in](#per-core-fan-in)). Workload informers are
+    /// off by default (see [Lazy informers](#lazy-informers)); a
+    /// processor calls this at its `start()` when its extraction
+    /// config references the corresponding `*.uid` metadata or `from:`
+    /// source. Returns immediately; the watcher is brought up on the
+    /// extension's runtime, and `workload()` lookups for the kind may
+    /// return `None` until the initial list completes.
+    fn register_workload_kind(&self, kind: WorkloadKind);
 }
 ```
 
@@ -336,7 +370,7 @@ exactly once before any consumer can resolve it, so the extension's
 `start()` performs watcher construction and background-task spawn
 unconditionally with no initialization coordination.
 
-#### Cache structure
+### Cache structure
 
 The extension holds one `kube_runtime::reflector::Store<K>` per watched
 kind (pod, namespace, node, and any workload kinds the configuration
@@ -469,11 +503,6 @@ pipeline_groups:
       # pipelines in this group bind `k8s_metadata` and see a different cache
 ```
 
-The two groups share the same cluster and the same `ServiceAccount`
-credentials but run independent watchers because their `filter:` scopes
-differ. Within either group, any number of pipelines bind the one
-extension instance and share its cache.
-
 Rules:
 
 - `serde(deny_unknown_fields)` on every config struct.
@@ -538,10 +567,9 @@ attribute name sets are precomputed at `Config` time into a single
 rule-scan plan so the hot path performs at most one O(R) pass per
 resource (R = referenced attribute names).
 
-Because the group-scoped extension and the per-core processors live in
-different scopes, adding a new association-source shape at runtime
-requires a control-channel message; see
-[Index-shape extension on demand](#index-shape-extension-on-demand).
+Non-default `pod_association` shapes must be registered with the
+extension via `register_shape()` at processor start; see
+[Index-shape registration](#index-shape-registration).
 
 ### Pod Identifier Index Model
 
@@ -562,37 +590,110 @@ corresponding fields are present:
 
 - `[(k8s.pod.uid, <uid>)]`
 - `[(k8s.pod.name, <name>), (k8s.namespace.name, <ns>)]`
-- `[(k8s.pod.ip, <pod_status_pod_ip>)]` (skipped for `hostNetwork` pods;
-  see [`KubernetesMetadataLookup` capability](#kubernetesmetadatalookup-capability))
+- `[(k8s.pod.ip, <pod_status_pod_ip>)]` (skipped for `hostNetwork` pods)
 - `[(container.id, <stripped_id>)]` per container status
 
-Additional shapes are added on demand for any source name referenced by a
-loaded processor's `pod_association`. See
-[Index-shape extension on demand](#index-shape-extension-on-demand) for
-the runtime protocol.
+Any non-default shape referenced by a loaded processor's
+`pod_association` is added on demand by [Index-shape
+registration](#index-shape-registration).
 
-### Index-shape extension on demand
+### Index-shape registration
 
-The extension only knows the union of identifier shapes referenced by
-config that has reached it; per-pipeline processors may load with a new
-association shape that the extension has not seen.
+The writer can only populate `pod_index` entries for shapes it knows
+about. The default shapes above are baked in; any other shape
+(`[service.instance.id]`, `[service.name, service.namespace]`, etc.) must
+be declared to the writer before the corresponding lookups can hit.
 
-When a processor's `start()` or `NodeControlMsg::Config { config }`
-introduces a new identifier shape, the processor sends a
-`RequestIndexShape { shape: PodIdentifierShape }` message on the
-extension's control channel. The extension:
+#### Framework constraint
 
-1. de-duplicates against existing shapes,
-2. extends the indexer to populate the new shape on every reflector apply,
-3. rebuilds the new shape's entries over the existing reflector store
-   contents (one pass), and
-4. acknowledges via the processor's reply channel.
+The extension does **not** see processor configs at its own `start()`.
+The extension system wires capabilities in one direction -- consumers
+pull from extensions through typed handles -- and the engine builds the
+extension from its own `extensions:` config block alone. There is no
+framework pathway that delivers "the union of `pod_association` shapes
+referenced by every bound processor" to the extension at construction
+time, and reusing the engine-driven `ExtensionControlMsg` lifecycle
+channel for node-to-extension calls would invert the architecture.
 
-The processor does not block on the acknowledgement: lookups for the new
-shape will simply miss until the rebuild completes, and the rebuild
-duration is reported through telemetry (see [Telemetry](#telemetry)).
-A loud `k8s.index.shape_rebuild_pending` gauge makes the transient
-miss-window observable.
+The only architecture-legal channel for a processor to communicate
+with an extension is the capability handle. So shape registration lives
+on the `KubernetesMetadataLookup` trait as `register_shape()`. The flow
+is processor-driven:
+
+1. On the processor's `start()`, it walks its own `pod_association`
+   rules, derives the set of `PodIdentifierShape` values it will look
+   up (each rule's source names form one shape), and calls
+   `register_shape()` once per shape on its capability handle.
+2. On every `NodeControlMsg::Config { config }` reload, the processor
+   re-derives its shape set and calls `register_shape()` for any new
+   shape. The capability is idempotent, so re-registering an existing
+   shape is a no-op; shapes that are no longer referenced are left in
+   place (cheap to keep, no correctness impact, simpler than
+   reference-counting across pipelines).
+3. The extension records the shape in its writer plan and, on its own
+   runtime, walks the existing reflector stores once to back-fill
+   entries for the new shape. The back-fill duration is bounded by the
+   cache size; the `k8s.index.shape_rebuild_pending` gauge counts
+   in-flight rebuilds so an operator can observe the transient
+   miss window.
+
+#### Consequence: ordering and first-lookup misses
+
+Because `register_shape()` is a capability call from the processor, the
+shape information physically arrives at the extension **after** the
+extension's `start()` has run and after its initial watch list has
+begun. This produces an unavoidable miss window for any shape that is
+not one of the defaults:
+
+- the extension's first watch-list events arrive and the writer
+  populates `pod_index` only for the default shapes (uid, name+ns, ip,
+  container.id);
+- the processor reaches its own `start()`, calls `register_shape()` for
+  its non-default shapes;
+- the extension extends its writer plan and starts a back-fill pass
+  over the reflector store contents;
+- until the back-fill completes, lookups using the newly-registered
+  shape miss and are counted in `k8s.lookup.miss`.
+
+Default shapes are never affected -- they are populated unconditionally
+from the first list. Steady state after back-fill is "all
+registered shapes hit." Processors do not block on `register_shape()`;
+the call returns immediately and the back-fill runs in the
+background.
+
+The processor cannot "wait for extension start" before calling
+`register_shape()` -- the framework already guarantees the extension is
+started before any consumer can resolve its capability, so the call is
+always safe by construction. What it cannot guarantee is that the
+extension's *cache* is warm enough for the shape's back-fill to be a
+no-op; that depends on how far the initial list has progressed, which
+is a Kubernetes-API latency question reported through telemetry.
+
+#### Per-core fan-in
+
+The processor is instantiated per pipeline instance, which is per core.
+Every per-core instance of `k8s_attributes_processor` runs the same
+`register_shape()` / `register_workload_kind()` loop at its `start()`,
+so on an N-core engine the extension sees N redundant calls for every
+shape and every workload kind a given pipeline references. If two
+pipelines in the same group reference overlapping shapes, those
+overlap on top of the per-core fan-in.
+
+This is intentional and harmless: idempotency at the extension's
+writer is the load-bearing property. The writer holds the set of
+registered shapes (and the set of started workload kinds) behind a
+standard concurrent set; a registration call is a single
+insert-if-absent and a scheduling decision. The first call for a given
+shape inserts and schedules one back-fill; the remaining N-1 calls
+observe "already present" and return immediately. Same for workload
+kinds: one watcher per kind, regardless of how many per-core
+processors registered it.
+
+The writer's set is the single coordination point between per-core
+callers, and the work behind it is trivial (a hashset check plus, on
+first insertion, scheduling a back-fill on the extension's own
+runtime). There is no thundering-herd cost at startup beyond the
+hashset contention.
 
 ## Extraction
 
@@ -654,35 +755,34 @@ stripped, matching the semantic conventions.
 ### Lazy informers
 
 Informers for `Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `CronJob`,
-and `ReplicaSet` are not started by default. They are started lazily on
-extension `start()` when the loaded processor configuration references the
-corresponding `*.uid` metadata, or when `extract.labels` /
-`extract.annotations` references the corresponding `from:` source. This
-keeps memory and RBAC needs at the documented "node-filtered agent" floor
-unless the user opts in.
+and `ReplicaSet` are off by default. Each is brought up on first call
+to `register_workload_kind()` from any processor in the group, for the
+same reason `register_shape()` exists (see
+[Framework constraint](#framework-constraint)). A processor calls it
+at its own `start()` (and on reload) for every workload kind its
+extraction config references -- through `*.uid` metadata or through
+`extract.labels` / `extract.annotations` with a matching `from:`
+source. The new watcher's events flow through the same telemetry as
+the default kinds.
 
 ## Filter and Exclude
 
 `filter.node` / `filter.node_from_env_var` narrow the pod watcher with a
 `spec.nodeName=<node>` field selector. The namespace, node, and workload
-watchers are not node-narrowed. `filter.node_from_env_var` is resolved by
-the group-scoped extension exactly once at group startup, before any
-pipeline in the group starts.
+watchers are not node-narrowed.
 
 `filter.namespace` narrows the pod watcher to a single namespace at API
 scope (not via a selector). The namespace and node watchers remain at
 cluster scope and silently degrade to empty when RBAC denies them (see
 [RBAC](#rbac)).
 
-This is the single supported watch-narrowing mechanism in v1; field- and
-label-selector filtering of arbitrary pods is deferred and rejected at
-config validation.
+This is the single supported watch-narrowing mechanism in v1; field-
+and label-selector filtering of arbitrary pods is deferred and rejected
+at config validation.
 
-`exclude.pods` is post-watch: entries whose pod name matches any configured
-regex are dropped from the indexes (and never enriched). The default
-exclude list is `jaeger-agent` and `jaeger-collector`. Exclude reloads
-apply uniformly across every pipeline in the group binding this
-extension.
+`exclude.pods` is post-watch: entries whose pod name matches any
+configured regex are dropped from the indexes (and never enriched).
+The default exclude list is `jaeger-agent` and `jaeger-collector`.
 
 ## Kubernetes Watch Model
 
@@ -691,11 +791,8 @@ extension.
   failure with exponential backoff.
 - `api.qps` / `api.burst` are applied as a token-bucket rate limiter on
   the client; both list and watch HTTP requests pass through the limiter.
-- The watcher task runs on the group-scoped extension's runtime. Whether
-  that runtime is a dedicated extension runtime or a designated "host
-  core" is an engine-side hosting policy (see
-  [Group-Scoped Integration](#group-scoped-integration)). In either
-  case, Kubernetes client I/O is non-blocking and no dedicated blocking
+- The watcher task runs on the group-scoped extension's runtime;
+  Kubernetes client I/O is non-blocking and no dedicated blocking
   worker thread is required.
 
 ## Connection-IP Association
@@ -760,47 +857,17 @@ extension exposes the levers that matter:
 
 Per-pod overhead estimate (agent mode, default extraction, no
 label/annotation extraction): ~1 KB of `Arc`-shared metadata plus index
-entries. A 200-pod node should fit comfortably in <1 MiB. A 10k-pod gateway
-with full label extraction is plausible at <500 MiB. These are design
-targets, not contractual guarantees; group scope provides "one cache per
-group" structurally, so each group's footprint scales with what that
-group's filter admits, not with the union of every group's filters in
-the process.
+entries. A 200-pod node should fit comfortably in <1 MiB. A 10k-pod
+gateway with full label extraction is plausible at <500 MiB. These are
+design targets, not contractual guarantees; each group's footprint
+scales with what its filter admits, independent of other groups in the
+process.
 
 `cache.pod_index_capacity` and the other capacity hints set initial
 index sizes so the first watcher list does not trigger repeated
 rehashing.
 
-## Group-Scoped Integration
-
-Pipeline-group scope means:
-
-- The framework instantiates exactly one extension per named declaration
-  inside a pipeline group's `extensions:` block. Two groups with their
-  own `k8s_metadata` declarations get two independent instances, even if
-  the bodies are identical.
-- Capability handles returned by `require_shared` from per-core processors
-  are `Send + Clone` and reference the one group-scoped instance the
-  processor's pipeline is bound to.
-- The extension's `start()` runs once before any pipeline in the group
-  starts; its shutdown runs after every pipeline in the group has drained.
-
-The design uses those guarantees as the primary mechanism for "one
-watcher per group": one extension instance per group, one Kubernetes
-client, one set of watchers, one cache, one snapshot stream serving every
-pipeline in the group.
-
-On the data path, the processor never crosses a core boundary to perform
-work: each per-core processor takes a snapshot reference through its local
-capability handle, which dereferences an `Arc<ArcSwap<MetadataTables>>`
-into an immutable `Arc<MetadataTables>` that is `Send + Sync` and used
-read-only for the rest of `process()`. The capability handle itself is
-held per-core and never shared between cores at runtime. The watcher task
-runs on the group-scoped extension's runtime, off the per-core data-path
-runtimes; Kubernetes client I/O does not contend with the data path for
-runtime time.
-
-### Why group scope rather than engine scope
+## Why group scope rather than engine scope
 
 Even though every group in the process talks to the same cluster, group
 scope is the right sharing boundary:
@@ -809,34 +876,28 @@ scope is the right sharing boundary:
   groups that disagree on filter cannot share a watcher without one of
   them paying the cost of pods it will never query. Group scope lets
   each group's watcher match exactly its filter.
-- `auth_type` / `kube_config` / `context` define which client identity is
-  used. Even on a single cluster, different groups may need different
-  identities for RBAC reasons.
+- `auth_type` / `kube_config` / `context` define which client identity
+  is used. Different groups may need different identities for RBAC
+  reasons.
 - Reload blast radius. A restart-required field on the extension
   (`filter.namespace`, `auth_type`, ...) restarts the watcher for every
-  pipeline binding that extension. Group scope bounds the blast radius
-  to the group; engine scope would let one group's reload disturb every
-  other group in the process.
-- `RequestIndexShape` blast radius. A shape rebuild triggered by one
-  group's processor causes a transient miss window for every pipeline
-  binding the same extension. Group scope contains the miss window to
-  the group whose processors actually requested the shape.
-- Lifecycle. Group scope makes shutdown ordering match the actual data
-  dependency: pipelines in a group drain before that group's extension.
-  Engine scope would couple shutdown of every group's pipelines to every
-  group's extension.
+  pipeline binding that extension; group scope bounds this to the
+  group rather than the whole process.
+- Index-shape back-fill blast radius. A `register_shape()` call from
+  one group's processor triggers a back-fill that causes a transient
+  miss window for every pipeline in that group binding the same
+  extension; group scope contains that to the group whose processors
+  actually registered the shape.
+- Lifecycle ordering matches the actual data dependency: pipelines in
+  a group drain before that group's extension shuts down.
 
 When multiple groups happen to need identical enrichment from the same
-cluster, they can each declare the same `k8s_metadata` extension config
-and pay for two watchers; the operational simplicity (independent reload
-windows, independent telemetry, clear binding rules) outweighs the cost
-of the duplicated watcher in practice. If a deployment really wants one
+cluster, they can each declare the same `k8s_metadata` extension and
+pay for two watchers; the operational simplicity (independent reload
+windows, independent telemetry, clear binding rules) outweighs the
+duplicate watcher cost in practice. If a deployment really wants one
 watcher serving multiple groups, the right answer is to merge those
 groups into one.
-
-### Runtime placement of the watcher task
-
-TBD
 
 ## Telemetry
 
@@ -901,21 +962,19 @@ When `filter.namespace` is set, the same rules can be a namespace-scoped
 1. The engine starts each pipeline group. The group's `k8s_metadata`
    extension `start()` resolves `filter.node_from_env_var` if it was
    configured (failing fast when the named env var is missing or empty),
-   builds the Kubernetes client, and starts watchers for the kinds
-   required by:
-   - the default pod / namespace / node set, plus
-   - any workload kinds referenced by the **initial union** of bound
-     processor configurations in the group resolvable at group-startup
-     time.
-2. The engine starts the pipeline instances inside the group. Each
-   per-core processor `start()` resolves the group-scoped capability via
-   `require_shared`, validates that the capability provides the
-   `KubernetesMetadataLookup` surface, pre-compiles all `key_regex`
-   patterns, and precomputes each association rule's attribute-name set
-   for fast presence checks on the hot path. Any new identifier shapes
-   are requested via `RequestIndexShape`; lookups for those shapes may
-   miss until the rebuild completes (see
-   [Index-shape extension on demand](#index-shape-extension-on-demand)).
+   builds the Kubernetes client, and starts watchers for the default
+   pod / namespace / node set. Workload-kind informers are not started
+   yet (see [Lazy informers](#lazy-informers)).
+2. The engine starts the pipeline instances in the group. Each per-core
+   processor `start()` resolves the capability via `require_shared`,
+   pre-compiles `key_regex` patterns and the rule-scan plan, then calls
+   `register_shape()` for each `PodIdentifierShape` its `pod_association`
+   references and `register_workload_kind()` for each kind its extraction
+   references. Both calls return immediately; back-fills and new
+   workload watchers run on the extension's runtime. Lookups for
+   newly-registered shapes or newly-started kinds may miss until the
+   corresponding work completes (see
+   [Consequence: ordering and first-lookup misses](#consequence-ordering-and-first-lookup-misses)).
 3. The pipeline reaches Ready. Telemetry can flow before the cache is
    warm; until cache fill completes, lookups will miss and the
    `k8s.lookup.miss` counter will rise.
@@ -949,9 +1008,9 @@ change.
 
 | Config field | Hot-swappable | Owner of the reload |
 | --- | --- | --- |
-| `extract.metadata` / `extract.labels` / `extract.annotations` | Yes | Per-pipeline processor (atomic plan publish); extension extends the indexed-field set on `RequestIndexShape` if a new `from:` source is referenced |
+| `extract.metadata` / `extract.labels` / `extract.annotations` | Yes | Per-pipeline processor (atomic plan publish); processor also calls `register_workload_kind()` for any new workload kind referenced by the reload (see [Lazy informers](#lazy-informers)) |
 | `extract.otel_annotations` | Yes | Per-pipeline processor |
-| `pod_association` | Yes | Per-pipeline processor; extension extends the composite-key index via `RequestIndexShape` for new shapes |
+| `pod_association` | Yes | Per-pipeline processor (atomic rule-scan plan publish); processor calls `register_shape()` for new shapes (see [Index-shape registration](#index-shape-registration)) |
 | `exclude.pods` | Yes | Group-scoped extension (applies uniformly across every pipeline in the group binding it) |
 | `filter.namespace` | No | Group-scoped extension (watcher restart; restarts cache for every pipeline in the group binding it) |
 | `filter.node` / `filter.node_from_env_var` | No | Group-scoped extension (watcher restart) |
@@ -1012,14 +1071,23 @@ Additional scenario coverage:
   `filter.namespace`. Verify exactly two watch connections, two
   independent caches, and that restarting one group's extension does
   not disturb the other group's lookups;
-- **`RequestIndexShape` rebuild.** Start the collector with one pipeline
-  in a group using only `k8s.pod.uid` association; add a second pipeline
-  in the same group at runtime whose `pod_association` references a new
-  shape (e.g. `(service.name, service.namespace)` joined to extracted
-  metadata). Verify `k8s.index.shape_rebuild_pending` rises to 1, falls
-  to 0 within the rebuild budget, and that subsequent lookups using the
-  new shape hit. Verify the rebuild does not affect another group's
-  extension.
+- **`register_shape()` back-fill.** Start the collector with one
+  pipeline in a group using only `k8s.pod.uid` association; add a
+  second pipeline in the same group at runtime whose `pod_association`
+  references a new shape (e.g. `(service.name, service.namespace)`
+  joined to extracted metadata). Verify the new processor calls
+  `register_shape()` at its `start()`,
+  `k8s.index.shape_rebuild_pending` rises to 1, falls to 0 within the
+  rebuild budget, and that subsequent lookups using the new shape hit.
+  Verify the back-fill does not affect another group's extension.
+- **First-lookup miss window for non-default shapes.** Configure a
+  processor whose `pod_association` references a non-default shape;
+  start the collector against a cluster with many existing pods.
+  Verify lookups for the non-default shape miss for the duration of the
+  back-fill pass (`k8s.index.shape_rebuild_pending` non-zero,
+  `k8s.lookup.miss` rising) and then hit once the back-fill completes.
+  Verify default-shape lookups (`k8s.pod.uid`, name+namespace) hit from
+  the moment the initial list completes regardless.
 
 Robustness coverage:
 
@@ -1033,45 +1101,58 @@ Robustness coverage:
 
 ## Open Questions
 
-1. **`RequestIndexShape` failure modes.** What should the processor do
-   when the extension declines a shape request (e.g. because it would
-   exceed a configured `max_index_shapes` budget)? Options: hard-fail the
-   processor reload, soft-fail with a permanent miss for that shape, or
-   reject the new processor config at the engine level. v1 leans toward
-   soft-fail with a loud metric (`k8s.index.shape_rebuild_pending` stays
-   at zero and a separate `k8s.index.shape_rejected` counter rises).
-2. **Workload metadata growth under aggressive churn.** Caches are not
+1. **Readiness-probe hook in the extension framework, and its scope.**
+   Implementing `wait_for_metadata` (and its timeout) requires the
+   engine to support opt-in readiness probes that gate data-path node
+   startup on an extension signal. Even with that hook the guarantee
+   would be **partial**: the extension can signal "initial list
+   complete + default shapes (`uid`, `name+ns`, `ip`, `container.id`)
+   populated" before any processor starts, but it cannot signal
+   "non-default shapes populated" or "lazy workload-kind informers
+   ready" without deadlocking -- those depend on the processor calling
+   `register_shape()` / `register_workload_kind()`, which can only
+   happen *after* the processor has started. Gating processor `start()`
+   on consumer-driven registration produces a cycle:
+   `processor.start()` waits on `extension ready for my shapes`, which
+   waits on the processor having called `register_shape()`, which is
+   inside `processor.start()`. Open question: should v1 ship with
+   `wait_for_metadata` permanently deferred, or should it ship a
+   partial form (initial list + default shapes only) once the hook
+   lands, with the user-facing contract explicitly calling out the
+   non-default-shape miss window as unavoidable?
+2. **Avoiding mandatory first-lookup misses for non-default shapes.**
+   The current design produces a guaranteed first-lookup miss window
+   for any non-default `pod_association` shape and any lazy workload
+   kind, because the extension's cache shape is driven by
+   processor-config-derived information that the framework only
+   delivers *after* the extension has started (via
+   `register_shape()` / `register_workload_kind()` capability calls).
+   Alternatives, all with their own tradeoffs, include:
+   - **Engine pre-resolution.** Give the engine a way to inspect the
+     union of bound processors' `pod_association` and extraction
+     configs and pass it to the extension at construction time. Removes
+     the miss window completely but breaks the architecture's
+     one-direction wiring (extensions would now depend on consumer
+     configs structurally). Requires a new framework feature.
+   - **Cache by full pod blob, indexed lazily on lookup.** Keep all
+     pods in the cache as one `Arc<PodMetadata>` per pod and compute
+     identifier values on every lookup by scanning the pod object.
+     Removes the writer-side shape registration entirely but turns the
+     hot path from O(1) into O(P) per lookup where P is the configured
+     shape's attribute count -- and the hot path is the constraint we
+     refused to compromise.
+   - **Pre-list pump at extension start.** Have the extension perform a
+     synchronous initial list and hold it in a generic `Vec<Pod>` until
+     the first `register_shape()` call, then index. Reduces the
+     miss window from "reflector store walk" to "hash insertions" --
+     same complexity class, smaller constant.
+   Worth exploring whether any of these unblock `wait_for_metadata` as
+   a total (not partial) guarantee, and whether the gain justifies the
+   architectural concessions.
+3. **Workload metadata growth under aggressive churn.** Caches are not
    bounded; a misconfiguration (e.g. extracting deployment labels in a
    cluster with hundreds of thousands of deployments) can use substantial
    memory. Should the extension grow a `max_objects` guard per kind that
    refuses to start a watcher beyond a budget? The guard would live on
    the group-scoped extension and bound that group's worst-case memory
    independently of other groups.
-3. **`service.*` derivation.** Adding `service.namespace` / `service.name`
-   / `service.version` / `service.instance.id` in v1 is small but couples
-   us to the semantic conventions' "how to compute" notes, which themselves
-   have known ambiguity. Confirm this is acceptable as a v2 follow-up.
-4. **Composite-key index size under user-defined sources.** A user who
-   adds a high-cardinality attribute (e.g. `service.name`) as an
-   association source will multiply the index size proportionally and
-   may hit the documented caveat that multiple pods can share that
-   value. Group scope bounds the blast radius to the group sharing the
-   index. v1 keeps one shared metadata entry per shape and lets the last
-   write win. Should we instead reject high-cardinality sources with a
-   `last_writer_wins_warning`?
-5. **Readiness-probe hook in the extension framework.** Implementing
-   `wait_for_metadata` (and its timeout) requires the engine to support
-   opt-in readiness probes that gate data-path node startup on an
-   extension signal. Under group scope the extension instance signals
-   readiness once and the engine gates every pipeline in the group on
-   that signal -- no per-core fan-in. Should the engine grow that hook
-   before this processor ships, or should v1 ship with `wait_for_metadata`
-   permanently deferred and revisited later?
-6. **Group-scope extension reload semantics.** When a group-scoped
-   extension's restart-required field changes at runtime, does the
-   engine drain every pipeline in the group before restarting the
-   extension, or does it restart the extension live while pipelines in
-   the group see lookup misses? This is an engine-side decision; this
-   design tolerates either choice and reports the resulting miss window
-   through telemetry, but the answer changes operator expectations
-   significantly.
