@@ -155,8 +155,10 @@ fn producer_scenario(
 
 async fn run_producer_body(dynamic_provider_name: &str) {
     // ── Dynamic provider (`tracelogging_dynamic`) ───────────────────────
-    let dynamic_provider =
-        Box::pin(tld::Provider::new(dynamic_provider_name, &tld::Provider::options()));
+    let dynamic_provider = Box::pin(tld::Provider::new(
+        dynamic_provider_name,
+        &tld::Provider::options(),
+    ));
     // SAFETY: `dynamic_provider` is pinned and lives until the end of
     // this async block; it auto-unregisters on drop.
     #[allow(unsafe_code)]
@@ -243,7 +245,10 @@ fn emit_dynamic_event(provider: &Pin<Box<tld::Provider>>) {
         .add_str8("MyMessage", b"hello-from-test", tld::OutType::Default, 0)
         .add_str16(
             "MyWideMessage",
-            "wide\u{2603}".encode_utf16().collect::<Vec<u16>>().as_slice(),
+            "wide\u{2603}"
+                .encode_utf16()
+                .collect::<Vec<u16>>()
+                .as_slice(),
             tld::OutType::Default,
             0,
         )
@@ -270,7 +275,12 @@ fn emit_dynamic_event(provider: &Pin<Box<tld::Provider>>) {
         // comment in `session.rs`.
         .add_struct("MyNested", 2, 0)
         .add_u32("NestedAnswer", 99u32, tld::OutType::Default, 0)
-        .add_str8("NestedMessage", b"nested-from-dynamic", tld::OutType::Default, 0)
+        .add_str8(
+            "NestedMessage",
+            b"nested-from-dynamic",
+            tld::OutType::Default,
+            0,
+        )
         .write(provider, None, None);
     assert_eq!(r, 0, "dynamic EventBuilder::write returned errno {r}");
 }
@@ -320,8 +330,7 @@ fn producer_validation() -> impl FnOnce(
             let mut batches: Vec<OtapArrowRecords> = Vec::new();
 
             loop {
-                if has_event(&batches, DYNAMIC_EVENT_NAME)
-                    && has_event(&batches, STATIC_EVENT_NAME)
+                if has_event(&batches, DYNAMIC_EVENT_NAME) && has_event(&batches, STATIC_EVENT_NAME)
                 {
                     break;
                 }
@@ -352,7 +361,9 @@ fn producer_validation() -> impl FnOnce(
 }
 
 fn has_event(batches: &[OtapArrowRecords], event_name: &str) -> bool {
-    batches.iter().any(|r| find_event_row(r, event_name).is_some())
+    batches
+        .iter()
+        .any(|r| find_event_row(r, event_name).is_some())
 }
 
 fn locate_event<'a>(
@@ -481,8 +492,8 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
     assert_u32_struct_field_zero_or_null(&scope, consts::DROPPED_ATTRIBUTES_COUNT, row);
 
     // ── Receiver-injected `etw.*` attributes ────────────────────────────
-    let log_id = u16_column(logs_rb, consts::ID)[row]
-        .expect("log id must be present at the matched row");
+    let log_id =
+        u16_column(logs_rb, consts::ID)[row].expect("log id must be present at the matched row");
     let attrs = collect_attributes(attrs_rb, log_id);
 
     // TraceLogging events have no manifest, so id/opcode/version are 0.
@@ -579,8 +590,8 @@ fn collect_user_attrs(records: &OtapArrowRecords, row: usize) -> Vec<(String, At
     let attrs_rb = records
         .get(ArrowPayloadType::LogAttrs)
         .expect("LogAttrs payload should be present");
-    let log_id = u16_column(logs_rb, consts::ID)[row]
-        .expect("log id must be present at the matched row");
+    let log_id =
+        u16_column(logs_rb, consts::ID)[row].expect("log id must be present at the matched row");
     collect_attributes(attrs_rb, log_id)
         .into_iter()
         .filter(|(k, _)| !k.starts_with("etw."))
@@ -698,9 +709,7 @@ fn assert_attr_double(attrs: &[(String, AttrSnapshot)], key: &str, expected: f64
             (*actual - expected).abs() < f64::EPSILON,
             "attribute '{key}' double value mismatch: expected {expected}, got {actual}"
         ),
-        Some(other) => panic!(
-            "attribute '{key}' expected to be Double({expected}), got {other:?}"
-        ),
+        Some(other) => panic!("attribute '{key}' expected to be Double({expected}), got {other:?}"),
         None => panic!(
             "expected attribute '{key}' not found; got keys = {:?}",
             attr_keys(attrs)
@@ -714,9 +723,7 @@ fn assert_attr_str(attrs: &[(String, AttrSnapshot)], key: &str, expected: &str) 
             actual, expected,
             "attribute '{key}' str value mismatch: expected {expected:?}, got {actual:?}"
         ),
-        Some(other) => panic!(
-            "attribute '{key}' expected to be Str({expected:?}), got {other:?}"
-        ),
+        Some(other) => panic!("attribute '{key}' expected to be Str({expected:?}), got {other:?}"),
         None => panic!(
             "expected attribute '{key}' not found; got keys = {:?}",
             attr_keys(attrs)
@@ -933,7 +940,10 @@ fn f64_column(rb: &arrow::array::RecordBatch, name: &str) -> Vec<Option<f64>> {
         .as_any()
         .downcast_ref::<arrow::array::Float64Array>()
         .unwrap_or_else(|| {
-            panic!("column `{name}` has unsupported data type {:?}", col.data_type())
+            panic!(
+                "column `{name}` has unsupported data type {:?}",
+                col.data_type()
+            )
         });
     (0..arr.len())
         .map(|i| (!arr.is_null(i)).then(|| arr.value(i)))
@@ -948,7 +958,10 @@ fn bool_column(rb: &arrow::array::RecordBatch, name: &str) -> Vec<Option<bool>> 
         .as_any()
         .downcast_ref::<arrow::array::BooleanArray>()
         .unwrap_or_else(|| {
-            panic!("column `{name}` has unsupported data type {:?}", col.data_type())
+            panic!(
+                "column `{name}` has unsupported data type {:?}",
+                col.data_type()
+            )
         });
     (0..arr.len())
         .map(|i| (!arr.is_null(i)).then(|| arr.value(i)))
@@ -1030,7 +1043,10 @@ fn assert_u32_zero_or_null(rb: &arrow::array::RecordBatch, name: &str, row: usiz
         .as_any()
         .downcast_ref::<arrow::array::UInt32Array>()
         .unwrap_or_else(|| {
-            panic!("column `{name}` is not UInt32; data type = {:?}", col.data_type())
+            panic!(
+                "column `{name}` is not UInt32; data type = {:?}",
+                col.data_type()
+            )
         });
     assert_eq!(
         arr.value(row),
@@ -1041,11 +1057,7 @@ fn assert_u32_zero_or_null(rb: &arrow::array::RecordBatch, name: &str, row: usiz
 }
 
 /// Struct-field analogue of [`assert_u32_zero_or_null`].
-fn assert_u32_struct_field_zero_or_null(
-    s: &arrow::array::StructArray,
-    field: &str,
-    row: usize,
-) {
+fn assert_u32_struct_field_zero_or_null(s: &arrow::array::StructArray, field: &str, row: usize) {
     let Some(col) = s.column_by_name(field) else {
         return;
     };
@@ -1070,11 +1082,7 @@ fn assert_u32_struct_field_zero_or_null(
 }
 
 /// UInt16 struct-field analogue of [`assert_u32_zero_or_null`].
-fn assert_u16_struct_field_zero_or_null(
-    s: &arrow::array::StructArray,
-    field: &str,
-    row: usize,
-) {
+fn assert_u16_struct_field_zero_or_null(s: &arrow::array::StructArray, field: &str, row: usize) {
     let Some(col) = s.column_by_name(field) else {
         return;
     };
