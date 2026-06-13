@@ -1,14 +1,28 @@
 receivers:
-  otlp:
+  # otelarrow is used as the OTLP receiver for its admission controller.
+  otelarrow:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
+    admission:
+      # memory limits applies to OTAP and OTLP data.
+      request_limit_mib: 128
+      waiting_limit_mib: 32
 
 exporters:
   otlp:
     endpoint: '{{backend_hostname}}:1235'
     tls:
       insecure: true
+    # 100 standing requests, 5 at a time, asynchronous, no batching.
+    sending_queue:
+      enabled: true
+      sizer: requests
+      queue_size: 100
+      num_consumers: 5
+      block_on_overflow: true
+      batch:
+        enabled: false
 
 processors:
   filter:
@@ -30,6 +44,6 @@ service:
                 port: 8086
   pipelines:
     logs:
-      receivers: [otlp]
+      receivers: [otelarrow]
       processors: [filter]
       exporters: [otlp]

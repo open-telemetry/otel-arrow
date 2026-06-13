@@ -10,6 +10,18 @@ exporters:
     compression: none
     arrow:
       payload_compression: zstd
+      # 5 matches DFE OTAP exporter default
+      num_streams: 5
+
+    # 100 standing requests (on 5 streams), asynchronous, no batching.
+    sending_queue:
+      enabled: true
+      sizer: requests
+      queue_size: 100
+      num_consumers: 100
+      block_on_overflow: true
+      batch:
+        enabled: false
     tls:
       insecure: true
 

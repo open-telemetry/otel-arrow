@@ -15,6 +15,10 @@ exporters:
       block_on_overflow: {{ block_on_overflow | default(true) }}
       sizer: {{ sending_queue_sizer | default("requests") }}
       queue_size: {{ sending_queue_size | default(100) }}
+      num_consumers: {{ sending_queue_otlp_consumers | default(5) }}
+      batch:
+        enabled: {{ sending_queue_batch_enabled | default(false) }}
+        sizer: {{ sending_queue_sizer | default("requests") }}
 
 service:
   telemetry:
