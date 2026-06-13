@@ -304,6 +304,35 @@ pub struct DurableBufferMetrics {
     /// Data may still be recoverable via WAL replay on restart.
     #[metric(unit = "{error}")]
     pub flush_failures: Counter<u64>,
+
+    // ─── Appended metrics (Do not shift index) ──────────────────────────────
+    /// Current storage utilization ratio (0.0 to 1.0).
+    #[metric(unit = "{1}")]
+    pub storage_utilization: Gauge<f64>,
+
+    /// Total log records lost due to force-dropped segments (DropOldest policy).
+    #[metric(unit = "{log_record}")]
+    pub dropped_log_records: ObserveCounter<u64>,
+
+    /// Total spans lost due to force-dropped segments (DropOldest policy).
+    #[metric(unit = "{span}")]
+    pub dropped_spans: ObserveCounter<u64>,
+
+    /// Total metric data points lost due to force-dropped segments (DropOldest policy).
+    #[metric(unit = "{data_point}")]
+    pub dropped_metric_datapoints: ObserveCounter<u64>,
+
+    /// Total log records lost due to expired segments (max_age retention).
+    #[metric(unit = "{log_record}")]
+    pub expired_log_records: ObserveCounter<u64>,
+
+    /// Total spans lost due to expired segments (max_age retention).
+    #[metric(unit = "{span}")]
+    pub expired_spans: ObserveCounter<u64>,
+
+    /// Total metric data points lost due to expired segments (max_age retention).
+    #[metric(unit = "{data_point}")]
+    pub expired_metric_datapoints: ObserveCounter<u64>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -420,7 +449,7 @@ struct CachedSegmentMetrics {
 ///
 /// # Segment Metrics Cache
 ///
-/// To avoid per-tick allocations in `recompute_queued_counters`, this struct
+/// To avoid per-tick allocations in `recompute_metrics`, this struct
 /// maintains a `segment_cache` that maps finalized segment sequences to their
 /// pre-computed per-bundle signal classification.  Because segments are
 /// **immutable** after finalization, the cache entry for a given segment
@@ -729,7 +758,7 @@ impl DurableBuffer {
                 Ok((engine, subscriber_id)) => {
                     // Seed queued gauges immediately so they reflect
                     // persisted state before the first telemetry tick.
-                    self.recompute_queued_counters(&engine, &subscriber_id);
+                    self.recompute_metrics(&engine, &subscriber_id);
 
                     self.engine_state = EngineState::Ready {
                         engine,
@@ -777,7 +806,7 @@ impl DurableBuffer {
     /// 3. `open_segment_metrics` — engine open-segment lock (brief snapshot).
     ///
     /// After snapshots are taken, all iteration is lock-free.
-    fn recompute_queued_counters(&mut self, engine: &QuiverEngine, subscriber_id: &SubscriberId) {
+    fn recompute_metrics(&mut self, engine: &QuiverEngine, subscriber_id: &SubscriberId) {
         self.segment_cache_generation = self.segment_cache_generation.wrapping_add(1);
         let current_generation = self.segment_cache_generation;
 
@@ -867,11 +896,15 @@ impl DurableBuffer {
                 }
             };
 
+            let mut seg_logs = 0;
+            let mut seg_metrics = 0;
+            let mut seg_spans = 0;
+
             // Fast path: no bundles resolved → use precomputed totals.
             if progress.resolved_count() == 0 {
-                logs += summary.total_logs;
-                metrics += summary.total_metrics;
-                spans += summary.total_spans;
+                seg_logs = summary.total_logs;
+                seg_metrics = summary.total_metrics;
+                seg_spans = summary.total_spans;
             } else {
                 // Slow path: iterate per-bundle, skipping resolved.
                 for (idx, &(item_count, signal)) in summary.bundles.iter().enumerate() {
@@ -887,14 +920,18 @@ impl DurableBuffer {
 
                     if !progress.is_resolved(BundleIndex::new(bundle_idx)) {
                         match signal {
-                            Some(SignalType::Logs) => logs += item_count,
-                            Some(SignalType::Metrics) => metrics += item_count,
-                            Some(SignalType::Traces) => spans += item_count,
+                            Some(SignalType::Logs) => seg_logs += item_count,
+                            Some(SignalType::Metrics) => seg_metrics += item_count,
+                            Some(SignalType::Traces) => seg_spans += item_count,
                             None => {}
                         }
                     }
                 }
             }
+
+            logs += seg_logs;
+            metrics += seg_metrics;
+            spans += seg_spans;
         }
 
         // Step 3: add items from the open (accumulating) segment.
@@ -921,6 +958,39 @@ impl DurableBuffer {
         // Step 4: evict cache entries for segments no longer tracked.
         self.segment_cache
             .retain(|seq, _| progress_snapshot.contains_key(&SegmentSeq::new(*seq)));
+
+        // Update dropped and expired metrics from QuiverEngine's per-slot tracking
+        // (combining both OTLP and Arrow primary slot IDs for each signal)
+        self.metrics.dropped_log_records.observe(
+            engine.force_dropped_items_for_slot(bundle_adapter::to_otlp_slot_id(SignalType::Logs))
+                + engine.force_dropped_items_for_slot(bundle_adapter::ARROW_LOGS_SLOT),
+        );
+        self.metrics.dropped_metric_datapoints.observe(
+            engine
+                .force_dropped_items_for_slot(bundle_adapter::to_otlp_slot_id(SignalType::Metrics))
+                + engine.force_dropped_items_for_slot(bundle_adapter::ARROW_METRICS_SLOT_1)
+                + engine.force_dropped_items_for_slot(bundle_adapter::ARROW_METRICS_SLOT_2),
+        );
+        self.metrics.dropped_spans.observe(
+            engine
+                .force_dropped_items_for_slot(bundle_adapter::to_otlp_slot_id(SignalType::Traces))
+                + engine.force_dropped_items_for_slot(bundle_adapter::ARROW_TRACES_SLOT),
+        );
+
+        self.metrics.expired_log_records.observe(
+            engine.expired_items_for_slot(bundle_adapter::to_otlp_slot_id(SignalType::Logs))
+                + engine.expired_items_for_slot(bundle_adapter::ARROW_LOGS_SLOT),
+        );
+        self.metrics.expired_metric_datapoints.observe(
+            engine.expired_items_for_slot(bundle_adapter::to_otlp_slot_id(SignalType::Metrics))
+                + engine.expired_items_for_slot(bundle_adapter::ARROW_METRICS_SLOT_1)
+                + engine.expired_items_for_slot(bundle_adapter::ARROW_METRICS_SLOT_2),
+        );
+        self.metrics.expired_spans.observe(
+            engine.expired_items_for_slot(bundle_adapter::to_otlp_slot_id(SignalType::Traces))
+                + engine.expired_items_for_slot(bundle_adapter::ARROW_TRACES_SLOT),
+        );
+
         self.metadata_load_warned_segments
             .retain(|seq| progress_snapshot.contains_key(&SegmentSeq::new(*seq)));
         self.enforce_segment_cache_bound();
@@ -1871,6 +1941,14 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                     {
                         self.metrics.storage_bytes_used.set(used);
                         self.metrics.storage_bytes_cap.set(cap);
+
+                        let utilization = if cap > 0 {
+                            used as f64 / cap as f64
+                        } else {
+                            0.0
+                        };
+                        self.metrics.storage_utilization.set(utilization);
+
                         self.metrics.dropped_segments.observe(dropped_segs);
                         self.metrics.dropped_bundles.observe(dropped_buns);
                         self.metrics.dropped_items.observe(dropped_items);
@@ -1881,7 +1959,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                         // registry. This is the single source of truth for
                         // these gauges, correctly accounting for ACKs,
                         // force-drops, and expiry.
-                        self.recompute_queued_counters(&engine, &subscriber_id);
+                        self.recompute_metrics(&engine, &subscriber_id);
                     }
 
                     metrics_reporter
@@ -1964,7 +2042,7 @@ mod tests {
     const IDX_QUEUED_LOG_RECORDS: usize = 27;
     const IDX_QUEUED_METRIC_POINTS: usize = 28;
     const IDX_QUEUED_SPANS: usize = 29;
-    const EXPECTED_METRIC_COUNT: usize = 31;
+    const EXPECTED_METRIC_COUNT: usize = 38;
 
     #[test]
     fn test_bundle_ref_encoding_roundtrip() {
@@ -2725,7 +2803,7 @@ mod tests {
         )
         .expect("valid batch");
 
-        let slot_id = SlotId::new(30); // Logs slot
+        let slot_id = bundle_adapter::ARROW_LOGS_SLOT;
         let bundle = SimpleBundle {
             descriptor: BundleDescriptor::new(vec![SlotDescriptor::new(slot_id, "Logs")]),
             batch,
@@ -2752,7 +2830,7 @@ mod tests {
             "open segment bundle should have the logs slot"
         );
 
-        processor.recompute_queued_counters(&engine, &subscriber_id);
+        processor.recompute_metrics(&engine, &subscriber_id);
 
         let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
         reporter.report(&mut processor.metrics).unwrap();
@@ -2841,5 +2919,253 @@ mod tests {
         );
         assert!(processor.segment_cache.contains_key(&20));
         assert!(processor.segment_cache.contains_key(&30));
+    }
+
+    #[test]
+    fn test_storage_utilization_reporting() {
+        use otap_df_config::node::NodeUserConfig;
+        use otap_df_engine::config::ProcessorConfig;
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_engine::message::Message;
+        use otap_df_engine::testing::processor::TestRuntime;
+        use otap_df_engine::testing::test_node;
+        use otap_df_pdata::encode::encode_logs_otap_batch;
+        use otap_df_pdata::testing::fixtures::DataGenerator;
+        use otap_df_telemetry::reporter::MetricsReporter;
+        use serde_json::json;
+
+        let rt = TestRuntime::new();
+        let controller = ControllerContext::new(rt.metrics_registry());
+        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+
+        let mut node_config = NodeUserConfig::new_processor_config(DURABLE_BUFFER_URN);
+        node_config.config = json!({
+            "path": temp_dir.path(),
+            "retention_size_cap": "256 MiB",
+            "poll_interval": "100ms",
+            "max_segment_open_duration": "1s",
+            "initial_retry_interval": "100ms",
+            "max_retry_interval": "100ms",
+            "retry_multiplier": 2.0,
+            "max_in_flight": 1000
+        });
+
+        let processor = create_durable_buffer(
+            pipeline_ctx,
+            test_node("durable-buffer-utilization-test"),
+            Arc::new(node_config),
+            &ProcessorConfig::new("durable-buffer-utilization-test"),
+            &otap_df_engine::capability::registry::Capabilities::empty(),
+        )
+        .expect("create durable buffer");
+
+        rt.set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                // Ingest some logs to write data to disk (so used bytes > 0)
+                let mut datagen = DataGenerator::new(1);
+                let input = datagen.generate_logs();
+                let rec = encode_logs_otap_batch(&input).expect("encode logs");
+                ctx.process(Message::PData(OtapPdata::new_default(rec.into())))
+                    .await
+                    .expect("process input");
+
+                // Trigger flush to finalize the open segment and write it to disk
+                ctx.process(Message::Control(NodeControlMsg::TimerTick {}))
+                    .await
+                    .expect("process timer tick");
+
+                // Trigger metrics collection
+                let (metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter: reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+
+                let snap = metrics_rx.try_recv().unwrap();
+                let metrics = snap.get_metrics();
+
+                const IDX_STORAGE_UTILIZATION: usize = 31;
+                const IDX_STORAGE_BYTES_USED: usize = 15;
+                const IDX_STORAGE_BYTES_CAP: usize = 16;
+
+                let used = metrics[IDX_STORAGE_BYTES_USED].to_u64_lossy();
+                let cap = metrics[IDX_STORAGE_BYTES_CAP].to_u64_lossy();
+                let reported_utilization = metrics[IDX_STORAGE_UTILIZATION].to_f64();
+
+                assert!(used > 0, "used bytes should be greater than 0");
+                assert_eq!(cap, 256 * 1024 * 1024, "cap bytes should be 256 MiB");
+                assert_eq!(
+                    reported_utilization,
+                    used as f64 / cap as f64,
+                    "reported utilization should match used / cap"
+                );
+            })
+            .validate(|_| async {});
+    }
+
+    #[tokio::test]
+    async fn test_per_signal_dropped_expired_metrics() {
+        use std::sync::Arc;
+        use std::time::SystemTime;
+
+        use arrow::array::{Int32Array, StringArray};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::record_batch::RecordBatch;
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otap_df_telemetry::reporter::MetricsReporter;
+        use quiver::record_bundle::{
+            BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
+        };
+
+        struct SimpleBundle {
+            descriptor: BundleDescriptor,
+            batch: RecordBatch,
+            fingerprint: SchemaFingerprint,
+            slot_id: SlotId,
+            item_count: u64,
+        }
+
+        impl RecordBundle for SimpleBundle {
+            fn descriptor(&self) -> &BundleDescriptor {
+                &self.descriptor
+            }
+
+            fn ingestion_time(&self) -> SystemTime {
+                SystemTime::now()
+            }
+
+            fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
+                if slot == self.slot_id {
+                    Some(PayloadRef {
+                        schema_fingerprint: self.fingerprint,
+                        batch: &self.batch,
+                    })
+                } else {
+                    None
+                }
+            }
+
+            fn item_count(&self) -> u64 {
+                self.item_count
+            }
+        }
+
+        let registry = TelemetryRegistryHandle::default();
+        let controller_ctx = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 1, 0);
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = DurableBufferConfig {
+            path: temp_dir.path().to_path_buf(),
+            retention_size_cap: byte_unit::Byte::from_u64(256 * 1024 * 1024),
+            max_age: Some(Duration::from_millis(5)), // very small max_age for expiry testing
+            size_cap_policy: SizeCapPolicy::Backpressure,
+            poll_interval: Duration::from_millis(100),
+            otlp_handling: OtlpHandling::PassThrough,
+            max_segment_open_duration: Duration::from_secs(60),
+            initial_retry_interval: Duration::from_secs(1),
+            max_retry_interval: Duration::from_secs(30),
+            retry_multiplier: 2.0,
+            max_in_flight: 1000,
+        };
+
+        let mut processor = DurableBuffer::new(config, &pipeline_ctx).unwrap();
+        let (engine, subscriber_id) = processor.init_engine().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])),
+                Arc::new(StringArray::from(vec![
+                    Some("a"),
+                    Some("b"),
+                    Some("c"),
+                    Some("d"),
+                    Some("e"),
+                ])),
+            ],
+        )
+        .expect("valid batch");
+
+        let slot_id = bundle_adapter::ARROW_LOGS_SLOT;
+        let bundle = SimpleBundle {
+            descriptor: BundleDescriptor::new(vec![SlotDescriptor::new(slot_id, "Logs")]),
+            batch,
+            fingerprint: [0x11u8; 32],
+            slot_id,
+            item_count: 5,
+        };
+
+        // 1. Ingest and flush a segment
+        engine.ingest(&bundle).await.unwrap();
+        engine.flush().await.unwrap();
+
+        // 2. Force drop the oldest pending segment
+        let dropped = engine.force_drop_oldest_pending_segments();
+        assert_eq!(dropped, 1, "should have dropped 1 segment");
+
+        // Recompute metrics so processor reads the engine drop counts
+        processor.recompute_metrics(&engine, &subscriber_id);
+
+        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
+        reporter.report(&mut processor.metrics).unwrap();
+        let snap = metrics_rx.try_recv().unwrap();
+        let metrics = snap.get_metrics();
+
+        const IDX_DROPPED_LOG_RECORDS: usize = 32;
+        assert_eq!(
+            metrics[IDX_DROPPED_LOG_RECORDS].to_u64_lossy(),
+            5,
+            "dropped_log_records should show 5 items dropped"
+        );
+
+        // 3. Test expiry metrics
+        // Ingest and flush another segment
+        let batch2 = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![10, 11, 12])),
+                Arc::new(StringArray::from(vec![Some("x"), Some("y"), Some("z")])),
+            ],
+        )
+        .expect("valid batch");
+        let bundle2 = SimpleBundle {
+            descriptor: BundleDescriptor::new(vec![SlotDescriptor::new(slot_id, "Logs")]),
+            batch: batch2,
+            fingerprint: [0x11u8; 32],
+            slot_id,
+            item_count: 3,
+        };
+        engine.ingest(&bundle2).await.unwrap();
+        engine.flush().await.unwrap();
+
+        // Wait for it to exceed max_age (5ms)
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // Clean up expired segments
+        let expired = engine.cleanup_expired_segments().unwrap();
+        assert_eq!(expired, 1, "should have expired 1 segment");
+
+        // Recompute metrics so processor reads the engine expiry counts
+        processor.recompute_metrics(&engine, &subscriber_id);
+
+        reporter.report(&mut processor.metrics).unwrap();
+        let snap2 = metrics_rx.try_recv().unwrap();
+        let metrics2 = snap2.get_metrics();
+
+        const IDX_EXPIRED_LOG_RECORDS: usize = 35;
+        assert_eq!(
+            metrics2[IDX_EXPIRED_LOG_RECORDS].to_u64_lossy(),
+            3,
+            "expired_log_records should show 3 items expired"
+        );
     }
 }
