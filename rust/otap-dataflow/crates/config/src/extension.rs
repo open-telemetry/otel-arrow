@@ -11,7 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// User configuration for an extension in the pipeline.
+/// User configuration for an extension instance.
 ///
 /// Unlike [`NodeUserConfig`](crate::node::NodeUserConfig), extensions have no
 /// output ports, wiring contracts, or transport header policies — they only
