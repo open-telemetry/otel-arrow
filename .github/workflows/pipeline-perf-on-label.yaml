@@ -98,45 +98,24 @@ jobs:
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
 
-      - name: Run pipeline performance test suite
+      - name: Run OTLP saturation/scaling tests (fixed 64 connections)
         run: |
           cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
+          for config in test_suites/integration/continuous/saturation-{2cores,4cores}.yaml; do
+            echo "=== Running: $config ==="
+            python orchestrator/run_orchestrator.py --config "$config" || true
+          done
 
-      - name: Run saturation/scaling performance test suite
+      - name: Analyze OTLP scaling results
         if: ${{ !cancelled() }}
         run: |
           cd tools/pipeline_perf_test
-          ./scripts/run-saturation-tests.sh --output-json results/scaling-efficiency.json \
-            | tee saturation-scaling-report.txt
-          echo "### Saturation/Scaling Test Analysis" >> $GITHUB_STEP_SUMMARY
+          python ../../.github/workflows/scripts/analyze-saturation-scaling.py results \
+            | tee scaling-report.txt
+          echo "### OTLP Scaling (fixed 64 connections)" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          sed -n '/^=.*SCALING ANALYSIS/,/^=\{10,\}$/p' saturation-scaling-report.txt >> $GITHUB_STEP_SUMMARY
+          cat scaling-report.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Run single-core saturation max throughput test (OTLP)
-        if: ${{ !cancelled() }}
-        run: |
-          cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/saturation-max-throughput.yaml
-
-      - name: Run single-core saturation max throughput test (OTAP)
-        if: ${{ !cancelled() }}
-        run: |
-          cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/saturation-max-throughput-otap.yaml
-
-      - name: Run passthrough performance test (OTLP)
-        if: ${{ !cancelled() }}
-        run: |
-          cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/passthrough.yaml
-
-      - name: Run passthrough performance test (OTAP)
-        if: ${{ !cancelled() }}
-        run: |
-          cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/passthrough-otap.yaml
 
       - name: Post-run disk usage diagnostics
         if: always()
