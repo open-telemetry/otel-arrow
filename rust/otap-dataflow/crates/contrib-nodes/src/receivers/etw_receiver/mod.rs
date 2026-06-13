@@ -793,5 +793,5 @@ mod tests {
 
 /// End-to-end Windows integration tests for the ETW receiver. See
 /// [`windows_e2e_tests`] for details.
-#[cfg(all(test, target_os = "windows"))]
+#[cfg(test)]
 mod windows_e2e_tests;
