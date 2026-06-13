@@ -101,12 +101,14 @@ futures = "0.3.32"
 futures-core = "0.3.32"
 futures-channel = "0.3.32"
 futures-timer = "3.0.3"
+futures-util = "0.3.32"
 async-channel = { version = "2.5.0" }
 hashbrown = { version = "0.17", features = ["equivalent"] }
 http = "1.4"
 humantime = "2.3.0"
 humantime-serde = "1.1.1"
 iso8601 = "0.6.3"
+insta = { version = "1.44", features = ["redactions"] }
 itoa = "1"
 itertools = "0.14.0"
 k8s-openapi = { version = "0.27.0", features = ["latest"] }
@@ -168,6 +170,7 @@ schemars = { version = "1.0.0" }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
 serde_json = { version = "1.0.149" }
+serde-transcode = "1.1.1"
 serde_yaml = "0.9.34-deprecated"        # Deprecated, but no good alternative yet
 crc32fast = "1.4.2"
 replace_with = "0.1.8"
@@ -217,6 +220,8 @@ sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
+clickhouse = { version = "0.15.1", features = ["rustls-tls-ring", "rustls-tls-native-roots"] }
+clickhouse-ext-arrow = "0.1.0"
 cpu-time = "1.0.0"
 
 one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "5a9f381edf38e24bf583f25f7fce9def0c013173" }
@@ -299,6 +304,7 @@ azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
 contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
 user_events-receiver = ["otap-df-contrib-nodes/user_events-receiver"]
 user_events-eventheader = ["otap-df-contrib-nodes/user_events-eventheader"]
+clickhouse-exporter = ["otap-df-contrib-nodes/clickhouse-exporter"]
 # Contrib processors (opt-in) - now in contrib-nodes
 contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
 condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]

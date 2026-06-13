@@ -1,0 +1,894 @@
+//! ClickHouse schema initialization for the OTAP-based ClickHouse exporter.
+//!
+//! This module is responsible for translating the exporter [`Config`] into concrete ClickHouse
+//! DDL (CREATE TABLE) for the OTAP (Arrow) payload types that are stored in ClickHouse.
+//! Attributes are always stored inline on the signal tables (logs/spans) using a
+//! `Map(LowCardinality(String), String)` representation.
+//!
+//! Key responsibilities:
+//!
+//! - Build ClickHouse `CREATE TABLE` statements via [`CHTableBuilder`], including engine settings,
+//!   columns, ORDER BY / PARTITION BY / PRIMARY KEY, and TTL.
+//! - Merge per-table overrides with global defaults (`finalize_table_config`) to determine the
+//!   effective engine/TTL/schema-creation behavior.
+//! - Produce a runtime lookup map of which destination table each signal payload should be inserted
+//!   into (`build_payload_destination_table_map`).
+//! - Create base tables (`init_table`, `build_table_sql`).
+//!
+//! The module also defines [`TableKind`] and [`TableEntry`] plus iterators over configured tables
+//! (via [`TablesConfig::iter_tables`] and [`MetricsTableConfig::iter`]) to drive initialization.
+use std::collections::HashMap;
+
+use clickhouse::Client;
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+
+use crate::exporters::clickhouse_exporter::config::{
+    Config, DefaultTableConfig, MetricsTableConfig, TableConfig, TableEngine, TablesConfig,
+};
+use crate::exporters::clickhouse_exporter::consts as ch_consts;
+use crate::exporters::clickhouse_exporter::error::ClickhouseExporterError;
+use crate::exporters::clickhouse_exporter::schema;
+
+#[derive(Debug, Default, Clone)]
+pub struct CHTableBuilder {
+    pub database: String,
+    pub table: String,
+    pub engine: String,
+    pub engine_params: Option<String>,
+    pub order_by: Vec<String>,
+    pub partition_by: Vec<String>,
+    pub primary_key: Vec<String>,
+    pub columns: Vec<schema::Column>,
+    pub indexes: Vec<schema::Index>,
+    pub settings: Vec<(String, String)>,
+    pub ttl: Option<String>,
+    pub timestamp_field: String,
+}
+impl CHTableBuilder {
+    pub fn build(self) -> Result<String, ClickhouseExporterError> {
+        let mut body_items = Vec::new();
+
+        // Columns
+        for column in &self.columns {
+            body_items.push(column.render());
+        }
+
+        // Indexes (render after columns within the parenthesized list)
+        for index in &self.indexes {
+            body_items.push(index.render());
+        }
+
+        // ORDER BY
+        let order_by_sql = if self.order_by.is_empty() {
+            "ORDER BY tuple()".to_string()
+        } else {
+            format!("ORDER BY ({})", self.order_by.join(", "))
+        };
+
+        // PARTITION BY
+        let partition_by_sql = if self.partition_by.is_empty() {
+            "PARTITION BY tuple()".to_string()
+        } else {
+            format!("PARTITION BY ({})", self.partition_by.join(", "))
+        };
+
+        // PRIMARY KEY -- omit when empty (let ClickHouse default to ORDER BY)
+        let primary_key_sql = if self.primary_key.is_empty() {
+            None
+        } else {
+            Some(format!("PRIMARY KEY ({})", self.primary_key.join(", ")))
+        };
+
+        // SETTINGS
+        let settings_sql = if self.settings.is_empty() {
+            None
+        } else {
+            let pairs: Vec<String> = self
+                .settings
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            Some(format!("SETTINGS {}", pairs.join(", ")))
+        };
+
+        // TTL
+        let ttl_sql = self
+            .ttl
+            .as_ref()
+            .map(|v| format!("TTL {} + INTERVAL {}", self.timestamp_field, v));
+
+        let engine_param_sql = self.engine_params.unwrap_or_default();
+
+        // Build final SQL with only non-empty clauses
+        let mut clauses = Vec::new();
+        clauses.push(format!(
+            "CREATE TABLE IF NOT EXISTS {}.{} (\n    {}\n) ENGINE = {}{}",
+            self.database,
+            self.table,
+            body_items.join(",\n    "),
+            self.engine,
+            engine_param_sql,
+        ));
+        clauses.push(partition_by_sql);
+        if let Some(pk) = primary_key_sql {
+            clauses.push(pk);
+        }
+        clauses.push(order_by_sql);
+        if let Some(settings) = settings_sql {
+            clauses.push(settings);
+        }
+        if let Some(ttl) = ttl_sql {
+            clauses.push(ttl);
+        }
+
+        Ok(format!("{}\n;", clauses.join("\n")))
+    }
+
+    /// Validate the user-supplied inputs to the table construction for basic SQL validity/safety.
+    pub fn validate(self) -> Result<(), ClickhouseExporterError> {
+        validate_identifier(&self.database, "database")?;
+        validate_identifier(&self.table, "table")?;
+        validate_identifier(&self.engine, "engine")?;
+        if let Some(params) = &self.engine_params {
+            validate_engine_params(params)?;
+        }
+        if let Some(ttl) = &self.ttl {
+            validate_ttl(ttl)?;
+        }
+        Ok(())
+    }
+}
+
+/// Validate user supplied identifiers for basic sql validity.
+pub fn validate_identifier(name: &str, section: &str) -> Result<(), ClickhouseExporterError> {
+    if name.is_empty() {
+        return Err(ClickhouseExporterError::TableCreationError {
+            error: format!("Identifier cannot be empty: {}.", section),
+        });
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(ClickhouseExporterError::TableCreationError {
+            error: format!("Invalid identifier: {}", name),
+        });
+    }
+    Ok(())
+}
+
+/// Reject SQL statement terminators and comment sequences that could enable injection when the
+/// value is interpolated directly into DDL.
+fn reject_injection(value: &str, section: &str) -> Result<(), ClickhouseExporterError> {
+    if value.contains(';') || value.contains("--") || value.contains("/*") || value.contains("*/") {
+        return Err(ClickhouseExporterError::TableCreationError {
+            error: format!("Unsafe sequence in {}: {}", section, value),
+        });
+    }
+    Ok(())
+}
+
+/// Time-unit keywords accepted in a TTL interval expression.
+const TTL_UNITS: [&str; 8] = [
+    "SECOND", "MINUTE", "HOUR", "DAY", "WEEK", "MONTH", "QUARTER", "YEAR",
+];
+
+/// Validate a TTL interval expression, e.g. `"72 HOUR"` or `"toIntervalDay(30)"`.
+///
+/// Permits digits, whitespace, a time-unit keyword, and an optional column/function reference,
+/// while rejecting statement terminators and comment sequences.
+fn validate_ttl(ttl: &str) -> Result<(), ClickhouseExporterError> {
+    let trimmed = ttl.trim();
+    if trimmed.is_empty() {
+        return Err(ClickhouseExporterError::TableCreationError {
+            error: "TTL cannot be empty".into(),
+        });
+    }
+    reject_injection(trimmed, "ttl")?;
+
+    if !trimmed.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || c.is_ascii_whitespace()
+            || matches!(c, '_' | '+' | '(' | ')' | '.')
+    }) {
+        return Err(ClickhouseExporterError::TableCreationError {
+            error: format!("Invalid TTL expression: {}", ttl),
+        });
+    }
+
+    let upper = trimmed.to_ascii_uppercase();
+    if !TTL_UNITS.iter().any(|unit| upper.contains(unit)) {
+        return Err(ClickhouseExporterError::TableCreationError {
+            error: format!("TTL must contain a time unit (e.g. HOUR, DAY): {}", ttl),
+        });
+    }
+    Ok(())
+}
+
+/// Punctuation permitted in `engine_params` in addition to alphanumerics — covers replicated-engine
+/// paths and macros, e.g. `"('/clickhouse/tables/{shard}/{db}/{table}', '{replica}')"`.
+const ENGINE_PARAM_PUNCT: &str = "/{}'(),. -_";
+
+/// Validate engine parameters, which are interpolated directly into DDL.
+///
+/// Permits a documented safe charset (alphanumerics plus [`ENGINE_PARAM_PUNCT`]) so replicated
+/// engines and ClickHouse macros work, while rejecting statement terminators and comment sequences.
+fn validate_engine_params(params: &str) -> Result<(), ClickhouseExporterError> {
+    if params.is_empty() {
+        return Ok(());
+    }
+    reject_injection(params, "engine_params")?;
+    if !params
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || ENGINE_PARAM_PUNCT.contains(c))
+    {
+        return Err(ClickhouseExporterError::TableCreationError {
+            error: format!("Invalid engine_params: {}", params),
+        });
+    }
+    Ok(())
+}
+
+struct FinalTableConfig {
+    /// Logical name (users query this)
+    pub name: String,
+    /// TTL, e.g., "72h"
+    pub ttl: Option<String>,
+    /// Optional table engine override
+    pub engine: TableEngine,
+    /// Whether to create the schema automatically or not
+    pub create_schema: bool,
+}
+/// Merge the default table configs with any more specific overrides to produce a final config.
+fn finalize_table_config(t: &TableConfig, d: &DefaultTableConfig) -> FinalTableConfig {
+    FinalTableConfig {
+        name: t.name.clone(),
+        // Fall back to the global `ttl_interval` default when a table has no explicit `ttl`.
+        ttl: t.ttl.clone().or(d.ttl_interval.clone()),
+        engine: t.engine.clone().unwrap_or(d.engine.clone()),
+        create_schema: t.create_schema.unwrap_or(d.create_schema),
+    }
+}
+
+/// Create a map of signal payload types to the name of the table where the data will be stored.
+/// Only signal payloads (Logs, Spans) get entries. Attribute payloads are consumed during
+/// transformation and don't need table mappings.
+pub(crate) fn build_payload_destination_table_map(
+    config: &Config,
+) -> HashMap<ArrowPayloadType, String> {
+    let mut dst_tables = HashMap::new();
+    let _ = dst_tables.insert(ArrowPayloadType::Logs, config.tables.logs.name.clone());
+    let _ = dst_tables.insert(ArrowPayloadType::Spans, config.tables.traces.name.clone());
+    dst_tables
+}
+
+fn build_table_sql(
+    entry: &TableEntry<'_>,
+    config: &Config,
+) -> Result<Option<String>, ClickhouseExporterError> {
+    let final_config = finalize_table_config(entry.config, &config.table_defaults);
+    // Check if we need to create the schema or return if not.
+    if !final_config.create_schema {
+        return Ok(None);
+    }
+
+    let mut builder = CHTableBuilder {
+        database: config.database.clone(),
+        table: final_config.name.clone(),
+        engine: final_config.engine.name.clone(),
+        engine_params: final_config.engine.params.clone(),
+        ttl: final_config.ttl.clone(),
+        timestamp_field: ch_consts::CH_TIMESTAMP.into(),
+        order_by: vec![],
+        partition_by: vec![],
+        primary_key: vec![],
+        columns: vec![],
+        indexes: vec![],
+        settings: vec![],
+    };
+    let maybe_sql = match entry.kind {
+        TableKind::Logs => {
+            // Logs table columns
+            builder.columns.extend_from_slice(&[
+                schema::TIMESTAMP_COLUMN.clone(),
+                schema::TRACE_ID_COLUMN.clone(),
+                schema::SPAN_ID_COLUMN.clone(),
+                schema::TRACE_FLAGS_COLUMN.clone(),
+                schema::SEVERITY_TEXT_COLUMN.clone(),
+                schema::SEVERITY_NUMBER_COLUMN.clone(),
+                schema::SERVICE_NAME_COLUMN.clone(),
+                schema::BODY_COLUMN.clone(),
+                schema::RESOURCE_SCHEMA_URL_COLUMN.clone(),
+            ]);
+            builder
+                .columns
+                .push(schema::INLINE_RESOURCE_ATTR_COLUMN.clone());
+            builder
+                .columns
+                .push(schema::SCOPE_SCHEMA_URL_COLUMN.clone());
+            builder.columns.extend_from_slice(&[
+                schema::SCOPE_NAME_COLUMN.clone(),
+                schema::SCOPE_VERSION_COLUMN.clone(),
+            ]);
+            builder
+                .columns
+                .push(schema::INLINE_SCOPE_ATTR_COLUMN.clone());
+            builder.columns.push(schema::INLINE_LOG_ATTR_COLUMN.clone());
+            builder.columns.push(schema::EVENT_NAME_COLUMN.clone());
+
+            // Indexes
+            builder.indexes.push(schema::IDX_TRACE_ID);
+            builder.indexes.push(schema::IDX_RES_ATTR_KEY);
+            builder.indexes.push(schema::IDX_RES_ATTR_VALUE);
+            builder.indexes.push(schema::IDX_SCOPE_ATTR_KEY);
+            builder.indexes.push(schema::IDX_SCOPE_ATTR_VALUE);
+            builder.indexes.push(schema::IDX_LOG_ATTR_KEY);
+            builder.indexes.push(schema::IDX_LOG_ATTR_VALUE);
+            builder.indexes.push(schema::IDX_LOWER_BODY);
+
+            builder.order_by.extend(vec![
+                format!("toStartOfFiveMinutes({})", ch_consts::CH_TIMESTAMP),
+                ch_consts::CH_SERVICE_NAME.into(),
+                ch_consts::CH_TIMESTAMP.into(),
+            ]);
+            builder
+                .partition_by
+                .push(format!("toDate({})", ch_consts::CH_TIMESTAMP));
+            // primary_key left empty -> omitted, defaults to ORDER BY
+            builder.settings.extend(default_table_settings());
+
+            builder.clone().validate()?;
+            Some(builder.build()?)
+        }
+        TableKind::Traces => {
+            // Traces table columns
+            builder.columns.extend_from_slice(&[
+                schema::TIMESTAMP_COLUMN.clone(),
+                schema::TRACE_ID_COLUMN.clone(),
+                schema::SPAN_ID_COLUMN.clone(),
+                schema::PARENT_SPAN_ID_COLUMN.clone(),
+                schema::TRACE_STATE_COLUMN.clone(),
+                schema::SPAN_NAME_COLUMN.clone(),
+                schema::SPAN_KIND_COLUMN.clone(),
+                schema::SERVICE_NAME_COLUMN.clone(),
+            ]);
+            builder
+                .columns
+                .push(schema::INLINE_RESOURCE_ATTR_COLUMN.clone());
+            builder.columns.extend_from_slice(&[
+                schema::SCOPE_NAME_COLUMN.clone(),
+                schema::SCOPE_VERSION_COLUMN.clone(),
+            ]);
+
+            builder
+                .columns
+                .push(schema::INLINE_SPAN_ATTR_COLUMN.clone());
+
+            builder.columns.extend_from_slice(&[
+                schema::DURATION_COLUMN.clone(),
+                schema::STATUS_CODE_COLUMN.clone(),
+                schema::STATUS_MESSAGE_COLUMN.clone(),
+            ]);
+
+            // Events Nested columns
+            builder
+                .columns
+                .push(schema::EVENTS_TIMESTAMP_COLUMN.clone());
+            builder.columns.push(schema::EVENTS_NAME_COLUMN.clone());
+            builder
+                .columns
+                .push(schema::EVENTS_ATTRIBUTES_COLUMN.clone());
+
+            // Links Nested columns
+            builder.columns.push(schema::LINKS_TRACE_ID_COLUMN.clone());
+            builder.columns.push(schema::LINKS_SPAN_ID_COLUMN.clone());
+            builder
+                .columns
+                .push(schema::LINKS_TRACE_STATE_COLUMN.clone());
+            builder
+                .columns
+                .push(schema::LINKS_ATTRIBUTES_COLUMN.clone());
+
+            // Indexes
+            builder.indexes.push(schema::IDX_TRACE_ID);
+            builder.indexes.push(schema::IDX_RES_ATTR_KEY);
+            builder.indexes.push(schema::IDX_RES_ATTR_VALUE);
+            builder.indexes.push(schema::IDX_SPAN_ATTR_KEY);
+            builder.indexes.push(schema::IDX_SPAN_ATTR_VALUE);
+            builder.indexes.push(schema::IDX_DURATION);
+
+            builder.order_by.extend(vec![
+                ch_consts::CH_SERVICE_NAME.into(),
+                ch_consts::CH_SPAN_NAME.into(),
+                format!("toDateTime({})", ch_consts::CH_TIMESTAMP),
+            ]);
+            builder
+                .partition_by
+                .push(format!("toDate({})", ch_consts::CH_TIMESTAMP));
+            // primary_key left empty -> omitted, defaults to ORDER BY
+            builder.settings.extend(default_table_settings());
+
+            builder.clone().validate()?;
+            Some(builder.build()?)
+        }
+        // TODO: [support_new_signal] implement these
+        _ => Some("SELECT 1;".into()),
+    };
+    Ok(maybe_sql)
+}
+
+pub async fn init_table(
+    client: &Client,
+    entry: &TableEntry<'_>,
+    config: &Config,
+) -> Result<(), ClickhouseExporterError> {
+    let Some(sql) = build_table_sql(entry, config)? else {
+        return Ok(());
+    };
+
+    client.query(&sql).execute().await.map_err(|e| {
+        ClickhouseExporterError::TableCreationError {
+            error: format!("{e}"),
+        }
+    })?;
+    Ok(())
+}
+
+/// Default table SETTINGS.
+fn default_table_settings() -> Vec<(String, String)> {
+    vec![
+        ("index_granularity".into(), "8192".into()),
+        ("ttl_only_drop_parts".into(), "1".into()),
+    ]
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableKind {
+    Logs,
+    Traces,
+    Gauge,
+    Sum,
+    Histogram,
+}
+
+#[derive(Debug)]
+pub struct TableEntry<'a> {
+    pub kind: TableKind,
+    pub config: &'a TableConfig,
+}
+
+impl TableKind {
+    pub fn is_signal_kind(&self) -> bool {
+        matches!(
+            self,
+            Self::Logs | Self::Traces | Self::Gauge | Self::Sum | Self::Histogram
+        )
+    }
+    #[allow(dead_code)]
+    fn as_str(&self) -> &'static str {
+        match self {
+            TableKind::Traces => "trace",
+            TableKind::Logs => "log",
+            _ => "unknown",
+        }
+    }
+}
+
+impl MetricsTableConfig {
+    /// Helper function for iterrating the metric table configs.
+    pub fn iter(&self) -> impl Iterator<Item = TableEntry<'_>> {
+        [
+            (TableKind::Gauge, &self.gauge),
+            (TableKind::Sum, &self.sum),
+            (TableKind::Histogram, &self.histogram),
+        ]
+        .into_iter()
+        .map(|(kind, config)| TableEntry { kind, config })
+    }
+}
+
+impl TablesConfig {
+    /// Helper function for iterrating the table configs.
+    pub fn iter_tables(&self) -> impl Iterator<Item = TableEntry<'_>> {
+        // base tables
+        let base = [
+            (TableKind::Logs, &self.logs),
+            (TableKind::Traces, &self.traces),
+        ];
+
+        // nested metric tables (MetricsTableConfig exposes its own iterator)
+        let metrics = self.metrics.iter();
+
+        base.into_iter()
+            .map(|(kind, config)| TableEntry { kind, config })
+            .chain(metrics)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::exporters::clickhouse_exporter::config::ConfigPatch;
+
+    use super::*;
+
+    fn base_config() -> Config {
+        let json = serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "foo",
+            "password": "bar",
+        });
+
+        let patch: ConfigPatch = serde_json::from_value(json).unwrap();
+        Config::from_patch(patch)
+    }
+
+    fn get_table_config(kind: TableKind, config: &Config) -> &TableConfig {
+        match kind {
+            TableKind::Logs => &config.tables.logs,
+            TableKind::Traces => &config.tables.traces,
+            TableKind::Gauge => &config.tables.metrics.gauge,
+            TableKind::Sum => &config.tables.metrics.sum,
+            TableKind::Histogram => &config.tables.metrics.histogram,
+        }
+    }
+
+    #[test]
+    fn snapshot_signal_tables() {
+        let signal_types = [TableKind::Logs, TableKind::Traces];
+
+        for signal_type in signal_types {
+            let config = base_config();
+
+            let entry = TableEntry {
+                kind: signal_type,
+                config: get_table_config(signal_type, &config),
+            };
+
+            let sql = build_table_sql(&entry, &config)
+                .expect("sql generation failed")
+                .expect("signal table should always be created");
+
+            insta::with_settings!({
+                prepend_module_to_snapshot => false,
+                snapshot_path => "table_snapshots"
+            }, {
+                insta::assert_snapshot!(format!(
+                    "{}_table_map_attrs",
+                    signal_type.as_str(),
+                ),
+                sql);
+            });
+        }
+    }
+
+    // --- Task 2.6: CHTableBuilder unit tests ---
+
+    #[test]
+    fn test_builder_with_indexes_and_settings() {
+        let builder = CHTableBuilder {
+            database: "test_db".into(),
+            table: "test_table".into(),
+            engine: "MergeTree".into(),
+            engine_params: None,
+            order_by: vec!["col1".into()],
+            partition_by: vec!["toDate(col1)".into()],
+            primary_key: vec![],
+            columns: vec![schema::Column::new(
+                "col1",
+                schema::ColumnType::String,
+                schema::ColumnOpts::ZSTD,
+            )],
+            indexes: vec![schema::Index::new(
+                "idx_test",
+                "col1",
+                "bloom_filter(0.01)",
+                1,
+            )],
+            settings: vec![
+                ("index_granularity".into(), "8192".into()),
+                ("ttl_only_drop_parts".into(), "1".into()),
+            ],
+            ttl: None,
+            timestamp_field: "col1".into(),
+        };
+        let sql = builder.build().unwrap();
+        assert!(sql.contains("INDEX idx_test col1 TYPE bloom_filter(0.01) GRANULARITY 1"));
+        assert!(sql.contains("SETTINGS index_granularity=8192, ttl_only_drop_parts=1"));
+        assert!(!sql.contains("PRIMARY KEY"));
+    }
+
+    #[test]
+    fn test_builder_empty_order_by_uses_tuple() {
+        let builder = CHTableBuilder {
+            database: "db".into(),
+            table: "tbl".into(),
+            engine: "MergeTree".into(),
+            order_by: vec![],
+            ..Default::default()
+        };
+        let sql = builder.build().unwrap();
+        assert!(sql.contains("ORDER BY tuple()"));
+    }
+
+    #[test]
+    fn test_builder_empty_primary_key_omits_clause() {
+        let builder = CHTableBuilder {
+            database: "db".into(),
+            table: "tbl".into(),
+            engine: "MergeTree".into(),
+            primary_key: vec![],
+            ..Default::default()
+        };
+        let sql = builder.build().unwrap();
+        assert!(
+            !sql.contains("PRIMARY KEY"),
+            "Empty primary_key should not produce a PRIMARY KEY clause"
+        );
+    }
+
+    #[test]
+    fn test_builder_with_primary_key() {
+        let builder = CHTableBuilder {
+            database: "db".into(),
+            table: "tbl".into(),
+            engine: "MergeTree".into(),
+            primary_key: vec!["a".into(), "b".into()],
+            ..Default::default()
+        };
+        let sql = builder.build().unwrap();
+        assert!(sql.contains("PRIMARY KEY (a, b)"));
+    }
+
+    #[test]
+    fn test_builder_with_ttl() {
+        let builder = CHTableBuilder {
+            database: "db".into(),
+            table: "tbl".into(),
+            engine: "MergeTree".into(),
+            ttl: Some("72 HOUR".into()),
+            timestamp_field: "Timestamp".into(),
+            ..Default::default()
+        };
+        let sql = builder.build().unwrap();
+        assert!(sql.contains("TTL Timestamp + INTERVAL 72 HOUR"));
+    }
+
+    #[test]
+    fn test_builder_indexes_render_after_columns() {
+        let builder = CHTableBuilder {
+            database: "db".into(),
+            table: "tbl".into(),
+            engine: "MergeTree".into(),
+            columns: vec![schema::Column::new(
+                "col1",
+                schema::ColumnType::String,
+                schema::ColumnOpts::ZSTD,
+            )],
+            indexes: vec![schema::Index::new("idx_c1", "col1", "minmax", 1)],
+            ..Default::default()
+        };
+        let sql = builder.build().unwrap();
+        let col_pos = sql.find("`col1`").unwrap();
+        let idx_pos = sql.find("INDEX idx_c1").unwrap();
+        assert!(idx_pos > col_pos, "Index should appear after column in DDL");
+    }
+
+    // --- Payload destination table map tests ---
+
+    #[test]
+    fn test_payload_destination_table_map_default() {
+        let config = base_config();
+        let map = build_payload_destination_table_map(&config);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[&ArrowPayloadType::Logs], "otel_logs");
+        assert_eq!(map[&ArrowPayloadType::Spans], "otel_traces");
+    }
+
+    // --- Metric stubs ---
+
+    #[test]
+    fn test_gauge_table_produces_stub() {
+        let config = base_config();
+        let entry = TableEntry {
+            kind: TableKind::Gauge,
+            config: get_table_config(TableKind::Gauge, &config),
+        };
+        let sql = build_table_sql(&entry, &config).unwrap().unwrap();
+        assert_eq!(sql, "SELECT 1;");
+    }
+
+    // --- Schema creation disabled ---
+
+    #[test]
+    fn test_disabled_schema_creation_returns_none() {
+        let json = serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "foo",
+            "password": "bar",
+            "table_defaults": { "create_schema": false },
+        });
+        let patch: ConfigPatch = serde_json::from_value(json).unwrap();
+        let config = Config::from_patch(patch);
+        let entry = TableEntry {
+            kind: TableKind::Logs,
+            config: &config.tables.logs,
+        };
+        let result = build_table_sql(&entry, &config).unwrap();
+        assert!(result.is_none());
+    }
+
+    // --- Validation tests ---
+
+    #[test]
+    fn test_validate_valid_identifiers() {
+        let builder = CHTableBuilder {
+            database: "otap".into(),
+            table: "otel_logs".into(),
+            engine: "MergeTree".into(),
+            ..Default::default()
+        };
+        assert!(builder.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_empty_database_fails() {
+        let builder = CHTableBuilder {
+            database: "".into(),
+            table: "otel_logs".into(),
+            engine: "MergeTree".into(),
+            ..Default::default()
+        };
+        assert!(builder.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_special_chars_fail() {
+        let builder = CHTableBuilder {
+            database: "otap".into(),
+            table: "otel-logs".into(),
+            engine: "MergeTree".into(),
+            ..Default::default()
+        };
+        assert!(builder.validate().is_err());
+    }
+
+    #[test]
+    fn test_global_ttl_interval_applied_to_ddl() {
+        // No per-table `ttl`, but a global `ttl_interval` default — it should appear in the DDL.
+        let json = serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "foo",
+            "password": "bar",
+            "table_defaults": { "ttl_interval": "48 HOUR" },
+        });
+        let patch: ConfigPatch = serde_json::from_value(json).unwrap();
+        let config = Config::from_patch(patch);
+        let entry = TableEntry {
+            kind: TableKind::Logs,
+            config: &config.tables.logs,
+        };
+        let sql = build_table_sql(&entry, &config).unwrap().unwrap();
+        assert!(
+            sql.contains("TTL Timestamp + INTERVAL 48 HOUR"),
+            "global ttl_interval should appear in DDL, got:\n{sql}"
+        );
+    }
+
+    #[test]
+    fn test_per_table_ttl_overrides_global_interval() {
+        // An explicit per-table `ttl` wins over the global `ttl_interval`.
+        let json = serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "foo",
+            "password": "bar",
+            "table_defaults": { "ttl_interval": "48 HOUR" },
+            "tables": { "logs": { "ttl": "12 HOUR" } },
+        });
+        let patch: ConfigPatch = serde_json::from_value(json).unwrap();
+        let config = Config::from_patch(patch);
+        let entry = TableEntry {
+            kind: TableKind::Logs,
+            config: &config.tables.logs,
+        };
+        let sql = build_table_sql(&entry, &config).unwrap().unwrap();
+        assert!(sql.contains("TTL Timestamp + INTERVAL 12 HOUR"), "{sql}");
+        assert!(!sql.contains("48 HOUR"), "{sql}");
+    }
+
+    #[test]
+    fn test_validate_ttl_accepts_interval_with_space() {
+        let builder = CHTableBuilder {
+            database: "otap".into(),
+            table: "otel_logs".into(),
+            engine: "MergeTree".into(),
+            ttl: Some("72 HOUR".into()),
+            timestamp_field: "Timestamp".into(),
+            ..Default::default()
+        };
+        assert!(
+            builder.clone().validate().is_ok(),
+            "'72 HOUR' should pass validation"
+        );
+        let sql = builder.build().unwrap();
+        assert!(sql.contains("TTL Timestamp + INTERVAL 72 HOUR"), "{sql}");
+    }
+
+    #[test]
+    fn test_validate_ttl_rejects_injection() {
+        for bad in [
+            "72 HOUR; DROP TABLE x",
+            "72 HOUR -- comment",
+            "1 DAY /* x */",
+        ] {
+            let builder = CHTableBuilder {
+                database: "otap".into(),
+                table: "otel_logs".into(),
+                engine: "MergeTree".into(),
+                ttl: Some(bad.into()),
+                ..Default::default()
+            };
+            assert!(
+                builder.validate().is_err(),
+                "ttl '{bad}' should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_ttl_rejects_missing_unit() {
+        let builder = CHTableBuilder {
+            database: "otap".into(),
+            table: "otel_logs".into(),
+            engine: "MergeTree".into(),
+            ttl: Some("72".into()),
+            ..Default::default()
+        };
+        assert!(
+            builder.validate().is_err(),
+            "ttl without a unit should fail"
+        );
+    }
+
+    #[test]
+    fn test_validate_engine_params_accepts_replicated() {
+        let params = "('/clickhouse/tables/{shard}/{db}/{table}', '{replica}')";
+        let builder = CHTableBuilder {
+            database: "otap".into(),
+            table: "otel_logs".into(),
+            engine: "ReplicatedMergeTree".into(),
+            engine_params: Some(params.into()),
+            ..Default::default()
+        };
+        assert!(
+            builder.clone().validate().is_ok(),
+            "replicated-engine params should pass validation"
+        );
+        let sql = builder.build().unwrap();
+        assert!(
+            sql.contains(params),
+            "engine params should appear in DDL:\n{sql}"
+        );
+    }
+
+    #[test]
+    fn test_validate_engine_params_rejects_injection() {
+        for bad in [
+            "('/path'); DROP TABLE x --",
+            "('{shard}') -- comment",
+            "('{shard}') /* x */",
+        ] {
+            let builder = CHTableBuilder {
+                database: "otap".into(),
+                table: "otel_logs".into(),
+                engine: "ReplicatedMergeTree".into(),
+                engine_params: Some(bad.into()),
+                ..Default::default()
+            };
+            assert!(
+                builder.validate().is_err(),
+                "engine_params '{bad}' should be rejected"
+            );
+        }
+    }
+}
