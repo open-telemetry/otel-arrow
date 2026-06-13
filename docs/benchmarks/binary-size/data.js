@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781225487163,
+  "lastUpdate": 1781311650341,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5026,6 +5026,38 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/877dd362a5547ce59c0243a1f0203cc85cd3d892"
         },
         "date": 1781225475898,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 98.72,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Laurent Quérel",
+            "username": "lquerel",
+            "email": "l.querel@f5.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "591a9c12c0b36025f9f7a899eb840d4fee913ffd",
+          "message": "feat: add controller extension hooks (#3281)\n\n# Change Summary\n\nAdds a controller extension hooks for trusted in-process integrations.\n\nThis PR introduces:\n- an `engine.extensions` configuration section keyed by extension ID\n- a reusable `ExtensionUserConfig` envelope for engine-level extension\ndeclarations\n- `ControllerExtensionRegistry` and `ControllerRunOptions` for embedding\napplications to register extension factories\n- `ControllerExtensionContext`, giving extensions access to:\n    - their extension ID and config\n    - the semantic control-plane handle\n    - observed runtime state\n    - the shared telemetry registry\n    - the initial engine config\n- extension lifecycle startup/shutdown handling on dedicated controller\nextension tasks\n\nThe default behavior remains unchanged: if no engine extensions are\nconfigured, no extension tasks are started. If an extension is\nconfigured without a registered factory, controller startup fails with a\nclear\nerror.\n\n## What issue does this PR close?\n\nCloses https://github.com/open-telemetry/otel-arrow/issues/3263\n\n## How are these changes tested?\n\nTested with:\n\n- `cargo xtask check`\n\n## Are there any user-facing changes?\n\nYes. This adds a new public engine configuration field,\n`engine.extensions`, and new controller APIs for embedding applications\nthat need to register trusted in-process controller extensions.\n\nExisting configurations remain backward compatible because\n`engine.extensions` defaults to empty.\n\n### Changelog\n\n* [x] Added a `.chloggen/*.yaml` entry, OR this PR is a `chore`\n(indicated in title).\n\n---------\n\nCo-authored-by: Cijo Thomas <cithomas@microsoft.com>",
+          "timestamp": "2026-06-13T00:11:46Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/591a9c12c0b36025f9f7a899eb840d4fee913ffd"
+        },
+        "date": 1781311640251,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
