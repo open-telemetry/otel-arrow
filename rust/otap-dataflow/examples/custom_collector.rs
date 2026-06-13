@@ -11,7 +11,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example custom_collector -- --config configs/fake-perf.yaml
+//! cargo run --example custom_collector -- --config configs/trafficgen-perf.yaml
 //! ```
 
 use std::path::PathBuf;
