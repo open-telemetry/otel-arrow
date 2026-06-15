@@ -24,7 +24,7 @@ engine:
             name: "debug.logs.consumed.count"
             description: "Count of log messages consumed by debug processor"
     resource:
-      service.name: "fake-debug-noop-service"
+      service.name: "trafficgen-debug-noop-service"
 groups:
   default:
     pipelines:

@@ -60,6 +60,8 @@ release of v0.104.0][ARROW-RELEASED].
 
 Our project is growing, new contributors are welcome.  **[Join us in
 `#otel-arrow` on the CNCF Slack!](https://cloud-native.slack.com/archives/C07S4Q67LTF)**
+If you are new to the CNCF Slack community, you can
+[create an account](https://slack.cncf.io/).
 
 ## What is Apache Arrow?
 
