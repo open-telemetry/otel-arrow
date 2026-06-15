@@ -5709,6 +5709,56 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_filter_by_attr_bytes_type() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes([
+                    KeyValue::new("attr_bytes", AnyValue::new_bytes(b"hello")),
+                    KeyValue::new("mixed_types", AnyValue::new_bytes(b"world")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes([
+                    KeyValue::new("attr_bytes", AnyValue::new_bytes(b"hello")),
+                    KeyValue::new("mixed_types", AnyValue::new_string("text")),
+                ])
+                .finish(),
+        ];
+
+        // all rows match when all have a Bytes attribute
+        let query = r#"logs | where attributes["attr_bytes"] is Bytes"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        let expected = vec![log_records[0].clone(), log_records[1].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+
+        // inverted: no rows
+        let query = r#"logs | where not(attributes["attr_bytes"] is Bytes)"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0, "expected empty result");
+
+        // Bytes attribute is not matched by String
+        let query = r#"logs | where attributes["attr_bytes"] is String"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0, "expected empty result");
+
+        // only the row whose mixed_types is Bytes is selected
+        let query = r#"logs | where attributes["mixed_types"] is Bytes"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        let expected = vec![log_records[0].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+    }
+
+    #[tokio::test]
     async fn test_filter_by_known_type() {
         let log_records = vec![
             LogRecord::build().severity_text("DEBUG").finish(),
