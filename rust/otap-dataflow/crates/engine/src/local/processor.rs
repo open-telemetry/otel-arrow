@@ -196,9 +196,11 @@ impl<PData> EffectHandler<PData> {
     /// Sets the send-marker to "now" so that the first
     /// [`take_elapsed_since_send_marker_ns`] call (typically from the send
     /// hook) measures elapsed time from the start of `process()`.
-    /// No-op when no flow_metrics are configured.
+    /// No-op unless some flow in this pipeline tracks `compute.duration`
+    /// (`needs_timing`); a count-only flow such as `signals.dropped` pays no
+    /// per-message `Instant::now()` cost.
     pub(crate) fn begin_process_timing(&self) {
-        if self.flow.active {
+        if self.flow.needs_timing {
             self.flow.last_send_marker.set(Some(Instant::now()));
         }
     }
@@ -233,11 +235,13 @@ impl<PData> EffectHandler<PData> {
         signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>>,
         signals_dropped_metric: Option<MetricSet<FlowSignalsDroppedMetrics>>,
         flow_metrics_active: bool,
+        flow_needs_timing: bool,
     ) {
         self.flow.is_start = is_start;
         self.flow.is_end = is_end;
         self.flow.is_decision = signals_dropped_metric.is_some();
         self.flow.active = flow_metrics_active;
+        self.flow.needs_timing = flow_needs_timing;
         self.flow.incoming = IncomingFlowMetrics {
             signals_incoming: signals_incoming_metric
                 .map(|metrics| (metrics, Cell::new(Mmsc::default()))),
@@ -1071,6 +1075,7 @@ mod tests {
             Some(outgoing_metric_set),
             None,
             true,
+            true,
         );
 
         // Record two observations — should accumulate in the local Mmsc,
@@ -1161,8 +1166,9 @@ mod tests {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
-        eh.set_flow_roles(true, false, None, None, None, None, true);
+        eh.set_flow_roles(true, false, None, None, None, None, true, true);
         assert!(eh.flow.active);
+        assert!(eh.flow.needs_timing);
 
         eh.begin_process_timing();
 
@@ -1188,7 +1194,37 @@ mod tests {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
-        eh.set_flow_roles(true, false, None, None, None, None, true);
+        eh.set_flow_roles(true, false, None, None, None, None, true, true);
         assert_eq!(eh.take_elapsed_since_send_marker_ns(), 0);
+    }
+
+    /// A flow that is active but does not track `compute.duration` (e.g. a
+    /// `signals.dropped`-only flow) must not arm the send marker, so messages
+    /// pay no per-message `Instant::now()` timing cost.
+    #[test]
+    fn flow_metric_marker_not_armed_when_timing_disabled() {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh =
+            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        // active = true, needs_timing = false.
+        eh.set_flow_roles(true, false, None, None, None, None, true, false);
+        assert!(eh.flow.active);
+        assert!(!eh.flow.needs_timing);
+
+        eh.begin_process_timing();
+
+        // Even after burning CPU, the marker was never armed, so the elapsed
+        // delta stays 0.
+        let mut value = 0u64;
+        for i in 0..10_000 {
+            value = value.wrapping_add(std::hint::black_box(i));
+        }
+        let _ = std::hint::black_box(value);
+
+        assert_eq!(
+            eh.take_elapsed_since_send_marker_ns(),
+            0,
+            "send marker must stay unarmed when timing is disabled"
+        );
     }
 }

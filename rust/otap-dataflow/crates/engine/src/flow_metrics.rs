@@ -213,10 +213,15 @@ pub(crate) struct FlowMetricState<Marker, Accumulator> {
     pub is_end: bool,
     /// Whether this node is a decision node for some flow.
     pub is_decision: bool,
-    /// Whether any flow_metric is configured in this pipeline.
-    /// When false, `begin_process_timing` and
-    /// `take_elapsed_since_send_marker_ns` are no-ops.
+    /// Whether any flow_metric is configured in this pipeline. Gates the
+    /// per-message hook block (incoming counting and periodic reporting).
+    /// True even for count-only flows such as `signals.dropped`.
     pub active: bool,
+    /// Whether any flow in this pipeline tracks `compute.duration`, i.e.
+    /// whether per-message send-marker timing is needed. When false,
+    /// `begin_process_timing` is a no-op even if `active` is true (e.g. a
+    /// `signals.dropped`-only flow pays no `Instant::now()` cost).
+    pub needs_timing: bool,
     /// Start-side measurements (metric set + accumulator).
     /// `None` when this node is not a flow_metric start node — non-start
     /// nodes pay no allocation cost for the metric set or accumulator.
@@ -246,6 +251,7 @@ impl Default for LocalFlowMetricState {
             is_end: false,
             is_decision: false,
             active: false,
+            needs_timing: false,
             incoming: IncomingFlowMetrics {
                 signals_incoming: None,
             },
@@ -268,6 +274,7 @@ impl Default for SharedFlowMetricState {
             is_end: false,
             is_decision: false,
             active: false,
+            needs_timing: false,
             incoming: IncomingFlowMetrics {
                 signals_incoming: None,
             },
@@ -563,12 +570,22 @@ impl PipelineFlowMetricState {
 
     /// Returns `true` if any flow_metrics are configured.
     #[must_use]
-    #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
         self.signals_incoming_metrics.iter().any(Option::is_some)
             || self.duration_metrics.iter().any(Option::is_some)
             || self.signals_outgoing_metrics.iter().any(Option::is_some)
             || !self.decision_candidates.is_empty()
+    }
+
+    /// Returns `true` if any flow tracks `compute.duration`, i.e. whether
+    /// per-message send-marker timing (`Instant::now()`) is needed.
+    ///
+    /// Distinct from [`is_active`](Self::is_active): a count-only flow (e.g.
+    /// `signals.dropped`) is active but needs no timing, so it must not pay
+    /// the per-message `Instant::now()` cost.
+    #[must_use]
+    pub fn needs_timing(&self) -> bool {
+        self.duration_metrics.iter().any(Option::is_some)
     }
 }
 

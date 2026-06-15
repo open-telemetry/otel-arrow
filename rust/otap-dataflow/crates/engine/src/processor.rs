@@ -586,6 +586,7 @@ impl<PData> ProcessorWrapper<PData> {
             None,
             None,
             false,
+            false,
         )
         .await
     }
@@ -604,6 +605,7 @@ impl<PData> ProcessorWrapper<PData> {
         flow_signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>>,
         flow_signals_dropped_metric: Option<MetricSet<FlowSignalsDroppedMetrics>>,
         flow_metrics_active: bool,
+        flow_needs_timing: bool,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode + FlowMetricHook,
@@ -636,6 +638,7 @@ impl<PData> ProcessorWrapper<PData> {
                     flow_signals_outgoing_metric.clone(),
                     flow_signals_dropped_metric.clone(),
                     flow_metrics_active,
+                    flow_needs_timing,
                 );
 
                 while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
@@ -694,6 +697,7 @@ impl<PData> ProcessorWrapper<PData> {
                     flow_signals_outgoing_metric.clone(),
                     flow_signals_dropped_metric.clone(),
                     flow_metrics_active,
+                    flow_needs_timing,
                 );
 
                 while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
@@ -1208,7 +1212,16 @@ mod tests {
             None,
             metrics_reporter,
         );
-        handler.set_flow_roles(true, false, Some(incoming_metric), None, None, None, true);
+        handler.set_flow_roles(
+            true,
+            false,
+            Some(incoming_metric),
+            None,
+            None,
+            None,
+            true,
+            false,
+        );
 
         handler.record_flow_signals_incoming(3);
         handler.record_flow_duration(10);
@@ -1253,6 +1266,7 @@ mod tests {
             Some(outgoing_metric),
             None,
             true,
+            true,
         );
 
         handler.record_flow_signals_incoming(3);
@@ -1295,7 +1309,17 @@ mod tests {
             metrics_reporter,
         );
         // A decision node that is neither start nor end of the flow range.
-        handler.set_flow_roles(false, false, None, None, None, Some(dropped_metric), true);
+        // Drop-only: needs no per-message timing.
+        handler.set_flow_roles(
+            false,
+            false,
+            None,
+            None,
+            None,
+            Some(dropped_metric),
+            true,
+            false,
+        );
         assert!(handler.is_flow_decision());
 
         handler.record_flow_signals_dropped(3);
@@ -1388,6 +1412,7 @@ mod tests {
                             Some(duration_metric_set),
                             Some(outgoing_metric_set),
                             None,
+                            true,
                             true,
                         )
                         .await

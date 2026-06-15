@@ -493,6 +493,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 );
             }
             let flow_active = flow_metric_state.is_active();
+            let flow_needs_timing = flow_metric_state.needs_timing();
             let fut = async move {
                 let result = processor
                     .start_with_completion_metrics(
@@ -508,6 +509,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         flow_signals_outgoing_metric,
                         flow_signals_dropped_metric,
                         flow_active,
+                        flow_needs_timing,
                     )
                     .await;
                 drop(telemetry_guard);
