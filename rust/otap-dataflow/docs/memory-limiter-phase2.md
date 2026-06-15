@@ -1406,13 +1406,15 @@ Validation:
   remains `observe_only`.
 - The only enforcement path wired so far is `enforcement.queue_publish` at the
   owned topic-publish boundary: with `mode = enforce` and `queue_publish: true`,
-  an owned publish whose payload exceeds the topic escrow cap or the global
-  spare pool is rejected and returns the original local ticket
-  (`DroppedOnFull`), committing nothing. `enforcement.receiver_admission` and
-  `enforcement.reclaim_hooks` are carried into the runtime config but are not yet
-  wired to any admission point or reclaim driver; setting them changes no runtime
-  behavior today. Observe-only (and `mode = enforce` with `queue_publish: false`)
-  records escrow/pool pressure without rejecting.
+  an owned publish whose payload exceeds the current aggregate topic-publish
+  escrow cap or the global spare pool is rejected and returns the original local
+  ticket (`DroppedOnFull`), committing nothing. This is a foundation gate, not
+  production per-topic enforcement; separate per-topic/per-boundary escrow
+  buckets and metrics are still future work. `enforcement.receiver_admission`
+  and `enforcement.reclaim_hooks` are carried into the runtime config but are
+  not yet wired to any admission point or reclaim driver; setting them changes
+  no runtime behavior today. Observe-only (and `mode = enforce` with
+  `queue_publish: false`) records escrow/pool pressure without rejecting.
 - `reserve` must be smaller than the process hard limit when a hard limit is
   known.
 - `runtime_count` is the total resolved runtime instances in the process.
