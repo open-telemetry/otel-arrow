@@ -1,4 +1,4 @@
 change_type: enhancement
 component: engine
 note: Add full-engine live reconciliation primitives plus Admin HTTP endpoints for config snapshots, config reconciliation, pipeline group creation, and pipeline/group deletion.
-issues: []
+issues: [3266]
