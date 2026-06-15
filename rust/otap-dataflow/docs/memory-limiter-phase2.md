@@ -1425,11 +1425,21 @@ Validation:
   - the OTLP gRPC exporter's backpressure-parked pending request and each
     in-flight encoded request (local ticket per retained request, released on
     completion success/error/nack/timeout, on shutdown drain, and on early
-    teardown when the in-flight queue is dropped).
+    teardown when the in-flight queue is dropped);
+  - the OTLP HTTP exporter's in-flight request bodies (local ticket per retained
+    request body, released on completion success/partial-success/error/nack, on
+    shutdown drain, and on early teardown; this exporter has no separate
+    backpressure-parked pending request).
   These exporter/processor sites are accounting points, not admission points:
   under `mode = enforce` a rejected charge yields no ticket and the work still
   proceeds, so they never drop data. Admission/enforcement of retained work
   remains the receiver/queue layer's responsibility and stays gated.
+- Exporter retained-work coverage is **not** complete across all exporters. The
+  topic exporter's retained work is the topic queue, already accounted by the
+  topic/per-boundary escrow buckets (and enforced via `queue_publish`). The OTAP
+  (streaming) and parquet exporters retain in-flight/buffered work that is **not
+  yet** charged and remains an open gap. The console, perf, noop, and error
+  exporters hand off synchronously and have no retained pending request.
 - `reserve` must be smaller than the process hard limit when a hard limit is
   known.
 - `runtime_count` is the total resolved runtime instances in the process.
