@@ -41,8 +41,8 @@ use crate::effect_handler::{
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
     DecisionFlowMetrics, EndFlowMetrics, FlowDurationMetrics, FlowSignalsDroppedMetrics,
-    FlowSignalsIncomingMetrics, FlowSignalsKeptMetrics, FlowSignalsOutgoingMetrics,
-    IncomingFlowMetrics, SharedFlowMetricState, nanos_u64,
+    FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics, IncomingFlowMetrics,
+    SharedFlowMetricState, nanos_u64,
 };
 use crate::message::Message;
 use crate::node::NodeId;
@@ -203,13 +203,12 @@ impl<PData> EffectHandler<PData> {
         signals_incoming_metric: Option<MetricSet<FlowSignalsIncomingMetrics>>,
         duration_metric: Option<MetricSet<FlowDurationMetrics>>,
         signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>>,
-        signals_kept_metric: Option<MetricSet<FlowSignalsKeptMetrics>>,
         signals_dropped_metric: Option<MetricSet<FlowSignalsDroppedMetrics>>,
         flow_metrics_active: bool,
     ) {
         self.flow.is_start = is_start;
         self.flow.is_end = is_end;
-        self.flow.is_decision = signals_kept_metric.is_some() || signals_dropped_metric.is_some();
+        self.flow.is_decision = signals_dropped_metric.is_some();
         self.flow.active = flow_metrics_active;
         self.flow.incoming = IncomingFlowMetrics {
             signals_incoming: signals_incoming_metric
@@ -222,8 +221,6 @@ impl<PData> EffectHandler<PData> {
                 .map(|metrics| (metrics, Arc::new(Mutex::new(Mmsc::default())))),
         };
         self.flow.decision = DecisionFlowMetrics {
-            signals_kept: signals_kept_metric
-                .map(|metrics| (metrics, Arc::new(Mutex::new(Mmsc::default())))),
             signals_dropped: signals_dropped_metric
                 .map(|metrics| (metrics, Arc::new(Mutex::new(Mmsc::default())))),
         };
@@ -241,7 +238,7 @@ impl<PData> EffectHandler<PData> {
         self.flow.is_end
     }
 
-    /// Returns whether this node is a keep/drop decision node for some flow.
+    /// Returns whether this node is a decision node for some flow.
     #[must_use]
     pub fn is_flow_decision(&self) -> bool {
         self.flow.is_decision
@@ -321,23 +318,9 @@ impl<PData> EffectHandler<PData> {
         acc.record(signals as f64);
     }
 
-    /// Record the count of signal items this decision node chose to keep.
-    ///
-    /// No-op unless this node is wired as a keep/drop decision node for a flow
-    /// that enables `signals.kept`.
-    pub fn record_flow_signals_kept(&self, signals: u64) {
-        let Some((_, acc_mutex)) = self.flow.decision.signals_kept.as_ref() else {
-            return;
-        };
-        let mut acc = acc_mutex
-            .lock()
-            .expect("flow signals_kept accumulator poisoned");
-        acc.record(signals as f64);
-    }
-
     /// Record the count of signal items this decision node chose to drop.
     ///
-    /// No-op unless this node is wired as a keep/drop decision node for a flow
+    /// No-op unless this node is wired as a decision node for a flow
     /// that enables `signals.dropped`.
     pub fn record_flow_signals_dropped(&self, signals: u64) {
         let Some((_, acc_mutex)) = self.flow.decision.signals_dropped.as_ref() else {
@@ -379,16 +362,6 @@ impl<PData> EffectHandler<PData> {
                 std::mem::take(&mut *guard)
             };
             metrics.signals_outgoing.merge(drained);
-            let _ = self.core.metrics_reporter.report(metrics);
-        }
-        if let Some((metrics, acc_mutex)) = self.flow.decision.signals_kept.as_mut() {
-            let drained = {
-                let mut guard = acc_mutex
-                    .lock()
-                    .expect("flow signals_kept accumulator poisoned");
-                std::mem::take(&mut *guard)
-            };
-            metrics.signals_kept.merge(drained);
             let _ = self.core.metrics_reporter.report(metrics);
         }
         if let Some((metrics, acc_mutex)) = self.flow.decision.signals_dropped.as_mut() {
@@ -752,7 +725,7 @@ mod tests {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
-        eh.set_flow_roles(true, false, None, None, None, None, None, true);
+        eh.set_flow_roles(true, false, None, None, None, None, true);
         assert!(eh.is_flow_start());
         assert!(eh.flow.active);
 
@@ -796,7 +769,6 @@ mod tests {
             Some(start_metric_set),
             Some(duration_metric_set),
             Some(outgoing_metric_set),
-            None,
             None,
             true,
         );

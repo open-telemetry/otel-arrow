@@ -55,16 +55,6 @@ pub struct FlowSignalsOutgoingMetrics {
     pub signals_outgoing: Mmsc,
 }
 
-/// Kept signal metric set emitted by a decision node within a flow range.
-#[metric_set(name = "flow")]
-#[derive(Debug, Default, Clone)]
-pub struct FlowSignalsKeptMetrics {
-    /// Number of signal items (log records, spans, or metric data points) a
-    /// decision node chose to keep.
-    #[metric(name = "signals.kept", unit = "{item}")]
-    pub signals_kept: Mmsc,
-}
-
 /// Dropped signal metric set emitted by a decision node within a flow range.
 #[metric_set(name = "flow")]
 #[derive(Debug, Default, Clone)]
@@ -95,20 +85,19 @@ pub struct FlowAttributeSet {
     /// `flow` scope.
     #[attribute(key = "flow.purpose")]
     pub purpose: Cow<'static, str>,
-    /// Name of the decision node that recorded `signals.kept` / `signals.dropped`.
-    /// Always emitted as the `flow.node.decision` scope attribute; carries an
-    /// empty value for the flow's incoming/outgoing/duration entity (which is
-    /// not attributed to a specific decision node). Lets a single flow contain
+    /// Name of the decision node that recorded `signals.dropped`. Always
+    /// emitted as the `flow.node.decision` scope attribute; carries an empty
+    /// value for the flow's incoming/outgoing/duration entity (which is not
+    /// attributed to a specific decision node). Lets a single flow contain
     /// multiple decision nodes without conflation.
     ///
-    /// Aggregation across this attribute differs by metric. `signals.dropped`
-    /// sums correctly: drops at different decision nodes are disjoint (a dropped
-    /// item never reaches a later node), so the sum equals the flow's total
-    /// removed = `signals.incoming - signals.outgoing`. `signals.kept` does NOT
-    /// sum: each node's kept count is relative to its own input, and for nodes
-    /// in series those sets are nested subsets, so summing double-counts. The
-    /// flow-wide kept count is simply `signals.outgoing`; the per-node
-    /// `signals.kept` is only meaningful on its own entity.
+    /// `signals.dropped` aggregates correctly across this attribute: drops at
+    /// different decision nodes are disjoint (a dropped item never reaches a
+    /// later node), so the sum equals the flow's total removed =
+    /// `signals.incoming - signals.outgoing`. There is deliberately no
+    /// per-node "kept" metric: a survivor count is non-additive across series
+    /// nodes (nested subsets double-count) and undefined under fan-out, and the
+    /// flow-wide kept count is simply `signals.outgoing`.
     #[attribute(key = "flow.node.decision")]
     pub decision: Cow<'static, str>,
     /// Pipeline attributes.
@@ -137,28 +126,23 @@ pub(crate) struct PipelineFlowMetricState {
     /// Mapping from node index → flow metric index where this node is the start node.
     pub start_nodes: HashMap<usize, usize>,
     /// Decision-node candidates keyed by node index. A processor at one of
-    /// these indices that declares the keep/drop capability records
-    /// `signals.kept` / `signals.dropped` attributed to itself via
-    /// `flow.node.decision`. Populated only for flows that enable kept and/or
-    /// dropped metrics, for every processor node within the flow's active
-    /// range (start..=end).
+    /// these indices that declares the drop capability records
+    /// `signals.dropped` attributed to itself via `flow.node.decision`.
+    /// Populated only for flows that enable the dropped metric, for every
+    /// processor node within the flow's active range (start..=end).
     pub decision_candidates: HashMap<usize, DecisionCandidate>,
 }
 
-/// A node that may record `signals.kept` / `signals.dropped` for a flow.
+/// A node that may record `signals.dropped` for a flow.
 ///
 /// Carries the flow's base attribute set (with an empty `flow.node.decision`)
 /// so the runtime can register a per-node decision entity by filling in the
-/// deciding node's name, plus which of the two metrics the flow enables.
+/// deciding node's name.
 #[derive(Clone)]
 pub(crate) struct DecisionCandidate {
     /// Flow attribute set with an empty `decision` field; the runtime fills in
     /// the deciding node's name before registering the per-node entity.
     pub attrs: FlowAttributeSet,
-    /// Whether the flow enables `signals.kept`.
-    pub kept: bool,
-    /// Whether the flow enables `signals.dropped`.
-    pub dropped: bool,
 }
 
 /// Start-side measurements for a node that begins a flow_metric range.
@@ -185,7 +169,7 @@ pub(crate) struct EndFlowMetrics<Accumulator> {
     pub signals_outgoing: Option<(MetricSet<FlowSignalsOutgoingMetrics>, Accumulator)>,
 }
 
-/// Decision-side measurements for a node that records keep/drop decisions
+/// Decision-side measurements for a node that records drop decisions
 /// within a flow_metric range.
 ///
 /// Groups the metric sets and their accumulators so that they share the
@@ -193,11 +177,8 @@ pub(crate) struct EndFlowMetrics<Accumulator> {
 /// either.
 #[derive(Clone)]
 pub(crate) struct DecisionFlowMetrics<Accumulator> {
-    /// Kept signal measurement, if enabled for this flow and this node is a
-    /// keep/drop decision node.
-    pub signals_kept: Option<(MetricSet<FlowSignalsKeptMetrics>, Accumulator)>,
     /// Dropped signal measurement, if enabled for this flow and this node is a
-    /// keep/drop decision node.
+    /// decision node.
     pub signals_dropped: Option<(MetricSet<FlowSignalsDroppedMetrics>, Accumulator)>,
 }
 
@@ -230,7 +211,7 @@ pub(crate) struct FlowMetricState<Marker, Accumulator> {
     pub is_start: bool,
     /// Whether this node is a flow metric end node.
     pub is_end: bool,
-    /// Whether this node is a keep/drop decision node for some flow.
+    /// Whether this node is a decision node for some flow.
     pub is_decision: bool,
     /// Whether any flow_metric is configured in this pipeline.
     /// When false, `begin_process_timing` and
@@ -270,7 +251,6 @@ impl Default for LocalFlowMetricState {
                 signals_outgoing: None,
             },
             decision: DecisionFlowMetrics {
-                signals_kept: None,
                 signals_dropped: None,
             },
         }
@@ -293,7 +273,6 @@ impl Default for SharedFlowMetricState {
                 signals_outgoing: None,
             },
             decision: DecisionFlowMetrics {
-                signals_kept: None,
                 signals_dropped: None,
             },
         }
@@ -400,18 +379,16 @@ pub(crate) fn build_flow_metric_state(
                 .register_metric_set_for_entity::<FlowSignalsOutgoingMetrics>(entity_key)
         });
 
-        // Register keep/drop decision candidates for every processor node
+        // Register drop decision candidates for every processor node
         // within this flow's active range (inclusive of start and end). A
-        // processor at one of these indices that declares the keep/drop
-        // capability records `signals.kept` / `signals.dropped` attributed to
-        // itself. A decision node must belong to at most one flow — otherwise
-        // its single kept/dropped count could not be unambiguously attributed
-        // to one `flow.id`. The pairwise overlap check below only rejects
-        // shared start/end nodes, so we explicitly reject shared interior nodes
-        // here (e.g. fan-in/merge topologies where two ranges meet at a node).
-        let kept = flow_config.has(FlowMetric::SignalsKept);
-        let dropped = flow_config.has(FlowMetric::SignalsDropped);
-        if kept || dropped {
+        // processor at one of these indices that declares the drop
+        // capability records `signals.dropped` attributed to itself. A decision
+        // node must belong to at most one flow — otherwise its single dropped
+        // count could not be unambiguously attributed to one `flow.id`. The
+        // pairwise overlap check below only rejects shared start/end nodes, so
+        // we explicitly reject shared interior nodes here (e.g. fan-in/merge
+        // topologies where two ranges meet at a node).
+        if flow_config.has(FlowMetric::SignalsDropped) {
             let (mut range_nodes, _) = active_range(start_idx, end_idx, &adjacency);
             let _ = range_nodes.insert(start_idx);
             let _ = range_nodes.insert(end_idx);
@@ -419,7 +396,7 @@ pub(crate) fn build_flow_metric_state(
                 if processor_indices.contains(&node_idx) {
                     if let Some(existing) = decision_candidates.get(&node_idx) {
                         return Err(invalid_flow_metric_config(format!(
-                            "flow metric `{}` shares keep/drop decision node `{}` with flow metric `{}`: a decision node may belong to at most one flow",
+                            "flow metric `{}` shares decision node `{}` with flow metric `{}`: a decision node may belong to at most one flow",
                             flow_config.id,
                             node_name_to_index
                                 .iter()
@@ -432,8 +409,6 @@ pub(crate) fn build_flow_metric_state(
                         node_idx,
                         DecisionCandidate {
                             attrs: attrs.clone(),
-                            kept,
-                            dropped,
                         },
                     );
                 }
@@ -818,11 +793,11 @@ mod tests {
         let (names, procs) = test_maps(&["a", "b", "c"], &[]);
         let edges = test_edges(&[("a", "b"), ("b", "c")], &names);
         let mut flow = sw("decisions", "a", "c");
-        flow.metrics = Some(vec![FlowMetric::SignalsKept, FlowMetric::SignalsDropped]);
+        flow.metrics = Some(vec![FlowMetric::SignalsDropped]);
         let policy = policy_with(vec![flow]);
 
         let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
-            .expect("kept/dropped config should build");
+            .expect("dropped config should build");
 
         // Every processor node in the range a..=c is a decision candidate.
         assert_eq!(state.decision_candidates.len(), 3);
@@ -831,32 +806,13 @@ mod tests {
                 .decision_candidates
                 .get(&idx)
                 .expect("each range node should be a candidate");
-            assert!(candidate.kept);
-            assert!(candidate.dropped);
             assert!(candidate.attrs.decision.is_empty());
         }
         assert!(state.is_active());
     }
 
     #[test]
-    fn kept_only_registers_candidates_without_dropped() {
-        let (ctx, _) = test_pipeline_ctx();
-        let (names, procs) = test_maps(&["a", "b"], &[]);
-        let edges = test_edges(&[("a", "b")], &names);
-        let mut flow = sw("kept_only", "a", "b");
-        flow.metrics = Some(vec![FlowMetric::SignalsKept]);
-        let policy = policy_with(vec![flow]);
-
-        let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
-            .expect("kept-only config should build");
-
-        let candidate = state.decision_candidates.get(&0).expect("candidate");
-        assert!(candidate.kept);
-        assert!(!candidate.dropped);
-    }
-
-    #[test]
-    fn no_kept_dropped_means_no_decision_candidates() {
+    fn no_dropped_means_no_decision_candidates() {
         let (ctx, _) = test_pipeline_ctx();
         let (names, procs) = test_maps(&["a", "b"], &[]);
         let edges = test_edges(&[("a", "b")], &names);
@@ -875,7 +831,7 @@ mod tests {
         let (ctx, _) = test_pipeline_ctx();
         let (names, procs) = test_maps(&["solo"], &[]);
         let mut flow = sw("single", "solo", "solo");
-        flow.metrics = Some(vec![FlowMetric::SignalsKept, FlowMetric::SignalsDropped]);
+        flow.metrics = Some(vec![FlowMetric::SignalsDropped]);
         let policy = policy_with(vec![flow]);
 
         let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &[])
@@ -895,9 +851,9 @@ mod tests {
         let (names, procs) = test_maps(&["a", "c", "m", "b", "d"], &[]);
         let edges = test_edges(&[("a", "m"), ("c", "m"), ("m", "b"), ("m", "d")], &names);
         let mut flow1 = sw("flow1", "a", "b");
-        flow1.metrics = Some(vec![FlowMetric::SignalsKept, FlowMetric::SignalsDropped]);
+        flow1.metrics = Some(vec![FlowMetric::SignalsDropped]);
         let mut flow2 = sw("flow2", "c", "d");
-        flow2.metrics = Some(vec![FlowMetric::SignalsKept, FlowMetric::SignalsDropped]);
+        flow2.metrics = Some(vec![FlowMetric::SignalsDropped]);
         let policy = policy_with(vec![flow1, flow2]);
 
         let err = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)

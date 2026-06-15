@@ -120,10 +120,9 @@ impl FilterProcessor {
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for FilterProcessor {
     fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
-        // The filter processor makes keep/drop decisions on signal items, so
-        // it records `signals.kept` / `signals.dropped` when it lies within a
-        // flow that enables them.
-        ProcessorRuntimeRequirements::none().with_keep_drop_decisions()
+        // The filter processor drops signal items, so it records
+        // `signals.dropped` when it lies within a flow that enables it.
+        ProcessorRuntimeRequirements::none().with_drop_decisions()
     }
 
     async fn process(
@@ -221,14 +220,10 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     }
                 }
 
-                // Record keep/drop flow-metric decisions. These are no-ops
-                // unless this node is a decision node in a flow that enables
-                // `signals.kept` / `signals.dropped`. `signals_consumed` is the
-                // total input count and `signals_filtered` is the dropped count,
-                // so kept = consumed - filtered.
+                // Record the drop flow-metric. A no-op unless this node is
+                // a decision node in a flow that enables `signals.dropped`.
+                // `signals_filtered` is the dropped count.
                 effect_handler.record_flow_signals_dropped(signals_filtered);
-                effect_handler
-                    .record_flow_signals_kept(signals_consumed.saturating_sub(signals_filtered));
 
                 effect_handler
                     .send_message_with_source_node(OtapPdata::new(

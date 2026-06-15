@@ -22,7 +22,7 @@ use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
 use crate::flow_metrics::{
     FlowDurationMetrics, FlowSignalsDroppedMetrics, FlowSignalsIncomingMetrics,
-    FlowSignalsKeptMetrics, FlowSignalsOutgoingMetrics,
+    FlowSignalsOutgoingMetrics,
 };
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
@@ -131,10 +131,10 @@ pub struct ProcessorRuntimeRequirements {
     /// Processor-local wakeup requirements, if the processor uses the local
     /// wakeup API.
     pub local_wakeups: Option<LocalWakeupRequirements>,
-    /// Whether this processor makes keep/drop decisions on signal items and
-    /// therefore records `signals.kept` / `signals.dropped` flow metrics when
-    /// it lies within a flow that enables them. Defaults to `false`.
-    pub makes_keep_drop_decisions: bool,
+    /// Whether this processor drops signal items and therefore records the
+    /// `signals.dropped` flow metric when it lies within a flow that enables
+    /// it. Defaults to `false`.
+    pub makes_drop_decisions: bool,
 }
 
 impl ProcessorRuntimeRequirements {
@@ -144,7 +144,7 @@ impl ProcessorRuntimeRequirements {
     pub const fn none() -> Self {
         Self {
             local_wakeups: None,
-            makes_keep_drop_decisions: false,
+            makes_drop_decisions: false,
         }
     }
 
@@ -153,15 +153,15 @@ impl ProcessorRuntimeRequirements {
     pub const fn with_local_wakeups(live_slots: usize) -> Self {
         Self {
             local_wakeups: Some(LocalWakeupRequirements::new(live_slots)),
-            makes_keep_drop_decisions: false,
+            makes_drop_decisions: false,
         }
     }
 
-    /// Declare that this processor makes keep/drop decisions, enabling
-    /// `signals.kept` / `signals.dropped` flow-metric recording.
+    /// Declare that this processor drops signal items, enabling
+    /// `signals.dropped` flow-metric recording.
     #[must_use]
-    pub const fn with_keep_drop_decisions(mut self) -> Self {
-        self.makes_keep_drop_decisions = true;
+    pub const fn with_drop_decisions(mut self) -> Self {
+        self.makes_drop_decisions = true;
         self
     }
 }
@@ -585,7 +585,6 @@ impl<PData> ProcessorWrapper<PData> {
             None,
             None,
             None,
-            None,
             false,
         )
         .await
@@ -603,7 +602,6 @@ impl<PData> ProcessorWrapper<PData> {
         flow_signals_incoming_metric: Option<MetricSet<FlowSignalsIncomingMetrics>>,
         flow_duration_metric: Option<MetricSet<FlowDurationMetrics>>,
         flow_signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>>,
-        flow_signals_kept_metric: Option<MetricSet<FlowSignalsKeptMetrics>>,
         flow_signals_dropped_metric: Option<MetricSet<FlowSignalsDroppedMetrics>>,
         flow_metrics_active: bool,
     ) -> Result<(), Error>
@@ -636,7 +634,6 @@ impl<PData> ProcessorWrapper<PData> {
                     flow_signals_incoming_metric.clone(),
                     flow_duration_metric.clone(),
                     flow_signals_outgoing_metric.clone(),
-                    flow_signals_kept_metric.clone(),
                     flow_signals_dropped_metric.clone(),
                     flow_metrics_active,
                 );
@@ -695,7 +692,6 @@ impl<PData> ProcessorWrapper<PData> {
                     flow_signals_incoming_metric.clone(),
                     flow_duration_metric.clone(),
                     flow_signals_outgoing_metric.clone(),
-                    flow_signals_kept_metric.clone(),
                     flow_signals_dropped_metric.clone(),
                     flow_metrics_active,
                 );
@@ -892,7 +888,7 @@ mod tests {
     };
     use crate::flow_metrics::{
         FlowAttributeSet, FlowDurationMetrics, FlowSignalsDroppedMetrics,
-        FlowSignalsIncomingMetrics, FlowSignalsKeptMetrics, FlowSignalsOutgoingMetrics,
+        FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
     };
     use crate::local::message::{LocalReceiver, LocalSender};
     use crate::local::processor as local;
@@ -1212,16 +1208,7 @@ mod tests {
             None,
             metrics_reporter,
         );
-        handler.set_flow_roles(
-            true,
-            false,
-            Some(incoming_metric),
-            None,
-            None,
-            None,
-            None,
-            true,
-        );
+        handler.set_flow_roles(true, false, Some(incoming_metric), None, None, None, true);
 
         handler.record_flow_signals_incoming(3);
         handler.record_flow_duration(10);
@@ -1265,7 +1252,6 @@ mod tests {
             Some(duration_metric),
             Some(outgoing_metric),
             None,
-            None,
             true,
         );
 
@@ -1292,14 +1278,11 @@ mod tests {
     }
 
     #[test]
-    fn flow_decision_node_reports_kept_and_dropped() {
+    fn flow_decision_node_reports_dropped() {
         let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
         let entity_key = pipeline_ctx
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
-        let kept_metric = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowSignalsKeptMetrics>(entity_key);
         let dropped_metric = pipeline_ctx
             .metrics_registry()
             .register_metric_set_for_entity::<FlowSignalsDroppedMetrics>(entity_key);
@@ -1312,31 +1295,15 @@ mod tests {
             metrics_reporter,
         );
         // A decision node that is neither start nor end of the flow range.
-        handler.set_flow_roles(
-            false,
-            false,
-            None,
-            None,
-            None,
-            Some(kept_metric),
-            Some(dropped_metric),
-            true,
-        );
+        handler.set_flow_roles(false, false, None, None, None, Some(dropped_metric), true);
         assert!(handler.is_flow_decision());
 
-        handler.record_flow_signals_kept(7);
         handler.record_flow_signals_dropped(3);
         // Recording incoming/outgoing here must be a no-op (not a start/end node).
         handler.record_flow_signals_incoming(99);
         handler.record_flow_signals_outgoing(99);
         handler.report_flow_metrics();
 
-        let kept_snapshot = metrics_rx.try_recv().expect("kept metric should report");
-        let [MetricValue::Mmsc(kept)] = kept_snapshot.get_metrics() else {
-            panic!("expected kept metric");
-        };
-        assert_eq!(kept.count, 1);
-        assert!((kept.sum - 7.0).abs() < f64::EPSILON);
         let dropped_snapshot = metrics_rx.try_recv().expect("dropped metric should report");
         let [MetricValue::Mmsc(dropped)] = dropped_snapshot.get_metrics() else {
             panic!("expected dropped metric");
@@ -1420,7 +1387,6 @@ mod tests {
                             Some(start_metric_set),
                             Some(duration_metric_set),
                             Some(outgoing_metric_set),
-                            None,
                             None,
                             true,
                         )

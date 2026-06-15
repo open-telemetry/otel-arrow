@@ -154,10 +154,8 @@ impl LogSamplingProcessor {
         let dropped = total - kept;
         self.metrics.log_signals_dropped.add(dropped as u64);
 
-        // Record keep/drop flow-metric decisions. These are no-ops unless this
-        // node is a decision node in a flow that enables `signals.kept` /
-        // `signals.dropped`.
-        effect_handler.record_flow_signals_kept(kept as u64);
+        // Record the drop flow-metric. A no-op unless this node is a
+        // decision node in a flow that enables `signals.dropped`.
         effect_handler.record_flow_signals_dropped(dropped as u64);
 
         let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(filtered));
@@ -174,10 +172,9 @@ impl LogSamplingProcessor {
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for LogSamplingProcessor {
     fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
-        // The log sampling processor makes keep/drop decisions on log records,
-        // so it records `signals.kept` / `signals.dropped` when it lies within
-        // a flow that enables them.
-        ProcessorRuntimeRequirements::none().with_keep_drop_decisions()
+        // The log sampling processor drops log records, so it records
+        // `signals.dropped` when it lies within a flow that enables it.
+        ProcessorRuntimeRequirements::none().with_drop_decisions()
     }
 
     async fn process(

@@ -19,7 +19,7 @@ use crate::entity_context::{NodeTaskContext, NodeTelemetryHandle, instrument_wit
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
     FlowDurationMetrics, FlowSignalsDroppedMetrics, FlowSignalsIncomingMetrics,
-    FlowSignalsKeptMetrics, FlowSignalsOutgoingMetrics, build_flow_metric_state,
+    FlowSignalsOutgoingMetrics, build_flow_metric_state,
 };
 use crate::memory_limiter::MemoryPressureChanged;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
@@ -474,35 +474,23 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     .end_nodes
                     .get(&node_id.index)
                     .and_then(|&id| flow_metric_state.signals_outgoing_metrics[id].clone());
-            // Register per-node keep/drop decision metric sets when this
-            // processor declares the keep/drop capability and lies within a
-            // flow that enables kept/dropped. Each decision node gets its own
+            // Register per-node drop decision metric set when this
+            // processor declares the drop capability and lies within a
+            // flow that enables dropped. Each decision node gets its own
             // entity tagged with `flow.node.decision` = this node's name.
-            let mut flow_signals_kept_metric: Option<MetricSet<FlowSignalsKeptMetrics>> = None;
             let mut flow_signals_dropped_metric: Option<MetricSet<FlowSignalsDroppedMetrics>> =
                 None;
-            if processor.runtime_requirements().makes_keep_drop_decisions
+            if processor.runtime_requirements().makes_drop_decisions
                 && let Some(candidate) = flow_metric_state.decision_candidates.get(&node_id.index)
             {
                 let mut attrs = candidate.attrs.clone();
                 attrs.decision = std::borrow::Cow::Owned(node_id.name.to_string());
                 let entity_key = pipeline_context.metrics_registry().register_entity(attrs);
-                if candidate.kept {
-                    flow_signals_kept_metric = Some(
-                        pipeline_context
-                            .metrics_registry()
-                            .register_metric_set_for_entity::<FlowSignalsKeptMetrics>(entity_key),
-                    );
-                }
-                if candidate.dropped {
-                    flow_signals_dropped_metric = Some(
-                        pipeline_context
-                            .metrics_registry()
-                            .register_metric_set_for_entity::<FlowSignalsDroppedMetrics>(
-                                entity_key,
-                            ),
-                    );
-                }
+                flow_signals_dropped_metric = Some(
+                    pipeline_context
+                        .metrics_registry()
+                        .register_metric_set_for_entity::<FlowSignalsDroppedMetrics>(entity_key),
+                );
             }
             let flow_active = flow_metric_state.is_active();
             let fut = async move {
@@ -518,7 +506,6 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         flow_signals_incoming_metric,
                         flow_duration_metric,
                         flow_signals_outgoing_metric,
-                        flow_signals_kept_metric,
                         flow_signals_dropped_metric,
                         flow_active,
                     )
