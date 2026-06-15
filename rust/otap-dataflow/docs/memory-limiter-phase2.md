@@ -1418,6 +1418,18 @@ Validation:
   or reclaim driver; setting them changes no runtime behavior today.
   Observe-only (and `mode = enforce` with `queue_publish: false`) records
   escrow/pool pressure without rejecting.
+- Observe-only retained-work **accounting** (no admission/rejection) is wired at
+  these production sites today, charging against the runtime account so retained
+  bytes are attributed even before any enforcement is enabled:
+  - retry processor delayed-retry payloads (local ticket per queued payload);
+  - the OTLP gRPC exporter's backpressure-parked pending request and each
+    in-flight encoded request (local ticket per retained request, released on
+    completion success/error/nack/timeout, on shutdown drain, and on early
+    teardown when the in-flight queue is dropped).
+  These exporter/processor sites are accounting points, not admission points:
+  under `mode = enforce` a rejected charge yields no ticket and the work still
+  proceeds, so they never drop data. Admission/enforcement of retained work
+  remains the receiver/queue layer's responsibility and stays gated.
 - `reserve` must be smaller than the process hard limit when a hard limit is
   known.
 - `runtime_count` is the total resolved runtime instances in the process.
