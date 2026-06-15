@@ -1133,13 +1133,15 @@ This lets the caller apply the topic or queue's policy without losing
 accounting ownership.
 
 `EscrowTicket::drop` should not silently release accounting as if delivery had
-succeeded. Dropping an unresolved escrow ticket records an abandoned escrow
-entry in a leak-detection graveyard with a deadline. Graveyard entries remain
-charged until leak detection resolves them explicitly, so leaks remain visible
-instead of being converted into silent accounting success. A normal abort,
-eviction, or tracked negative outcome should release escrow explicitly before
-drop. Explicit abort releases escrow inline; only bypassing the explicit abort,
-evict, redeem, or release path routes the ticket to the graveyard.
+succeeded. Dropping an unresolved escrow ticket records a sticky abandoned
+escrow entry in the leak-detection graveyard, emits one bounded low-cardinality
+alarm per memory-budget state, and keeps count, bytes, and oldest-age metrics
+visible. Graveyard entries remain charged until a future explicit reaper policy
+resolves them, so leaks remain visible instead of being converted into silent
+accounting success. A normal abort, eviction, or tracked negative outcome should
+release escrow explicitly before drop. Explicit abort releases escrow inline;
+only bypassing the explicit abort, evict, redeem, or release path routes the
+ticket to the graveyard.
 
 Existing channel `SendError<T>` shapes should be reused where possible by
 making `T` the local or escrow envelope. Phase 2 should not introduce a
@@ -1526,6 +1528,8 @@ item that has no owner.
 | `engine.runtime.memory.budget.escrow.ring.occupancy.bytes` | Broadcast or mixed-topic ring-slot escrow bytes. |
 | `engine.runtime.memory.budget.escrow.abandoned.bytes` | Escrow bytes moved to the leak-detection graveyard. |
 | `engine.runtime.memory.budget.escrow.abandoned.count` | Escrow tickets moved to the leak-detection graveyard. |
+| `engine.runtime.memory.budget.escrow.abandoned.oldest_age_ms` | Oldest abandoned escrow age retained for leak detection. |
+| `engine.runtime.memory.budget.escrow.abandoned.alarms` | Bounded abandoned-escrow alarms emitted by the engine. |
 | `engine.runtime.memory.budget.escrow.rejections` | Publish or redemption failures by escrow. |
 | `engine.runtime.memory.budget.escrow.shadow.rejections` | Publish or redemption work that would have failed under enforcement. |
 | `engine.runtime.memory.budget.spare.available.bytes` | Remaining global spare pool. |
@@ -1567,6 +1571,7 @@ Add events that mirror Phase 1 naming style:
 | `runtime_memory_budget.lease_failed` | warn | Runtime could not borrow needed lease. |
 | `runtime_memory_budget.rejection` | warn | Admission or publish rejected by local budget. |
 | `runtime_memory_budget.ticket_adjust_failed` | warn | Retained item could not grow its ticket. |
+| `runtime_memory_escrow.abandoned` | warn | First unresolved escrow drop recorded in the sticky graveyard. |
 | `runtime_memory_escrow.rejection` | warn | Escrow boundary refused or failed redemption. |
 | `numa.topology.detected` | info | NUMA topology discovered. |
 | `numa.placement.applied` | info | Runtime thread memory policy applied. |
@@ -1761,8 +1766,9 @@ On runtime teardown:
 
 - local queues drop local tickets as part of normal drain or abort
 - in-transit escrow is either redeemed by a live consumer or released by abort
-- abandoned escrow moves to a leak-detection graveyard with timeout-based
-  metrics so shutdown cannot hide accounting drift
+- abandoned escrow moves to a sticky leak-detection graveyard with bounded
+  first-alarm logging and oldest-age metrics so shutdown cannot hide accounting
+  drift; automatic reaping is future work
 - pure control-plane shutdown must not acquire memory budget
 
 ## Platform Support
