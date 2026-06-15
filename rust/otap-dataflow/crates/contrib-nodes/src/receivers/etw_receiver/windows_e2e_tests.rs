@@ -1,3 +1,4 @@
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Windows-only end-to-end integration tests for the ETW receiver.
@@ -58,17 +59,23 @@ fn etw_receiver_decodes_tracelogging_events_end_to_end() {
          `Run as administrator`)."
     );
 
-    // Stop any leftover sessions from previous failed runs — a single
-    // stale `OtapEtwE2E-*` session blocks new ones because the underlying
-    // `EtwSession` uses a fixed session GUID.
-    cleanup_stale_otap_etw_sessions();
-
-    // Per-PID names so concurrent runs in different processes don't
-    // collide on the global ETW namespace.  The static provider's name
-    // is fixed (it's a compile-time literal in `define_provider!`).
+    // Per-PID names make leaked sessions easy to attribute to the
+    // process that left them behind.  The static provider's name is
+    // fixed (it's a compile-time literal in `define_provider!`).
     let pid = std::process::id();
     let dynamic_provider_name = format!("OtapEtwE2E.Dyn.{pid}");
     let session_name = format!("OtapEtwE2E-{pid}");
+
+    // Stop every leftover `OtapEtwE2E-*` session on the box.  We can't
+    // narrow this to our own per-PID `session_name`: `EtwSession::new()`
+    // in `one_collect` uses a fixed internal session GUID, so any
+    // session created by a previous run of this test — regardless of
+    // its name — occupies that GUID and makes `StartTraceW` fail with
+    // `ERROR_ALREADY_EXISTS` (183).  The same constraint means two
+    // copies of this test physically cannot run concurrently on the
+    // same machine, so the broad cleanup never disrupts a peer that
+    // would otherwise have succeeded.
+    cleanup_stale_otap_etw_sessions();
 
     // Canonical TraceLogging GUIDs for both providers — the same hash
     // ETW itself uses for manifest-free providers, so the kernel session
@@ -129,6 +136,15 @@ fn producer_scenario(
             let outcome = AssertUnwindSafe(run_producer_body(&dynamic_provider_name))
                 .catch_unwind()
                 .await;
+
+            // Best-effort cleanup of the static provider: `run_producer_body`
+            // only unregisters on the happy path, so a panic before that
+            // point would otherwise leak the provider registration for the
+            // remainder of the test binary and interfere with any later
+            // tests in the same process.  `unregister()` is idempotent at
+            // the Win32 level, so calling it again on the happy path is a
+            // harmless no-op.
+            let _ = STATIC_PROVIDER.unregister();
 
             // `DrainIngress` first so the receiver flushes any in-flight
             // ETW events from its MPSC channel and the pending Arrow
@@ -328,9 +344,11 @@ fn producer_validation() -> impl FnOnce(
             // busy CI runners.
             let deadline = Instant::now() + Duration::from_secs(15);
             let mut batches: Vec<OtapArrowRecords> = Vec::new();
+            let our_pid = std::process::id();
 
             loop {
-                if has_event(&batches, DYNAMIC_EVENT_NAME) && has_event(&batches, STATIC_EVENT_NAME)
+                if has_event(&batches, DYNAMIC_EVENT_NAME, our_pid)
+                    && has_event(&batches, STATIC_EVENT_NAME, our_pid)
                 {
                     break;
                 }
@@ -348,8 +366,8 @@ fn producer_validation() -> impl FnOnce(
                 }
             }
 
-            let (dyn_records, dyn_row) = locate_event(&batches, DYNAMIC_EVENT_NAME);
-            let (stc_records, stc_row) = locate_event(&batches, STATIC_EVENT_NAME);
+            let (dyn_records, dyn_row) = locate_event(&batches, DYNAMIC_EVENT_NAME, our_pid);
+            let (stc_records, stc_row) = locate_event(&batches, STATIC_EVENT_NAME, our_pid);
 
             assert_log_record_common(dyn_records, dyn_row, DYNAMIC_EVENT_NAME);
             assert_dynamic_user_attrs(dyn_records, dyn_row);
@@ -360,31 +378,62 @@ fn producer_validation() -> impl FnOnce(
     }
 }
 
-fn has_event(batches: &[OtapArrowRecords], event_name: &str) -> bool {
+fn has_event(batches: &[OtapArrowRecords], event_name: &str, expected_pid: u32) -> bool {
     batches
         .iter()
-        .any(|r| find_event_row(r, event_name).is_some())
+        .any(|r| find_event_row(r, event_name, expected_pid).is_some())
 }
 
 fn locate_event<'a>(
     batches: &'a [OtapArrowRecords],
     event_name: &str,
+    expected_pid: u32,
 ) -> (&'a OtapArrowRecords, usize) {
     batches
         .iter()
-        .find_map(|r| find_event_row(r, event_name).map(|row| (r, row)))
+        .find_map(|r| find_event_row(r, event_name, expected_pid).map(|row| (r, row)))
         .unwrap_or_else(|| {
             panic!(
                 "did not receive an Arrow batch containing event '{event_name}' \
-                 from the ETW receiver within 15s"
+                 from PID {expected_pid} via the ETW receiver within 15s"
             )
         })
 }
 
-fn find_event_row(records: &OtapArrowRecords, expected: &str) -> Option<usize> {
+/// Locate a Logs row whose `event_name` matches AND whose injected
+/// `etw.process_id` attribute equals `expected_pid`.  Matching on PID in
+/// addition to name prevents a concurrent test run (which would emit an
+/// identically-named `STATIC_EVENT_NAME` from the same fixed static
+/// provider) from being picked up as ours.
+fn find_event_row(
+    records: &OtapArrowRecords,
+    expected: &str,
+    expected_pid: u32,
+) -> Option<usize> {
     let logs_rb = records.get(ArrowPayloadType::Logs)?;
+    let attrs_rb = records.get(ArrowPayloadType::LogAttrs)?;
     let names = string_column(logs_rb, consts::EVENT_NAME);
-    names.iter().position(|n| n.as_deref() == Some(expected))
+    let log_ids = u16_column(logs_rb, consts::ID);
+    let expected_pid_i64 = i64::from(expected_pid);
+
+    for (row, name) in names.iter().enumerate() {
+        if name.as_deref() != Some(expected) {
+            continue;
+        }
+        let Some(log_id) = log_ids[row] else {
+            continue;
+        };
+        let pid_attr = collect_attributes(attrs_rb, log_id)
+            .into_iter()
+            .find(|(k, _)| k == "etw.process_id")
+            .map(|(_, v)| v);
+        if let Some(AttrSnapshot::Int(pid)) = pid_attr
+            && pid == expected_pid_i64
+        {
+            return Some(row);
+        }
+    }
+    None
 }
 
 /// Field-by-field validation of the Logs/Resource/Scope columns and the
@@ -1166,26 +1215,35 @@ fn print_running_etw_sessions() {
     eprintln!("=== end of sessions ===");
 }
 
-/// Stop any leftover `OtapEtwE2E-*` ETW sessions left by previous test
-/// runs.  ETW real-time sessions persist across process exits — Windows
-/// only cleans them up on reboot or via an explicit `ControlTrace(STOP)`
-/// call.  `EtwSession::new()` in `one_collect` uses a fixed internal
-/// session GUID, so a single leftover session — even one whose owning
-/// process is long gone — makes `StartTraceW` fail with
-/// `ERROR_ALREADY_EXISTS` (183) when we try to create our own.
+/// Stop every `OtapEtwE2E-*` ETW session left behind by a previous
+/// run that died without unregistering.  ETW real-time sessions
+/// persist across process exits — Windows only cleans them up on
+/// reboot or via an explicit `ControlTrace(STOP)` call.
+///
+/// We have to be broad rather than per-PID: `EtwSession::new()` in
+/// `one_collect` uses a fixed internal session GUID, so any leftover
+/// `OtapEtwE2E-*` session — regardless of the PID suffix in its name
+/// — occupies that GUID and makes `StartTraceW` fail with
+/// `ERROR_ALREADY_EXISTS` (183).  The same constraint means two copies
+/// of this test physically cannot run concurrently on the same
+/// machine, so this sweep never disrupts a peer that would otherwise
+/// have succeeded.
 #[allow(clippy::print_stderr)]
 fn cleanup_stale_otap_etw_sessions() {
-    let Ok(output) = std::process::Command::new("logman")
+    let output = match std::process::Command::new("logman")
         .args(["query", "-ets"])
         .output()
-    else {
-        return;
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("failed to invoke `logman query -ets`: {e}");
+            return;
+        }
     };
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
-        // `logman query -ets` formats each data-collector row as
-        // `<name><whitespace>Trace<whitespace>Running`; take the
-        // leading whitespace-separated token.
+        // `logman query -ets` prints `<name>  <type>  <status>` per
+        // session; the name is the first whitespace-delimited token.
         let Some(name) = line.split_whitespace().next() else {
             continue;
         };
@@ -1199,12 +1257,8 @@ fn cleanup_stale_otap_etw_sessions() {
             Ok(out) if out.status.success() => {
                 eprintln!("cleaned up stale ETW session {name}");
             }
-            Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                eprintln!(
-                    "failed to stop stale ETW session {name}: exit={:?}, stderr={stderr}",
-                    out.status.code()
-                );
+            Ok(_) => {
+                // Session disappeared between query and stop — fine.
             }
             Err(e) => {
                 eprintln!("failed to invoke `logman stop {name}`: {e}");

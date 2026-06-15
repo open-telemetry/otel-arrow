@@ -17,7 +17,9 @@ issues: [2783]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Drives the ETW receiver from a `TestRuntime`, emits a TraceLogging event via
-  `tracelogging_dynamic`, and asserts the decoded event arrives in an OTAP
-  Arrow batch. Gated on `--ignored` and Administrator privileges; runs in CI
-  on `windows-latest`.
+  Drives the ETW receiver from a `TestRuntime`, emits TraceLogging events via
+  both the dynamic (`tracelogging_dynamic`) and static (`tracelogging`)
+  producer crates, and asserts the decoded events arrive in an OTAP Arrow
+  batch with the expected scalar, string, and nested-struct field values.
+  Gated on `--ignored` and Administrator privileges; runs in CI on
+  `windows-latest`.
