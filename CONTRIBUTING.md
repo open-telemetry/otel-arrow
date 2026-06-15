@@ -163,8 +163,9 @@ the steps to sign electronically.
 
 If you have any questions or run into issues:
 
-Join the OpenTelemetry
-[Slack](https://cloud-native.slack.com/archives/C07S4Q67LTF) Community.
+Our Slack channel is [#otel-arrow](https://cloud-native.slack.com/archives/C07S4Q67LTF)
+on CNCF Slack. If you are new to the CNCF Slack community, you can
+[create an account](https://slack.cncf.io/).
 
 ## Filing Issues
 

@@ -1668,6 +1668,7 @@ impl ExprPlanner {
 
                 let expected_type = match value_type {
                     ValueType::Boolean => ExprLogicalType::Boolean,
+                    ValueType::Bytes => ExprLogicalType::Binary,
                     ValueType::DateTime => ExprLogicalType::TimestampNanosecond,
                     ValueType::Double => ExprLogicalType::Float64,
                     ValueType::Integer => ExprLogicalType::AnyInt,
