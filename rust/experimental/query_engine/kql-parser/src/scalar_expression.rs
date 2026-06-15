@@ -312,6 +312,7 @@ pub(crate) fn parse_scalar_unary_expression(
                         let item = match value_type {
                             ValueType::Array => ("Array", "array"),
                             ValueType::Boolean => ("Boolean", "bool"),
+                            ValueType::Bytes => ("Bytes", "bytes"),
                             ValueType::DateTime => ("DateTime", "datetime"),
                             ValueType::Double => ("Double", "real"),
                             ValueType::Integer => ("Integer", "long"),
