@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781397903210,
+  "lastUpdate": 1781484647705,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5090,6 +5090,38 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/f8cd17f084c1a766f887530531ad06f546080c90"
         },
         "date": 1781397891855,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 98.91,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cijo Thomas",
+            "username": "cijothomas",
+            "email": "cijo.thomas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f8cd17f084c1a766f887530531ad06f546080c90",
+          "message": "chore: rename traffic generator example configs (#3288)\n\nRenames the traffic generator example config files under\n`rust/otap-dataflow/configs` from the old `fake-*` prefix to\n`trafficgen-*`, and updates the docs/examples that reference them.\n\nFollow-up to #2891.\n\nCo-authored-by: Utkarsh Umesan Pillai <66651184+utpilla@users.noreply.github.com>",
+          "timestamp": "2026-06-13T01:12:36Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f8cd17f084c1a766f887530531ad06f546080c90"
+        },
+        "date": 1781484636309,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
