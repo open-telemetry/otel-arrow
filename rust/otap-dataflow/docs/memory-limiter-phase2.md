@@ -31,6 +31,7 @@ In short:
 - [NUMA Placement Appendix](#numa-placement-appendix)
 - [Configuration](#configuration)
 - [Metrics](#metrics)
+- [Integration Guide](#integrating-a-component-with-memory-budgeting)
 - [Phased Rollout](#phased-rollout)
 - [Validation Scenarios](#validation-scenarios)
 
@@ -1397,6 +1398,21 @@ Validation:
 
 - `memory_budget` is supported only at top-level `policies.resources`.
 - `memory_budget.mode` is required when configured.
+- `memory_budget.mode = enforce` and any `memory_budget.enforcement.*` gate flag
+  are **rejected at validation time** unless the crate is built with the
+  `unstable-memory-enforcement` feature. Production builds do not enable that
+  feature, so enforcement cannot be reached accidentally from normal config; it
+  is a compile-time opt-in for tests and experimental builds. The default
+  remains `observe_only`.
+- The only enforcement path wired so far is `enforcement.queue_publish` at the
+  owned topic-publish boundary: with `mode = enforce` and `queue_publish: true`,
+  an owned publish whose payload exceeds the topic escrow cap or the global
+  spare pool is rejected and returns the original local ticket
+  (`DroppedOnFull`), committing nothing. `enforcement.receiver_admission` and
+  `enforcement.reclaim_hooks` are carried into the runtime config but are not yet
+  wired to any admission point or reclaim driver; setting them changes no runtime
+  behavior today. Observe-only (and `mode = enforce` with `queue_publish: false`)
+  records escrow/pool pressure without rejecting.
 - `reserve` must be smaller than the process hard limit when a hard limit is
   known.
 - `runtime_count` is the total resolved runtime instances in the process.
@@ -1492,6 +1508,8 @@ item that has no owner.
 | `engine.runtime.memory.budget.borrowed.bytes` | Bytes borrowed from the global lease pool. |
 | `engine.runtime.memory.budget.current.overshoot.bytes` | Current bytes above local floor plus leases. |
 | `engine.runtime.memory.budget.reconcile.debt.bytes` | Current bytes reconciled after growth without prior authorization. |
+| `engine.runtime.memory.budget.drain.allowance.bytes` | Configured per-runtime redemption/drain allowance, summed across runtimes. |
+| `engine.runtime.memory.budget.drain.committed.bytes` | Drain/redemption bytes currently outstanding against the allowance. |
 | `engine.runtime.memory.budget.level` | Runtime budget pressure state. |
 | `engine.runtime.memory.budget.lease.borrows` | Count of successful lease borrows. |
 | `engine.runtime.memory.budget.lease.failures` | Count of failed lease borrows. |
@@ -1500,8 +1518,11 @@ item that has no owner.
 | `engine.runtime.memory.budget.unknown.bytes` | Retained bytes excluded from enforcement because exact logical size is unknown. |
 | `engine.runtime.memory.budget.uncovered.retained.bytes` | Retained bytes observed without a ticket owner. |
 | `engine.runtime.memory.budget.escrow.charged.bytes` | Logical bytes owned by an escrow boundary. |
+| `engine.runtime.memory.budget.escrow.pool.held.bytes` | Escrow bytes backed by an explicit borrow against the global spare pool. |
+| `engine.runtime.memory.budget.escrow.pool.overshoot.bytes` | Escrow bytes not backed by a pool borrow, tolerated only in observe-only mode. |
 | `engine.runtime.memory.budget.escrow.ring.occupancy.bytes` | Broadcast or mixed-topic ring-slot escrow bytes. |
 | `engine.runtime.memory.budget.escrow.abandoned.bytes` | Escrow bytes moved to the leak-detection graveyard. |
+| `engine.runtime.memory.budget.escrow.abandoned.count` | Escrow tickets moved to the leak-detection graveyard. |
 | `engine.runtime.memory.budget.escrow.rejections` | Publish or redemption failures by escrow. |
 | `engine.runtime.memory.budget.escrow.shadow.rejections` | Publish or redemption work that would have failed under enforcement. |
 | `engine.runtime.memory.budget.spare.available.bytes` | Remaining global spare pool. |
@@ -1610,6 +1631,100 @@ In Phase 2e, shared retained memory is reported through metrics but is not
 eligible for local reclaim hooks. A later phase can add `SharedMemoryReclaim`
 for shared retention sites that materially contribute to runtime or escrow
 pressure.
+
+## Integrating a Component with Memory Budgeting
+
+This is a practical checklist for node and component authors. The goal is that
+every byte retained across an `await`, queue, topic, retry, or state boundary
+has exactly one charged owner, and that release never needs budget.
+
+### When to charge
+
+Charge when your component starts retaining a payload beyond the current call:
+
+- before pushing into a local queue, batch buffer, retry buffer, delayed
+  scheduler, or any processor state that outlives the message handler
+- before holding a payload across an `await`
+
+Do not charge for transient, stack-local work that is dropped before the next
+`await`.
+
+### How to attach a ticket
+
+Reach the runtime account through the thread-local accessor and charge the
+retained size:
+
+```rust
+if let Some(budget) = current_runtime_memory_budget() {
+    if let Some(ticket) = budget.charge(retained_bytes) {
+        // keep `ticket` alongside the payload
+    }
+}
+```
+
+Pair the payload with its ticket using `LocalEnvelope<T>`, or a side table that
+has the same drop, send-error, and drain guarantees. Never place a
+`LocalMemoryTicket` inside `PData`: `PData` is `Clone + Send + Sync` and the
+ticket is intentionally `!Send`.
+
+### When to convert to escrow
+
+When the payload crosses a shared (`Send + Sync`) boundary - a shared channel,
+a topic publish, or a shared-return ack/nack - consume the local ticket and
+produce a sendable `EscrowTicket` with `try_into_escrow`. The accepting boundary
+owns the escrow. On a failed send, the original owner is returned: you keep the
+local ticket (or escrow) and can retry or drop. Never send a `LocalMemoryTicket`
+across a shared boundary.
+
+For retained work that moves from a local (`!Send`) context into a shared
+channel or shared node, the intended owner type is `SharedEnvelope<T>`, produced
+by `LocalEnvelope::into_shared`. It converts the local ticket into a sendable
+owner that holds only an `EscrowSlot`. `SharedEnvelope<T>` is `Send` whenever
+`T` is `Send`, so a local ticket cannot enter a shared boundary inside it by
+construction; the shared charge is held until the envelope is dropped (clean
+RAII release) or split with `into_parts` to hand the `EscrowSlot` to the
+boundary.
+
+`SharedEnvelope<T>` is currently a primitive: it is verified to cross a real
+`Send`/thread boundary and release exactly once, but the engine's shared
+channels still carry plain `PData` and do not yet attach it, so shared-channel
+and shared-node steady-state retention is **not** production-complete. New
+shared retention sites should adopt it as they are wired. Topic publishers do
+not call it directly: `try_publish_owned` performs the equivalent conversion at
+the broker boundary (point-to-point escrow for balanced, ring-slot escrow for
+broadcast, and an all-or-nothing fanout of one owner per retained destination
+for mixed).
+
+### How to release, drop, drain, or abort
+
+Release is RAII. Dropping a `LocalMemoryTicket`, `EscrowTicket`, `EscrowSlot`,
+`LocalEnvelope`, or `SharedEnvelope` refunds the charge exactly once. Use the
+explicit `EscrowTicket::{redeem, redeem_into, release, abort}` methods to make
+the release cause clear at boundaries. The hard rule: **release, drop, drain,
+abort, and reclaim must never acquire budget.** A consumer pinned to local
+`Hard` may still redeem already-admitted escrow through the per-runtime drain
+allowance (`try_charge_for_drain`); that path charges the bytes but does not
+admit new external work.
+
+### How to handle unknown sizes
+
+If the exact retained size is not known, return `None` from `ChargedSize` (or
+call `observe_unknown`). The bytes are tracked separately as unknown/uncovered
+retention instead of being silently treated as zero. Make unknown-size routes
+explicit and observable; do not guess a size.
+
+### What not to do
+
+- Do not put a `LocalMemoryTicket` in `PData` or any shared/topic envelope.
+- Do not let a `LocalMemoryTicket` cross a `Send + Sync` boundary.
+- Do not acquire budget on a release, drop, drain, abort, or reclaim path.
+- Do not clone rich attribution or `String`s per retained item; attribution is
+  interned once per runtime and carried by the account `Rc` (local) or the
+  cheap `Arc` scope handle (escrow).
+- Do not enable enforcement in production: it is gated behind the
+  `unstable-memory-enforcement` build feature (off by default) and rejected by
+  config validation in normal builds. Use it only for tests and experiments
+  where the ownership and escrow paths your component touches are complete.
 
 ## Live Reconfiguration
 
