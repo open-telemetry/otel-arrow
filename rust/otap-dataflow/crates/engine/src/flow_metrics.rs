@@ -223,7 +223,10 @@ pub(crate) struct FlowMetricState<Marker, Accumulator> {
     pub incoming: IncomingFlowMetrics<Accumulator>,
     /// End-side measurements.
     pub end: EndFlowMetrics<Accumulator>,
-    /// Decision-side measurements (kept/dropped).
+    /// Decision-side measurements (dropped).
+    /// Leaving this as 'DecisionFlowMetrics' in case
+    /// it will be used to represent other decision-related
+    /// metrics like routing decisions.
     pub decision: DecisionFlowMetrics<Accumulator>,
 }
 
@@ -788,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn kept_dropped_registers_decision_candidates_for_range_processors() {
+    fn dropped_registers_decision_candidates_for_range_processors() {
         let (ctx, _) = test_pipeline_ctx();
         let (names, procs) = test_maps(&["a", "b", "c"], &[]);
         let edges = test_edges(&[("a", "b"), ("b", "c")], &names);
