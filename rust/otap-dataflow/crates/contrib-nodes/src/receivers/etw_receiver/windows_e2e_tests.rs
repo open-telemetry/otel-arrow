@@ -405,11 +405,7 @@ fn locate_event<'a>(
 /// addition to name prevents a concurrent test run (which would emit an
 /// identically-named `STATIC_EVENT_NAME` from the same fixed static
 /// provider) from being picked up as ours.
-fn find_event_row(
-    records: &OtapArrowRecords,
-    expected: &str,
-    expected_pid: u32,
-) -> Option<usize> {
+fn find_event_row(records: &OtapArrowRecords, expected: &str, expected_pid: u32) -> Option<usize> {
     let logs_rb = records.get(ArrowPayloadType::Logs)?;
     let attrs_rb = records.get(ArrowPayloadType::LogAttrs)?;
     let names = string_column(logs_rb, consts::EVENT_NAME);
