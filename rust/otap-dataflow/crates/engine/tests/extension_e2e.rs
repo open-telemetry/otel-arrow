@@ -3979,3 +3979,742 @@ connections:
          exactly `bumps` times, observable to capability consumers"
     );
 }
+
+const READY_GATE_EXTENSION_URN: &str = "urn:test:extension:ready_gate_extension";
+
+#[derive(Clone)]
+struct ReadyGateExtImpl {
+    ready_after: Option<Duration>,
+    fail_before_ready: bool,
+    ready_at: Arc<parking_lot::Mutex<Option<Instant>>>,
+    start_at: Arc<parking_lot::Mutex<Option<Instant>>>,
+}
+
+#[async_trait]
+impl SharedNoOpStateless for ReadyGateExtImpl {
+    fn name(&self) -> &str {
+        "ready-gate"
+    }
+    fn echo(&self, value: u64) -> u64 {
+        value
+    }
+    async fn ping(&self) -> u64 {
+        0
+    }
+    async fn echo_async(&self, value: String) -> String {
+        value
+    }
+}
+
+#[async_trait]
+impl otap_df_engine::shared::extension::Extension for ReadyGateExtImpl {
+    async fn start(
+        self: Box<Self>,
+        mut ctrl: otap_df_engine::shared::extension::ControlChannel,
+        eh: EffectHandler,
+    ) -> Result<TerminalState, EngineError> {
+        *self.start_at.lock() = Some(Instant::now());
+
+        // Yield so the spawn barrier sees this task alive before a
+        // fail_before_ready return drops `eh`.
+        tokio::task::yield_now().await;
+
+        if self.fail_before_ready {
+            return Err(EngineError::InternalError {
+                message: "synthetic failure before readiness signal".into(),
+            });
+        }
+
+        if let Some(d) = self.ready_after {
+            tokio::time::sleep(d).await;
+            eh.signal_ready();
+            *self.ready_at.lock() = Some(Instant::now());
+        }
+
+        loop {
+            match ctrl.recv().await {
+                Ok(ExtensionControlMsg::Shutdown { .. }) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        Ok(TerminalState::default())
+    }
+}
+
+#[derive(Clone)]
+struct ReadyGateProbe {
+    ready_after: Option<Duration>,
+    fail_before_ready: bool,
+    ready_at: Arc<parking_lot::Mutex<Option<Instant>>>,
+    start_at: Arc<parking_lot::Mutex<Option<Instant>>>,
+}
+
+static READY_GATE_PROBES: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, ReadyGateProbe>>,
+> = std::sync::OnceLock::new();
+
+fn ready_gate_probes()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, ReadyGateProbe>> {
+    READY_GATE_PROBES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn register_ready_gate_probe(key: &str, probe: ReadyGateProbe) {
+    let _ = ready_gate_probes()
+        .lock()
+        .expect("ready gate probes mutex poisoned")
+        .insert(key.to_owned(), probe);
+}
+
+fn lookup_ready_gate_probe(key: &str) -> ReadyGateProbe {
+    ready_gate_probes()
+        .lock()
+        .expect("ready gate probes mutex poisoned")
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| panic!("no ReadyGateProbe registered for key '{key}'"))
+}
+
+fn make_ready_gate_probe(
+    key: &str,
+    ready_after: Option<Duration>,
+    fail_before_ready: bool,
+) -> ReadyGateProbe {
+    let probe = ReadyGateProbe {
+        ready_after,
+        fail_before_ready,
+        ready_at: Arc::new(parking_lot::Mutex::new(None)),
+        start_at: Arc::new(parking_lot::Mutex::new(None)),
+    };
+    register_ready_gate_probe(key, probe.clone());
+    probe
+}
+
+fn ready_gate_extension_create(
+    _ctx: &ExtensionContext,
+    name: otap_df_config::ExtensionId,
+    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    extension_config: &ExtensionConfig,
+) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+    let key = user_config
+        .config
+        .get("probe_key")
+        .and_then(|v| v.as_str())
+        .expect("probe_key present in ready_gate extension config");
+    let probe = lookup_ready_gate_probe(key);
+
+    let readiness_timeout = user_config
+        .config
+        .get("readiness_timeout_ms")
+        .and_then(|v| v.as_u64())
+        .map(Duration::from_millis);
+
+    let impl_ = ReadyGateExtImpl {
+        ready_after: probe.ready_after,
+        fail_before_ready: probe.fail_before_ready,
+        ready_at: Arc::clone(&probe.ready_at),
+        start_at: Arc::clone(&probe.start_at),
+    };
+
+    let builder = ExtensionWrapper::builder(name, user_config, extension_config).active();
+    let builder = match readiness_timeout {
+        Some(t) => builder.with_extended_readiness_probe_timeout(t),
+        None => builder,
+    };
+    let bundle = builder
+        .shared::<ReadyGateExtImpl>(impl_)
+        .build()
+        .expect("ready_gate extension bundle builds");
+    Ok(bundle)
+}
+
+const READY_GATE_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
+    name: READY_GATE_EXTENSION_URN,
+    description: "active extension whose start() optionally sleeps before signalling readiness",
+    documentation_url: "",
+    capabilities: Some(extension_capabilities!(
+        shared: ReadyGateExtImpl => [NoOpStateless]
+    )),
+    create: ready_gate_extension_create,
+    validate_config: otap_df_config::validation::no_config,
+};
+
+const READY_GATE_BG_EXTENSION_URN: &str = "urn:test:extension:ready_gate_extension_bg";
+
+fn ready_gate_bg_extension_create(
+    _ctx: &ExtensionContext,
+    name: otap_df_config::ExtensionId,
+    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    extension_config: &ExtensionConfig,
+) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+    let key = user_config
+        .config
+        .get("probe_key")
+        .and_then(|v| v.as_str())
+        .expect("probe_key present in ready_gate background extension config");
+    let probe = lookup_ready_gate_probe(key);
+
+    let readiness_timeout = user_config
+        .config
+        .get("readiness_timeout_ms")
+        .and_then(|v| v.as_u64())
+        .map(Duration::from_millis);
+
+    let impl_ = ReadyGateExtImpl {
+        ready_after: probe.ready_after,
+        fail_before_ready: probe.fail_before_ready,
+        ready_at: Arc::clone(&probe.ready_at),
+        start_at: Arc::clone(&probe.start_at),
+    };
+
+    let builder = ExtensionWrapper::builder(name, user_config, extension_config).background();
+    let builder = match readiness_timeout {
+        Some(t) => builder.with_extended_readiness_probe_timeout(t),
+        None => builder,
+    };
+    let bundle = builder
+        .shared::<ReadyGateExtImpl>(impl_)
+        .build()
+        .expect("ready_gate background extension bundle builds");
+    Ok(bundle)
+}
+
+const READY_GATE_BG_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
+    name: READY_GATE_BG_EXTENSION_URN,
+    description: "background twin of ready_gate — engine-driven, no capabilities",
+    documentation_url: "",
+    capabilities: None,
+    create: ready_gate_bg_extension_create,
+    validate_config: otap_df_config::validation::no_config,
+};
+
+fn build_runtime_pipeline_with_ready_gate(
+    yaml: &str,
+) -> (
+    otap_df_engine::runtime_pipeline::RuntimePipeline<()>,
+    PipelineContext,
+    otap_df_telemetry::registry::EntityKey,
+    InternalTelemetrySystem,
+) {
+    const EXT_FACTORIES_PLUS_GATE: &[ExtensionFactory] = &[
+        PASSIVE_EXTENSION_FACTORY,
+        DUAL_EXTENSION_FACTORY,
+        ACTIVE_EXTENSION_FACTORY,
+        ACTIVE_SHARED_COUNTER_EXTENSION_FACTORY,
+        FAILING_EXTENSION_FACTORY,
+        IMMEDIATE_OK_EXTENSION_FACTORY,
+        SHUTDOWN_RECORDING_EXTENSION_FACTORY,
+        DUAL_ACTIVE_EXTENSION_FACTORY,
+        BACKGROUND_EXTENSION_FACTORY,
+        SHARED_COUNTER_EXTENSION_FACTORY,
+        SHARED_COUNTER_SHARED_EXTENSION_FACTORY,
+        CONSTRUCTED_EXTENSION_FACTORY,
+        RC_COUNTER_EXTENSION_FACTORY,
+        READY_GATE_EXTENSION_FACTORY,
+        READY_GATE_BG_EXTENSION_FACTORY,
+    ];
+    static PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+        RECEIVER_FACTORIES,
+        PROCESSOR_FACTORIES,
+        EXPORTER_FACTORIES,
+        EXT_FACTORIES_PLUS_GATE,
+    );
+
+    let config = PipelineConfig::from_yaml("test-group".into(), "test-pipeline".into(), yaml)
+        .expect("yaml config parses + validates");
+    let (pipeline_ctx, telemetry_system, entity_key) = fresh_pipeline_env();
+    let runtime_pipeline = PIPELINE_FACTORY
+        .build(
+            pipeline_ctx.clone(),
+            config,
+            ChannelCapacityPolicy::default(),
+            TelemetryPolicy::default(),
+            None,
+            None,
+        )
+        .expect("pipeline builds");
+    (runtime_pipeline, pipeline_ctx, entity_key, telemetry_system)
+}
+
+#[test]
+fn test_extension_readiness_gate_passes_when_ext_signals_in_time() {
+    let receiver_key = "ready-pass-recv";
+    let ext_key = "ready-pass-ext";
+    let lifecycle_key = "ready-pass-lifecycle";
+
+    let _recv_probe = make_probe(receiver_key, CallSequence::Local);
+    register_node_lifecycle_probe(lifecycle_key, NodeLifecycleProbe::default());
+    let ext_probe = make_ready_gate_probe(ext_key, Some(Duration::from_millis(150)), false);
+
+    let yaml = format!(
+        r#"
+nodes:
+  receiver:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{receiver_key}"
+      lifecycle_key: "{lifecycle_key}"
+    capabilities:
+      no_op_stateless: "{ext_key}"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  {ext_key}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_key}"
+      readiness_timeout_ms: 5000
+
+connections:
+  - from: receiver
+    to: exporter
+"#
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_runtime_pipeline_with_ready_gate(&yaml);
+
+    let started_at = Instant::now();
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        Duration::from_millis(500),
+    );
+    let elapsed = started_at.elapsed();
+
+    assert!(result.is_ok(), "{result:?}");
+    assert!(elapsed < Duration::from_secs(5), "elapsed={elapsed:?}");
+
+    let lifecycle = lookup_node_lifecycle_probe(lifecycle_key);
+    let receiver_start_at = lifecycle.receiver_start_at.lock().unwrap();
+    let ready_at = ext_probe.ready_at.lock().unwrap();
+    assert!(
+        receiver_start_at >= ready_at,
+        "receiver_start_at={receiver_start_at:?}, ready_at={ready_at:?}"
+    );
+}
+
+#[test]
+fn test_extension_readiness_gate_times_out_with_named_extension() {
+    let receiver_key = "ready-timeout-recv";
+    let ext_key = "ready-timeout-ext";
+
+    let _recv_probe = make_probe(receiver_key, CallSequence::Local);
+    let _ext_probe = make_ready_gate_probe(ext_key, None, false);
+
+    let timeout_ms: u64 = 5_000;
+    let yaml = format!(
+        r#"
+nodes:
+  receiver:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{receiver_key}"
+    capabilities:
+      no_op_stateless: "{ext_key}"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  {ext_key}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_key}"
+      readiness_timeout_ms: {timeout_ms}
+
+connections:
+  - from: receiver
+    to: exporter
+"#
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_runtime_pipeline_with_ready_gate(&yaml);
+
+    let started_at = Instant::now();
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        Duration::from_secs(30),
+    );
+    let elapsed = started_at.elapsed();
+
+    assert!(result.is_err());
+
+    let upper = Duration::from_millis(timeout_ms) + Duration::from_secs(2);
+    assert!(elapsed < upper, "elapsed={elapsed:?}, upper={upper:?}");
+
+    let err = result.err().unwrap();
+    let msg = format!("{err}");
+    assert!(msg.contains(ext_key), "{msg}");
+    let lower = msg.to_lowercase();
+    assert!(
+        lower.contains("readiness") && (lower.contains("timeout") || lower.contains("did not")),
+        "{msg}"
+    );
+}
+
+#[test]
+fn test_extension_readiness_gate_waits_in_parallel_for_multiple_extensions() {
+    let lifecycle_key = "ready-parallel-lifecycle";
+    let recv_keys = [
+        "ready-parallel-recv-a",
+        "ready-parallel-recv-b",
+        "ready-parallel-recv-c",
+    ];
+    let ext_keys = [
+        "ready-parallel-ext-a",
+        "ready-parallel-ext-b",
+        "ready-parallel-ext-c",
+    ];
+
+    for k in recv_keys.iter() {
+        let _ = make_probe(k, CallSequence::Shared);
+    }
+    register_node_lifecycle_probe(lifecycle_key, NodeLifecycleProbe::default());
+
+    let ready_after = Duration::from_millis(1000);
+    let mut ext_probes = Vec::new();
+    for k in ext_keys.iter() {
+        ext_probes.push(make_ready_gate_probe(k, Some(ready_after), false));
+    }
+
+    let yaml = format!(
+        r#"
+nodes:
+  {recv_a}:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{recv_a}"
+      lifecycle_key: "{lifecycle_key}"
+    capabilities:
+      no_op_stateless: "{ext_a}"
+  {recv_b}:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{recv_b}"
+    capabilities:
+      no_op_stateless: "{ext_b}"
+  {recv_c}:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{recv_c}"
+    capabilities:
+      no_op_stateless: "{ext_c}"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  {ext_a}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_a}"
+      readiness_timeout_ms: 5000
+  {ext_b}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_b}"
+      readiness_timeout_ms: 5000
+  {ext_c}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_c}"
+      readiness_timeout_ms: 5000
+
+connections:
+  - from: {recv_a}
+    to: exporter
+  - from: {recv_b}
+    to: exporter
+  - from: {recv_c}
+    to: exporter
+"#,
+        recv_a = recv_keys[0],
+        recv_b = recv_keys[1],
+        recv_c = recv_keys[2],
+        ext_a = ext_keys[0],
+        ext_b = ext_keys[1],
+        ext_c = ext_keys[2],
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_runtime_pipeline_with_ready_gate(&yaml);
+
+    let started_at = Instant::now();
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        ready_after + Duration::from_millis(250),
+    );
+    let elapsed = started_at.elapsed();
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let parallel_upper = ready_after + Duration::from_millis(250) + Duration::from_secs(1);
+    assert!(
+        elapsed < parallel_upper,
+        "elapsed={elapsed:?}, parallel_upper={parallel_upper:?}, serial_lower={:?}",
+        ready_after * ext_keys.len() as u32,
+    );
+
+    let lifecycle = lookup_node_lifecycle_probe(lifecycle_key);
+    let receiver_start_at = lifecycle.receiver_start_at.lock().unwrap();
+    let slowest_ready_at = ext_probes
+        .iter()
+        .map(|p| p.ready_at.lock().unwrap())
+        .max()
+        .unwrap();
+    assert!(
+        receiver_start_at >= slowest_ready_at,
+        "receiver_start_at={receiver_start_at:?}, slowest_ready_at={slowest_ready_at:?}"
+    );
+}
+
+#[test]
+fn test_extension_readiness_gate_honors_per_extension_timeouts() {
+    let recv_keys = ["ready-mixed-recv-fast", "ready-mixed-recv-slow"];
+    let ext_keys = ["ready-mixed-ext-fast", "ready-mixed-ext-slow"];
+
+    for k in recv_keys.iter() {
+        let _ = make_probe(k, CallSequence::Shared);
+    }
+    let _ext_fast_probe = make_ready_gate_probe(ext_keys[0], None, false);
+    let _ext_slow_probe = make_ready_gate_probe(ext_keys[1], None, false);
+
+    let fast_timeout_ms: u64 = 5_000;
+    let slow_timeout_ms: u64 = 30_000;
+
+    let yaml = format!(
+        r#"
+nodes:
+  {recv_fast}:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{recv_fast}"
+    capabilities:
+      no_op_stateless: "{ext_fast}"
+  {recv_slow}:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{recv_slow}"
+    capabilities:
+      no_op_stateless: "{ext_slow}"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  {ext_fast}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_fast}"
+      readiness_timeout_ms: {fast_timeout_ms}
+  {ext_slow}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_slow}"
+      readiness_timeout_ms: {slow_timeout_ms}
+
+connections:
+  - from: {recv_fast}
+    to: exporter
+  - from: {recv_slow}
+    to: exporter
+"#,
+        recv_fast = recv_keys[0],
+        recv_slow = recv_keys[1],
+        ext_fast = ext_keys[0],
+        ext_slow = ext_keys[1],
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_runtime_pipeline_with_ready_gate(&yaml);
+
+    let started_at = Instant::now();
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        Duration::from_secs(60),
+    );
+    let elapsed = started_at.elapsed();
+
+    assert!(result.is_err());
+
+    let upper = Duration::from_millis(fast_timeout_ms) + Duration::from_secs(2);
+    assert!(elapsed < upper, "elapsed={elapsed:?}, upper={upper:?}");
+
+    let err = result.err().unwrap();
+    let msg = format!("{err}");
+    assert!(msg.contains(ext_keys[0]), "{msg}");
+    assert!(!msg.contains(ext_keys[1]), "{msg}");
+}
+
+#[test]
+fn test_extension_readiness_gate_surfaces_signaller_dropped() {
+    let receiver_key = "ready-drop-recv";
+    let ext_key = "ready-drop-ext";
+
+    let _recv_probe = make_probe(receiver_key, CallSequence::Local);
+    let _ext_probe = make_ready_gate_probe(ext_key, None, true);
+
+    let timeout_ms: u64 = 30_000;
+    let yaml = format!(
+        r#"
+nodes:
+  receiver:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{receiver_key}"
+    capabilities:
+      no_op_stateless: "{ext_key}"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  {ext_key}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_key}"
+      readiness_timeout_ms: {timeout_ms}
+
+connections:
+  - from: receiver
+    to: exporter
+"#
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_runtime_pipeline_with_ready_gate(&yaml);
+
+    let started_at = Instant::now();
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        Duration::from_secs(60),
+    );
+    let elapsed = started_at.elapsed();
+
+    assert!(result.is_err());
+    assert!(elapsed < Duration::from_secs(5), "elapsed={elapsed:?}");
+
+    let err = result.err().unwrap();
+    let msg = format!("{err}");
+    assert!(msg.contains(ext_key), "{msg}");
+    let lower = msg.to_lowercase();
+    assert!(
+        lower.contains("signaller") || lower.contains("dropped") || lower.contains("readiness"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn test_extension_readiness_gate_waits_for_background_extension() {
+    let receiver_key = "ready-bg-recv";
+    let bg_ext_key = "ready-bg-ext";
+    let lifecycle_key = "ready-bg-lifecycle";
+
+    let _recv_probe = make_probe(receiver_key, CallSequence::Local);
+    register_node_lifecycle_probe(lifecycle_key, NodeLifecycleProbe::default());
+    let bg_probe = make_ready_gate_probe(bg_ext_key, Some(Duration::from_millis(150)), false);
+
+    let yaml = format!(
+        r#"
+nodes:
+  receiver:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{receiver_key}"
+      lifecycle_key: "{lifecycle_key}"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  {bg_ext_key}:
+    type: "{READY_GATE_BG_EXTENSION_URN}"
+    config:
+      probe_key: "{bg_ext_key}"
+      readiness_timeout_ms: 5000
+
+connections:
+  - from: receiver
+    to: exporter
+"#
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_runtime_pipeline_with_ready_gate(&yaml);
+
+    let started_at = Instant::now();
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        Duration::from_millis(500),
+    );
+    let elapsed = started_at.elapsed();
+
+    assert!(result.is_ok(), "{result:?}");
+    assert!(elapsed < Duration::from_secs(5), "elapsed={elapsed:?}");
+
+    let lifecycle = lookup_node_lifecycle_probe(lifecycle_key);
+    let receiver_start_at = lifecycle.receiver_start_at.lock().unwrap();
+    let ready_at = bg_probe.ready_at.lock().unwrap();
+    assert!(
+        receiver_start_at >= ready_at,
+        "receiver_start_at={receiver_start_at:?}, ready_at={ready_at:?}"
+    );
+}
+
+#[test]
+fn test_extension_readiness_gate_times_out_for_background_extension() {
+    let receiver_key = "ready-bg-timeout-recv";
+    let bg_ext_key = "ready-bg-timeout-ext";
+
+    let _recv_probe = make_probe(receiver_key, CallSequence::Local);
+    let _bg_probe = make_ready_gate_probe(bg_ext_key, None, false);
+
+    let timeout_ms: u64 = 5_000;
+    let yaml = format!(
+        r#"
+nodes:
+  receiver:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{receiver_key}"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  {bg_ext_key}:
+    type: "{READY_GATE_BG_EXTENSION_URN}"
+    config:
+      probe_key: "{bg_ext_key}"
+      readiness_timeout_ms: {timeout_ms}
+
+connections:
+  - from: receiver
+    to: exporter
+"#
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_runtime_pipeline_with_ready_gate(&yaml);
+
+    let started_at = Instant::now();
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        Duration::from_secs(30),
+    );
+    let elapsed = started_at.elapsed();
+
+    assert!(result.is_err());
+    assert!(elapsed < Duration::from_secs(8), "elapsed={elapsed:?}");
+
+    let err = result.err().unwrap();
+    let msg = format!("{err}");
+    assert!(msg.contains(bg_ext_key), "{msg}");
+    let lower = msg.to_lowercase();
+    assert!(
+        lower.contains("timeout") || lower.contains("readiness"),
+        "{msg}"
+    );
+}

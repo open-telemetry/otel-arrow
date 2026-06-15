@@ -62,6 +62,7 @@ pub(crate) struct ExtensionLifecycle {
     // or task completion) calls `remove`, which is idempotent — so a task
     // that signals and then completes can never under-count its slot.
     pending_starts: HashSet<ExtensionKey>,
+    extension_readiness_probes: Vec<(ExtensionKey, crate::extension::ReadinessProbe)>,
 }
 
 impl ExtensionLifecycle {
@@ -80,6 +81,8 @@ impl ExtensionLifecycle {
         let mut shutdown_channels: Vec<(ExtensionKey, ExtensionShutdownChannel)> = Vec::new();
         let mut passive = Vec::new();
         let mut pending_starts: HashSet<ExtensionKey> = HashSet::new();
+        let mut extension_readiness_probes: Vec<(ExtensionKey, crate::extension::ReadinessProbe)> =
+            Vec::new();
         let (started_tx, started_rx) = mpsc::unbounded_channel::<ExtensionKey>();
 
         for (mut ext_wrapper, entity_key) in extensions {
@@ -91,10 +94,14 @@ impl ExtensionLifecycle {
             let key = ExtensionKey::new(ext_id.clone(), ext_wrapper.variant());
             let control_sender = ext_wrapper.extension_control_sender();
             let shutdown_channel = ext_wrapper.take_shutdown_sender();
+            let readiness_probe = ext_wrapper.take_readiness_probe();
             let telemetry_guard = ext_wrapper.take_telemetry_guard();
             monitor.register(ext_ctx, key.clone(), entity_key, control_sender.as_ref());
             if let Some(channel) = shutdown_channel {
                 shutdown_channels.push((key.clone(), channel));
+            }
+            if let Some(probe) = readiness_probe {
+                extension_readiness_probes.push((key.clone(), probe));
             }
             let ext_metrics_reporter = metrics_reporter.clone();
             let task_key = key.clone();
@@ -139,6 +146,7 @@ impl ExtensionLifecycle {
             monitor,
             started_rx,
             pending_starts,
+            extension_readiness_probes,
         }
     }
 
@@ -263,6 +271,47 @@ impl ExtensionLifecycle {
                 else => return Ok(()),
             }
         }
+    }
+
+    /// Await every opted-in readiness probe in parallel, with each
+    /// probe's own timeout. Returns on the first failure with a
+    /// named-laggard error
+    /// ([`Error::ExtensionReadinessSignallerDropped`] or
+    /// [`Error::ExtensionReadinessTimeout`]).
+    pub async fn wait_all_ready(&mut self) -> Result<(), Error> {
+        let probes = std::mem::take(&mut self.extension_readiness_probes);
+        if probes.is_empty() {
+            return Ok(());
+        }
+
+        let mut waiters = FuturesUnordered::new();
+        for (key, probe) in probes {
+            let timeout = probe.timeout();
+            waiters.push(async move {
+                let outcome = tokio::time::timeout(timeout, probe.wait_ready()).await;
+                (key, timeout, outcome)
+            });
+        }
+
+        while let Some((key, timeout, outcome)) = waiters.next().await {
+            match outcome {
+                Ok(Ok(())) => continue,
+                Ok(Err(crate::extension::ReadinessProbeError::SignallerDropped)) => {
+                    return Err(Error::ExtensionReadinessSignallerDropped {
+                        extension: key.id.to_string(),
+                        variant: key.variant.as_str().to_owned(),
+                    });
+                }
+                Err(_elapsed) => {
+                    return Err(Error::ExtensionReadinessTimeout {
+                        extension: key.id.to_string(),
+                        variant: key.variant.as_str().to_owned(),
+                        timeout,
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Returns the `ExtensionKey` associated with a `joined` outcome so the
@@ -505,6 +554,7 @@ mod tests {
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
                 pending_starts: HashSet::new(),
+                extension_readiness_probes: Vec::new(),
             };
 
             let start = Instant::now();
@@ -576,6 +626,7 @@ mod tests {
                 monitor,
                 started_rx,
                 pending_starts: HashSet::new(),
+                extension_readiness_probes: Vec::new(),
             };
 
             let prev_hook = std::panic::take_hook();
@@ -630,6 +681,7 @@ mod tests {
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx: mpsc::unbounded_channel().1,
                 pending_starts: HashSet::new(),
+                extension_readiness_probes: Vec::new(),
             };
 
             lifecycle.initiate_shutdown(Some("first"));
@@ -762,6 +814,7 @@ mod tests {
                 monitor: ExtensionMetricsMonitor::disabled(ctx_a),
                 started_rx: mpsc::unbounded_channel().1,
                 pending_starts: HashSet::new(),
+                extension_readiness_probes: Vec::new(),
             };
             let life_b = ExtensionLifecycle {
                 futures: FuturesUnordered::new(),
@@ -772,6 +825,7 @@ mod tests {
                 monitor: ExtensionMetricsMonitor::disabled(ctx_b),
                 started_rx: mpsc::unbounded_channel().1,
                 pending_starts: HashSet::new(),
+                extension_readiness_probes: Vec::new(),
             };
 
             life_a.initiate_shutdown(Some("a-only"));
@@ -878,6 +932,7 @@ mod tests {
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
                 pending_starts: HashSet::new(),
+                extension_readiness_probes: Vec::new(),
             };
 
             match lifecycle.next_event().await {
@@ -938,6 +993,7 @@ mod tests {
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
                 pending_starts: HashSet::new(),
+                extension_readiness_probes: Vec::new(),
             };
 
             let _ = lifecycle.next_event().await;
@@ -990,6 +1046,8 @@ mod tests {
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
                 pending_starts,
+
+                extension_readiness_probes: Vec::new(),
             };
 
             let outcome =
@@ -1063,6 +1121,8 @@ mod tests {
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
                 pending_starts,
+
+                extension_readiness_probes: Vec::new(),
             };
 
             let outcome =
@@ -1106,6 +1166,8 @@ mod tests {
                 monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
                 started_rx,
                 pending_starts: HashSet::from([key]),
+
+                extension_readiness_probes: Vec::new(),
             };
 
             let prev_hook = std::panic::take_hook();
@@ -1304,6 +1366,203 @@ mod tests {
             assert!(
                 registry.visit_entity(entity_key, |_| ()).is_none(),
                 "EntityTelemetryGuard must unregister the entity after start() returns",
+            );
+        }));
+    }
+
+    // wait_all_ready tests: exercise the readiness gate in isolation
+    // (no ExtensionWrapper). Probes are injected directly into an
+    // otherwise empty lifecycle.
+
+    fn empty_lifecycle(ext_ctx: ExtensionContext) -> ExtensionLifecycle {
+        let (_started_tx, started_rx) = mpsc::unbounded_channel::<ExtensionKey>();
+        ExtensionLifecycle {
+            futures: FuturesUnordered::new(),
+            task_id_to_key: HashMap::new(),
+            shutdown_channels: Vec::new(),
+            _passive: Vec::new(),
+            phase: LifecyclePhase::Running,
+            monitor: ExtensionMetricsMonitor::disabled(ext_ctx),
+            started_rx,
+            pending_starts: HashSet::new(),
+            extension_readiness_probes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn wait_all_ready_is_zero_cost_noop_when_no_extension_opted_in() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+            let mut lifecycle = empty_lifecycle(ext_ctx);
+
+            let outcome =
+                tokio::time::timeout(Duration::from_millis(50), lifecycle.wait_all_ready()).await;
+            assert!(matches!(outcome, Ok(Ok(()))));
+        }));
+    }
+
+    #[test]
+    fn wait_all_ready_resolves_when_signaller_fires() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+            let mut lifecycle = empty_lifecycle(ext_ctx);
+
+            let (sig, probe) = crate::extension::ReadinessSignaller::pair(Duration::from_secs(60));
+            lifecycle.extension_readiness_probes.push((
+                ExtensionKey::new("opt-in-ext".into(), ExtensionVariant::Local),
+                probe,
+            ));
+
+            // Fire on a child task so the gate observably awaits.
+            drop(task::spawn_local(async move {
+                task::yield_now().await;
+                sig.ready();
+            }));
+
+            let outcome =
+                tokio::time::timeout(Duration::from_secs(1), lifecycle.wait_all_ready()).await;
+            assert!(matches!(outcome, Ok(Ok(()))), "got {outcome:?}");
+        }));
+    }
+
+    #[test]
+    fn wait_all_ready_surfaces_signaller_dropped_with_named_extension() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+            let mut lifecycle = empty_lifecycle(ext_ctx);
+
+            let (sig, probe) = crate::extension::ReadinessSignaller::pair(Duration::from_secs(60));
+            lifecycle.extension_readiness_probes.push((
+                ExtensionKey::new("dropped-ext".into(), ExtensionVariant::Shared),
+                probe,
+            ));
+            drop(sig);
+
+            let outcome =
+                tokio::time::timeout(Duration::from_secs(1), lifecycle.wait_all_ready()).await;
+            match outcome {
+                Ok(Err(Error::ExtensionReadinessSignallerDropped { extension, variant })) => {
+                    assert_eq!(extension, "dropped-ext");
+                    assert_eq!(variant, "shared");
+                }
+                other => panic!("expected ExtensionReadinessSignallerDropped; got {other:?}"),
+            }
+        }));
+    }
+
+    #[test]
+    fn wait_all_ready_surfaces_timeout_with_named_extension() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+            let mut lifecycle = empty_lifecycle(ext_ctx);
+
+            let probe_timeout = Duration::from_millis(40);
+            let (sig, probe) = crate::extension::ReadinessSignaller::pair(probe_timeout);
+            lifecycle.extension_readiness_probes.push((
+                ExtensionKey::new("slow-ext".into(), ExtensionVariant::Local),
+                probe,
+            ));
+
+            let outcome =
+                tokio::time::timeout(Duration::from_secs(1), lifecycle.wait_all_ready()).await;
+            // Hold sig across the await so drop-detect can't race the timeout.
+            drop(sig);
+
+            match outcome {
+                Ok(Err(Error::ExtensionReadinessTimeout {
+                    extension,
+                    variant,
+                    timeout,
+                })) => {
+                    assert_eq!(extension, "slow-ext");
+                    assert_eq!(variant, "local");
+                    assert_eq!(timeout, probe_timeout);
+                }
+                other => panic!("expected ExtensionReadinessTimeout; got {other:?}"),
+            }
+        }));
+    }
+
+    #[test]
+    fn wait_all_ready_is_idempotent_after_drain() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+            let mut lifecycle = empty_lifecycle(ext_ctx);
+
+            let (sig, probe) = crate::extension::ReadinessSignaller::pair(Duration::from_secs(60));
+            lifecycle.extension_readiness_probes.push((
+                ExtensionKey::new("once-ext".into(), ExtensionVariant::Local),
+                probe,
+            ));
+            sig.ready();
+
+            let first =
+                tokio::time::timeout(Duration::from_secs(1), lifecycle.wait_all_ready()).await;
+            assert!(matches!(first, Ok(Ok(()))));
+            assert!(lifecycle.extension_readiness_probes.is_empty());
+
+            let second =
+                tokio::time::timeout(Duration::from_millis(50), lifecycle.wait_all_ready()).await;
+            assert!(matches!(second, Ok(Ok(()))), "got {second:?}");
+        }));
+    }
+
+    #[test]
+    fn wait_all_ready_partial_signal_in_dual_variant_lifecycle_names_laggard() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+            let mut lifecycle = empty_lifecycle(ext_ctx);
+
+            let shared_timeout = Duration::from_secs(60);
+            let (shared_sig, shared_probe) =
+                crate::extension::ReadinessSignaller::pair(shared_timeout);
+            let local_timeout = Duration::from_millis(60);
+            let (local_sig, local_probe) =
+                crate::extension::ReadinessSignaller::pair(local_timeout);
+
+            let ext_id_str = "dual-ext";
+            lifecycle.extension_readiness_probes.push((
+                ExtensionKey::new(ext_id_str.into(), ExtensionVariant::Shared),
+                shared_probe,
+            ));
+            lifecycle.extension_readiness_probes.push((
+                ExtensionKey::new(ext_id_str.into(), ExtensionVariant::Local),
+                local_probe,
+            ));
+
+            shared_sig.ready();
+
+            let started = Instant::now();
+            let outcome =
+                tokio::time::timeout(Duration::from_secs(5), lifecycle.wait_all_ready()).await;
+            let elapsed = started.elapsed();
+            // Keep both signallers alive through the await so drop-detect
+            // never wins the race against the local timeout.
+            drop(shared_sig);
+            drop(local_sig);
+
+            match outcome {
+                Ok(Err(Error::ExtensionReadinessTimeout {
+                    extension,
+                    variant,
+                    timeout,
+                })) => {
+                    assert_eq!(extension, "dual-ext");
+                    assert_eq!(variant, "local");
+                    assert_eq!(timeout, local_timeout);
+                }
+                other => panic!("expected ExtensionReadinessTimeout for local; got {other:?}"),
+            }
+
+            assert!(
+                elapsed < local_timeout * 10,
+                "elapsed {elapsed:?} suggests serial wait or wrong timeout"
             );
         }));
     }

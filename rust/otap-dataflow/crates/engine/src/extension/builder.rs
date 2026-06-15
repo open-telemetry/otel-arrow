@@ -66,6 +66,7 @@
 //! no `.constructed()` method — the invalid combination is a
 //! compile-time error.
 
+use super::readiness::{ReadinessProbe, ReadinessSignaller};
 use super::{ExtensionBundle, ExtensionLifecycle, ExtensionWrapper};
 use crate::capability::factory::{LocalInstanceFactory, SharedInstanceFactory};
 use crate::config::ExtensionConfig;
@@ -78,9 +79,10 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::mpsc;
 use otap_df_config::ExtensionId;
 use otap_df_config::extension::ExtensionUserConfig;
-use otap_df_telemetry::otel_debug;
+use otap_df_telemetry::{otel_debug, otel_info};
 use std::any::{Any, TypeId};
 use std::sync::Arc;
+use std::time::Duration;
 
 // ── Decomposed (type-erased) provider outputs ────────────────────────────────
 
@@ -123,18 +125,62 @@ pub struct LocalDecomposed {
 
 // ── Active lifecycle (shared/local stages) ───────────────────────────────────
 
-/// Lifecycle-selected: Active (engine drives an event loop).
+/// Lifecycle-selected: Active. Must register at least one variant
+/// (shared / local) before `.build()`. Instance policy is Cloned.
 ///
-/// Instance policy is implicitly Cloned — constructed-per-consumer is
-/// Passive-only. Call [`shared()`](Self::shared) or [`local()`](Self::local)
-/// to register the first variant; the typestate then forbids registering
-/// the same variant twice.
+/// Opt in to the readiness gate via [`with_readiness_probe`](Self::with_readiness_probe)
+/// or [`with_extended_readiness_probe_timeout`](Self::with_extended_readiness_probe_timeout)
+/// before registering variants.
 #[doc(hidden)]
 pub struct ActiveStage {
     parent: ExtensionBundleBuilder,
+    readiness_timeout: Option<Duration>,
 }
 
 impl ActiveStage {
+    /// Opt in with the default timeout
+    /// ([`DEFAULT_READINESS_TIMEOUT`](super::readiness::DEFAULT_READINESS_TIMEOUT), 5 s).
+    /// Must precede [`shared()`](Self::shared) / [`local()`](Self::local).
+    #[must_use]
+    pub fn with_readiness_probe(mut self) -> Self {
+        self.readiness_timeout = Some(super::readiness::DEFAULT_READINESS_TIMEOUT);
+        self
+    }
+
+    /// Opt in with a timeout `>= DEFAULT_READINESS_TIMEOUT`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `timeout < DEFAULT_READINESS_TIMEOUT`.
+    ///
+    /// # Telemetry
+    ///
+    /// Emits `extension.readiness.timeout_override` (INFO) when
+    /// `timeout > DEFAULT_READINESS_TIMEOUT`.
+    #[must_use]
+    pub fn with_extended_readiness_probe_timeout(mut self, timeout: Duration) -> Self {
+        let default = super::readiness::DEFAULT_READINESS_TIMEOUT;
+        assert!(
+            timeout >= default,
+            "with_extended_readiness_probe_timeout: timeout {:?} is below the readiness-probe default of {:?} (extension: {}). \
+             Use with_readiness_probe() for the default; pass >= {:?} to override.",
+            timeout,
+            default,
+            self.parent.name.as_ref(),
+            default,
+        );
+        if timeout > default {
+            otel_info!(
+                "extension.readiness.timeout_override",
+                extension = self.parent.name.as_ref(),
+                timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+                default_ms = u64::try_from(default.as_millis()).unwrap_or(u64::MAX),
+            );
+        }
+        self.readiness_timeout = Some(timeout);
+        self
+    }
+
     /// Register the shared (Send) variant.
     #[must_use]
     pub fn shared<E>(mut self, extension: E) -> ActiveSharedStage
@@ -142,33 +188,40 @@ impl ActiveStage {
         E: shared_ext::Extension + Clone + Send + 'static,
     {
         self.parent.set_shared_active(extension);
+        if let Some(t) = self.readiness_timeout {
+            let (sig, probe) = ReadinessSignaller::pair(t);
+            self.parent.set_shared_readiness(probe, sig);
+        }
         ActiveSharedStage {
             parent: self.parent,
+            readiness_timeout: self.readiness_timeout,
         }
     }
 
     /// Register the local (!Send) variant.
-    ///
-    /// `E: Clone` is required so capability consumers can each receive
-    /// an independent boxed clone of `*extension`. The original `Rc<E>`
-    /// is what the engine will hand to `local_ext::Extension::start`,
-    /// so the lifecycle wiring still uses an `Rc`-hosted instance.
     #[must_use]
     pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> ActiveLocalStage
     where
         E: local_ext::Extension + Clone + 'static,
     {
         self.parent.set_local_active(extension);
+        if let Some(t) = self.readiness_timeout {
+            let (sig, probe) = ReadinessSignaller::pair(t);
+            self.parent.set_local_readiness(probe, sig);
+        }
         ActiveLocalStage {
             parent: self.parent,
+            readiness_timeout: self.readiness_timeout,
         }
     }
 }
 
-/// Active + shared registered. Awaiting optional `.local(...)` or `.build()`.
+/// Active + shared registered. Awaiting optional `.local(...)` or
+/// `.build()`.
 #[doc(hidden)]
 pub struct ActiveSharedStage {
     parent: ExtensionBundleBuilder,
+    readiness_timeout: Option<Duration>,
 }
 
 impl ActiveSharedStage {
@@ -183,6 +236,10 @@ impl ActiveSharedStage {
         E: local_ext::Extension + Clone + 'static,
     {
         self.parent.set_local_active(extension);
+        if let Some(t) = self.readiness_timeout {
+            let (sig, probe) = ReadinessSignaller::pair(t);
+            self.parent.set_local_readiness(probe, sig);
+        }
         ActiveCompleteStage {
             parent: self.parent,
         }
@@ -198,10 +255,12 @@ impl ActiveSharedStage {
     }
 }
 
-/// Active + local registered. Awaiting optional `.shared(...)` or `.build()`.
+/// Active + local registered. Awaiting optional `.shared(...)` or
+/// `.build()`.
 #[doc(hidden)]
 pub struct ActiveLocalStage {
     parent: ExtensionBundleBuilder,
+    readiness_timeout: Option<Duration>,
 }
 
 impl ActiveLocalStage {
@@ -213,6 +272,10 @@ impl ActiveLocalStage {
         E: shared_ext::Extension + Clone + Send + 'static,
     {
         self.parent.set_shared_active(extension);
+        if let Some(t) = self.readiness_timeout {
+            let (sig, probe) = ReadinessSignaller::pair(t);
+            self.parent.set_shared_readiness(probe, sig);
+        }
         ActiveCompleteStage {
             parent: self.parent,
         }
@@ -228,7 +291,7 @@ impl ActiveLocalStage {
     }
 }
 
-/// Active + both shared and local registered. Only `.build()` remains.
+/// Active + both variants registered. Only `.build()` remains.
 #[doc(hidden)]
 pub struct ActiveCompleteStage {
     parent: ExtensionBundleBuilder,
@@ -536,34 +599,69 @@ impl PassiveConstructedCompleteStage {
 #[doc(hidden)]
 pub struct BackgroundEmptyStage {
     parent: ExtensionBundleBuilder,
+    readiness_timeout: Option<Duration>,
 }
 
 impl BackgroundEmptyStage {
+    /// Opt in with the default timeout. See [`ActiveStage::with_readiness_probe`].
+    #[must_use]
+    pub fn with_readiness_probe(mut self) -> Self {
+        self.readiness_timeout = Some(super::readiness::DEFAULT_READINESS_TIMEOUT);
+        self
+    }
+
+    /// See [`ActiveStage::with_extended_readiness_probe_timeout`].
+    #[must_use]
+    pub fn with_extended_readiness_probe_timeout(mut self, timeout: Duration) -> Self {
+        let default = super::readiness::DEFAULT_READINESS_TIMEOUT;
+        assert!(
+            timeout >= default,
+            "with_extended_readiness_probe_timeout: timeout {:?} is below the readiness-probe default of {:?} (extension: {}). \
+             Use with_readiness_probe() for the default; pass >= {:?} to override.",
+            timeout,
+            default,
+            self.parent.name.as_ref(),
+            default,
+        );
+        if timeout > default {
+            otel_info!(
+                "extension.readiness.timeout_override",
+                extension = self.parent.name.as_ref(),
+                timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+                default_ms = u64::try_from(default.as_millis()).unwrap_or(u64::MAX),
+            );
+        }
+        self.readiness_timeout = Some(timeout);
+        self
+    }
+
     /// Register the shared (Send + Clone) bg task instance.
-    ///
-    /// Same parameter shape as [`ActiveStage::shared`] — the difference
-    /// is purely typestate: Background allows exactly one registration.
     #[must_use]
     pub fn shared<E>(mut self, extension: E) -> BackgroundCompleteStage
     where
         E: shared_ext::Extension + Clone + Send + 'static,
     {
         self.parent.set_shared_active(extension);
+        if let Some(t) = self.readiness_timeout {
+            let (sig, probe) = ReadinessSignaller::pair(t);
+            self.parent.set_shared_readiness(probe, sig);
+        }
         BackgroundCompleteStage {
             parent: self.parent,
         }
     }
 
     /// Register the local (!Send) bg task instance.
-    ///
-    /// Same parameter shape as [`ActiveStage::local`] — the difference
-    /// is purely typestate: Background allows exactly one registration.
     #[must_use]
     pub fn local<E>(mut self, extension: std::rc::Rc<E>) -> BackgroundCompleteStage
     where
         E: local_ext::Extension + Clone + 'static,
     {
         self.parent.set_local_active(extension);
+        if let Some(t) = self.readiness_timeout {
+            let (sig, probe) = ReadinessSignaller::pair(t);
+            self.parent.set_local_readiness(probe, sig);
+        }
         BackgroundCompleteStage {
             parent: self.parent,
         }
@@ -571,7 +669,7 @@ impl BackgroundEmptyStage {
 }
 
 /// Background + the single bg task instance registered. Only `.build()`
-/// remains — neither a second `.shared(...)` nor `.local(...)` is reachable.
+/// remains.
 #[doc(hidden)]
 pub struct BackgroundCompleteStage {
     parent: ExtensionBundleBuilder,
@@ -602,6 +700,18 @@ pub struct ExtensionBundleBuilder {
     pub(super) runtime_config: ExtensionConfig,
     shared: Option<SharedDecomposed>,
     local: Option<LocalDecomposed>,
+    shared_probe: Option<ReadinessProbe>,
+    local_probe: Option<ReadinessProbe>,
+    /// Matched signaller half for the shared variant. Plumbed into
+    /// [`ExtensionLifecycle::Active::readiness_signaller`] at
+    /// [`Self::build`] time so it can be threaded into
+    /// [`EffectHandler`](super::wrapper::EffectHandler) when the
+    /// extension's task is spawned. The extension fires it (a no-op
+    /// when `None`) via [`EffectHandler::signal_ready`].
+    shared_signaller: Option<ReadinessSignaller>,
+    /// Matched signaller half for the local variant. See
+    /// [`Self::shared_signaller`].
+    local_signaller: Option<ReadinessSignaller>,
 }
 
 impl ExtensionBundleBuilder {
@@ -618,6 +728,10 @@ impl ExtensionBundleBuilder {
             runtime_config,
             shared: None,
             local: None,
+            shared_probe: None,
+            local_probe: None,
+            shared_signaller: None,
+            local_signaller: None,
         }
     }
 
@@ -705,6 +819,32 @@ impl ExtensionBundleBuilder {
         });
     }
 
+    /// Stash the matched (probe, signaller) pair for the shared variant.
+    /// Panics if a pair has already been set, which would indicate the
+    /// caller invoked `with_readiness_probe` twice for the same variant.
+    fn set_shared_readiness(&mut self, probe: ReadinessProbe, signaller: ReadinessSignaller) {
+        assert!(
+            self.shared_probe.is_none() && self.shared_signaller.is_none(),
+            "readiness probe already registered for the shared variant of extension '{}'",
+            self.name.as_ref()
+        );
+        self.shared_probe = Some(probe);
+        self.shared_signaller = Some(signaller);
+    }
+
+    /// Stash the matched (probe, signaller) pair for the local variant.
+    /// Panics if a pair has already been set, which would indicate the
+    /// caller invoked `with_readiness_probe` twice for the same variant.
+    fn set_local_readiness(&mut self, probe: ReadinessProbe, signaller: ReadinessSignaller) {
+        assert!(
+            self.local_probe.is_none() && self.local_signaller.is_none(),
+            "readiness probe already registered for the local variant of extension '{}'",
+            self.name.as_ref()
+        );
+        self.local_probe = Some(probe);
+        self.local_signaller = Some(signaller);
+    }
+
     /// Select the **Active** lifecycle for this extension bundle.
     /// The engine will drive an event loop for whichever sides are
     /// registered.
@@ -713,7 +853,10 @@ impl ExtensionBundleBuilder {
     /// constructed-per-consumer (factory closure) is Passive-only.
     #[must_use]
     pub fn active(self) -> ActiveStage {
-        ActiveStage { parent: self }
+        ActiveStage {
+            parent: self,
+            readiness_timeout: None,
+        }
     }
 
     /// Select the **Passive** lifecycle for this extension bundle. No
@@ -742,7 +885,10 @@ impl ExtensionBundleBuilder {
     /// to `None`.
     #[must_use]
     pub fn background(self) -> BackgroundEmptyStage {
-        BackgroundEmptyStage { parent: self }
+        BackgroundEmptyStage {
+            parent: self,
+            readiness_timeout: None,
+        }
     }
 
     /// Build the [`ExtensionBundle`].
@@ -770,7 +916,37 @@ impl ExtensionBundleBuilder {
 
         let cap = self.runtime_config.control_channel.capacity;
 
-        let local = self.local.map(|l| {
+        let Self {
+            name,
+            user_config,
+            runtime_config,
+            shared: shared_decomposed,
+            local: local_decomposed,
+            shared_probe,
+            local_probe,
+            shared_signaller,
+            local_signaller,
+        } = self;
+
+        // Defensive guard: typestate prevents `with_readiness_probe` on
+        // passive stages, but keep the invariant explicit so future
+        // refactors can't silently orphan a probe.
+        debug_assert!(
+            !(local_probe.is_some()
+                && local_decomposed
+                    .as_ref()
+                    .is_none_or(|d| d.extension.is_none())),
+            "local readiness probe registered but no active local extension — typestate broken"
+        );
+        debug_assert!(
+            !(shared_probe.is_some()
+                && shared_decomposed
+                    .as_ref()
+                    .is_none_or(|d| d.extension.is_none())),
+            "shared readiness probe registered but no active shared extension — typestate broken"
+        );
+
+        let local = local_decomposed.map(|l| {
             let lifecycle = match l.extension {
                 Some(ext) => {
                     let (tx, rx) = mpsc::Channel::new(cap);
@@ -781,21 +957,23 @@ impl ExtensionBundleBuilder {
                         control_receiver: LocalReceiver::mpsc(rx),
                         shutdown_sender: Some(shutdown_tx),
                         shutdown_receiver: Some(shutdown_rx),
+                        readiness_probe: local_probe,
+                        readiness_signaller: local_signaller,
                     }
                 }
                 None => ExtensionLifecycle::Passive,
             };
             ExtensionWrapper::Local {
-                name: self.name.clone(),
-                user_config: self.user_config.clone(),
-                runtime_config: self.runtime_config.clone(),
+                name: name.clone(),
+                user_config: user_config.clone(),
+                runtime_config: runtime_config.clone(),
                 telemetry: None,
                 lifecycle,
                 instance_factory: l.instance_factory,
             }
         });
 
-        let shared = self.shared.map(|s| {
+        let shared = shared_decomposed.map(|s| {
             let lifecycle = match s.extension {
                 Some(ext) => {
                     let (tx, rx) = tokio::sync::mpsc::channel(cap);
@@ -806,14 +984,16 @@ impl ExtensionBundleBuilder {
                         control_receiver: SharedReceiver::mpsc(rx),
                         shutdown_sender: Some(shutdown_tx),
                         shutdown_receiver: Some(shutdown_rx),
+                        readiness_probe: shared_probe,
+                        readiness_signaller: shared_signaller,
                     }
                 }
                 None => ExtensionLifecycle::Passive,
             };
             ExtensionWrapper::Shared {
-                name: self.name.clone(),
-                user_config: self.user_config.clone(),
-                runtime_config: self.runtime_config.clone(),
+                name: name.clone(),
+                user_config: user_config.clone(),
+                runtime_config: runtime_config.clone(),
                 telemetry: None,
                 lifecycle,
                 instance_factory: s.instance_factory,
