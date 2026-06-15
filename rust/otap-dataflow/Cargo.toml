@@ -254,7 +254,7 @@ tonic-prost-build = "0.14"
 tracepoint = { version = "0.5.0", features = ["user_events"] }
 tracepoint_decode = "0.5.0"
 urlencoding = "2"
-geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "47ece283fa10334cca14c2dd6311824c052c08e3" }
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "e263bdb5af68ddcba4af1645c32ce1d8443c8cbc" }
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata = { path = "crates/pdata" }
