@@ -1433,7 +1433,11 @@ Validation:
   - the exclusive-router processors (content router and signal-type router)
     backpressure-parked routes (local ticket per parked message, carried across
     probe/re-park cycles and released on downstream admission, route-closed nack,
-    shutdown drain, or drop).
+    shutdown drain, or drop);
+  - the fanout processor's in-flight requests (local ticket per retained
+    `original_pdata` in both the slim-primary and full await/sequential/fallback
+    paths, released on completion ack/nack, timeout, capacity eviction, or
+    processor drop; the fire-and-forget path retains nothing).
   These exporter/processor sites are accounting points, not admission points:
   under `mode = enforce` a rejected charge yields no ticket and the work still
   proceeds, so they never drop data. Admission/enforcement of retained work
