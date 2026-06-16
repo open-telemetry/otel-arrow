@@ -20,6 +20,10 @@ pub struct CompletedExport {
 pub struct InFlightExports {
     futures: FuturesUnordered<LocalBoxFuture<'static, CompletedExport>>,
     limit: usize,
+    /// Running total of log records (rows) across all in-flight exports.
+    /// Incremented when an export is enqueued and decremented when it
+    /// completes (success or failure), so it cannot drift from the futures set.
+    queued_rows: u64,
 }
 
 impl InFlightExports {
@@ -27,6 +31,7 @@ impl InFlightExports {
         Self {
             futures: FuturesUnordered::new(),
             limit,
+            queued_rows: 0,
         }
     }
 
@@ -35,13 +40,23 @@ impl InFlightExports {
         self.futures.len()
     }
 
+    /// Current number of log records (rows) across all in-flight exports.
+    #[inline]
+    pub fn queued_rows(&self) -> u64 {
+        self.queued_rows
+    }
+
     #[inline]
     pub async fn next_completion(&mut self) -> Option<CompletedExport> {
         if self.futures.is_empty() {
             // Stay pending forever when empty - prevents busy loop
             std::future::pending().await
         } else {
-            self.futures.next().await
+            let completed = self.futures.next().await;
+            if let Some(ref c) = completed {
+                self.queued_rows = self.queued_rows.saturating_sub(c.row_count);
+            }
+            completed
         }
     }
 
@@ -56,6 +71,9 @@ impl InFlightExports {
         } else {
             None
         };
+        if let Some(ref c) = completed {
+            self.queued_rows = self.queued_rows.saturating_sub(c.row_count);
+        }
         self.futures.push(fut);
         completed
     }
@@ -69,6 +87,7 @@ impl InFlightExports {
         body: Bytes,
     ) -> Option<CompletedExport> {
         let fut = Self::make_export_future(client, batch_id, row_count, body);
+        self.queued_rows = self.queued_rows.saturating_add(row_count);
         self.push(fut).await
     }
 
@@ -94,6 +113,7 @@ impl InFlightExports {
     pub async fn drain(&mut self) -> Vec<CompletedExport> {
         let mut out = Vec::with_capacity(self.futures.len());
         while let Some(completed) = self.futures.next().await {
+            self.queued_rows = self.queued_rows.saturating_sub(completed.row_count);
             out.push(completed);
         }
         out
@@ -140,15 +160,25 @@ mod tests {
         )
     }
 
-    /// Create a future that completes immediately with a success result.
-    /// Used to fill the InFlightExports to test backpressure without waiting for real network calls.
-    fn mock_completed_export_future(batch_id: u64) -> LocalBoxFuture<'static, CompletedExport> {
+    /// Create a future that completes immediately with the given `row_count`
+    /// and result. Used to fill the InFlightExports and exercise backpressure
+    /// and in-flight record accounting without waiting for real network calls.
+    fn mock_completed_export_future(
+        batch_id: u64,
+        row_count: u64,
+        success: bool,
+    ) -> LocalBoxFuture<'static, CompletedExport> {
         Box::pin(async move {
+            let result = if success {
+                Ok(StdDuration::from_millis(1))
+            } else {
+                Err(Error::LogEntryTooLarge)
+            };
             CompletedExport {
                 batch_id,
                 client: create_test_client(),
-                result: Ok(StdDuration::from_millis(1)),
-                row_count: 1,
+                result,
+                row_count,
             }
         })
     }
@@ -255,7 +285,9 @@ mod tests {
         // 1. Fill the capacity with a dummy future that completes immediately
         // We use a dummy future because if we used push_export, it would create a real
         // export future that might retry and take a long time to fail/complete.
-        let _ = exports.push(mock_completed_export_future(100)).await;
+        let _ = exports
+            .push(mock_completed_export_future(100, 1, true))
+            .await;
         assert_eq!(exports.len(), 1);
 
         // 2. Now call push_export. Since we are at limit (1), it must wait for a completion.
@@ -272,6 +304,44 @@ mod tests {
 
         // The new export should be in the queue
         assert_eq!(exports.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_push_export_increments_queued_rows() {
+        let mut exports = InFlightExports::new(5);
+
+        // Under the limit, push_export does not block and increments the
+        // in-flight record tally by the enqueued row count. The real export
+        // future stays pending.
+        let _ = exports
+            .push_export(create_test_client(), 1, 100, Bytes::from("data"))
+            .await;
+        assert_eq!(exports.queued_rows(), 100);
+
+        let _ = exports
+            .push_export(create_test_client(), 2, 50, Bytes::from("data"))
+            .await;
+        assert_eq!(exports.queued_rows(), 150);
+    }
+
+    #[tokio::test]
+    async fn test_push_export_backpressure_decrements_queued_rows() {
+        let mut exports = InFlightExports::new(1);
+        exports.queued_rows = 10;
+        // Fill capacity with a completing future worth 10 records.
+        let _ = exports
+            .push(mock_completed_export_future(1, 10, true))
+            .await;
+        assert_eq!(exports.len(), 1);
+
+        // At capacity, push_export(+25) pops the completed future (-10) before
+        // adding the new one: 10 + 25 - 10 = 25.
+        let completed = exports
+            .push_export(create_test_client(), 2, 25, Bytes::from("data"))
+            .await;
+        assert!(completed.is_some());
+        assert_eq!(completed.unwrap().row_count, 10);
+        assert_eq!(exports.queued_rows(), 25);
     }
 
     // ==================== drain Tests ====================
@@ -291,9 +361,9 @@ mod tests {
         let mut exports = InFlightExports::new(5);
 
         // Push 3 dummy completed futures
-        let _ = exports.push(mock_completed_export_future(1)).await;
-        let _ = exports.push(mock_completed_export_future(2)).await;
-        let _ = exports.push(mock_completed_export_future(3)).await;
+        let _ = exports.push(mock_completed_export_future(1, 1, true)).await;
+        let _ = exports.push(mock_completed_export_future(2, 1, true)).await;
+        let _ = exports.push(mock_completed_export_future(3, 1, true)).await;
 
         assert_eq!(exports.len(), 3);
 
@@ -306,6 +376,22 @@ mod tests {
         assert!(ids.contains(&1));
         assert!(ids.contains(&2));
         assert!(ids.contains(&3));
+    }
+
+    #[tokio::test]
+    async fn test_drain_resets_queued_rows_to_zero() {
+        let mut exports = InFlightExports::new(5);
+        exports.queued_rows = 60;
+        let _ = exports
+            .push(mock_completed_export_future(1, 20, true))
+            .await;
+        let _ = exports
+            .push(mock_completed_export_future(2, 40, false))
+            .await;
+
+        let drained = exports.drain().await;
+        assert_eq!(drained.len(), 2);
+        assert_eq!(exports.queued_rows(), 0);
     }
 
     // ==================== next_completion Tests ====================
@@ -327,13 +413,52 @@ mod tests {
     async fn test_next_completion_returns_completed() {
         let mut exports = InFlightExports::new(5);
 
-        let _ = exports.push(mock_completed_export_future(42)).await;
+        let _ = exports
+            .push(mock_completed_export_future(42, 1, true))
+            .await;
 
         let result = exports.next_completion().await;
 
         assert!(result.is_some());
         assert_eq!(result.unwrap().batch_id, 42);
         assert_eq!(exports.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_next_completion_decrements_queued_rows() {
+        let mut exports = InFlightExports::new(5);
+        // Simulate in-flight exports totaling 100 records.
+        exports.queued_rows = 100;
+        let _ = exports
+            .push(mock_completed_export_future(1, 30, true))
+            .await;
+
+        let completed = exports.next_completion().await.unwrap();
+        assert_eq!(completed.row_count, 30);
+        assert_eq!(exports.queued_rows(), 70);
+    }
+
+    #[tokio::test]
+    async fn test_next_completion_failure_decrements_queued_rows() {
+        let mut exports = InFlightExports::new(5);
+        exports.queued_rows = 40;
+        let _ = exports
+            .push(mock_completed_export_future(1, 40, false))
+            .await;
+
+        let completed = exports.next_completion().await.unwrap();
+        assert!(completed.result.is_err());
+        assert_eq!(exports.queued_rows(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_next_completion_queued_rows_saturates_on_underflow() {
+        let mut exports = InFlightExports::new(5);
+        // queued_rows is 0 but a completion reports 5 records; saturating_sub
+        // must keep it at 0 rather than wrapping around.
+        let _ = exports.push(mock_completed_export_future(1, 5, true)).await;
+        let _ = exports.next_completion().await.unwrap();
+        assert_eq!(exports.queued_rows(), 0);
     }
 
     // ==================== Capacity/Backpressure Tests ====================
@@ -387,5 +512,11 @@ mod tests {
         let exports = InFlightExports::new(1000);
         assert_eq!(exports.limit, 1000);
         assert_eq!(exports.len(), 0);
+    }
+
+    #[test]
+    fn test_new_queued_rows_starts_at_zero() {
+        let exports = InFlightExports::new(5);
+        assert_eq!(exports.queued_rows(), 0);
     }
 }

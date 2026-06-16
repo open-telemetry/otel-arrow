@@ -80,6 +80,10 @@ pub struct AzureMonitorExporterMetrics {
     /// Current number of in-flight export requests.
     #[metric(unit = "{export}")]
     pub in_flight_exports: Gauge<u64>,
+    /// Current number of log records in-flight at the exporter (enqueued export
+    /// requests awaiting completion, including records being retried).
+    #[metric(unit = "{log}")]
+    pub in_flight_log_records: Gauge<u64>,
     /// Current number of batch-to-message mappings (leak detector).
     #[metric(unit = "{entry}")]
     pub batch_to_msg_count: Gauge<u64>,
@@ -220,6 +224,13 @@ impl AzureMonitorExporterMetricsTracker {
         self.metrics.in_flight_exports.get()
     }
 
+    /// Get the current in-flight log records gauge value.
+    #[inline]
+    #[must_use]
+    pub fn in_flight_log_records(&self) -> u64 {
+        self.metrics.in_flight_log_records.get()
+    }
+
     /// Get the current batch_to_msg map size.
     #[inline]
     #[must_use]
@@ -315,6 +326,12 @@ impl AzureMonitorExporterMetricsTracker {
     #[inline]
     pub fn set_in_flight_exports(&mut self, count: u64) {
         self.metrics.in_flight_exports.set(count);
+    }
+
+    /// Set the current number of in-flight log records.
+    #[inline]
+    pub fn set_in_flight_log_records(&mut self, count: u64) {
+        self.metrics.in_flight_log_records.set(count);
     }
 
     /// Set the current batch_to_msg map size.
@@ -496,6 +513,21 @@ mod tests {
         stats.add_network_error();
         stats.add_network_error();
         assert_eq!(stats.metrics().laclient_network_errors.get(), 3);
+    }
+
+    #[test]
+    fn test_in_flight_log_records_gauge() {
+        let mut stats = new_test_tracker();
+
+        assert_eq!(stats.in_flight_log_records(), 0);
+
+        stats.set_in_flight_log_records(250);
+        assert_eq!(stats.in_flight_log_records(), 250);
+        assert_eq!(stats.metrics().in_flight_log_records.get(), 250);
+
+        // Gauge tracks the latest point-in-time value.
+        stats.set_in_flight_log_records(0);
+        assert_eq!(stats.in_flight_log_records(), 0);
     }
 
     #[test]

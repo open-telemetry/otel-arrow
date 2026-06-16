@@ -26,6 +26,7 @@ by the crate and log events emitted via `otel_*` log macros.
 | `exporter.azure_monitor.batch_size` | Compressed batch size in bytes (min/max/sum/count). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
 | `exporter.azure_monitor.batch_uncompressed_size` | Uncompressed batch size in bytes (min/max/sum/count). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `exporter.azure_monitor.in_flight_exports` | Current number of in-flight export requests. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
+| `exporter.azure_monitor.in_flight_log_records` | Current number of log records in-flight at the exporter (enqueued export requests awaiting completion, including records being retried). A sustained non-zero value indicates the destination is unreachable or slow and data is backing up. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `exporter.azure_monitor.batch_to_msg_count` | Current number of batch-to-message mappings. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `exporter.azure_monitor.msg_to_batch_count` | Current number of message-to-batch mappings. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `exporter.azure_monitor.msg_to_data_count` | Current number of message-to-data mappings. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
