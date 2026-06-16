@@ -1257,27 +1257,44 @@ impl<
         };
 
         let shutdown = if has_active_runtime {
-            let initial_shutdown = self.request_shutdown_pipeline_for_engine_operation(
+            match self.request_shutdown_pipeline_for_engine_operation(
                 &pipeline_group_id,
                 &pipeline_id,
                 timeout_secs,
                 engine_operation_id,
-            )?;
-            let terminal_shutdown = self.wait_for_shutdown_terminal(initial_shutdown);
-            if terminal_shutdown.state != "succeeded" {
-                return Ok(PipelineDeleteStatus {
-                    pipeline_group_id,
-                    pipeline_id,
-                    state: "failed".to_owned(),
-                    started_at,
-                    updated_at: timestamp_now(),
-                    shutdown: Some(terminal_shutdown.clone()),
-                    failure_reason: terminal_shutdown.failure_reason.clone().or_else(|| {
-                        Some("pipeline shutdown did not complete successfully".to_owned())
-                    }),
-                });
+            ) {
+                Ok(initial_shutdown) => {
+                    let terminal_shutdown = self.wait_for_shutdown_terminal(initial_shutdown);
+                    if terminal_shutdown.state != "succeeded" {
+                        return Ok(PipelineDeleteStatus {
+                            pipeline_group_id,
+                            pipeline_id,
+                            state: "failed".to_owned(),
+                            started_at,
+                            updated_at: timestamp_now(),
+                            shutdown: Some(terminal_shutdown.clone()),
+                            failure_reason: terminal_shutdown.failure_reason.clone().or_else(
+                                || {
+                                    Some(
+                                        "pipeline shutdown did not complete successfully"
+                                            .to_owned(),
+                                    )
+                                },
+                            ),
+                        });
+                    }
+                    Some(terminal_shutdown)
+                }
+                // The pipeline may have stopped between the has_active_runtime
+                // check and the shutdown request. Treat this as already-stopped
+                // and proceed directly to record removal.
+                Err(ControlPlaneError::InvalidRequest { ref message })
+                    if message.contains("already stopped") =>
+                {
+                    None
+                }
+                Err(err) => return Err(err),
             }
-            Some(terminal_shutdown)
         } else {
             None
         };
