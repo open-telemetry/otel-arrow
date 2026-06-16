@@ -163,6 +163,11 @@ pub struct GrpcClientSettings {
     /// Keys and values must be valid ASCII gRPC metadata; this is enforced by
     /// [`GrpcClientSettings::validate`]. These coexist with any header
     /// propagation policy configured on the exporter.
+    ///
+    /// Note: `GrpcClientSettings` is shared by the OTLP/gRPC exporter and the
+    /// OTAP (Arrow) exporter, but only the OTLP/gRPC exporter applies these
+    /// headers today. The OTAP exporter rejects a non-empty `headers` map at
+    /// config validation rather than silently dropping it.
     #[serde(default)]
     pub headers: IndexMap<String, String>,
 }

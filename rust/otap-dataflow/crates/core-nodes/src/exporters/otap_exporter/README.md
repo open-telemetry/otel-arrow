@@ -124,6 +124,11 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ## Limits
 
 - `stream_queue_capacity` and `streams_per_signal` must be greater than zero.
+- Static request `headers` are not supported yet: the OTAP exporter shares
+  `GrpcClientSettings` with the OTLP/gRPC exporter, but does not attach static
+  metadata to its Arrow streams, so a non-empty `headers` map is rejected at
+  config validation rather than silently dropped. Use `exporter:otlp_grpc` or
+  `exporter:otlp_http` to send static headers.
 - Compression values are limited to the variants supported by the shared OTAP
   transport layer.
 - End-to-end delivery depends on downstream OTAP stream responses.

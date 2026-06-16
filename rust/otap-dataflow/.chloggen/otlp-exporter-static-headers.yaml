@@ -21,4 +21,7 @@ subtext: |
   (Content-Type/Content-Encoding/Content-Length/Host) are rejected for HTTP and
   protocol headers always take precedence. The gRPC static metadata is built
   once at startup so the per-message hot path keeps its zero-allocation fast
-  path. This is the static-header complement to header propagation (#2563).
+  path. The OTAP (Arrow) exporter shares `GrpcClientSettings` but does not apply
+  static headers to its streams yet, so it rejects a non-empty `headers` map at
+  config load rather than silently dropping it. This is the static-header
+  complement to header propagation (#2563).

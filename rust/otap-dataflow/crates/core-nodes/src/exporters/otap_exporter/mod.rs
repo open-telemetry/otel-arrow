@@ -191,7 +191,28 @@ fn validate_config(config: &Value) -> Result<(), otap_df_config::error::Error> {
         .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
             error: e.to_string(),
         })?;
+    reject_unsupported_headers(&cfg)?;
     Ok(())
+}
+
+/// Rejects static `headers` configured on the OTAP exporter.
+///
+/// [`GrpcClientSettings`] is shared with the OTLP/gRPC exporter, which applies
+/// static `headers` as per-request metadata. The OTAP exporter sends data over
+/// long-lived Arrow streams and does not attach that metadata yet, so accepting
+/// `headers` here would silently drop them (e.g. an `authorization` credential
+/// that never reaches the backend). Fail loudly until OTAP-native support lands.
+fn reject_unsupported_headers(cfg: &Config) -> Result<(), otap_df_config::error::Error> {
+    if cfg.grpc.headers.is_empty() {
+        return Ok(());
+    }
+    Err(otap_df_config::error::Error::InvalidUserConfig {
+        error: "the OTAP exporter (urn:otel:exporter:otap) does not support static \
+                `headers` yet; they would be silently dropped from the OTAP/Arrow \
+                stream. Configure `headers` on exporter:otlp_grpc or \
+                exporter:otlp_http instead, or remove the field"
+            .to_string(),
+    })
 }
 
 impl OTAPExporter {
@@ -218,6 +239,8 @@ impl OTAPExporter {
                 error: e.to_string(),
             }
         })?;
+
+        reject_unsupported_headers(&config)?;
 
         Ok(OTAPExporter::new(pipeline_ctx, config))
     }
@@ -1408,6 +1431,55 @@ mod tests {
             Err(err) => err,
         };
         assert!(format!("{err}").contains("streams_per_signal must be greater than 0"));
+    }
+
+    #[test]
+    fn test_from_config_rejects_headers() {
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        // `GrpcClientSettings` is shared with the OTLP/gRPC exporter, but the OTAP
+        // exporter does not apply static headers to its Arrow streams yet. They must
+        // be rejected loudly rather than silently dropped.
+        let json_config = json!({
+            "grpc_endpoint": "http://localhost:4317",
+            "headers": { "authorization": "Basic dXNlcjpwYXNz" }
+        });
+        let err = match OTAPExporter::from_config(pipeline_ctx, &json_config) {
+            Ok(_) => panic!("headers on the OTAP exporter should be rejected"),
+            Err(err) => err,
+        };
+        assert!(format!("{err}").contains("does not support static `headers`"));
+    }
+
+    #[test]
+    fn test_validate_config_rejects_headers() {
+        let json_config = json!({
+            "grpc_endpoint": "http://localhost:4317",
+            "headers": { "x-tenant": "acme" }
+        });
+        let err = super::validate_config(&json_config)
+            .expect_err("headers on the OTAP exporter should fail validation");
+        assert!(format!("{err}").contains("does not support static `headers`"));
+    }
+
+    #[test]
+    fn test_from_config_accepts_empty_headers() {
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        // An absent/empty `headers` map must remain valid (backwards compatible).
+        let json_config = json!({
+            "grpc_endpoint": "http://localhost:4317",
+            "headers": {}
+        });
+        let exporter =
+            OTAPExporter::from_config(pipeline_ctx, &json_config).expect("Config should be valid");
+        assert!(exporter.config.grpc.headers.is_empty());
     }
 
     #[test]
