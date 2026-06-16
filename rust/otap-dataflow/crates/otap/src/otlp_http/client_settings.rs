@@ -7,6 +7,7 @@ use indexmap::IndexMap;
 use reqwest::ClientBuilder;
 use reqwest::header::HeaderValue;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::io;
 use std::time::Duration;
 use tower::limit::ConcurrencyLimitLayer;
@@ -91,9 +92,10 @@ impl HttpClientSettings {
     /// characters valid in an HTTP header value (visible ASCII, 32-127).
     ///
     /// Checks that every entry in `headers` has a valid HTTP header name and a
-    /// value representable as an HTTP header value, and that no protocol-reserved
+    /// value representable as an HTTP header value, that no protocol-reserved
     /// header (`Content-Type` / `Content-Encoding` / `Content-Length` / `Host`)
-    /// is overridden.
+    /// is overridden, and that no header name is a case-insensitive duplicate of
+    /// another (HTTP header names are case-insensitive).
     pub fn validate(&self) -> Result<(), HttpClientError> {
         if let Some(ua) = &self.user_agent {
             if ua.trim().is_empty() {
@@ -110,6 +112,7 @@ impl HttpClientSettings {
             }
         }
 
+        let mut seen_names = HashSet::new();
         for (name, value) in &self.headers {
             let header_name = http::HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
                 HttpClientError::InvalidConfig(format!(
@@ -131,6 +134,16 @@ impl HttpClientSettings {
                 return Err(HttpClientError::InvalidConfig(format!(
                     "header \"{name}\" is reserved and cannot be set via `headers`; it is managed \
                      by the exporter"
+                )));
+            }
+            // HTTP header names are case-insensitive, so two keys differing only in
+            // case (e.g. `X-Foo` and `x-foo`) would collide on the wire. Reject such
+            // duplicates rather than sending an ambiguous request. `header_name` is
+            // already normalized to lowercase, so it is the canonical key here.
+            if !seen_names.insert(header_name.as_str().to_string()) {
+                return Err(HttpClientError::InvalidConfig(format!(
+                    "header \"{name}\" is specified more than once; HTTP header names are \
+                     case-insensitive, so keys that differ only in case are duplicates"
                 )));
             }
         }
@@ -445,6 +458,22 @@ mod tests {
         };
 
         assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_case_insensitive_duplicate_headers() {
+        let mut headers = IndexMap::new();
+        let _ = headers.insert("X-Tenant".to_string(), "a".to_string());
+        let _ = headers.insert("x-tenant".to_string(), "b".to_string());
+        let settings = HttpClientSettings {
+            headers,
+            ..HttpClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(HttpClientError::InvalidConfig(_))
+        ));
     }
 
     #[test]

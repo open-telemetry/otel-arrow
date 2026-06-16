@@ -12,6 +12,7 @@ use indexmap::IndexMap;
 use otap_df_config::byte_units;
 use otap_df_config::tls::TlsClientConfig;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -249,7 +250,8 @@ impl GrpcClientSettings {
     /// characters valid in an HTTP header value (visible ASCII, 32-127).
     ///
     /// Checks that every entry in `headers` is a valid ASCII gRPC metadata
-    /// key/value pair.
+    /// key/value pair, and that no key is a case-insensitive duplicate of another
+    /// (gRPC metadata keys are sent lowercased).
     pub fn validate(&self) -> Result<(), GrpcEndpointError> {
         if let Some(ua) = &self.user_agent {
             if ua.trim().is_empty() {
@@ -266,19 +268,32 @@ impl GrpcClientSettings {
             }
         }
 
+        let mut seen_names = HashSet::new();
         for (name, value) in &self.headers {
-            if name.parse::<MetadataKey<tonic::metadata::Ascii>>().is_err() {
-                return Err(GrpcEndpointError::InvalidConfig(format!(
-                    "header name \"{name}\" is not a valid gRPC metadata key (expected an \
-                     HTTP/2 token: ASCII letters, digits, or `-_.`; the key is sent \
-                     lowercased and must not end with `-bin`, which is reserved for \
-                     binary metadata)"
-                )));
-            }
+            let key = name
+                .parse::<MetadataKey<tonic::metadata::Ascii>>()
+                .map_err(|_| {
+                    GrpcEndpointError::InvalidConfig(format!(
+                        "header name \"{name}\" is not a valid gRPC metadata key (expected an \
+                         HTTP/2 token: ASCII letters, digits, or `-_.`; the key is sent \
+                         lowercased and must not end with `-bin`, which is reserved for \
+                         binary metadata)"
+                    ))
+                })?;
             if MetadataValue::try_from(value.as_str()).is_err() {
                 return Err(GrpcEndpointError::InvalidConfig(format!(
                     "header \"{name}\" has a value that cannot be represented as ASCII gRPC \
                      metadata (must be visible ASCII)"
+                )));
+            }
+            // gRPC metadata keys are sent lowercased, so two keys differing only in
+            // case (e.g. `X-Tenant` and `x-tenant`) collide. Reject such duplicates
+            // rather than silently overwriting one with the other. `key` is already
+            // normalized to lowercase, so it is the canonical key here.
+            if !seen_names.insert(key.as_str().to_string()) {
+                return Err(GrpcEndpointError::InvalidConfig(format!(
+                    "header \"{name}\" is specified more than once; gRPC metadata keys are \
+                     case-insensitive, so keys that differ only in case are duplicates"
                 )));
             }
         }
@@ -766,6 +781,22 @@ mod tests {
         };
 
         assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_case_insensitive_duplicate_headers() {
+        let mut headers = IndexMap::new();
+        let _ = headers.insert("X-Tenant".to_string(), "a".to_string());
+        let _ = headers.insert("x-tenant".to_string(), "b".to_string());
+        let settings = GrpcClientSettings {
+            headers,
+            ..GrpcClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(GrpcEndpointError::InvalidConfig(_))
+        ));
     }
 
     #[test]
