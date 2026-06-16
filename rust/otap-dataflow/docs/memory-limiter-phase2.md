@@ -1715,6 +1715,14 @@ torn down. The registry is the *mechanism*: registering concrete site reclaimers
 and triggering reclaim from admission/pressure stays gated behind
 `enforcement.reclaim_hooks` and is wired site by site.
 
+The per-runtime registry is reachable the same way as the runtime memory budget:
+the controller installs a fresh `ReclaimRegistry` on each pinned pipeline thread
+(alongside `current_runtime_memory_budget`), and a site running on that thread
+reaches it through `current_reclaim_registry()` to register its reclaimer. The
+slot is cleared when the per-runtime guard drops, on the same thread. Until a
+site registers and a driver calls `reclaim`, the registry is present but inert,
+so installing it is a no-op for budget behavior.
+
 In Phase 2e, shared retained memory is reported through metrics but is not
 eligible for local reclaim hooks. A later phase can add `SharedMemoryReclaim`
 for shared retention sites that materially contribute to runtime or escrow
@@ -1946,7 +1954,8 @@ who require placement can choose `unsupported: error`.
 - Add the reclaim primitive (`LocalMemoryReclaim`, `ReclaimContext`,
   `ReclaimCoordinator`) and the runtime-local `ReclaimRegistry` lifecycle
   (register/unregister with RAII teardown, deterministic priority-ordered,
-  re-entry-safe, budget-free passes). **Done.**
+  re-entry-safe, budget-free passes), installed per pipeline runtime thread and
+  reachable through `current_reclaim_registry()`. **Done.**
 - Register concrete site reclaimers (batch/retry/durable/queue/stream) and
   trigger reclaim from pressure/admission, gated behind
   `enforcement.reclaim_hooks`. **Pending** (wired site by site).
