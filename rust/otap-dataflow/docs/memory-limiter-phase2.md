@@ -1685,6 +1685,36 @@ Reclaim ordering should be deterministic. The engine should ask reclaimers in
 `ReclaimPriority` order, use a fixed component-kind tie breaker, and stop once
 the target byte count is met or all reclaimers report no progress.
 
+The engine provides a runtime-local registration lifecycle over this primitive:
+
+```rust
+// Runtime-local: holds Rc, runs on the pinned runtime thread.
+pub struct ReclaimRegistry { /* ... */ }
+
+impl ReclaimRegistry {
+    // Register a shared, runtime-local reclaimer; the returned guard
+    // unregisters it on drop (RAII teardown, no explicit unregister call).
+    pub fn register(
+        &self,
+        reclaimer: Rc<RefCell<dyn LocalMemoryReclaim>>,
+    ) -> ReclaimRegistration;
+
+    // Drive every currently-registered reclaimer to release up to
+    // `target_bytes`, in priority order, refusing re-entry.
+    pub async fn reclaim(&self, target_bytes: u64) -> ReclaimOutcome;
+}
+```
+
+A stateful retention site registers an `Rc<RefCell<_>>` reclaimer over the state
+it already owns and keeps a clone for its own hot-path mutations; the registry
+borrows each reclaimer only for the duration of its own `reclaim` call, so
+registered reclaimers are never all borrowed at once and a reclaimer may
+register or unregister others mid-pass (changes apply to the next pass). Dropping
+the [`ReclaimRegistration`] removes the reclaimer automatically when the site is
+torn down. The registry is the *mechanism*: registering concrete site reclaimers
+and triggering reclaim from admission/pressure stays gated behind
+`enforcement.reclaim_hooks` and is wired site by site.
+
 In Phase 2e, shared retained memory is reported through metrics but is not
 eligible for local reclaim hooks. A later phase can add `SharedMemoryReclaim`
 for shared retention sites that materially contribute to runtime or escrow
@@ -1913,7 +1943,13 @@ who require placement can choose `unsupported: error`.
 
 ### Phase 2e: Reclaim Hooks
 
-- Add reclaim hooks for stateful processors and queues.
+- Add the reclaim primitive (`LocalMemoryReclaim`, `ReclaimContext`,
+  `ReclaimCoordinator`) and the runtime-local `ReclaimRegistry` lifecycle
+  (register/unregister with RAII teardown, deterministic priority-ordered,
+  re-entry-safe, budget-free passes). **Done.**
+- Register concrete site reclaimers (batch/retry/durable/queue/stream) and
+  trigger reclaim from pressure/admission, gated behind
+  `enforcement.reclaim_hooks`. **Pending** (wired site by site).
 - Prefer reclaim/drain before local shedding where possible.
 - Make runtime-budget receiver enforcement generally available only after
   reclaim paths exist for the main retained-memory sources.
