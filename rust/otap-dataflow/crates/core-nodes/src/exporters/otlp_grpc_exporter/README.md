@@ -68,7 +68,10 @@ Validation at config load rejects:
 - invalid metadata names (must be a valid ASCII gRPC metadata key: an HTTP/2
   token that is sent lowercased and must not end in `-bin`, which is reserved
   for binary metadata), and
-- invalid metadata values (must be visible ASCII).
+- invalid metadata values (must be visible ASCII), and
+- protocol-reserved metadata managed by the gRPC transport: `content-type`,
+  `te`, `user-agent`, and any name with the spec-reserved `grpc-` prefix
+  (e.g. `grpc-timeout`, `grpc-encoding`).
 
 When [header propagation](../../../../../docs/transport-headers.md) is also
 enabled, statically configured headers take precedence: a propagated header

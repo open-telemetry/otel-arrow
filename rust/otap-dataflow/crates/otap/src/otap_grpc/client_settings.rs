@@ -278,6 +278,21 @@ impl GrpcClientSettings {
                          binary metadata)"
                     ))
                 })?;
+            // Reject metadata the gRPC protocol/transport manages itself, mirroring
+            // the OTLP/HTTP exporter's reserved-header check. `content-type`, `te`,
+            // and `user-agent` are set by the transport (a dedicated `user_agent`
+            // config field already exists), and the `grpc-` prefix is reserved by
+            // the gRPC spec (e.g. `grpc-timeout`, `grpc-encoding`), so user-supplied
+            // values could otherwise alter call semantics such as the server-side
+            // deadline.
+            if matches!(key.as_str(), "content-type" | "te" | "user-agent")
+                || key.as_str().starts_with("grpc-")
+            {
+                return Err(GrpcEndpointError::InvalidConfig(format!(
+                    "header \"{name}\" is reserved by the gRPC protocol and cannot be set via \
+                     `headers`; it is managed by the exporter"
+                )));
+            }
             if MetadataValue::try_from(value.as_str()).is_err() {
                 return Err(GrpcEndpointError::InvalidConfig(format!(
                     "header \"{name}\" has a value that cannot be represented as ASCII gRPC \
@@ -795,6 +810,32 @@ mod tests {
             settings.validate(),
             Err(GrpcEndpointError::InvalidConfig(_))
         ));
+    }
+
+    #[test]
+    fn validate_rejects_reserved_grpc_metadata() {
+        for reserved in [
+            "content-type",
+            "TE",
+            "user-agent",
+            "grpc-timeout",
+            "grpc-encoding",
+            "grpc-accept-encoding",
+        ] {
+            let mut headers = HashMap::new();
+            let _ = headers.insert(reserved.to_string(), "x".to_string());
+            let settings = GrpcClientSettings {
+                headers,
+                ..GrpcClientSettings::default()
+            };
+            assert!(
+                matches!(
+                    settings.validate(),
+                    Err(GrpcEndpointError::InvalidConfig(_))
+                ),
+                "expected reserved gRPC metadata {reserved:?} to be rejected"
+            );
+        }
     }
 
     #[test]
