@@ -1136,12 +1136,19 @@ accounting ownership.
 succeeded. Dropping an unresolved escrow ticket records a sticky abandoned
 escrow entry in the leak-detection graveyard, emits one bounded low-cardinality
 alarm per memory-budget state, and keeps count, bytes, and oldest-age metrics
-visible. Graveyard entries remain charged until a future explicit reaper policy
-resolves them, so leaks remain visible instead of being converted into silent
-accounting success. A normal abort, eviction, or tracked negative outcome should
-release escrow explicitly before drop. Explicit abort releases escrow inline;
-only bypassing the explicit abort, evict, redeem, or release path routes the
-ticket to the graveyard.
+visible. By default, graveyard entries remain charged indefinitely so leaks
+remain visible instead of being converted into silent accounting success. An
+optional reaper policy (`escrow.abandoned_reap_after_millis`) reclaims a
+graveyard entry once it has aged past the configured threshold: its bytes return
+to the global pool while the cumulative abandoned- and reaped-escrow metrics
+preserve the full history, so reclaimed leaks stay observable and are never
+silently hidden. Reaping is always safe because an abandoned escrow charge is
+permanently orphaned the moment its ticket is dropped (no code can redeem,
+release, or abort it again), so the reaper only reverses an accounting charge
+that can never otherwise be resolved. A normal abort, eviction, or tracked
+negative outcome should release escrow explicitly before drop. Explicit abort
+releases escrow inline; only bypassing the explicit abort, evict, redeem, or
+release path routes the ticket to the graveyard.
 
 Existing channel `SendError<T>` shapes should be reused where possible by
 making `T` the local or escrow envelope. Phase 2 should not introduce a
@@ -1387,6 +1394,9 @@ policies:
         overshoot_debt_limit: 16 MiB
       escrow:
         topic_default_limit: 64 MiB
+        # Optional: reclaim abandoned (leaked) escrow after this long. Omitted =
+        # disabled (abandoned escrow stays sticky/visible indefinitely).
+        abandoned_reap_after_millis: 300000
       enforcement:
         receiver_admission: false
         queue_publish: false
@@ -1466,6 +1476,9 @@ Validation:
   least two borrow chunks fit inside the overshoot allowance.
 - `overshoot_debt_limit` must be bounded and smaller than
   `max_overshoot_per_runtime`.
+- `escrow.abandoned_reap_after_millis`, when present, must be greater than zero.
+  Omitting it disables the reaper (abandoned escrow stays sticky). It is not an
+  enforcement gate, so it is accepted in default (non-`unstable`) builds.
 - `memory_placement.bind_node` requires Linux NUMA support and explicit
   unsupported handling.
 
@@ -1565,6 +1578,8 @@ item that has no owner.
 | `engine.runtime.memory.budget.escrow.abandoned.count` | Escrow tickets moved to the leak-detection graveyard. |
 | `engine.runtime.memory.budget.escrow.abandoned.oldest_age_ms` | Oldest abandoned escrow age retained for leak detection. |
 | `engine.runtime.memory.budget.escrow.abandoned.alarms` | Bounded abandoned-escrow alarms emitted by the engine. |
+| `engine.runtime.memory.budget.escrow.reaped.count` | Abandoned-escrow entries reclaimed by the reaper (cumulative). |
+| `engine.runtime.memory.budget.escrow.reaped.bytes` | Bytes reclaimed from abandoned escrow by the reaper (cumulative). |
 | `engine.runtime.memory.budget.escrow.rejections` | Publish or redemption failures by escrow. |
 | `engine.runtime.memory.budget.escrow.shadow.rejections` | Publish or redemption work that would have failed under enforcement. |
 | `engine.runtime.memory.budget.spare.available.bytes` | Remaining global spare pool. |
@@ -1803,7 +1818,9 @@ On runtime teardown:
 - in-transit escrow is either redeemed by a live consumer or released by abort
 - abandoned escrow moves to a sticky leak-detection graveyard with bounded
   first-alarm logging and oldest-age metrics so shutdown cannot hide accounting
-  drift; automatic reaping is future work
+  drift; an optional reaper (`escrow.abandoned_reap_after_millis`) reclaims aged
+  graveyard entries back to the pool while preserving cumulative
+  abandoned/reaped metrics
 - pure control-plane shutdown must not acquire memory budget
 
 ## Platform Support
