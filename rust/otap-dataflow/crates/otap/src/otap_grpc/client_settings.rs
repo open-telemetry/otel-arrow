@@ -8,6 +8,7 @@ use crate::otap_grpc::proxy::ProxyConfig;
 use crate::tls_utils;
 use http::header::HeaderValue;
 use hyper_util::rt::TokioIo;
+use indexmap::IndexMap;
 use otap_df_config::byte_units;
 use otap_df_config::tls::TlsClientConfig;
 use serde::Deserialize;
@@ -16,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tonic::codec::CompressionEncoding;
+use tonic::metadata::{MetadataKey, MetadataValue};
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
 use tower::service_fn;
@@ -153,6 +155,16 @@ pub struct GrpcClientSettings {
     /// User-Agent is sent.
     #[serde(default)]
     pub user_agent: Option<String>,
+
+    /// Static metadata (headers) added to every outbound OTLP/gRPC request
+    /// (e.g. an `authorization` or tenant-routing header). Iteration follows
+    /// the declaration order in the config.
+    ///
+    /// Keys and values must be valid ASCII gRPC metadata; this is enforced by
+    /// [`GrpcClientSettings::validate`]. These coexist with any header
+    /// propagation policy configured on the exporter.
+    #[serde(default)]
+    pub headers: IndexMap<String, String>,
 }
 
 /// Error returned when building a gRPC [`Endpoint`] (including TLS/mTLS setup).
@@ -230,6 +242,9 @@ impl GrpcClientSettings {
     ///
     /// Checks that `user_agent`, when set, is non-empty and contains only
     /// characters valid in an HTTP header value (visible ASCII, 32-127).
+    ///
+    /// Checks that every entry in `headers` is a valid ASCII gRPC metadata
+    /// key/value pair.
     pub fn validate(&self) -> Result<(), GrpcEndpointError> {
         if let Some(ua) = &self.user_agent {
             if ua.trim().is_empty() {
@@ -245,6 +260,21 @@ impl GrpcClientSettings {
                 ));
             }
         }
+
+        for (name, value) in &self.headers {
+            if name.parse::<MetadataKey<tonic::metadata::Ascii>>().is_err() {
+                return Err(GrpcEndpointError::InvalidConfig(format!(
+                    "header name \"{name}\" is not a valid ASCII gRPC metadata key"
+                )));
+            }
+            if MetadataValue::try_from(value.as_str()).is_err() {
+                return Err(GrpcEndpointError::InvalidConfig(format!(
+                    "header \"{name}\" has a value that cannot be represented as ASCII gRPC \
+                     metadata (must be visible ASCII)"
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -543,6 +573,7 @@ impl Default for GrpcClientSettings {
             startup_check: StartupCheck::default(),
             proxy: None,
             user_agent: None,
+            headers: IndexMap::new(),
         }
     }
 }
@@ -684,6 +715,70 @@ mod tests {
         };
 
         assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_header_name() {
+        let mut headers = IndexMap::new();
+        let _ = headers.insert("bad header".to_string(), "value".to_string());
+        let settings = GrpcClientSettings {
+            headers,
+            ..GrpcClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(GrpcEndpointError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_invalid_header_value() {
+        let mut headers = IndexMap::new();
+        let _ = headers.insert("x-test".to_string(), "bad\nvalue".to_string());
+        let settings = GrpcClientSettings {
+            headers,
+            ..GrpcClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(GrpcEndpointError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_accepts_valid_headers() {
+        let mut headers = IndexMap::new();
+        let _ = headers.insert("authorization".to_string(), "Basic abc123".to_string());
+        let _ = headers.insert("x-scope-orgid".to_string(), "tenant-1".to_string());
+        let settings = GrpcClientSettings {
+            headers,
+            ..GrpcClientSettings::default()
+        };
+
+        assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn deserialize_accepts_headers_and_keeps_deny_unknown_fields() {
+        let settings: GrpcClientSettings = serde_json::from_str(
+            r#"{ "grpc_endpoint": "http://localhost:4317",
+                 "headers": { "authorization": "Basic abc123", "x-scope-orgid": "tenant-1" } }"#,
+        )
+        .unwrap();
+        assert_eq!(settings.headers.len(), 2);
+        // Declaration order is preserved by IndexMap.
+        let keys: Vec<&str> = settings.headers.keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["authorization", "x-scope-orgid"]);
+
+        // deny_unknown_fields is preserved now that `headers` is a known field.
+        assert!(
+            serde_json::from_str::<GrpcClientSettings>(
+                r#"{ "grpc_endpoint": "http://localhost:4317", "nope": 1 }"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

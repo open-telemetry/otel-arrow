@@ -740,6 +740,18 @@ impl HttpClientPool {
     ) -> Result<Self, HttpClientError> {
         let mut default_headers = HeaderMap::new();
 
+        // User-configured static headers are inserted first so the protocol
+        // headers below always win on any (already validated against) collision.
+        for (name, value) in &client_settings.headers {
+            let header_name = http::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
+                HttpClientError::InvalidConfig(format!("invalid header name \"{name}\": {e}"))
+            })?;
+            let header_value = HeaderValue::from_str(value).map_err(|e| {
+                HttpClientError::InvalidConfig(format!("invalid value for header \"{name}\": {e}"))
+            })?;
+            _ = default_headers.insert(header_name, header_value);
+        }
+
         // TODO eventually this header value should be dynamic once we support JSON OTLP payloads
         _ = default_headers.insert(
             http::header::CONTENT_TYPE,
@@ -1008,6 +1020,176 @@ mod test {
                 Err(_) => std::thread::sleep(Duration::from_millis(10)),
             }
         }
+    }
+
+    /// Runs a minimal HTTP server that records the headers of the first request
+    /// it receives into `captured` and always replies `200 OK`. Used to assert
+    /// what the exporter actually puts on the wire.
+    fn run_header_capture_server(
+        tokio_rt: &Runtime,
+        endpoint_addr: &str,
+        captured: Arc<std::sync::Mutex<Option<HeaderMap>>>,
+    ) -> CancellationToken {
+        let server_cancellation_token = CancellationToken::new();
+        let server_cancellation_token2 = server_cancellation_token.clone();
+        let endpoint_addr = endpoint_addr.to_string();
+        _ = tokio_rt.spawn(async move {
+            let listener = tokio::net::TcpListener::bind(endpoint_addr).await.unwrap();
+            let tracker = TaskTracker::new();
+            loop {
+                tokio::select! {
+                    _ = server_cancellation_token.cancelled() => break,
+                    accept_result = listener.accept() => {
+                        let (stream, _peer_addr) = accept_result.unwrap();
+                        let captured = captured.clone();
+                        let shutdown_token = server_cancellation_token.clone();
+                        drop(tracker.spawn(async move {
+                            let io = TokioIo::new(stream);
+                            let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                                let captured = captured.clone();
+                                async move {
+                                    *captured.lock().unwrap() = Some(req.headers().clone());
+                                    Ok::<_, hyper::Error>(Response::builder()
+                                        .status(200)
+                                        .body(Full::new(Bytes::from(Vec::new())))
+                                        .unwrap())
+                                }
+                            });
+                            let conn = http1::Builder::new().serve_connection(io, service);
+                            let mut conn = std::pin::pin!(conn);
+                            tokio::select! {
+                                _ = shutdown_token.cancelled() => {
+                                    conn.as_mut().graceful_shutdown();
+                                    let _ = conn.await;
+                                },
+                                conn_result = &mut conn => {
+                                    let _ = conn_result;
+                                }
+                            }
+                        }));
+                    }
+                }
+            }
+            let _ = tracker.close();
+        });
+
+        server_cancellation_token2
+    }
+
+    #[test]
+    fn test_configured_headers_sent_on_wire() {
+        use indexmap::IndexMap;
+
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = pick_unused_port().expect("no free port available");
+        let endpoint_addr = format!("127.0.0.1:{port}");
+
+        let captured: Arc<std::sync::Mutex<Option<HeaderMap>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, captured.clone());
+        wait_for_port_ready(&endpoint_addr);
+
+        let mut headers = IndexMap::new();
+        _ = headers.insert(
+            "authorization".to_string(),
+            "Basic dXNlcjpwYXNz".to_string(),
+        );
+        _ = headers.insert("x-test".to_string(), "abc".to_string());
+        let settings = HttpClientSettings {
+            headers,
+            ..Default::default()
+        };
+
+        tokio_rt.block_on(async {
+            let mut pool = HttpClientPool::try_new(&settings, NonZeroUsize::new(1).unwrap())
+                .await
+                .expect("failed to build client pool");
+            let client = pool.get_client();
+            let resp = client
+                .post(format!("http://{endpoint_addr}/v1/logs"))
+                .body(Vec::new())
+                .send()
+                .await
+                .expect("request failed");
+            assert!(resp.status().is_success());
+        });
+
+        cancel.cancel();
+
+        let headers = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("server did not capture any request headers");
+        assert_eq!(
+            headers.get("authorization").unwrap().to_str().unwrap(),
+            "Basic dXNlcjpwYXNz"
+        );
+        assert_eq!(headers.get("x-test").unwrap().to_str().unwrap(), "abc");
+        // Protocol headers are still applied and take precedence.
+        assert_eq!(
+            headers
+                .get(http::header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            PROTOBUF_CONTENT_TYPE
+        );
+    }
+
+    #[test]
+    fn test_protocol_headers_win_over_configured_headers() {
+        use indexmap::IndexMap;
+
+        // `validate()` rejects reserved names, but the apply site is also
+        // belt-and-suspenders: protocol headers are inserted last and win.
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = pick_unused_port().expect("no free port available");
+        let endpoint_addr = format!("127.0.0.1:{port}");
+
+        let captured: Arc<std::sync::Mutex<Option<HeaderMap>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, captured.clone());
+        wait_for_port_ready(&endpoint_addr);
+
+        let mut headers = IndexMap::new();
+        _ = headers.insert("content-type".to_string(), "text/plain".to_string());
+        let settings = HttpClientSettings {
+            headers,
+            ..Default::default()
+        };
+
+        tokio_rt.block_on(async {
+            let mut pool = HttpClientPool::try_new(&settings, NonZeroUsize::new(1).unwrap())
+                .await
+                .expect("failed to build client pool");
+            let client = pool.get_client();
+            let resp = client
+                .post(format!("http://{endpoint_addr}/v1/logs"))
+                .body(Vec::new())
+                .send()
+                .await
+                .expect("request failed");
+            assert!(resp.status().is_success());
+        });
+
+        cancel.cancel();
+
+        let headers = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("server did not capture any request headers");
+        assert_eq!(
+            headers
+                .get(http::header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            PROTOBUF_CONTENT_TYPE
+        );
     }
 
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that

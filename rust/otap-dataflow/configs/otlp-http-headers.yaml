@@ -1,0 +1,51 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        # OTLP/HTTP receiver -> OTLP/HTTP exporter pipeline with static request
+        # headers. The exporter adds the configured `http.headers` to every
+        # outbound request, e.g. an `Authorization` header and a backend
+        # routing header required by managed OTLP backends.
+
+        policies:
+          channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                # OTLP/HTTP receiver only (default port: 4318)
+                http:
+                  listening_addr: "127.0.0.1:4318"
+
+          exporter:
+            type: exporter:otlp_http
+            config:
+              # Base OTLP/HTTP endpoint without the signal path.
+              endpoint: "https://obs.example.app/api/default"
+
+              # Number of HTTP clients in the pool (required, must be non-zero).
+              client_pool_size: 1
+
+              http:
+                compression: gzip
+
+                # Static headers sent on every outbound OTLP/HTTP request.
+                # Values are sent verbatim; keep rendered configs holding
+                # secrets root-readable only. Protocol headers
+                # (Content-Type / Content-Encoding / Content-Length / Host)
+                # cannot be set here and are rejected at config load.
+                headers:
+                  authorization: "Basic <base64(email:password)>"
+                  stream-name: "default"
+
+        connections:
+          - from: receiver
+            to: exporter

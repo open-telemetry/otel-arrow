@@ -3,6 +3,7 @@
 
 //! Shared configuration for HTTP-based clients.
 
+use indexmap::IndexMap;
 use reqwest::ClientBuilder;
 use reqwest::header::HeaderValue;
 use serde::Deserialize;
@@ -71,6 +72,16 @@ pub struct HttpClientSettings {
     /// header is sent (reqwest does not add one by default).
     #[serde(default)]
     pub user_agent: Option<String>,
+
+    /// Static headers added to every outbound OTLP/HTTP request (e.g. an
+    /// `Authorization` or backend routing header). Iteration follows the
+    /// declaration order in the config.
+    ///
+    /// Protocol headers (`Content-Type` / `Content-Encoding` /
+    /// `Content-Length` / `Host`) cannot be set here and are rejected by
+    /// [`HttpClientSettings::validate`]; they are managed by the exporter.
+    #[serde(default)]
+    pub headers: IndexMap<String, String>,
 }
 
 impl HttpClientSettings {
@@ -78,6 +89,11 @@ impl HttpClientSettings {
     ///
     /// Checks that `user_agent`, when set, is non-empty and contains only
     /// characters valid in an HTTP header value (visible ASCII, 32-127).
+    ///
+    /// Checks that every entry in `headers` has a valid HTTP header name and a
+    /// value representable as an HTTP header value, and that no protocol-reserved
+    /// header (`Content-Type` / `Content-Encoding` / `Content-Length` / `Host`)
+    /// is overridden.
     pub fn validate(&self) -> Result<(), HttpClientError> {
         if let Some(ua) = &self.user_agent {
             if ua.trim().is_empty() {
@@ -93,6 +109,32 @@ impl HttpClientSettings {
                 ));
             }
         }
+
+        for (name, value) in &self.headers {
+            let header_name = http::HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+                HttpClientError::InvalidConfig(format!(
+                    "header name \"{name}\" is not a valid HTTP header name"
+                ))
+            })?;
+            if HeaderValue::from_str(value).is_err() {
+                return Err(HttpClientError::InvalidConfig(format!(
+                    "header \"{name}\" has a value that cannot be represented as an HTTP header \
+                     value (must be visible ASCII)"
+                )));
+            }
+            // Reject protocol headers the exporter sets itself, so user config can
+            // never collide with or shadow them.
+            if matches!(
+                header_name.as_str(),
+                "content-type" | "content-encoding" | "content-length" | "host"
+            ) {
+                return Err(HttpClientError::InvalidConfig(format!(
+                    "header \"{name}\" is reserved and cannot be set via `headers`; it is managed \
+                     by the exporter"
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -269,6 +311,7 @@ impl Default for HttpClientSettings {
             tls: None,
             compression: None,
             user_agent: None,
+            headers: IndexMap::new(),
         }
     }
 }
@@ -342,6 +385,85 @@ mod tests {
         };
 
         assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_header_name() {
+        let mut headers = IndexMap::new();
+        let _ = headers.insert("bad header".to_string(), "value".to_string());
+        let settings = HttpClientSettings {
+            headers,
+            ..HttpClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(HttpClientError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_invalid_header_value() {
+        let mut headers = IndexMap::new();
+        let _ = headers.insert("x-test".to_string(), "bad\nvalue".to_string());
+        let settings = HttpClientSettings {
+            headers,
+            ..HttpClientSettings::default()
+        };
+
+        assert!(matches!(
+            settings.validate(),
+            Err(HttpClientError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_reserved_header() {
+        for reserved in ["content-type", "Content-Type", "content-length", "host"] {
+            let mut headers = IndexMap::new();
+            let _ = headers.insert(reserved.to_string(), "x".to_string());
+            let settings = HttpClientSettings {
+                headers,
+                ..HttpClientSettings::default()
+            };
+
+            assert!(
+                matches!(settings.validate(), Err(HttpClientError::InvalidConfig(_))),
+                "reserved header {reserved} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_accepts_valid_headers() {
+        let mut headers = IndexMap::new();
+        let _ = headers.insert("authorization".to_string(), "Basic abc123".to_string());
+        let _ = headers.insert("x-scope-orgid".to_string(), "tenant-1".to_string());
+        let settings = HttpClientSettings {
+            headers,
+            ..HttpClientSettings::default()
+        };
+
+        assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn deserialize_accepts_headers_and_keeps_deny_unknown_fields() {
+        let settings: HttpClientSettings = serde_json::from_str(
+            r#"{ "headers": { "authorization": "Basic abc123", "stream-name": "default" } }"#,
+        )
+        .unwrap();
+        assert_eq!(settings.headers.len(), 2);
+        assert_eq!(
+            settings.headers.get("authorization").map(String::as_str),
+            Some("Basic abc123")
+        );
+        // Declaration order is preserved by IndexMap.
+        let keys: Vec<&str> = settings.headers.keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["authorization", "stream-name"]);
+
+        // deny_unknown_fields is preserved now that `headers` is a known field.
+        assert!(serde_json::from_str::<HttpClientSettings>(r#"{ "nope": 1 }"#).is_err());
     }
 
     #[tokio::test]
