@@ -1429,7 +1429,11 @@ Validation:
   - the OTLP HTTP exporter's in-flight request bodies (local ticket per retained
     request body, released on completion success/partial-success/error/nack, on
     shutdown drain, and on early teardown; this exporter has no separate
-    backpressure-parked pending request).
+    backpressure-parked pending request);
+  - the exclusive-router processors (content router and signal-type router)
+    backpressure-parked routes (local ticket per parked message, carried across
+    probe/re-park cycles and released on downstream admission, route-closed nack,
+    shutdown drain, or drop).
   These exporter/processor sites are accounting points, not admission points:
   under `mode = enforce` a rejected charge yields no ticket and the work still
   proceeds, so they never drop data. Admission/enforcement of retained work
