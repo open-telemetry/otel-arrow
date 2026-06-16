@@ -34,8 +34,6 @@ meta:
     - { value: otap, description: "OpenTelemetry Arrow Protocol - columnar gRPC transport using Apache Arrow record batches." }
     - { value: otlp, description: "OpenTelemetry Protocol over gRPC (row-oriented protobuf)." }
     - { value: otlphttp, description: "OpenTelemetry Protocol over HTTP/protobuf." }
-    - { value: kafkaotlp, description: "Kafka transport with OTLP protobuf message encoding." }
-    - { value: kafkaotap, description: "Kafka transport with OTAP (Arrow) protobuf message encoding." }
   signals:
     - { value: logs, description: "OpenTelemetry Logs signal." }
     - { value: metrics, description: "OpenTelemetry Metrics signal." }
@@ -136,12 +134,12 @@ suites:
   - suites/dfe/dfe-traces-otlphttp-none-baseline.yaml
   - suites/dfe/dfe-traces-otlphttp-gzip-baseline.yaml
   - suites/dfe/dfe-traces-otlphttp-zstd-baseline.yaml
-  - suites/dfe/dfe-logs-kafkaotlp-none-baseline.yaml
-  - suites/dfe/dfe-metrics-kafkaotlp-none-baseline.yaml
-  - suites/dfe/dfe-traces-kafkaotlp-none-baseline.yaml
-  - suites/dfe/dfe-logs-kafkaotap-none-baseline.yaml
-  - suites/dfe/dfe-metrics-kafkaotap-none-baseline.yaml
-  - suites/dfe/dfe-traces-kafkaotap-none-baseline.yaml
+  - suites/dfe/dfe-logs-kafka-otlp-none-baseline.yaml
+  - suites/dfe/dfe-metrics-kafka-otlp-none-baseline.yaml
+  - suites/dfe/dfe-traces-kafka-otlp-none-baseline.yaml
+  - suites/dfe/dfe-logs-kafka-otap-none-baseline.yaml
+  - suites/dfe/dfe-metrics-kafka-otap-none-baseline.yaml
+  - suites/dfe/dfe-traces-kafka-otap-none-baseline.yaml
 
   # OTel Collector
   - suites/otc/otc-logs-otap-none-baseline.yaml
@@ -165,9 +163,9 @@ suites:
   - suites/otc/otc-traces-otlp-gzip-baseline.yaml
   - suites/otc/otc-traces-otlp-zstd-baseline.yaml
   - suites/otc/otc-traces-otlphttp-none-baseline.yaml
-  - suites/otc/otc-logs-kafkaotlp-none-baseline.yaml
-  - suites/otc/otc-metrics-kafkaotlp-none-baseline.yaml
-  - suites/otc/otc-traces-kafkaotlp-none-baseline.yaml
+  - suites/otc/otc-logs-kafka-otlp-none-baseline.yaml
+  - suites/otc/otc-metrics-kafka-otlp-none-baseline.yaml
+  - suites/otc/otc-traces-kafka-otlp-none-baseline.yaml
   - suites/dfe/dfe-logs-otap-none-attr-insert.yaml
   - suites/dfe/dfe-logs-otlp-none-attr-insert.yaml
   - suites/dfe/dfe-logs-otap-none-transform-insert.yaml
@@ -208,9 +206,9 @@ suites:
   - suites/rotel/rotel-metrics-otlp-gzip-baseline.yaml
   - suites/rotel/rotel-metrics-otlphttp-gzip-baseline.yaml
   - suites/rotel/rotel-traces-otlp-gzip-baseline.yaml
-  - suites/rotel/rotel-logs-kafkaotlp-none-baseline.yaml
-  - suites/rotel/rotel-metrics-kafkaotlp-none-baseline.yaml
-  - suites/rotel/rotel-traces-kafkaotlp-none-baseline.yaml
+  - suites/rotel/rotel-logs-kafka-otlp-none-baseline.yaml
+  - suites/rotel/rotel-metrics-kafka-otlp-none-baseline.yaml
+  - suites/rotel/rotel-traces-kafka-otlp-none-baseline.yaml
 
   # Fluent Bit
   - suites/fbit/fbit-logs-otlp-none-baseline.yaml

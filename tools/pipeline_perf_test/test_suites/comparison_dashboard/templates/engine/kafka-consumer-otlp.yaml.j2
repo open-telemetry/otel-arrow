@@ -27,23 +27,18 @@ groups:
               group_id: "dfe-kafka-consumer"
               client_id: "dfe-kafka-consumer"
               auto_offset_reset: earliest
-{%- set signal = signal | default("logs") %}
-{%- if signal == "logs" %}
               logs:
                 topics:
                   - "otel-logs"
                 encoding: otlp_proto
-{%- elif signal == "metrics" %}
               metrics:
                 topics:
                   - "otel-metrics"
                 encoding: otlp_proto
-{%- elif signal == "traces" %}
               traces:
                 topics:
                   - "otel-spans"
                 encoding: otlp_proto
-{%- endif %}
           exporter:
             type: urn:otel:exporter:otlp_grpc
             config:

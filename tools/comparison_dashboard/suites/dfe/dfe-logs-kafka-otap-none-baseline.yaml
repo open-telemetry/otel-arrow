@@ -1,21 +1,21 @@
-name: DFE Kafka OTLP Baseline (Logs)
-slug: dfe_logs_kafkaotlp_none_baseline
-description: Dataflow Engine Kafka pipeline with OTLP protobuf encoding for logs, no compression
+name: DFE Kafka OTAP Baseline (Logs)
+slug: dfe_logs_otap_none_baseline
+description: Dataflow Engine Kafka pipeline with OTAP Arrow protobuf encoding for logs, no compression
 orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/dfe-kafka-single-core-multi-rate.yaml
 
 meta:
   binary: dfe
-  protocols: [kafkaotlp]
+  protocols: []
   signals: [logs]
   compression: none
 
 variables:
   report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_logs.yaml
-  kafka_producer_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/engine/kafka-producer-otlp.yaml.j2
-  kafka_consumer_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/engine/kafka-consumer-otlp.yaml.j2
+  kafka_producer_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/engine/kafka-producer-otap.yaml.j2
+  kafka_consumer_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/engine/kafka-consumer-otap.yaml.j2
   loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otlp.yaml.j2
   backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/backend/otlp.yaml.j2
-  protocol: kafkaotlp
+  protocol: otap
   signal: logs
   loadgen_max_batch_size: 1000
   compression_method: none

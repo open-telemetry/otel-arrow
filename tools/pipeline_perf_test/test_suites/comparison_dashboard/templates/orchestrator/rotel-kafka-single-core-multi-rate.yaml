@@ -1,24 +1,11 @@
-{%- set protocol = variables.protocol | default("kafkaotlp") %}
 {%- set compression = variables.compression_method | default("none") %}
 {%- set signal = variables.signal | default("logs") %}
 {%- if signal == "logs" %}
 {%- set log_weight = 100 %}{%- set metric_weight = 0 %}{%- set trace_weight = 0 %}
-{%- set kafka_topic = "otel-logs" %}
-{%- set receiver_flag = "--kafka-receiver-logs" %}
-{%- set exporter_topic_flag = "--kafka-exporter-logs-topic" %}
-{%- set receiver_topic_flag = "--kafka-receiver-logs-topic" %}
 {%- elif signal == "metrics" %}
 {%- set log_weight = 0 %}{%- set metric_weight = 100 %}{%- set trace_weight = 0 %}
-{%- set kafka_topic = "otel-metrics" %}
-{%- set receiver_flag = "--kafka-receiver-metrics" %}
-{%- set exporter_topic_flag = "--kafka-exporter-metrics-topic" %}
-{%- set receiver_topic_flag = "--kafka-receiver-metrics-topic" %}
 {%- elif signal == "traces" %}
 {%- set log_weight = 0 %}{%- set metric_weight = 0 %}{%- set trace_weight = 100 %}
-{%- set kafka_topic = "otel-spans" %}
-{%- set receiver_flag = "--kafka-receiver-traces" %}
-{%- set exporter_topic_flag = "--kafka-exporter-traces-topic" %}
-{%- set receiver_topic_flag = "--kafka-receiver-traces-topic" %}
 {%- endif %}
 name: {{suite_name}}
 components:
@@ -54,8 +41,12 @@ components:
           - "kafka"
           - "--kafka-exporter-brokers"
           - "kafka-broker:9092"
-          - "{{exporter_topic_flag}}"
-          - "{{kafka_topic}}"
+          - "--kafka-exporter-logs-topic"
+          - "otel-logs"
+          - "--kafka-exporter-metrics-topic"
+          - "otel-metrics"
+          - "--kafka-exporter-traces-topic"
+          - "otel-spans"
           - "--kafka-exporter-format"
           - "protobuf"
           - "--kafka-exporter-compression"
@@ -96,11 +87,17 @@ components:
         environment:
           - RUST_LOG=info
         command:
-          - "{{receiver_flag}}"
+          - "--kafka-receiver-logs"
+          - "--kafka-receiver-metrics"
+          - "--kafka-receiver-traces"
           - "--kafka-receiver-brokers"
           - "kafka-broker:9092"
-          - "{{receiver_topic_flag}}"
-          - "{{kafka_topic}}"
+          - "--kafka-receiver-logs-topic"
+          - "otel-logs"
+          - "--kafka-receiver-metrics-topic"
+          - "otel-metrics"
+          - "--kafka-receiver-traces-topic"
+          - "otel-spans"
           - "--kafka-receiver-format"
           - "protobuf"
           - "--kafka-receiver-group-id"

@@ -8,19 +8,15 @@ receivers:
     autocommit:
       enable: true
       interval: 1s
-{%- if signal == "logs" %}
     logs:
       topic: otel-logs
       encoding: otlp_proto
-{%- elif signal == "metrics" %}
     metrics:
       topic: otel-metrics
       encoding: otlp_proto
-{%- elif signal == "traces" %}
     traces:
       topic: otel-spans
       encoding: otlp_proto
-{%- endif %}
 
 exporters:
   otlp:

@@ -11,19 +11,15 @@ exporters:
     protocol_version: '3.0.0'
     producer:
       flush_max_messages: 1000
-{%- if signal == "logs" %}
     logs:
       topic: otel-logs
       encoding: otlp_proto
-{%- elif signal == "metrics" %}
     metrics:
       topic: otel-metrics
       encoding: otlp_proto
-{%- elif signal == "traces" %}
     traces:
       topic: otel-spans
       encoding: otlp_proto
-{%- endif %}
 
 service:
   telemetry:

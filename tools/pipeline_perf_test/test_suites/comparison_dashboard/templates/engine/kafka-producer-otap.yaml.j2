@@ -32,20 +32,15 @@ groups:
             config:
               brokers: "{{kafka_hostname}}:9092"
               client_id: "dfe-kafka-producer"
-{%- set signal = signal | default("logs") %}
-{%- if signal == "logs" %}
               logs:
                 topic: "otel-logs-otap"
                 encoding: otap_proto
-{%- elif signal == "metrics" %}
               metrics:
                 topic: "otel-metrics-otap"
                 encoding: otap_proto
-{%- elif signal == "traces" %}
               traces:
                 topic: "otel-spans-otap"
                 encoding: otap_proto
-{%- endif %}
         connections:
           - from: receiver
             to: exporter
