@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781484647705,
+  "lastUpdate": 1781571358078,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5127,6 +5127,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 111.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 98.91,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb",
+            "email": "lalit_fin@yahoo.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5b0ef7b8f627d6bd258b5990984799257f0cee51",
+          "message": "feat(Linux user_events receiver) - Add per-subscription pending governance  (#3153)\n\n# Change Summary\n\nAdds Phase 1 per-subscription pending governance for the Linux\n`user_events` receiver.\n\nThis introduces optional per-subscription pending limits:\n\n  - `subscriptions[].limits.max_pending_events`\n  - `subscriptions[].limits.max_pending_bytes`\n\nWhen no effective subscription limits are configured, the receiver keeps\nthe existing shared FIFO pending queue behavior. When any subscription\nhas effective limits, the receiver uses per-subscription pending queues\nwith round-robin drain under the existing global\n`session.max_pending_events` and `session.max_pending_bytes` ceilings.\n\nAdmission is enforced in the `one_collect` callback before\n`event_data().to_vec()`, so rejected samples avoid payload heap\nallocation.\n\nThis improves receiver-side fairness for pending queue capacity and\ndrain order. It does not provide kernel-ring isolation: perf-ring loss\nand one_collect parse work remain shared by tracepoints in the same\nreceiver/session.\n\n## What issue does this PR close?\n\n  * Addresses receiver-side pending governance for #3071\n\n## How are these changes tested?\n\n  - `cargo fmt --all`\n  - `git diff --check`\n- `cargo check -p otap-df-contrib-nodes --features\nuser_events-receiver,otap-df-otap/crypto-ring --all-targets`\n- `cargo clippy -p otap-df-contrib-nodes --features\nuser_events-receiver,otap-df-otap/crypto-ring --all-targets -- -D\nwarnings`\n  - Linux VM:\n    - user_events adapter tests: 13 passed\n    - user_events config validation subset: 6 passed\n- manual noisy/quiet tracepoint test confirmed quiet records pass with\nnoisy tracepoint pending limits enabled\n\n## Are there any user-facing changes?\n\nYes. The Linux `user_events` receiver now supports optional\nper-subscription pending limits:\n\n  ```yaml\n  subscriptions:\n    - tracepoint: \"user_events:noisy_tracepoint\"\n      format:\n        type: tracefs\n      limits:\n        max_pending_events: 1024\n        max_pending_bytes: 4194304\n```\n\nWhen subscriptions[].limits is present, at least one pending cap must be set and configured cap values must be greater than zero.\n\nPhase 1 keeps dropped_pending_overflow aggregate-only. Per-tracepoint/per-cap drop attribution is left for a follow-up.\n\n### Changelog\n\n  * [x] Added a `.chloggen/*.yaml` entry, OR this PR is a `chore` (indicated in title).",
+          "timestamp": "2026-06-16T00:11:45Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5b0ef7b8f627d6bd258b5990984799257f0cee51"
+        },
+        "date": 1781571345752,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.54,
             "unit": "MB"
           },
           {
