@@ -264,7 +264,10 @@ impl GrpcClientSettings {
         for (name, value) in &self.headers {
             if name.parse::<MetadataKey<tonic::metadata::Ascii>>().is_err() {
                 return Err(GrpcEndpointError::InvalidConfig(format!(
-                    "header name \"{name}\" is not a valid ASCII gRPC metadata key"
+                    "header name \"{name}\" is not a valid gRPC metadata key (expected an \
+                     HTTP/2 token: ASCII letters, digits, or `-_.`; the key is sent \
+                     lowercased and must not end with `-bin`, which is reserved for \
+                     binary metadata)"
                 )));
             }
             if MetadataValue::try_from(value.as_str()).is_err() {

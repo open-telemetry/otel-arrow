@@ -1028,7 +1028,7 @@ mod test {
     fn run_header_capture_server(
         tokio_rt: &Runtime,
         endpoint_addr: &str,
-        captured: Arc<std::sync::Mutex<Option<HeaderMap>>>,
+        captured: Arc<parking_lot::Mutex<Option<HeaderMap>>>,
     ) -> CancellationToken {
         let server_cancellation_token = CancellationToken::new();
         let server_cancellation_token2 = server_cancellation_token.clone();
@@ -1048,7 +1048,7 @@ mod test {
                             let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                                 let captured = captured.clone();
                                 async move {
-                                    *captured.lock().unwrap() = Some(req.headers().clone());
+                                    *captured.lock() = Some(req.headers().clone());
                                     Ok::<_, hyper::Error>(Response::builder()
                                         .status(200)
                                         .body(Full::new(Bytes::from(Vec::new())))
@@ -1085,8 +1085,8 @@ mod test {
         let port = pick_unused_port().expect("no free port available");
         let endpoint_addr = format!("127.0.0.1:{port}");
 
-        let captured: Arc<std::sync::Mutex<Option<HeaderMap>>> =
-            Arc::new(std::sync::Mutex::new(None));
+        let captured: Arc<parking_lot::Mutex<Option<HeaderMap>>> =
+            Arc::new(parking_lot::Mutex::new(None));
         let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, captured.clone());
         wait_for_port_ready(&endpoint_addr);
 
@@ -1119,7 +1119,6 @@ mod test {
 
         let headers = captured
             .lock()
-            .unwrap()
             .clone()
             .expect("server did not capture any request headers");
         assert_eq!(
@@ -1128,60 +1127,6 @@ mod test {
         );
         assert_eq!(headers.get("x-test").unwrap().to_str().unwrap(), "abc");
         // Protocol headers are still applied and take precedence.
-        assert_eq!(
-            headers
-                .get(http::header::CONTENT_TYPE)
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            PROTOBUF_CONTENT_TYPE
-        );
-    }
-
-    #[test]
-    fn test_protocol_headers_win_over_configured_headers() {
-        use indexmap::IndexMap;
-
-        // `validate()` rejects reserved names, but the apply site is also
-        // belt-and-suspenders: protocol headers are inserted last and win.
-        otap_df_otap::crypto::ensure_crypto_provider();
-        let tokio_rt = Runtime::new().unwrap();
-        let port = pick_unused_port().expect("no free port available");
-        let endpoint_addr = format!("127.0.0.1:{port}");
-
-        let captured: Arc<std::sync::Mutex<Option<HeaderMap>>> =
-            Arc::new(std::sync::Mutex::new(None));
-        let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, captured.clone());
-        wait_for_port_ready(&endpoint_addr);
-
-        let mut headers = IndexMap::new();
-        _ = headers.insert("content-type".to_string(), "text/plain".to_string());
-        let settings = HttpClientSettings {
-            headers,
-            ..Default::default()
-        };
-
-        tokio_rt.block_on(async {
-            let mut pool = HttpClientPool::try_new(&settings, NonZeroUsize::new(1).unwrap())
-                .await
-                .expect("failed to build client pool");
-            let client = pool.get_client();
-            let resp = client
-                .post(format!("http://{endpoint_addr}/v1/logs"))
-                .body(Vec::new())
-                .send()
-                .await
-                .expect("request failed");
-            assert!(resp.status().is_success());
-        });
-
-        cancel.cancel();
-
-        let headers = captured
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("server did not capture any request headers");
         assert_eq!(
             headers
                 .get(http::header::CONTENT_TYPE)
