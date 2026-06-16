@@ -55,13 +55,14 @@ config:
     compression: gzip
 
     # Static headers added to every outbound OTLP/HTTP request (optional).
-    # Useful for authentication or backend routing. Protocol headers
-    # (Content-Type / Content-Encoding / Content-Length / Host) and
-    # response-negotiation headers (Accept / Accept-Encoding) cannot be set
-    # here and are rejected at config load.
+    # Useful for arbitrary headers such as backend routing or multi-tenant
+    # tenant IDs. Not recommended for authorization; prefer a dedicated Auth
+    # extension instead. Protocol headers (Content-Type / Content-Encoding /
+    # Content-Length / Host) and response-negotiation headers (Accept /
+    # Accept-Encoding) cannot be set here and are rejected at config load.
     headers:
-      authorization: "Basic <base64(user:password)>"
       x-scope-orgid: "tenant-1"
+      environment: "production-west"
 ```
 
 Shared HTTP client fields include concurrency limit, connect timeout, request
@@ -71,8 +72,10 @@ timeout, TCP keepalive, TLS, request-body compression, and static request
 ### Static request headers
 
 `http.headers` is a map of header name to value applied to every outbound
-request (auth tokens, multi-tenant routing, tracing-vendor headers).
-Values are sent verbatim, so treat secrets in the rendered config as sensitive.
+request (multi-tenant routing IDs, tracing-vendor headers, and similar). For
+request authentication, prefer a dedicated Auth extension rather than
+hard-coding an `authorization` header here. Values are sent verbatim, so treat
+any secret in the rendered config as sensitive.
 
 Validation at config load rejects:
 

@@ -6,8 +6,9 @@ groups:
       main:
         # OTLP/HTTP receiver -> OTLP/HTTP exporter pipeline with static request
         # headers. The exporter adds the configured `http.headers` to every
-        # outbound request, e.g. an `Authorization` header and a backend
-        # routing header required by managed OTLP backends.
+        # outbound request, e.g. multi-tenant routing headers required by
+        # managed OTLP backends. For request authentication, prefer a dedicated
+        # Auth extension rather than hard-coding an `authorization` header.
 
         policies:
           channel_capacity:
@@ -38,12 +39,15 @@ groups:
                 compression: gzip
 
                 # Static headers sent on every outbound OTLP/HTTP request.
-                # Values are sent verbatim; keep rendered configs holding
-                # secrets root-readable only. Protocol headers
-                # (Content-Type / Content-Encoding / Content-Length / Host)
-                # cannot be set here and are rejected at config load.
+                # Useful for multi-tenant routing or backend stream selection.
+                # For request authentication, prefer a dedicated Auth extension
+                # rather than hard-coding an `authorization` header. Values are
+                # sent verbatim; keep any rendered config holding a secret
+                # root-readable only. Protocol headers (Content-Type /
+                # Content-Encoding / Content-Length / Host) cannot be set here
+                # and are rejected at config load.
                 headers:
-                  authorization: "Basic <base64(email:password)>"
+                  x-scope-orgid: "tenant-1"
                   stream-name: "default"
 
         connections:

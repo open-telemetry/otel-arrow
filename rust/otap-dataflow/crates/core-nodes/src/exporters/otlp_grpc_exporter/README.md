@@ -47,11 +47,13 @@ config:
   num_connections: 1
 
   # Static metadata (headers) added to every outbound OTLP/gRPC request
-  # (optional). Useful for authentication or tenant routing. Keys and values
-  # must be valid ASCII gRPC metadata and are validated at config load.
+  # (optional). Useful for arbitrary metadata such as tenant routing. Not
+  # recommended for authorization; prefer a dedicated Auth extension instead.
+  # Keys and values must be valid ASCII gRPC metadata and are validated at
+  # config load.
   headers:
-    authorization: "Basic <base64(user:password)>"
     x-scope-orgid: "tenant-1"
+    environment: "production-west"
 ```
 
 Shared gRPC client fields include connect timeout, request timeout, TCP
@@ -59,9 +61,11 @@ keepalive, HTTP/2 settings, TLS, proxy, and transport buffer settings.
 
 ### Static request headers
 
-`headers` is a map of metadata name to value added to every outbound
-request (auth tokens, multi-tenant routing, tracing-vendor metadata). Values are
-sent verbatim, so treat secrets in the rendered config as sensitive.
+`headers` is a map of metadata name to value added to every outbound request
+(multi-tenant routing IDs, tracing-vendor metadata, and similar). For request
+authentication, prefer a dedicated Auth extension rather than hard-coding an
+`authorization` entry here. Values are sent verbatim, so treat any secret in
+the rendered config as sensitive.
 
 Validation at config load rejects:
 
@@ -75,8 +79,8 @@ Validation at config load rejects:
 
 When [header propagation](../../../../../docs/transport-headers.md) is also
 enabled, statically configured headers take precedence: a propagated header
-whose key matches a configured one is dropped, so a configured backend
-credential (e.g. `authorization`) is never overridden or duplicated.
+whose key matches a configured one is dropped, so a configured routing header
+(e.g. `x-scope-orgid`) is never overridden or duplicated.
 
 ## Examples
 
