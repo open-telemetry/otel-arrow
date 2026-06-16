@@ -14,7 +14,8 @@
 //! The specialized testing utilities for receivers, processors, and exporters are in their respective
 //! submodules.
 
-use crate::context::{ControllerContext, PipelineContext};
+use crate::attributes::{ExtensionScopeAttributeSet, PipelineAttributeSet};
+use crate::context::{ControllerContext, ExtensionContext, PipelineContext};
 use crate::control::NodeControlMsg;
 use otap_df_channel::mpsc;
 use otap_df_config::node::NodeKind;
@@ -54,6 +55,20 @@ pub fn test_pipeline_ctx() -> (PipelineContext, TelemetryRegistryHandle) {
             HashMap::new(),
         );
     (ctx, registry)
+}
+
+/// Create a minimal [`ExtensionContext`] suitable for unit tests of the
+/// extension subsystem. Returns the context and the underlying registry.
+#[must_use]
+pub fn test_extension_ctx() -> (ExtensionContext, TelemetryRegistryHandle) {
+    let registry = TelemetryRegistryHandle::new();
+    let controller = ControllerContext::new(registry.clone());
+    let scope = ExtensionScopeAttributeSet::pipeline(PipelineAttributeSet {
+        pipeline_group_id: "test_group".into(),
+        pipeline_id: "test_pipeline".into(),
+        ..PipelineAttributeSet::default()
+    });
+    (ExtensionContext::new(controller, scope), registry)
 }
 
 /// A test message type used in component tests.

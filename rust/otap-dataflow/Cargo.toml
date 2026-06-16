@@ -221,7 +221,8 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
-one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "f655a30aec1d15467501ae9f735defb2d6b86581" }
+
+one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "a242d3db8deadc216a4ca28adbd7a3f866169b58" }
 
 azure_core = {version = "1.0.0", default-features = false }
 azure_identity = {version = "1.0.0", default-features = false }
@@ -231,7 +232,7 @@ flate2 = "1.1.5"
 # TLS remains enabled through rustls-no-provider, with the provider installed at startup via crypto-* features.
 reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no-provider", "json", "query", "http2", "stream", "charset", "system-proxy"] }
 
-time = "0.3.47"
+time = ">=0.3.47, <0.3.48"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
@@ -255,8 +256,10 @@ toml = "1.0.0"
 tonic-prost-build = "0.14"
 tracepoint = { version = "0.5.0", features = ["user_events"] }
 tracepoint_decode = "0.5.0"
+tracelogging = "1.2.4"
+tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
-geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "47ece283fa10334cca14c2dd6311824c052c08e3" }
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "e263bdb5af68ddcba4af1645c32ce1d8443c8cbc" }
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata = { path = "crates/pdata" }

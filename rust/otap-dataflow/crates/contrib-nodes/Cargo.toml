@@ -70,7 +70,7 @@ one_collect = { workspace = true, optional = true }
 tracepoint_decode = { workspace = true, optional = true }
 
 [features]
-etw-receiver = ["dep:one_collect"]
+etw-receiver = ["dep:one_collect", "dep:humantime-serde"]
 kafka-receiver = [
     "dep:rdkafka",
     "dep:smallvec",
@@ -160,6 +160,10 @@ wiremock.workspace = true
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 eventheader_dynamic.workspace = true
 tracepoint.workspace = true
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+tracelogging.workspace = true
+tracelogging_dynamic.workspace = true
 
 [[bench]]
 name = "azure_monitor_transformer"
