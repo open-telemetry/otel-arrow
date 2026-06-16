@@ -1740,6 +1740,50 @@ is present but inert and installing it is a no-op for budget behavior; and
 because `reclaim_hooks` is rejected at config validation, reclaim cannot be
 turned on until a reclaimer and a driver are wired end to end.
 
+### First-site blocker: retry processor is not a valid first reclaimer
+
+The retry processor was the preferred first concrete reclaimer (it runs on the
+current-thread runtime and owns per-payload `LocalMemoryTicket`s). On inspection
+it is **not** a valid site, and wiring a reclaimer there would be misleading:
+
+- The retry processor owns only the budget tickets
+  (`retry_budget_tickets: HashMap<LocalResumeId, LocalMemoryTicket>`), keyed by
+  the scheduler-assigned resume id.
+- The retained payload itself is a `Box<OtapPdata>` that `requeue_later` moves
+  into the engine's `node_local_scheduler` delayed-resumes heap. The processor
+  does not hold the data after requeue; the scheduler does.
+- The scheduler exposes no cancel-resume-by-id API (only `cancel_wakeup`, which
+  carries no payload), so there is no way to selectively drop one retained
+  delayed payload.
+- A registry-driven reclaimer runs outside the processor's `process()` method
+  and has no `EffectHandler`/scheduler access, so it cannot reach the heap at
+  all.
+
+Consequently a retry "reclaimer" could only drop tickets. That would lower
+`charged_bytes` **without** freeing the retained `OtapPdata` (it still resumes
+and is processed) and without shedding any telemetry, undercounting retained
+memory and silently violating the reclaim contract ("release only by dropping
+the owners already held"). We therefore do **not** wire it, and keep
+`reclaim_hooks` rejected at config validation.
+
+A valid first reclaim site requires one of the following future fixes:
+
+1. **Co-locate ownership**: move ownership of the scheduler-retained payload so
+   a single owner holds both the `Box<OtapPdata>` and its `LocalMemoryTicket`
+   and can drop them together under reclaim (the reclaimer sheds real data and
+   the charge in one step). This is the preferred shape and also clarifies the
+   data path.
+2. **Scheduler cancel-resume API**: add a safe `node_local_scheduler` API that
+   cancels a pending delayed resume by id and returns (or drops) the retained
+   payload together with its ticket, callable from the owning component so the
+   reclaimer can drive it. If reclaim drops cancelled retry work, that is a
+   deliberate shed of retry-buffered telemetry under memory pressure and must be
+   documented and tested as data loss at that site.
+
+Until one of these lands, the first concrete reclaimer should instead target a
+site that already owns both its retained data and the matching ticket in-process
+(for example, a stateful processor buffer), so reclaim genuinely frees memory.
+
 In Phase 2e, shared retained memory is reported through metrics but is not
 eligible for local reclaim hooks. A later phase can add `SharedMemoryReclaim`
 for shared retention sites that materially contribute to runtime or escrow
@@ -1980,6 +2024,11 @@ who require placement can choose `unsupported: error`.
   `enforcement.reclaim_hooks` (which the config layer rejects until this is
   wired). **Pending:** no concrete reclaimer registers and no driver invokes
   reclaim yet.
+- Retry processor was evaluated as the first concrete reclaimer and **rejected**
+  (see the "First-site blocker" note above): it owns the tickets but not the
+  scheduler-retained payload, so a reclaimer there could only undercount memory
+  without freeing it. `reclaim_hooks` stays rejected until a site that owns both
+  its retained data and ticket is wired (or a scheduler cancel-resume API lands).
 - Prefer reclaim/drain before local shedding where possible.
 - Make runtime-budget receiver enforcement generally available only after
   reclaim paths exist for the main retained-memory sources.
