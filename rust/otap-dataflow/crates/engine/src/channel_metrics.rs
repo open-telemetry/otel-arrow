@@ -313,7 +313,7 @@ mod tests {
         let pipeline_ctx = test_context();
         let mut registry = ChannelMetricsRegistry::default();
         let (sender, receiver) = mpsc::Channel::new(1);
-        let channel_entity_key = pipeline_ctx.register_channel_entity(
+        let channel_entity_key = pipeline_ctx.register_node_channel_entity(
             "test:sender".into(),
             "out".into(),
             CHANNEL_KIND_PDATA,
@@ -343,7 +343,7 @@ mod tests {
         let mut registry = ChannelMetricsRegistry::default();
         let (sender, receiver) = mpsc::Channel::new(1);
         let sender = LocalSender::mpsc(sender);
-        let channel_entity_key = pipeline_ctx.register_channel_entity(
+        let channel_entity_key = pipeline_ctx.register_node_channel_entity(
             "receiver:test".into(),
             "input".into(),
             CHANNEL_KIND_PDATA,

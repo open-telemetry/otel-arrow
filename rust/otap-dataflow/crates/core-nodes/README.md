@@ -1,265 +1,139 @@
 # Core Nodes
 
-This crate contains essential node implementations (exporters, receivers, and
-processors) for the OTAP Dataflow Engine. Components are organized by category
-with per-component subfolders.
+Core nodes are the built-in OTAP Dataflow Engine receivers, processors, and
+exporters. Use this catalog to find the node `type` to put in runtime YAML and
+to open the node-specific documentation for configuration examples, telemetry,
+limits, and stability notes.
 
-## Architecture
+For help writing runtime YAML, start at
+[`docs/configuration.md`](../../docs/configuration.md). For exact runtime
+configuration semantics, see
+[`docs/configuration-model.md`](../../docs/configuration-model.md).
 
-Each component lives in its own subfolder within a category:
+## How To Read Node Documentation
 
-    src/
-      exporters/
-        mod.rs (category exports)
-        console_exporter/
-        error_exporter/
-        noop_exporter/
-        otap_exporter/
-        otlp_grpc_exporter/
-        otlp_http_exporter/
-        parquet_exporter/
-        perf_exporter/
-        topic_exporter/
-      processors/
-        mod.rs (category exports)
-        attributes_processor/
-        batch_processor/
-        content_router/
-        debug_processor/
-        delay_processor/
-        durable_buffer_processor/
-        fanout_processor/
-        filter_processor/
-        log_sampling_processor/
-        retry_processor/
-        temporal_reaggregation_processor/
-        signal_type_router/
-        transform_processor/
-      receivers/
-        mod.rs (category exports)
-        internal_telemetry_receiver/
-        otap_receiver/
-        otlp_receiver/
-        syslog_cef_receiver/
-        topic_receiver/
-        traffic_generator/
-      lib.rs
+Each node page follows the same general shape:
 
-## Components
+- `Metadata`: node type, full URN, feature gate, and stability.
+- `Overview`: what the node does and where it fits in a pipeline.
+- `Configuration`: the node-level `config` payload and related node options.
+- `Examples`: small YAML snippets for common use cases.
+- `Telemetry`: node-specific metric sets and events.
+- `Limits`: important operational or compatibility limits.
+- `Related Docs`: adjacent references and examples.
 
-### Exporters
+Most nodes in this catalog are available in the default engine build. If the
+`Feature` column names a non-default feature, the node is available only in
+builds that enable that feature. A node documented as `experimental` has no
+stable compatibility guarantee yet, and its behavior or configuration can
+change between releases.
 
-<!-- markdownlint-disable MD013 -->
-| Node | URN | Module |
-| ---- | --- | ------ |
-| console_exporter | `urn:otel:exporter:console` | `src/exporters/console_exporter/` |
-| error_exporter | `urn:otel:exporter:error` | `src/exporters/error_exporter/` |
-| noop_exporter | `urn:otel:exporter:noop` | `src/exporters/noop_exporter/` |
-| otap_exporter | `urn:otel:exporter:otap` | `src/exporters/otap_exporter/` |
-| otlp_grpc_exporter | `urn:otel:exporter:otlp_grpc` | `src/exporters/otlp_grpc_exporter/` |
-| otlp_http_exporter | `urn:otel:exporter:otlp_http` | `src/exporters/otlp_http_exporter/` |
-| parquet_exporter | `urn:otel:exporter:parquet` | `src/exporters/parquet_exporter/` |
-| perf_exporter | `urn:otel:exporter:perf` | `src/exporters/perf_exporter/` |
-| topic_exporter | `urn:otel:exporter:topic` | `src/exporters/topic_exporter/` |
-<!-- markdownlint-enable MD013 -->
+## Node Type Syntax
 
-#### console_exporter
+Use the `Type` value from the tables below in a node definition:
 
-- Hierarchical ANSI-colored console output for OTLP logs, metrics, and traces
-- Useful for debugging and visual inspection of data
+```yaml
+type: receiver:otlp
+```
 
-#### error_exporter
+The full URN form is also accepted:
 
-- Test exporter that NACKs all messages with a configurable error message
-- Used primarily in testing and error path validation
+```yaml
+type: urn:otel:receiver:otlp
+```
 
-#### noop_exporter
+For the canonical node URN format, see [`docs/urns.md`](../../docs/urns.md).
 
-- Placeholder exporter that ACKs all messages without processing
-- Lightweight for performance testing and pipeline validation
+## Receivers
 
-#### otap_exporter
-
-- Streams OTAP Arrow payloads over gRPC to OTAP-compatible downstream receivers
-- Reuses shared OTAP transport, compression, and Arrow encoding support from
-  `otap-df-otap`
-
-#### otlp_grpc_exporter
-
-- Sends OTLP logs, metrics, and traces over unary gRPC export requests
-- Supports concurrent in-flight exports with ack/nack propagation back into the
-  pipeline
-- Supports endpoint overrides, partial-success handling, and TLS via shared OTAP
-  HTTP helpers
-
-#### otlp_http_exporter
-
-- Sends OTLP logs, metrics, and traces over OTLP/HTTP endpoints
-- Supports concurrent in-flight exports with ack/nack propagation back into the
-  pipeline
-- Supports endpoint overrides, partial-success handling, and TLS via shared OTAP
-  HTTP helpers
-
-#### parquet_exporter
-
-- Writes OTAP batches into partitioned Parquet files
-- Supports schema normalization, ID generation, and configurable flush behavior
-
-#### perf_exporter
-
-- Measures item throughput by signal type for benchmarking scenarios
-- Emits pdata-oriented telemetry metrics during pipeline execution
-
-#### topic_exporter
-
-- Publishes pdata into configured runtime topics
-- Supports tracked end-to-end ack/nack propagation through topic boundaries
-
-### Processors
+Receivers ingest data into a pipeline.
 
 <!-- markdownlint-disable MD013 -->
-| Node | URN | Module |
-| ---- | --- | ------ |
-| attributes_processor | `urn:otel:processor:attribute` | `src/processors/attributes_processor/` |
-| batch_processor | `urn:otel:processor:batch` | `src/processors/batch_processor/` |
-| content_router | `urn:otel:processor:content_router` | `src/processors/content_router/` |
-| debug_processor | `urn:otel:processor:debug` | `src/processors/debug_processor/` |
-| delay_processor | `urn:otel:processor:delay` | `src/processors/delay_processor/` |
-| durable_buffer_processor | `urn:otel:processor:durable_buffer` | `src/processors/durable_buffer_processor/` |
-| fanout_processor | `urn:otel:processor:fanout` | `src/processors/fanout_processor/` |
-| filter_processor | `urn:otel:processor:filter` | `src/processors/filter_processor/` |
-| log_sampling_processor | `urn:otel:processor:log_sampling` | `src/processors/log_sampling_processor/` |
-| retry_processor | `urn:otel:processor:retry` | `src/processors/retry_processor/` |
-| signal_type_router | `urn:otel:processor:type_router` | `src/processors/signal_type_router/` |
-| temporal_reaggregation_processor | `urn:otel:processor:temporal_reaggregation` | `src/processors/temporal_reaggregation_processor/` |
-| transform_processor | `urn:otel:processor:transform` | `src/processors/transform_processor/` |
+
+| Type                                                                                 | Feature     | Stability    | Description                                                          |
+| ------------------------------------------------------------------------------------ | ----------- | ------------ | -------------------------------------------------------------------- |
+| [`receiver:host_metrics`](src/receivers/host_metrics_receiver/README.md)             | default     | experimental | Emits Linux `system.*` host metrics from procfs and sysfs.           |
+| [`receiver:internal_telemetry`](src/receivers/internal_telemetry_receiver/README.md) | default     | experimental | Consumes internal engine log events for observability pipelines.     |
+| [`receiver:journald`](src/receivers/journald_receiver/README.md)                     | default     | experimental | Reads local `systemd-journald` records with journald source filters. |
+| [`receiver:otap`](src/receivers/otap_receiver/README.md)                             | default     | experimental | Accepts OTAP Arrow streams over gRPC.                                |
+| [`receiver:otlp`](src/receivers/otlp_receiver/README.md)                             | default     | experimental | Accepts OTLP/gRPC, OTLP/HTTP, or both.                               |
+| [`receiver:syslog_cef`](src/receivers/syslog_cef_receiver/README.md)                 | default     | experimental | Ingests syslog RFC 3164, syslog RFC 5424, and CEF messages.          |
+| [`receiver:topic`](src/receivers/topic_receiver/README.md)                           | default     | experimental | Subscribes to a named in-process topic.                              |
+| [`receiver:traffic_generator`](src/receivers/traffic_generator/README.md)            | `dev-tools` | experimental | Emits synthetic or semantic-convention-derived test traffic.         |
+
 <!-- markdownlint-enable MD013 -->
 
-#### attributes_processor
+## Processors
 
-- Adds, updates, renames, and deletes OpenTelemetry attributes
-- Works directly on OTAP-native data structures for low-copy mutations
-
-#### content_router
-
-- Routes telemetry to named output ports based on resource attribute values
-- Supports configurable selected-route admission for matched and default routes
-  with `reject_immediately` (default) or `backpressure`
-- Always emits a route-local retryable NACK when the selected route is closed,
-  and uses the configured policy when the selected route is full
-- Supports default routing and mixed-batch validation; see
-  [Content Router Processor](src/processors/content_router/README.md)
-
-#### batch_processor
-
-- Batches OTAP and OTLP payloads by size and/or time-based flush criteria
-- Supports preserve/force format modes and ack-aware request tracking
-- Useful for throughput optimization and controlled downstream pressure
-
-#### debug_processor
-
-- Outputs received signals with configurable filtering, sampling, and verbosity
-- Supports multiple output modes (console, file, outports) and marshaling
-  formats
-- Useful for understanding data flow through pipelines
-
-#### delay_processor
-
-- Introduces artificial delays between signal processing
-- Configured via humantime duration strings
-- Used for testing timeout handling and rate control
-
-#### durable_buffer_processor
-
-- Persists telemetry to WAL and segment storage before forwarding downstream
-- Supports crash recovery, retry backoff, and bounded retention policies
-
-#### fanout_processor
-
-- Clones incoming data to multiple downstream outputs
-- Supports parallel or sequential delivery modes with configurable ack policies
-- Supports fallback chains and timeout handling per destination
-
-#### filter_processor
-
-- Filters OTAP signals according to configured trace/log filter rules
-- Tracks consumed and filtered signal metrics for telemetry
-- Useful for reducing data volume before downstream processing
-
-#### log_sampling_processor
-
-- Discards a portion of incoming logs according to a configurable sampling policy
-- Useful for reducing data volume in a telemetry backend
-
-#### retry_processor
-
-- Retries downstream delivery with exponential backoff using Ack/Nack handling
-- Preserves retry state in call data instead of external durable state
-
-#### signal_type_router
-
-- Routes signals by type (logs, metrics, traces) to named output ports
-- Falls back to default routing only when a type-specific port is not connected
-- Supports configurable selected-route admission with `reject_immediately`
-  (default) or `backpressure`
-- Always emits a route-local retryable NACK when the selected named or default
-  route is closed, and uses the configured policy when the selected route is
-  full
-- Exposes per-signal routing and route-rejection telemetry; see
-  [Signal Type Router Processor](src/processors/signal_type_router/README.md)
-
-#### transform_processor
-
-- Applies KQL or OPL transformations to OTAP batches via the query engine
-- Supports routed outputs while preserving upstream Ack/Nack semantics
-
-#### temporal_reaggregation_processor
-
-- Reaggregates metrics at a lower frequency to reduce telemetry volume
-
-### Receivers
+Processors transform, route, buffer, or otherwise handle data already moving
+through a pipeline.
 
 <!-- markdownlint-disable MD013 -->
-| Node | URN | Module |
-| ---- | --- | ------ |
-| internal_telemetry_receiver | `urn:otel:receiver:internal_telemetry` | `src/receivers/internal_telemetry_receiver/` |
-| otap_receiver | `urn:otel:receiver:otap` | `src/receivers/otap_receiver/` |
-| otlp_receiver | `urn:otel:receiver:otlp` | `src/receivers/otlp_receiver/` |
-| syslog_cef_receiver | `urn:otel:receiver:syslog_cef` | `src/receivers/syslog_cef_receiver/` |
-| topic_receiver | `urn:otel:receiver:topic` | `src/receivers/topic_receiver/` |
-| traffic_generator | `urn:otel:receiver:traffic_generator` | `src/receivers/traffic_generator/` |
+
+| Type                                                                                            | Feature | Stability    | Description                                                      |
+| ----------------------------------------------------------------------------------------------- | ------- | ------------ | ---------------------------------------------------------------- |
+| [`processor:attribute`](src/processors/attributes_processor/README.md)                          | default | experimental | Mutates OpenTelemetry attributes in OTAP batches.                |
+| [`processor:batch`](src/processors/batch_processor/README.md)                                   | default | experimental | Combines OTAP and OTLP payloads before forwarding.               |
+| [`processor:content_router`](src/processors/content_router/README.md)                           | default | experimental | Routes telemetry to named output ports based on content.         |
+| [`processor:debug`](src/processors/debug_processor/README.md)                                   | default | experimental | Observes passing data and emits diagnostic output.               |
+| [`processor:delay`](src/processors/delay_processor/README.md)                                   | default | experimental | Sleeps for a configured duration before forwarding each message. |
+| [`processor:durable_buffer`](src/processors/durable_buffer_processor/README.md)                 | default | experimental | Adds crash-resilient buffering through a local durable queue.    |
+| [`processor:fanout`](src/processors/fanout_processor/README.md)                                 | default | experimental | Clones incoming data to multiple downstream destinations.        |
+| [`processor:filter`](src/processors/filter_processor/README.md)                                 | default | experimental | Drops logs or traces according to include and exclude rules.     |
+| [`processor:log_sampling`](src/processors/log_sampling_processor/README.md)                     | default | experimental | Reduces log volume by discarding selected log records.           |
+| [`processor:retry`](src/processors/retry_processor/README.md)                                   | default | experimental | Retries downstream delivery when it receives a NACK.             |
+| [`processor:type_router`](src/processors/signal_type_router/README.md)                          | default | experimental | Routes OTAP payloads to output ports by signal type.             |
+| [`processor:temporal_reaggregation`](src/processors/temporal_reaggregation_processor/README.md) | default | experimental | Reaggregates high-frequency metrics into lower-frequency output. |
+| [`processor:transform`](src/processors/transform_processor/README.md)                           | default | experimental | Applies query-language transformations to OTAP batches.          |
+
 <!-- markdownlint-enable MD013 -->
 
-#### traffic_generator
+For a behavioral processor taxonomy, see
+[`docs/processors.md`](../../docs/processors.md).
 
-- Generates synthetic OTAP/OTLP signals for testing and benchmarking
-- Configurable signal generation strategies and volume constraints
-- Includes support for pregenerated, dynamic, and rate-based signal generation
+## Exporters
 
-#### internal_telemetry_receiver
+Exporters send data out of a pipeline.
 
-- Receives internal engine telemetry events from the internal log channel
-- Emits them as OTLP log pdata into the configured pipeline
+<!-- markdownlint-disable MD013 -->
 
-#### otap_receiver
+| Type                                                               | Feature | Stability    | Description                                                 |
+| ------------------------------------------------------------------ | ------- | ------------ | ----------------------------------------------------------- |
+| [`exporter:console`](src/exporters/console_exporter/README.md)     | default | experimental | Prints OTLP logs, metrics, and traces for local inspection. |
+| [`exporter:error`](src/exporters/error_exporter/README.md)         | default | experimental | Rejects every received message with a configured NACK.      |
+| [`exporter:noop`](src/exporters/noop_exporter/README.md)           | default | experimental | Acknowledges and discards every received message.           |
+| [`exporter:otap`](src/exporters/otap_exporter/README.md)           | default | experimental | Sends OTAP Arrow payloads over gRPC streams.                |
+| [`exporter:otlp_grpc`](src/exporters/otlp_grpc_exporter/README.md) | default | experimental | Sends telemetry as unary OTLP/gRPC export requests.         |
+| [`exporter:otlp_http`](src/exporters/otlp_http_exporter/README.md) | default | experimental | Sends telemetry to OTLP/HTTP endpoints.                     |
+| [`exporter:parquet`](src/exporters/parquet_exporter/README.md)     | default | experimental | Writes OTAP batches as Parquet files.                       |
+| [`exporter:perf`](src/exporters/perf_exporter/README.md)           | default | experimental | Reports pipeline throughput and optional resource usage.    |
+| [`exporter:topic`](src/exporters/topic_exporter/README.md)         | default | experimental | Publishes data to a named in-process topic.                 |
 
-- Accepts OTAP Arrow streams over gRPC and forwards them into the pipeline as
-  `OtapPdata`
-- Supports downstream wait-for-result ack/nack routing back to OTAP clients
+<!-- markdownlint-enable MD013 -->
 
-#### otlp_receiver
+## Maintenance Notes
 
-- Accepts OTLP over gRPC, OTLP/HTTP, or both, and forwards serialized OTLP
-  payloads into the pipeline
-- Shares gRPC, HTTP, concurrency, TLS, and ack-routing support from
-  `otap-df-otap`
-
-#### syslog_cef_receiver
-
-- Ingests RFC 3164/RFC 5424 syslog and CEF logs over TCP or UDP
-- Converts incoming records into OTAP pdata with parser/format metadata
-
-#### topic_receiver
-
-- Subscribes to runtime topics and forwards messages into the pipeline
-- Supports broadcast/balanced subscription modes and topic ack/nack bridging
+- Keep node READMEs beside the node source files.
+- Update this catalog when adding, removing, renaming, or feature-gating a
+  node.
+- Keep per-node README headings predictable: `Metadata`, `Overview`,
+  `Configuration`, `Examples`, `Telemetry`, `Limits`, and `Related Docs`.
+- Document node stability as `Experimental` when there is no explicit
+  compatibility guarantee.
+- Render `Metadata` as a list with one field per list item instead of a table.
+- Omit implementation file names from metadata because the README already sits
+  next to the source.
+- Keep `Configuration` focused on the node's `config` shape and node-local
+  options such as `outputs`.
+- Prefer the smallest useful node-level YAML snippet. Include `groups`,
+  `pipelines`, `topics`, or full engine structure only when the surrounding
+  structure is required to explain the node behavior.
+- Put `Telemetry` before `Limits`.
+- In `Telemetry`, document each metric set with a `Metric`, `Unit`, and
+  `Description` table, and document events with an `Event`, `Severity`, and
+  `Description` table.
+- State explicitly when a node has no node-specific metric set or no
+  node-specific events.
+- Keep examples in the native `otel_dataflow/v1` runtime format.
+- Prefer linking to shared policy docs instead of duplicating long
+  descriptions.

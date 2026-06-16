@@ -60,18 +60,26 @@ impl LogsIngestionClientPool {
         }
     }
 
-    fn create_http_clients(&self, count: usize) -> Result<Vec<Client>, Error> {
+    fn create_http_clients(
+        &self,
+        count: usize,
+        user_agent: Option<&str>,
+    ) -> Result<Vec<Client>, Error> {
         let mut clients = Vec::with_capacity(count);
 
         for _ in 0..count {
-            let http_client = Client::builder()
+            let mut builder = Client::builder()
                 .http1_only()
                 .timeout(Duration::from_secs(30))
                 .pool_max_idle_per_host(MAX_IDLE_CONNECTIONS_PER_HOST)
                 .pool_idle_timeout(Duration::from_secs(90))
-                .tcp_nodelay(true)
-                .build()
-                .map_err(Error::CreateClient)?;
+                .tcp_nodelay(true);
+
+            if let Some(ua) = user_agent {
+                builder = builder.user_agent(ua);
+            }
+
+            let http_client = builder.build().map_err(Error::CreateClient)?;
 
             clients.push(http_client);
         }
@@ -80,7 +88,8 @@ impl LogsIngestionClientPool {
     }
 
     pub async fn initialize(&mut self, config: &ApiConfig) -> Result<(), Error> {
-        let http_clients = self.create_http_clients(self.clients.capacity())?;
+        let http_clients =
+            self.create_http_clients(self.clients.capacity(), config.user_agent.as_deref())?;
 
         for http_client in http_clients {
             let client = LogsIngestionClient::new(config, http_client, self.metrics.clone())?;
@@ -345,6 +354,7 @@ mod tests {
             schema: Default::default(),
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
+            user_agent: None,
         }
     }
 
@@ -367,6 +377,7 @@ mod tests {
             schema: Default::default(),
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
+            user_agent: None,
         };
 
         let http_client = create_test_http_client();
@@ -389,6 +400,7 @@ mod tests {
             schema: Default::default(),
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
+            user_agent: None,
         };
 
         let http_client = create_test_http_client();
@@ -634,7 +646,7 @@ mod tests {
         otap_df_otap::crypto::ensure_crypto_provider();
         let pool = LogsIngestionClientPool::new(4, create_test_metrics());
 
-        let result = pool.create_http_clients(4);
+        let result = pool.create_http_clients(4, None);
 
         assert!(result.is_ok());
         let clients = result.unwrap();
@@ -646,11 +658,22 @@ mod tests {
         otap_df_otap::crypto::ensure_crypto_provider();
         let pool = LogsIngestionClientPool::new(4, create_test_metrics());
 
-        let result = pool.create_http_clients(0);
+        let result = pool.create_http_clients(0, None);
 
         assert!(result.is_ok());
         let clients = result.unwrap();
         assert_eq!(clients.len(), 0);
+    }
+
+    #[test]
+    fn test_pool_create_http_clients_with_user_agent() {
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let pool = LogsIngestionClientPool::new(4, create_test_metrics());
+
+        let result = pool.create_http_clients(4, Some("my-app/1.0"));
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 4);
     }
 
     // ==================== Resource ID Header Tests ====================

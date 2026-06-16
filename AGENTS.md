@@ -2,3 +2,26 @@
 
 If working on Rust code (i.e., the `rust/` directory), read and follow all
 instructions in [rust/otap-dataflow/AGENTS.md](rust/otap-dataflow/AGENTS.md).
+
+## Changelog entries
+
+If your change is user-facing, add a changelog entry by **copying
+`TEMPLATE.yaml`** in the appropriate `.chloggen/` directory to a new `.yaml`
+file (e.g. `arrow-encoder-fix-null-handling.yaml`) and filling in the fields.
+
+- Go changes: copy [`go/.chloggen/TEMPLATE.yaml`](go/.chloggen/TEMPLATE.yaml)
+  to a new file in [`go/.chloggen/`](go/.chloggen/).
+- Rust changes: copy
+  [`rust/otap-dataflow/.chloggen/TEMPLATE.yaml`](rust/otap-dataflow/.chloggen/TEMPLATE.yaml)
+  to a new file in
+  [`rust/otap-dataflow/.chloggen/`](rust/otap-dataflow/.chloggen/).
+
+Required fields: `change_type` (one of `breaking`, `deprecation`,
+`new_component`, `enhancement`, `bug_fix`), `component` (must be listed in the
+directory's `config.yaml`), `note`, and `issues`.
+
+Skip the entry only when the change is not user-facing (build chores, internal
+refactors, doc-only edits, dev-only dependency bumps). In that case include
+`chore` in the PR title.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md#changelog-entries) for full details.

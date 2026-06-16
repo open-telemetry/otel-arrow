@@ -1,6 +1,7 @@
 // Grammar for Observability Programming Language (OPL)
 
 WHITESPACE = _{ " " | NEWLINE | "\t" }
+COMMENT    = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!NEWLINE ~ ANY)*) }
 
 ident = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
 
@@ -15,7 +16,7 @@ single_quote_string_char = _{
   | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
 }
 
-string_literal = {
+string_literal = ${
     ("\"" ~ double_quote_string_char* ~ "\"")
   | ("'" ~ single_quote_string_char* ~ "'")
 }
@@ -193,12 +194,28 @@ assignment_expression = {
     (attribute_selection_expression | index_expression | identifier_expression) ~ "=" ~ expression
 }
 
+rename_pair = {
+    string_literal ~ "as" ~ string_literal
+}
+
+rename_target = {
+    identifier_expression ~ ("." ~ identifier_expression)*
+}
+
+fork_operator_call = {
+    "fork" ~ fork_branch+
+}
+
+fork_branch = {
+    "{" ~ pipeline_stage ~ ("|" ~ pipeline_stage)* ~ "}"
+}
+
 rename_operator_call = {
-    ("rename" | "project-rename") ~ assignment_expression ~ ("," ~ assignment_expression)*
+    "rename" ~ rename_target ~ rename_pair ~ ("," ~ rename_pair)*
 }
 
 remove_map_keys_operator_call = {
-    ("exclude" | "project-away") ~ (attribute_selection_expression | index_expression) ~ ("," ~ (attribute_selection_expression | index_expression))*
+    ("remove" | "project-away") ~ (attribute_selection_expression | index_expression) ~ ("," ~ (attribute_selection_expression | index_expression))*
 }
 
 set_operator_call = {
@@ -207,6 +224,10 @@ set_operator_call = {
 
 where_operator_call = {
     "where" ~ expression
+}
+
+drop_operator_call = {
+    "drop"
 }
 
 route_to_operator_call = {
@@ -222,7 +243,9 @@ operator_call = {
   | rename_operator_call
   | remove_map_keys_operator_call
   | if_else_operator_call
+  | fork_operator_call
   | route_to_operator_call
+  | drop_operator_call
   | where_operator_call
   | apply_operator_call
 }

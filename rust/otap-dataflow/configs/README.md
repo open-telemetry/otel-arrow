@@ -3,90 +3,112 @@
 This directory contains example engine configurations for the OTAP dataflow engine.
 Each file uses `version: otel_dataflow/v1` at the root.
 
+If you are learning how to write these files, start with
+[Configuration](../docs/configuration.md).
+
 Note: These configurations are based on the native OTAP dataflow engine
-configuration model, which is a superset of the Go Collector configuration
-model. Support for the Go Collector YAML format is planned for the future.
+configuration model, which is intentionally distinct from the OpenTelemetry Collector
+YAML model. Support for the OTel Collector YAML format will be explored in the
+future.
 
 ## Available Configurations
 
-### `fake-batch-debug-noop.yaml`
+### `trafficgen-batch-debug-noop.yaml`
 
 Demonstrates the batch processor:
 
-- Generates fake data -> batch processor -> debug processor -> noop exporter
+- Generates synthetic traffic -> batch processor -> debug processor -> noop exporter
 
-### `fake-debug-noop-telemetry.yaml`
+### `trafficgen-debug-noop-telemetry.yaml`
 
 A basic pipeline with telemetry export enabled:
 
-- Generates fake data -> debug processor -> noop exporter
+- Generates synthetic traffic -> debug processor -> noop exporter
 - Includes `engine.telemetry` configuration with console metrics export
 
-### `fake-debug-output-ports.yaml`
-
-Demonstrates multiple output ports:
-
-- Generates fake data -> debug processor with multiple output ports -> noop exporter
-
-### `fake-filter-debug-noop.yaml`
+### `trafficgen-filter-debug-noop.yaml`
 
 Demonstrates the filter processor:
 
-- Generates fake data -> filter processor -> debug processor -> noop exporter
+- Generates synthetic traffic -> filter processor -> debug processor -> noop exporter
 
-### `fake-transform-debug-noop.yaml`
+### `trafficgen-metric-filter-debug-noop.yaml`
+
+Demonstrates metric-name filtering:
+
+- Generates synthetic metrics -> filter processor by metric name -> debug processor
+  -> noop exporter
+
+### `trafficgen-transform-debug-noop.yaml`
 
 Demonstrate using the transform processor to transform data
 
-- Generates fake data -> debug -> transform -> debug -> noop exporter
+- Generates synthetic traffic -> debug -> transform -> debug -> noop exporter
 
 The input data can be viewed at /tmp/debug1.log and the transformed output at
 /tmp/debug2.log
 
-### `fake-otap.yaml`
+### `trafficgen-otap.yaml`
 
-Generates fake data and exports via OTAP:
+Generates synthetic traffic and exports via OTAP:
 
-- Generates fake data -> OTAP exporter to `http://127.0.0.1:4318`
+- Generates synthetic traffic -> OTAP exporter to `http://127.0.0.1:4318`
 
-### `fake-otlp.yaml`
+### `trafficgen-otlp.yaml`
 
-Generates fake data and exports via OTLP:
+Generates synthetic traffic and exports via OTLP:
 
-- Generates fake data -> OTLP exporter to `http://127.0.0.1:4317`
+- Generates synthetic traffic -> OTLP exporter to `http://127.0.0.1:4317`
 
-### `fake-parquet.yaml`
+### `trafficgen-parquet.yaml`
 
-Generates fake data and exports to Parquet files:
+Generates synthetic traffic and exports to Parquet files:
 
-- Generates fake data -> Parquet exporter to `/tmp`
+- Generates synthetic traffic -> Parquet exporter to `/tmp`
 
-### `fake-perf.yaml`
+Parquet exporter configs can include an optional `retry` block for cloud-backed
+object stores. Any omitted fields use the `object_store` defaults.
 
-Generates fake data with performance metrics:
+```yaml
+retry:
+  max_retries: 10
+  init_backoff: "200ms"
+  max_backoff: "30s"
+  backoff_base: 2.0
+  retry_timeout: "2min"
+```
 
-- Generates fake data -> performance exporter
+This configures the `object_store` layer request retry loop for transient
+storage requests. Local file storage accepts valid retry settings but ignores
+them; invalid retry values are still rejected during config validation. It does
+not replay consumed Parquet writers after `AsyncArrowWriter::close` fails, and
+it is separate from the retry processor's whole-batch redelivery policy.
+
+### `trafficgen-perf.yaml`
+
+Generates synthetic traffic with performance metrics:
+
+- Generates synthetic traffic -> performance exporter
 - View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
 
-### `fake-multi-tenant-perf.yaml`
+### `trafficgen-multi-tenant-perf.yaml`
 
 Generates mixed-tenant traffic using weighted resource attribute rotation:
 
-- Uses `data_source: static` with two resource attribute sets (`tenant.id:
-  prod` and `tenant.id: ppe`) weighted 3:1, producing a 75% / 25% batch split
-  per  pipeline.
-- Generates fake data -> performance exporter
+- Uses `data_source: synthetic` with two resource attribute sets (`tenant.id:
+prod` and `tenant.id: ppe`) weighted 3:1, producing a 75% / 25% batch split
+  per pipeline.
+- Generates synthetic traffic -> performance exporter
 - View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
 
 The `resource_attributes` field accepts three forms:
 
-| Form | Description |
-| ---- | ----------- |
-| Single map | All batches carry the same attributes (weight 1) |
-| List of maps | Equal round-robin rotation across entries (weight 1 each) |
-| List of weighted entries (`attrs` + `weight`) | Each entry receives batches proportional to its weight |
+- Single map: all batches carry the same attributes (weight 1).
+- List of maps: equal round-robin rotation across entries (weight 1 each).
+- List of weighted entries (`attrs` + `weight`): each entry receives batches
+  proportional to its weight.
 
-> **Note:** `resource_attributes` only applies to `data_source: static`.
+> **Note:** `resource_attributes` only applies to `data_source: synthetic`.
 > With `generation_strategy: pre_generated`, only the first attribute set is used.
 
 ### `otap-otap.yaml`
@@ -163,14 +185,21 @@ Syslog/CEF receiver with performance metrics:
 To send a quick test message (UDP):
 
 ```bash
-echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message" | nc -u -w1 127.0.0.1 5140
+echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message" \
+  | nc -u -w1 127.0.0.1 5140
 ```
 
-For sustained load testing, see the [load generator](../../tools/pipeline_perf_test/load_generator/readme.md):
+For sustained load testing, see the
+[load generator](../../tools/pipeline_perf_test/load_generator/readme.md):
 
 ```bash
 cd tools/pipeline_perf_test/load_generator
-python loadgen.py --load-type syslog --syslog-server 127.0.0.1 --syslog-port 5140 --syslog-transport udp --duration 15
+python loadgen.py \
+  --load-type syslog \
+  --syslog-server 127.0.0.1 \
+  --syslog-port 5140 \
+  --syslog-transport udp \
+  --duration 15
 ```
 
 > **Note:** The default `syslog-perf.yaml` config only enables UDP.

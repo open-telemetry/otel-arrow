@@ -18,14 +18,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, DictionaryArray, Float64Array, Int64Array, NullArray,
+    Array, ArrayRef, AsArray, BooleanArray, DictionaryArray, Float64Array, Int64Array, NullArray,
     RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
 };
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::kernels::cmp::{eq, neq};
 use arrow::compute::kernels::merge::merge;
 use arrow::compute::{and_not, cast, filter, max, take};
-use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
+use arrow::datatypes::{DataType, Field, Fields, Schema, UInt16Type};
 use async_trait::async_trait;
 use data_engine_expressions::QueryLocation;
 use datafusion::config::ConfigOptions;
@@ -48,16 +48,19 @@ use otap_df_pdata::schema::{consts, get_field_metadata, update_field_metadata};
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
+use crate::pipeline::expr::eval::scoped_value_to_join_input;
+use crate::pipeline::expr::join::JoinInput;
 use crate::pipeline::expr::join::{
     AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec, RootAttrsToRootJoin,
     RootToAttributesJoin,
 };
+use crate::pipeline::expr::planner::PlannedOp;
 use crate::pipeline::expr::types::{
-    ExprLogicalType, root_field_supports_dict_encoding, root_field_type,
+    ExprLogicalType, nested_struct_field_type, root_field_supports_dict_encoding, root_field_type,
 };
 use crate::pipeline::expr::{
-    DataScope, ExprPhysicalPlanner, LogicalExprDataSource, PhysicalExprEvalResult,
-    SCALAR_RECORD_BATCH_INPUT, ScopedLogicalExpr, ScopedPhysicalExpr, VALUE_COLUMN_NAME,
+    DataScope, LeafEval, RootParentStruct, SCALAR_RECORD_BATCH_INPUT, ScopedExpr, ScopedValue,
+    VALUE_COLUMN_NAME,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::anyval::{
@@ -69,13 +72,13 @@ use crate::pipeline::state::ExecutionState;
 
 /// Representation of assignment source and destination
 pub struct Assignment<'a> {
-    /// The column destination
     pub dest_column: ColumnAccessor,
 
-    /// The expression that will be evaluated and have its result assigned ot the destination
-    pub source: ScopedLogicalExpr,
+    /// Planned expression that will produce the data to be assigned to the destination column.
+    /// Contains both the `ScopedExpr` execution tree and type metadata.
+    pub source: PlannedOp,
 
-    /// Query location of the destination - used when reporting errors
+    /// The query location of the assignment destination
     pub dest_query_location: Option<&'a QueryLocation>,
 }
 
@@ -95,8 +98,8 @@ pub(crate) struct AssignPipelineStage {
     /// computed from dest_column, we create it up-front to avoid cloning data during evaluation
     dest_scopes: Vec<Rc<DataScope>>,
 
-    /// Expression that will produce the data to be assigned to the destination
-    sources: Vec<ScopedPhysicalExpr>,
+    /// Unified execution trees that produce the data to be assigned to the destination.
+    sources: Vec<ScopedExpr>,
 
     /// When this pipeline stage is used in a nested pipeline that processes attributes, it may be
     /// applying an expression that references the virtual "value" column. This flag will be set if
@@ -119,7 +122,7 @@ impl AssignPipelineStage {
         }
 
         let mut dest_columns = Vec::with_capacity(assignments.len());
-        let mut source_physical_exprs = Vec::with_capacity(assignments.len());
+        let mut source_exprs = Vec::with_capacity(assignments.len());
         for assignment in assignments.drain(..) {
             // validate that all the assignments are for the same record batch:
             if let Some(last_dest_col) = dest_columns.last() {
@@ -144,7 +147,7 @@ impl AssignPipelineStage {
                 }
             }
 
-            // validate that the assignment is expression is valid for the destination:
+            // validate that the assignment expression is valid for the destination:
             validate_assign(
                 &assignment.dest_column,
                 assignment.dest_query_location,
@@ -152,23 +155,15 @@ impl AssignPipelineStage {
             )?;
 
             dest_columns.push(assignment.dest_column);
-            let physical_planner = ExprPhysicalPlanner::default();
-            let physical_expr = physical_planner.plan(assignment.source)?;
-            source_physical_exprs.push(physical_expr);
+            source_exprs.push(assignment.source.expr);
         }
 
         // determine, in the case that we're doing assignment on a nested pipeline for attributes,
         // whether we need to project the virtual "value" column. We only look at the first expr
         // because for these nested pipelines, the planner shouldn't be combining multiple
         // set expressions together due to them all having the same destination.
-        let projection_contains_value_column = source_physical_exprs[0]
-            .projection
-            .schema
-            .iter()
-            .any(|projected_col| match projected_col {
-                ProjectedSchemaColumn::Root(col_name) => col_name == VALUE_COLUMN_NAME,
-                _ => false,
-            });
+        let projection_contains_value_column =
+            projection_references_column(&source_exprs[0], VALUE_COLUMN_NAME);
 
         Ok(Self {
             dest_scopes: dest_columns
@@ -177,7 +172,7 @@ impl AssignPipelineStage {
                 .map(Rc::new)
                 .collect(),
             dest_columns,
-            sources: source_physical_exprs,
+            sources: source_exprs,
             projection_contains_value_column,
             id_bitmap_pool: IdBitmapPool::new(),
         })
@@ -187,8 +182,8 @@ impl AssignPipelineStage {
     fn assign_to_root(
         &self,
         mut otap_batch: OtapArrowRecords,
-        mut eval_result: PhysicalExprEvalResult,
-        dest_scope: &Rc<DataScope>,
+        mut scoped_value: ScopedValue,
+        dest_scope: &DataScope,
         dest_column_name: &str,
     ) -> Result<OtapArrowRecords> {
         let root_batch = match otap_batch.root_record_batch() {
@@ -212,7 +207,7 @@ impl AssignPipelineStage {
             let root_batch = root_batch.clone();
             return self.assign_any_value_to_root(
                 otap_batch,
-                eval_result,
+                scoped_value,
                 dest_scope,
                 dest_column_name,
                 &root_batch,
@@ -228,23 +223,23 @@ impl AssignPipelineStage {
 
         // if we've received an AnyValue as the assignment source, but the destination is not an
         // AnyValue, we coerce attempt to coerce it into a single value
-        if let ColumnarValue::Array(values) = &eval_result.values {
+        if let ColumnarValue::Array(values) = &scoped_value.values {
             if is_any_value_data_type(values.data_type()) {
                 let coerced_value_col =
                     attempt_coerce_value_column_from_any_value_struct_column(values)?;
-                eval_result.values = ColumnarValue::Array(coerced_value_col);
+                scoped_value.values = ColumnarValue::Array(coerced_value_col);
             }
         }
 
-        // coerce static scalar int" if the result was a static scalar integer, it will have been
+        // coerce static scalar int: if the result was a static scalar integer, it will have been
         // produced as an int64 by default, however the expression tree doesn't actually specify
         // the type, so we assume the type should have matched the expected type here and cast it
-        let mut eval_result_column_type = eval_result.values.data_type();
-        if eval_result.data_scope.as_ref() == &DataScope::StaticScalar
+        let mut eval_result_column_type = scoped_value.values.data_type();
+        if scoped_value.scope == DataScope::StaticScalar
             && eval_result_column_type.is_integer()
             && expected_column_data_type.is_integer()
         {
-            eval_result.values = eval_result
+            scoped_value.values = scoped_value
                 .values
                 .cast_to(&expected_column_data_type, None)?;
             eval_result_column_type = expected_column_data_type.clone();
@@ -276,14 +271,13 @@ impl AssignPipelineStage {
         // convert the expression evaluation result to an array, with the correct dict encoding if
         // the destination column supports it
         let mut values = eval_result_to_array(
-            &eval_result.values,
+            &scoped_value.values,
             column_supports_dict_encoding,
             root_batch.num_rows(),
         )?;
 
         // align the rows in the new values with the rows in the root batch, if not already aligned
-        let already_aligned = eval_result.data_scope.is_scalar()
-            || eval_result.data_scope.as_ref() == dest_scope.as_ref();
+        let already_aligned = scoped_value.scope.is_scalar() || scoped_value.scope == *dest_scope;
 
         if !already_aligned {
             // if we're here, it means we have received a column value that has the row order
@@ -291,7 +285,7 @@ impl AssignPipelineStage {
             // computed from attributes. We'll need to join the result's values column to the root
             // column to get the values in the correct order ...
 
-            let DataScope::Attributes(attrs_id, _) = eval_result.data_scope.as_ref() else {
+            let DataScope::Attribute(attrs_id, _) = &scoped_value.scope else {
                 // safety: if the data_scope were anything other than attributes, we'd have taken
                 // the if branch (not the else branch) above when we checked if the data was
                 // already aligned
@@ -299,12 +293,13 @@ impl AssignPipelineStage {
             };
 
             // create a JoinExec implementation that computes joined indices of values to root on
-            // `root.id == attrs.parent_id` and use this to take rows from the result in order
+            // `root.id == attrs.parent_id` and use this to take rows from the result in order.
             let join_exec = RootToAttributesJoin::new(*attrs_id);
+            let eval_result = scoped_value_to_join_input(scoped_value, &otap_batch)?;
             let vals_take_indices = join_exec.rows_to_take(
-                &PhysicalExprEvalResult::new(
+                &JoinInput::new(
                     ColumnarValue::Scalar(ScalarValue::Null), // empty placeholder,
-                    Rc::clone(dest_scope),
+                    Rc::new(dest_scope.clone()),
                     root_batch,
                 ),
                 &eval_result,
@@ -331,31 +326,31 @@ impl AssignPipelineStage {
     fn assign_any_value_to_root(
         &self,
         mut otap_batch: OtapArrowRecords,
-        eval_result: PhysicalExprEvalResult,
-        dest_scope: &Rc<DataScope>,
+        scoped_value: ScopedValue,
+        dest_scope: &DataScope,
         dest_column_name: &str,
         root_batch: &RecordBatch,
     ) -> Result<OtapArrowRecords> {
         // Convert the evaluation result to an array (no dict encoding for struct columns)
-        let mut values = eval_result_to_array(&eval_result.values, false, root_batch.num_rows())?;
+        let mut values = eval_result_to_array(&scoped_value.values, false, root_batch.num_rows())?;
 
         // Align row order if the result came from a different data scope (e.g., attributes)
-        let already_aligned = eval_result.data_scope.is_scalar()
-            || eval_result.data_scope.as_ref() == dest_scope.as_ref();
+        let already_aligned = scoped_value.scope.is_scalar() || scoped_value.scope == *dest_scope;
 
         if !already_aligned {
-            let DataScope::Attributes(attrs_id, _) = eval_result.data_scope.as_ref() else {
+            let DataScope::Attribute(attrs_id, _) = &scoped_value.scope else {
                 unreachable!("unexpected data_scope for non-aligned result")
             };
 
             let join_exec = RootToAttributesJoin::new(*attrs_id);
+
             let vals_take_indices = join_exec.rows_to_take(
-                &PhysicalExprEvalResult::new(
+                &JoinInput::new(
                     ColumnarValue::Scalar(ScalarValue::Null),
-                    Rc::clone(dest_scope),
+                    Rc::new(dest_scope.clone()),
                     root_batch,
                 ),
-                &eval_result,
+                &scoped_value_to_join_input(scoped_value, &otap_batch)?,
                 &OtapArrowRecords::Logs(Logs::default()),
             )?;
 
@@ -419,10 +414,165 @@ impl AssignPipelineStage {
         Ok(otap_batch)
     }
 
+    /// try to assign an all-null value to a field within a struct column in the root record batch.
+    /// In practice, this just means removing the field from the struct. This will return an error
+    /// if it turns out the field is not nullable. If the struct column or the field does not exist,
+    /// this is a no-op.
+    fn assign_null_struct_field(
+        &self,
+        mut otap_batch: OtapArrowRecords,
+        struct_col_name: &str,
+        field_name: &str,
+    ) -> Result<OtapArrowRecords> {
+        let root_batch = match otap_batch.root_record_batch() {
+            Some(rb) => rb,
+            None => {
+                // nothing to do
+                return Ok(otap_batch);
+            }
+        };
+
+        let schema = root_batch.schema_ref();
+        let maybe_struct_col = schema.fields().find(struct_col_name);
+        if let Some((struct_col_index, struct_field)) = maybe_struct_col {
+            // the column should always be a struct, but guard against schema corruption
+            let DataType::Struct(struct_fields) = struct_field.data_type() else {
+                return Err(Error::ExecutionError {
+                    cause: format!(
+                        "expected struct column '{struct_col_name}' to have DataType::Struct, \
+                        found {:?}",
+                        struct_field.data_type()
+                    ),
+                });
+            };
+
+            let maybe_found_field = struct_fields.find(field_name);
+            if let Some((field_index, field)) = maybe_found_field {
+                if field.is_nullable() {
+                    let struct_array = root_batch.column(struct_col_index).as_struct();
+                    let mut new_fields = struct_fields.to_vec();
+                    _ = new_fields.remove(field_index);
+                    let mut new_columns = struct_array.columns().to_vec();
+                    _ = new_columns.remove(field_index);
+
+                    let root_payload_type = otap_batch.root_payload_type();
+                    if new_columns.is_empty() {
+                        let mut new_root_batch = root_batch.clone();
+                        _ = new_root_batch.remove_column(struct_col_index);
+                        otap_batch.set(root_payload_type, new_root_batch)?;
+                    } else {
+                        let new_struct = Arc::new(StructArray::new(
+                            Fields::from(new_fields),
+                            new_columns,
+                            struct_array.nulls().cloned(),
+                        ));
+                        otap_batch.set(
+                            root_payload_type,
+                            try_upsert_column(struct_col_name, new_struct, root_batch)?,
+                        )?;
+                    }
+                } else {
+                    return Err(Error::ExecutionError {
+                        cause: format!(
+                            "cannot assign null to non-nullable field '{field_name}' \
+                            on struct column '{struct_col_name}'"
+                        ),
+                    });
+                }
+            }
+        }
+
+        Ok(otap_batch)
+    }
+
+    fn assign_to_struct_column(
+        &self,
+        mut otap_batch: OtapArrowRecords,
+        mut scoped_value: ScopedValue,
+        dest_scope: &Rc<DataScope>,
+        dest_column_name: &str,
+        dest_field_name: &str,
+    ) -> Result<OtapArrowRecords> {
+        let root_batch = match otap_batch.root_record_batch() {
+            Some(rb) => rb,
+            None => {
+                // nothing to do
+                return Ok(otap_batch);
+            }
+        };
+
+        let column_supports_dict_encoding =
+            nested_struct_field_supports_dict_encoding(dest_column_name, dest_field_name);
+
+        if let ColumnarValue::Array(values) = &scoped_value.values {
+            if is_any_value_data_type(values.data_type()) {
+                let coerced = attempt_coerce_value_column_from_any_value_struct_column(values)?;
+                scoped_value.values = ColumnarValue::Array(coerced);
+            }
+        }
+
+        // Coerce static scalar integers to the destination field type (e.g. AnyInt literal → UInt32).
+        // Mirrors the same cast done in assign_to_root.
+        if let Some(dest_logical_type) = nested_struct_field_type(dest_field_name) {
+            if let Some(dest_arrow_type) = dest_logical_type.datatype() {
+                if scoped_value.scope == DataScope::StaticScalar
+                    && scoped_value.values.data_type().is_integer()
+                    && dest_arrow_type.is_integer()
+                {
+                    scoped_value.values = scoped_value.values.cast_to(&dest_arrow_type, None)?;
+                }
+            }
+        }
+
+        let mut values = eval_result_to_array(
+            &scoped_value.values,
+            column_supports_dict_encoding,
+            root_batch.num_rows(),
+        )?;
+
+        // Check if the source rows are already aligned with the root batch rows.
+        // Scalars broadcast to any row count; Root and RootParent both live in the root batch
+        // so their row order matches. If the source is an Attributes batch, it has fewer rows
+        // (one per scope/resource) than the root batch (one per log/span/metric), so we need
+        // a join to expand and reorder the values to match the root batch row count.
+        let already_aligned = scoped_value.scope.is_scalar()
+            || &scoped_value.scope == dest_scope.as_ref()
+            || matches!(
+                scoped_value.scope,
+                DataScope::Root | DataScope::RootParent(_)
+            );
+
+        if !already_aligned {
+            let DataScope::Attribute(attrs_id, _) = scoped_value.scope else {
+                unreachable!("unexpected data_scope")
+            };
+
+            let join_exec = RootToAttributesJoin::new(attrs_id);
+            let vals_take_indices = join_exec.rows_to_take(
+                &JoinInput::new(
+                    ColumnarValue::Scalar(ScalarValue::Null),
+                    Rc::clone(dest_scope),
+                    root_batch,
+                ),
+                &scoped_value_to_join_input(scoped_value, &otap_batch)?,
+                &OtapArrowRecords::Logs(Logs::default()),
+            )?;
+
+            values = take(&values, &vals_take_indices, None)?;
+        }
+
+        otap_batch.set(
+            otap_batch.root_payload_type(),
+            try_upsert_struct_col(dest_column_name, dest_field_name, values, root_batch)?,
+        )?;
+
+        Ok(otap_batch)
+    }
+
     fn assign_to_attributes(
         &mut self,
         mut otap_batch: OtapArrowRecords,
-        eval_results: &mut [Option<PhysicalExprEvalResult>],
+        eval_results: &mut [Option<ScopedValue>],
         dest_attrs_id: AttributesIdentifier,
     ) -> Result<OtapArrowRecords> {
         let root_record_batch = match otap_batch.root_record_batch() {
@@ -516,11 +666,11 @@ impl AssignPipelineStage {
                 unreachable!("invalid column accessor variant")
             };
 
-            // if the evaluation was of the expression turned out to be null, we'll create
+            // if the evaluation of the expression turned out to be null, we'll create
             // empty attributes from the Null scalar value.
-            let mut eval_result = eval_result
+            let mut scoped_value = eval_result
                 .take()
-                .unwrap_or_else(|| PhysicalExprEvalResult::new_scalar(ScalarValue::Null));
+                .unwrap_or_else(|| ScopedValue::new_scalar(ScalarValue::Null));
 
             // determine for which rows will be treated as an attribute "update", and which will
             // be treated as an "insert" (create new attributes)
@@ -569,33 +719,37 @@ impl AssignPipelineStage {
             // Attempt to coerce the AnyValue into a single column. In this case, we do this as an
             // optimization: this makes the join faster because we can take fewer columns, and it
             // also makes it so we avoid entering `decompose_any_value_upsert` upsert.
-            if let ColumnarValue::Array(ref arr) = eval_result.values {
+            if let ColumnarValue::Array(ref arr) = scoped_value.values {
                 if is_any_value_data_type(arr.data_type()) {
                     let coerced_value_col =
                         attempt_coerce_value_column_from_any_value_struct_column(arr)?;
-                    eval_result.values = ColumnarValue::Array(coerced_value_col);
+                    scoped_value.values = ColumnarValue::Array(coerced_value_col);
                 }
             }
 
-            let aligned_values = if let ColumnarValue::Scalar(s) = eval_result.values {
+            let aligned_values = if let ColumnarValue::Scalar(s) = scoped_value.values {
                 // if it's a scalar, there's actually no alignment needed
                 ColumnarValue::Scalar(s)
             } else {
-                // align the row-order of the result with the row-order that they will be inserted into
-                // the resulting record batch.
-                let ColumnarValue::Array(result_values) = &eval_result.values else {
-                    // safety: this is the else block of an if statement where we've tried to check if
-                    // this is a scalar. Since we've determined it's not scalar, it must be array.
+                // align the row-order of the result with the row-order that they will be inserted
+                // into the resulting record batch.
+                //
+                // the ScopedValue converted to a JoinInput below. The conversion consumes the it,
+                // so extract the values array first
+                let eval_result = scoped_value_to_join_input(scoped_value, &otap_batch)?;
+                let ColumnarValue::Array(ref result_values) = eval_result.values else {
                     unreachable!("expected ColumnarResult::Array")
                 };
-                let left_join_input = &PhysicalExprEvalResult::new_with_parent_ids(
+
+                let left_join_input = &JoinInput::new_with_parent_ids(
                     ColumnarValue::Scalar(ScalarValue::Null), // empty placeholder,
                     Rc::clone(&self.dest_scopes[i]),
                     &parent_ids,
                 );
 
                 let vals_take_indices = match eval_result.data_scope.as_ref() {
-                    DataScope::Attributes(result_attrs_id, _) => {
+                    DataScope::Attribute(result_attrs_id, _)
+                    | DataScope::AttributesAll(result_attrs_id) => {
                         if dest_attrs_id == *result_attrs_id {
                             AttributeToSameAttributeJoin::new().rows_to_take(
                                 left_join_input,
@@ -607,11 +761,8 @@ impl AssignPipelineStage {
                                 .rows_to_take(left_join_input, &eval_result, &otap_batch)?
                         }
                     }
-                    DataScope::Root => RootAttrsToRootJoin::new().rows_to_take(
-                        left_join_input,
-                        &eval_result,
-                        &otap_batch,
-                    )?,
+                    DataScope::Root | DataScope::RootParent(_) => RootAttrsToRootJoin::new()
+                        .rows_to_take(left_join_input, &eval_result, &otap_batch)?,
                     DataScope::StaticScalar => {
                         // safety: if the data scope was scalar, the result would have also been a
                         // Scalar which would have been handled above where we checked the
@@ -620,7 +771,7 @@ impl AssignPipelineStage {
                     }
                 };
 
-                ColumnarValue::Array(take(&result_values, &vals_take_indices, None)?)
+                ColumnarValue::Array(take(result_values, &vals_take_indices, None)?)
             };
 
             // If the expression produced an AnyValue struct and we were not already able to
@@ -780,7 +931,7 @@ impl PipelineStage for AssignPipelineStage {
 
             let mut eval_results = Vec::new();
             for source in &mut self.sources {
-                let eval_result = source.execute(&otap_batch, session_context)?;
+                let eval_result = source.execute_as_value(&otap_batch, session_context)?;
                 eval_results.push(eval_result);
             }
             let result = self.assign_to_attributes(otap_batch, &mut eval_results, *attrs_id)?;
@@ -792,26 +943,37 @@ impl PipelineStage for AssignPipelineStage {
         // support bulk assignment so we just evaluate the expressions and update the columns
         // one at a time
         for i in 0..self.sources.len() {
-            let dest_col_name = match &self.dest_columns[i] {
-                ColumnAccessor::ColumnName(col_name) => col_name,
-                other_dest => {
-                    return Err(Error::NotYetSupportedError {
-                        message: format!(
-                            "assignment to column destination {:?} not yet supported",
-                            other_dest
+            let eval_result = self.sources[i].execute_as_value(&otap_batch, session_context)?;
+            let dest_scope = &self.dest_scopes[i];
+            match &self.dest_columns[i] {
+                ColumnAccessor::ColumnName(dest_col_name) => {
+                    otap_batch = match eval_result {
+                        Some(eval_result) => {
+                            self.assign_to_root(otap_batch, eval_result, dest_scope, dest_col_name)
+                        }
+                        None => self.assign_null_root_column(otap_batch, dest_col_name),
+                    }?;
+                }
+                ColumnAccessor::StructCol(struct_col_name, field_name) => {
+                    otap_batch = match eval_result {
+                        Some(eval_result) => self.assign_to_struct_column(
+                            otap_batch,
+                            eval_result,
+                            dest_scope,
+                            struct_col_name,
+                            field_name,
                         ),
-                    });
+                        None => {
+                            self.assign_null_struct_field(otap_batch, struct_col_name, field_name)
+                        }
+                    }?;
+                }
+                ColumnAccessor::Attributes(_, _) => {
+                    unreachable!(
+                        "attributes assignment should be handled separately before this loop"
+                    )
                 }
             };
-
-            let eval_result = self.sources[i].execute(&otap_batch, session_context)?;
-            let dest_scope = &self.dest_scopes[i];
-            otap_batch = match eval_result {
-                Some(eval_result) => {
-                    self.assign_to_root(otap_batch, eval_result, dest_scope, dest_col_name)
-                }
-                None => self.assign_null_root_column(otap_batch, dest_col_name),
-            }?;
         }
 
         Ok(otap_batch)
@@ -987,7 +1149,7 @@ impl PipelineStage for AssignPipelineStage {
 
             // remove dict encoding if necessary. This would be needed for certain expressions such
             // as arithmetic
-            if self.sources[0].projection_opts.downcast_dicts {
+            if leaf_requires_dict_downcast(&self.sources[0]) {
                 Projection::try_downcast_dicts(&mut fields, &mut columns)?
             }
 
@@ -1009,9 +1171,9 @@ impl PipelineStage for AssignPipelineStage {
 
         // determine the "logical" type of the result (e.g. the array type, or the values if the
         // result happens to be dictionary encoded.
-        let mut result_logical_type = result.data_type();
-        if let DataType::Dictionary(_, v) = result_logical_type {
-            result_logical_type = v.as_ref();
+        let mut result_logical_type = result.data_type().clone();
+        if let DataType::Dictionary(_, v) = &result_logical_type {
+            result_logical_type = v.as_ref().clone();
         }
 
         // prepare insert the result into the record batch by determining the column name and
@@ -1356,6 +1518,36 @@ fn decompose_any_value_upsert<'a>(
     Ok(upserts)
 }
 
+/// Check if the top-level `Eval(DatafusionExpr)` node's projection references a given column.
+///
+/// Returns `true` if this is an `Eval(DatafusionExpr)` node whose projection includes the
+/// specified column name. For non-`Eval` nodes or `BatchPredicate` leaves, returns `false`.
+fn projection_references_column(expr: &ScopedExpr, col_name: &str) -> bool {
+    match expr {
+        ScopedExpr::Eval {
+            eval: LeafEval::DatafusionExpr { projection, ..  },
+            ..
+        } => projection.schema.iter().any(|projected_col| {
+            matches!(projected_col, ProjectedSchemaColumn::Root(name) if name == col_name)
+        }),
+        _ => false,
+    }
+}
+
+/// Returns the `downcast_dicts` option from the inner `LeafEval::DatafusionExpr` projection
+/// options, if this is an `Eval(DatafusionExpr)` node. Returns `false` otherwise.
+pub(crate) fn leaf_requires_dict_downcast(expr: &ScopedExpr) -> bool {
+    match expr {
+        ScopedExpr::Eval {
+            eval: LeafEval::DatafusionExpr {
+                projection_opts, ..
+            },
+            ..
+        } => projection_opts.downcast_dicts,
+        _ => false,
+    }
+}
+
 /// Validate that the results of the passed expression can be assigned to the destination.
 /// There are multiple validations performed:
 ///
@@ -1386,7 +1578,7 @@ fn decompose_any_value_upsert<'a>(
 fn validate_assign(
     dest_column: &ColumnAccessor,
     dest_query_location: Option<&QueryLocation>,
-    source_logical_plan: &ScopedLogicalExpr,
+    source_plan: &PlannedOp,
 ) -> Result<()> {
     match dest_column {
         ColumnAccessor::ColumnName(col_name) => {
@@ -1400,7 +1592,7 @@ fn validate_assign(
                     query_location: dest_query_location.cloned(),
                 })?;
 
-            let source_type = &source_logical_plan.expr_type;
+            let source_type = &source_plan.expr_type;
             if !can_assign_type(&dest_type, source_type) {
                 return Err(Error::InvalidPipelineError {
                     cause: format!(
@@ -1410,31 +1602,51 @@ fn validate_assign(
                 });
             }
         }
-        ColumnAccessor::Attributes(dest_attrs_id, _) => {
-            if !can_assign_type(&ExprLogicalType::AnyValue, &source_logical_plan.expr_type) {
+        ColumnAccessor::StructCol(struct_name, field_name) => {
+            if !is_valid_struct_field(struct_name, field_name) {
                 return Err(Error::InvalidPipelineError {
                     cause: format!(
-                        "cannot assign expression of type {:?} to type AnyValue",
-                        source_logical_plan.expr_type
+                        "cannot assign to field '{field_name}' on struct column '{struct_name}'"
                     ),
                     query_location: dest_query_location.cloned(),
                 });
             }
 
-            validate_attribute_assign_cardinality(
-                *dest_attrs_id,
+            let dest_type = nested_struct_field_type(field_name).ok_or_else(|| {
+                Error::InvalidPipelineError {
+                    cause: format!("cannot assign to non-existent struct field '{field_name}'"),
+                    query_location: dest_query_location.cloned(),
+                }
+            })?;
+
+            let source_type = &source_plan.expr_type;
+            if !can_assign_type(&dest_type, source_type) {
+                return Err(Error::InvalidPipelineError {
+                    cause: format!(
+                        "cannot assign expression of type {source_type:?} to type {dest_type:?}"
+                    ),
+                    query_location: dest_query_location.cloned(),
+                });
+            }
+
+            validate_struct_col_assign_cardinality(
+                struct_name,
                 dest_query_location,
-                source_logical_plan,
+                &source_plan.expr,
             )?;
         }
-        other_dest => {
-            // TODO other assignment destinations will be supported soon
-            return Err(Error::NotYetSupportedError {
-                message: format!(
-                    "assignment to column destination {:?} not yet supported",
-                    other_dest
-                ),
-            });
+        ColumnAccessor::Attributes(dest_attrs_id, _) => {
+            if !can_assign_type(&ExprLogicalType::AnyValue, &source_plan.expr_type) {
+                return Err(Error::InvalidPipelineError {
+                    cause: format!(
+                        "cannot assign expression of type {:?} to type AnyValue",
+                        source_plan.expr_type
+                    ),
+                    query_location: dest_query_location.cloned(),
+                });
+            }
+
+            validate_expr_cardinality(*dest_attrs_id, dest_query_location, &source_plan.expr)?;
         }
     }
 
@@ -1447,28 +1659,33 @@ fn validate_assign(
 /// For example, if we had an expression like `resource.attributes["x"] = event_name`, because
 /// there can be many logs with different events to a single resource, it is ambiguous what the
 /// actual value should be and os we consider this an invalid expression
-fn validate_attribute_assign_cardinality(
+///
+/// This walks the `ScopedExpr` tree and checks the `DataScope` at each `Eval` leaf. For non-root
+/// attribute destinations, root-scoped data and bitmap operations (which produce root-scoped
+/// booleans) are invalid because of the one-to-many relationship.
+fn validate_expr_cardinality(
     dest_attrs_id: AttributesIdentifier,
     dest_query_location: Option<&QueryLocation>,
-    source_logical_plan: &ScopedLogicalExpr,
+    expr: &ScopedExpr,
 ) -> Result<()> {
     if dest_attrs_id == AttributesIdentifier::Root {
-        // root attributes has no 1:many relations
+        // root attributes have no 1:many relations
         return Ok(());
     }
 
-    match &source_logical_plan.source {
-        LogicalExprDataSource::DataSource(data_scope) => {
-            let is_valid = match data_scope {
+    match expr {
+        ScopedExpr::Eval { scope, .. } => {
+            let is_valid = match scope {
                 // always valid to assign a scalar
                 DataScope::StaticScalar => true,
 
                 // we've already determined we're not assigning to a root attribute, so the
                 // destination must be something that has a one:many relationship with root like
                 // resource or scope
-                DataScope::Root => false,
+                DataScope::Root | DataScope::RootParent(_) => false,
 
-                DataScope::Attributes(source_attrs_id, _) => {
+                DataScope::Attribute(source_attrs_id, _)
+                | DataScope::AttributesAll(source_attrs_id) => {
                     dest_attrs_id == *source_attrs_id
                         || matches!(
                             dest_attrs_id,
@@ -1481,23 +1698,130 @@ fn validate_attribute_assign_cardinality(
             };
 
             if !is_valid {
-                // we didn't return, so must be invalid
                 return Err(Error::InvalidPipelineError {
                     cause: format!(
-                        "cannot assign data scope {data_scope:?} to \
+                        "cannot assign data scope {scope:?} to \
                                 attributes {dest_attrs_id:?}"
                     ),
                     query_location: dest_query_location.cloned(),
                 });
             }
         }
-        LogicalExprDataSource::Join(left, right) => {
-            validate_attribute_assign_cardinality(dest_attrs_id, dest_query_location, left)?;
-            validate_attribute_assign_cardinality(dest_attrs_id, dest_query_location, right)?;
-        }
-        LogicalExprDataSource::MultiJoin(children) => {
+        ScopedExpr::JoinAndEval { children, .. } => {
             for child in children {
-                validate_attribute_assign_cardinality(dest_attrs_id, dest_query_location, child)?;
+                validate_expr_cardinality(dest_attrs_id, dest_query_location, child)?;
+            }
+        }
+        ScopedExpr::BitmapAnd(left, right) | ScopedExpr::BitmapOr(left, right) => {
+            validate_expr_cardinality(dest_attrs_id, dest_query_location, left)?;
+            validate_expr_cardinality(dest_attrs_id, dest_query_location, right)?;
+        }
+        ScopedExpr::BitmapNot(child) => {
+            validate_expr_cardinality(dest_attrs_id, dest_query_location, child)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Returns true if the given field is a valid assignable field on the given struct column.
+///
+/// `id` fields are excluded as they are internal OTAP identifiers and should not be
+/// modified by users.
+fn is_valid_struct_field(struct_name: &str, field_name: &str) -> bool {
+    matches!(
+        (struct_name, field_name),
+        (consts::RESOURCE, consts::SCHEMA_URL)
+            | (consts::RESOURCE, consts::DROPPED_ATTRIBUTES_COUNT)
+            | (consts::SCOPE, consts::NAME)
+            | (consts::SCOPE, consts::VERSION)
+            | (consts::SCOPE, consts::DROPPED_ATTRIBUTES_COUNT)
+    )
+}
+
+/// Returns true if the given struct field supports dictionary encoding for the given payload type.
+fn nested_struct_field_supports_dict_encoding(struct_name: &str, field_name: &str) -> bool {
+    matches!(
+        (struct_name, field_name),
+        (consts::RESOURCE, consts::SCHEMA_URL)
+            | (consts::SCOPE, consts::NAME)
+            | (consts::SCOPE, consts::VERSION)
+    )
+}
+
+/// Validates that assigning to a struct column field does not involve a 1:many relationship.
+///
+/// The hierarchy is RESOURCE (highest) > SCOPE > LOG/SPAN/METRIC (lowest).
+/// Source data from a lower level cannot be assigned to a higher-level struct field because
+/// one resource/scope row maps to many log rows, making the value ambiguous.
+fn validate_struct_col_assign_cardinality(
+    dest_struct_name: &str,
+    dest_query_location: Option<&QueryLocation>,
+    source_plan: &ScopedExpr,
+) -> Result<()> {
+    match source_plan {
+        ScopedExpr::Eval { scope, .. } => {
+            let is_valid = match scope {
+                DataScope::StaticScalar => true,
+                // root (log/span/metric level) is always lower than resource or scope
+                DataScope::Root => false,
+                DataScope::RootParent(source_parent) => match dest_struct_name {
+                    consts::RESOURCE => {
+                        matches!(source_parent, RootParentStruct::Resource)
+                    }
+                    consts::SCOPE => matches!(
+                        source_parent,
+                        RootParentStruct::Resource | RootParentStruct::Scope
+                    ),
+                    _ => false,
+                },
+                DataScope::Attribute(source_attrs_id, _)
+                | DataScope::AttributesAll(source_attrs_id) => match dest_struct_name {
+                    consts::RESOURCE => matches!(
+                        source_attrs_id,
+                        AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs)
+                    ),
+                    consts::SCOPE => matches!(
+                        source_attrs_id,
+                        AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs)
+                            | AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs)
+                    ),
+                    _ => false,
+                },
+            };
+
+            if !is_valid {
+                return Err(Error::InvalidPipelineError {
+                    cause: format!(
+                        "cannot assign data scope {scope:?} to \
+                        struct column {dest_struct_name}"
+                    ),
+                    query_location: dest_query_location.cloned(),
+                });
+            }
+        }
+        ScopedExpr::BitmapAnd(left, right) | ScopedExpr::BitmapOr(left, right) => {
+            validate_struct_col_assign_cardinality(
+                dest_struct_name,
+                dest_query_location,
+                left.as_ref(),
+            )?;
+            validate_struct_col_assign_cardinality(
+                dest_struct_name,
+                dest_query_location,
+                right.as_ref(),
+            )?;
+        }
+        ScopedExpr::BitmapNot(inverted) => {
+            validate_struct_col_assign_cardinality(dest_struct_name, dest_query_location, inverted)?
+        }
+        ScopedExpr::JoinAndEval { children, .. } => {
+            for child in children {
+                validate_struct_col_assign_cardinality(
+                    dest_struct_name,
+                    dest_query_location,
+                    child,
+                )?;
             }
         }
     }
@@ -1670,12 +1994,71 @@ fn try_upsert_column(
     new_column: ArrayRef,
     record_batch: &RecordBatch,
 ) -> Result<RecordBatch> {
-    let mut columns = record_batch.columns().to_vec();
-    let schema = record_batch.schema();
-    let fields = schema.fields();
+    let (fields, columns) = try_upsert_array_in_columns(
+        column_name,
+        new_column,
+        record_batch.schema().fields(),
+        record_batch.columns().to_vec(),
+    )?;
+
+    Ok(RecordBatch::try_new(
+        Arc::new(Schema::new(fields)),
+        columns,
+    )?)
+}
+
+fn try_upsert_struct_col(
+    struct_column_name: &str,
+    field_name: &str,
+    new_column: ArrayRef,
+    record_batch: &RecordBatch,
+) -> Result<RecordBatch> {
+    let rb_schema = record_batch.schema_ref();
+    let rb_fields = rb_schema.fields();
+    let maybe_found_column = rb_fields.find(struct_column_name);
+    let new_struct_col = if let Some((rb_col_index, current_field)) = maybe_found_column {
+        // upsert the column on the existing struct field
+        let struct_col = record_batch.column(rb_col_index);
+        let (new_struct_fields, new_struct_columns) =
+            if let DataType::Struct(struct_fields) = current_field.data_type() {
+                try_upsert_array_in_columns(
+                    field_name,
+                    new_column,
+                    struct_fields,
+                    struct_col.as_struct().columns().to_vec(),
+                )?
+            } else {
+                return Err(Error::ExecutionError {
+                    cause: format!(
+                        "expected struct column '{struct_column_name}' to have DataType::Struct, \
+                        found {:?}",
+                        current_field.data_type()
+                    ),
+                });
+            };
+
+        StructArray::new(
+            new_struct_fields,
+            new_struct_columns,
+            struct_col.nulls().cloned(),
+        )
+    } else {
+        // struct column doesn't exist yet - create it with just this one field
+        let new_field = Arc::new(Field::new(field_name, new_column.data_type().clone(), true));
+        StructArray::new(Fields::from(vec![new_field]), vec![new_column], None)
+    };
+
+    try_upsert_column(struct_column_name, Arc::new(new_struct_col), record_batch)
+}
+
+fn try_upsert_array_in_columns(
+    column_name: &str,
+    new_column: ArrayRef,
+    fields: &Fields,
+    mut columns: Vec<ArrayRef>,
+) -> Result<(Fields, Vec<ArrayRef>)> {
     let maybe_found_column = fields.find(column_name);
     let mut fields = fields.to_vec();
-
     if let Some((target_col_index, current_field)) = maybe_found_column {
         // check that we're not assigning a column with nulls to a non-nullable column
         if !current_field.is_nullable() && new_column.null_count() != 0 {
@@ -1723,10 +2106,7 @@ fn try_upsert_column(
         columns.push(new_column)
     }
 
-    Ok(RecordBatch::try_new(
-        Arc::new(Schema::new(fields)),
-        columns,
-    )?)
+    Ok((fields.into(), columns))
 }
 
 #[cfg(test)]
@@ -2966,6 +3346,715 @@ mod test {
                 panic!("expected error, received Ok")
             }
         }
+    }
+
+    async fn test_insert_scalar_to_struct_col<P: Parser>() {
+        let logs_data = LogsData {
+            resource_logs: vec![ResourceLogs::new(
+                Resource::default(),
+                vec![
+                    ScopeLogs::new(
+                        InstrumentationScope::build().name("scope1").finish(),
+                        vec![LogRecord::build().event_name("event1").finish()],
+                    ),
+                    ScopeLogs::new(
+                        InstrumentationScope::build().name("scope2").finish(),
+                        vec![LogRecord::build().event_name("event2").finish()],
+                    ),
+                ],
+            )],
+        };
+
+        let input_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let pipeline_expr = P::parse("logs | extend instrumentation_scope.name = \"new_name\"")
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(input_batch).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let resource_0 = &result_logs_data.resource_logs[0];
+        let expected = vec![
+            ScopeLogs::new(
+                InstrumentationScope::build().name("new_name").finish(),
+                vec![LogRecord::build().event_name("event1").finish()],
+            ),
+            ScopeLogs::new(
+                InstrumentationScope::build().name("new_name").finish(),
+                vec![LogRecord::build().event_name("event2").finish()],
+            ),
+        ];
+        assert_eq!(resource_0.scope_logs, expected);
+    }
+
+    #[tokio::test]
+    async fn test_insert_scalar_to_struct_col_opl_parser() {
+        test_insert_scalar_to_struct_col::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_insert_scalar_to_struct_col_kql_parser() {
+        test_insert_scalar_to_struct_col::<KqlParser>().await
+    }
+
+    async fn test_struct_str_assign_from_actual_bigger_struct_str<P: Parser>() {
+        let logs_data = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::default(),
+                vec![
+                    ScopeLogs::new(
+                        InstrumentationScope::build().name("scope1").finish(),
+                        vec![LogRecord::build().event_name("event1").finish()],
+                    ),
+                    ScopeLogs::new(
+                        InstrumentationScope::build().name("scope2").finish(),
+                        vec![LogRecord::build().event_name("event2").finish()],
+                    ),
+                ],
+            )
+            .set_schema_url("schema_url_1"),
+            ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build().name("scope3").finish(),
+                    vec![LogRecord::build().event_name("event3").finish()],
+                )],
+            )
+            .set_schema_url("schema_url_2"),
+        ]);
+
+        let query = "logs | extend instrumentation_scope.name = resource.schema_url";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let resource_0 = &result_logs_data.resource_logs[0];
+        let expected = vec![
+            ScopeLogs::new(
+                InstrumentationScope::build().name("schema_url_1").finish(),
+                vec![LogRecord::build().event_name("event1").finish()],
+            ),
+            ScopeLogs::new(
+                InstrumentationScope::build().name("schema_url_1").finish(),
+                vec![LogRecord::build().event_name("event2").finish()],
+            ),
+        ];
+        assert_eq!(resource_0.scope_logs, expected);
+
+        let resource_1 = &result_logs_data.resource_logs[1];
+        let expected = vec![ScopeLogs::new(
+            InstrumentationScope::build().name("schema_url_2").finish(),
+            vec![LogRecord::build().event_name("event3").finish()],
+        )];
+        assert_eq!(resource_1.scope_logs, expected);
+    }
+
+    #[tokio::test]
+    async fn test_struct_str_assign_from_actual_bigger_struct_str_opl_parser() {
+        test_struct_str_assign_from_actual_bigger_struct_str::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_struct_str_assign_from_actual_bigger_struct_str_kql_parser() {
+        test_struct_str_assign_from_actual_bigger_struct_str::<KqlParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_struct_str_assign_fails_from_smaller_struct_str() {
+        let logs_data = to_logs_data(vec![LogRecord::build().event_name("event1").finish()]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let query = "logs | extend resource.schema_url = instrumentation_scope.name";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let err = pipeline.execute(input).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("cannot assign data scope RootParent(Scope) to struct column resource"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_struct_str_assign_fails_from_root_str() {
+        let logs_data = to_logs_data(vec![LogRecord::build().event_name("event1").finish()]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let query = "logs | extend instrumentation_scope.name = event_name";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let err = pipeline.execute(input).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("cannot assign data scope Root to struct column scope"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    async fn test_struct_str_assign_from_self_attribute<P: Parser>() {
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![
+                ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .name("scope1")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                        .finish(),
+                    vec![LogRecord::build().event_name("event1").finish()],
+                ),
+                ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .name("scope2")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                        .finish(),
+                    vec![LogRecord::build().event_name("event2").finish()],
+                ),
+            ],
+        )]);
+
+        let query =
+            "logs | extend instrumentation_scope.name = instrumentation_scope.attributes[\"key\"]";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let resource_0 = &result_logs_data.resource_logs[0];
+        let expected = vec![
+            ScopeLogs::new(
+                InstrumentationScope::build()
+                    .name("val1")
+                    .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                    .finish(),
+                vec![LogRecord::build().event_name("event1").finish()],
+            ),
+            ScopeLogs::new(
+                InstrumentationScope::build()
+                    .name("val2")
+                    .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                    .finish(),
+                vec![LogRecord::build().event_name("event2").finish()],
+            ),
+        ];
+        assert_eq!(resource_0.scope_logs, expected);
+    }
+
+    #[tokio::test]
+    async fn test_struct_str_assign_from_self_attribute_opl_parser() {
+        test_struct_str_assign_from_self_attribute::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_struct_str_assign_from_self_attribute_kql_parser() {
+        test_struct_str_assign_from_self_attribute::<KqlParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_struct_str_assign_fails_from_smaller_attribute() {
+        let logs_data = to_logs_data(vec![LogRecord::build().event_name("event1").finish()]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let query = "logs | extend resource.schema_url = instrumentation_scope.attributes[\"key\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let err = pipeline.execute(input).await.unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "cannot assign data scope Attribute(NonRoot(ScopeAttrs), \"key\") to struct column resource"
+            ),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    async fn test_struct_str_assign_from_bigger_struct_str<P: Parser>() {
+        let logs_data = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new(
+                        "name",
+                        AnyValue::new_string("resource1"),
+                    )])
+                    .finish(),
+                vec![
+                    ScopeLogs::new(
+                        InstrumentationScope::build().name("scope1").finish(),
+                        vec![LogRecord::build().event_name("event1").finish()],
+                    ),
+                    ScopeLogs::new(
+                        InstrumentationScope::build().name("scope2").finish(),
+                        vec![LogRecord::build().event_name("event2").finish()],
+                    ),
+                ],
+            ),
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new(
+                        "name",
+                        AnyValue::new_string("resource2"),
+                    )])
+                    .finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build().name("scope3").finish(),
+                    vec![LogRecord::build().event_name("event3").finish()],
+                )],
+            ),
+        ]);
+
+        let query = "logs | extend instrumentation_scope.name = resource.attributes[\"name\"]";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let resource_0 = &result_logs_data.resource_logs[0];
+        let expected = vec![
+            ScopeLogs::new(
+                InstrumentationScope::build().name("resource1").finish(),
+                vec![LogRecord::build().event_name("event1").finish()],
+            ),
+            ScopeLogs::new(
+                InstrumentationScope::build().name("resource1").finish(),
+                vec![LogRecord::build().event_name("event2").finish()],
+            ),
+        ];
+        assert_eq!(resource_0.scope_logs, expected);
+
+        let resource_1 = &result_logs_data.resource_logs[1];
+        let expected = vec![ScopeLogs::new(
+            InstrumentationScope::build().name("resource2").finish(),
+            vec![LogRecord::build().event_name("event3").finish()],
+        )];
+        assert_eq!(resource_1.scope_logs, expected);
+    }
+
+    #[tokio::test]
+    async fn test_struct_str_assign_from_bigger_struct_str_opl_parser() {
+        test_struct_str_assign_from_bigger_struct_str::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_struct_str_assign_from_bigger_struct_str_kql_parser() {
+        test_struct_str_assign_from_bigger_struct_str::<KqlParser>().await
+    }
+
+    async fn test_struct_col_assign_fails_on_wrong_type<P: Parser>() {
+        let logs_data = to_logs_data(vec![LogRecord::build().finish()]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let query = "logs | extend instrumentation_scope.name = 42";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let err = pipeline.execute(input).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("cannot assign expression of type AnyInt to type String"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_struct_col_assign_fails_on_wrong_type_opl_parser() {
+        test_struct_col_assign_fails_on_wrong_type::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_struct_col_assign_fails_on_wrong_type_kql_parser() {
+        test_struct_col_assign_fails_on_wrong_type::<KqlParser>().await
+    }
+
+    async fn test_struct_col_assign_uint32_field<P: Parser>() {
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![
+                ScopeLogs::new(
+                    InstrumentationScope::build().name("scope1").finish(),
+                    vec![LogRecord::build().finish()],
+                ),
+                ScopeLogs::new(
+                    InstrumentationScope::build().name("scope2").finish(),
+                    vec![LogRecord::build().finish()],
+                ),
+            ],
+        )]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let query = "logs | extend instrumentation_scope.dropped_attributes_count = 42";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let resource_0 = &result_logs_data.resource_logs[0];
+        let expected = vec![
+            ScopeLogs::new(
+                InstrumentationScope::build()
+                    .name("scope1")
+                    .dropped_attributes_count(42u32)
+                    .finish(),
+                vec![LogRecord::build().finish()],
+            ),
+            ScopeLogs::new(
+                InstrumentationScope::build()
+                    .name("scope2")
+                    .dropped_attributes_count(42u32)
+                    .finish(),
+                vec![LogRecord::build().finish()],
+            ),
+        ];
+        assert_eq!(resource_0.scope_logs, expected);
+    }
+
+    #[tokio::test]
+    async fn test_struct_col_assign_uint32_field_opl_parser() {
+        test_struct_col_assign_uint32_field::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_struct_col_assign_uint32_field_kql_parser() {
+        test_struct_col_assign_uint32_field::<KqlParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_struct_col_assign_null_removes_nullable_field() {
+        let logs_data = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().finish()],
+                )],
+            )
+            .set_schema_url("existing_url"),
+        ]);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        // resource has no attributes so resource.attributes["x"] evaluates to None,
+        // which triggers assign_null_struct_field for the nullable schema_url field
+        let query = "logs | extend resource.schema_url = resource.attributes[\"x\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        // null assigned to nullable schema_url removes the field "" in OTLP
+        assert_eq!(result_logs_data.resource_logs[0].schema_url, "");
+    }
+
+    async fn test_struct_col_assign_from_func_call_expr<P: Parser>() {
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![
+                ScopeLogs::new(
+                    InstrumentationScope::build().name("scope1_full").finish(),
+                    vec![LogRecord::build().finish()],
+                ),
+                ScopeLogs::new(
+                    InstrumentationScope::build().name("scope2_full").finish(),
+                    vec![LogRecord::build().finish()],
+                ),
+            ],
+        )]);
+
+        let query = "logs | extend instrumentation_scope.name = substring(instrumentation_scope.name, 0, 6)";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let resource_0 = &result_logs_data.resource_logs[0];
+        let expected = vec![
+            ScopeLogs::new(
+                InstrumentationScope::build().name("scope1").finish(),
+                vec![LogRecord::build().finish()],
+            ),
+            ScopeLogs::new(
+                InstrumentationScope::build().name("scope2").finish(),
+                vec![LogRecord::build().finish()],
+            ),
+        ];
+        assert_eq!(resource_0.scope_logs, expected);
+    }
+
+    #[tokio::test]
+    async fn test_struct_col_assign_from_func_call_expr_opl_parser() {
+        test_struct_col_assign_from_func_call_expr::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_struct_col_assign_from_func_call_expr_kql_parser() {
+        test_struct_col_assign_from_func_call_expr::<KqlParser>().await
+    }
+
+    #[test]
+    fn test_try_upsert_struct_col_when_struct_col_absent() {
+        use std::sync::Arc;
+
+        use arrow::array::RecordBatch;
+        use arrow::datatypes::{Field, Schema};
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "event_name",
+            DataType::Utf8,
+            true,
+        )]));
+        let event_names: Arc<dyn Array> = Arc::new(StringArray::from(vec!["event1", "event2"]));
+        let rb = RecordBatch::try_new(schema, vec![event_names]).unwrap();
+
+        let new_col: Arc<dyn Array> = Arc::new(StringArray::from(vec!["url1", "url2"]));
+        let result = super::try_upsert_struct_col("resource", "schema_url", new_col, &rb).unwrap();
+
+        let resource_col = result
+            .column_by_name("resource")
+            .expect("resource struct column should have been created");
+        let DataType::Struct(struct_fields) = resource_col.data_type() else {
+            panic!(
+                "expected Struct data type, got {:?}",
+                resource_col.data_type()
+            );
+        };
+        assert!(
+            struct_fields.find("schema_url").is_some(),
+            "schema_url field should exist in the newly created resource struct"
+        );
+        let resource_struct = resource_col.as_any().downcast_ref::<StructArray>().unwrap();
+        let url_values = resource_struct
+            .column_by_name("schema_url")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(url_values.value(0), "url1");
+        assert_eq!(url_values.value(1), "url2");
+    }
+
+    async fn test_struct_col_assign_when_field_absent<P: Parser>() {
+        // default ResourceLogs has no schema_url, so the resource struct will not have a
+        // schema_url field; assigning to it should add the field
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ]);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let query = "logs | extend resource.schema_url = \"new_url\"";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        assert_eq!(
+            result_logs_data.resource_logs[0].schema_url, "new_url",
+            "schema_url should have been added to the existing resource struct"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_struct_col_assign_when_field_absent_opl_parser() {
+        test_struct_col_assign_when_field_absent::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_struct_col_assign_when_field_absent_kql_parser() {
+        test_struct_col_assign_when_field_absent::<KqlParser>().await
+    }
+
+    async fn test_assign_to_schema_url<P: Parser>() {
+        let logs_data = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().finish()],
+                )],
+            )
+            .set_schema_url("old_url"),
+        ]);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let query = "logs | extend resource.schema_url = \"new_url\"";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        assert_eq!(result_logs_data.resource_logs[0].schema_url, "new_url");
+    }
+
+    #[tokio::test]
+    async fn test_assign_to_schema_url_opl_parser() {
+        test_assign_to_schema_url::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_assign_to_schema_url_kql_parser() {
+        test_assign_to_schema_url::<KqlParser>().await
+    }
+
+    async fn test_assign_multiple_struct_cols<P: Parser>() {
+        let logs_data = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build().name("old_name").finish(),
+                    vec![LogRecord::build().finish()],
+                )],
+            )
+            .set_schema_url("old_url"),
+        ]);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let query = "logs | extend instrumentation_scope.name = \"new_name\", resource.schema_url = \"new_url\"";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let resource_0 = &result_logs_data.resource_logs[0];
+        let expected_schema_url = "new_url";
+        assert_eq!(resource_0.schema_url, expected_schema_url);
+        let expected = vec![ScopeLogs::new(
+            InstrumentationScope::build().name("new_name").finish(),
+            vec![LogRecord::build().finish()],
+        )];
+        assert_eq!(resource_0.scope_logs, expected);
+    }
+
+    #[tokio::test]
+    async fn test_assign_multiple_struct_cols_opl_parser() {
+        test_assign_multiple_struct_cols::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_assign_multiple_struct_cols_kql_parser() {
+        test_assign_multiple_struct_cols::<KqlParser>().await
+    }
+
+    async fn test_struct_col_assign_from_anyvalue<P: Parser>() {
+        let logs_data = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new(
+                        "url",
+                        AnyValue::new_string("resource_url_1"),
+                    )])
+                    .finish(),
+                vec![
+                    ScopeLogs::new(
+                        InstrumentationScope::build().name("scope1").finish(),
+                        vec![LogRecord::build().finish()],
+                    ),
+                    ScopeLogs::new(
+                        InstrumentationScope::build().name("scope2").finish(),
+                        vec![LogRecord::build().finish()],
+                    ),
+                ],
+            ),
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new(
+                        "url",
+                        AnyValue::new_string("resource_url_2"),
+                    )])
+                    .finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build().name("scope3").finish(),
+                    vec![LogRecord::build().finish()],
+                )],
+            ),
+        ]);
+
+        let query = "logs | extend instrumentation_scope.name = resource.attributes[\"url\"]";
+        let pipeline_expr = P::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let resource_0 = &result_logs_data.resource_logs[0];
+        let expected = vec![
+            ScopeLogs::new(
+                InstrumentationScope::build()
+                    .name("resource_url_1")
+                    .finish(),
+                vec![LogRecord::build().finish()],
+            ),
+            ScopeLogs::new(
+                InstrumentationScope::build()
+                    .name("resource_url_1")
+                    .finish(),
+                vec![LogRecord::build().finish()],
+            ),
+        ];
+        assert_eq!(resource_0.scope_logs, expected);
+
+        let resource_1 = &result_logs_data.resource_logs[1];
+        let expected = vec![ScopeLogs::new(
+            InstrumentationScope::build()
+                .name("resource_url_2")
+                .finish(),
+            vec![LogRecord::build().finish()],
+        )];
+        assert_eq!(resource_1.scope_logs, expected);
+    }
+
+    #[tokio::test]
+    async fn test_struct_col_assign_from_anyvalue_opl_parser() {
+        test_struct_col_assign_from_anyvalue::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_struct_col_assign_from_anyvalue_kql_parser() {
+        test_struct_col_assign_from_anyvalue::<KqlParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_struct_col_assign_on_empty_batch() {
+        let query = "logs | extend instrumentation_scope.name = \"new_name\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let input = OtapArrowRecords::Logs(Logs::default());
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        assert_eq!(result, input);
     }
 
     async fn test_upserts_attribute_computed_from_root<P: Parser>() {
@@ -4454,7 +5543,7 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Attributes(Root, \"x\") to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains("cannot assign data scope Attribute(Root, \"x\") to attributes NonRoot(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );
@@ -4467,7 +5556,7 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Attributes(NonRoot(ScopeAttrs), \"x\") to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains("cannot assign data scope Attribute(NonRoot(ScopeAttrs), \"x\") to attributes NonRoot(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );
@@ -4480,7 +5569,7 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Attributes(Root, \"y\") to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains("cannot assign data scope Attribute(Root, \"y\") to attributes NonRoot(ResourceAttrs)"),
             "unexpected error message {}",
             err_msg
         );
@@ -4513,7 +5602,7 @@ mod test {
         let err_msg = err.to_string();
         assert!(
             err_msg.contains(
-                "cannot assign data scope Attributes(Root, \"x\") to attributes NonRoot(ScopeAttrs)"
+                "cannot assign data scope Attribute(Root, \"x\") to attributes NonRoot(ScopeAttrs)"
             ),
             "unexpected error message {}",
             err_msg
@@ -5479,6 +6568,51 @@ mod test {
         );
     }
 
+    #[tokio::test]
+    async fn test_assign_containing_logical_expr() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("attr", AnyValue::new_string("hello"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("attr", AnyValue::new_string("world"))])
+                .finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["result"] = attributes["attr"] == "hello""#;
+        let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let input_attrs = input.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert!(input_attrs.column_by_name(consts::ATTRIBUTE_STR).is_some());
+
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log_0 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log_0.attributes,
+            vec![
+                KeyValue::new("attr", AnyValue::new_string("hello")),
+                KeyValue::new("result", AnyValue::new_bool(true)),
+            ]
+        );
+
+        let log_1 = &result_logs_data.resource_logs[0].scope_logs[0].log_records[1];
+        assert_eq!(
+            log_1.attributes,
+            vec![
+                KeyValue::new("attr", AnyValue::new_string("world")),
+                KeyValue::new("result", AnyValue::new_bool(false)),
+            ]
+        );
+    }
+
     async fn test_update_attr_to_concat_with_delim_with_scalars<P: Parser>(concat_fn_name: &str) {
         let logs_data = to_logs_data(vec![
             LogRecord::build()
@@ -6072,6 +7206,71 @@ mod test {
     #[tokio::test]
     async fn test_update_attr_coalesce_function_call_kql_parser() {
         test_update_attr_coalesce_function_call::<KqlParser>().await
+    }
+
+    /// `coalesce` must use an outer join so spans entirely missing the first attribute
+    /// (no key present, not even an explicit null) are not dropped.
+    async fn test_update_attr_coalesce_missing_attributes<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            // log 0: has attr1 — coalesce picks attr1
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("attr1", AnyValue::new_string("X")),
+                    KeyValue::new("attr2", AnyValue::new_string("Y")),
+                ])
+                .finish(),
+            // log 1: attr1 absent entirely (no key), only attr2 — coalesce must pick attr2
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("attr2", AnyValue::new_string("Z"))])
+                .finish(),
+            // log 2: both absent — coalesce falls through to the literal "foo"
+            LogRecord::build().attributes(vec![]).finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["attr3"] = coalesce(attributes["attr1"], attributes["attr2"], "foo")"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let records = &result_logs_data.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(records.len(), 3, "no logs should be dropped");
+
+        assert_eq!(
+            records[0].attributes,
+            vec![
+                KeyValue::new("attr1", AnyValue::new_string("X")),
+                KeyValue::new("attr2", AnyValue::new_string("Y")),
+                KeyValue::new("attr3", AnyValue::new_string("X")),
+            ]
+        );
+        assert_eq!(
+            records[1].attributes,
+            vec![
+                KeyValue::new("attr2", AnyValue::new_string("Z")),
+                KeyValue::new("attr3", AnyValue::new_string("Z")),
+            ]
+        );
+        assert_eq!(
+            records[2].attributes,
+            vec![KeyValue::new("attr3", AnyValue::new_string("foo"))]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_coalesce_missing_attributes_opl_parser() {
+        test_update_attr_coalesce_missing_attributes::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_coalesce_missing_attributes_kql_parser() {
+        test_update_attr_coalesce_missing_attributes::<KqlParser>().await
     }
 
     async fn test_update_attr_to_lower_case_function_call<P: Parser>() {

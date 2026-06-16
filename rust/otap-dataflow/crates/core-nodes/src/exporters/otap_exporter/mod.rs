@@ -172,8 +172,27 @@ pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    validate_config,
 };
+
+/// Validates the OTAP exporter configuration at config load time.
+///
+/// Runs before any node is started (initial load and live reconfigure), so bad
+/// configuration is rejected fast and attributed to the offending node rather
+/// than surfacing as an opaque client error at startup.
+fn validate_config(config: &Value) -> Result<(), otap_df_config::error::Error> {
+    let cfg: Config = serde_json::from_value(config.clone()).map_err(|e| {
+        otap_df_config::error::Error::InvalidUserConfig {
+            error: e.to_string(),
+        }
+    })?;
+    cfg.grpc
+        .validate()
+        .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+            error: e.to_string(),
+        })?;
+    Ok(())
+}
 
 impl OTAPExporter {
     /// Creates a new OTAPExporter
@@ -199,6 +218,7 @@ impl OTAPExporter {
                 error: e.to_string(),
             }
         })?;
+
         Ok(OTAPExporter::new(pipeline_ctx, config))
     }
 
@@ -374,6 +394,19 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         );
 
         let exporter_id = effect_handler.exporter_id();
+
+        // Run the optional startup check (dns resolution or eager connect) before creating the
+        // lazy channel used for normal runtime traffic.
+        self.config.grpc.run_startup_check().await.map_err(|e| {
+            let source_detail = format_error_sources(&e);
+            Error::ExporterError {
+                exporter: exporter_id.clone(),
+                kind: ExporterErrorKind::Connect,
+                error: format!("startup check failed: {e}"),
+                source_detail,
+            }
+        })?;
+
         let channel = self
             .config
             .grpc

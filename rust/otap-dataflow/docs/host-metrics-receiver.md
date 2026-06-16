@@ -26,7 +26,8 @@ the scraper-per-family shape used by the Collector hostmetrics receiver.
 The v1 receiver must:
 
 - run as a local receiver;
-- collect only host-wide metrics, not per-process time series;
+- collect host-wide metrics by default, with bounded opt-in Linux per-process
+  metrics;
 - support one receiver instance with per-family intervals;
 - apply `root_path` consistently for container host filesystem collection;
 - emit metrics aligned with current OpenTelemetry system metric semantic
@@ -37,10 +38,9 @@ The v1 receiver must:
 
 ## Non-Goals
 
-The v1 receiver does not include:
+The initial receiver scope did not include:
 
-- per-PID process metrics;
-- top-k process metrics;
+- per-PID process metrics by default;
 - grouped process aggregates;
 - eBPF;
 - io_uring;
@@ -83,11 +83,12 @@ architecture. The OTAP receiver deliberately diverges in these areas:
   receiver.
 - Do not use independent scrapers that reread shared Linux sources in the same
   tick. This receiver builds one shared snapshot for the due family set.
-- Do not preserve legacy metric names just because the Collector emits them.
-  For example, the Collector load scraper emits `system.cpu.load_average.*`,
-  but those names are not listed in Semantic Conventions 1.41.0 system metrics.
-- Do not include per-process metrics in v1. The Collector's `process` scraper
-  is useful future reference, but v1 only emits aggregate process metrics.
+- Keep Linux load averages behind explicit configuration while they use the
+  Collector-compatible development names `system.cpu.load_average.*`, which are
+  not listed in Semantic Conventions 1.41.0 system metrics.
+- Keep per-process metrics explicitly opt-in and bounded. The Collector's
+  `process` scraper is useful reference material, but this receiver only emits
+  a small Linux subset guarded by filters and `max_processes`.
 - Do not copy entity-event logs. They are explicitly out of scope for v1.
 
 Collector behavior worth preserving at the boundary: root-path consistency,
@@ -202,7 +203,25 @@ nodes:
             match_type: strict
         processes:
           interval: 60s
-          mode: summary
+          mode: summary_and_per_process
+          process:
+            include:
+              names: ["df_engine", "otelcol"]
+              match_type: strict
+            max_processes: 100
+            labels:
+              pid: true
+              command: true
+              executable_name: true
+              parent_pid: true
+            metrics:
+              cpu_time: true
+              cpu_utilization: true
+              memory_usage: true
+              memory_virtual: true
+              disk_io: true
+              threads: true
+              uptime: true
 ```
 
 Rules:
@@ -213,12 +232,34 @@ Rules:
 - `initial_delay` defaults to zero if omitted.
 - Unknown fields must be rejected with `serde(deny_unknown_fields)`.
 - `include_connection_count: true` is invalid in v1.
-- `processes.mode` only accepts `summary` in v1.
+- `processes.mode` defaults to `summary`. `summary_and_per_process` enables
+  per-process Linux metrics in addition to the aggregate summary.
 - `processes.mode: summary` emits `system.process.count` and
   `system.process.created`; `system.process.count` is limited to registered
   `process.state` values. The v1 implementation emits `running` from
   `/proc/stat`. It parses `procs_blocked` but does not emit it because
   `blocked` is not a registered `process.state` value.
+- `processes.mode: summary_and_per_process` is opt-in and emits the configured
+  subset of `process.cpu.time`, `process.cpu.utilization`,
+  `process.memory.usage`, `process.memory.virtual`, `process.disk.io`,
+  `process.thread.count`, and `process.uptime`. It requires `max_processes` to be
+  greater than zero and tracks CPU deltas by `(pid, start_time)` to avoid PID
+  reuse mixing.
+- `processes.mode: summary_and_per_process` requires
+  `processes.process.labels.pid: true` so two same-command processes cannot emit
+  indistinguishable per-process metric series.
+- Per-process filters match either `process.command` or
+  `process.executable.name`. `process.command` is read from the first
+  `/proc/<pid>/cmdline` argument with lossy UTF-8 conversion when available and
+  falls back to the kernel comm field from `/proc/<pid>/stat`. The emitted
+  `process.executable.name` is the basename of that command value, so strict
+  filters such as `names: ["postgres"]` match `/usr/bin/postgres`.
+- When more processes match than `max_processes`, the receiver emits the top
+  processes by cumulative CPU time, then resident memory, then PID. This is a
+  first-pass cardinality guard, not a complete top-k process feature.
+- Per-process CPU utilization is computed from the previous emitted sample for
+  the same `(pid, start_time)`. A process that moves into the emitted top set
+  after being truncated may not have utilization for its first emitted scrape.
 - The load family is not shown in the default example because Semantic
   Conventions 1.41.0 does not register a load metric. If maintainers choose an
   experimental Linux load metric, add it as an explicit opt-in.
@@ -500,7 +541,7 @@ This table is the implementation checklist. It is intentionally limited to v1.
 | ------ | ------- |
 | CPU | `system.cpu.time`, `system.cpu.physical.count`, `system.cpu.logical.count`, `system.cpu.frequency`; opt-in: `system.cpu.utilization` |
 | Memory | `system.memory.usage`, `system.memory.utilization`, `system.memory.linux.available`, `system.memory.linux.slab.usage`; opt-in: `system.memory.limit`, `system.memory.linux.shared`, Linux hugepage metrics |
-| Load | Linux-specific load metrics, pending semconv registry decision. Do not emit `system.cpu.load_average.*`; those names are not in the current semconv registry. |
+| Load | Opt-in Linux load metrics: `system.cpu.load_average.1m`, `system.cpu.load_average.5m`, `system.cpu.load_average.15m` |
 | Paging/swap | `system.paging.usage`, `system.paging.utilization`, `system.paging.operations`, `system.paging.faults` |
 | System | `system.uptime` |
 | Disk | `system.disk.io`, `system.disk.operations`, `system.disk.io_time`, `system.disk.operation_time`, `system.disk.merged`; opt-in: `system.disk.limit` |
@@ -584,10 +625,12 @@ must stamp the attribute key required by each metric.
 Load average needs special handling. The semconv docs explain that UNIX load
 average is not well standardized and give `system.linux.cpu.load_1m` as an
 example OS-specific name, but Semantic Conventions 1.41.0 does not list a
-registered load metric. Do not ship `system.cpu.load_average.1m`,
-`system.cpu.load_average.5m`, or `system.cpu.load_average.15m`. If maintainers
-choose an experimental Linux load metric for v1, emit raw `/proc/loadavg`
-values as-is; CPU-normalized load can be a future option.
+registered load metric. The receiver therefore keeps load disabled by default.
+When `families.load.enabled` is true, it emits the Collector-compatible
+development gauges `system.cpu.load_average.1m`,
+`system.cpu.load_average.5m`, and `system.cpu.load_average.15m` with unit
+`{thread}`. Values are raw `/proc/loadavg` values; CPU-normalized load can be a
+future option.
 
 Do not emit `system.filesystem.inodes.usage`; the Collector has that metric, but
 it is not present in Semantic Conventions 1.41.0. If network connection counts
@@ -744,5 +787,6 @@ all Linux collectors are added.
 ## Open Decisions
 
 1. Whether v1 should include an experimental Linux load metric name or defer the
-   load family until a registered semantic convention exists. Do not emit the
-   Collector's legacy `system.cpu.load_average.*` names.
+   load family until a registered semantic convention exists. Current behavior
+   emits the Collector-compatible `system.cpu.load_average.*` names only when
+   `families.load.enabled` is true.

@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<!--
+  Copyright The OpenTelemetry Authors
+  SPDX-License-Identifier: Apache-2.0
+
+  OPL Playground — interactive web UI for executing OPL programs against
+  OpenTelemetry data.  Uses protobuf.js (CDN) to encode/decode OTLP messages
+  in the browser, sending binary protobuf to the Rust backend for execution.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OPL Playground</title>
+<style>
+:root {
+  --bg: #1e1e2e;
+  --surface: #282840;
+  --border: #3e3e5e;
+  --text: #cdd6f4;
+  --dim: #888ea8;
+  --accent: #89b4fa;
+  --accent2: #b4d0fb;
+  --err: #f38ba8;
+  --mono: "SF Mono","Cascadia Code","Fira Code",Consolas,monospace;
+  --sans: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{font-family:var(--sans);background:var(--bg);color:var(--text);display:flex;flex-direction:column}
+
+/* header */
+header{display:flex;align-items:center;gap:1rem;padding:.5rem 1rem;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+header h1{font-size:1rem;font-weight:600;color:var(--accent);white-space:nowrap}
+.controls{display:flex;align-items:center;gap:.75rem;flex:1}
+select,button{font-family:var(--sans);font-size:.8125rem;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:.35rem .6rem;cursor:pointer}
+select:hover,button:hover{border-color:var(--accent)}
+.primary{background:var(--accent);color:var(--bg);font-weight:600;border-color:var(--accent)}
+.primary:hover{background:var(--accent2)}
+.primary:disabled{opacity:.5;cursor:not-allowed}
+
+/* query bar */
+.qbar{display:flex;align-items:flex-start;gap:.5rem;padding:.5rem 1rem;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+.qbar label{font-size:.75rem;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;padding-top:.45rem}
+#qry{flex:1;font-family:var(--mono);font-size:.875rem;line-height:1.5;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:.4rem .6rem;outline:none;resize:vertical;min-height:2.4rem;max-height:40vh;tab-size:2;field-sizing:content}
+#qry:focus{border-color:var(--accent)}
+
+/* panels */
+.panels{display:flex;flex:1;overflow:hidden}
+.panel{display:flex;flex-direction:column;overflow:hidden}
+.pl{width:40%;border-right:1px solid var(--border)}
+.pr{flex:1}
+.ph{font-size:.6875rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);padding:.4rem .75rem;border-bottom:1px solid var(--border);background:var(--surface);display:flex;align-items:center;gap:.5rem;flex-shrink:0}
+textarea{flex:1;font-family:var(--mono);font-size:.8125rem;line-height:1.5;background:var(--bg);color:var(--text);border:none;padding:.75rem;resize:none;outline:none;tab-size:2}
+
+/* result tabs */
+.rtabs{display:flex;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0}
+.rtab{font-size:.75rem;padding:.4rem .75rem;cursor:pointer;color:var(--dim);border-bottom:2px solid transparent;transition:color .15s;user-select:none}
+.rtab:hover{color:var(--text)}
+.rtab.on{color:var(--accent);border-bottom-color:var(--accent)}
+.rc{flex:1;overflow:auto;padding:.75rem}
+.rp{display:none}
+.rp.on{display:block}
+pre.r{font-family:var(--mono);font-size:.8125rem;line-height:1.5;white-space:pre;word-break:normal}
+.e{color:var(--err)}
+.st{font-size:.75rem;color:var(--dim);margin-left:auto;white-space:nowrap}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:sp .6s linear infinite;vertical-align:middle;margin-right:.4rem}
+@keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>OPL Playground</h1>
+  <div class="controls">
+    <select id="sig">
+      <option value="logs" selected>Logs</option>
+      <option value="traces">Traces</option>
+      <option value="metrics">Metrics</option>
+    </select>
+    <button id="ex-btn">Load Example</button>
+    <button id="run" class="primary" disabled>Loading protos&hellip;</button>
+    <span id="st" class="st"></span>
+  </div>
+</header>
+
+<div class="qbar">
+  <label for="qry">OPL</label>
+  <textarea id="qry" rows="1" spellcheck="false"
+            placeholder='logs | where severity_text == "Error"'></textarea>
+</div>
+
+<div class="panels">
+  <div class="panel pl">
+    <div class="ph">Input Data <span style="font-weight:400;text-transform:none">(OTLP JSON)</span></div>
+    <textarea id="inp" spellcheck="false" aria-label="OTLP JSON input data"></textarea>
+  </div>
+  <div class="panel pr">
+    <div class="rtabs">
+      <div class="rtab on" data-t="json">Result JSON</div>
+      <div class="rtab" data-t="arrow">Arrow Tables</div>
+    </div>
+    <div class="rc">
+      <div id="p-json" class="rp on"><pre id="rj" class="r">Execute a query to see results here.</pre></div>
+      <div id="p-arrow" class="rp"><pre id="ra" class="r">Execute a query to see Arrow table output here.</pre></div>
+    </div>
+  </div>
+</div>
+
+<!-- protobuf.js from CDN — full build includes descriptor-set support -->
+<script src="https://cdn.jsdelivr.net/npm/protobufjs@7.4.0/dist/protobuf.min.js"
+        integrity="sha384-QXLBv6MtfHjfkbBq/Oaa6WF7xDVm8Gp2yJrGA7MAt5QBYEckWkYdIdiK7v0Ce5xE"
+        crossorigin="anonymous"></script>
+<script>
+(function(){
+"use strict";
+
+var $ = document.getElementById.bind(document);
+var sig = $("sig"), exBtn = $("ex-btn"), runBtn = $("run");
+var qry = $("qry"), inp = $("inp");
+var rj = $("rj"), ra = $("ra"), st = $("st");
+
+// --- Tab switching ---
+document.querySelectorAll(".rtab").forEach(function(tab){
+  tab.addEventListener("click", function(){
+    document.querySelectorAll(".rtab").forEach(function(t){t.classList.remove("on")});
+    document.querySelectorAll(".rp").forEach(function(p){p.classList.remove("on")});
+    tab.classList.add("on");
+    var p = $("p-"+tab.dataset.t);
+    if(p) p.classList.add("on");
+  });
+});
+
+// --- Example data ---
+var EX = {
+  logs: {
+    query: 'logs | where severity_number > 9',
+    data: {
+      resourceLogs:[{
+        resource:{attributes:[{key:"service.name",value:{stringValue:"my.service"}}]},
+        scopeLogs:[{
+          scope:{name:"my.library",version:"1.0.0"},
+          logRecords:[
+            {timeUnixNano:"1544712660300000000",observedTimeUnixNano:"1544712660300000000",severityNumber:10,severityText:"Information",body:{stringValue:"Example log record"},attributes:[{key:"string.attribute",value:{stringValue:"some string"}},{key:"int.attribute",value:{intValue:"10"}}]},
+            {timeUnixNano:"1544712661000000000",observedTimeUnixNano:"1544712661000000000",severityNumber:17,severityText:"Error",body:{stringValue:"Something went wrong"},attributes:[{key:"error.type",value:{stringValue:"RuntimeException"}}]},
+            {timeUnixNano:"1544712662000000000",observedTimeUnixNano:"1544712662000000000",severityNumber:5,severityText:"Debug",body:{stringValue:"Debug details"},attributes:[{key:"component",value:{stringValue:"http-handler"}}]}
+          ]
+        }]
+      }]
+    }
+  },
+  traces: {
+    query: 'traces | where name == "server-span"',
+    data: {
+      resourceSpans:[{
+        resource:{attributes:[{key:"service.name",value:{stringValue:"my.service"}}]},
+        scopeSpans:[{
+          scope:{name:"my.library",version:"1.0.0"},
+          spans:[
+            {traceId:"AAAAAAAAAAAAAAAAAAAAAA==",spanId:"AAAAAAAAAAE=",name:"server-span",kind:2,startTimeUnixNano:"1544712660000000000",endTimeUnixNano:"1544712661000000000",attributes:[{key:"my.span.attr",value:{stringValue:"some value"}}]},
+            {traceId:"AAAAAAAAAAAAAAAAAAAAAA==",spanId:"AAAAAAAAAAI=",parentSpanId:"AAAAAAAAAAE=",name:"client-call",kind:3,startTimeUnixNano:"1544712660100000000",endTimeUnixNano:"1544712660900000000",attributes:[{key:"http.method",value:{stringValue:"GET"}}]}
+          ]
+        }]
+      }]
+    }
+  },
+  metrics: {
+    query: 'metrics | where name == "my.counter"',
+    data: {
+      resourceMetrics:[{
+        resource:{attributes:[{key:"service.name",value:{stringValue:"my.service"}}]},
+        scopeMetrics:[{
+          scope:{name:"my.library",version:"1.0.0"},
+          metrics:[
+            {name:"my.counter",unit:"1",description:"I am a Counter",sum:{aggregationTemporality:1,isMonotonic:true,dataPoints:[{asDouble:5,startTimeUnixNano:"1544712660300000000",timeUnixNano:"1544712660300000000",attributes:[{key:"my.counter.attr",value:{stringValue:"some value"}}]}]}},
+            {name:"my.gauge",unit:"1",description:"I am a Gauge",gauge:{dataPoints:[{asDouble:10,timeUnixNano:"1544712660300000000",attributes:[{key:"my.gauge.attr",value:{stringValue:"some value"}}]}]}}
+          ]
+        }]
+      }]
+    }
+  }
+};
+
+function loadExample(){
+  var e = EX[sig.value];
+  if(!e) return;
+  qry.value = e.query;
+  inp.value = JSON.stringify(e.data, null, 2);
+}
+
+exBtn.addEventListener("click", loadExample);
+sig.addEventListener("change", loadExample);
+
+// --- Persist state in localStorage ---
+var STORAGE_KEY = "opl-playground-state";
+
+function saveState(){
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      signal: sig.value,
+      query: qry.value,
+      data: inp.value
+    }));
+  } catch(e) { /* quota exceeded or private mode — ignore */ }
+}
+
+function restoreState(){
+  try {
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    var s = JSON.parse(raw);
+    if (s.signal) sig.value = s.signal;
+    if (s.query != null) qry.value = s.query;
+    if (s.data != null) inp.value = s.data;
+    return true;
+  } catch(e) { return false; }
+}
+
+// Restore previous session, or fall back to default example.
+if (!restoreState()) loadExample();
+
+// Auto-save on edits (debounced).
+var saveTimer;
+function debounceSave(){
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveState, 400);
+}
+qry.addEventListener("input", debounceSave);
+inp.addEventListener("input", debounceSave);
+sig.addEventListener("change", debounceSave);
+
+// --- Helpers ---
+function u8ToB64(u8){
+  var bin="";
+  for(var i=0;i<u8.length;i++) bin+=String.fromCharCode(u8[i]);
+  return btoa(bin);
+}
+function b64ToU8(b){
+  var bin=atob(b), u8=new Uint8Array(bin.length);
+  for(var i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i);
+  return u8;
+}
+
+// --- Load proto definitions from server ---
+// The server embeds the OTel .proto files and serves them under /proto/.
+// protobuf.load() fetches them, resolves imports automatically, and builds
+// the message types we need for encode/decode.
+var LogsData, TracesData, MetricsData;
+
+(function initProtos(){
+  var root = new protobuf.Root();
+  // Tell protobuf.js to resolve imports relative to /proto/
+  root.resolvePath = function(_origin, target) {
+    return "/proto/" + target;
+  };
+  root.load([
+    "opentelemetry/proto/logs/v1/logs.proto",
+    "opentelemetry/proto/trace/v1/trace.proto",
+    "opentelemetry/proto/metrics/v1/metrics.proto"
+  ], function(err) {
+    if (err) {
+      st.textContent = "Failed to load proto definitions: " + err.message;
+      runBtn.textContent = "Proto load failed";
+      return;
+    }
+    LogsData = root.lookupType("opentelemetry.proto.logs.v1.LogsData");
+    TracesData = root.lookupType("opentelemetry.proto.trace.v1.TracesData");
+    MetricsData = root.lookupType("opentelemetry.proto.metrics.v1.MetricsData");
+    runBtn.disabled = false;
+    runBtn.textContent = "Execute";
+  });
+})();
+
+// --- Encode/decode ---
+function encode(signal, json){
+  var T = signal==="logs"?LogsData : signal==="traces"?TracesData : MetricsData;
+  // Skip T.verify() — it rejects string-encoded uint64 values like
+  // "1544712660300000000" which are valid per the OTLP JSON spec.
+  // T.fromObject() handles the string→Long conversion correctly.
+  var msg = T.fromObject(json);
+  return T.encode(msg).finish();
+}
+
+function decode(signal, bytes){
+  var T = signal==="logs"?LogsData : signal==="traces"?TracesData : MetricsData;
+  var msg = T.decode(bytes);
+  return T.toObject(msg, {longs:String, defaults:true});
+}
+
+// --- Execute ---
+async function execute(){
+  var signal = sig.value;
+  var query = qry.value.trim();
+  var jsonText = inp.value.trim();
+
+  if(!query){ rj.textContent="Error: enter an OPL query."; rj.className="r e"; return; }
+  if(!jsonText){ rj.textContent="Error: provide input data."; rj.className="r e"; return; }
+
+  var jsonObj;
+  try{ jsonObj=JSON.parse(jsonText); }
+  catch(e){ rj.textContent="JSON parse error: "+e.message; rj.className="r e"; return; }
+
+  var protoBytes;
+  try{ protoBytes=encode(signal,jsonObj); }
+  catch(e){ rj.textContent="Protobuf encode error: "+e.message; rj.className="r e"; return; }
+
+  st.innerHTML='<span class="spinner"></span>Executing\u2026';
+  runBtn.disabled=true;
+
+  try{
+    var resp = await fetch("/api/execute",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({query:query, signal_type:signal, data:u8ToB64(protoBytes)})
+    });
+    var result = await resp.json();
+
+    if(result.error){
+      rj.textContent="Error: "+result.error;
+      rj.className="r e";
+      ra.textContent="";
+      st.textContent="Error";
+      return;
+    }
+
+    // Decode result
+    var decoded;
+    try{
+      decoded = decode(signal, b64ToU8(result.data));
+    }catch(e){
+      decoded = {_decodeError:e.message, rawBase64:result.data};
+    }
+    rj.textContent = JSON.stringify(decoded, null, 2);
+    rj.className = "r";
+
+    // Arrow tables
+    var txt="", keys=Object.keys(result.arrow_tables||{}).sort();
+    for(var i=0;i<keys.length;i++){
+      if(i>0) txt+="\n\n";
+      txt += "--- "+keys[i]+" ---\n"+result.arrow_tables[keys[i]];
+    }
+    ra.textContent = txt || "(no Arrow table data)";
+    st.textContent = "Done";
+  }catch(e){
+    rj.textContent="Network error: "+e.message;
+    rj.className="r e";
+    st.textContent="Error";
+  }finally{
+    runBtn.disabled=false;
+  }
+}
+
+runBtn.addEventListener("click", execute);
+document.addEventListener("keydown", function(e){
+  if((e.ctrlKey||e.metaKey) && e.key==="Enter"){
+    if (runBtn.disabled) return;
+    e.preventDefault();
+    execute();
+  }
+});
+
+})();
+</script>
+</body>
+</html>
