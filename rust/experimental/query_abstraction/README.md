@@ -1,6 +1,7 @@
 # Query Abstraction
 
-> [!NOTE] The initial prototyping in this directory regarding an abstraction for
+> [!NOTE]
+> The initial prototyping in this directory regarding an abstraction for
 > common data processing operations has largely been folded into the following
 > directories:
 >
