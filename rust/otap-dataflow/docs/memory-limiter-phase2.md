@@ -1410,24 +1410,32 @@ Validation:
 
 - `memory_budget` is supported only at top-level `policies.resources`.
 - `memory_budget.mode` is required when configured.
-- `memory_budget.mode = enforce` and any `memory_budget.enforcement.*` gate flag
-  are **rejected at validation time** unless the crate is built with the
-  `unstable-memory-enforcement` feature. Production builds do not enable that
-  feature, so enforcement cannot be reached accidentally from normal config; it
-  is a compile-time opt-in for tests and experimental builds. The default
-  remains `observe_only`.
-- The only enforcement path wired so far is `enforcement.queue_publish` at the
-  owned topic-publish boundary: with `mode = enforce` and `queue_publish: true`,
-  an owned publish whose payload exceeds the topic/per-boundary escrow bucket
-  cap or the global spare pool is rejected and returns the original local ticket
-  (`DroppedOnFull`), committing nothing. Topic-owned publish now uses
-  per-topic/per-boundary buckets with aggregate escrow rollup, but this remains
-  only the topic publish enforcement slice, not full retained-work production
-  coverage. `enforcement.receiver_admission` and `enforcement.reclaim_hooks` are
-  carried into the runtime config but are not yet wired to any admission point
-  or reclaim driver; setting them changes no runtime behavior today.
-  Observe-only (and `mode = enforce` with `queue_publish: false`) records
-  escrow/pool pressure without rejecting.
+- `memory_budget.mode = enforce` is **rejected at validation time** unless the
+  crate is built with the `unstable-memory-enforcement` feature. Production
+  builds do not enable that feature, so enforce mode cannot be reached
+  accidentally from normal config; it is a compile-time opt-in for tests and
+  experimental builds. The default remains `observe_only`.
+- Enforcement-flag gating is honest about what is actually wired:
+  - `enforcement.queue_publish` is the only wired enforcement path. It is
+    rejected in default builds and accepted only with the
+    `unstable-memory-enforcement` feature.
+  - `enforcement.receiver_admission` is **rejected in all builds** (even with the
+    unstable feature) because no runtime admission point consumes the runtime
+    budget yet.
+  - `enforcement.reclaim_hooks` is **rejected in all builds** (even with the
+    unstable feature) because, although a per-runtime reclaim registry is
+    installed, no concrete reclaimer registers and no driver invokes reclaim.
+  These two flags stay rejected until they are wired end to end, so enabling them
+  can never create a false sense of enforcement.
+- The wired `enforcement.queue_publish` path works at the owned topic-publish
+  boundary: with `mode = enforce` and `queue_publish: true`, an owned publish
+  whose payload exceeds the topic/per-boundary escrow bucket cap or the global
+  spare pool is rejected and returns the original local ticket (`DroppedOnFull`),
+  committing nothing. Topic-owned publish uses per-topic/per-boundary buckets
+  with aggregate escrow rollup, but this remains only the topic publish
+  enforcement slice, not full retained-work production coverage. Observe-only
+  (and `mode = enforce` with `queue_publish: false`) records escrow/pool pressure
+  without rejecting.
 - Observe-only retained-work **accounting** (no admission/rejection) is wired at
   these production sites today, charging against the runtime account so retained
   bytes are attributed even before any enforcement is enabled:
@@ -1653,10 +1661,12 @@ pub struct ReclaimResult {
     more_available: bool,
 }
 
-#[async_trait::async_trait(?Send)]
 pub trait LocalMemoryReclaim {
     fn reclaim_priority(&self) -> ReclaimPriority;
-    async fn reclaim(
+    // Synchronous and non-blocking: reclaim releases memory by dropping owners
+    // the component already holds (RAII), so it cannot await, yield, or acquire
+    // budget while the registry holds it borrowed.
+    fn reclaim(
         &mut self,
         target_bytes: u64,
         context: ReclaimContext<'_>,
@@ -1673,13 +1683,16 @@ Candidate components:
 - OTAP stream state
 - delayed local scheduler payloads
 
-Reclaim must be best-effort and bounded. It must not require additional budget
-to release memory. The reclaim context should not expose reservation APIs; it
-should expose only release paths. Shared components can add a separate
-`SharedMemoryReclaim` variant if needed, mirroring the engine's local/shared
-node split. `attempted_bytes` lets the controller distinguish no useful reclaim
-from partial reclaim and avoid immediately repolling a component that released
-far less than requested.
+Reclaim is synchronous, best-effort, and bounded. It must not block, await, or
+require additional budget to release memory; release happens through RAII drop
+of the component's owners. Keeping `reclaim` synchronous makes that contract
+enforceable: a reclaimer cannot yield to other tasks while the registry holds
+it borrowed, so there is no borrow-across-await hazard. The reclaim context
+exposes only inspection, not reservation APIs. Shared components can add a
+separate `SharedMemoryReclaim` variant if needed, mirroring the engine's
+local/shared node split. `attempted_bytes` lets the driver distinguish no useful
+reclaim from partial reclaim and avoid immediately repolling a component that
+released far less than requested.
 
 Reclaim ordering should be deterministic. The engine should ask reclaimers in
 `ReclaimPriority` order, use a fixed component-kind tie breaker, and stop once
@@ -1700,28 +1713,32 @@ impl ReclaimRegistry {
     ) -> ReclaimRegistration;
 
     // Drive every currently-registered reclaimer to release up to
-    // `target_bytes`, in priority order, refusing re-entry.
-    pub async fn reclaim(&self, target_bytes: u64) -> ReclaimOutcome;
+    // `target_bytes`, in priority order, refusing re-entry. Synchronous: each
+    // reclaimer is borrowed only for the duration of its own (non-awaiting) call.
+    pub fn reclaim(&self, target_bytes: u64) -> ReclaimOutcome;
 }
 ```
 
 A stateful retention site registers an `Rc<RefCell<_>>` reclaimer over the state
 it already owns and keeps a clone for its own hot-path mutations; the registry
-borrows each reclaimer only for the duration of its own `reclaim` call, so
-registered reclaimers are never all borrowed at once and a reclaimer may
+borrows each reclaimer only for the duration of its own synchronous `reclaim`
+call, so registered reclaimers are never all borrowed at once and a reclaimer may
 register or unregister others mid-pass (changes apply to the next pass). Dropping
 the [`ReclaimRegistration`] removes the reclaimer automatically when the site is
 torn down. The registry is the *mechanism*: registering concrete site reclaimers
 and triggering reclaim from admission/pressure stays gated behind
-`enforcement.reclaim_hooks` and is wired site by site.
+`enforcement.reclaim_hooks`, which the config layer rejects until that wiring
+exists, and is wired site by site.
 
 The per-runtime registry is reachable the same way as the runtime memory budget:
 the controller installs a fresh `ReclaimRegistry` on each pinned pipeline thread
 (alongside `current_runtime_memory_budget`), and a site running on that thread
 reaches it through `current_reclaim_registry()` to register its reclaimer. The
-slot is cleared when the per-runtime guard drops, on the same thread. Until a
-site registers and a driver calls `reclaim`, the registry is present but inert,
-so installing it is a no-op for budget behavior.
+slot is cleared when the per-runtime guard drops, on the same thread. **No
+concrete reclaimer registers and no driver calls `reclaim` yet**, so the registry
+is present but inert and installing it is a no-op for budget behavior; and
+because `reclaim_hooks` is rejected at config validation, reclaim cannot be
+turned on until a reclaimer and a driver are wired end to end.
 
 In Phase 2e, shared retained memory is reported through metrics but is not
 eligible for local reclaim hooks. A later phase can add `SharedMemoryReclaim`
@@ -1935,7 +1952,9 @@ who require placement can choose `unsupported: error`.
 - Keep queue and processor enforcement disabled.
 - `receiver_admission: true` for runtime budget pressure is supported only
   after reclaim paths exist for the dominant retained-memory sources in that
-  deployment.
+  deployment. **Status:** not started; `receiver_admission` is rejected at
+  config validation in all builds until a runtime admission point consumes the
+  runtime budget.
 
 ### Phase 2d: Queue and Topic Enforcement
 
@@ -1954,11 +1973,13 @@ who require placement can choose `unsupported: error`.
 - Add the reclaim primitive (`LocalMemoryReclaim`, `ReclaimContext`,
   `ReclaimCoordinator`) and the runtime-local `ReclaimRegistry` lifecycle
   (register/unregister with RAII teardown, deterministic priority-ordered,
-  re-entry-safe, budget-free passes), installed per pipeline runtime thread and
-  reachable through `current_reclaim_registry()`. **Done.**
+  re-entry-safe, budget-free, **synchronous** passes), installed per pipeline
+  runtime thread and reachable through `current_reclaim_registry()`. **Done.**
 - Register concrete site reclaimers (batch/retry/durable/queue/stream) and
   trigger reclaim from pressure/admission, gated behind
-  `enforcement.reclaim_hooks`. **Pending** (wired site by site).
+  `enforcement.reclaim_hooks` (which the config layer rejects until this is
+  wired). **Pending:** no concrete reclaimer registers and no driver invokes
+  reclaim yet.
 - Prefer reclaim/drain before local shedding where possible.
 - Make runtime-budget receiver enforcement generally available only after
   reclaim paths exist for the main retained-memory sources.
