@@ -21,8 +21,11 @@ pub struct InFlightExports {
     futures: FuturesUnordered<LocalBoxFuture<'static, CompletedExport>>,
     limit: usize,
     /// Running total of log records (rows) across all in-flight exports.
-    /// Incremented when an export is enqueued and decremented when it
-    /// completes (success or failure), so it cannot drift from the futures set.
+    ///
+    /// Maintained by [`InFlightExports::push_export`] (which increments by the
+    /// enqueued `row_count`) and the completion paths ([`next_completion`],
+    /// [`push`], and [`drain`], which decrement by the completed export's
+    /// `row_count`).
     queued_rows: u64,
 }
 
@@ -62,7 +65,7 @@ impl InFlightExports {
 
     /// Push a future. If at capacity, waits for one completion and returns it.
     #[inline]
-    pub async fn push(
+    async fn push(
         &mut self,
         fut: LocalBoxFuture<'static, CompletedExport>,
     ) -> Option<CompletedExport> {
