@@ -3,11 +3,10 @@
 
 //! Shared configuration for HTTP-based clients.
 
-use indexmap::IndexMap;
 use reqwest::ClientBuilder;
 use reqwest::header::HeaderValue;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::time::Duration;
 use tower::limit::ConcurrencyLimitLayer;
@@ -75,14 +74,14 @@ pub struct HttpClientSettings {
     pub user_agent: Option<String>,
 
     /// Static headers added to every outbound OTLP/HTTP request (e.g. an
-    /// `Authorization` or backend routing header). Iteration follows the
-    /// declaration order in the config.
+    /// `Authorization` or backend routing header).
     ///
     /// Protocol headers (`Content-Type` / `Content-Encoding` /
-    /// `Content-Length` / `Host`) cannot be set here and are rejected by
+    /// `Content-Length` / `Host`) and response-negotiation headers
+    /// (`Accept` / `Accept-Encoding`) cannot be set here and are rejected by
     /// [`HttpClientSettings::validate`]; they are managed by the exporter.
     #[serde(default)]
-    pub headers: IndexMap<String, String>,
+    pub headers: HashMap<String, String>,
 }
 
 impl HttpClientSettings {
@@ -94,7 +93,8 @@ impl HttpClientSettings {
     /// Checks that every entry in `headers` has a valid HTTP header name and a
     /// value representable as an HTTP header value, that no protocol-reserved
     /// header (`Content-Type` / `Content-Encoding` / `Content-Length` / `Host`)
-    /// is overridden, and that no header name is a case-insensitive duplicate of
+    /// or response-negotiation header (`Accept` / `Accept-Encoding`) is
+    /// overridden, and that no header name is a case-insensitive duplicate of
     /// another (HTTP header names are case-insensitive).
     pub fn validate(&self) -> Result<(), HttpClientError> {
         if let Some(ua) = &self.user_agent {
@@ -125,11 +125,19 @@ impl HttpClientSettings {
                      value (must be visible ASCII)"
                 )));
             }
-            // Reject protocol headers the exporter sets itself, so user config can
-            // never collide with or shadow them.
+            // Reject headers the exporter or HTTP client manages itself: the
+            // protocol headers it sets per request, plus the response-negotiation
+            // headers (`accept` / `accept-encoding`) whose effective value is
+            // dictated by what the client can actually parse and decompress and so
+            // is not something a user can truthfully declare here.
             if matches!(
                 header_name.as_str(),
-                "content-type" | "content-encoding" | "content-length" | "host"
+                "content-type"
+                    | "content-encoding"
+                    | "content-length"
+                    | "host"
+                    | "accept"
+                    | "accept-encoding"
             ) {
                 return Err(HttpClientError::InvalidConfig(format!(
                     "header \"{name}\" is reserved and cannot be set via `headers`; it is managed \
@@ -324,7 +332,7 @@ impl Default for HttpClientSettings {
             tls: None,
             compression: None,
             user_agent: None,
-            headers: IndexMap::new(),
+            headers: HashMap::new(),
         }
     }
 }
@@ -402,7 +410,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_invalid_header_name() {
-        let mut headers = IndexMap::new();
+        let mut headers = HashMap::new();
         let _ = headers.insert("bad header".to_string(), "value".to_string());
         let settings = HttpClientSettings {
             headers,
@@ -417,7 +425,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_invalid_header_value() {
-        let mut headers = IndexMap::new();
+        let mut headers = HashMap::new();
         let _ = headers.insert("x-test".to_string(), "bad\nvalue".to_string());
         let settings = HttpClientSettings {
             headers,
@@ -432,8 +440,16 @@ mod tests {
 
     #[test]
     fn validate_rejects_reserved_header() {
-        for reserved in ["content-type", "Content-Type", "content-length", "host"] {
-            let mut headers = IndexMap::new();
+        for reserved in [
+            "content-type",
+            "Content-Type",
+            "content-length",
+            "host",
+            "accept",
+            "accept-encoding",
+            "Accept-Encoding",
+        ] {
+            let mut headers = HashMap::new();
             let _ = headers.insert(reserved.to_string(), "x".to_string());
             let settings = HttpClientSettings {
                 headers,
@@ -449,7 +465,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_valid_headers() {
-        let mut headers = IndexMap::new();
+        let mut headers = HashMap::new();
         let _ = headers.insert("authorization".to_string(), "Basic abc123".to_string());
         let _ = headers.insert("x-scope-orgid".to_string(), "tenant-1".to_string());
         let settings = HttpClientSettings {
@@ -462,7 +478,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_case_insensitive_duplicate_headers() {
-        let mut headers = IndexMap::new();
+        let mut headers = HashMap::new();
         let _ = headers.insert("X-Tenant".to_string(), "a".to_string());
         let _ = headers.insert("x-tenant".to_string(), "b".to_string());
         let settings = HttpClientSettings {
@@ -487,9 +503,10 @@ mod tests {
             settings.headers.get("authorization").map(String::as_str),
             Some("Basic abc123")
         );
-        // Declaration order is preserved by IndexMap.
-        let keys: Vec<&str> = settings.headers.keys().map(String::as_str).collect();
-        assert_eq!(keys, vec!["authorization", "stream-name"]);
+        assert_eq!(
+            settings.headers.get("stream-name").map(String::as_str),
+            Some("default")
+        );
 
         // deny_unknown_fields is preserved now that `headers` is a known field.
         assert!(serde_json::from_str::<HttpClientSettings>(r#"{ "nope": 1 }"#).is_err());

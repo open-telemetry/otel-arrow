@@ -56,7 +56,8 @@ config:
 
     # Static headers added to every outbound OTLP/HTTP request (optional).
     # Useful for authentication or backend routing. Protocol headers
-    # (Content-Type / Content-Encoding / Content-Length / Host) cannot be set
+    # (Content-Type / Content-Encoding / Content-Length / Host) and
+    # response-negotiation headers (Accept / Accept-Encoding) cannot be set
     # here and are rejected at config load.
     headers:
       authorization: "Basic <base64(user:password)>"
@@ -69,16 +70,18 @@ timeout, TCP keepalive, TLS, request-body compression, and static request
 
 ### Static request headers
 
-`http.headers` is an ordered map of header name to value applied to every
-outbound request (auth tokens, multi-tenant routing, tracing-vendor headers).
+`http.headers` is a map of header name to value applied to every outbound
+request (auth tokens, multi-tenant routing, tracing-vendor headers).
 Values are sent verbatim, so treat secrets in the rendered config as sensitive.
 
 Validation at config load rejects:
 
 - invalid header names (must be valid HTTP token characters), and
 - invalid header values (must be visible ASCII), and
-- protocol-reserved names: `content-type`, `content-encoding`,
-  `content-length`, and `host`.
+- protocol-reserved names managed by the exporter: `content-type`,
+  `content-encoding`, `content-length`, and `host`, and
+- response-negotiation names dictated by the client's decode capabilities:
+  `accept` and `accept-encoding`.
 
 Protocol headers always take precedence over configured headers.
 

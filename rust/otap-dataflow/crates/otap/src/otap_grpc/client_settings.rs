@@ -8,11 +8,10 @@ use crate::otap_grpc::proxy::ProxyConfig;
 use crate::tls_utils;
 use http::header::HeaderValue;
 use hyper_util::rt::TokioIo;
-use indexmap::IndexMap;
 use otap_df_config::byte_units;
 use otap_df_config::tls::TlsClientConfig;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -158,8 +157,7 @@ pub struct GrpcClientSettings {
     pub user_agent: Option<String>,
 
     /// Static metadata (headers) added to every outbound OTLP/gRPC request
-    /// (e.g. an `authorization` or tenant-routing header). Iteration follows
-    /// the declaration order in the config.
+    /// (e.g. an `authorization` or tenant-routing header).
     ///
     /// Keys and values must be valid ASCII gRPC metadata; this is enforced by
     /// [`GrpcClientSettings::validate`]. These coexist with any header
@@ -170,7 +168,7 @@ pub struct GrpcClientSettings {
     /// headers today. The OTAP exporter rejects a non-empty `headers` map at
     /// config validation rather than silently dropping it.
     #[serde(default)]
-    pub headers: IndexMap<String, String>,
+    pub headers: HashMap<String, String>,
 }
 
 /// Error returned when building a gRPC [`Endpoint`] (including TLS/mTLS setup).
@@ -596,7 +594,7 @@ impl Default for GrpcClientSettings {
             startup_check: StartupCheck::default(),
             proxy: None,
             user_agent: None,
-            headers: IndexMap::new(),
+            headers: HashMap::new(),
         }
     }
 }
@@ -742,7 +740,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_invalid_header_name() {
-        let mut headers = IndexMap::new();
+        let mut headers = HashMap::new();
         let _ = headers.insert("bad header".to_string(), "value".to_string());
         let settings = GrpcClientSettings {
             headers,
@@ -757,7 +755,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_invalid_header_value() {
-        let mut headers = IndexMap::new();
+        let mut headers = HashMap::new();
         let _ = headers.insert("x-test".to_string(), "bad\nvalue".to_string());
         let settings = GrpcClientSettings {
             headers,
@@ -772,7 +770,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_valid_headers() {
-        let mut headers = IndexMap::new();
+        let mut headers = HashMap::new();
         let _ = headers.insert("authorization".to_string(), "Basic abc123".to_string());
         let _ = headers.insert("x-scope-orgid".to_string(), "tenant-1".to_string());
         let settings = GrpcClientSettings {
@@ -785,7 +783,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_case_insensitive_duplicate_headers() {
-        let mut headers = IndexMap::new();
+        let mut headers = HashMap::new();
         let _ = headers.insert("X-Tenant".to_string(), "a".to_string());
         let _ = headers.insert("x-tenant".to_string(), "b".to_string());
         let settings = GrpcClientSettings {
@@ -807,9 +805,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(settings.headers.len(), 2);
-        // Declaration order is preserved by IndexMap.
-        let keys: Vec<&str> = settings.headers.keys().map(String::as_str).collect();
-        assert_eq!(keys, vec!["authorization", "x-scope-orgid"]);
+        assert_eq!(
+            settings.headers.get("authorization").map(String::as_str),
+            Some("Basic abc123")
+        );
+        assert_eq!(
+            settings.headers.get("x-scope-orgid").map(String::as_str),
+            Some("tenant-1")
+        );
 
         // deny_unknown_fields is preserved now that `headers` is a known field.
         assert!(

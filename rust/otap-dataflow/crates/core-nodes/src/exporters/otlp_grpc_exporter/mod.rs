@@ -13,7 +13,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
-use indexmap::IndexMap;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
@@ -45,7 +44,7 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde::Deserialize;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::Arc;
 use tonic::codec::CompressionEncoding;
@@ -645,7 +644,7 @@ async fn finalize_completed_export(
 /// `None` when no static headers are configured so `build_grpc_metadata` keeps
 /// its zero-allocation fast path. Header names/values are validated at config
 /// load time; any that somehow fail to parse here are skipped with a debug log.
-fn build_static_grpc_metadata(headers: &IndexMap<String, String>) -> Option<MetadataMap> {
+fn build_static_grpc_metadata(headers: &HashMap<String, String>) -> Option<MetadataMap> {
     if headers.is_empty() {
         return None;
     }
@@ -1359,7 +1358,7 @@ mod tests {
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
-        let mut headers = IndexMap::new();
+        let mut headers = HashMap::new();
         _ = headers.insert(
             "authorization".to_string(),
             "Bearer secret-token-123".to_string(),
@@ -1969,7 +1968,7 @@ mod tests {
 
     #[test]
     fn test_build_static_grpc_metadata_empty_returns_none() {
-        let headers: IndexMap<String, String> = IndexMap::new();
+        let headers: HashMap<String, String> = HashMap::new();
         assert!(
             build_static_grpc_metadata(&headers).is_none(),
             "no configured headers must yield None to preserve the hot-path fast path"
@@ -1978,7 +1977,7 @@ mod tests {
 
     #[test]
     fn test_build_static_grpc_metadata_builds_map() {
-        let mut headers = IndexMap::new();
+        let mut headers = HashMap::new();
         _ = headers.insert("authorization".to_string(), "Basic abc123".to_string());
         _ = headers.insert("x-scope-orgid".to_string(), "tenant-1".to_string());
 
@@ -2001,7 +2000,7 @@ mod tests {
         let handler = make_effect_handler_with_policy(None);
         let context = context_without_headers();
 
-        let mut headers = IndexMap::new();
+        let mut headers = HashMap::new();
         _ = headers.insert("authorization".to_string(), "Basic abc123".to_string());
         let static_metadata =
             build_static_grpc_metadata(&headers).expect("static metadata should be present");
@@ -2027,7 +2026,7 @@ mod tests {
         ));
         let context = context_with_headers(transport);
 
-        let mut static_headers = IndexMap::new();
+        let mut static_headers = HashMap::new();
         _ = static_headers.insert("authorization".to_string(), "Basic abc123".to_string());
         let static_metadata =
             build_static_grpc_metadata(&static_headers).expect("static metadata should be present");
@@ -2061,7 +2060,7 @@ mod tests {
         ));
         let context = context_with_headers(transport);
 
-        let mut static_headers = IndexMap::new();
+        let mut static_headers = HashMap::new();
         _ = static_headers.insert("authorization".to_string(), "Basic static".to_string());
         let static_metadata =
             build_static_grpc_metadata(&static_headers).expect("static metadata should be present");

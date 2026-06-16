@@ -18,7 +18,6 @@ async-trait.workspace = true
 futures.workspace = true
 http.workspace = true
 humantime-serde.workspace = true
-indexmap.workspace = true
 object_store = {workspace = true, features = ["fs"]}
 thiserror = { workspace = true }
 serde_json = { workspace = true }

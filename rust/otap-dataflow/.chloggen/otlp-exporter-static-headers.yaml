@@ -18,8 +18,9 @@ issues: [3303]
 # Use pipe (|) for multiline entries.
 subtext: |
   Headers are validated at config load: protocol-reserved names
-  (Content-Type/Content-Encoding/Content-Length/Host) are rejected for HTTP and
-  protocol headers always take precedence. The gRPC static metadata is built
+  (Content-Type/Content-Encoding/Content-Length/Host) and response-negotiation
+  names (Accept/Accept-Encoding) are rejected for HTTP and protocol headers
+  always take precedence. The gRPC static metadata is built
   once at startup so the per-message hot path keeps its zero-allocation fast
   path. The OTAP (Arrow) exporter shares `GrpcClientSettings` but does not apply
   static headers to its streams yet, so it rejects a non-empty `headers` map at

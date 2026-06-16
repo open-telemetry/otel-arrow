@@ -59,7 +59,7 @@ keepalive, HTTP/2 settings, TLS, proxy, and transport buffer settings.
 
 ### Static request headers
 
-`headers` is an ordered map of metadata name to value added to every outbound
+`headers` is a map of metadata name to value added to every outbound
 request (auth tokens, multi-tenant routing, tracing-vendor metadata). Values are
 sent verbatim, so treat secrets in the rendered config as sensitive.
 

@@ -1078,7 +1078,7 @@ mod test {
 
     #[test]
     fn test_configured_headers_sent_on_wire() {
-        use indexmap::IndexMap;
+        use std::collections::HashMap;
 
         otap_df_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
@@ -1090,7 +1090,7 @@ mod test {
         let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, captured.clone());
         wait_for_port_ready(&endpoint_addr);
 
-        let mut headers = IndexMap::new();
+        let mut headers = HashMap::new();
         _ = headers.insert(
             "authorization".to_string(),
             "Basic dXNlcjpwYXNz".to_string(),
