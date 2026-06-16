@@ -26,6 +26,7 @@ pub struct PipelineGroupConfig {
     pub topics: HashMap<TopicName, TopicSpec>,
 
     /// All pipelines belonging to this pipeline group, keyed by pipeline ID.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub pipelines: HashMap<PipelineId, PipelineConfig>,
 }
 
