@@ -253,6 +253,8 @@ toml = "1.0.0"
 tonic-prost-build = "0.14"
 tracepoint = { version = "0.5.0", features = ["user_events"] }
 tracepoint_decode = "0.5.0"
+tracelogging = "1.2.4"
+tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
 geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "e263bdb5af68ddcba4af1645c32ce1d8443c8cbc" }
 
