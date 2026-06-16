@@ -1,9 +1,13 @@
 # Live Pipeline Reconfiguration
 
-This document describes the live reconfiguration flow exposed by the admin API.
+This document describes the live reconfiguration and controller-owned
+configuration lifecycle flows exposed by the admin API.
 
 The feature lets a running OTel Dataflow Engine mutate one logical pipeline at
 a time without restarting the process or reloading the full startup file.
+It also exposes controller-level primitives for reading the full committed
+engine config, reconciling against a desired full config, creating empty
+pipeline groups, and deleting committed pipelines or groups.
 
 ## Goals
 
@@ -25,6 +29,10 @@ a time without restarting the process or reloading the full startup file.
 - Accept an effectively identical update as a `noop`.
 - Track rollout progress with a rollout id.
 - Shutdown a logical pipeline and track shutdown progress with a shutdown id.
+- Read the full controller-owned engine config snapshot.
+- Reconcile the running engine against a desired full engine config.
+- Read, create, and delete committed pipeline groups.
+- Delete a committed logical pipeline from a group.
 
 ## Terminology
 
@@ -85,21 +93,37 @@ traffic flip across the whole pipeline.
 ## Boundaries and Current Limits
 
 - Updates are in-memory only. The startup YAML file is not rewritten.
-- The target pipeline group must already exist.
+- The target pipeline group must already exist for per-pipeline
+  reconfiguration.
+- Empty pipeline groups can be created through the group lifecycle endpoint.
+  The first endpoint version allows group-level settings but rejects create
+  payloads that already contain pipelines or group-local topic declarations.
 - Runtime topic broker mutation is rejected. In practice this means:
   - no new or removed declared topics;
   - no change to the selected topic mode;
   - no change to topic backend or topic policies.
-- Group-level and engine-level policy mutation is out of scope.
+- Full-engine reconciliation rejects desired configs that would change runtime
+  topic profiles. Deleting or restoring pipelines that use `receiver:topic` or
+  `exporter:topic` can therefore be rejected even when the YAML is otherwise
+  valid.
+- Per-pipeline reconfiguration does not mutate group-level or engine-level
+  policy. Full-engine reconciliation can update those fields after all
+  requested pipeline rollouts and deletions succeed.
 - There is no dedicated scale endpoint. Scale-only changes use the same `PUT`
   endpoint as topology changes.
 
 ## Consistency Model
 
-The current API serializes live operations per logical pipeline, identified by
-`(pipeline_group_id, pipeline_id)`. A rollout or shutdown conflicts with another
-active operation for the same logical pipeline, while operations for different
-logical pipelines may run concurrently.
+The current API serializes normal rollout and shutdown operations per logical
+pipeline, identified by `(pipeline_group_id, pipeline_id)`. A rollout or
+shutdown conflicts with another active operation for the same logical pipeline,
+while operations for different logical pipelines may run concurrently.
+
+Full-engine reconciliation and group/pipeline lifecycle delete operations use
+an engine-scoped consistency guard. While one of those operations is active,
+other config-mutating lifecycle operations return `409 Conflict`. This prevents
+full-config reconciliation, group creation, group deletion, and pipeline
+deletion from interleaving with each other or with per-pipeline rollouts.
 
 Rollout planning validates a candidate by patching one pipeline into the
 controller's current in-memory `OtelDataflowSpec` snapshot and running full
@@ -108,12 +132,11 @@ operation a whole-config transaction: another logical pipeline can commit before
 this rollout commits, and commit applies only the accepted pipeline back into
 the latest live config.
 
-The API intentionally leaves room to widen the consistency scope later. If
-group-level invariants become mutable, the controller can serialize
-config-mutating operations per pipeline group and return `409 Conflict` for
-concurrent operations in that group without changing the existing pipeline
-endpoint or response schema. Engine-level reconfiguration can be added as a
-separate operation surface if full-engine transactions become necessary.
+The API intentionally leaves room to adjust the consistency scope later. If
+group-level invariants become mutable outside full-engine reconciliation, the
+controller can serialize config-mutating operations per pipeline group and
+return `409 Conflict` for concurrent operations in that group without changing
+the existing pipeline endpoint or response schema.
 
 ## How It Works
 
@@ -322,6 +345,131 @@ controller and the same live-operation consistency scope.
 Terminal shutdown ids are retained only within a bounded in-memory window, so
 older ids may return `404 Not Found` after eviction.
 
+### Read full engine config
+
+`GET /config`
+
+Returns the controller-owned `OtelDataflowSpec` snapshot currently committed in
+memory. This is the source used by the live controller for later
+reconfiguration and lifecycle operations. The startup YAML file is not read
+again and is not rewritten by this endpoint.
+
+Status codes:
+
+- `200 OK`: full config snapshot returned
+- `500 Internal Server Error`: the active control plane does not expose full
+  config snapshots or failed unexpectedly
+
+### Reconcile full engine config
+
+`POST /config/reconcile`
+
+Request body:
+
+```json
+{
+  "config": {
+    "...": "OtelDataflowSpec"
+  },
+  "stepTimeoutSecs": 60,
+  "drainTimeoutSecs": 60,
+  "deleteTimeoutSecs": 60,
+  "deleteMissing": true
+}
+```
+
+Behavior:
+
+- The desired full config is validated before any live work starts.
+- Desired pipelines are created, replaced, resized, or treated as `noop` using
+  the same rollout machinery as `PUT /groups/{group}/pipelines/{id}`.
+- When `deleteMissing=true`, live pipelines and groups omitted from the desired
+  config are gracefully deleted.
+- When `deleteMissing=false`, omitted live pipelines and groups are preserved.
+- Engine-level and group-level metadata is committed only after the
+  reconciliation succeeds.
+- Runtime topic profile mutation is rejected with `422 Unprocessable Entity`.
+
+Response body is an `EngineConfigReconcileStatus` with:
+
+- `reconcileId`
+- `state` (`pending`, `running`, `succeeded`, `failed`)
+- `startedAt`
+- `updatedAt`
+- `changes`
+- optional `failureReason`
+
+Each `changes` entry identifies the affected group and optional pipeline, the
+selected action (`create`, `noop`, `replace`, `resize`, or `delete`), the
+terminal state, and the rollout or shutdown status when applicable.
+
+Status codes:
+
+- `200 OK`: reconciliation finished successfully
+- `202 Accepted`: reconciliation was accepted but is not terminal
+- `409 Conflict`: another incompatible lifecycle operation is active, or
+  reconciliation reached a terminal failed state
+- `422 Unprocessable Entity`: validation failure or unsupported runtime
+  mutation
+- `500 Internal Server Error`: the active control plane does not support full
+  reconciliation or failed unexpectedly
+
+### Read, create, or delete groups
+
+`GET /groups/{group}`
+
+Returns the committed `PipelineGroupConfig` for one group.
+
+`POST /groups/{group}`
+
+Creates one empty pipeline group. The request body is a `PipelineGroupConfig`.
+The first endpoint version rejects payloads that include pipelines or
+group-local topic declarations. Group-level policies are allowed.
+
+`DELETE /groups/{group}?timeout_secs=<seconds>`
+
+Gracefully drains and deletes every logical pipeline in the group, then removes
+the empty group from the committed live config.
+
+Status codes:
+
+- `200 OK`: group was read or deleted successfully
+- `201 Created`: group was created successfully
+- `404 Not Found`: group does not exist
+- `409 Conflict`: the group already exists, another incompatible lifecycle
+  operation is active, or delete reached a terminal failed state
+- `422 Unprocessable Entity`: the submitted group config is invalid or outside
+  the supported create boundary
+- `500 Internal Server Error`: unexpected control-plane failure
+
+### Delete a pipeline
+
+`DELETE /groups/{group}/pipelines/{id}?timeout_secs=<seconds>`
+
+Gracefully drains the logical pipeline if it has active runtime instances, then
+removes the pipeline from the committed live config. The containing group is
+kept as an empty group when the deleted pipeline was its last pipeline.
+
+Response body is a `PipelineDeleteStatus` with:
+
+- `pipelineGroupId`
+- `pipelineId`
+- `state`
+- `startedAt`
+- `updatedAt`
+- optional `shutdown`
+- optional `failureReason`
+
+Status codes:
+
+- `200 OK`: pipeline was deleted successfully
+- `404 Not Found`: group or pipeline does not exist
+- `409 Conflict`: another incompatible lifecycle operation is active, or delete
+  reached a terminal failed state
+- `422 Unprocessable Entity`: the request is invalid for the current runtime
+  state
+- `500 Internal Server Error`: unexpected control-plane failure
+
 ## Manual Examples
 
 The examples below use
@@ -404,7 +552,15 @@ Verify the committed config and rollout-aware status:
 ```bash
 curl -s "$BASE/groups/$GROUP/pipelines/$PIPE" | jq .
 curl -s "$BASE/groups/$GROUP/pipelines/$PIPE/status" \
-  | jq '{conditions, totalCores, runningCores, activeGeneration, servingGenerations, rollout, instances}'
+  | jq '{
+      conditions,
+      totalCores,
+      runningCores,
+      activeGeneration,
+      servingGenerations,
+      rollout,
+      instances
+    }'
 ```
 
 ### Example: Async rollout tracking
@@ -465,14 +621,157 @@ curl -s "$BASE/groups/$GROUP/pipelines/$PIPE/status" \
 Scale back down by setting `coreAllocation.count = 1` in the same request body
 pattern.
 
+### Example: Full-config and lifecycle endpoints
+
+This scenario uses a small no-topic config so delete and restore stay within
+the current runtime-topic mutation boundary.
+
+Create a temporary config:
+
+```bash
+cat >/tmp/otap-admin-lifecycle.yaml <<'YAML'
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: 127.0.0.1:18085
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              data_source: synthetic
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 100
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 100
+          exporter:
+            type: exporter:noop
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+YAML
+```
+
+Start the engine:
+
+```bash
+cargo run --bin df_engine -- -c /tmp/otap-admin-lifecycle.yaml
+```
+
+In another terminal:
+
+```bash
+BASE=http://127.0.0.1:18085/api/v1
+GROUP=default
+PIPE=main
+```
+
+Snapshot the committed full config:
+
+```bash
+curl -sS "$BASE/config" | jq -S . > /tmp/otap-engine-before.json
+curl -sS "$BASE/config" | jq '{groups: (.groups | keys)}'
+```
+
+Create and delete an empty group:
+
+```bash
+curl -sS -X POST "$BASE/groups/scratch_admin_test" \
+  -H 'content-type: application/json' \
+  --data-binary '{}' \
+  | jq .
+
+curl -sS "$BASE/groups/scratch_admin_test" | jq .
+
+curl -sS -X DELETE "$BASE/groups/scratch_admin_test?timeout_secs=10" \
+  | jq .
+```
+
+Delete the live pipeline:
+
+```bash
+curl -sS -X DELETE "$BASE/groups/$GROUP/pipelines/$PIPE?timeout_secs=10" \
+  | jq '{
+      state,
+      pipelineGroupId,
+      pipelineId,
+      shutdownState: (.shutdown.state // "none")
+    }'
+
+curl -sS -o /tmp/otap-deleted-pipeline.json -w 'HTTP %{http_code}\n' \
+  "$BASE/groups/$GROUP/pipelines/$PIPE"
+```
+
+The delete response should have `state: "succeeded"`, and the follow-up `GET`
+should return `HTTP 404`.
+
+Restore the deleted pipeline from the saved full config:
+
+```bash
+jq '{
+      config: .,
+      stepTimeoutSecs: 30,
+      drainTimeoutSecs: 30,
+      deleteTimeoutSecs: 30,
+      deleteMissing: false
+    }' \
+  /tmp/otap-engine-before.json > /tmp/otap-reconcile-restore.json
+
+curl -sS -X POST "$BASE/config/reconcile" \
+  -H 'content-type: application/json' \
+  --data-binary @/tmp/otap-reconcile-restore.json \
+  | jq '{
+      state,
+      changes: [
+        .changes[]
+        | {
+            group: .pipelineGroupId,
+            pipeline: .pipelineId,
+            action,
+            state
+          }
+      ]
+    }'
+```
+
+The reconcile response should have `state: "succeeded"` and include a `create`
+change for `default/main`.
+
+Verify that the pipeline is readable again and the committed full config
+matches the snapshot taken before deletion:
+
+```bash
+curl -sS "$BASE/groups/$GROUP/pipelines/$PIPE" \
+  | jq '{pipelineGroupId, pipelineId, activeGeneration}'
+
+curl -sS "$BASE/config" | jq -S . > /tmp/otap-engine-after.json
+diff -u /tmp/otap-engine-before.json /tmp/otap-engine-after.json
+```
+
+No diff means the delete and restore cycle returned the committed config to the
+original state.
+
 ## Operational Notes
 
 - Different logical pipelines may roll concurrently in the current
   implementation.
 - A single logical pipeline allows only one active rollout or shutdown at a
   time.
-- Future group-level consistency can widen the conflict scope so concurrent
-  operations in the same group return `409 Conflict`.
+- Full-config reconciliation, group creation, group deletion, and pipeline
+  deletion use an engine-scoped lifecycle guard and return `409 Conflict` when
+  another guarded operation is active.
 - `GET /groups/{group}/pipelines/{id}` always returns the committed
   live config, not an uncommitted candidate.
 - `GET /groups/{group}/pipelines/{id}/status` is the best endpoint
