@@ -443,6 +443,8 @@ mod tests {
         for reserved in [
             "content-type",
             "Content-Type",
+            "content-encoding",
+            "Content-Encoding",
             "content-length",
             "host",
             "accept",

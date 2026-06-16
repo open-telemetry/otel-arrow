@@ -738,7 +738,10 @@ impl HttpClientPool {
         client_settings: &HttpClientSettings,
         pool_size: NonZeroUsize,
     ) -> Result<Self, HttpClientError> {
-        let mut default_headers = HeaderMap::new();
+        // Pre-size for the configured static headers plus the two protocol
+        // headers (Content-Type, Accept) inserted below, so the map is built
+        // with a single allocation and never resizes during construction.
+        let mut default_headers = HeaderMap::with_capacity(client_settings.headers.len() + 2);
 
         // User-configured static headers are inserted first so the protocol
         // headers below always win on any (already validated against) collision.
