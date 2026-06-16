@@ -93,6 +93,31 @@ struct SubscriptionConfig {
     /// Payload decoding format for records emitted by this tracepoint.
     #[serde(default)]
     format: FormatConfig,
+    /// Optional per-tracepoint pending queue limits.
+    #[serde(default)]
+    limits: Option<SubscriptionLimitsConfig>,
+}
+
+/// Per-subscription pending queue limits.
+///
+/// These limits govern receiver-side buffering after one_collect has parsed a
+/// sample and before the receiver drain loop has consumed it. They do not
+/// isolate the shared perf ring used by one_collect.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SubscriptionLimitsConfig {
+    /// Maximum parsed events buffered for this subscription.
+    #[serde(default)]
+    max_pending_events: Option<usize>,
+    /// Maximum raw event payload bytes buffered for this subscription.
+    #[serde(default)]
+    max_pending_bytes: Option<usize>,
+}
+
+impl SubscriptionLimitsConfig {
+    fn has_effective_pending_limit(&self) -> bool {
+        self.max_pending_events.is_some() || self.max_pending_bytes.is_some()
+    }
 }
 
 /// Low-level tracepoint session settings.
@@ -118,6 +143,23 @@ struct SessionConfig {
     // wakeup/readiness and watermark configuration for tracepoint sessions.
     #[serde(default = "default_wakeup_watermark")]
     wakeup_watermark: usize,
+    /// Session-wide pending queue limits.
+    #[serde(default)]
+    limits: SessionLimitsConfig,
+    /// Optional retry interval for tracepoints that may be registered after
+    /// startup. When absent, missing tracepoints fail startup immediately.
+    #[serde(default, with = "humantime_serde::option")]
+    late_registration_poll_interval: Option<Duration>,
+}
+
+/// Session-wide pending queue limits.
+///
+/// These limits cap total receiver-side buffering across all subscriptions in a
+/// session. Per-subscription limits may further constrain individual
+/// subscriptions, but these global ceilings always apply.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+struct SessionLimitsConfig {
     /// Maximum number of parsed events buffered between one_collect callbacks
     /// and the receiver drain loop.
     #[serde(default = "default_max_pending_events")]
@@ -126,10 +168,15 @@ struct SessionConfig {
     /// and the receiver drain loop.
     #[serde(default = "default_max_pending_bytes")]
     max_pending_bytes: usize,
-    /// Optional retry interval for tracepoints that may be registered after
-    /// startup. When absent, missing tracepoints fail startup immediately.
-    #[serde(default, with = "humantime_serde::option")]
-    late_registration_poll_interval: Option<Duration>,
+}
+
+impl Default for SessionLimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_pending_events: default_max_pending_events(),
+            max_pending_bytes: default_max_pending_bytes(),
+        }
+    }
 }
 
 /// Per-turn limits for reading samples from the tracepoint session.
@@ -228,8 +275,7 @@ impl UserEventsReceiver {
         let session = config.session.clone().unwrap_or(SessionConfig {
             per_cpu_buffer_size: default_per_cpu_buffer_size(),
             wakeup_watermark: default_wakeup_watermark(),
-            max_pending_events: default_max_pending_events(),
-            max_pending_bytes: default_max_pending_bytes(),
+            limits: SessionLimitsConfig::default(),
             late_registration_poll_interval: None,
         });
         Self::validate_session(&session)?;
@@ -270,6 +316,7 @@ impl UserEventsReceiver {
         }
         for subscription in subscriptions {
             subscription.tracepoint = Self::normalize_tracepoint(&subscription.tracepoint)?;
+            Self::validate_subscription_limits(&subscription.tracepoint, &subscription.limits)?;
         }
         Ok(())
     }
@@ -295,16 +342,16 @@ impl UserEventsReceiver {
     }
 
     fn validate_session(session: &SessionConfig) -> Result<(), otap_df_config::error::Error> {
-        if session.max_pending_events == 0 {
+        if session.limits.max_pending_events == 0 {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
                 error:
-                    "user_events receiver `session.max_pending_events` must be greater than zero"
+                    "user_events receiver `session.limits.max_pending_events` must be greater than zero"
                         .to_owned(),
             });
         }
-        if session.max_pending_bytes == 0 {
+        if session.limits.max_pending_bytes == 0 {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "user_events receiver `session.max_pending_bytes` must be greater than zero"
+                error: "user_events receiver `session.limits.max_pending_bytes` must be greater than zero"
                     .to_owned(),
             });
         }
@@ -315,6 +362,37 @@ impl UserEventsReceiver {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
                 error: "user_events receiver `session.late_registration_poll_interval` must be greater than zero"
                     .to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_subscription_limits(
+        tracepoint: &str,
+        limits: &Option<SubscriptionLimitsConfig>,
+    ) -> Result<(), otap_df_config::error::Error> {
+        let Some(limits) = limits else {
+            return Ok(());
+        };
+        if !limits.has_effective_pending_limit() {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "user_events receiver subscription `{tracepoint}` `limits` must set at least one pending limit"
+                ),
+            });
+        }
+        if limits.max_pending_events == Some(0) {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "user_events receiver subscription `{tracepoint}` `limits.max_pending_events` must be greater than zero"
+                ),
+            });
+        }
+        if limits.max_pending_bytes == Some(0) {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "user_events receiver subscription `{tracepoint}` `limits.max_pending_bytes` must be greater than zero"
+                ),
             });
         }
         Ok(())
@@ -763,8 +841,7 @@ mod linux_integration_tests {
         SessionConfig {
             per_cpu_buffer_size: default_per_cpu_buffer_size(),
             wakeup_watermark: default_wakeup_watermark(),
-            max_pending_events: default_max_pending_events(),
-            max_pending_bytes: default_max_pending_bytes(),
+            limits: SessionLimitsConfig::default(),
             late_registration_poll_interval: None,
         }
     }
@@ -781,6 +858,7 @@ mod linux_integration_tests {
         let subscriptions = vec![SubscriptionConfig {
             tracepoint: tracepoint.to_owned(),
             format,
+            limits: None,
         }];
 
         match UserEventsSession::open(&subscriptions, &test_session_config(), 0) {
@@ -1095,6 +1173,7 @@ mod config_tests {
         SubscriptionConfig {
             tracepoint: "user_events:test".to_owned(),
             format: FormatConfig::Tracefs,
+            limits: None,
         }
     }
 
@@ -1364,6 +1443,7 @@ mod config_tests {
         let mut subscriptions = vec![SubscriptionConfig {
             tracepoint: "user_events:example_L5K1".to_owned(),
             format: FormatConfig::Tracefs,
+            limits: None,
         }];
 
         UserEventsReceiver::normalize_subscriptions(&mut subscriptions)
@@ -1376,6 +1456,7 @@ mod config_tests {
         let mut subscriptions = vec![SubscriptionConfig {
             tracepoint: "example_L5K1".to_owned(),
             format: FormatConfig::Tracefs,
+            limits: None,
         }];
 
         UserEventsReceiver::normalize_subscriptions(&mut subscriptions)
@@ -1392,6 +1473,50 @@ mod config_tests {
 
         assert!(
             error.to_string().contains("unknown field `tracepoint`"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn deserialize_config_accepts_session_limits() {
+        let config = serde_json::from_value::<UserEventsReceiverConfig>(serde_json::json!({
+            "subscriptions": [
+                {
+                    "tracepoint": "user_events:example_L5K1"
+                }
+            ],
+            "session": {
+                "limits": {
+                    "max_pending_events": 128,
+                    "max_pending_bytes": 4096
+                }
+            }
+        }))
+        .expect("session limits accepted");
+
+        let session = config.session.expect("session configured");
+        assert_eq!(session.limits.max_pending_events, 128);
+        assert_eq!(session.limits.max_pending_bytes, 4096);
+    }
+
+    #[test]
+    fn deserialize_config_rejects_ungrouped_session_pending_limits() {
+        let error = serde_json::from_value::<UserEventsReceiverConfig>(serde_json::json!({
+            "subscriptions": [
+                {
+                    "tracepoint": "user_events:example_L5K1"
+                }
+            ],
+            "session": {
+                "max_pending_events": 128
+            }
+        }))
+        .expect_err("ungrouped session pending limits rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `max_pending_events`"),
             "unexpected error: {error}"
         );
     }
@@ -1441,6 +1566,7 @@ mod config_tests {
             subscriptions: vec![SubscriptionConfig {
                 tracepoint: "foo:example_L2K1".to_owned(),
                 format: FormatConfig::Tracefs,
+                limits: None,
             }],
             session: None,
             drain: None,
@@ -1463,6 +1589,7 @@ mod config_tests {
         let mut subscriptions = vec![SubscriptionConfig {
             tracepoint: String::new(),
             format: FormatConfig::Tracefs,
+            limits: None,
         }];
 
         let error = UserEventsReceiver::normalize_subscriptions(&mut subscriptions)
@@ -1474,12 +1601,71 @@ mod config_tests {
     }
 
     #[test]
+    fn validate_subscriptions_rejects_zero_subscription_pending_events_limit() {
+        let mut subscriptions = vec![SubscriptionConfig {
+            tracepoint: "user_events:example_L5K1".to_owned(),
+            format: FormatConfig::Tracefs,
+            limits: Some(SubscriptionLimitsConfig {
+                max_pending_events: Some(0),
+                max_pending_bytes: None,
+            }),
+        }];
+
+        let error = UserEventsReceiver::normalize_subscriptions(&mut subscriptions)
+            .expect_err("zero rejected");
+        assert!(
+            error.to_string().contains("limits.max_pending_events"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_subscriptions_rejects_zero_subscription_pending_bytes_limit() {
+        let mut subscriptions = vec![SubscriptionConfig {
+            tracepoint: "user_events:example_L5K1".to_owned(),
+            format: FormatConfig::Tracefs,
+            limits: Some(SubscriptionLimitsConfig {
+                max_pending_events: None,
+                max_pending_bytes: Some(0),
+            }),
+        }];
+
+        let error = UserEventsReceiver::normalize_subscriptions(&mut subscriptions)
+            .expect_err("zero rejected");
+        assert!(
+            error.to_string().contains("limits.max_pending_bytes"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_subscriptions_rejects_empty_subscription_limits() {
+        let mut subscriptions = vec![SubscriptionConfig {
+            tracepoint: "user_events:example_L5K1".to_owned(),
+            format: FormatConfig::Tracefs,
+            limits: Some(SubscriptionLimitsConfig {
+                max_pending_events: None,
+                max_pending_bytes: None,
+            }),
+        }];
+
+        let error = UserEventsReceiver::normalize_subscriptions(&mut subscriptions)
+            .expect_err("empty limits rejected");
+        assert!(
+            error.to_string().contains("at least one pending limit"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn validate_session_rejects_zero_max_pending_events() {
         let session = SessionConfig {
             per_cpu_buffer_size: default_per_cpu_buffer_size(),
             wakeup_watermark: default_wakeup_watermark(),
-            max_pending_events: 0,
-            max_pending_bytes: default_max_pending_bytes(),
+            limits: SessionLimitsConfig {
+                max_pending_events: 0,
+                max_pending_bytes: default_max_pending_bytes(),
+            },
             late_registration_poll_interval: None,
         };
         let error = UserEventsReceiver::validate_session(&session).expect_err("zero rejected");
@@ -1494,8 +1680,10 @@ mod config_tests {
         let session = SessionConfig {
             per_cpu_buffer_size: default_per_cpu_buffer_size(),
             wakeup_watermark: default_wakeup_watermark(),
-            max_pending_events: default_max_pending_events(),
-            max_pending_bytes: 0,
+            limits: SessionLimitsConfig {
+                max_pending_events: default_max_pending_events(),
+                max_pending_bytes: 0,
+            },
             late_registration_poll_interval: None,
         };
         let error = UserEventsReceiver::validate_session(&session).expect_err("zero rejected");
@@ -1510,8 +1698,7 @@ mod config_tests {
         let session = SessionConfig {
             per_cpu_buffer_size: default_per_cpu_buffer_size(),
             wakeup_watermark: default_wakeup_watermark(),
-            max_pending_events: default_max_pending_events(),
-            max_pending_bytes: default_max_pending_bytes(),
+            limits: SessionLimitsConfig::default(),
             late_registration_poll_interval: Some(Duration::ZERO),
         };
         let error = UserEventsReceiver::validate_session(&session).expect_err("zero rejected");
