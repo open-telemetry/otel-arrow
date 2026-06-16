@@ -686,6 +686,11 @@ fn build_static_grpc_metadata(headers: &IndexMap<String, String>) -> Option<Meta
 /// this returns `None` without allocating. The static template is cloned only
 /// when present (each tonic request needs its own owned metadata); propagated
 /// headers are appended on top so static and propagated headers coexist.
+///
+/// Static config wins on collision: a propagated header whose key matches a
+/// statically configured one is dropped, so a configured backend credential
+/// (e.g. `authorization`) can never be overridden or duplicated by inbound
+/// transport headers.
 fn build_grpc_metadata(
     effect_handler: &EffectHandler<OtapPdata>,
     context: &Context,
@@ -729,6 +734,18 @@ fn build_grpc_metadata(
                         );
                         continue;
                     };
+                    // Static config wins: a statically configured header (e.g. an
+                    // `authorization` backend credential) must not be duplicated or
+                    // overridden by a propagated header with the same key. Static
+                    // metadata is ASCII-only, so only text headers can collide.
+                    if static_metadata.is_some_and(|s| s.contains_key(key.as_str())) {
+                        otel_debug!(
+                            "otlp.exporter.grpc.header_skip",
+                            reason = "static header takes precedence over propagated header",
+                            header_name = header.header_name
+                        );
+                        continue;
+                    }
                     let _ = metadata.append(key, value);
                 }
                 ValueKind::Binary => {
@@ -2026,6 +2043,41 @@ mod tests {
             metadata.get("x-tenant-id").unwrap().to_str().unwrap(),
             "tenant-abc",
             "propagated header must be present"
+        );
+    }
+
+    #[test]
+    fn test_build_grpc_metadata_static_wins_over_propagated_collision() {
+        // When a propagated header collides with a statically configured one,
+        // the static value must win and the propagated duplicate must be dropped
+        // so we never send two `authorization` values on the wire.
+        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
+
+        let mut transport = TransportHeaders::new();
+        transport.push(TransportHeader::text(
+            "authorization",
+            "Authorization",
+            b"Bearer propagated",
+        ));
+        let context = context_with_headers(transport);
+
+        let mut static_headers = IndexMap::new();
+        _ = static_headers.insert("authorization".to_string(), "Basic static".to_string());
+        let static_metadata =
+            build_static_grpc_metadata(&static_headers).expect("static metadata should be present");
+
+        let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata))
+            .expect("should produce metadata");
+
+        let values: Vec<&str> = metadata
+            .get_all("authorization")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            values,
+            vec!["Basic static"],
+            "static header must win and the propagated duplicate must be dropped"
         );
     }
 }
