@@ -1437,7 +1437,12 @@ Validation:
   - the fanout processor's in-flight requests (local ticket per retained
     `original_pdata` in both the slim-primary and full await/sequential/fallback
     paths, released on completion ack/nack, timeout, capacity eviction, or
-    processor drop; the fire-and-forget path retains nothing).
+    processor drop; the fire-and-forget path retains nothing);
+  - the batch processor's pending input buffer (local ticket per buffered input,
+    kept parallel to the pending batches and charged on accept; tickets move with
+    the buffer on internal drain and are released when the batches leave for
+    output on flush, or on processor drop. Known-size OTLP-bytes inputs charge
+    their byte length; unknown-size OTAP arrow inputs are tracked as unknown).
   These exporter/processor sites are accounting points, not admission points:
   under `mode = enforce` a rejected charge yields no ticket and the work still
   proceeds, so they never drop data. Admission/enforcement of retained work
