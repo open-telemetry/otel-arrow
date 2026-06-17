@@ -1598,6 +1598,8 @@ item that has no owner.
 | `engine.runtime.memory.budget.escrow.rejections` | Publish or redemption failures by escrow. |
 | `engine.runtime.memory.budget.escrow.shadow.rejections` | Publish or redemption work that would have failed under enforcement. |
 | `engine.runtime.memory.budget.spare.available.bytes` | Remaining global spare pool. |
+| `engine.runtime.memory.budget.site.charged.bytes` | Known logical retained bytes charged to one retention site (selected by the `site` attribute). Summing across all `site` values reproduces `charged.bytes`. |
+| `engine.runtime.memory.budget.site.unknown.count` | Unknown-size retained item count for one retention site (selected by the `site` attribute). Summing across all `site` values reproduces `unknown.count`. |
 | `engine.numa.node.id` | NUMA node assigned to the runtime core. |
 | `engine.allocator.arena.resident.bytes` | Optional jemalloc arena resident bytes. |
 <!-- markdownlint-enable MD013 -->
@@ -1623,6 +1625,58 @@ per-runtime local snapshot protocol. Expensive ticket cardinality metrics such a
 `outstanding_tickets` and `oldest_ticket_age_ms` are observe-only diagnostics or
 feature-gated debug metrics; they must not add ordered per-ticket tracking to
 the enforce hot path by default.
+
+### Per-Retention-Site Attribution
+
+Operators need to know *which kind* of retained work is holding memory, not just
+the aggregate runtime total. Retained-work accounting therefore carries a small,
+low-cardinality site discriminator, `RetainedSiteKind`, and the engine exposes a
+per-site breakdown of the aggregate runtime counters.
+
+`RetainedSiteKind` is a `Copy` enum (one byte). Each `LocalMemoryTicket` records
+its site once, at charge time, and every charge, refund, resize, reconcile, and
+escrow-transfer path for that ticket updates the matching per-site slot. The
+per-runtime account keeps fixed-size `[Cell<u64>; N]` arrays (charged bytes and
+unknown-size count) indexed by the site, so the per-site slots **always sum back
+to** the aggregate `charged_bytes`/`unknown_count`. There is no dynamic map, no
+per-item string, and no atomics on the local charge/refund path: the only
+hot-path cost is one extra `Cell` read+write on a fixed array. The per-site
+arrays are published into the shared snapshot at the same flush/level-transition
+points as the scalar snapshot, never per item.
+
+The back-compatible `charge(size)` entry point attributes to `Unknown`; call
+sites that know their retention kind use `charge_at(site, size)`, which keeps the
+exact same ownership semantics.
+
+Sites attributed in this slice (local-ticket retention):
+
+<!-- markdownlint-disable MD013 -->
+| `site` value | Retention site |
+| --- | --- |
+| `batch_pending` | Batch processor pending-input buffer. |
+| `retry_buffer` | Retry processor delayed-retry payload buffer. |
+| `fanout_inflight` | Fanout processor in-flight retained original request. |
+| `router_parked` | Router (exclusive/content) backpressure-parked route. |
+| `exporter_pending` | Exporter request parked before send (e.g. OTLP gRPC pending). |
+| `exporter_inflight` | Exporter request retained while in flight (OTLP gRPC/HTTP encoded body). |
+| `unknown` | Fallback for `charge`, the drain/redemption allowance path, and any not-yet-attributed local charge. |
+<!-- markdownlint-enable MD013 -->
+
+Sites **not** folded into these local-ticket counters (deliberately, to avoid
+conflating two ownership models):
+
+- **Topic queue / topic ring** retention is owned by **escrow buckets**, which
+  already have their own per-boundary aggregate gauges
+  (`escrow.charged.bytes`, `escrow.active.bucket.count`,
+  `escrow.max.bucket.bytes`, ...). When a local ticket converts to escrow its
+  local per-site slot is decremented, so the two views never double-count.
+- **Shared channel** retention via `SharedEnvelope` is a primitive that is not
+  yet production-adopted, so it has no site variant yet.
+- The aggregate `unknown.bytes` observe-only diagnostic is not split per site.
+
+This is per-*site* attribution only. Per-group, per-pipeline, and per-tenant
+attribution (and any enforcement keyed off these metrics, such as receiver
+admission) remain future work.
 
 ## Structured Events
 
