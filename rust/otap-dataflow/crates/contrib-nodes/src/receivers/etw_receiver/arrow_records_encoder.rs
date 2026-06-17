@@ -188,6 +188,11 @@ impl EtwArrowRecordsBuilder {
 
         // Attributes: ETW header metadata
         self.append_attr("etw.event_id", AttrValue::Int(i64::from(event.event_id)));
+        // Preserve the raw ETW level so the severity mapping remains
+        // reversible (levels 0 and 6-255 map to UNSPECIFIED but the original
+        // value is retained here).  See the ETW mapping in the OpenTelemetry
+        // logs data model appendix.
+        self.append_attr("etw.level", AttrValue::Int(i64::from(event.level)));
         self.append_attr("etw.opcode", AttrValue::Int(i64::from(event.opcode)));
         self.append_attr("etw.version", AttrValue::Int(i64::from(event.version)));
         self.append_attr(
@@ -352,12 +357,12 @@ mod tests {
             .expect("attrs batch present");
 
         assert_eq!(logs_rb.num_rows(), 1);
-        // 7 header attrs (event_id, opcode, version, keywords, process_id,
-        // thread_id, provider_id) + 2 decoded fields = 9 rows.
+        // 8 header attrs (event_id, level, opcode, version, keywords,
+        // process_id, thread_id, provider_id) + 2 decoded fields = 10 rows.
         // (event_name is carried in the OTAP `event_name` log-record column,
         // not duplicated as an attribute; activity_id is all zeros so it's
         // omitted.)
-        assert_eq!(attrs_rb.num_rows(), 9);
+        assert_eq!(attrs_rb.num_rows(), 10);
     }
 
     #[test]
@@ -399,10 +404,10 @@ mod tests {
         let attrs_rb = batch
             .get(ArrowPayloadType::LogAttrs)
             .expect("attrs batch present");
-        // 7 header attributes (event_id, opcode, version, keywords,
+        // 8 header attributes (event_id, level, opcode, version, keywords,
         // process_id, thread_id, provider_id); event_name is carried in the
         // OTAP `event_name` log-record column; activity_id is zero → omitted
-        assert_eq!(attrs_rb.num_rows(), 7);
+        assert_eq!(attrs_rb.num_rows(), 8);
     }
 
     #[test]
@@ -419,7 +424,7 @@ mod tests {
         let attrs_rb = batch
             .get(ArrowPayloadType::LogAttrs)
             .expect("attrs batch present");
-        // 7 header attributes; the empty-named field is skipped
-        assert_eq!(attrs_rb.num_rows(), 7);
+        // 8 header attributes; the empty-named field is skipped
+        assert_eq!(attrs_rb.num_rows(), 8);
     }
 }
