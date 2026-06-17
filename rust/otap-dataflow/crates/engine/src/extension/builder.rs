@@ -774,10 +774,13 @@ impl ExtensionBundleBuilder {
             let lifecycle = match l.extension {
                 Some(ext) => {
                     let (tx, rx) = mpsc::Channel::new(cap);
+                    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
                     ExtensionLifecycle::Active {
                         extension: ext,
                         control_sender: Sender::Local(LocalSender::mpsc(tx)),
                         control_receiver: LocalReceiver::mpsc(rx),
+                        shutdown_sender: Some(shutdown_tx),
+                        shutdown_receiver: Some(shutdown_rx),
                     }
                 }
                 None => ExtensionLifecycle::Passive,
@@ -796,10 +799,13 @@ impl ExtensionBundleBuilder {
             let lifecycle = match s.extension {
                 Some(ext) => {
                     let (tx, rx) = tokio::sync::mpsc::channel(cap);
+                    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
                     ExtensionLifecycle::Active {
                         extension: ext,
                         control_sender: Sender::Shared(SharedSender::mpsc(tx)),
                         control_receiver: SharedReceiver::mpsc(rx),
+                        shutdown_sender: Some(shutdown_tx),
+                        shutdown_receiver: Some(shutdown_rx),
                     }
                 }
                 None => ExtensionLifecycle::Passive,

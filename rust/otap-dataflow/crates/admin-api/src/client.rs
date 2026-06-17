@@ -5,7 +5,7 @@
 
 use crate::endpoint::{AdminAuth, AdminEndpoint};
 use crate::http_backend::HttpBackend;
-use crate::{Error, engine, groups, operations, pipelines, telemetry};
+use crate::{Error, config, engine, groups, operations, pipelines, telemetry};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
@@ -340,6 +340,37 @@ impl GroupsClient<'_> {
     /// ```
     pub async fn status(&self) -> Result<groups::Status, Error> {
         self.backend.groups_status().await
+    }
+
+    /// Returns the committed configuration for one pipeline group.
+    ///
+    /// Returns `Ok(None)` when the group is not found.
+    pub async fn details(
+        &self,
+        pipeline_group_id: &str,
+    ) -> Result<Option<config::pipeline_group::PipelineGroupConfig>, Error> {
+        self.backend.group_details(pipeline_group_id).await
+    }
+
+    /// Creates one empty pipeline group with optional group-level settings.
+    ///
+    /// The first endpoint version supports policies on the group but not
+    /// pipelines or new topic declarations in the create payload.
+    pub async fn create(
+        &self,
+        pipeline_group_id: &str,
+        group: &config::pipeline_group::PipelineGroupConfig,
+    ) -> Result<config::pipeline_group::PipelineGroupConfig, Error> {
+        self.backend.create_group(pipeline_group_id, group).await
+    }
+
+    /// Gracefully drains and deletes one pipeline group.
+    pub async fn delete(
+        &self,
+        pipeline_group_id: &str,
+        options: &operations::DeleteOptions,
+    ) -> Result<engine::GroupDeleteStatus, Error> {
+        self.backend.delete_group(pipeline_group_id, options).await
     }
 
     /// Requests coordinated shutdown for all running logical pipelines.
@@ -709,6 +740,18 @@ impl PipelinesClient<'_> {
             .await
     }
 
+    /// Gracefully drains and deletes one logical pipeline.
+    pub async fn delete(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        options: &operations::DeleteOptions,
+    ) -> Result<engine::PipelineDeleteStatus, Error> {
+        self.backend
+            .pipeline_delete(pipeline_group_id, pipeline_id, options)
+            .await
+    }
+
     /// Returns the liveness probe result for one logical pipeline.
     ///
     /// # Examples
@@ -897,6 +940,20 @@ pub(crate) trait AdminBackend: Send + Sync {
     async fn engine_readyz(&self) -> Result<engine::ProbeResponse, Error>;
 
     async fn groups_status(&self) -> Result<groups::Status, Error>;
+    async fn group_details(
+        &self,
+        pipeline_group_id: &str,
+    ) -> Result<Option<config::pipeline_group::PipelineGroupConfig>, Error>;
+    async fn create_group(
+        &self,
+        pipeline_group_id: &str,
+        group: &config::pipeline_group::PipelineGroupConfig,
+    ) -> Result<config::pipeline_group::PipelineGroupConfig, Error>;
+    async fn delete_group(
+        &self,
+        pipeline_group_id: &str,
+        options: &operations::DeleteOptions,
+    ) -> Result<engine::GroupDeleteStatus, Error>;
     async fn groups_shutdown(
         &self,
         options: &operations::OperationOptions,
@@ -947,6 +1004,12 @@ pub(crate) trait AdminBackend: Send + Sync {
         pipeline_id: &str,
         shutdown_id: &str,
     ) -> Result<Option<pipelines::ShutdownStatus>, Error>;
+    async fn pipeline_delete(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        options: &operations::DeleteOptions,
+    ) -> Result<engine::PipelineDeleteStatus, Error>;
 
     async fn telemetry_logs(
         &self,

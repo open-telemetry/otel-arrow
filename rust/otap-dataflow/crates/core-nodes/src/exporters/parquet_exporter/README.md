@@ -53,9 +53,9 @@ config:
 
 The default build supports local file storage. Enable the top-level `azure`
 feature for Azure Blob Storage and the top-level `aws` feature for S3. See
-[`configs/fake-parquet-azure.yaml`](../../../../../configs/fake-parquet-azure.yaml)
+[`configs/trafficgen-parquet-azure.yaml`](../../../../../configs/trafficgen-parquet-azure.yaml)
 and
-[`configs/fake-parquet-s3.yaml`](../../../../../configs/fake-parquet-s3.yaml)
+[`configs/trafficgen-parquet-s3.yaml`](../../../../../configs/trafficgen-parquet-s3.yaml)
 for backend-specific configuration examples.
 
 ## Examples
