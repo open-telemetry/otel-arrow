@@ -12,7 +12,7 @@ subtext: |
   exposed only as the `otel_scope_name` label, per the OTel/Prometheus interop
   spec). When two scopes emit the same metric name with different descriptions
   (e.g. `cpu_utilization`, `pending_sends.buffered`), the exporter keeps the
-  first `# HELP` and logged an "Instrument description conflict" warning on every
+  first `# HELP` and logs an "Instrument description conflict" warning on every
   scrape. No data is lost — each scope remains a distinct time series — so the
   warning was pure noise. The internal-telemetry log filter now adds a
   field-scoped directive
