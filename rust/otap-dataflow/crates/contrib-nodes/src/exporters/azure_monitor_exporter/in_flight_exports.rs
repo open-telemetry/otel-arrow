@@ -95,7 +95,7 @@ impl InFlightExports {
     }
 
     /// Create a boxed export future.
-    pub fn make_export_future(
+    fn make_export_future(
         mut client: LogsIngestionClient,
         batch_id: u64,
         row_count: u64,
