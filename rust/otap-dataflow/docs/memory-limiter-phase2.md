@@ -1416,16 +1416,18 @@ Validation:
   accidentally from normal config; it is a compile-time opt-in for tests and
   experimental builds. The default remains `observe_only`.
 - Enforcement-flag gating is honest about what is actually wired:
-  - `enforcement.queue_publish` is the only wired enforcement path. It is
-    rejected in default builds and accepted only with the
+  - `enforcement.queue_publish` is the wired owned topic-publish enforcement
+    path. It is rejected in default builds and accepted only with the
     `unstable-memory-enforcement` feature.
+  - `enforcement.reclaim_hooks` currently gates component-driven pressure relief
+    for the batch processor: when the runtime budget is at `Soft` or `Hard`
+    pressure, the batch processor can flush its pending buffer early through its
+    normal `EffectHandler` path. It is rejected in default builds and accepted
+    only with the `unstable-memory-enforcement` feature.
   - `enforcement.receiver_admission` is **rejected in all builds** (even with the
     unstable feature) because no runtime admission point consumes the runtime
     budget yet.
-  - `enforcement.reclaim_hooks` is **rejected in all builds** (even with the
-    unstable feature) because, although a per-runtime reclaim registry is
-    installed, no concrete reclaimer registers and no driver invokes reclaim.
-  These two flags stay rejected until they are wired end to end, so enabling them
+  The receiver flag stays rejected until it is wired end to end, so enabling it
   can never create a false sense of enforcement.
 - The wired `enforcement.queue_publish` path works at the owned topic-publish
   boundary: with `mode = enforce` and `queue_publish: true`, an owned publish
@@ -1461,6 +1463,11 @@ Validation:
     the buffer on internal drain and are released when the batches leave for
     output on flush, or on processor drop. Known-size OTLP-bytes inputs charge
     their byte length; unknown-size OTAP arrow inputs are tracked as unknown).
+    With `enforcement.reclaim_hooks` enabled in an unstable build, runtime
+    `Soft`/`Hard` pressure triggers an early flush of this pending buffer through
+    the normal flush path. This is pressure relief, not silent dropping: buffered
+    telemetry is sent downstream and the parallel tickets are released by the
+    existing handoff.
   These exporter/processor sites are accounting points, not admission points:
   under `mode = enforce` a rejected charge yields no ticket and the work still
   proceeds, so they never drop data. Admission/enforcement of retained work
@@ -1735,10 +1742,18 @@ the controller installs a fresh `ReclaimRegistry` on each pinned pipeline thread
 (alongside `current_runtime_memory_budget`), and a site running on that thread
 reaches it through `current_reclaim_registry()` to register its reclaimer. The
 slot is cleared when the per-runtime guard drops, on the same thread. **No
-concrete reclaimer registers and no driver calls `reclaim` yet**, so the registry
-is present but inert and installing it is a no-op for budget behavior; and
-because `reclaim_hooks` is rejected at config validation, reclaim cannot be
-turned on until a reclaimer and a driver are wired end to end.
+concrete registry reclaimer registers and no driver calls `reclaim` yet**, so
+the registry mechanism is present but inert and installing it is a no-op for
+budget behavior.
+
+The first live `reclaim_hooks` behavior is intentionally **component-driven
+pressure relief**, not registry-driven reclaim: the batch processor checks the
+current runtime budget on its own `process()` turn, where its `EffectHandler` is
+available, and flushes its pending buffer early when the runtime is at `Soft` or
+`Hard` pressure. This releases retained payloads and tickets together through
+the normal flush handoff and does not drop telemetry. Registry reclaim remains a
+foundation for future sites that can safely release retained owners without
+component-side effects.
 
 ### First-site blocker: retry processor is not a valid first reclaimer
 
@@ -1833,8 +1848,10 @@ Recommended smallest enabling change (do not implement in this audit slice):
    `reclaim()` path but is a larger design and must preserve "release only by
    dropping owners already held" plus exactly-once terminal delivery.
 
-Because neither change exists yet, **no concrete reclaimer is wired, no driver
-invokes reclaim, and `reclaim_hooks` stays rejected at config validation.**
+Because neither change exists yet, **no concrete registry reclaimer is wired and
+no driver invokes `ReclaimRegistry::reclaim`**. The `reclaim_hooks` flag is
+accepted only in unstable builds because it now gates the batch processor's
+component-driven early flush path; it does not mean registry reclaim is live.
 
 In Phase 2e, shared retained memory is reported through metrics but is not
 eligible for local reclaim hooks. A later phase can add `SharedMemoryReclaim`
@@ -2071,16 +2088,21 @@ who require placement can choose `unsupported: error`.
   (register/unregister with RAII teardown, deterministic priority-ordered,
   re-entry-safe, budget-free, **synchronous** passes), installed per pipeline
   runtime thread and reachable through `current_reclaim_registry()`. **Done.**
+- Add component-driven pressure relief for sites that need their own
+  `EffectHandler`: the batch processor flushes its pending input buffer early
+  under runtime `Soft`/`Hard` pressure when `enforcement.reclaim_hooks` is
+  enabled in an unstable build. **Done for batch pending buffer only.**
 - Register concrete site reclaimers (batch/retry/durable/queue/stream) and
   trigger reclaim from pressure/admission, gated behind
-  `enforcement.reclaim_hooks` (which the config layer rejects until this is
-  wired). **Pending:** no concrete reclaimer registers and no driver invokes
-  reclaim yet.
+  `enforcement.reclaim_hooks`. **Pending for the registry path:** no concrete
+  registry reclaimer registers and no driver invokes `ReclaimRegistry::reclaim`
+  yet.
 - Retry processor was evaluated as the first concrete reclaimer and **rejected**
   (see the "First-site blocker" note above): it owns the tickets but not the
   scheduler-retained payload, so a reclaimer there could only undercount memory
-  without freeing it. `reclaim_hooks` stays rejected until a site that owns both
-  its retained data and ticket is wired (or a scheduler cancel-resume API lands).
+  without freeing it. Registry reclaim stays pending until a site that owns both
+  its retained data and ticket can release safely without component-side effects,
+  or a scheduler cancel-resume API lands.
 - Prefer reclaim/drain before local shedding where possible.
 - Make runtime-budget receiver enforcement generally available only after
   reclaim paths exist for the main retained-memory sources.
