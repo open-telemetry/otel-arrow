@@ -41,14 +41,19 @@ const fn etw_level_to_otel_severity(level: u8) -> i32 {
     }
 }
 
-/// Map an ETW level to the conventional OTel severity text.
+/// Map an ETW level to the `SeverityText`.
+///
+/// Per the OpenTelemetry logs data model, `SeverityText` is the original
+/// string representation of the severity as it is known at the source, so this
+/// returns the ETW level name (e.g. `"Critical"`) rather than the OTel
+/// severity short name (e.g. `"FATAL"`).
 const fn etw_level_to_severity_text(level: u8) -> Option<&'static str> {
     match level {
-        1 => Some("FATAL"),
-        2 => Some("ERROR"),
-        3 => Some("WARN"),
-        4 => Some("INFO"),
-        5 => Some("DEBUG"),
+        1 => Some("Critical"),
+        2 => Some("Error"),
+        3 => Some("Warning"),
+        4 => Some("Information"),
+        5 => Some("Verbose"),
         _ => None,
     }
 }
@@ -374,6 +379,82 @@ mod tests {
         assert_eq!(etw_level_to_otel_severity(5), 5); // DEBUG
         assert_eq!(etw_level_to_otel_severity(0), 0); // UNSPECIFIED
         assert_eq!(etw_level_to_otel_severity(255), 0); // Unknown
+    }
+
+    #[test]
+    fn unspecified_severity_preserves_raw_level() {
+        use arrow::array::{DictionaryArray, Int64Array, StringArray};
+        use arrow::datatypes::{UInt8Type, UInt16Type};
+
+        // An ETW level outside the documented 1-5 range (e.g. 200) maps to
+        // OTel UNSPECIFIED, so no severity number/text is emitted.
+        assert_eq!(etw_level_to_otel_severity(200), 0);
+        assert_eq!(etw_level_to_severity_text(200), None);
+
+        let mut event = test_event();
+        event.level = 200;
+
+        let mut builder = EtwArrowRecordsBuilder::new();
+        builder.append(&event);
+        let batch = builder.build().expect("build succeeds");
+
+        // The severity maps to UNSPECIFIED, so the logs batch carries no
+        // severity number (the column is either omitted or null).
+        let logs_rb = batch
+            .get(ArrowPayloadType::Logs)
+            .expect("logs batch present");
+        if let Some(severity) = logs_rb.column_by_name("severity_number") {
+            assert!(
+                severity.is_null(0),
+                "UNSPECIFIED severity must not emit a severity number"
+            );
+        }
+
+        // The raw ETW level is still recoverable from the `etw.level`
+        // attribute, even though the severity mapping discarded it.
+        let attrs_rb = batch
+            .get(ArrowPayloadType::LogAttrs)
+            .expect("attrs batch present");
+
+        let key_dict = attrs_rb
+            .column_by_name("key")
+            .expect("key column present")
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+            .expect("key is dictionary-encoded");
+        let key_values = key_dict
+            .values()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("key dictionary values are strings");
+
+        let int_dict = attrs_rb
+            .column_by_name("int")
+            .expect("int column present")
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .expect("int is dictionary-encoded");
+        let int_values = int_dict
+            .values()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("int dictionary values are i64");
+
+        let mut recovered_level = None;
+        for row in 0..attrs_rb.num_rows() {
+            let key = key_values.value(key_dict.key(row).expect("key index"));
+            if key == "etw.level" {
+                let int_idx = int_dict.key(row).expect("etw.level has an int value");
+                recovered_level = Some(int_values.value(int_idx));
+                break;
+            }
+        }
+
+        assert_eq!(
+            recovered_level,
+            Some(200),
+            "raw ETW level should be recoverable from the etw.level attribute"
+        );
     }
 
     #[test]

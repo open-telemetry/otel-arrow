@@ -462,7 +462,9 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
     );
 
     // severity: producer wrote `Informational` (== ETW level 4), which
-    // the encoder maps to OTel INFO (severity_number 9, text "INFO").
+    // the encoder maps to OTel INFO (severity_number 9). `SeverityText`
+    // carries the original ETW level name ("Information") as known at the
+    // source, per the OpenTelemetry logs data model.
     let severity_number = i32_column(logs_rb, consts::SEVERITY_NUMBER);
     assert_eq!(
         severity_number[row],
@@ -473,8 +475,8 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
     let severity_text = string_column(logs_rb, consts::SEVERITY_TEXT);
     assert_eq!(
         severity_text[row].as_deref(),
-        Some("INFO"),
-        "severity_text at row {row}: expected Some(\"INFO\"), got {:?}",
+        Some("Information"),
+        "severity_text at row {row}: expected Some(\"Information\"), got {:?}",
         severity_text[row]
     );
 
