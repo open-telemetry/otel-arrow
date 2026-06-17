@@ -1780,9 +1780,61 @@ A valid first reclaim site requires one of the following future fixes:
    deliberate shed of retry-buffered telemetry under memory pressure and must be
    documented and tested as data loss at that site.
 
-Until one of these lands, the first concrete reclaimer should instead target a
-site that already owns both its retained data and the matching ticket in-process
-(for example, a stateful processor buffer), so reclaim genuinely frees memory.
+Until one of these lands, the retry processor cannot be the first reclaim site.
+
+### Candidate audit: no site is a safe registry reclaimer yet
+
+A wider audit of co-located retention sites (those that own both the retained
+payload and its `LocalMemoryTicket` in the same state) found that none is a
+clearly-safe, small first reclaimer, for one systemic reason:
+
+> **`LocalMemoryReclaim::reclaim(&mut self, target_bytes, context)` has no
+> `EffectHandler`.** A registry-driven reclaimer runs outside the owning
+> component's `process()` turn, so it cannot notify ack/nack or forward work
+> downstream. It can only *drop* owners.
+
+Every co-located retention site holds **subscribed** work (work that a
+downstream consumer expects to be acked, nacked, or forwarded). Shedding it
+safely therefore requires the `EffectHandler` (to nack the shed item or to
+early-flush it downstream), which the reclaim trait does not provide. The
+engine's own teardown paths confirm this contract: the batch processor
+*flushes* its buffered inputs downstream on shutdown (it does not drop them), and
+the routers turn parked routes back into retryable nacks on shutdown. A silent
+reclaim-drop would both lose data and strand the ack/nack subscriber (a hung or
+inconsistent upstream), which is worse than the existing contracts allow.
+
+<!-- markdownlint-disable MD013 -->
+| Candidate site | Payload + ticket co-located? | Can reclaim release both safely? | Why not (first slice) |
+| --- | --- | --- | --- |
+| Batch processor pending buffer (`Inputs.pending` + `Inputs.tickets`) | Yes | No | Shutdown *flushes* downstream (needs `EffectHandler`); subscribed inputs need nack/flush. Only the unsubscribed (`inkey == None`) subset is drop-safe, but it is interleaved with subscribed inputs in delicate parallel vectors and would need hot-path `Rc<RefCell>` restructuring + intricate selective drop. |
+| Content/signal router parked routes (`PendingRoute.data` + `.ticket`) | Yes | No | Parked routes are subscribed; shedding requires a nack via `EffectHandler` (`emit_shutdown_nack`). |
+| Fanout in-flight (`Inflight.original_pdata` / `SlimInflight` + `_ticket`) | Yes | No | Dropping in-flight state strands the awaited downstream ack/nack correlation (protocol inconsistency). |
+| OTLP gRPC/HTTP exporter in-flight (request body + `ticket` in the export future) | Yes | No | Releasing means aborting an in-flight network request and breaking send/retry semantics. |
+| Retry processor delayed work | No | No | Ticket and payload are split (payload lives in `node_local_scheduler`); see above. |
+<!-- markdownlint-enable MD013 -->
+
+Recommended smallest enabling change (do not implement in this audit slice):
+
+1. **Preferred: early-flush under pressure, driven from the owning component's
+   runtime turn.** Drive memory relief from inside a processor's `process()` /
+   control path (e.g. on `MemoryPressureChanged` or a maintenance tick), where
+   the `EffectHandler` is in scope, so the component can *flush* buffered work
+   downstream (no data loss) when runtime budget pressure is high and
+   `reclaim_hooks` is enabled. The batch processor is the natural first target:
+   its existing flush path already releases `pending` + `tickets` together by
+   sending data downstream, is budget-free, and creates no new retained memory.
+   Note this is a processor-self-flush, **not** the effect-handler-less registry
+   `reclaim()` mechanism, so it would either reshape what "reclaim driver" means
+   or remain a pressure response distinct from the registry.
+2. **Alternative: give the reclaim mechanism a constrained terminal-action
+   sink.** Extend `ReclaimContext` (or the registry pass) with a budget-free way
+   for a reclaimer to hand back deferred ack/nack/forward actions that the owning
+   component completes on its next runtime turn. This keeps the registry
+   `reclaim()` path but is a larger design and must preserve "release only by
+   dropping owners already held" plus exactly-once terminal delivery.
+
+Because neither change exists yet, **no concrete reclaimer is wired, no driver
+invokes reclaim, and `reclaim_hooks` stays rejected at config validation.**
 
 In Phase 2e, shared retained memory is reported through metrics but is not
 eligible for local reclaim hooks. A later phase can add `SharedMemoryReclaim`
