@@ -22,10 +22,38 @@ use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
 /// Otherwise, the level's [`RUST_LOG`-style directive string][env-filter] is
 /// passed directly to [`EnvFilter`].
 ///
+/// In all cases the filter suppresses one specific benign per-scrape warning
+/// from the `opentelemetry-prometheus` crate: the
+/// `MetricValidationFailed` event carrying a `metric_description` field. The
+/// Prometheus exporter flattens OpenTelemetry instrumentation scopes into a
+/// single namespace keyed by metric name (scope is exposed only as the
+/// `otel_scope_name` label, per the OTel/Prometheus interop spec). When two
+/// scopes emit the same metric name with different descriptions, the exporter
+/// keeps the first `# HELP` and logs this warning on every scrape. No data is
+/// lost (each scope remains a distinct time series), so it is pure noise.
+///
+/// The directive is field-scoped, so it is surgical: it caps *only* the
+/// description-conflict warning (which carries `metric_description`) at `ERROR`.
+/// The sibling type-conflict warning (which carries `metric_type` and *does*
+/// drop data) lacks that field, so it is left untouched and remains visible at
+/// `WARN`, as do all other diagnostics from the crate.
+/// See https://github.com/open-telemetry/otel-arrow/issues/2734 for more
+/// details.
+///
 /// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
 #[must_use]
 pub fn create_env_filter(level: &LogLevel) -> EnvFilter {
-    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level.as_str()))
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level.as_str()));
+    // Target matches `env!("CARGO_PKG_NAME")` set by opentelemetry's `otel_warn!`.
+    // The `[{metric_description}]` field filter matches only the benign
+    // description-conflict `MetricValidationFailed` event, leaving the
+    // data-dropping type-conflict variant (field `metric_type`) visible.
+    filter.add_directive(
+        "opentelemetry-prometheus[{metric_description}]=error"
+            .parse()
+            .expect("valid tracing directive"),
+    )
 }
 
 /// Combined tracing configuration for a thread.
@@ -239,6 +267,78 @@ mod tests {
             level("warn"),
             level("error"),
         ]
+    }
+
+    /// Counts how many events reach the subscriber after filtering.
+    fn count_events_through_filter<F>(emit: F) -> usize
+    where
+        F: FnOnce() + std::panic::UnwindSafe,
+    {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingLayer(Arc<AtomicUsize>);
+        impl<S: Subscriber> TracingLayer<S> for CountingLayer {
+            fn on_event(&self, _event: &Event<'_>, _ctx: Context<'_, S>) {
+                let _ = self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let count = Arc::new(AtomicUsize::new(0));
+        crate::with_cleared_rust_log(|| {
+            let subscriber = Registry::default()
+                .with(create_env_filter(&level("info")))
+                .with(CountingLayer(count.clone()));
+            tracing::subscriber::with_default(subscriber, emit);
+        });
+        count.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn create_env_filter_parses_for_all_levels() {
+        // The embedded `opentelemetry-prometheus[{metric_description}]=error`
+        // directive must parse for every level (otherwise `create_env_filter`
+        // panics at startup via its `.expect`).
+        crate::with_cleared_rust_log(|| {
+            for l in all_simple_levels() {
+                let _ = create_env_filter(&l);
+            }
+        });
+    }
+
+    #[test]
+    fn prometheus_description_conflict_warning_is_suppressed() {
+        // Benign description-conflict warning (field `metric_description`): the
+        // field-scoped directive caps it at ERROR, so a WARN is dropped.
+        let count = count_events_through_filter(|| {
+            tracing::warn!(
+                target: "opentelemetry-prometheus",
+                metric_description = "conflict",
+                "Instrument description conflict, using existing"
+            );
+        });
+        assert_eq!(
+            count, 0,
+            "benign description-conflict warning should be suppressed"
+        );
+    }
+
+    #[test]
+    fn prometheus_type_conflict_warning_remains_visible() {
+        // Data-dropping type-conflict warning (field `metric_type`, not
+        // `metric_description`): the directive does not match it, so it stays
+        // visible at WARN.
+        let count = count_events_through_filter(|| {
+            tracing::warn!(
+                target: "opentelemetry-prometheus",
+                metric_type = "conflict",
+                "Instrument type conflict, using existing type definition"
+            );
+        });
+        assert_eq!(
+            count, 1,
+            "data-dropping type-conflict warning should remain visible"
+        );
     }
 
     #[test]

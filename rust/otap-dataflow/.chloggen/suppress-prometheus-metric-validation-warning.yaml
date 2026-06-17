@@ -1,0 +1,22 @@
+change_type: bug_fix
+
+component: observability
+
+note: Suppress noisy per-scrape `MetricValidationFailed` warnings from the Prometheus pull exporter
+
+issues: [2734]
+
+subtext: |
+  The `opentelemetry-prometheus` crate flattens OpenTelemetry
+  instrumentation scopes into a single namespace keyed by metric name (scope is
+  exposed only as the `otel_scope_name` label, per the OTel/Prometheus interop
+  spec). When two scopes emit the same metric name with different descriptions
+  (e.g. `cpu_utilization`, `pending_sends.buffered`), the exporter keeps the
+  first `# HELP` and logged an "Instrument description conflict" warning on every
+  scrape. No data is lost — each scope remains a distinct time series — so the
+  warning was pure noise. The internal-telemetry log filter now adds a
+  field-scoped directive
+  (`opentelemetry-prometheus[{metric_description}]=error`) that silences only
+  that benign description-conflict warning. The sibling type-conflict warning
+  (which carries a `metric_type` field and *does* drop data) and every other
+  diagnostic from the crate remain visible at their original level.
