@@ -18,9 +18,12 @@ use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
 
 /// Creates an `EnvFilter` for the given log level.
 ///
-/// If the `RUST_LOG` environment variable is set, it takes precedence.
-/// Otherwise, the level's [`RUST_LOG`-style directive string][env-filter] is
-/// passed directly to [`EnvFilter`].
+/// The base filter comes from the `RUST_LOG` environment variable if set;
+/// otherwise it falls back to the level's
+/// [`RUST_LOG`-style directive string][env-filter]. The suppression directive
+/// described below is then appended unconditionally on top of that base, so it
+/// can override a conflicting user-supplied directive for the
+/// `opentelemetry-prometheus[{metric_description}]` target.
 ///
 /// In all cases the filter suppresses one specific benign per-scrape warning
 /// from the `opentelemetry-prometheus` crate: the
