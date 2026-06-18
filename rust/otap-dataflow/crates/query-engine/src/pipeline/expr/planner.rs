@@ -670,8 +670,17 @@ impl ExprPlanner {
             }
         };
 
+        let mut expr = self.build_eval_or_join(case_expr, args_scope, data_scope, true)?;
+        if let ScopedExpr::JoinAndEval {
+            ref mut align_children_to_root,
+            ..
+        } = expr
+        {
+            *align_children_to_root = true;
+        }
+
         Ok(PlannedOp {
-            expr: self.build_eval_or_join(case_expr, args_scope, data_scope, true)?,
+            expr,
             // Like `concat`, mixed attribute columns (often dictionary-encoded) and literals need
             // dictionary downcasting before CASE can build a single array.
             expr_type: ExprLogicalType::AnyValue,
@@ -1659,6 +1668,7 @@ impl ExprPlanner {
 
                 let expected_type = match value_type {
                     ValueType::Boolean => ExprLogicalType::Boolean,
+                    ValueType::Bytes => ExprLogicalType::Binary,
                     ValueType::DateTime => ExprLogicalType::TimestampNanosecond,
                     ValueType::Double => ExprLogicalType::Float64,
                     ValueType::Integer => ExprLogicalType::AnyInt,

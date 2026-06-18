@@ -38,6 +38,35 @@ pub enum Error {
         message: String,
     },
 
+    /// A configured controller extension has no registered factory.
+    #[error("Controller extension `{extension_id}` of type `{extension_type}` is not registered")]
+    ControllerExtensionNotRegistered {
+        /// Configured extension instance identifier.
+        extension_id: String,
+        /// Configured extension type URN.
+        extension_type: String,
+    },
+
+    /// A controller extension failed during synchronous startup.
+    #[error("Controller extension `{extension_id}` failed to start: {source}")]
+    ControllerExtensionStartError {
+        /// Configured extension instance identifier.
+        extension_id: String,
+        /// Underlying extension error.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+
+    /// A controller extension task returned an error.
+    #[error("Controller extension `{extension_id}` failed: {source}")]
+    ControllerExtensionRuntimeError {
+        /// Configured extension instance identifier.
+        extension_id: String,
+        /// Underlying extension error.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+
     /// Pipeline runtime error.
     #[error("Pipeline runtime error: {source}")]
     PipelineRuntimeError {
