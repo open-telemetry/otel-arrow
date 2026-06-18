@@ -13,64 +13,58 @@ future.
 
 ## Available Configurations
 
-### `fake-batch-debug-noop.yaml`
+### `trafficgen-batch-debug-noop.yaml`
 
 Demonstrates the batch processor:
 
-- Generates fake data -> batch processor -> debug processor -> noop exporter
+- Generates synthetic traffic -> batch processor -> debug processor -> noop exporter
 
-### `fake-debug-noop-telemetry.yaml`
+### `trafficgen-debug-noop-telemetry.yaml`
 
 A basic pipeline with telemetry export enabled:
 
-- Generates fake data -> debug processor -> noop exporter
+- Generates synthetic traffic -> debug processor -> noop exporter
 - Includes `engine.telemetry` configuration with console metrics export
 
-### `fake-debug-output-ports.yaml`
-
-Demonstrates multiple output ports:
-
-- Generates fake data -> debug processor with multiple output ports -> noop exporter
-
-### `fake-filter-debug-noop.yaml`
+### `trafficgen-filter-debug-noop.yaml`
 
 Demonstrates the filter processor:
 
-- Generates fake data -> filter processor -> debug processor -> noop exporter
+- Generates synthetic traffic -> filter processor -> debug processor -> noop exporter
 
-### `fake-metric-filter-debug-noop.yaml`
+### `trafficgen-metric-filter-debug-noop.yaml`
 
 Demonstrates metric-name filtering:
 
-- Generates fake metrics -> filter processor by metric name -> debug processor
+- Generates synthetic metrics -> filter processor by metric name -> debug processor
   -> noop exporter
 
-### `fake-transform-debug-noop.yaml`
+### `trafficgen-transform-debug-noop.yaml`
 
 Demonstrate using the transform processor to transform data
 
-- Generates fake data -> debug -> transform -> debug -> noop exporter
+- Generates synthetic traffic -> debug -> transform -> debug -> noop exporter
 
 The input data can be viewed at /tmp/debug1.log and the transformed output at
 /tmp/debug2.log
 
-### `fake-otap.yaml`
+### `trafficgen-otap.yaml`
 
-Generates fake data and exports via OTAP:
+Generates synthetic traffic and exports via OTAP:
 
-- Generates fake data -> OTAP exporter to `http://127.0.0.1:4318`
+- Generates synthetic traffic -> OTAP exporter to `http://127.0.0.1:4318`
 
-### `fake-otlp.yaml`
+### `trafficgen-otlp.yaml`
 
-Generates fake data and exports via OTLP:
+Generates synthetic traffic and exports via OTLP:
 
-- Generates fake data -> OTLP exporter to `http://127.0.0.1:4317`
+- Generates synthetic traffic -> OTLP exporter to `http://127.0.0.1:4317`
 
-### `fake-parquet.yaml`
+### `trafficgen-parquet.yaml`
 
-Generates fake data and exports to Parquet files:
+Generates synthetic traffic and exports to Parquet files:
 
-- Generates fake data -> Parquet exporter to `/tmp`
+- Generates synthetic traffic -> Parquet exporter to `/tmp`
 
 Parquet exporter configs can include an optional `retry` block for cloud-backed
 object stores. Any omitted fields use the `object_store` defaults.
@@ -90,21 +84,21 @@ them; invalid retry values are still rejected during config validation. It does
 not replay consumed Parquet writers after `AsyncArrowWriter::close` fails, and
 it is separate from the retry processor's whole-batch redelivery policy.
 
-### `fake-perf.yaml`
+### `trafficgen-perf.yaml`
 
-Generates fake data with performance metrics:
+Generates synthetic traffic with performance metrics:
 
-- Generates fake data -> performance exporter
+- Generates synthetic traffic -> performance exporter
 - View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
 
-### `fake-multi-tenant-perf.yaml`
+### `trafficgen-multi-tenant-perf.yaml`
 
 Generates mixed-tenant traffic using weighted resource attribute rotation:
 
 - Uses `data_source: synthetic` with two resource attribute sets (`tenant.id:
 prod` and `tenant.id: ppe`) weighted 3:1, producing a 75% / 25% batch split
   per pipeline.
-- Generates fake data -> performance exporter
+- Generates synthetic traffic -> performance exporter
 - View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
 
 The `resource_attributes` field accepts three forms:

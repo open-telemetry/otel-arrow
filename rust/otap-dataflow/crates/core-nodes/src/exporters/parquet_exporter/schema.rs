@@ -386,6 +386,11 @@ static LOGS_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
             true,
         ),
         Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, false),
+        // NULL when the source omits it. The OTAP schema marks this as
+        // Dictionary(UInt8, Utf8), but the transform preserves an incoming dictionary column if
+        // present (see `test_keeps_original_datatype_for_dicts`), and the Parquet writer may
+        // dictionary-encode it at write time depending on its settings/heuristics.
+        Field::new(consts::EVENT_NAME, DataType::Utf8, true),
         Field::new(consts::FLAGS, DataType::UInt32, false),
     ])
 });
@@ -762,6 +767,7 @@ mod test {
                     true,
                 ),
                 Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, false),
+                Field::new(consts::EVENT_NAME, DataType::Utf8, true),
                 Field::new(consts::FLAGS, DataType::UInt32, false),
             ])),
             vec![
@@ -810,6 +816,7 @@ mod test {
                     Some(NullBuffer::new_null(3)),
                 )),
                 Arc::new(UInt32Array::from_iter_values(repeat_n(0, 3))),
+                Arc::new(StringArray::new_null(3)),
                 Arc::new(UInt32Array::from_iter_values(repeat_n(0, 3))),
             ],
         )
@@ -879,6 +886,58 @@ mod test {
 
         let val_str_column = result.column_by_name(consts::ATTRIBUTE_STR).unwrap();
         assert_eq!(val_str_column.data_type(), &expected_data_type);
+    }
+
+    #[test]
+    fn test_logs_event_name_preserved_when_present() {
+        // a logs batch that carries `event_name` should have the value written through unchanged
+        let event_names = StringArray::from_iter(vec![Some("event_a"), None, Some("event_b")]);
+        let log_record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::EVENT_NAME,
+                DataType::Utf8,
+                true,
+            )])),
+            vec![Arc::new(event_names.clone())],
+        )
+        .unwrap();
+
+        let result =
+            transform_record_batch_to_known_schema(&log_record_batch, ArrowPayloadType::Logs)
+                .unwrap();
+
+        let event_name_column = result
+            .column_by_name(consts::EVENT_NAME)
+            .expect("event_name column should be present in the transformed logs batch");
+        assert_eq!(event_name_column.data_type(), &DataType::Utf8);
+        let event_name_strings = event_name_column
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(event_name_strings, &event_names);
+    }
+
+    #[test]
+    fn test_logs_event_name_null_when_absent() {
+        // a logs batch without `event_name` should produce an all-null Utf8 column (no error,
+        // no default empty string)
+        let log_record_batch = RecordBatch::try_new_with_options(
+            Arc::new(Schema::empty()),
+            vec![],
+            &RecordBatchOptions::new().with_row_count(Some(3)),
+        )
+        .unwrap();
+
+        let result =
+            transform_record_batch_to_known_schema(&log_record_batch, ArrowPayloadType::Logs)
+                .unwrap();
+
+        let event_name_column = result
+            .column_by_name(consts::EVENT_NAME)
+            .expect("event_name column should be present in the transformed logs batch");
+        assert_eq!(event_name_column.data_type(), &DataType::Utf8);
+        assert_eq!(event_name_column.len(), 3);
+        assert_eq!(event_name_column.null_count(), 3);
     }
 
     #[test]
