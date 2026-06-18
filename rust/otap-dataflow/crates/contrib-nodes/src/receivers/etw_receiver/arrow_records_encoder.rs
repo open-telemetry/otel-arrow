@@ -45,15 +45,22 @@ const fn etw_level_to_otel_severity(level: u8) -> i32 {
 ///
 /// Per the OpenTelemetry logs data model, `SeverityText` is the original
 /// string representation of the severity as it is known at the source, so this
-/// returns the ETW level name (e.g. `"Critical"`) rather than the OTel
+/// returns the ETW level name (e.g. `"CRITICAL"`) rather than the OTel
 /// severity short name (e.g. `"FATAL"`).
+///
+/// Level 0 (`LOG_ALWAYS`) is a filtering directive rather than a severity, but
+/// its source name is still recorded here even though `SeverityNumber` maps to
+/// UNSPECIFIED. Reserved (6-15) and provider-defined (16-255) levels have no
+/// name standardized across providers, so they return `None`. The names match
+/// the ETW mapping table in the OpenTelemetry logs data model appendix.
 const fn etw_level_to_severity_text(level: u8) -> Option<&'static str> {
     match level {
-        1 => Some("Critical"),
-        2 => Some("Error"),
-        3 => Some("Warning"),
-        4 => Some("Information"),
-        5 => Some("Verbose"),
+        0 => Some("LOG_ALWAYS"),
+        1 => Some("CRITICAL"),
+        2 => Some("ERROR"),
+        3 => Some("WARNING"),
+        4 => Some("INFO"),
+        5 => Some("VERBOSE"),
         _ => None,
     }
 }
@@ -167,16 +174,16 @@ impl EtwArrowRecordsBuilder {
         // field in the general case).  Decoded fields go into attributes.
         self.logs.body.append_null();
 
-        // Severity from ETW level
+        // Severity from ETW level. The severity number is only set for the
+        // mapped levels 1-5; UNSPECIFIED (0) levels leave it null. The
+        // `SeverityText` carries the original ETW level name as known at the
+        // source and is emitted even when the number is UNSPECIFIED (e.g.
+        // level 0 -> "LOG_ALWAYS"), per the OpenTelemetry logs data model.
         let severity = etw_level_to_otel_severity(event.level);
-        if severity > 0 {
-            self.logs.append_severity_number(Some(severity));
-            self.logs
-                .append_severity_text(etw_level_to_severity_text(event.level).map(str::as_bytes));
-        } else {
-            self.logs.append_severity_number(None);
-            self.logs.append_severity_text(None);
-        }
+        self.logs
+            .append_severity_number(if severity > 0 { Some(severity) } else { None });
+        self.logs
+            .append_severity_text(etw_level_to_severity_text(event.level).map(str::as_bytes));
 
         self.logs.append_id(Some(self.curr_log_id));
 
@@ -379,6 +386,22 @@ mod tests {
         assert_eq!(etw_level_to_otel_severity(5), 5); // DEBUG
         assert_eq!(etw_level_to_otel_severity(0), 0); // UNSPECIFIED
         assert_eq!(etw_level_to_otel_severity(255), 0); // Unknown
+    }
+
+    #[test]
+    fn severity_text_matches_data_model_mapping() {
+        // SeverityText carries the original ETW level name per the
+        // OpenTelemetry logs data model appendix ETW mapping table.
+        assert_eq!(etw_level_to_severity_text(0), Some("LOG_ALWAYS"));
+        assert_eq!(etw_level_to_severity_text(1), Some("CRITICAL"));
+        assert_eq!(etw_level_to_severity_text(2), Some("ERROR"));
+        assert_eq!(etw_level_to_severity_text(3), Some("WARNING"));
+        assert_eq!(etw_level_to_severity_text(4), Some("INFO"));
+        assert_eq!(etw_level_to_severity_text(5), Some("VERBOSE"));
+        // Reserved (6-15) and provider-defined (16-255) levels have no
+        // standardized name.
+        assert_eq!(etw_level_to_severity_text(6), None);
+        assert_eq!(etw_level_to_severity_text(200), None);
     }
 
     #[test]

@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Preserve the raw ETW level in the `etw.level` attribute so the SeverityNumber mapping remains reversible, aligning with the OpenTelemetry logs data model appendix ETW mapping
+note: Align the ETW receiver with the OpenTelemetry logs data model appendix ETW mapping - preserve the raw ETW level in the `etw.level` attribute so the SeverityNumber mapping stays reversible, and emit `SeverityText` using the standardized ETW level names (`LOG_ALWAYS`, `CRITICAL`, `ERROR`, `WARNING`, `INFO`, `VERBOSE`)
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [2783]
