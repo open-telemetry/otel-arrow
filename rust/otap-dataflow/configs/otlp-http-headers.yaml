@@ -1,0 +1,55 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        # OTLP/HTTP receiver -> OTLP/HTTP exporter pipeline with static request
+        # headers. The exporter adds the configured `http.headers` to every
+        # outbound request, e.g. multi-tenant routing headers required by
+        # managed OTLP backends. For request authentication, prefer a dedicated
+        # Auth extension rather than hard-coding an `authorization` header.
+
+        policies:
+          channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                # OTLP/HTTP receiver only (default port: 4318)
+                http:
+                  listening_addr: "127.0.0.1:4318"
+
+          exporter:
+            type: exporter:otlp_http
+            config:
+              # Base OTLP/HTTP endpoint without the signal path.
+              endpoint: "https://obs.example.app/api/default"
+
+              # Number of HTTP clients in the pool (required, must be non-zero).
+              client_pool_size: 1
+
+              http:
+                compression: gzip
+
+                # Static headers sent on every outbound OTLP/HTTP request.
+                # Useful for multi-tenant routing or backend stream selection.
+                # For request authentication, prefer a dedicated Auth extension
+                # rather than hard-coding an `authorization` header. Values are
+                # sent verbatim; keep any rendered config holding a secret
+                # root-readable only. Protocol headers (Content-Type /
+                # Content-Encoding / Content-Length / Host) cannot be set here
+                # and are rejected at config load.
+                headers:
+                  x-scope-orgid: "tenant-1"
+                  stream-name: "default"
+
+        connections:
+          - from: receiver
+            to: exporter
