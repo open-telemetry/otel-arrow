@@ -1322,7 +1322,7 @@ transition to local `Hard`.
 This keeps expensive decode work out of the system when pressure is already
 known and improves attribution once exact sizes are available.
 
-### Receiver Admission Primitive (implemented, not yet wired)
+### Receiver Admission Primitive (wired for syslog CEF)
 
 The pre-decode pressure checkpoint above is now realized by a concrete, pure
 engine primitive in `crate::memory_limiter`:
@@ -1382,14 +1382,47 @@ from the receiver-local process-pressure snapshot
 (`Local`/`SharedReceiverAdmissionState`); collect `runtime_budget_level` from
 `current_runtime_memory_budget()`, which is available only on the pinned pipeline
 runtime thread, so it is `None` for receivers whose ingress runs on gRPC/HTTP
-handler threads; set `runtime_budget_enforce` only when the
-`unstable-memory-enforcement` feature is built, the budget mode is enforce, and
-the `receiver_admission` gate is enabled.
+handler threads; set `runtime_budget_enforce` from the runtime budget's
+`receiver_admission_active()` (true only when the budget mode is enforce and the
+`enforcement.receiver_admission` gate is enabled, which config validation accepts
+only under the `unstable-memory-enforcement` build feature).
 
 **Reclaim-before-reject is future.** This slice does not attempt component-driven
 pressure relief before rejecting at a receiver; admission must not block on or
 spin a reclaim loop. Whether a receiver awaits one safe pressure-relief turn
-before shedding is deferred to the wiring slice.
+before shedding is deferred to a later slice.
+
+#### Wired receiver: syslog CEF
+
+The syslog CEF receiver (`syslog_cef_receiver`) is the first and only receiver
+wired to runtime-budget admission. It is a local receiver running on the pinned
+pipeline thread, so it captures `current_runtime_memory_budget()` once at start
+and, at each existing ingress shed point (UDP datagram, TCP accept, and the
+per-message TCP read paths), evaluates the admission primitive instead of the
+Phase 1 process-only `should_shed_ingress()`:
+
+- Process `Hard` under the process limiter still sheds exactly as before
+  (`evaluate(None, false).is_reject()` is identical to the old check), so
+  existing process-pressure behavior and tests are unchanged.
+- Runtime-budget `Hard` additionally sheds **only** when the budget is in enforce
+  mode with `enforcement.receiver_admission` enabled. In observe-only mode or
+  with the gate disabled, runtime-budget `Hard` is a shadow decision and never
+  drops a datagram or closes a connection.
+- `Soft` pressure (either source) never sheds. Process `Hard` outranks
+  runtime-budget `Hard` for source attribution.
+- Shedding reuses the receiver's existing drop/close behavior and the existing
+  `received_logs_rejected_memory_pressure` / `tcp_connections_rejected_memory_pressure`
+  counters. The reject `source` (`process_hard` / `runtime_budget_hard`) is added
+  to the shed log lines for distinguishability; a source-labeled metric is left
+  as future work. The shed path acquires no budget and retains no payload.
+- syslog has no protocol-level retry-after, so the decision's `retry_after_secs`
+  is ignored by this receiver.
+
+Reading the runtime budget on the per-item path is cheap: the budget handle is
+captured once (an `Rc` clone, no per-item thread-local lookup), and each check is
+a few local `Cell` reads with no atomics, no allocation, and no budget
+acquisition. When no runtime budget is installed the receiver behaves exactly as
+the Phase 1 process-only path.
 
 #### Receiver audit (first-wiring candidates)
 
@@ -1405,18 +1438,22 @@ before shedding is deferred to the wiring slice.
 
 <!-- markdownlint-enable MD013 -->
 
-The smallest clearly-safe first wiring target is **`syslog_cef_receiver`**: a
-local receiver whose ingress already reads the process-pressure snapshot and
-already sheds on process `Hard`, with an existing shedding test, running on the
-pinned pipeline thread (so it can read `current_runtime_memory_budget()`).
-`user_events_receiver` is an equivalent contrib-side candidate. Shared
-gRPC/HTTP receivers are **not** safe first targets for runtime-budget admission
-because their ingress threads cannot cheaply reach the `!Send` runtime budget;
-they would need the runtime-budget level published into a shared snapshot first.
+The smallest clearly-safe first wiring target was **`syslog_cef_receiver`** (now
+wired, see above): a local receiver whose ingress already reads the
+process-pressure snapshot and already sheds on process `Hard`, with an existing
+shedding test, running on the pinned pipeline thread (so it can read
+`current_runtime_memory_budget()`). `user_events_receiver` is an equivalent
+contrib-side candidate that remains future. Shared gRPC/HTTP receivers are
+**not** safe targets for runtime-budget admission because their ingress threads
+cannot cheaply reach the `!Send` runtime budget; they would need the
+runtime-budget level published into a shared snapshot first.
 
-**Status:** the engine primitive is implemented and unit-tested; no receiver
-consumes it yet, so `enforcement.receiver_admission` remains rejected at config
-validation in all builds.
+**Status:** the engine primitive is implemented and unit-tested, and it is wired
+end to end for the syslog CEF receiver only. `enforcement.receiver_admission` is
+accepted at config validation **only** under the `unstable-memory-enforcement`
+build feature (rejected in default/production builds), exactly like
+`queue_publish` and `reclaim_hooks`. All other receivers still consult process
+pressure only; runtime-budget admission for them remains future work.
 
 ## NUMA Placement Appendix
 
@@ -1520,13 +1557,14 @@ Validation:
     pressure, the batch processor can flush its pending buffer early through its
     normal `EffectHandler` path. It is rejected in default builds and accepted
     only with the `unstable-memory-enforcement` feature.
-  - `enforcement.receiver_admission` is **rejected in all builds** (even with the
-    unstable feature) because no receiver ingress path consumes the runtime
-    budget yet. The engine-level admission primitive
-    (`ReceiverAdmissionInputs::evaluate`) exists and is unit-tested, but it is
-    not wired to any receiver, so enabling the flag would still do nothing.
-  The receiver flag stays rejected until it is wired end to end, so enabling it
-  can never create a false sense of enforcement.
+  - `enforcement.receiver_admission` gates runtime-budget receiver shedding,
+    currently wired for the **syslog CEF receiver** only: with `mode = enforce`
+    and `receiver_admission: true`, that receiver sheds ingress when the runtime
+    budget is at `Hard` pressure (in addition to the existing process-`Hard`
+    shedding). It is rejected in default builds and accepted only with the
+    `unstable-memory-enforcement` feature. Observe-only mode and a disabled gate
+    never drop on runtime-budget pressure, and all other receivers still consult
+    process pressure only.
 - The wired `enforcement.queue_publish` path works at the owned topic-publish
   boundary: with `mode = enforce` and `queue_publish: true`, an owned publish
   whose payload exceeds the topic/per-boundary escrow bucket cap or the global
@@ -2219,11 +2257,12 @@ who require placement can choose `unsupported: error`.
   after reclaim paths exist for the dominant retained-memory sources in that
   deployment. **Status:** the engine-level admission primitive
   (`ReceiverAdmissionInputs::evaluate`) is implemented and unit-tested (see
-  [Receiver Admission Primitive](#receiver-admission-primitive-implemented-not-yet-wired)),
-  but no receiver ingress path consumes it yet. `receiver_admission` is
-  therefore still rejected at config validation in all builds until a receiver
-  admission point consumes the runtime budget end to end. The smallest safe
-  first wiring target is `syslog_cef_receiver`.
+  [Receiver Admission Primitive](#receiver-admission-primitive-wired-for-syslog-cef)),
+  and it is wired end to end for the **syslog CEF receiver** only.
+  `receiver_admission` is accepted at config validation only under the
+  `unstable-memory-enforcement` feature (rejected in default builds). All other
+  receivers still consult process pressure only; wiring them (and a shared
+  runtime-pressure snapshot for gRPC/HTTP receivers) remains future work.
 
 ### Phase 2d: Queue and Topic Enforcement
 
