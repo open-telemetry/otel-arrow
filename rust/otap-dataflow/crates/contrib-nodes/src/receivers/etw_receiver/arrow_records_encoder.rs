@@ -53,6 +53,9 @@ const fn etw_level_to_otel_severity(level: u8) -> i32 {
 /// UNSPECIFIED. Reserved (6-15) and provider-defined (16-255) levels have no
 /// name standardized across providers, so they return `None`. The names match
 /// the ETW mapping table in the OpenTelemetry logs data model appendix.
+///
+/// See the Windows `EVENT_DESCRIPTOR` documentation for the level semantics:
+/// <https://learn.microsoft.com/en-us/windows/win32/api/evntprov/ns-evntprov-event_descriptor>
 const fn etw_level_to_severity_text(level: u8) -> Option<&'static str> {
     match level {
         0 => Some("LOG_ALWAYS"),
@@ -61,6 +64,9 @@ const fn etw_level_to_severity_text(level: u8) -> Option<&'static str> {
         3 => Some("WARNING"),
         4 => Some("INFO"),
         5 => Some("VERBOSE"),
+        // TODO: Manifest-based events can define their own levels in the
+        // 16-255 range. We will need to handle the mapping for those once
+        // manifest-based event support is implemented.
         _ => None,
     }
 }
@@ -174,14 +180,13 @@ impl EtwArrowRecordsBuilder {
         // field in the general case).  Decoded fields go into attributes.
         self.logs.body.append_null();
 
-        // Severity from ETW level. The severity number is only set for the
-        // mapped levels 1-5; UNSPECIFIED (0) levels leave it null. The
-        // `SeverityText` carries the original ETW level name as known at the
-        // source and is emitted even when the number is UNSPECIFIED (e.g.
-        // level 0 -> "LOG_ALWAYS"), per the OpenTelemetry logs data model.
+        // Severity from ETW level. The severity number is always emitted;
+        // unmapped levels resolve to UNSPECIFIED (0). The `SeverityText`
+        // carries the original ETW level name as known at the source and is
+        // emitted even when the number is UNSPECIFIED (e.g. level 0 ->
+        // "LOG_ALWAYS"), per the OpenTelemetry logs data model.
         let severity = etw_level_to_otel_severity(event.level);
-        self.logs
-            .append_severity_number(if severity > 0 { Some(severity) } else { None });
+        self.logs.append_severity_number(Some(severity));
         self.logs
             .append_severity_text(etw_level_to_severity_text(event.level).map(str::as_bytes));
 
@@ -406,11 +411,12 @@ mod tests {
 
     #[test]
     fn unspecified_severity_preserves_raw_level() {
-        use arrow::array::{DictionaryArray, Int64Array, StringArray};
+        use arrow::array::{Array, DictionaryArray, Int32Array, Int64Array, StringArray};
         use arrow::datatypes::{UInt8Type, UInt16Type};
 
         // An ETW level outside the documented 1-5 range (e.g. 200) maps to
-        // OTel UNSPECIFIED, so no severity number/text is emitted.
+        // OTel UNSPECIFIED, so the severity number is emitted as 0 and no
+        // severity text is emitted.
         assert_eq!(etw_level_to_otel_severity(200), 0);
         assert_eq!(etw_level_to_severity_text(200), None);
 
@@ -421,15 +427,28 @@ mod tests {
         builder.append(&event);
         let batch = builder.build().expect("build succeeds");
 
-        // The severity maps to UNSPECIFIED, so the logs batch carries no
-        // severity number (the column is either omitted or null).
+        // The severity maps to UNSPECIFIED, so the logs batch carries a
+        // severity number of 0.
         let logs_rb = batch
             .get(ArrowPayloadType::Logs)
             .expect("logs batch present");
         if let Some(severity) = logs_rb.column_by_name("severity_number") {
+            // The column may be dictionary-encoded, so cast to a plain Int32
+            // array before inspecting the value.
+            let severity = arrow::compute::cast(severity, &arrow::datatypes::DataType::Int32)
+                .expect("cast severity_number to i32");
+            let severity = severity
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .expect("severity_number is i32");
             assert!(
-                severity.is_null(0),
-                "UNSPECIFIED severity must not emit a severity number"
+                !severity.is_null(0),
+                "UNSPECIFIED severity must still emit a severity number"
+            );
+            assert_eq!(
+                severity.value(0),
+                0,
+                "UNSPECIFIED severity number must be 0"
             );
         }
 
