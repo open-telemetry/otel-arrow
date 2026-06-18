@@ -1,41 +1,36 @@
 # Observe-Only Retained-Work Memory Accounting
 
-This document describes the first level of retained-work memory accounting for
-the OTAP dataflow engine: an observe-only layer that makes it possible to see
-where admitted telemetry is waiting in memory and which component logically owns
-that retained work.
+This document defines the first level of retained-work memory accounting for
+the OTAP dataflow engine: an observe-only layer for seeing where admitted
+telemetry waits in memory and which component logically owns it.
 
 This document deliberately stops before enforcement. The goal here is to agree
 on the measurement model first.
 
 ## Summary
 
-A telemetry pipeline holds admitted data in many places: receiver intake,
-queues, batch buffers, retry buffers, routers, topics, and exporter requests
-that are waiting to be sent or acknowledged. Any of these can hold a large share
-of process memory at a given moment.
+A telemetry pipeline can hold admitted data in receiver intake, queues, batch
+buffers, retry buffers, routers, topics, and exporter requests. Any of these can
+hold a large share of process memory at a given moment.
 
 Process-level signals such as resident set size (RSS) or cgroup usage tell us
 that the process is under pressure. They do not tell us *where* admitted
 telemetry is waiting, or *who* is responsible for it. That gap is what
 observe-only retained-work accounting is meant to close.
 
-Observe-only accounting is designed to:
+Observe-only accounting should:
 
-- attributes retained telemetry bytes to a runtime, a retention site, and a
+- attribute retained telemetry bytes to a runtime, a retention site, and a
   component,
-- does this without changing how traffic flows,
-- and provides the visibility layer that any later enforcement or tenant
-  isolation work would build on.
-
-It is a measurement layer, not a control layer.
+- preserve normal traffic flow while measuring retained work,
+- and provide the visibility needed before any later enforcement or tenant
+  isolation work.
 
 ## Why this exists
 
-A pipeline can look healthy at the process level and still have a problem. RSS
-might be stable while one queue, one exporter, or one retry buffer quietly holds
-most of the retained work. When that happens, an operator with only a process
-gauge has no way to find the hot spot.
+A pipeline can look healthy at the process level while one queue, exporter, or
+retry buffer holds most of the retained work. An operator with only a process
+gauge has no direct way to find that hot spot.
 
 The problem gets worse with more than one pipeline or tenant in a process. One
 noisy source can push work into shared queues and topics and indirectly consume
@@ -60,24 +55,37 @@ reviewer does not need to know every internal type to follow this document.
 - A **controller** starts and supervises pipelines, while **worker runtimes** do
   the actual data movement, usually one pinned runtime per core.
 
-The key idea: once an item is admitted, it occupies memory somewhere in this
-chain until it is delivered, dropped, or acknowledged. Retained-work accounting
-is about naming that "somewhere".
+Once an item is admitted, it occupies memory somewhere in this chain until it is
+delivered, dropped, or acknowledged. Retained-work accounting is about naming
+that "somewhere".
 
 ## Diagrams
 
 ### Where work can be retained
 
 ```mermaid
-flowchart LR
-    R[Receiver] --> Q[Queue or topic]
-    Q --> P[Processor]
-    P --> B[Batch / retry / route]
-    B --> E[Exporter]
+flowchart TB
+    subgraph DataPath[Pipeline data path]
+        direction LR
+        R[Receiver] --> Q[Queue or topic]
+        Q --> P[Processor]
+        P --> B[Batch / retry / route]
+        B --> E[Exporter]
+    end
+
+    X[Optional extension / plugin / WASM capability]
+    R -. uses .-> X
+    P -. uses .-> X
+    E -. uses .-> X
 ```
 
 Retained work may sit at any of these points after it has been admitted but
-before it has been delivered, dropped, or acknowledged.
+before it has been delivered, dropped, or acknowledged. Extensions, plugins, and
+WASM providers are shown with dotted lines because they are optional capability
+boundaries that may be used by receivers, processors, or exporters. If a custom
+plugin or WASM module runs as a data-path node, or if a capability buffers
+admitted telemetry, its retained work follows the same ownership discipline as
+the built-in pipeline stages.
 
 ### Observe-only versus enforcement
 
@@ -89,8 +97,10 @@ flowchart TD
     D -. later .-> E[Backpressure or enforcement]
 ```
 
-Observe-only mode should not reject traffic. It should make later policy
-decisions safer.
+Observe-only mode records where work is retained, attributes ownership, and
+exposes that information through metrics. Traffic continues to flow as before.
+The dotted path is intentional: backpressure or rejection comes later, after the
+ownership and release paths are trustworthy.
 
 ### Local ownership
 
@@ -104,6 +114,10 @@ sequenceDiagram
     Node->>Budget: drop or resize ticket
 ```
 
+Local ownership is the lowest-overhead case. A node keeps a local ticket beside
+the data it is holding, and the ticket is valid only on that runtime. This keeps
+the common path local for work that never leaves the runtime.
+
 ### Shared-boundary ownership
 
 ```mermaid
@@ -116,15 +130,19 @@ sequenceDiagram
     OtherRuntime->>SharedBoundary: release ownership on drain/drop/close
 ```
 
+Shared ownership starts when retained work crosses a boundary where a local
+ticket cannot safely travel. The local owner is converted into a sendable owner,
+which is then responsible for release while the work sits outside the local
+runtime.
+
 ## Core idea: retained work has an owner
 
 The whole design rests on one rule: every admitted item that waits in memory has
 exactly one logical owner.
 
-The owner is whatever component is responsible for that retained work right now.
-The owner holds the accounting for it and is responsible for releasing that
-accounting when the work leaves memory, whether it is delivered, dropped, or
-acknowledged.
+The owner is the component or boundary responsible for that retained work at the
+moment. It holds the accounting and releases it when the work is delivered,
+dropped, or acknowledged.
 
 Two shapes of ownership are enough to start:
 
@@ -132,40 +150,34 @@ Two shapes of ownership are enough to start:
 - **Shared ownership** for work that crosses into a shared queue, a topic, or
   another runtime.
 
-The important property is that ownership travels *with* the data. The accounting
-should not live in a side table that can drift out of sync with the payload it
-is supposed to describe. If the data moves, its ownership moves with it. If the
-data is dropped, its ownership is released. This is what keeps the numbers
-honest.
+Ownership travels *with* the data. If the data moves, ownership moves with it.
+If the data is dropped, ownership is released. The accounting should not live in
+a side table that can drift away from the payload it describes.
 
 ## Ownership types
 
-The concepts come first. Likely Rust shapes are named afterward, only to keep
-the design concrete; the names matter less than the properties.
-
 ### Local retained ownership
 
-Used when retained work stays on the same pinned runtime.
+Local retained ownership is used when retained work stays on the same pinned
+runtime.
 
 - It should be cheap and runtime-local.
 - It should not require shared locks or atomics on every item.
-- It is naturally not safe to send across threads, and that is fine: it never
+- It is intentionally not safe to send across threads: it never
   needs to.
 
-In Rust terms this maps to a non-`Send` ticket held next to the retained data
-(for example, a local memory ticket backed by runtime-local cell state).
+In Rust terms this maps to a non-`Send` ticket held next to retained data.
 
 ### Shared retained ownership
 
-Used when retained work crosses a `Send` boundary: a shared queue, a topic, or a
-cross-runtime path.
+Shared retained ownership is used when retained work crosses a `Send` boundary:
+a shared queue, a topic, or a cross-runtime path.
 
 - It must be safe to move between threads.
 - It must release exactly once, on close, drain, failed send, eviction, or drop.
 
-In Rust terms this maps to a sendable ownership handle (for example, an escrow
-ticket) that represents the same retained bytes while they sit on the shared
-boundary.
+In Rust terms this maps to a sendable ownership handle, such as an escrow
+ticket.
 
 ### Envelope-style ownership
 
@@ -173,15 +185,20 @@ A retained item can be carried as an envelope that holds the payload and its
 ownership together. Bundling them is a simple way to make sure the data and its
 accounting cannot diverge: you cannot move or drop one without the other.
 
+The implementation should keep this shape simple: local owners for
+runtime-local retention, sendable owners for shared boundaries, and optional
+envelopes when a payload and its owner must move together. Most nodes should not
+need a broad trait hierarchy; they only need to create ownership when they
+retain work and release or transfer it when the payload leaves.
+
 ### Abandoned ownership
 
-If ownership is dropped without going through a normal release path, the bytes
-should not silently disappear from the accounting. Instead, the drop should be
-recorded as a visible diagnostic signal: an abandoned owner.
+If ownership is dropped without a normal release path, the bytes should not
+silently disappear from the accounting. The drop should be recorded as an
+abandoned owner.
 
-Abandoned ownership usually points at a terminal path that forgot to release, or
-an error path that was not wired correctly. Keeping it visible (rather than
-quietly forgiving it) is what lets reviewers find and fix those paths.
+Abandoned ownership usually points at a terminal or error path that needs
+review. Keeping it visible is what lets reviewers find and fix those paths.
 
 ## What observe-only should measure
 
@@ -203,11 +220,42 @@ These dimensions are intentionally coarse. They are meant to point an operator a
 the right runtime, the right kind of buffer, and the right component, not to
 track individual items.
 
+## Applying the model
+
+Observe-only accounting is added where a component starts retaining admitted
+work, not where bytes happen to be allocated. For each waiting item, the design
+should identify who owns it until it moves again.
+
+Each node or boundary follows the same pattern:
+
+1. Estimate the logical size of the retained work.
+2. Create local or shared ownership for that size.
+3. Keep the owner with the retained payload.
+4. Move, resize, or release the owner when the payload moves, changes size, or
+   leaves the system.
+5. Publish coarse metrics from runtime or boundary snapshots.
+
+<!-- markdownlint-disable MD013 -->
+| Pipeline area | Design guidance |
+| --- | --- |
+| Receivers | Treat data as retained after it crosses the receiver's admission point. Receivers that queue or batch admitted data should keep ownership with that queued data. |
+| Processors | Account for work that is buffered, delayed, parked, batched, or waiting for downstream acknowledgement. Stateless transform work that does not retain data between turns does not need a long-lived owner. |
+| Topics and queues | Use shared ownership when data can be retained independently of the producing runtime. Queue close, drain, failed send, eviction, and overwrite paths must release ownership. |
+| Batch and retry | Keep ownership beside pending batches or delayed retry payloads. If retry state is split between a ticket and a scheduler payload, the design should avoid pretending that dropping only the ticket frees retained work. |
+| Routers and fanout | Carry ownership for parked routes or in-flight fanout work until all downstream paths complete or the original work is released. Failed fanout should unwind any ownership it created. |
+| Exporters | Account for pending encoded requests and in-flight sends while they wait for completion, retry, timeout, or shutdown cleanup. Completion should release the owner with no new budget acquisition. |
+| Extensions, plugins, and WASM | Treat optional capability or custom-node boundaries like any other retaining component. If they buffer admitted telemetry, ownership should enter the boundary with the payload and leave when the payload returns, is forwarded, or is dropped. |
+| Shared runtime boundaries | Convert local ownership to sendable ownership before crossing the boundary. The sendable owner is responsible for release while the work is outside the local runtime. |
+<!-- markdownlint-enable MD013 -->
+
+This keeps the design consistent across node kinds without requiring every node
+to use the same internal data structure. The rule is about ownership of retained
+work, not about forcing a specific queue, buffer, or scheduler implementation.
+
 ## Initial observe-only scope
 
-Scope matters more than completeness here. A first level should cover the places
-where retained work most commonly accumulates, and explicitly leave the rest for
-later.
+The first level should cover the places where retained work commonly
+accumulates and leave control policy for later.
 
 ### In scope for the first level
 
@@ -220,21 +268,13 @@ later.
 - abandoned-ownership visibility,
 - low-cardinality attribution by runtime, site, and component.
 
-### Out of scope for the first level
-
-- rejecting receiver traffic,
-- enforcing tenant budgets,
-- dropping buffered work to reclaim memory,
-- changing retry or acknowledgement semantics,
-- requiring every processor state machine to be fully attributed on day one.
-
 Partial coverage is acceptable and expected. A site that cannot yet estimate its
 size precisely should show up as unknown-size rather than be omitted, so the gaps
 are visible too.
 
 ## Non-goals for the first level
 
-To keep the first level reviewable, these are explicit non-goals:
+These are explicit non-goals:
 
 - No traffic rejection.
 - No tenant isolation enforcement.
@@ -249,24 +289,24 @@ first level should not try to reconcile the two. It tracks what the pipeline
 logically holds, which is a different and more actionable number than what the
 allocator happens to keep resident.
 
-## Safety invariants
+## Accounting principles
 
-This is the checklist a reviewer can hold the design against. Most review
-attention should go here.
+Observe-only accounting should be simple enough to reason about during review.
 
-- A retained item has exactly one logical owner.
-- The owner is created when the item is admitted or retained.
-- Ownership moves with the payload, not in a separate table that can drift.
-- Dropping the owner releases accounting exactly once.
-- A failed send or failed conversion returns ownership or releases it exactly
-  once.
-- Resizing a charge either succeeds or leaves the original accounting intact.
-- Shared or broadcast retention releases on close, drain, overwrite, eviction,
-  or final drop.
-- Cleanup paths (drop, drain, abort, shutdown) never acquire new budget.
-- Observe-only mode does not reject, shed, or backpressure because of the
-  retained-work budget.
-- Labels are low-cardinality and do not allocate per item.
+- Each retained telemetry item should have one accounting owner.
+- Accounting should start when work is admitted or retained.
+- Accounting ownership should move with the telemetry data.
+- Accounting should end once the retained work is delivered, dropped, drained,
+  or otherwise no longer held.
+- Failed transfers should not lose or duplicate ownership.
+- Updating an estimated size should not corrupt the previous accounting value.
+- Shared queues, broadcast buffers, and fanout paths should release accounting
+  when retained work is closed, drained, overwritten, evicted, or dropped.
+- Cleanup paths should not need to acquire additional budget.
+- Observe-only mode should not reject, shed, or backpressure traffic because of
+  retained-work accounting.
+- Metric labels should stay low-cardinality and should not require per-item
+  string allocation.
 
 ## Performance principles
 
@@ -311,19 +351,3 @@ makes sure the measurement layer leaves enforcement on solid ground.
 - Shared boundaries need sendable ownership in place before they can be enforced.
 - Tenant or pipeline isolation needs scoped attribution before any budget can be
   applied to it.
-
-## Review guide
-
-A suggested path through this design:
-
-1. Review the mental model and make sure the pipeline shape reads correctly.
-2. Review the ownership invariants in the safety-invariants checklist.
-3. Review local versus shared ownership and where the boundary sits.
-4. Review what the first-level scope includes and what it excludes.
-5. Check that nothing in the design changes runtime behavior or traffic.
-6. Keep enforcement and rollout policy separate until the measurement model is
-   clear.
-
-This document intentionally focuses on the observe-only measurement model. It
-keeps enforcement, tenant isolation, and rollout policy out of scope so the
-ownership and attribution model can be reviewed first.
