@@ -1322,6 +1322,102 @@ transition to local `Hard`.
 This keeps expensive decode work out of the system when pressure is already
 known and improves attribution once exact sizes are available.
 
+### Receiver Admission Primitive (implemented, not yet wired)
+
+The pre-decode pressure checkpoint above is now realized by a concrete, pure
+engine primitive in `crate::memory_limiter`:
+
+```rust
+pub enum ReceiverAdmissionOutcome { Admit, ShadowReject, Reject }
+
+pub enum ReceiverAdmissionSource { None, ProcessHard, RuntimeBudgetHard, EscrowOrTopicHard }
+
+pub struct ReceiverAdmissionDecision {
+    pub outcome: ReceiverAdmissionOutcome,
+    pub source: ReceiverAdmissionSource,
+    pub retry_after_secs: u32,
+}
+
+pub struct ReceiverAdmissionInputs {
+    pub process_level: MemoryPressureLevel,
+    pub process_enforce: bool,
+    pub runtime_budget_level: Option<BudgetLevel>,
+    pub runtime_budget_enforce: bool,
+    pub retry_after_secs: u32,
+}
+// ReceiverAdmissionInputs::evaluate(self) -> ReceiverAdmissionDecision
+```
+
+This is a deliberately small first step. It implements only the **pre-decode
+pressure classification** (checkpoint 1), not the estimated-reserve or
+final-adjust checkpoints, so it never charges a ticket and never decodes. It is
+a `Copy`-in/`Copy`-out pure function: it allocates nothing, acquires no budget,
+performs no I/O, and is therefore safe to call on any ingress path and trivial
+to unit-test without a real receiver.
+
+Semantics:
+
+- Only `Hard` pressure can reject. `Soft` is advisory and admits; `Normal`
+  admits.
+- A source produces `Reject` only when it is `Hard` **and** its enforcement is
+  active. A `Hard` source whose enforcement is off (observe-only mode, or the
+  gate disabled) produces `ShadowReject`: the item is still admitted, but a
+  would-reject is recorded for metrics. No data is dropped in shadow mode.
+- Source precedence is process > runtime-budget. The reserved
+  `EscrowOrTopicHard` variant is **not produced** by `evaluate` yet (no caller
+  supplies escrow pressure); when escrow/topic admission is wired it slots
+  between process and runtime-budget, matching the design's
+  `ProcessHard, EscrowFull, RuntimeBudgetHard` tie-break order.
+- When more than one source is `Hard`, the highest-precedence *enforced* `Hard`
+  source is attributed for a `Reject`; otherwise the highest-precedence `Hard`
+  source is attributed for a `ShadowReject`. So an enforced runtime-budget
+  `Hard` still rejects even when process pressure is only observe-only `Hard`.
+- `retry_after_secs` is carried through to the decision so the receiver can
+  advertise it where the protocol supports it (HTTP `Retry-After`, gRPC
+  pushback). The caller supplies the hint (process limiter or
+  `memory_budget.retry_after_secs`).
+
+Caller responsibilities (for a future wiring slice): collect `process_level`
+from the receiver-local process-pressure snapshot
+(`Local`/`SharedReceiverAdmissionState`); collect `runtime_budget_level` from
+`current_runtime_memory_budget()`, which is available only on the pinned pipeline
+runtime thread, so it is `None` for receivers whose ingress runs on gRPC/HTTP
+handler threads; set `runtime_budget_enforce` only when the
+`unstable-memory-enforcement` feature is built, the budget mode is enforce, and
+the `receiver_admission` gate is enabled.
+
+**Reclaim-before-reject is future.** This slice does not attempt component-driven
+pressure relief before rejecting at a receiver; admission must not block on or
+spin a reclaim loop. Whether a receiver awaits one safe pressure-relief turn
+before shedding is deferred to the wiring slice.
+
+#### Receiver audit (first-wiring candidates)
+
+<!-- markdownlint-disable MD013 -->
+| Receiver | Trait | Reaches runtime budget? | Shed behavior today | Retry-after | Shed test | First-target risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `syslog_cef_receiver` | local | Yes (pipeline thread) | Drop UDP / close TCP conn, drop buffered batch | No | Yes (`udp_sheds_ingress_under_hard_memory_pressure`) | low |
+| `user_events_receiver` (contrib) | local | Yes (pipeline thread) | Drop drained records/batch | No | Yes (`process_drained_records_drops_records_under_memory_pressure`) | low |
+| `otlp_receiver` | shared | No (gRPC/HTTP handler threads) | HTTP 503 + `Retry-After`; gRPC `ResourceExhausted` + pushback | Yes | Yes (OTLP/OTAP stack) | high |
+| `otap_receiver` | shared | No (gRPC handler threads) | Stream `BatchStatus { ResourceExhausted }` + pushback | Yes | Yes | high |
+| `host_metrics`, `journald`, `internal_telemetry`, `topic`, `etw` | local | Yes | No admission today | n/a | No | medium (new admission point) |
+| `traffic_generator` | local | Yes | Generates/yields; no shedding | n/a | No | low (test/source receiver) |
+
+<!-- markdownlint-enable MD013 -->
+
+The smallest clearly-safe first wiring target is **`syslog_cef_receiver`**: a
+local receiver whose ingress already reads the process-pressure snapshot and
+already sheds on process `Hard`, with an existing shedding test, running on the
+pinned pipeline thread (so it can read `current_runtime_memory_budget()`).
+`user_events_receiver` is an equivalent contrib-side candidate. Shared
+gRPC/HTTP receivers are **not** safe first targets for runtime-budget admission
+because their ingress threads cannot cheaply reach the `!Send` runtime budget;
+they would need the runtime-budget level published into a shared snapshot first.
+
+**Status:** the engine primitive is implemented and unit-tested; no receiver
+consumes it yet, so `enforcement.receiver_admission` remains rejected at config
+validation in all builds.
+
 ## NUMA Placement Appendix
 
 NUMA locality is useful because the engine already runs each runtime instance on
@@ -1425,8 +1521,10 @@ Validation:
     normal `EffectHandler` path. It is rejected in default builds and accepted
     only with the `unstable-memory-enforcement` feature.
   - `enforcement.receiver_admission` is **rejected in all builds** (even with the
-    unstable feature) because no runtime admission point consumes the runtime
-    budget yet.
+    unstable feature) because no receiver ingress path consumes the runtime
+    budget yet. The engine-level admission primitive
+    (`ReceiverAdmissionInputs::evaluate`) exists and is unit-tested, but it is
+    not wired to any receiver, so enabling the flag would still do nothing.
   The receiver flag stays rejected until it is wired end to end, so enabling it
   can never create a false sense of enforcement.
 - The wired `enforcement.queue_publish` path works at the owned topic-publish
@@ -2119,9 +2217,13 @@ who require placement can choose `unsupported: error`.
 - Keep queue and processor enforcement disabled.
 - `receiver_admission: true` for runtime budget pressure is supported only
   after reclaim paths exist for the dominant retained-memory sources in that
-  deployment. **Status:** not started; `receiver_admission` is rejected at
-  config validation in all builds until a runtime admission point consumes the
-  runtime budget.
+  deployment. **Status:** the engine-level admission primitive
+  (`ReceiverAdmissionInputs::evaluate`) is implemented and unit-tested (see
+  [Receiver Admission Primitive](#receiver-admission-primitive-implemented-not-yet-wired)),
+  but no receiver ingress path consumes it yet. `receiver_admission` is
+  therefore still rejected at config validation in all builds until a receiver
+  admission point consumes the runtime budget end to end. The smallest safe
+  first wiring target is `syslog_cef_receiver`.
 
 ### Phase 2d: Queue and Topic Enforcement
 
