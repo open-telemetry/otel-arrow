@@ -53,10 +53,40 @@ config:
   # Shared HTTP client settings (required).
   http:
     compression: gzip
+
+    # Static headers added to every outbound OTLP/HTTP request (optional).
+    # Useful for arbitrary headers such as backend routing or multi-tenant
+    # tenant IDs. Not recommended for authorization; prefer a dedicated Auth
+    # extension instead. Protocol headers (Content-Type / Content-Encoding /
+    # Content-Length / Host) and response-negotiation headers (Accept /
+    # Accept-Encoding) cannot be set here and are rejected at config load.
+    headers:
+      x-scope-orgid: "tenant-1"
+      environment: "production-west"
 ```
 
 Shared HTTP client fields include concurrency limit, connect timeout, request
-timeout, TCP keepalive, TLS, and request-body compression.
+timeout, TCP keepalive, TLS, request-body compression, and static request
+`headers`.
+
+### Static request headers
+
+`http.headers` is a map of header name to value applied to every outbound
+request (multi-tenant routing IDs, tracing-vendor headers, and similar). For
+request authentication, prefer a dedicated Auth extension rather than
+hard-coding an `authorization` header here. Values are sent verbatim, so treat
+any secret in the rendered config as sensitive.
+
+Validation at config load rejects:
+
+- invalid header names (must be valid HTTP token characters), and
+- invalid header values (must be visible ASCII), and
+- protocol-reserved names managed by the exporter: `content-type`,
+  `content-encoding`, `content-length`, and `host`, and
+- response-negotiation names dictated by the client's decode capabilities:
+  `accept` and `accept-encoding`.
+
+Protocol headers always take precedence over configured headers.
 
 ## Examples
 
