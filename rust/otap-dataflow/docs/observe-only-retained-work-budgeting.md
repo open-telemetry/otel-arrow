@@ -5,11 +5,8 @@ the OTAP dataflow engine: an observe-only layer that makes it possible to see
 where admitted telemetry is waiting in memory and which component logically owns
 that retained work.
 
-It is an introductory companion to the deeper
-[Phase 2 memory budgeting design](memory-limiter-phase2.md). That design covers
-enforcement, leases, cross-runtime budgets, and production rollout. This
-document deliberately stops before enforcement. The goal here is to agree on the
-measurement model first.
+This document deliberately stops before enforcement. The goal here is to agree
+on the measurement model first.
 
 ## Summary
 
@@ -23,7 +20,7 @@ that the process is under pressure. They do not tell us *where* admitted
 telemetry is waiting, or *who* is responsible for it. That gap is what
 observe-only retained-work accounting is meant to close.
 
-Observe-only accounting:
+Observe-only accounting is designed to:
 
 - attributes retained telemetry bytes to a runtime, a retention site, and a
   component,
@@ -324,10 +321,9 @@ A suggested path through this design:
 3. Review local versus shared ownership and where the boundary sits.
 4. Review what the first-level scope includes and what it excludes.
 5. Check that nothing in the design changes runtime behavior or traffic.
-6. Then read the deeper
-   [Phase 2 memory budgeting design](memory-limiter-phase2.md) for enforcement
-   and production rollout.
+6. Keep enforcement and rollout policy separate until the measurement model is
+   clear.
 
-This document is an introductory companion to that design. It intentionally
-focuses on observe-only accounting, so that the measurement model can be agreed
-on before enforcement is considered.
+This document intentionally focuses on the observe-only measurement model. It
+keeps enforcement, tenant isolation, and rollout policy out of scope so the
+ownership and attribution model can be reviewed first.
