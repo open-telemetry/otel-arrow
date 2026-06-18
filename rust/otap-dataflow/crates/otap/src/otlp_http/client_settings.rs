@@ -5,6 +5,7 @@
 
 use reqwest::ClientBuilder;
 use reqwest::header::HeaderValue;
+use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -76,12 +77,17 @@ pub struct HttpClientSettings {
     /// Static headers added to every outbound OTLP/HTTP request (e.g. an
     /// `Authorization` or backend routing header).
     ///
+    /// Values are wrapped in [`SecretString`] so a header credential is not
+    /// accidentally leaked through `Debug`/telemetry; the cleartext is only
+    /// reachable via [`ExposeSecret::expose_secret`] at the request-construction
+    /// site.
+    ///
     /// Protocol headers (`Content-Type` / `Content-Encoding` /
     /// `Content-Length` / `Host`) and response-negotiation headers
     /// (`Accept` / `Accept-Encoding`) cannot be set here and are rejected by
     /// [`HttpClientSettings::validate`]; they are managed by the exporter.
     #[serde(default)]
-    pub headers: HashMap<String, String>,
+    pub headers: HashMap<String, SecretString>,
 }
 
 impl HttpClientSettings {
@@ -119,7 +125,7 @@ impl HttpClientSettings {
                     "header name \"{name}\" is not a valid HTTP header name"
                 ))
             })?;
-            if HeaderValue::from_str(value).is_err() {
+            if HeaderValue::from_str(value.expose_secret()).is_err() {
                 return Err(HttpClientError::InvalidConfig(format!(
                     "header \"{name}\" has a value that cannot be represented as an HTTP header \
                      value (must be visible ASCII)"
@@ -411,7 +417,7 @@ mod tests {
     #[test]
     fn validate_rejects_invalid_header_name() {
         let mut headers = HashMap::new();
-        let _ = headers.insert("bad header".to_string(), "value".to_string());
+        let _ = headers.insert("bad header".to_string(), "value".into());
         let settings = HttpClientSettings {
             headers,
             ..HttpClientSettings::default()
@@ -426,7 +432,7 @@ mod tests {
     #[test]
     fn validate_rejects_invalid_header_value() {
         let mut headers = HashMap::new();
-        let _ = headers.insert("x-test".to_string(), "bad\nvalue".to_string());
+        let _ = headers.insert("x-test".to_string(), "bad\nvalue".into());
         let settings = HttpClientSettings {
             headers,
             ..HttpClientSettings::default()
@@ -452,7 +458,7 @@ mod tests {
             "Accept-Encoding",
         ] {
             let mut headers = HashMap::new();
-            let _ = headers.insert(reserved.to_string(), "x".to_string());
+            let _ = headers.insert(reserved.to_string(), "x".into());
             let settings = HttpClientSettings {
                 headers,
                 ..HttpClientSettings::default()
@@ -468,8 +474,8 @@ mod tests {
     #[test]
     fn validate_accepts_valid_headers() {
         let mut headers = HashMap::new();
-        let _ = headers.insert("authorization".to_string(), "Basic abc123".to_string());
-        let _ = headers.insert("x-scope-orgid".to_string(), "tenant-1".to_string());
+        let _ = headers.insert("authorization".to_string(), "Basic abc123".into());
+        let _ = headers.insert("x-scope-orgid".to_string(), "tenant-1".into());
         let settings = HttpClientSettings {
             headers,
             ..HttpClientSettings::default()
@@ -481,8 +487,8 @@ mod tests {
     #[test]
     fn validate_rejects_case_insensitive_duplicate_headers() {
         let mut headers = HashMap::new();
-        let _ = headers.insert("X-Tenant".to_string(), "a".to_string());
-        let _ = headers.insert("x-tenant".to_string(), "b".to_string());
+        let _ = headers.insert("X-Tenant".to_string(), "a".into());
+        let _ = headers.insert("x-tenant".to_string(), "b".into());
         let settings = HttpClientSettings {
             headers,
             ..HttpClientSettings::default()
@@ -495,6 +501,36 @@ mod tests {
     }
 
     #[test]
+    fn debug_redacts_header_secret_values() {
+        let mut headers = HashMap::new();
+        let _ = headers.insert(
+            "authorization".to_string(),
+            "Basic super-secret-token".into(),
+        );
+        let settings = HttpClientSettings {
+            headers,
+            ..HttpClientSettings::default()
+        };
+        let dbg = format!("{settings:?}");
+        assert!(
+            !dbg.contains("super-secret-token"),
+            "Debug output must not contain the plaintext header value: {dbg}"
+        );
+        assert!(
+            dbg.contains("REDACTED"),
+            "Debug output should mark the header value as redacted: {dbg}"
+        );
+        assert_eq!(
+            settings
+                .headers
+                .get("authorization")
+                .map(|v| v.expose_secret()),
+            Some("Basic super-secret-token"),
+            "the cleartext must remain reachable via the explicit accessor"
+        );
+    }
+
+    #[test]
     fn deserialize_accepts_headers_and_keeps_deny_unknown_fields() {
         let settings: HttpClientSettings = serde_json::from_str(
             r#"{ "headers": { "authorization": "Basic abc123", "stream-name": "default" } }"#,
@@ -502,11 +538,17 @@ mod tests {
         .unwrap();
         assert_eq!(settings.headers.len(), 2);
         assert_eq!(
-            settings.headers.get("authorization").map(String::as_str),
+            settings
+                .headers
+                .get("authorization")
+                .map(|v| v.expose_secret()),
             Some("Basic abc123")
         );
         assert_eq!(
-            settings.headers.get("stream-name").map(String::as_str),
+            settings
+                .headers
+                .get("stream-name")
+                .map(|v| v.expose_secret()),
             Some("default")
         );
 

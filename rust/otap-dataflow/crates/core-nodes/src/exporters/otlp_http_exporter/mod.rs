@@ -53,6 +53,7 @@ use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use prost::Message as _;
 use reqwest::{Client, Response};
+use secrecy::ExposeSecret;
 
 use self::config::Config;
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
@@ -749,9 +750,12 @@ impl HttpClientPool {
             let header_name = http::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
                 HttpClientError::InvalidConfig(format!("invalid header name \"{name}\": {e}"))
             })?;
-            let header_value = HeaderValue::from_str(value).map_err(|e| {
+            let mut header_value = HeaderValue::from_str(value.expose_secret()).map_err(|e| {
                 HttpClientError::InvalidConfig(format!("invalid value for header \"{name}\": {e}"))
             })?;
+            // Mark the value sensitive so it is redacted in any `HeaderMap`
+            // `Debug` output and excluded from HTTP/2 HPACK indexing.
+            header_value.set_sensitive(true);
             _ = default_headers.insert(header_name, header_value);
         }
 
@@ -1094,11 +1098,8 @@ mod test {
         wait_for_port_ready(&endpoint_addr);
 
         let mut headers = HashMap::new();
-        _ = headers.insert(
-            "authorization".to_string(),
-            "Basic dXNlcjpwYXNz".to_string(),
-        );
-        _ = headers.insert("x-test".to_string(), "abc".to_string());
+        _ = headers.insert("authorization".to_string(), "Basic dXNlcjpwYXNz".into());
+        _ = headers.insert("x-test".to_string(), "abc".into());
         let settings = HttpClientSettings {
             headers,
             ..Default::default()
