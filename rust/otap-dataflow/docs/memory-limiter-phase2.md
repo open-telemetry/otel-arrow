@@ -1438,22 +1438,64 @@ the Phase 1 process-only path.
 
 <!-- markdownlint-enable MD013 -->
 
-The smallest clearly-safe first wiring target was **`syslog_cef_receiver`** (now
-wired, see above): a local receiver whose ingress already reads the
-process-pressure snapshot and already sheds on process `Hard`, with an existing
-shedding test, running on the pinned pipeline thread (so it can read
-`current_runtime_memory_budget()`). `user_events_receiver` is an equivalent
-contrib-side candidate that remains future. Shared gRPC/HTTP receivers are
-**not** safe targets for runtime-budget admission because their ingress threads
-cannot cheaply reach the `!Send` runtime budget; they would need the
-runtime-budget level published into a shared snapshot first.
+The smallest clearly-safe first **local** wiring target was `syslog_cef_receiver`
+(wired, see above): a local receiver running on the pinned pipeline thread, so it
+reads `current_runtime_memory_budget()` directly. `user_events_receiver` is an
+equivalent contrib-side local candidate that remains future.
 
-**Status:** the engine primitive is implemented and unit-tested, and it is wired
-end to end for the syslog CEF receiver only. `enforcement.receiver_admission` is
-accepted at config validation **only** under the `unstable-memory-enforcement`
-build feature (rejected in default/production builds), exactly like
-`queue_publish` and `reclaim_hooks`. All other receivers still consult process
-pressure only; runtime-budget admission for them remains future work.
+#### Shared runtime-pressure snapshot and the OTLP HTTP receiver
+
+Shared receivers (OTLP/OTAP gRPC/HTTP) run request handlers on tonic/axum/hyper
+pool threads, **not** the pinned pipeline runtime thread, so they cannot read the
+`!Send` runtime account via `current_runtime_memory_budget()`. To wire them, the
+runtime's budget pressure is published into a sendable shared snapshot:
+
+- `RuntimeMemorySnapshot` (an `Arc` of atomics, already `Send + Sync`) gains a
+  `receiver_admission_enforce` atomic alongside its existing `level` atomic. The
+  owning `!Send` account publishes both only at coarse points: `level` on level
+  transitions / snapshot flush, and the enforce flag once at runtime init (and
+  reset to a safe default on teardown). There are **no** new atomics on the
+  per-item charge/refund hot path.
+- `SharedRuntimeBudgetPressure` is a small `Send + Sync + Clone` view derived
+  from that snapshot. It exposes **only** `budget_level()` and
+  `receiver_admission_enforce()` -- no charge/refund, no account, no `Rc`. Shared
+  handlers clone it and read it with cheap relaxed atomic loads.
+- `RuntimeMemorySnapshotHandle::shared_budget_pressure()` produces the view. The
+  handle is `Send + Clone` and is available on `PipelineContext` at receiver
+  construction (registered on the pinned thread before nodes are built), so the
+  receiver derives the view at construction and clones it into handler threads --
+  the `!Send` runtime budget never crosses a thread boundary.
+
+The **OTLP HTTP receiver** is the first shared receiver wired. At each of its
+existing pre-decode admission checkpoints (before `req.into_parts()` / body
+collection) it evaluates `SharedReceiverAdmissionState::evaluate(runtime_level,
+runtime_enforce)` instead of the process-only `should_shed_ingress()`:
+
+- Process `Hard` still returns `503 Service Unavailable` + `Retry-After` exactly
+  as before (`evaluate(None, false).is_reject()` equals the old check).
+- Runtime-budget `Hard` additionally returns `503` + `Retry-After` **only** in
+  enforce mode with `enforcement.receiver_admission` enabled. Observe-only mode
+  and a disabled gate never reject on runtime-budget pressure (shadow only);
+  `Soft` is advisory; process `Hard` outranks runtime `Hard` for source.
+- Rejection happens before body decode, acquires no budget, retains no payload,
+  and reuses the existing `refused_memory_pressure`/`rejected_requests` counters.
+  A source-labeled metric is left as future work.
+- Teardown resets the shared snapshot to `Normal` + enforcement disabled, so a
+  torn-down runtime can never keep shedding ingress.
+
+The **OTAP/OTLP gRPC** receivers (tonic `ResourceExhausted` + `grpc-retry-pushback-ms`)
+are **not** wired in this slice; they can reuse the same
+`SharedRuntimeBudgetPressure` view in a follow-up. This is shared *runtime
+pressure* publication only; shared-channel/shared-node retained-ownership
+adoption of `SharedEnvelope<T>` remains a separate, unstarted track.
+
+**Status:** the admission primitive is implemented and unit-tested and is wired
+end to end for **(1)** the syslog CEF local receiver and **(2)** the OTLP HTTP
+shared receiver. `enforcement.receiver_admission` is accepted at config
+validation **only** under the `unstable-memory-enforcement` build feature
+(rejected in default/production builds), exactly like `queue_publish` and
+`reclaim_hooks`. OTAP/OTLP gRPC and all other receivers still consult process
+pressure only; their runtime-budget admission remains future work.
 
 ## NUMA Placement Appendix
 
@@ -1558,12 +1600,13 @@ Validation:
     normal `EffectHandler` path. It is rejected in default builds and accepted
     only with the `unstable-memory-enforcement` feature.
   - `enforcement.receiver_admission` gates runtime-budget receiver shedding,
-    currently wired for the **syslog CEF receiver** only: with `mode = enforce`
-    and `receiver_admission: true`, that receiver sheds ingress when the runtime
-    budget is at `Hard` pressure (in addition to the existing process-`Hard`
-    shedding). It is rejected in default builds and accepted only with the
-    `unstable-memory-enforcement` feature. Observe-only mode and a disabled gate
-    never drop on runtime-budget pressure, and all other receivers still consult
+    currently wired for the **syslog CEF receiver** (local) and the **OTLP HTTP
+    receiver** (shared): with `mode = enforce` and `receiver_admission: true`,
+    those receivers shed ingress when the runtime budget is at `Hard` pressure
+    (in addition to the existing process-`Hard` shedding). It is rejected in
+    default builds and accepted only with the `unstable-memory-enforcement`
+    feature. Observe-only mode and a disabled gate never drop on runtime-budget
+    pressure, and all other receivers (including OTAP/OTLP gRPC) still consult
     process pressure only.
 - The wired `enforcement.queue_publish` path works at the owned topic-publish
   boundary: with `mode = enforce` and `queue_publish: true`, an owned publish
@@ -2258,11 +2301,12 @@ who require placement can choose `unsupported: error`.
   deployment. **Status:** the engine-level admission primitive
   (`ReceiverAdmissionInputs::evaluate`) is implemented and unit-tested (see
   [Receiver Admission Primitive](#receiver-admission-primitive-wired-for-syslog-cef)),
-  and it is wired end to end for the **syslog CEF receiver** only.
-  `receiver_admission` is accepted at config validation only under the
-  `unstable-memory-enforcement` feature (rejected in default builds). All other
-  receivers still consult process pressure only; wiring them (and a shared
-  runtime-pressure snapshot for gRPC/HTTP receivers) remains future work.
+  and it is wired end to end for the **syslog CEF receiver** (local) and the
+  **OTLP HTTP receiver** (shared, via the `SharedRuntimeBudgetPressure`
+  snapshot). `receiver_admission` is accepted at config validation only under
+  the `unstable-memory-enforcement` feature (rejected in default builds).
+  OTAP/OTLP gRPC and all other receivers still consult process pressure only;
+  wiring them (gRPC can reuse the shared snapshot) remains future work.
 
 ### Phase 2d: Queue and Topic Enforcement
 
