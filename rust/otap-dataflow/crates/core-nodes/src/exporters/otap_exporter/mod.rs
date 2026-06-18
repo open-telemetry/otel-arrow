@@ -25,7 +25,6 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataMetrics;
-use otap_df_otap::otap_grpc::client_settings::build_static_metadata;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::Producer;
 use otap_df_pdata::TryIntoWithOptions;
@@ -479,7 +478,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         // shared across all stream workers via `Arc`; each stream attaches a
         // clone as its initial metadata when it opens (see `stream_arrow_batches`),
         // so the per-`BatchArrowRecords` send path is never touched.
-        let static_metadata = build_static_metadata(&self.config.grpc.headers).map(Arc::new);
+        let static_metadata = self.config.grpc.build_static_metadata().map(Arc::new);
 
         // Operational breadcrumb: confirm which static header KEYS were loaded
         // (never the values, which may be credentials). Lets an operator verify
@@ -2693,7 +2692,7 @@ mod tests {
         let cap_logs = captured_tx.clone();
         let cap_metrics = captured_tx.clone();
         let cap_traces = captured_tx;
-        _ = tokio_rt.spawn(async move {
+        let server_handle = tokio_rt.spawn(async move {
             let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
             let _ = ready_sender.send(());
             let tcp_stream = TcpListenerStream::new(tcp_listener);
@@ -2790,6 +2789,11 @@ mod tests {
             });
 
         _ = shutdown_sender.send("Shutdown");
+        // Await the server task so teardown is deterministic and no background
+        // task is left pending at runtime drop.
+        tokio_rt
+            .block_on(server_handle)
+            .expect("server task should shut down cleanly");
     }
 
     /// Backwards compatibility: with no `headers` configured, the exporter must
@@ -2809,7 +2813,7 @@ mod tests {
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let tokio_rt = Runtime::new().unwrap();
 
-        _ = tokio_rt.spawn(async move {
+        let server_handle = tokio_rt.spawn(async move {
             let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
             let _ = ready_sender.send(());
             let tcp_stream = TcpListenerStream::new(tcp_listener);
@@ -2877,6 +2881,11 @@ mod tests {
             });
 
         _ = shutdown_sender.send("Shutdown");
+        // Await the server task so teardown is deterministic and no background
+        // task is left pending at runtime drop.
+        tokio_rt
+            .block_on(server_handle)
+            .expect("server task should shut down cleanly");
     }
 
     /// Reliability: the configured static headers must be applied to the request
@@ -2908,8 +2917,11 @@ mod tests {
 
         let mut headers = std::collections::HashMap::new();
         let _ = headers.insert(HDR_AUTH.to_string(), HDR_AUTH_VAL.to_string());
-        let static_metadata =
-            otap_df_otap::otap_grpc::client_settings::build_static_metadata(&headers).map(Arc::new);
+        let settings = otap_df_otap::otap_grpc::client_settings::GrpcClientSettings {
+            headers,
+            ..Default::default()
+        };
+        let static_metadata = settings.build_static_metadata().map(Arc::new);
         assert!(
             static_metadata.is_some(),
             "test setup should produce metadata"

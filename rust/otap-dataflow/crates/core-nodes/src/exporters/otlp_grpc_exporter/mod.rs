@@ -29,7 +29,7 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataMetrics;
-use otap_df_otap::otap_grpc::client_settings::{GrpcClientSettings, build_static_metadata};
+use otap_df_otap::otap_grpc::client_settings::GrpcClientSettings;
 use otap_df_otap::otap_grpc::otlp::client::{
     LogsServiceClient, MetricsServiceClient, TraceServiceClient,
 };
@@ -206,7 +206,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         // Pre-build the static gRPC metadata template ONCE, outside the hot loop.
         // Returns `None` when no static headers are configured, which preserves
         // the zero-allocation fast path in `build_grpc_metadata`.
-        let static_metadata = build_static_metadata(&self.config.grpc.headers);
+        let static_metadata = self.config.grpc.build_static_metadata();
 
         // reuse the encoder and the buffer across pdatas
         let mut logs_proto_encoder = LogsProtoBytesEncoder::new();
@@ -1937,8 +1937,12 @@ mod tests {
 
         let mut headers = HashMap::new();
         _ = headers.insert("authorization".to_string(), "Basic abc123".to_string());
-        let static_metadata =
-            build_static_metadata(&headers).expect("static metadata should be present");
+        let static_metadata = GrpcClientSettings {
+            headers,
+            ..Default::default()
+        }
+        .build_static_metadata()
+        .expect("static metadata should be present");
 
         let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata))
             .expect("should produce metadata from static headers alone");
@@ -1963,8 +1967,12 @@ mod tests {
 
         let mut static_headers = HashMap::new();
         _ = static_headers.insert("authorization".to_string(), "Basic abc123".to_string());
-        let static_metadata =
-            build_static_metadata(&static_headers).expect("static metadata should be present");
+        let static_metadata = GrpcClientSettings {
+            headers: static_headers,
+            ..Default::default()
+        }
+        .build_static_metadata()
+        .expect("static metadata should be present");
 
         let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata))
             .expect("should merge static and propagated headers");
@@ -1997,8 +2005,12 @@ mod tests {
 
         let mut static_headers = HashMap::new();
         _ = static_headers.insert("authorization".to_string(), "Basic static".to_string());
-        let static_metadata =
-            build_static_metadata(&static_headers).expect("static metadata should be present");
+        let static_metadata = GrpcClientSettings {
+            headers: static_headers,
+            ..Default::default()
+        }
+        .build_static_metadata()
+        .expect("static metadata should be present");
 
         let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata))
             .expect("should produce metadata");

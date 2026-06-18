@@ -136,6 +136,11 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
   allocation-free; the one-time cost is a single metadata clone per stream
   establishment. Header names/values are validated at config load via the shared
   `GrpcClientSettings` (ASCII-only, no gRPC-reserved metadata).
+  - Because the metadata is bound when a stream opens, a changed `headers` value
+    (e.g. a rotated `authorization` or tenant header) only takes effect on the
+    next stream open/reconnect — unlike the OTLP/gRPC exporter, which rebuilds
+    metadata per unary request. Existing long-lived streams keep using the value
+    they were opened with until they are re-established.
 - Compression values are limited to the variants supported by the shared OTAP
   transport layer.
 - End-to-end delivery depends on downstream OTAP stream responses.
