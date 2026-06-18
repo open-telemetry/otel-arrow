@@ -152,11 +152,6 @@ impl ActiveStage {
     /// # Panics
     ///
     /// Panics when `timeout < DEFAULT_READINESS_TIMEOUT`.
-    ///
-    /// # Telemetry
-    ///
-    /// Emits `extension.readiness.timeout_override` (INFO) when
-    /// `timeout > DEFAULT_READINESS_TIMEOUT`.
     #[must_use]
     pub fn with_extended_readiness_probe_timeout(mut self, timeout: Duration) -> Self {
         let default = super::readiness::DEFAULT_READINESS_TIMEOUT;
@@ -702,15 +697,7 @@ pub struct ExtensionBundleBuilder {
     local: Option<LocalDecomposed>,
     shared_probe: Option<ReadinessProbe>,
     local_probe: Option<ReadinessProbe>,
-    /// Matched signaller half for the shared variant. Plumbed into
-    /// [`ExtensionLifecycle::Active::readiness_signaller`] at
-    /// [`Self::build`] time so it can be threaded into
-    /// [`EffectHandler`](super::wrapper::EffectHandler) when the
-    /// extension's task is spawned. The extension fires it (a no-op
-    /// when `None`) via [`EffectHandler::signal_ready`].
     shared_signaller: Option<ReadinessSignaller>,
-    /// Matched signaller half for the local variant. See
-    /// [`Self::shared_signaller`].
     local_signaller: Option<ReadinessSignaller>,
 }
 
@@ -819,9 +806,6 @@ impl ExtensionBundleBuilder {
         });
     }
 
-    /// Stash the matched (probe, signaller) pair for the shared variant.
-    /// Panics if a pair has already been set, which would indicate the
-    /// caller invoked `with_readiness_probe` twice for the same variant.
     fn set_shared_readiness(&mut self, probe: ReadinessProbe, signaller: ReadinessSignaller) {
         assert!(
             self.shared_probe.is_none() && self.shared_signaller.is_none(),
@@ -832,9 +816,6 @@ impl ExtensionBundleBuilder {
         self.shared_signaller = Some(signaller);
     }
 
-    /// Stash the matched (probe, signaller) pair for the local variant.
-    /// Panics if a pair has already been set, which would indicate the
-    /// caller invoked `with_readiness_probe` twice for the same variant.
     fn set_local_readiness(&mut self, probe: ReadinessProbe, signaller: ReadinessSignaller) {
         assert!(
             self.local_probe.is_none() && self.local_signaller.is_none(),
@@ -928,9 +909,6 @@ impl ExtensionBundleBuilder {
             local_signaller,
         } = self;
 
-        // Defensive guard: typestate prevents `with_readiness_probe` on
-        // passive stages, but keep the invariant explicit so future
-        // refactors can't silently orphan a probe.
         debug_assert!(
             !(local_probe.is_some()
                 && local_decomposed
