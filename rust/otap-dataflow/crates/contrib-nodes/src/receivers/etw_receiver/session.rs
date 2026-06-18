@@ -158,10 +158,11 @@ pub enum EtwAttributeValue {
     Int(i64),
     /// Floating-point value widened to `f64`.
     Double(f64),
-    /// Boolean value.  Note: the current `one_collect` decoder maps
-    /// `TDH_INTYPE_BOOLEAN` to a `u8`, so real BOOLEAN fields arrive as
-    /// [`Int`](Self::Int); this variant is reserved for a future decoder that
-    /// emits a distinct boolean type name.
+    /// Boolean value.  Note: the `one_collect` TDH decoder maps a Win32
+    /// `BOOL` (`TDH_INTYPE_BOOLEAN`, TraceLogging `Bool32`) to a 4-byte
+    /// `"u32"` and a 1-byte boolean (`TDH_INTYPE_UINT8` + `OutType::Boolean`)
+    /// to `"u8"`.  Both currently surface as [`Int`](Self::Int); this variant
+    /// is reserved for a future path that emits a distinct boolean type name.
     Bool(bool),
     /// Genuinely unsupported / opaque field bytes.  The encoder renders these
     /// as a hex string.  Empty for zero-length or undecodable fields.
@@ -334,7 +335,9 @@ const FILETIME_TICKS_TO_UNIX_EPOCH: i64 = 116_444_736_000_000_000;
 ///
 /// Type-name reference (from `one_collect::etw::tdh::intype_to_field_info`):
 /// `s8`/`s16`/`s32`/`s64` (signed, with `HEXINT*` folded into `s32`/`s64`),
-/// `u8`/`u16`/`u32`/`u64` (unsigned, with `BOOLEAN` folded into `u8`),
+/// `u8`/`u16`/`u32`/`u64` (unsigned, with a Win32 `BOOL` / TraceLogging
+/// `Bool32` (`TDH_INTYPE_BOOLEAN`) mapped to a 4-byte `u32`, and a 1-byte
+/// boolean (`TDH_INTYPE_UINT8` + `OutType::Boolean`) mapped to `u8`),
 /// `float`/`double`, `string`/`wstring`/`counted_string`/`counted_wstring`
 /// (text), `pointer` (4 or 8 bytes), `filetime` (8 bytes), `guid` (16),
 /// `systemtime` (16), `binary` (SID / opaque), and `unsupported`.
@@ -357,8 +360,11 @@ fn interpret_field_value(type_name: &str, data: &[u8]) -> EtwAttributeValue {
             EtwAttributeValue::Int(i64::from_ne_bytes(data.try_into().expect("matched len==8")))
         }
 
-        // Unsigned integers.  Note: one_collect maps TDH_INTYPE_BOOLEAN to
-        // "u8", so boolean fields arrive here as a 0/1 integer.
+        // Unsigned integers.  Note: one_collect maps a 1-byte boolean
+        // (TDH_INTYPE_UINT8 + OutType::Boolean) to "u8", so 1-byte boolean
+        // fields arrive here as a 0/1 integer.  A Win32 BOOL / TraceLogging
+        // Bool32 (TDH_INTYPE_BOOLEAN) is a 4-byte value and arrives as "u32"
+        // (see the "u32" arm below).
         ("u8", 1) => EtwAttributeValue::Int(i64::from(data[0])),
         ("u16" | "unsigned short", 2) => EtwAttributeValue::Int(i64::from(u16::from_ne_bytes(
             data.try_into().expect("matched len==2"),
@@ -374,7 +380,9 @@ fn interpret_field_value(type_name: &str, data: &[u8]) -> EtwAttributeValue {
 
         // Explicit boolean spellings, kept for forward-compatibility in case a
         // future decoder emits a distinct "bool"/"boolean" type name.  With the
-        // current one_collect decoder these are unreachable (BOOLEAN → "u8").
+        // current one_collect decoder these are unreachable: a 1-byte boolean
+        // surfaces as "u8" and a Win32 BOOL / TraceLogging Bool32 surfaces as
+        // "u32".
         ("bool" | "boolean", 1) => EtwAttributeValue::Bool(data[0] != 0),
         ("bool" | "boolean", 4) => EtwAttributeValue::Bool(
             u32::from_ne_bytes(data.try_into().expect("matched len==4")) != 0,
