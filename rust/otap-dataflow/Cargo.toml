@@ -174,6 +174,7 @@ serde_cbor = "0.11.2"
 serde_json = { version = "1.0.149" }
 serde_yaml = "0.9.34-deprecated"        # Deprecated, but no good alternative yet
 crc32fast = "1.4.2"
+hex = "0.4.3"
 replace_with = "0.1.8"
 simdutf8 = "0.1.5"
 slotmap = "1.0.7"

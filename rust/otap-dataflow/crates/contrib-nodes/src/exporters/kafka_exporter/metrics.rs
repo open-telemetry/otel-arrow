@@ -14,7 +14,7 @@ use otap_df_telemetry_macros::metric_set;
 ///
 /// Tracks success and failure counts for each signal type (logs, metrics, traces).
 ///
-/// Metric set name: `gateway.exporter.kafka.pdata.metrics`
+/// Metric set name: `exporter.kafka`
 ///
 /// Individual metric names (after field name translation `_` → `.`):
 /// - `logs.exported` / `logs.failed`
@@ -22,7 +22,7 @@ use otap_df_telemetry_macros::metric_set;
 /// - `traces.exported` / `traces.failed`
 /// - `acks.received`
 /// - `nacks.received`
-#[metric_set(name = "gateway.exporter.kafka.pdata.metrics")]
+#[metric_set(name = "exporter.kafka")]
 #[derive(Debug, Default, Clone)]
 pub struct KafkaExporterMetrics {
     /// Number of log records successfully exported to Kafka.

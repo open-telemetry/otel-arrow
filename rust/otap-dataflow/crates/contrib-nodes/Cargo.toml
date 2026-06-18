@@ -46,6 +46,8 @@ data_engine_expressions = { workspace = true, optional = true }
 data_engine_kql_parser = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
 rdkafka = { workspace = true, features = ["zstd", "ssl"], optional = true }
+xxhash-rust = { workspace = true, optional = true, features = ["xxh64"] }
+hex = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
 aws-msk-iam-sasl-signer = { workspace = true, optional = true }
 smallvec = { workspace = true, optional = true }
@@ -76,6 +78,8 @@ kafka-exporter = [
     "dep:rdkafka",
     "dep:futures-channel",
     "dep:futures-util",
+    "dep:xxhash-rust",
+    "dep:hex",
 ]
 aws = [
     "dep:aws-config",

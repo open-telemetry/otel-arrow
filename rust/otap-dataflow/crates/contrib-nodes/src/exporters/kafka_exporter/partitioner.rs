@@ -4,77 +4,60 @@
 //! Partition key generation for Kafka messages.
 //!
 //! This module provides functions to generate deterministic partition keys for
-//! Kafka messages based on transport headers. The generated keys are
-//! length-prefixed byte buffers that librdkafka's partitioner algorithm
-//! (configured via [`PartitionerStrategy`]) hashes to select a concrete
-//! partition number.
+//! Kafka messages based on transport headers. The transport headers are hashed
+//! into a fixed-size, hex-encoded key that librdkafka's partitioner algorithm
+//! (configured via [`PartitionerStrategy`]) then maps to a concrete partition
+//! number.
 //!
 //! [`PartitionerStrategy`]: super::config::PartitionerStrategy
 
 use otap_df_otap::transport_headers::TransportHeaders;
+use std::hash::{Hash, Hasher};
+use xxhash_rust::xxh64::Xxh64;
 
 /// Build a deterministic partition key from transport headers.
 ///
-/// All headers from the pdata context are serialized (by transport header name
-/// and raw value) into a length-prefixed byte buffer. This ensures that requests
+/// Mirrors how the rotel / OpenTelemetry Collector Kafka exporters derive their
+/// partition key: the headers are sorted, a single hasher is initialized, and
+/// each sorted header is folded into that one hasher; the resulting `u64` is
+/// then hex-encoded into the Kafka record key. This ensures that requests
 /// carrying the same set of transport headers (e.g., same tenant ID, same auth
 /// token) produce the same key and are therefore routed to the same Kafka
 /// partition by librdkafka's partitioner.
 ///
-/// Using the transport header name means that
-/// headers differing only in casing or formatting (e.g. `X-Tenant-Id` vs
-/// `x-tenant-id`) produce the same key.
-///
-/// - **Order-independent**: Headers are sorted by `(name, value)` before
-///   serialization, so the same logical set of headers always produces the
-///   same key regardless of insertion order.
-/// - **Unambiguous**: Each field is length-prefixed (`u32` big-endian), so
-///   there is no delimiter collision risk and distinct header sets always
-///   produce distinct keys (zero collision risk).
-/// - **Single hash**: The byte buffer is passed directly as the Kafka message
-///   key. Only librdkafka hashes it (once) to select a partition — there is
-///   no application-level pre-hash.
-///
-/// ## Wire format
-///
-/// ```text
-/// For each header in sorted (name, value) order:
-///   [4 bytes: name length (u32 BE)][name bytes][4 bytes: value length (u32 BE)][value bytes]
-/// ```
+/// Using the transport header name means that headers differing only in casing
+/// or formatting (e.g. `X-Tenant-Id` vs `x-tenant-id`) produce the same key.
 ///
 /// # Arguments
 /// * `headers` - Transport headers captured from the inbound request.
 ///
 /// # Returns
-/// A length-prefixed byte buffer suitable for use as a Kafka partition key.
-/// Returns `None` if no headers are present, which leaves the Kafka key unset
-/// (null key) and ensures true round-robin partitioning under all
-/// [`PartitionerStrategy`] variants.
-///
-/// [`PartitionerStrategy`]: super::config::PartitionerStrategy
+/// A hex-encoded 16-character key, or `None` when there are no transport headers
 #[must_use]
-pub fn partition_key_from_transport_headers(headers: &TransportHeaders) -> Option<Vec<u8>> {
+pub fn partition_key_from_transport_headers(headers: &TransportHeaders) -> Option<String> {
     if headers.is_empty() {
         return None;
     }
 
-    // Sort by (name, value) to ensure order-independent serialization.
+    // Sort the headers by (name, value) to make the key order-independent.
     // TransportHeaders is backed by a Vec, so iteration order depends on
-    // insertion order; sorting removes that dependency.
-    // We use the normalized `name` (not `wire_name`) so that headers differing
-    // only in original casing produce the same partition key.
-    let mut sorted: Vec<_> = headers.iter().collect();
+    // insertion order; sorting removes that dependency. We sort on the
+    // normalized `name` (not `wire_name`) so headers differing only in original
+    // casing produce the same partition key.
+    let mut sorted: Vec<&_> = headers.iter().collect();
     sorted.sort_unstable_by(|a, b| a.name.cmp(&b.name).then_with(|| a.value.cmp(&b.value)));
 
-    let mut buf = Vec::new();
-    for header in &sorted {
-        buf.extend_from_slice(&(header.name.len() as u32).to_be_bytes());
-        buf.extend_from_slice(header.name.as_bytes());
-        buf.extend_from_slice(&(header.value.len() as u32).to_be_bytes());
-        buf.extend_from_slice(&header.value);
+    // Initialize a single hasher and fold each sorted header into it. For each
+    // header we hash its name and value
+    let mut hasher = Xxh64::new(0);
+    for header in sorted {
+        header.name.hash(&mut hasher);
+        header.value.hash(&mut hasher);
     }
+    let hash = hasher.finish();
 
-    Some(buf)
+    // Hex-encode the hash bytes
+    Some(hex::encode(hash.to_be_bytes()))
 }
 
 /// Determine the partition key for a signal based on its per-signal config and
@@ -97,7 +80,7 @@ pub fn partition_key_from_transport_headers(headers: &TransportHeaders) -> Optio
 pub fn partition_key_for_signal(
     signal_config: &super::config::SignalConfig,
     context: &otap_df_otap::pdata::Context,
-) -> Option<Vec<u8>> {
+) -> Option<String> {
     if signal_config.partition_by_transport_headers() {
         if let Some(headers) = context.transport_headers() {
             return partition_key_from_transport_headers(headers);
@@ -187,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn test_transport_headers_byte_format() {
+    fn test_transport_headers_key_is_fixed_size_hex() {
         let mut headers = TransportHeaders::new();
         headers.push(TransportHeader::text(
             "x_tenant_id",
@@ -198,25 +181,17 @@ mod tests {
         let key = partition_key_from_transport_headers(&headers)
             .expect("non-empty headers should produce a key");
 
-        // Expected format:
-        //   [4 bytes: name_len][name][4 bytes: value_len][value]
-        //   name = "x_tenant_id" (11 bytes)
-        //   value = "tenant-123" (10 bytes)
-        //   total = 4 + 11 + 4 + 10 = 29 bytes
-        assert_eq!(key.len(), 29);
-
-        // Verify name length prefix (big-endian u32 = 11)
-        assert_eq!(&key[0..4], &11_u32.to_be_bytes());
-        // Verify name bytes
-        assert_eq!(&key[4..15], b"x_tenant_id");
-        // Verify value length prefix (big-endian u32 = 10)
-        assert_eq!(&key[15..19], &10_u32.to_be_bytes());
-        // Verify value bytes
-        assert_eq!(&key[19..29], b"tenant-123");
+        // The key is the hex encoding of a u64 hash (8 bytes -> 16 hex chars),
+        // regardless of how large the header set is.
+        assert_eq!(key.len(), 16);
+        assert!(
+            key.chars().all(|c| c.is_ascii_hexdigit()),
+            "key should be lowercase hex ASCII"
+        );
     }
 
     #[test]
-    fn test_transport_headers_binary_values_in_key() {
+    fn test_transport_headers_binary_values_produce_fixed_size_hex() {
         let mut headers = TransportHeaders::new();
         headers.push(TransportHeader::binary(
             "x_binary",
@@ -227,12 +202,9 @@ mod tests {
         let key = partition_key_from_transport_headers(&headers)
             .expect("non-empty headers should produce a key");
 
-        // name = "x_binary" (8 bytes), value = 4 bytes
-        // total = 4 + 8 + 4 + 4 = 20 bytes
-        assert_eq!(key.len(), 20);
-
-        // Binary value should appear directly in the key (not hashed)
-        assert_eq!(&key[16..20], &[0x01, 0x02, 0x03, 0xFF]);
+        // Binary header values are folded into the same fixed-size hex key.
+        assert_eq!(key.len(), 16);
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     /// Transport headers pushed in different order must produce the same key.
@@ -264,14 +236,17 @@ mod tests {
         );
     }
 
-    // ---- Golden-value regression test ----
+    // ---- Hashing regression test ----
     //
-    // Pins the exact byte output for a known input. If the value changes
-    // it means the serialization format changed, which would cause a Kafka
-    // partition rebalance. Investigate before updating.
+    // Pins the hashing pipeline for a known input. The key is the hex encoding
+    // of the big-endian `u64` XXH64 hash produced by folding the sorted headers
+    // into a single hasher. If the hashing structure or hasher changes it would
+    // change which partition a given header set maps to, causing a Kafka
+    // partition rebalance. We recompute the expected hash from the documented
+    // pipeline so a change in either is caught.
 
     #[test]
-    fn test_transport_headers_golden_value() {
+    fn test_transport_headers_hash_matches_documented_pipeline() {
         let mut headers = TransportHeaders::new();
         headers.push(TransportHeader::text(
             "x_tenant_id",
@@ -282,17 +257,20 @@ mod tests {
         let key = partition_key_from_transport_headers(&headers)
             .expect("non-empty headers should produce a key");
 
-        // name = "x_tenant_id" (len 11), value = "tenant-123" (len 10)
-        let mut expected = Vec::new();
-        expected.extend_from_slice(&11_u32.to_be_bytes());
-        expected.extend_from_slice(b"x_tenant_id");
-        expected.extend_from_slice(&10_u32.to_be_bytes());
-        expected.extend_from_slice(b"tenant-123");
+        // Reconstruct the documented pipeline for a single header:
+        //   sort -> single hasher -> [name, value]
+        //   name = "x_tenant_id", value = "tenant-123"
+        let mut hasher = Xxh64::new(0);
+        "x_tenant_id".hash(&mut hasher);
+        b"tenant-123".to_vec().hash(&mut hasher);
+        let expected = hex::encode(hasher.finish().to_be_bytes());
 
         assert_eq!(
             key, expected,
-            "golden value changed — this will cause a Kafka partition rebalance"
+            "partition key no longer matches the documented hash pipeline — \
+             this will cause a Kafka partition rebalance"
         );
+        assert_eq!(key.len(), 16);
     }
 
     // ---- partition_key_for_signal tests ----

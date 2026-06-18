@@ -86,6 +86,11 @@ Each signal type can use a different header key (or none at all), allowing
 independent dynamic routing per signal. If the header is not present on a
 particular message, the static `topic` is used as a fallback.
 
+If a transport header *is* present but supplies an invalid Kafka topic name,
+the batch is **permanently nacked** rather than silently routed to the static
+`topic`. This avoids misdelivering data that explicitly requested a different
+(but unusable) destination.
+
 ### Authentication
 
 The exporter supports SASL authentication with the following mechanisms:
@@ -204,26 +209,10 @@ hashed to partition numbers. The default is `consistent_random`.
 #### Partition by Transport Headers
 
 When `partition_by_transport_headers` is enabled on a signal, the exporter
-serializes all transport headers from the pdata context into a deterministic,
-length-prefixed byte buffer and sets it as the Kafka record key. The exporter
-does not hash the headers itself -- the byte key is passed directly to
-librdkafka, which hashes it using the configured `partitioning_strategy` to
-select a partition. This ensures that requests carrying the same set of
-transport headers (e.g., same tenant ID, same auth token) always produce
-the same key and are therefore routed to the same Kafka partition.
-
-The key format is order-independent (headers are sorted by transport header
-name and value before serialization) and unambiguous (each field is
-length-prefixed with a big-endian `u32`, so distinct header sets always
-produce distinct keys with zero collision risk).
-
-If no transport headers are present on a message, the key is left unset
-(null key), which causes the configured partitioner strategy to apply its
-NULL/empty-key behavior (round-robin for `*_random` strategies,
-single-partition for others).
-
-This setting is per-signal -- each of `traces`, `metrics`, and `logs` can
-independently opt in.
+hashes the request's transport headers to derive the Kafka record key, so
+requests carrying the same headers (e.g. same tenant ID) are routed to the same
+partition. This setting is per-signal -- each of `traces`, `metrics`, and `logs`
+can independently opt in.
 
 ### Producer Tuning
 
@@ -327,20 +316,20 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `gateway.exporter.kafka.pdata.metrics`
+#### `exporter.kafka`
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `gateway.exporter.kafka.pdata.metrics.logs_exported` | `{log}` | Number of log records successfully exported to Kafka. |
-| `gateway.exporter.kafka.pdata.metrics.logs_failed` | `{log}` | Number of log records that failed to export to Kafka. |
-| `gateway.exporter.kafka.pdata.metrics.metrics_exported` | `{datapoint}` | Number of metric data points successfully exported to Kafka. |
-| `gateway.exporter.kafka.pdata.metrics.metrics_failed` | `{datapoint}` | Number of metric data points that failed to export to Kafka. |
-| `gateway.exporter.kafka.pdata.metrics.traces_exported` | `{span}` | Number of trace spans successfully exported to Kafka. |
-| `gateway.exporter.kafka.pdata.metrics.traces_failed` | `{span}` | Number of trace spans that failed to export to Kafka. |
-| `gateway.exporter.kafka.pdata.metrics.acks_received` | `{batch}` | Number of acks received from downstream. |
-| `gateway.exporter.kafka.pdata.metrics.nacks_received` | `{batch}` | Number of nacks received from downstream. |
-| `gateway.exporter.kafka.pdata.metrics.topic_from_header` | `{batch}` | Batches where topic was resolved from a transport header. |
-| `gateway.exporter.kafka.pdata.metrics.topic_from_static_config` | `{batch}` | Batches where topic was resolved from static per-signal config. |
+| `exporter.kafka.logs_exported` | `{log}` | Number of log records successfully exported to Kafka. |
+| `exporter.kafka.logs_failed` | `{log}` | Number of log records that failed to export to Kafka. |
+| `exporter.kafka.metrics_exported` | `{datapoint}` | Number of metric data points successfully exported to Kafka. |
+| `exporter.kafka.metrics_failed` | `{datapoint}` | Number of metric data points that failed to export to Kafka. |
+| `exporter.kafka.traces_exported` | `{span}` | Number of trace spans successfully exported to Kafka. |
+| `exporter.kafka.traces_failed` | `{span}` | Number of trace spans that failed to export to Kafka. |
+| `exporter.kafka.acks_received` | `{batch}` | Number of acks received from downstream. |
+| `exporter.kafka.nacks_received` | `{batch}` | Number of nacks received from downstream. |
+| `exporter.kafka.topic_from_header` | `{batch}` | Batches where topic was resolved from a transport header. |
+| `exporter.kafka.topic_from_static_config` | `{batch}` | Batches where topic was resolved from static per-signal config. |
 
 ### Events
 
