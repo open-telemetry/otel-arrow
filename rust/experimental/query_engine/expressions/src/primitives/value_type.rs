@@ -4,6 +4,7 @@
 // representations for stringified value types:
 const VALUE_TYPE_AS_STR_ARRAY: &str = "Array";
 const VALUE_TYPE_AS_STR_BOOLEAN: &str = "Boolean";
+const VALUE_TYPE_AS_STR_BYTES: &str = "Bytes";
 const VALUE_TYPE_AS_STR_DATETIME: &str = "DateTime";
 const VALUE_TYPE_AS_STR_DOUBLE: &str = "Double";
 const VALUE_TYPE_AS_STR_INTEGER: &str = "Integer";
@@ -17,22 +18,24 @@ const VALUE_TYPE_AS_STR_TIMESPAN: &str = "TimeSpan";
 pub enum ValueType {
     Array = 0,
     Boolean = 1,
-    DateTime = 2,
-    Double = 3,
-    Integer = 4,
-    Map = 5,
-    Null = 6,
-    Regex = 7,
-    String = 8,
-    TimeSpan = 9,
+    Bytes = 2,
+    DateTime = 3,
+    Double = 4,
+    Integer = 5,
+    Map = 6,
+    Null = 7,
+    Regex = 8,
+    String = 9,
+    TimeSpan = 10,
 }
 
 impl ValueType {
     pub fn get_value_types() -> impl Iterator<Item = ValueType> {
         // Note: Order here must match the enum definition
-        static VARIANTS: [ValueType; 10] = [
+        static VARIANTS: [ValueType; 11] = [
             ValueType::Array,
             ValueType::Boolean,
+            ValueType::Bytes,
             ValueType::DateTime,
             ValueType::Double,
             ValueType::Integer,
@@ -60,6 +63,7 @@ impl ValueType {
         Some(match s {
             VALUE_TYPE_AS_STR_ARRAY => ValueType::Array,
             VALUE_TYPE_AS_STR_BOOLEAN => ValueType::Boolean,
+            VALUE_TYPE_AS_STR_BYTES => ValueType::Bytes,
             VALUE_TYPE_AS_STR_DATETIME => ValueType::DateTime,
             VALUE_TYPE_AS_STR_DOUBLE => ValueType::Double,
             VALUE_TYPE_AS_STR_INTEGER => ValueType::Integer,
@@ -78,6 +82,7 @@ impl From<ValueType> for &str {
         match value {
             ValueType::Array => VALUE_TYPE_AS_STR_ARRAY,
             ValueType::Boolean => VALUE_TYPE_AS_STR_BOOLEAN,
+            ValueType::Bytes => VALUE_TYPE_AS_STR_BYTES,
             ValueType::DateTime => VALUE_TYPE_AS_STR_DATETIME,
             ValueType::Double => VALUE_TYPE_AS_STR_DOUBLE,
             ValueType::Integer => VALUE_TYPE_AS_STR_INTEGER,

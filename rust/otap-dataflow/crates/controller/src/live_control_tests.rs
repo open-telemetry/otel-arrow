@@ -232,6 +232,24 @@ groups:
     .expect("engine config should parse")
 }
 
+fn empty_engine_config() -> OtelDataflowSpec {
+    OtelDataflowSpec::from_yaml("version: otel_dataflow/v1\n")
+        .expect("empty engine config should parse")
+}
+
+fn reconcile_request(
+    config: OtelDataflowSpec,
+    delete_missing: bool,
+) -> EngineConfigReconcileRequest {
+    EngineConfigReconcileRequest {
+        config,
+        step_timeout_secs: 5,
+        drain_timeout_secs: 5,
+        delete_timeout_secs: 5,
+        delete_missing,
+    }
+}
+
 fn simple_pipeline_yaml() -> &'static str {
     r#"
         nodes:
@@ -1653,6 +1671,483 @@ fn request_shutdown_pipeline_rejects_missing_pipeline() {
         .expect_err("missing pipeline should be rejected");
 
     assert_eq!(err, ControlPlaneError::PipelineNotFound);
+}
+
+/// Scenario: a control-plane caller creates a new empty pipeline group after
+/// the controller has started with no groups.
+/// Guarantees: the group is added to committed live config and can be read
+/// back without registering any logical pipelines.
+#[test]
+fn create_group_adds_empty_group_to_live_config() {
+    let config = empty_engine_config();
+    let runtime = test_runtime(&config);
+    let group = PipelineGroupConfig::new();
+
+    let created = runtime
+        .create_group("g1", group.clone())
+        .expect("empty group should be created");
+
+    let group_id: PipelineGroupId = "g1".to_string().into();
+    assert_eq!(created, group);
+    assert_eq!(runtime.group_details_snapshot(&group_id), Some(group));
+    let snapshot = runtime.engine_config_snapshot();
+    assert!(snapshot.groups.contains_key(&group_id));
+    assert!(snapshot.groups[&group_id].pipelines.is_empty());
+}
+
+/// Scenario: a control-plane caller attempts to create a group that is already
+/// present in committed live config.
+/// Guarantees: the runtime rejects the request with a conflict-level error and
+/// leaves the existing group unchanged.
+#[test]
+fn create_group_rejects_duplicate_group() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+
+    let err = runtime
+        .create_group("g1", PipelineGroupConfig::new())
+        .expect_err("duplicate group should be rejected");
+
+    assert_eq!(err, ControlPlaneError::GroupAlreadyExists);
+    let group_id: PipelineGroupId = "g1".to_string().into();
+    assert!(runtime.group_details_snapshot(&group_id).is_some());
+}
+
+/// Scenario: a control-plane caller submits a group-create payload that already
+/// contains pipelines.
+/// Guarantees: PR1's endpoint boundary stays scoped to empty group creation,
+/// leaving pipeline creation to the existing pipeline reconfigure endpoint.
+#[test]
+fn create_group_rejects_payload_with_pipelines() {
+    let config = empty_engine_config();
+    let runtime = test_runtime(&config);
+    let pipeline = PipelineConfig::from_yaml("g1".into(), "p1".into(), simple_pipeline_yaml())
+        .expect("pipeline should parse");
+    let mut group = PipelineGroupConfig::new();
+    _ = group.pipelines.insert("p1".to_string().into(), pipeline);
+
+    let err = runtime
+        .create_group("g1", group)
+        .expect_err("non-empty group should be rejected");
+
+    assert!(matches!(
+        err,
+        ControlPlaneError::InvalidRequest { ref message }
+            if message == "pipeline group creation only supports empty groups"
+    ));
+    let group_id: PipelineGroupId = "g1".to_string().into();
+    assert!(runtime.group_details_snapshot(&group_id).is_none());
+}
+
+/// Scenario: a control-plane caller deletes a stopped logical pipeline.
+/// Guarantees: the pipeline is removed from committed live config and the
+/// containing group remains available as an empty group.
+#[test]
+fn delete_pipeline_removes_stopped_pipeline_from_live_config() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+
+    let status = runtime
+        .request_delete_pipeline("g1", "p1", 5)
+        .expect("stopped pipeline should be deleted");
+
+    assert_eq!(status.state, "succeeded");
+    assert!(status.shutdown.is_none());
+    let snapshot = runtime.engine_config_snapshot();
+    let group_id: PipelineGroupId = "g1".into();
+    let pipeline_id: PipelineId = "p1".into();
+    assert!(snapshot.groups.contains_key(&group_id));
+    assert!(
+        !snapshot.groups[&group_id]
+            .pipelines
+            .contains_key(&pipeline_id)
+    );
+}
+
+/// Scenario: a control-plane caller deletes a pipeline that cannot be found.
+/// Guarantees: missing groups and missing pipelines map to distinct typed
+/// errors before any live state is changed.
+#[test]
+fn delete_pipeline_rejects_missing_targets() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+
+    let missing_group = runtime
+        .request_delete_pipeline("missing", "p1", 5)
+        .expect_err("missing group should be rejected");
+    assert_eq!(missing_group, ControlPlaneError::GroupNotFound);
+
+    let missing_pipeline = runtime
+        .request_delete_pipeline("g1", "missing", 5)
+        .expect_err("missing pipeline should be rejected");
+    assert_eq!(missing_pipeline, ControlPlaneError::PipelineNotFound);
+
+    let snapshot = runtime.engine_config_snapshot();
+    assert!(
+        snapshot.groups[&PipelineGroupId::from("g1")]
+            .pipelines
+            .contains_key(&PipelineId::from("p1"))
+    );
+}
+
+/// Scenario: a control-plane caller deletes a pipeline while a shutdown is
+/// already active for the same logical pipeline.
+/// Guarantees: delete rejects with the same conflict boundary as rollout and
+/// shutdown planning.
+#[test]
+fn delete_pipeline_rejects_active_operation_conflict() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let plan = runtime
+        .prepare_shutdown_plan("g1", "p1", 5)
+        .expect("shutdown plan should be accepted");
+    runtime
+        .insert_shutdown(&plan.pipeline_key, plan.shutdown)
+        .expect("shutdown should register");
+
+    let err = runtime
+        .request_delete_pipeline("g1", "p1", 5)
+        .expect_err("active shutdown should block delete");
+
+    assert_eq!(err, ControlPlaneError::RolloutConflict);
+}
+
+/// Scenario: an engine-scoped lifecycle operation is already active.
+/// Guarantees: public config mutation entry points reject instead of
+/// interleaving with the active full-engine operation.
+#[test]
+fn engine_scoped_operation_rejects_public_lifecycle_mutations() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.active_engine_operation = Some("reconcile-42".to_owned());
+    }
+
+    let create_err = runtime
+        .create_group("g2", PipelineGroupConfig::new())
+        .expect_err("active engine operation should block group creation");
+    assert_eq!(create_err, ControlPlaneError::RolloutConflict);
+
+    let delete_err = runtime
+        .request_delete_pipeline("g1", "p1", 5)
+        .expect_err("active engine operation should block pipeline deletion");
+    assert_eq!(delete_err, ControlPlaneError::RolloutConflict);
+
+    let rollout_err = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: config.groups[&PipelineGroupId::from("g1")].pipelines
+                    [&PipelineId::from("p1")]
+                    .clone(),
+                step_timeout_secs: 5,
+                drain_timeout_secs: 5,
+            },
+        )
+        .expect_err("active engine operation should block rollout planning");
+    assert_eq!(rollout_err, ControlPlaneError::RolloutConflict);
+}
+
+/// Scenario: a control-plane caller deletes an empty group.
+/// Guarantees: the group is removed from committed live config without
+/// requiring pipeline shutdown work.
+#[test]
+fn delete_group_removes_empty_group_from_live_config() {
+    let config = empty_engine_config();
+    let runtime = test_runtime(&config);
+    let _created = runtime
+        .create_group("g1", PipelineGroupConfig::new())
+        .expect("group should be created");
+
+    let status = runtime
+        .request_delete_group("g1", 5)
+        .expect("empty group should be deleted");
+
+    assert_eq!(status.state, "succeeded");
+    assert!(status.pipelines.is_empty());
+    assert!(
+        !runtime
+            .engine_config_snapshot()
+            .groups
+            .contains_key(&PipelineGroupId::from("g1"))
+    );
+}
+
+/// Scenario: a control-plane caller deletes a group containing stopped
+/// pipelines.
+/// Guarantees: the runtime deletes each pipeline in deterministic order and
+/// removes the empty group from committed live config.
+#[test]
+fn delete_group_removes_stopped_pipelines_and_group() {
+    let config = OtelDataflowSpec::from_yaml(&format!(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines:
+      p1:
+{p1}
+      p2:
+{p2}
+"#,
+        p1 = simple_pipeline_yaml(),
+        p2 = simple_pipeline_yaml()
+    ))
+    .expect("config should parse");
+    let runtime = test_runtime(&config);
+
+    let status = runtime
+        .request_delete_group("g1", 5)
+        .expect("group should be deleted");
+
+    assert_eq!(status.state, "succeeded");
+    assert_eq!(
+        status
+            .pipelines
+            .iter()
+            .map(|pipeline| pipeline.pipeline_id.as_ref().to_owned())
+            .collect::<Vec<_>>(),
+        vec!["p1".to_owned(), "p2".to_owned()]
+    );
+    assert!(
+        !runtime
+            .engine_config_snapshot()
+            .groups
+            .contains_key(&PipelineGroupId::from("g1"))
+    );
+}
+
+/// Scenario: a full-config reconciliation request matches the current live
+/// pipeline configuration and runtime assignment.
+/// Guarantees: reconciliation records a no-op change and leaves committed
+/// config intact.
+#[test]
+fn reconcile_engine_config_reports_noop_for_matching_live_config() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(config.clone(), true))
+        .expect("matching config should reconcile");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(status.changes.len(), 1);
+    assert_eq!(status.changes[0].action, ConfigChangeAction::Noop);
+    assert_eq!(status.changes[0].state, "succeeded");
+    assert!(
+        runtime
+            .engine_config_snapshot()
+            .groups
+            .contains_key(&PipelineGroupId::from("g1"))
+    );
+}
+
+/// Scenario: a full-config reconciliation request omits live stopped
+/// resources with `delete_missing` enabled.
+/// Guarantees: reconciliation deletes the omitted pipeline and then the
+/// now-empty group from committed live config.
+#[test]
+fn reconcile_engine_config_deletes_missing_resources_by_default() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(empty_engine_config(), true))
+        .expect("missing resources should be deleted");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(
+        status
+            .changes
+            .iter()
+            .map(|change| (
+                change.pipeline_group_id.as_ref().map(|id| id.as_ref()),
+                change.pipeline_id.as_ref().map(|id| id.as_ref()),
+                change.action,
+                change.state.as_str(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                Some("g1"),
+                Some("p1"),
+                ConfigChangeAction::Delete,
+                "succeeded"
+            ),
+            (Some("g1"), None, ConfigChangeAction::Delete, "succeeded"),
+        ]
+    );
+    assert!(
+        !runtime
+            .engine_config_snapshot()
+            .groups
+            .contains_key(&PipelineGroupId::from("g1"))
+    );
+}
+
+/// Scenario: a full-config reconciliation request omits live resources with
+/// `delete_missing` disabled.
+/// Guarantees: reconciliation succeeds without deleting the omitted group or
+/// pipeline.
+#[test]
+fn reconcile_engine_config_preserves_missing_resources_when_requested() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(empty_engine_config(), false))
+        .expect("missing resources should be preserved");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert!(status.changes.is_empty());
+    let snapshot = runtime.engine_config_snapshot();
+    assert!(
+        snapshot.groups[&PipelineGroupId::from("g1")]
+            .pipelines
+            .contains_key(&PipelineId::from("p1"))
+    );
+}
+
+/// Scenario: full-config reconciliation is rejected after validation because a
+/// target pipeline already has an active rollout.
+/// Guarantees: desired engine-level scaffold fields are not committed when the
+/// reconcile request fails before applying all requested changes.
+#[test]
+fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        _ = state
+            .active_rollouts
+            .insert(pipeline_key, "rollout-42".to_owned());
+    }
+
+    let mut desired = config.clone();
+    _ = desired
+        .engine
+        .custom
+        .insert("desired".to_owned(), serde_json::json!({"enabled": true}));
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("active rollout should reject full-config reconciliation");
+
+    assert_eq!(err, ControlPlaneError::RolloutConflict);
+    assert!(runtime.engine_config_snapshot().engine.custom.is_empty());
+}
+
+/// Scenario: full-config reconciliation would change an existing topic
+/// runtime profile.
+/// Guarantees: reconciliation rejects the request before starting rollout or
+/// mutating committed live config.
+#[test]
+fn reconcile_engine_config_rejects_runtime_topic_mutation() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+topics:
+  shared: {}
+groups:
+  g1:
+    pipelines:
+      p1:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          to_topic:
+            type: "urn:otel:exporter:topic"
+            config:
+              topic: shared
+        connections:
+          - from: receiver
+            to: to_topic
+"#,
+    )
+    .expect("config should parse");
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+topics:
+  shared: {}
+groups:
+  g1:
+    pipelines:
+      p1:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          from_topic:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: shared
+              subscription:
+                mode: balanced
+                group: workers
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: from_topic
+            to: exporter
+"#,
+    )
+    .expect("desired config should parse");
+    let runtime = test_runtime(&config);
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("topic runtime changes should be rejected");
+
+    match err {
+        ControlPlaneError::InvalidRequest { message } => {
+            assert!(message.contains("runtime topic broker mutation"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(runtime.engine_config_snapshot(), config);
 }
 
 /// Scenario: a detached shutdown worker panics before it reaches the normal
