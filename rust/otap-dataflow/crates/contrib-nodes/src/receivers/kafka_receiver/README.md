@@ -623,27 +623,28 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `kafka.receiver.metrics`
+#### `receiver.kafka`
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `kafka.receiver.metrics.messages_received` | `{msg}` | Total messages received from Kafka across all signal types. |
-| `kafka.receiver.metrics.bytes_received` | `{byte}` | Total payload bytes consumed from Kafka. |
-| `kafka.receiver.metrics.log_msgs_received` | `{msg}` | Number of log messages received from the Kafka broker. |
-| `kafka.receiver.metrics.metric_msgs_received` | `{msg}` | Number of metric messages received from the Kafka broker. |
-| `kafka.receiver.metrics.trace_msgs_received` | `{msg}` | Number of trace messages received from the Kafka broker. |
-| `kafka.receiver.metrics.acks_received` | `{ack}` | Number of acks received from downstream. |
-| `kafka.receiver.metrics.nacks_received` | `{nack}` | Number of nacks received from downstream. |
-| `kafka.receiver.metrics.processing_errors` | `{msg}` | Number of messages that failed processing and were skipped. |
-| `kafka.receiver.metrics.unmarshal_failed_traces` | `{msg}` | Trace messages that failed to unmarshal. |
-| `kafka.receiver.metrics.unmarshal_failed_metrics` | `{msg}` | Metric messages that failed to unmarshal. |
-| `kafka.receiver.metrics.unmarshal_failed_logs` | `{msg}` | Log messages that failed to unmarshal. |
-| `kafka.receiver.metrics.empty_payloads` | `{msg}` | Messages with empty payload. |
-| `kafka.receiver.metrics.unknown_topic_errors` | `{error}` | Messages from topics that do not match any configured signal. |
-| `kafka.receiver.metrics.transport_errors` | `{error}` | Number of Kafka transport errors encountered (non-fatal). |
-| `kafka.receiver.metrics.offset_commits` | `{commit}` | Number of offset commits performed. |
-| `kafka.receiver.metrics.offset_commit_errors` | `{error}` | Number of offset commit failures. |
-| `kafka.receiver.metrics.idempotent_skips` | `{msg}` | Messages skipped due to idempotency check (duplicate detection). |
+| `receiver.kafka.messages_received` | `{msg}` | Total messages received from Kafka across all signal types. |
+| `receiver.kafka.bytes_received` | `{byte}` | Total payload bytes consumed from Kafka. |
+| `receiver.kafka.log_msgs_received` | `{msg}` | Number of log messages received from the Kafka broker. |
+| `receiver.kafka.metric_msgs_received` | `{msg}` | Number of metric messages received from the Kafka broker. |
+| `receiver.kafka.trace_msgs_received` | `{msg}` | Number of trace messages received from the Kafka broker. |
+| `receiver.kafka.acks_received` | `{ack}` | Number of acks received from downstream. |
+| `receiver.kafka.nacks_received` | `{nack}` | Number of nacks received from downstream. |
+| `receiver.kafka.processing_errors` | `{msg}` | Number of messages that failed processing and were skipped. |
+| `receiver.kafka.unmarshal_failed_traces` | `{msg}` | Trace messages that failed to unmarshal. |
+| `receiver.kafka.unmarshal_failed_metrics` | `{msg}` | Metric messages that failed to unmarshal. |
+| `receiver.kafka.unmarshal_failed_logs` | `{msg}` | Log messages that failed to unmarshal. |
+| `receiver.kafka.empty_payloads` | `{msg}` | Messages with empty payload. |
+| `receiver.kafka.unknown_topic_errors` | `{error}` | Messages from topics that do not match any configured signal. |
+| `receiver.kafka.transport_errors` | `{error}` | Number of Kafka transport errors encountered (non-fatal). |
+| `receiver.kafka.offset_commits` | `{commit}` | Number of offset commits performed. |
+| `receiver.kafka.offset_commit_errors` | `{error}` | Number of offset commit failures. |
+| `receiver.kafka.idempotent_skips` | `{msg}` | Messages skipped due to idempotency check (duplicate detection). |
+| `receiver.kafka.topic_id_exhausted` | `{msg}` | Messages dropped because the topic ID space was exhausted (overflow guard). |
 
 ### Events
 
@@ -651,12 +652,14 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | --- | --- | --- |
 | `kafka.receiver.consumer_config.override` | `warn` | A `consumer_config` entry was overridden by a built-in configuration field. |
 | `kafka.shutdown.commit_failed` | `error` | Final offset commit during shutdown failed. |
+| `kafka.commit.failed` | `error` | An offset commit failed (non-fatal; offsets stay tracked and are retried on the next ack/nack/timer-tick). |
 | `kafka.message.empty_payload` | `error` | A consumed message had an empty payload. |
 | `kafka.message.unknown_topic` | `error` | A consumed message came from a topic not mapped to any signal. |
 | `kafka.message.unmarshal_failed` | `error` | A consumed message failed to unmarshal (includes `signal` field: traces, metrics, or logs). |
 | `kafka.partition_eof` | `info` | Consumer reached end of a partition. |
 | `kafka.transport_error` | `error` | A Kafka transport-level error occurred (non-fatal, consumer continues). |
 | `kafka.capture_policy.limits_exceeded` | `error` | Transport header capture exceeded configured limits. |
+| `kafka.topic_id.exhausted` | `error` | The topic ID space was exhausted; the message was dropped to avoid a colliding ID. |
 
 ## Limits
 

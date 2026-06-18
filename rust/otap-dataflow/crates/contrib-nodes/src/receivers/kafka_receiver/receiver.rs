@@ -126,13 +126,13 @@ fn detect_message_format(
     }
 }
 
-/// Dynamically assigns compact `u8` IDs to actual Kafka topic names.
+/// Dynamically assigns compact `u32` IDs to actual Kafka topic names.
 ///
 /// Used to encode topic identity into [`CallData`] for Ack/Nack routing
 /// while supporting regex-matched topic names that aren't known at config
 /// time.
 struct TopicRegistry {
-    name_to_id: HashMap<String, u8>,
+    name_to_id: HashMap<String, u32>,
     id_to_name: Vec<String>,
 }
 
@@ -144,22 +144,22 @@ impl TopicRegistry {
         }
     }
 
-    /// Get or assign a `u8` ID for the given topic name.
-    fn get_or_assign(&mut self, topic: &str) -> u8 {
+    /// Get or assign a `u32` ID for the given topic name.
+    fn get_or_assign(&mut self, topic: &str) -> Option<u32> {
         // if topic hasn't been seen yet then we assign topic a id
         if let Some(&id) = self.name_to_id.get(topic) {
-            return id;
+            return Some(id);
         }
-        // get id for a new topic
-        let id = self.id_to_name.len() as u8;
+        // The next ID is the current count. Refuse if it doesn't fit in `u32`.
+        let id = u32::try_from(self.id_to_name.len()).ok()?;
         let owned = topic.to_string();
         self.id_to_name.push(owned.clone());
         let _ = self.name_to_id.insert(owned, id);
-        id
+        Some(id)
     }
 
     /// Look up a topic name by its assigned ID.
-    fn name_for(&self, id: u8) -> Option<&str> {
+    fn name_for(&self, id: u32) -> Option<&str> {
         self.id_to_name.get(id as usize).map(|s| s.as_str())
     }
 }
@@ -490,7 +490,17 @@ impl KafkaReceiver {
                                         .offset_tracker
                                         .acknowledge(name, partition, offset);
                                     if advanced {
-                                        self.commit_offsets(&consumer, &receiver_id)?;
+                                        // Commit failures are recoverable:
+                                        // the offset stays tracked and will be
+                                        // retried on the next ack/nack/timer-tick.
+                                        if let Err(e) =
+                                            self.commit_offsets(&consumer, &receiver_id)
+                                        {
+                                            otel_error!(
+                                                "kafka.commit.failed",
+                                                error = %e,
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -507,7 +517,17 @@ impl KafkaReceiver {
                                         .offset_tracker
                                         .acknowledge(name, partition, offset);
                                     if advanced {
-                                        self.commit_offsets(&consumer, &receiver_id)?;
+                                        // Commit failures are recoverable:
+                                        // the offset stays tracked and will be
+                                        // retried on the next ack/nack/timer-tick.
+                                        if let Err(e) =
+                                            self.commit_offsets(&consumer, &receiver_id)
+                                        {
+                                            otel_error!(
+                                                "kafka.commit.failed",
+                                                error = %e,
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -519,7 +539,14 @@ impl KafkaReceiver {
                         Ok(NodeControlMsg::TimerTick { .. }) => {
                             // Periodic safety-net commit: flush any committable
                             // offsets that haven't been committed via ack/nack yet.
-                            self.commit_offsets(&consumer, &receiver_id)?;
+                            // Commit failures are recoverable: offsets stay
+                            // tracked and are retried on the next tick.
+                            if let Err(e) = self.commit_offsets(&consumer, &receiver_id) {
+                                otel_error!(
+                                    "kafka.commit.failed",
+                                    error = %e,
+                                );
+                            }
                         },
                         Err(e) => {
                             return Err(EngineError::ChannelRecvError(e));
@@ -547,10 +574,26 @@ impl KafkaReceiver {
                                 self.metrics.bytes_received.add(payload.len() as u64);
                             }
 
-                            // Assign a compact u8 ID for this actual topic name.
+                            // Assign a compact u32 ID for this actual topic name.
                             // The registry remembers the mapping for Ack/Nack lookup.
-                            let topic_id =
-                                self.topic_registry.get_or_assign(&topic);
+                            // If the ID space is exhausted, assigning another ID
+                            // would wrap around and collide with an existing
+                            // topic, corrupting Ack/Nack offset routing. Drop the
+                            // message instead (the offset is not tracked, so it
+                            // will be re-delivered on restart).
+                            let topic_id = match self.topic_registry.get_or_assign(&topic) {
+                                Some(id) => id,
+                                None => {
+                                    self.metrics.topic_id_exhausted.add(1);
+                                    otel_error!(
+                                        "kafka.topic_id.exhausted",
+                                        topic = %topic,
+                                        partition = partition,
+                                        offset = offset,
+                                    );
+                                    continue;
+                                }
+                            };
 
                             // Idempotency: skip duplicate messages when enabled.
                             if idempotent
@@ -650,10 +693,19 @@ impl KafkaReceiver {
                                             .offset_tracker
                                             .acknowledge(&topic, partition, offset);
                                         if advanced {
-                                            self.commit_offsets(
+                                            // Commit failures are recoverable:
+                                            // the offset stays tracked and will
+                                            // be retried on the next
+                                            // ack/nack/timer-tick.
+                                            if let Err(e) = self.commit_offsets(
                                                 &consumer,
                                                 &receiver_id,
-                                            )?;
+                                            ) {
+                                                otel_error!(
+                                                    "kafka.commit.failed",
+                                                    error = %e,
+                                                );
+                                            }
                                         }
                                     }
                                 }
@@ -689,7 +741,7 @@ impl KafkaReceiver {
 ///
 /// Slot 0: `(topic_id << 32) | (partition as u32)` packed into a `u64`.
 /// Slot 1: `offset` cast to `u64`.
-fn encode_calldata(topic_id: u8, partition: i32, offset: i64) -> CallData {
+fn encode_calldata(topic_id: u32, partition: i32, offset: i64) -> CallData {
     let topic_partition = ((topic_id as u64) << 32) | (partition as u32 as u64);
     smallvec![
         Context8u8::from(topic_partition),
@@ -698,9 +750,9 @@ fn encode_calldata(topic_id: u8, partition: i32, offset: i64) -> CallData {
 }
 
 /// Decode Kafka message identity from [`CallData`] returned in Ack/Nack.
-fn decode_calldata(calldata: &CallData) -> (u8, i32, i64) {
+fn decode_calldata(calldata: &CallData) -> (u32, i32, i64) {
     let topic_partition: u64 = calldata[0].into();
-    let topic_id = (topic_partition >> 32) as u8;
+    let topic_id = (topic_partition >> 32) as u32;
     let partition = (topic_partition & 0xFFFF_FFFF) as i32;
     let offset: u64 = calldata[1].into();
     (topic_id, partition, offset as i64)
@@ -2079,7 +2131,7 @@ mod tests {
 
     #[test]
     fn encode_decode_calldata_roundtrip() {
-        let cases: Vec<(u8, i32, i64)> = vec![
+        let cases: Vec<(u32, i32, i64)> = vec![
             (0, 0, 0),
             (0, 0, 100),
             (1, 3, 999_999),
@@ -2087,6 +2139,11 @@ mod tests {
             (5, 0, 42),
             (10, 1, 1_000_000),
             (255, 2, 0),
+            // Values that would have been truncated by the old `u8` ID.
+            (256, 7, 1),
+            (65_536, 9, 2),
+            (u32::MAX, i32::MAX, i64::MAX),
+            (u32::MAX, -1, 0),
         ];
 
         for (topic_id, partition, offset) in cases {
@@ -2110,19 +2167,19 @@ mod tests {
     fn topic_registry_assigns_sequential_ids() {
         let mut reg = TopicRegistry::new();
 
-        assert_eq!(reg.get_or_assign("traces-prod"), 0);
-        assert_eq!(reg.get_or_assign("metrics-prod"), 1);
-        assert_eq!(reg.get_or_assign("logs-prod"), 2);
+        assert_eq!(reg.get_or_assign("traces-prod"), Some(0));
+        assert_eq!(reg.get_or_assign("metrics-prod"), Some(1));
+        assert_eq!(reg.get_or_assign("logs-prod"), Some(2));
 
         // Same topic returns the same ID.
-        assert_eq!(reg.get_or_assign("traces-prod"), 0);
+        assert_eq!(reg.get_or_assign("traces-prod"), Some(0));
     }
 
     #[test]
     fn topic_registry_name_for_roundtrip() {
         let mut reg = TopicRegistry::new();
 
-        let id = reg.get_or_assign("my-topic");
+        let id = reg.get_or_assign("my-topic").expect("id assigned");
         assert_eq!(reg.name_for(id), Some("my-topic"));
         assert_eq!(reg.name_for(99), None);
     }

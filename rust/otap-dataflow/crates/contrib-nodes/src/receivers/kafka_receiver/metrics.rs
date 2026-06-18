@@ -7,7 +7,7 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
 /// Metrics for the Kafka Receiver.
-#[metric_set(name = "kafka.receiver.metrics")]
+#[metric_set(name = "receiver.kafka")]
 #[derive(Debug, Default, Clone)]
 pub struct KafkaReceiverMetrics {
     // ── Message Counters ────────────────────────────────────
@@ -68,4 +68,7 @@ pub struct KafkaReceiverMetrics {
     /// Messages skipped due to idempotency check (duplicate detection)
     #[metric(unit = "{msg}")]
     pub idempotent_skips: Counter<u64>,
+    /// Messages dropped because the topic ID space was exhausted (overflow guard)
+    #[metric(unit = "{msg}")]
+    pub topic_id_exhausted: Counter<u64>,
 }
