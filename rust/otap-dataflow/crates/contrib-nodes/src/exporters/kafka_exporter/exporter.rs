@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Core Kafka exporter implementation.
-//! 
+//!
 //! ToDo: Currently only handles one kafka message add a time we should
 //! improve the throughput by handling delivery futures
 
