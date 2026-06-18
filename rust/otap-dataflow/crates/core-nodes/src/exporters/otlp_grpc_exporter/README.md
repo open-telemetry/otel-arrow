@@ -45,10 +45,42 @@ config:
 
   # Number of gRPC channels to open (default: 1).
   num_connections: 1
+
+  # Static metadata (headers) added to every outbound OTLP/gRPC request
+  # (optional). Useful for arbitrary metadata such as tenant routing. Not
+  # recommended for authorization; prefer a dedicated Auth extension instead.
+  # Keys and values must be valid ASCII gRPC metadata and are validated at
+  # config load.
+  headers:
+    x-scope-orgid: "tenant-1"
+    environment: "production-west"
 ```
 
 Shared gRPC client fields include connect timeout, request timeout, TCP
 keepalive, HTTP/2 settings, TLS, proxy, and transport buffer settings.
+
+### Static request headers
+
+`headers` is a map of metadata name to value added to every outbound request
+(multi-tenant routing IDs, tracing-vendor metadata, and similar). For request
+authentication, prefer a dedicated Auth extension rather than hard-coding an
+`authorization` entry here. Values are sent verbatim, so treat any secret in
+the rendered config as sensitive.
+
+Validation at config load rejects:
+
+- invalid metadata names (must be a valid ASCII gRPC metadata key: an HTTP/2
+  token that is sent lowercased and must not end in `-bin`, which is reserved
+  for binary metadata), and
+- invalid metadata values (must be visible ASCII), and
+- protocol-reserved metadata managed by the gRPC transport: `content-type`,
+  `te`, `user-agent`, and any name with the spec-reserved `grpc-` prefix
+  (e.g. `grpc-timeout`, `grpc-encoding`).
+
+When [header propagation](../../../../../docs/transport-headers.md) is also
+enabled, statically configured headers take precedence: a propagated header
+whose key matches a configured one is dropped, so a configured routing header
+(e.g. `x-scope-orgid`) is never overridden or duplicated.
 
 ## Examples
 

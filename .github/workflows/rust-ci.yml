@@ -28,7 +28,6 @@ jobs:
       fail-fast: false
       matrix:
         folder:
-          - experimental/query_abstraction
           - experimental/query_engine
         os:
           - ubuntu-latest
@@ -213,24 +212,42 @@ jobs:
         run: cargo test -p otap-df-contrib-nodes user_events_linux_e2e_smoke_when_available --features user_events-receiver,otap-df-otap/crypto-ring
         working-directory: ./rust/otap-dataflow
 
+  etw_windows_smoke:
+    # GitHub-hosted windows-latest runners execute as Administrator with UAC
+    # disabled, which the test requires in order to start an ETW session.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: ./rust/otap-dataflow
+          cache-bin: false
+      - name: Run ETW Windows smoke test
+        run: cargo test -p otap-df-contrib-nodes etw_receiver_decodes_tracelogging_events_end_to_end --features etw-receiver -- --ignored
+        working-directory: ./rust/otap-dataflow
+
   fmt:
     strategy:
       fail-fast: false
       matrix:
         folder:
-        - otap-dataflow
-        - experimental/query_abstraction
-        - experimental/query_engine
+          - otap-dataflow
+          - experimental/query_engine
         os:
-        - ubuntu-latest
-        - ubuntu-24.04-arm
-        - windows-latest
-        - macos-latest
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - windows-latest
+          - macos-latest
         exclude:
-        - folder: otap-dataflow
-          os: ubuntu-latest
-        - folder: otap-dataflow
-          os: windows-latest
+          - folder: otap-dataflow
+            os: ubuntu-latest
+          - folder: otap-dataflow
+            os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -299,19 +316,18 @@ jobs:
       fail-fast: false
       matrix:
         folder:
-        - otap-dataflow
-        - experimental/query_abstraction
-        - experimental/query_engine
+          - otap-dataflow
+          - experimental/query_engine
         os:
-        - ubuntu-latest
-        - ubuntu-24.04-arm
-        - windows-latest
-        - macos-latest
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - windows-latest
+          - macos-latest
         exclude:
-        - folder: otap-dataflow
-          os: ubuntu-latest
-        - folder: otap-dataflow
-          os: windows-latest
+          - folder: otap-dataflow
+            os: ubuntu-latest
+          - folder: otap-dataflow
+            os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -336,9 +352,8 @@ jobs:
       fail-fast: false
       matrix:
         folder:
-        - otap-dataflow
-        - experimental/query_abstraction
-        - experimental/query_engine
+          - otap-dataflow
+          - experimental/query_engine
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -348,25 +363,25 @@ jobs:
         with:
           toolchain: stable
       - name: advisories
-        if: '!cancelled()'
+        if: "!cancelled()"
         uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
         with:
           command: check advisories
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
       - name: licenses
-        if: '!cancelled()'
+        if: "!cancelled()"
         uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
         with:
           command: check licenses
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
       - name: bans
-        if: '!cancelled()'
+        if: "!cancelled()"
         uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
         with:
           command: check bans
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
       - name: sources
-        if: '!cancelled()'
+        if: "!cancelled()"
         uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
         with:
           command: check sources
@@ -377,9 +392,8 @@ jobs:
       fail-fast: false
       matrix:
         folder:
-        - otap-dataflow
-        - experimental/query_abstraction
-        - experimental/query_engine
+          - otap-dataflow
+          - experimental/query_engine
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -954,25 +968,25 @@ jobs:
         with:
           toolchain: stable
       - name: advisories
-        if: '!cancelled()'
+        if: "!cancelled()"
         uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
         with:
           command: check advisories
           manifest-path: ./rust/otap-dataflow/Cargo.toml
       - name: licenses
-        if: '!cancelled()'
+        if: "!cancelled()"
         uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
         with:
           command: check licenses
           manifest-path: ./rust/otap-dataflow/Cargo.toml
       - name: bans
-        if: '!cancelled()'
+        if: "!cancelled()"
         uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
         with:
           command: check bans
           manifest-path: ./rust/otap-dataflow/Cargo.toml
       - name: sources
-        if: '!cancelled()'
+        if: "!cancelled()"
         uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
         with:
           command: check sources
@@ -1093,6 +1107,7 @@ jobs:
       - pipeline_perf_test
       - host-metrics-semconv
       - user_events_linux_smoke
+      - etw_windows_smoke
     steps:
       - name: Check if all required jobs succeeded
         run: |
@@ -1138,6 +1153,10 @@ jobs:
           fi
           if [[ "${{ needs.user_events_linux_smoke.result }}" != "success" ]]; then
             echo "user_events_linux_smoke failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.etw_windows_smoke.result }}" != "success" ]]; then
+            echo "etw_windows_smoke failed or was cancelled"
             exit 1
           fi
           echo "All required checks passed!"
