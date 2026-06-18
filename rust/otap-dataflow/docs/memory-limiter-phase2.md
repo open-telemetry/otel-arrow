@@ -1483,19 +1483,31 @@ runtime_enforce)` instead of the process-only `should_shed_ingress()`:
 - Teardown resets the shared snapshot to `Normal` + enforcement disabled, so a
   torn-down runtime can never keep shedding ingress.
 
-The **OTAP/OTLP gRPC** receivers (tonic `ResourceExhausted` + `grpc-retry-pushback-ms`)
-are **not** wired in this slice; they can reuse the same
-`SharedRuntimeBudgetPressure` view in a follow-up. This is shared *runtime
-pressure* publication only; shared-channel/shared-node retained-ownership
+The **OTLP gRPC receiver** is also wired, through its existing
+`MemoryPressureLayer` (a tower/tonic middleware). The layer already fails fast
+with gRPC `ResourceExhausted` + `grpc-retry-pushback-ms` in `poll_ready`/`call`
+**before** tonic decodes the request body; it now evaluates the same combined
+admission decision (`SharedReceiverAdmissionState::evaluate`) so runtime-budget
+`Hard` sheds under enforce + the gate, while process `Hard` and `Soft`/observe
+behavior are unchanged. The receiver derives one `SharedRuntimeBudgetPressure`
+view at construction and attaches it to the layer via
+`MemoryPressureLayer::with_runtime_budget_pressure`. Rejection stays pre-decode,
+budget-free, payload-free, and reuses the existing rejection counters.
+
+The **OTAP gRPC** receiver (its own inline `grpc_memory_pressure_status` /
+`BatchStatus` stream-rejection path) is **not** wired in this slice; it can reuse
+the same `SharedRuntimeBudgetPressure` view in a follow-up. This is shared
+*runtime pressure* publication only; shared-channel/shared-node retained-ownership
 adoption of `SharedEnvelope<T>` remains a separate, unstarted track.
 
 **Status:** the admission primitive is implemented and unit-tested and is wired
-end to end for **(1)** the syslog CEF local receiver and **(2)** the OTLP HTTP
-shared receiver. `enforcement.receiver_admission` is accepted at config
+end to end for **(1)** the syslog CEF local receiver, **(2)** the OTLP HTTP
+shared receiver, and **(3)** the OTLP gRPC shared receiver (via
+`MemoryPressureLayer`). `enforcement.receiver_admission` is accepted at config
 validation **only** under the `unstable-memory-enforcement` build feature
 (rejected in default/production builds), exactly like `queue_publish` and
-`reclaim_hooks`. OTAP/OTLP gRPC and all other receivers still consult process
-pressure only; their runtime-budget admission remains future work.
+`reclaim_hooks`. The OTAP gRPC receiver and all other receivers still consult
+process pressure only; their runtime-budget admission remains future work.
 
 ## NUMA Placement Appendix
 
@@ -1600,14 +1612,15 @@ Validation:
     normal `EffectHandler` path. It is rejected in default builds and accepted
     only with the `unstable-memory-enforcement` feature.
   - `enforcement.receiver_admission` gates runtime-budget receiver shedding,
-    currently wired for the **syslog CEF receiver** (local) and the **OTLP HTTP
-    receiver** (shared): with `mode = enforce` and `receiver_admission: true`,
+    currently wired for the **syslog CEF receiver** (local), the **OTLP HTTP
+    receiver** (shared), and the **OTLP gRPC receiver** (shared, via its
+    `MemoryPressureLayer`): with `mode = enforce` and `receiver_admission: true`,
     those receivers shed ingress when the runtime budget is at `Hard` pressure
     (in addition to the existing process-`Hard` shedding). It is rejected in
     default builds and accepted only with the `unstable-memory-enforcement`
     feature. Observe-only mode and a disabled gate never drop on runtime-budget
-    pressure, and all other receivers (including OTAP/OTLP gRPC) still consult
-    process pressure only.
+    pressure, and all other receivers (including the OTAP gRPC receiver) still
+    consult process pressure only.
 - The wired `enforcement.queue_publish` path works at the owned topic-publish
   boundary: with `mode = enforce` and `queue_publish: true`, an owned publish
   whose payload exceeds the topic/per-boundary escrow bucket cap or the global
@@ -2301,12 +2314,14 @@ who require placement can choose `unsupported: error`.
   deployment. **Status:** the engine-level admission primitive
   (`ReceiverAdmissionInputs::evaluate`) is implemented and unit-tested (see
   [Receiver Admission Primitive](#receiver-admission-primitive-wired-for-syslog-cef)),
-  and it is wired end to end for the **syslog CEF receiver** (local) and the
-  **OTLP HTTP receiver** (shared, via the `SharedRuntimeBudgetPressure`
-  snapshot). `receiver_admission` is accepted at config validation only under
-  the `unstable-memory-enforcement` feature (rejected in default builds).
-  OTAP/OTLP gRPC and all other receivers still consult process pressure only;
-  wiring them (gRPC can reuse the shared snapshot) remains future work.
+  and it is wired end to end for the **syslog CEF receiver** (local), the
+  **OTLP HTTP receiver** (shared), and the **OTLP gRPC receiver** (shared, via
+  its `MemoryPressureLayer`), all using the `SharedRuntimeBudgetPressure`
+  snapshot for the shared paths. `receiver_admission` is accepted at config
+  validation only under the `unstable-memory-enforcement` feature (rejected in
+  default builds). The OTAP gRPC receiver and all other receivers still consult
+  process pressure only; wiring them (they can reuse the shared snapshot)
+  remains future work.
 
 ### Phase 2d: Queue and Topic Enforcement
 
