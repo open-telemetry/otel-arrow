@@ -268,8 +268,9 @@ impl TrackedPublishTracker {
     /// Returns [`AckFromResult::Resolved`] if this Ack completed the consensus (the
     /// entry resolved as Ack and was removed), [`AckFromResult::StillPending`] if
     /// the Ack was recorded but other subscribers are still required, or
-    /// [`AckFromResult::NotTracked`] if the message id is unknown or already
-    /// resolved.
+    /// [`AckFromResult::NotTracked`] if the message id is unknown, already
+    /// resolved, or not a consensus (`all`-mode) entry. First-wins (`First`-kind)
+    /// publishes must be resolved via [`TrackedPublishTracker::resolve`] instead.
     ///
     /// Lock order is map -> entry (matching the timeout worker); the entry mutex
     /// is the single linearization point for terminal resolution.
@@ -590,20 +591,16 @@ impl TrackedPublishEntry {
     /// Apply a single subscriber's Ack to a consensus (`all`-mode) entry.
     ///
     /// Removes `subscriber_id` from the pending set; when the set empties the
-    /// entry resolves as Ack. A `First`-kind entry resolves as Ack on the first
-    /// call. Already-resolved entries are left untouched. Idempotent: a repeated
-    /// Ack from the same subscriber never falsely completes the consensus.
+    /// entry resolves as Ack. This is the consensus (`all`-mode) path only: a
+    /// `First`-kind entry returns [`AckFromResult::NotTracked`] (first-wins
+    /// callers must use the tracker's `resolve(message_id, Ack)` instead).
+    /// Already-resolved entries are left untouched. Idempotent: a repeated Ack
+    /// from the same subscriber never falsely completes the consensus.
     pub(crate) fn resolve_ack_from(&self, subscriber_id: BroadcastSubscriberId) -> AckFromResult {
         let mut state = self.state.lock();
         match &mut *state {
             TrackedPublishState::Resolved(_) => AckFromResult::NotTracked,
-            TrackedPublishState::Pending(PendingKind::First) => {
-                *state = TrackedPublishState::Resolved(TrackedPublishOutcome::Ack);
-                drop(state);
-                _ = self.permit.lock().take();
-                self.notify.notify_waiters();
-                AckFromResult::Resolved
-            }
+            TrackedPublishState::Pending(PendingKind::First) => AckFromResult::NotTracked,
             TrackedPublishState::Pending(PendingKind::All { pending }) => {
                 let _ = pending.remove(&subscriber_id);
                 if pending.is_empty() {

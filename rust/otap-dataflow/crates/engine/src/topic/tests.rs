@@ -2284,6 +2284,22 @@ async fn consensus_resolve_ack_from_unknown_message_not_tracked() {
     );
 }
 
+// resolve_ack_from is consensus-only: a first-wins (`First`-kind) entry reports
+// not-tracked and is left pending, so the first-wins resolve path still works.
+#[tokio::test]
+async fn resolve_ack_from_first_kind_entry_is_not_tracked() {
+    let tracker = TrackedPublishTracker::new();
+    let receipt = tracker.register(1, Duration::from_secs(30), consensus_permit());
+
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
+        AckFromResult::NotTracked
+    );
+    // Still pending: the first-wins path resolves it.
+    assert!(tracker.resolve(1, TrackedPublishOutcome::Ack));
+    assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
+}
+
 // A required subscriber disappearing nacks its outstanding consensus entries.
 #[tokio::test]
 async fn consensus_subscriber_disappearance_nacks_outstanding() {
