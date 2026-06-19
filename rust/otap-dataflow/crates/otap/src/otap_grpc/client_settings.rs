@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tonic::codec::CompressionEncoding;
-use tonic::metadata::{MetadataKey, MetadataValue};
+use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
 use tower::service_fn;
@@ -156,17 +156,17 @@ pub struct GrpcClientSettings {
     #[serde(default)]
     pub user_agent: Option<String>,
 
-    /// Static metadata (headers) added to every outbound OTLP/gRPC request
-    /// (e.g. an `authorization` or tenant-routing header).
+    /// Static metadata (headers) added to every outbound request (e.g. an
+    /// `authorization` or tenant-routing header).
     ///
     /// Keys and values must be valid ASCII gRPC metadata; this is enforced by
     /// [`GrpcClientSettings::validate`]. These coexist with any header
     /// propagation policy configured on the exporter.
     ///
-    /// Note: `GrpcClientSettings` is shared by the OTLP/gRPC exporter and the
-    /// OTAP (Arrow) exporter, but only the OTLP/gRPC exporter applies these
-    /// headers today. The OTAP exporter rejects a non-empty `headers` map at
-    /// config validation rather than silently dropping it.
+    /// `GrpcClientSettings` is shared by the OTLP/gRPC exporter and the OTAP
+    /// (Arrow) exporter. The OTLP/gRPC exporter applies them as per-request
+    /// metadata; the OTAP exporter applies them once as the initial metadata of
+    /// each Arrow stream (see [`build_static_metadata`]).
     #[serde(default)]
     pub headers: HashMap<String, String>,
 }
@@ -242,6 +242,67 @@ fn validate_grpc_endpoint(endpoint: &str) -> Result<(), String> {
 }
 
 impl GrpcClientSettings {
+    /// Builds an owned gRPC [`MetadataMap`] template from the configured static
+    /// `headers`, or `None` when none are configured.
+    ///
+    /// This is the single source of truth shared by every gRPC-based exporter
+    /// (OTLP/gRPC applies it as per-request metadata; the OTAP/Arrow exporter
+    /// applies it as initial stream metadata). It is intended to be called ONCE
+    /// at exporter startup, outside any hot path: returning `None` for the empty
+    /// case lets callers keep a zero-allocation fast path when no headers are set.
+    ///
+    /// Header names/values are validated up front by [`Self::validate`] (ASCII
+    /// key/value, no reserved gRPC metadata, no case-insensitive duplicates), so
+    /// the per-entry parse below cannot fail and no two entries can collapse to
+    /// the same lowercased gRPC key for a validated config. De-duplication is
+    /// therefore [`Self::validate`]'s responsibility; this builder only defends
+    /// against a programmatic caller that bypassed it: invalid entries are
+    /// skipped and key collisions overwrite, both logged at debug level so a
+    /// dropped header still leaves a breadcrumb.
+    #[must_use]
+    pub fn build_static_metadata(&self) -> Option<MetadataMap> {
+        if self.headers.is_empty() {
+            return None;
+        }
+
+        let mut metadata = MetadataMap::with_capacity(self.headers.len());
+        for (name, value) in &self.headers {
+            let Ok(key) = name.parse::<MetadataKey<tonic::metadata::Ascii>>() else {
+                otap_df_telemetry::otel_debug!(
+                    "grpc.client.static_header_skip",
+                    reason = "invalid ascii metadata key",
+                    header_name = name.as_str()
+                );
+                continue;
+            };
+            let Ok(val) = MetadataValue::try_from(value.as_str()) else {
+                otap_df_telemetry::otel_debug!(
+                    "grpc.client.static_header_skip",
+                    reason = "invalid ascii metadata value",
+                    header_name = name.as_str()
+                );
+                continue;
+            };
+            // `insert` returns the prior value when this lowercased key already
+            // existed (e.g. `X-Tenant` and `x-tenant` from an unvalidated config).
+            // For a validated config this never happens; log if it ever does so
+            // the non-deterministic survivor is at least visible.
+            if metadata.insert(key, val).is_some() {
+                otap_df_telemetry::otel_debug!(
+                    "grpc.client.static_header_collision",
+                    reason = "case-insensitive duplicate gRPC metadata key overwritten",
+                    header_name = name.as_str()
+                );
+            }
+        }
+
+        if metadata.is_empty() {
+            None
+        } else {
+            Some(metadata)
+        }
+    }
+
     /// Validates the settings at config load time.
     ///
     /// Checks that `user_agent`, when set, is non-empty and contains only
@@ -794,6 +855,62 @@ mod tests {
         };
 
         assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn build_static_metadata_empty_returns_none() {
+        let settings = GrpcClientSettings::default();
+        assert!(
+            settings.build_static_metadata().is_none(),
+            "no configured headers must yield None so callers keep the zero-alloc fast path"
+        );
+    }
+
+    #[test]
+    fn build_static_metadata_builds_map() {
+        let mut headers = HashMap::new();
+        let _ = headers.insert("authorization".to_string(), "Basic abc123".to_string());
+        let _ = headers.insert("x-scope-orgid".to_string(), "tenant-1".to_string());
+        let settings = GrpcClientSettings {
+            headers,
+            ..GrpcClientSettings::default()
+        };
+
+        let metadata = settings
+            .build_static_metadata()
+            .expect("should build metadata");
+        assert_eq!(metadata.len(), 2);
+        assert_eq!(
+            metadata.get("authorization").unwrap().to_str().unwrap(),
+            "Basic abc123"
+        );
+        assert_eq!(
+            metadata.get("x-scope-orgid").unwrap().to_str().unwrap(),
+            "tenant-1"
+        );
+    }
+
+    #[test]
+    fn build_static_metadata_skips_invalid_entries() {
+        // Defense-in-depth: a programmatic caller that bypassed `validate()`
+        // could pass an unparseable header. The builder must drop only the bad
+        // entries (and keep the valid one) rather than panic. `validate()`
+        // normally rejects these at config load, so this path is unreachable for
+        // a validated config.
+        let mut headers = HashMap::new();
+        let _ = headers.insert("x-valid".to_string(), "ok".to_string());
+        let _ = headers.insert("bad key".to_string(), "v".to_string()); // space => invalid key
+        let _ = headers.insert("x-bad".to_string(), "bad\nvalue".to_string()); // newline => invalid value
+        let settings = GrpcClientSettings {
+            headers,
+            ..GrpcClientSettings::default()
+        };
+
+        let metadata = settings
+            .build_static_metadata()
+            .expect("the valid header should remain");
+        assert_eq!(metadata.len(), 1);
+        assert_eq!(metadata.get("x-valid").unwrap().to_str().unwrap(), "ok");
     }
 
     #[test]
