@@ -2182,12 +2182,12 @@ async fn tracked_publish_tracker_register_after_close_resolves_immediately() {
 }
 
 // =========================================================================
-// TrackedPublishTracker quorum (`all`-mode) primitives
+// TrackedPublishTracker consensus (`all`-mode) primitives
 //
 // These exercise the tracker primitive directly
 // =========================================================================
 
-fn quorum_permit_from(sem: &Arc<Semaphore>) -> TrackedPublishPermit {
+fn consensus_permit_from(sem: &Arc<Semaphore>) -> TrackedPublishPermit {
     TrackedPublishPermit::from_tokio_owned(
         sem.clone()
             .try_acquire_owned()
@@ -2195,23 +2195,23 @@ fn quorum_permit_from(sem: &Arc<Semaphore>) -> TrackedPublishPermit {
     )
 }
 
-fn quorum_permit() -> TrackedPublishPermit {
-    quorum_permit_from(&Arc::new(Semaphore::new(1)))
+fn consensus_permit() -> TrackedPublishPermit {
+    consensus_permit_from(&Arc::new(Semaphore::new(1)))
 }
 
 fn subscriber_set(ids: impl IntoIterator<Item = u64>) -> HashSet<BroadcastSubscriberId> {
     ids.into_iter().map(BroadcastSubscriberId).collect()
 }
 
-// A quorum entry resolves as Ack only once every required subscriber has acked,
+// A consensus entry resolves as Ack only once every required subscriber has acked,
 // and further acks for that message are no longer tracked.
 #[tokio::test]
-async fn quorum_resolves_ack_only_after_all_subscribers_ack() {
+async fn consensus_resolves_ack_only_after_all_subscribers_ack() {
     let tracker = TrackedPublishTracker::new();
-    let receipt = tracker.register_quorum(
+    let receipt = tracker.register_consensus(
         7,
         Duration::from_secs(30),
-        quorum_permit(),
+        consensus_permit(),
         subscriber_set([1, 2]),
     );
 
@@ -2231,14 +2231,14 @@ async fn quorum_resolves_ack_only_after_all_subscribers_ack() {
     );
 }
 
-// A repeated ack from the same subscriber must not falsely complete the quorum.
+// A repeated ack from the same subscriber must not falsely complete the consensus.
 #[tokio::test]
-async fn quorum_duplicate_ack_does_not_complete() {
+async fn consensus_duplicate_ack_does_not_complete() {
     let tracker = TrackedPublishTracker::new();
-    let _receipt = tracker.register_quorum(
+    let _receipt = tracker.register_consensus(
         1,
         Duration::from_secs(30),
-        quorum_permit(),
+        consensus_permit(),
         subscriber_set([1, 2]),
     );
 
@@ -2258,10 +2258,14 @@ async fn quorum_duplicate_ack_does_not_complete() {
 
 // Zero eligible subscribers resolves immediately as Ack without registering.
 #[tokio::test]
-async fn quorum_empty_set_resolves_ack_immediately() {
+async fn consensus_empty_set_resolves_ack_immediately() {
     let tracker = TrackedPublishTracker::new();
-    let receipt =
-        tracker.register_quorum(1, Duration::from_secs(30), quorum_permit(), HashSet::new());
+    let receipt = tracker.register_consensus(
+        1,
+        Duration::from_secs(30),
+        consensus_permit(),
+        HashSet::new(),
+    );
 
     assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
     assert_eq!(
@@ -2272,7 +2276,7 @@ async fn quorum_empty_set_resolves_ack_immediately() {
 
 // Acking an unknown message id is reported as not-tracked.
 #[tokio::test]
-async fn quorum_resolve_ack_from_unknown_message_not_tracked() {
+async fn consensus_resolve_ack_from_unknown_message_not_tracked() {
     let tracker = TrackedPublishTracker::new();
     assert_eq!(
         tracker.resolve_ack_from(99, BroadcastSubscriberId(1)),
@@ -2280,14 +2284,14 @@ async fn quorum_resolve_ack_from_unknown_message_not_tracked() {
     );
 }
 
-// A required subscriber disappearing nacks its outstanding quorum entries.
+// A required subscriber disappearing nacks its outstanding consensus entries.
 #[tokio::test]
-async fn quorum_subscriber_disappearance_nacks_outstanding() {
+async fn consensus_subscriber_disappearance_nacks_outstanding() {
     let tracker = TrackedPublishTracker::new();
-    let receipt = tracker.register_quorum(
+    let receipt = tracker.register_consensus(
         5,
         Duration::from_secs(30),
-        quorum_permit(),
+        consensus_permit(),
         subscriber_set([1, 2]),
     );
 
@@ -2308,18 +2312,18 @@ async fn quorum_subscriber_disappearance_nacks_outstanding() {
 
 // Disconnecting a subscriber only nacks entries that still require it.
 #[tokio::test]
-async fn quorum_disappearance_only_nacks_entries_requiring_subscriber() {
+async fn consensus_disappearance_only_nacks_entries_requiring_subscriber() {
     let tracker = TrackedPublishTracker::new();
-    let r1 = tracker.register_quorum(
+    let r1 = tracker.register_consensus(
         1,
         Duration::from_secs(30),
-        quorum_permit(),
+        consensus_permit(),
         subscriber_set([1]),
     );
-    let r2 = tracker.register_quorum(
+    let r2 = tracker.register_consensus(
         2,
         Duration::from_secs(30),
-        quorum_permit(),
+        consensus_permit(),
         subscriber_set([2]),
     );
 
@@ -2336,14 +2340,14 @@ async fn quorum_disappearance_only_nacks_entries_requiring_subscriber() {
     assert_eq!(r2.wait_for_outcome().await, TrackedPublishOutcome::Ack);
 }
 
-// A single Nack via the standard resolve path overrides an incomplete quorum.
+// A single Nack via the standard resolve path overrides an incomplete consensus.
 #[tokio::test]
-async fn quorum_single_resolve_nack_overrides_quorum() {
+async fn consensus_single_resolve_nack_overrides_consensus() {
     let tracker = TrackedPublishTracker::new();
-    let receipt = tracker.register_quorum(
+    let receipt = tracker.register_consensus(
         1,
         Duration::from_secs(30),
-        quorum_permit(),
+        consensus_permit(),
         subscriber_set([1, 2]),
     );
 
@@ -2367,15 +2371,15 @@ async fn quorum_single_resolve_nack_overrides_quorum() {
     );
 }
 
-// First terminal transition wins: an ack that completes the quorum makes a
+// First terminal transition wins: an ack that completes the consensus makes a
 // later disconnect of the (already satisfied) subscriber a no-op.
 #[tokio::test]
-async fn quorum_ack_completion_beats_late_disconnect() {
+async fn consensus_ack_completion_beats_late_disconnect() {
     let tracker = TrackedPublishTracker::new();
-    let receipt = tracker.register_quorum(
+    let receipt = tracker.register_consensus(
         1,
         Duration::from_secs(30),
-        quorum_permit(),
+        consensus_permit(),
         subscriber_set([1]),
     );
 
@@ -2387,15 +2391,15 @@ async fn quorum_ack_completion_beats_late_disconnect() {
     assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
 }
 
-// Registering a quorum entry against a closed tracker resolves immediately.
+// Registering a consensus entry against a closed tracker resolves immediately.
 #[tokio::test]
-async fn quorum_register_after_close_resolves_topic_closed() {
+async fn consensus_register_after_close_resolves_topic_closed() {
     let tracker = TrackedPublishTracker::new();
     tracker.close_all();
-    let receipt = tracker.register_quorum(
+    let receipt = tracker.register_consensus(
         1,
         Duration::from_secs(30),
-        quorum_permit(),
+        consensus_permit(),
         subscriber_set([1]),
     );
     assert_eq!(
@@ -2404,15 +2408,15 @@ async fn quorum_register_after_close_resolves_topic_closed() {
     );
 }
 
-// The in-flight permit is released exactly once the quorum entry resolves.
+// The in-flight permit is released exactly once the consensus entry resolves.
 #[tokio::test]
-async fn quorum_releases_permit_on_resolution() {
+async fn consensus_releases_permit_on_resolution() {
     let sem = Arc::new(Semaphore::new(1));
     let tracker = TrackedPublishTracker::new();
-    let receipt = tracker.register_quorum(
+    let receipt = tracker.register_consensus(
         1,
         Duration::from_secs(30),
-        quorum_permit_from(&sem),
+        consensus_permit_from(&sem),
         subscriber_set([1]),
     );
 
