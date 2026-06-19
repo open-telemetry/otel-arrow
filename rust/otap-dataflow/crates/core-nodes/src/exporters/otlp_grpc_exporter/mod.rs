@@ -466,10 +466,10 @@ async fn route_export_result<T>(
 ///
 /// See: <https://github.com/googleapis/googleapis/blob/master/google/rpc/status.proto>
 ///
-/// According to the OTLP Spec, this may be used in the event of a failure with code Unavailable
-/// in which case the retry info will be supplied as details.
+/// According to the OTLP spec, servers may attach `google.rpc.Status` details for certain
+/// failures. In particular, `RESOURCE_EXHAUSTED` may include a `google.rpc.RetryInfo` entry.
 ///
-/// See: https://opentelemetry.io/docs/specs/otlp/#failures
+/// See: <https://opentelemetry.io/docs/specs/otlp/#failures>
 #[derive(Clone, PartialEq, ::prost::Message)]
 struct RpcStatus {
     #[prost(int32, tag = "1")]
