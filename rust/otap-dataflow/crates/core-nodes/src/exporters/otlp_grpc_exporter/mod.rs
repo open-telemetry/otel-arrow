@@ -1044,10 +1044,10 @@ mod tests {
     ///
     /// See: <https://github.com/googleapis/googleapis/blob/master/google/rpc/error_details.proto>
     ///
-    /// According to the OTLP Spec, this may be used in the event of a failure with code Unavailable
-    /// in which case the retry info will be supplied as details.
+    /// According to the OTLP spec, servers may attach `RetryInfo` in rich status details.
+    /// In this module it is used to decide whether `RESOURCE_EXHAUSTED` is retryable.
     ///
-    /// See: https://opentelemetry.io/docs/specs/otlp/#failures
+    /// See: <https://opentelemetry.io/docs/specs/otlp/#failures>
     #[derive(Clone, PartialEq, ::prost::Message)]
     struct RetryInfo {
         #[prost(message, optional, tag = "1")]
