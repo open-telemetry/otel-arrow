@@ -165,9 +165,9 @@ pub struct GrpcClientSettings {
     /// propagation policy configured on the exporter.
     ///
     /// Values are wrapped in [`SecretString`] so a metadata credential is not
-    /// accidentally leaked through `Debug`/telemetry; the cleartext is only
-    /// reachable via [`ExposeSecret::expose_secret`] at the
-    /// metadata-construction site.
+    /// accidentally leaked through `Debug`/telemetry; the cleartext is reached
+    /// only through an explicit [`ExposeSecret::expose_secret`] call — during
+    /// [`GrpcClientSettings::validate`] and at the metadata-construction site.
     ///
     /// `GrpcClientSettings` is shared by the OTLP/gRPC exporter and the OTAP
     /// (Arrow) exporter. The OTLP/gRPC exporter applies them as per-request

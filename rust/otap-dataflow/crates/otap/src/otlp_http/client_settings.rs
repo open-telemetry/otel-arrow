@@ -78,9 +78,9 @@ pub struct HttpClientSettings {
     /// `Authorization` or backend routing header).
     ///
     /// Values are wrapped in [`SecretString`] so a header credential is not
-    /// accidentally leaked through `Debug`/telemetry; the cleartext is only
-    /// reachable via [`ExposeSecret::expose_secret`] at the request-construction
-    /// site.
+    /// accidentally leaked through `Debug`/telemetry; the cleartext is reached
+    /// only through an explicit [`ExposeSecret::expose_secret`] call — during
+    /// [`HttpClientSettings::validate`] and at the request-construction site.
     ///
     /// Protocol headers (`Content-Type` / `Content-Encoding` /
     /// `Content-Length` / `Host`) and response-negotiation headers
