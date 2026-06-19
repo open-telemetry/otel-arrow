@@ -462,19 +462,14 @@ async fn route_export_result<T>(
     }
 }
 
-/// Prost-generated struct for `google.rpc.RetryInfo`.
-///
-/// See: <https://github.com/googleapis/googleapis/blob/master/google/rpc/error_details.proto>
-#[derive(Clone, PartialEq, ::prost::Message)]
-#[allow(dead_code)] // Fields are accessed via prost deserialization, not directly.
-struct RetryInfo {
-    #[prost(message, optional, tag = "1")]
-    pub retry_delay: Option<prost_types::Duration>,
-}
-
 /// Prost-generated struct for `google.rpc.Status`.
 ///
 /// See: <https://github.com/googleapis/googleapis/blob/master/google/rpc/status.proto>
+///
+/// According to the OTLP Spec, this may be used in the event of a failure with code Unavailable
+/// in which case the retry info will be supplied as details.
+///
+/// See: https://opentelemetry.io/docs/specs/otlp/#failures
 #[derive(Clone, PartialEq, ::prost::Message)]
 struct RpcStatus {
     #[prost(int32, tag = "1")]
@@ -1043,6 +1038,16 @@ mod tests {
 
     use otap_df_config::node::NodeUserConfig;
     use std::collections::HashMap;
+
+    /// Prost-generated struct for `google.rpc.RetryInfo`, used only in tests to
+    /// construct serialized status details fixtures.
+    ///
+    /// See: <https://github.com/googleapis/googleapis/blob/master/google/rpc/error_details.proto>
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    struct RetryInfo {
+        #[prost(message, optional, tag = "1")]
+        pub retry_delay: Option<prost_types::Duration>,
+    }
 
     use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
     use otap_df_config::transport_headers_policy::PropagationSelectorType;
@@ -1757,18 +1762,14 @@ mod tests {
             .expect("server shutdown success");
     }
 
-    // ---- is_retryable_grpc_status unit tests ------------------------------------
-
-    /// Helper: builds a `tonic::Status` with the given code, no details.
+    /// Helper builds a [`tonic::Status`] with the given code, no details.
     fn status_with_code(code: Code) -> tonic::Status {
         tonic::Status::new(code, "test error")
     }
 
-    /// Helper: builds a `tonic::Status` carrying a `RetryInfo` in its
+    /// Helper builds a [`tonic::Status`] carrying a `RetryInfo` in its
     /// `grpc-status-details-bin` trailer, as a real server would.
     fn status_with_retry_info(code: Code) -> tonic::Status {
-        use prost::Message;
-
         let retry_info = RetryInfo {
             retry_delay: Some(prost_types::Duration {
                 seconds: 5,
@@ -1862,8 +1863,6 @@ mod tests {
 
     #[test]
     fn test_resource_exhausted_with_empty_details_is_not_retryable() {
-        use prost::Message;
-
         // Details bytes present but contain an RpcStatus with no Any entries.
         let rpc_status = RpcStatus {
             code: Code::ResourceExhausted as i32,
@@ -2176,8 +2175,6 @@ mod tests {
 
     #[test]
     fn test_resource_exhausted_with_retry_info_produces_non_permanent_nack() {
-        use prost::Message;
-
         let retry_info = RetryInfo {
             retry_delay: Some(prost_types::Duration {
                 seconds: 5,
