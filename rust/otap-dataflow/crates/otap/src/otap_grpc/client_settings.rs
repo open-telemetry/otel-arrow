@@ -256,7 +256,7 @@ impl GrpcClientSettings {
     /// the per-entry parse below cannot fail and no two entries can collapse to
     /// the same lowercased gRPC key for a validated config. De-duplication is
     /// therefore [`Self::validate`]'s responsibility; this builder only defends
-    /// against a programmatic caller that bypassed it — invalid entries are
+    /// against a programmatic caller that bypassed it: invalid entries are
     /// skipped and key collisions overwrite, both logged at debug level so a
     /// dropped header still leaves a breadcrumb.
     #[must_use]

@@ -42,6 +42,7 @@ use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -223,7 +224,7 @@ impl OTAPExporter {
         // Defense-in-depth: validate the shared gRPC settings (including the
         // ASCII/reserved/duplicate `headers` checks) here too, not only in the
         // factory `validate_config` hook. This guarantees that any construction
-        // path — including direct/programmatic `from_config` callers — rejects
+        // path (including direct/programmatic `from_config` callers) rejects
         // invalid or gRPC-reserved headers up front, so `start()` can never
         // build stream metadata from an unvalidated config.
         config
@@ -475,10 +476,11 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         // Build the static request-header metadata template ONCE, outside any
         // hot path. `None` when no `headers` are configured, which keeps the
         // stream-open path allocation-free for the common case. The template is
-        // shared across all stream workers via `Arc`; each stream attaches a
-        // clone as its initial metadata when it opens (see `stream_arrow_batches`),
+        // shared across all stream workers via `Rc` (the workers run on the same
+        // thread-local set, so no atomic refcount is needed); each stream attaches
+        // a clone as its initial metadata when it opens (see `stream_arrow_batches`),
         // so the per-`BatchArrowRecords` send path is never touched.
-        let static_metadata = self.config.grpc.build_static_metadata().map(Arc::new);
+        let static_metadata = self.config.grpc.build_static_metadata().map(Rc::new);
 
         // Operational breadcrumb: confirm which static header KEYS were loaded
         // (never the values, which may be credentials). Lets an operator verify
@@ -650,7 +652,7 @@ fn spawn_stream_workers<T>(
     streams_per_signal: usize,
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    static_metadata: Option<Arc<MetadataMap>>,
+    static_metadata: Option<Rc<MetadataMap>>,
 ) -> (Vec<Sender<StreamBatch>>, Vec<JoinHandle<()>>)
 where
     T: StreamingArrowService + Clone + 'static,
@@ -749,7 +751,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
     otap_batches_rx: Receiver<(OtapPdata, OtapArrowRecords)>,
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    static_metadata: Option<Arc<MetadataMap>>,
+    static_metadata: Option<Rc<MetadataMap>>,
 ) {
     let otap_batches_rx = Arc::new(tokio::sync::Mutex::new(otap_batches_rx));
     let mut shutdown = false;
@@ -798,7 +800,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                 // Attach the configured static `headers` as the stream's initial
                 // request metadata. gRPC sends these once when the stream opens,
                 // so the cost (one `MetadataMap` clone) is paid per stream
-                // (re)connect, never per `BatchArrowRecords` — the per-message
+                // (re)connect, never per `BatchArrowRecords`; the per-message
                 // hot path in `create_req_stream` is untouched. When no headers
                 // are configured this is a cheap `Option` check with no clone.
                 //
@@ -1170,6 +1172,7 @@ mod tests {
     use serde_json::json;
     use std::net::SocketAddr;
     use std::ops::Add;
+    use std::rc::Rc;
     use std::sync::Arc;
     use std::time::Instant;
     use tokio::net::TcpListener;
@@ -1506,6 +1509,15 @@ mod tests {
                 .map(String::as_str),
             Some("Basic dXNlcjpwYXNz")
         );
+        assert_eq!(
+            exporter
+                .config
+                .grpc
+                .headers
+                .get("x-scope-orgid")
+                .map(String::as_str),
+            Some("tenant-1")
+        );
     }
 
     #[test]
@@ -1532,25 +1544,30 @@ mod tests {
     }
 
     #[test]
-    fn test_from_config_rejects_invalid_headers() {
+    fn test_from_config_rejects_invalid_header_value() {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         // `from_config` validates the shared gRPC settings itself (defense in
-        // depth), so a reserved gRPC header is rejected at construction time and
-        // not only via the factory `validate_config` hook.
+        // depth), so a header whose value is not valid gRPC metadata is rejected
+        // at construction time, not only via the factory `validate_config` hook.
+        // Reserved-name rejection is covered separately by
+        // `test_validate_config_rejects_reserved_headers`. The value here carries a
+        // control character (a newline): high-byte bytes are accepted as obs-text,
+        // so a non-visible control byte is the value class actually rejected. It is
+        // written as an escape so this source file stays ASCII-only.
         let json_config = json!({
             "grpc_endpoint": "http://localhost:4317",
-            "headers": { "grpc-timeout": "1S" }
+            "headers": { "x-tenant": "bad\nvalue" }
         });
         // `OTAPExporter` is not `Debug`, so match rather than `expect_err`.
         let err = match OTAPExporter::from_config(pipeline_ctx, &json_config) {
-            Ok(_) => panic!("reserved gRPC metadata must be rejected by from_config"),
+            Ok(_) => panic!("invalid metadata value must be rejected by from_config"),
             Err(err) => err,
         };
-        assert!(format!("{err}").contains("reserved by the gRPC protocol"));
+        assert!(format!("{err}").contains("must be visible ASCII"));
     }
 
     #[test]
@@ -1885,7 +1902,7 @@ mod tests {
         ) -> Result<Response<Streaming<BatchStatus>>, Status> {
             use tokio_stream::StreamExt;
             let mut stream = Box::pin(req_stream.into_streaming_request().into_inner());
-            // Consume the first batch — this polls create_req_stream, which
+            // Consume the first batch; this polls create_req_stream, which
             // sends the corresponding OtapPdata to correlation_tx.
             let _ = stream.next().await;
             Err(Status::unavailable("mock failure after consume"))
@@ -1973,29 +1990,38 @@ mod tests {
                 .unwrap();
         }
 
-        let handle = tokio::spawn(stream_arrow_batches(
-            MockAlwaysFail,
-            SignalType::Logs,
-            None,
-            batches_rx,
-            metrics_tx,
-            shutdown_rx,
-            None,
-        ));
+        // Production drives `stream_arrow_batches` via `spawn_local` (the exporter
+        // runs on a thread-local set), so the worker future is `!Send`. Mirror that
+        // here with a `LocalSet` rather than `tokio::spawn`, which would require
+        // `Send` and does not reflect how the exporter actually runs.
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async move {
+                let handle = tokio::task::spawn_local(stream_arrow_batches(
+                    MockAlwaysFail,
+                    SignalType::Logs,
+                    None,
+                    batches_rx,
+                    metrics_tx,
+                    shutdown_rx,
+                    None,
+                ));
 
-        for attempt in 0..4 {
-            let update = metrics_rx.recv().await.expect("metrics channel closed");
-            assert!(
-                matches!(update, PDataMetricsUpdate::IncFailed(SignalType::Logs, ..)),
-                "expected IncFailed update for failed stream attempt #{attempt}"
-            );
-        }
+                for attempt in 0..4 {
+                    let update = metrics_rx.recv().await.expect("metrics channel closed");
+                    assert!(
+                        matches!(update, PDataMetricsUpdate::IncFailed(SignalType::Logs, ..)),
+                        "expected IncFailed update for failed stream attempt #{attempt}"
+                    );
+                }
 
-        _ = shutdown_tx.send_replace(true);
-        timeout(Duration::from_millis(40), handle)
-            .await
-            .expect("shutdown should interrupt reconnect backoff promptly")
-            .unwrap();
+                _ = shutdown_tx.send_replace(true);
+                timeout(Duration::from_millis(40), handle)
+                    .await
+                    .expect("shutdown should interrupt reconnect backoff promptly")
+                    .unwrap();
+            })
+            .await;
     }
 
     /// gRPC service mock that returns statuses out of request order.
@@ -2891,8 +2917,8 @@ mod tests {
     /// Reliability: the configured static headers must be applied to the request
     /// metadata on EVERY stream (re)open, not just the first. Drives
     /// `stream_arrow_batches` directly with a mock that records the metadata of
-    /// each open and fails (forcing a reconnect), so two batches yield two opens
-    /// — both of which must carry the header. This unit-level test is fully
+    /// each open and fails (forcing a reconnect), so two batches yield two opens,
+    /// both of which must carry the header. This unit-level test is fully
     /// deterministic (no gRPC server / network timing).
     #[tokio::test]
     async fn test_stream_arrow_batches_applies_headers_on_every_open() {
@@ -2921,7 +2947,7 @@ mod tests {
             headers,
             ..Default::default()
         };
-        let static_metadata = settings.build_static_metadata().map(Arc::new);
+        let static_metadata = settings.build_static_metadata().map(Rc::new);
         assert!(
             static_metadata.is_some(),
             "test setup should produce metadata"
