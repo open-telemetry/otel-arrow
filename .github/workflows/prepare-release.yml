@@ -34,10 +34,17 @@ jobs:
       - name: Create GitHub App token
         if: "!inputs.dry_run"
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: otelbot-token
+        id: app-token
         with:
           app-id: ${{ vars.OTELBOT_ARROW_APP_ID }}
           private-key: ${{ secrets.OTELBOT_ARROW_PRIVATE_KEY }}
+
+      - name: Get GitHub App User ID
+        if: "!inputs.dry_run"
+        id: get-user-id
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: echo "user-id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout (release preparation)
         if: "!inputs.dry_run"
@@ -46,7 +53,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ github.ref }}
-          token: ${{ steps.otelbot-token.outputs.token }}
+          token: ${{ steps.app-token.outputs.token }}
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version: stable
@@ -94,18 +101,6 @@ jobs:
           # [package] section (both have `version = "X.Y.Z"` at column 0).
           sed -i 's/^version = "[0-9]\+\.[0-9]\+\.[0-9]\+"/version = "${{ inputs.version }}"/g' rust/otap-dataflow/Cargo.toml
           echo "Updated rust/otap-dataflow/Cargo.toml to ${{ inputs.version }}"
-
-      - name: Update collector build version
-        run: |
-          # Update version in collector/otelarrowcol-build.yaml
-          sed -i "s/version: [0-9]\+\.[0-9]\+\.[0-9]\+/version: ${{ inputs.version }}/" collector/otelarrowcol-build.yaml
-          echo "Updated collector/otelarrowcol-build.yaml version to ${{ inputs.version }}"
-
-      - name: Update collector main.go version
-        run: |
-          # Update version in collector/cmd/otelarrowcol/main.go
-          sed -i "s/Version:     \"[0-9]\+\.[0-9]\+\.[0-9]\+\"/Version:     \"${{ inputs.version }}\"/" collector/cmd/otelarrowcol/main.go
-          echo "Updated collector/cmd/otelarrowcol/main.go version to ${{ inputs.version }}"
 
       - name: Extract release notes for PR body
         id: changelog
@@ -175,8 +170,6 @@ jobs:
           - `rust/otap-dataflow/CHANGELOG.md` - Render pending `rust/otap-dataflow/.chloggen/*.yaml` entries under `## v${{ inputs.version }}`
           - `go/.chloggen/*.yaml`, `rust/otap-dataflow/.chloggen/*.yaml` - Consumed entries deleted
           - `rust/otap-dataflow/Cargo.toml` - Bump workspace and root package version to ${{ inputs.version }}
-          - `collector/otelarrowcol-build.yaml` - Update version to ${{ inputs.version }}
-          - `collector/cmd/otelarrowcol/main.go` - Update version to ${{ inputs.version }}
 
           ## Release Notes Preview
           ```
@@ -198,8 +191,8 @@ jobs:
         if: "!inputs.dry_run"
         run: |
           # Configure git for otelbot
-          git config user.name otelbot
-          git config user.email 197425009+otelbot@users.noreply.github.com
+          git config user.name '${{ steps.app-token.outputs.app-slug }}[bot]'
+          git config user.email '${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
 
           # Use script to create branch and commit
           ./.github/workflows/scripts/create-release-branch.sh "${{ inputs.version }}" --push
@@ -208,7 +201,7 @@ jobs:
         if: "!inputs.dry_run"
         env:
           # not using secrets.GITHUB_TOKEN since pull requests from that token do not trigger workflows
-          GH_TOKEN: ${{ steps.otelbot-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           # Read combined changelog content for PR body
           CHANGELOG_CONTENT=$(cat /tmp/combined_release_content.txt)
@@ -222,16 +215,12 @@ jobs:
           ### Changes included:
           - Rendered pending chloggen entries into \`go/CHANGELOG.md\` and \`rust/otap-dataflow/CHANGELOG.md\`
           - Bumped \`rust/otap-dataflow/Cargo.toml\` (workspace + root package)
-          - Updated \`collector/otelarrowcol-build.yaml\` version to v${{ inputs.version }}
-          - Updated \`collector/cmd/otelarrowcol/main.go\` version to v${{ inputs.version }}
 
           ${CHANGELOG_CONTENT}
 
           ### Checklist:
           - [ ] Verify both CHANGELOG.md files render the expected entries
           - [ ] Verify Rust crate versions updated
-          - [ ] Verify collector version update in collector/otelarrowcol-build.yaml
-          - [ ] Verify collector main.go version update in collector/cmd/otelarrowcol/main.go
           - [ ] Confirm all tests pass
           - [ ] Ready to merge and tag release
 

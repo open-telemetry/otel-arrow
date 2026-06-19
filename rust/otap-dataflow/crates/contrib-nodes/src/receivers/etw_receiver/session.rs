@@ -34,6 +34,16 @@
 //! TID, timestamp, etc.) is read from the session's [`AncillaryData`] which
 //! `one_collect` populates before each dispatch.
 //!
+//! ## TDH Decoding
+//!
+//! For TraceLogging and TraceLoggingDynamic events the callback uses
+//! [`one_collect::etw::tdh::TdhDecoder`] to discover the event schema at
+//! runtime via the Windows TDH APIs.  The decoder maintains a schema cache
+//! so that repeated events with the same layout avoid kernel transitions.
+//! Each field's bytes are interpreted into a typed [`EtwAttributeValue`]
+//! (see [`interpret_field_value`]) and stored in a [`DecodedField`], which is
+//! sent across the channel alongside the event header metadata.
+//!
 //! ## Lifecycle
 //!
 //! The session lives until the process exits.  Dropping individual receivers
@@ -42,18 +52,84 @@
 //! (i.e. no receivers remain) the callback becomes a no-op.
 
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use one_collect::Guid;
+use one_collect::etw::tdh::TdhDecoder;
 use one_collect::etw::{self, EtwSession};
 use otap_df_engine::error::Error;
 use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use tokio::sync::mpsc;
 
 use super::{Config, ProviderConfig, TraceLevel};
+
+// ── QPC → Unix epoch conversion ──────────────────────────────────────────────
+
+/// Reference point captured once at session start to convert QPC ticks to
+/// Unix epoch nanoseconds.  All three values are sampled on the session
+/// thread before `parse_until` enters the `ProcessTrace` loop.
+#[derive(Debug, Clone, Copy)]
+struct QpcReference {
+    /// QPC tick value at reference time.
+    qpc_at_ref: u64,
+    /// QPC frequency (ticks per second).
+    qpc_frequency: u64,
+    /// Unix epoch nanoseconds at reference time.
+    unix_ns_at_ref: i64,
+}
+
+impl QpcReference {
+    /// Capture a QPC reference point using Win32 APIs.
+    ///
+    /// # Safety
+    ///
+    /// Calls `QueryPerformanceCounter` and `QueryPerformanceFrequency`,
+    /// which are always safe to call on Windows.
+    #[allow(unsafe_code)]
+    fn capture() -> Self {
+        // Use windows-sys types for QPC
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn QueryPerformanceCounter(lp: *mut i64) -> i32;
+            fn QueryPerformanceFrequency(lp: *mut i64) -> i32;
+        }
+
+        let mut qpc: i64 = 0;
+        let mut freq: i64 = 0;
+
+        // SAFETY: These Win32 APIs are always safe to call; they write to
+        // valid stack-allocated i64 pointers.
+        unsafe {
+            let _ = QueryPerformanceCounter(&mut qpc);
+            let _ = QueryPerformanceFrequency(&mut freq);
+        }
+
+        let unix_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as i64;
+
+        Self {
+            qpc_at_ref: qpc as u64,
+            qpc_frequency: freq.max(1) as u64,
+            unix_ns_at_ref: unix_ns,
+        }
+    }
+
+    /// Convert a QPC tick value to Unix epoch nanoseconds.
+    fn qpc_to_unix_ns(self, qpc_ticks: u64) -> i64 {
+        // delta_ticks can be negative if the event was captured slightly
+        // before our reference point (race between QPC and wall clock).
+        let delta_ticks = qpc_ticks as i128 - self.qpc_at_ref as i128;
+        let delta_ns = delta_ticks * 1_000_000_000 / self.qpc_frequency as i128;
+        self.unix_ns_at_ref.saturating_add(delta_ns as i64)
+    }
+}
 
 /// Channel capacity for ETW events sent from the blocking session thread to
 /// each per-core async receiver loop.  A bounded channel provides implicit
@@ -64,6 +140,48 @@ const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
 // ── Event data transferred across the channel ────────────────────────────────
 
+/// Typed value of a single TDH-decoded ETW field.
+///
+/// The decoder interprets each field's raw bytes **once** (on the
+/// `ProcessTrace` thread) into one of these variants, instead of deferring
+/// interpretation to the encoder via a `(type_name, len)` string match.  This
+/// gives compile-time exhaustiveness at every consumer match site — adding a
+/// variant is a compile error rather than a silent fall-through — and avoids
+/// the redundant `type_name: String` allocation plus consumer-side byte
+/// re-parsing.  Modeled on the Linux `user_events_receiver`'s
+/// `DecodedAttrValue`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EtwAttributeValue {
+    /// UTF-8 / UTF-16-decoded string value.
+    Str(String),
+    /// Signed/unsigned integer widened to `i64`.
+    Int(i64),
+    /// Floating-point value widened to `f64`.
+    Double(f64),
+    /// Boolean value.  Note: the `one_collect` TDH decoder maps a Win32
+    /// `BOOL` (`TDH_INTYPE_BOOLEAN`, TraceLogging `Bool32`) to a 4-byte
+    /// `"u32"` and a 1-byte boolean (`TDH_INTYPE_UINT8` + `OutType::Boolean`)
+    /// to `"u8"`.  Both currently surface as [`Int`](Self::Int); this variant
+    /// is reserved for a future path that emits a distinct boolean type name.
+    Bool(bool),
+    /// Genuinely unsupported / opaque field bytes.  The encoder renders these
+    /// as a hex string.  Empty for zero-length or undecodable fields.
+    Bytes(Vec<u8>),
+}
+
+/// A single decoded field from a TDH-decoded TraceLogging event.
+///
+/// During the `ProcessTrace` callback the raw `EVENT_RECORD` is still valid,
+/// so we interpret each field's bytes into an owned [`EtwAttributeValue`]
+/// before sending the event across the channel.
+#[derive(Debug, Clone)]
+pub struct DecodedField {
+    /// Field name (e.g. `"ProcessId"`, or `"Parent.ChildField"` for nested structs).
+    pub name: String,
+    /// Typed field value, interpreted from the raw payload bytes by the decoder.
+    pub value: EtwAttributeValue,
+}
+
 /// Lightweight snapshot of an ETW event captured in the `ProcessTrace` callback.
 ///
 /// Because the `EVENT_RECORD` pointer is only valid for the duration of the
@@ -71,10 +189,13 @@ const EVENT_CHANNEL_CAPACITY: usize = 4096;
 /// it across the channel to the async world.
 #[derive(Debug, Clone)]
 pub struct EtwEventData {
-    /// Provider GUID that produced the event.
-    #[expect(dead_code, reason = "captured for future use")]
+    /// Provider GUID that produced the event (16 raw bytes).
     pub provider_id: [u8; 16],
-    /// ETW event timestamp (QPC ticks from `EVENT_HEADER.TimeStamp`).
+    /// ETW event timestamp converted to Unix epoch nanoseconds.
+    ///
+    /// Derived from `EVENT_HEADER.TimeStamp` (QPC ticks) using a reference
+    /// point captured at session start via `QueryPerformanceCounter` and
+    /// `SystemTime::now()`.
     pub timestamp: u64,
     /// Process ID from the event header.
     pub process_id: u32,
@@ -85,12 +206,25 @@ pub struct EtwEventData {
     /// Opcode from the event descriptor.
     pub opcode: u8,
     /// Version from the event descriptor.
-    #[expect(dead_code, reason = "captured for future use")]
     pub version: u8,
     /// ETW level from the event descriptor.
     pub level: u8,
     /// Keywords from the event descriptor.
     pub keywords: u64,
+    /// TraceLogging event name discovered via TDH (e.g. `"AppStarted"`).
+    ///
+    /// Empty for manifest-based events or when TDH decoding fails.
+    pub event_name: String,
+    /// Activity ID from the event header for correlating related events.
+    ///
+    /// All zeros when the provider does not set an activity ID.
+    pub activity_id: [u8; 16],
+    /// TDH-decoded event payload fields.
+    ///
+    /// Populated for TraceLogging / TraceLoggingDynamic events whose schema
+    /// can be discovered via TDH.  Empty for manifest-based events (which
+    /// will be supported in a future extension) or when decoding fails.
+    pub decoded_fields: Vec<DecodedField>,
 }
 
 // ── GUID parsing ─────────────────────────────────────────────────────────────
@@ -184,6 +318,234 @@ fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
     unreachable!("validated upstream: provider must specify either 'name' or 'guid'")
 }
 
+// ── TDH field extraction ─────────────────────────────────────────────────────
+
+/// Number of 100-nanosecond ticks between the Windows `FILETIME` epoch
+/// (1601-01-01 UTC) and the Unix epoch (1970-01-01 UTC).
+const FILETIME_TICKS_TO_UNIX_EPOCH: i64 = 116_444_736_000_000_000;
+
+/// Interpret a TDH-decoded field's raw bytes as a typed [`EtwAttributeValue`].
+///
+/// The `type_name` strings come from `one_collect`'s TDH decoder
+/// (`intype_to_field_info`) and follow the same naming conventions as the
+/// user_events tracefs decoder.  Doing this interpretation here — next to the
+/// decoder — keeps TDH type knowledge in one place and lets the encoder
+/// collapse to an exhaustive match over [`EtwAttributeValue`] with no silent
+/// `(type_name, len)` fall-throughs.
+///
+/// Type-name reference (from `one_collect::etw::tdh::intype_to_field_info`):
+/// `s8`/`s16`/`s32`/`s64` (signed, with `HEXINT*` folded into `s32`/`s64`),
+/// `u8`/`u16`/`u32`/`u64` (unsigned, with a Win32 `BOOL` / TraceLogging
+/// `Bool32` (`TDH_INTYPE_BOOLEAN`) mapped to a 4-byte `u32`, and a 1-byte
+/// boolean (`TDH_INTYPE_UINT8` + `OutType::Boolean`) mapped to `u8`),
+/// `float`/`double`, `string`/`wstring`/`counted_string`/`counted_wstring`
+/// (text), `pointer` (4 or 8 bytes), `filetime` (8 bytes), `guid` (16),
+/// `systemtime` (16), `binary` (SID / opaque), and `unsupported`.
+///
+/// Genuinely opaque types (`guid`, `systemtime`, `binary`, `unsupported`) and
+/// any length mismatch fall back to [`EtwAttributeValue::Bytes`], which the
+/// encoder renders as a hex string.  Numeric conversions use the host byte
+/// order, matching the live same-host capture model.
+fn interpret_field_value(type_name: &str, data: &[u8]) -> EtwAttributeValue {
+    match (type_name, data.len()) {
+        // Signed integers (HEXINT32/64 are surfaced by one_collect as s32/s64).
+        ("s8", 1) => EtwAttributeValue::Int(i64::from(data[0] as i8)),
+        ("s16" | "short", 2) => EtwAttributeValue::Int(i64::from(i16::from_ne_bytes(
+            data.try_into().expect("matched len==2"),
+        ))),
+        ("s32" | "int", 4) => EtwAttributeValue::Int(i64::from(i32::from_ne_bytes(
+            data.try_into().expect("matched len==4"),
+        ))),
+        ("s64" | "long", 8) => {
+            EtwAttributeValue::Int(i64::from_ne_bytes(data.try_into().expect("matched len==8")))
+        }
+
+        // Unsigned integers.  Note: one_collect maps a 1-byte boolean
+        // (TDH_INTYPE_UINT8 + OutType::Boolean) to "u8", so 1-byte boolean
+        // fields arrive here as a 0/1 integer.  A Win32 BOOL / TraceLogging
+        // Bool32 (TDH_INTYPE_BOOLEAN) is a 4-byte value and arrives as "u32"
+        // (see the "u32" arm below).
+        ("u8", 1) => EtwAttributeValue::Int(i64::from(data[0])),
+        ("u16" | "unsigned short", 2) => EtwAttributeValue::Int(i64::from(u16::from_ne_bytes(
+            data.try_into().expect("matched len==2"),
+        ))),
+        ("u32" | "unsigned int", 4) => EtwAttributeValue::Int(i64::from(u32::from_ne_bytes(
+            data.try_into().expect("matched len==4"),
+        ))),
+        ("u64" | "unsigned long", 8) => {
+            // u64 may overflow i64; saturate to i64::MAX for observability.
+            let v = u64::from_ne_bytes(data.try_into().expect("matched len==8"));
+            EtwAttributeValue::Int(v.min(i64::MAX as u64) as i64)
+        }
+
+        // Explicit boolean spellings, kept for forward-compatibility in case a
+        // future decoder emits a distinct "bool"/"boolean" type name.  With the
+        // current one_collect decoder these are unreachable: a 1-byte boolean
+        // surfaces as "u8" and a Win32 BOOL / TraceLogging Bool32 surfaces as
+        // "u32".
+        ("bool" | "boolean", 1) => EtwAttributeValue::Bool(data[0] != 0),
+        ("bool" | "boolean", 4) => EtwAttributeValue::Bool(
+            u32::from_ne_bytes(data.try_into().expect("matched len==4")) != 0,
+        ),
+
+        // Pointer (4 bytes on 32-bit payloads, 8 on 64-bit).  Surface as an
+        // unsigned integer (saturating to i64::MAX) rather than opaque bytes.
+        ("pointer", 4) => EtwAttributeValue::Int(i64::from(u32::from_ne_bytes(
+            data.try_into().expect("matched len==4"),
+        ))),
+        ("pointer", 8) => {
+            let v = u64::from_ne_bytes(data.try_into().expect("matched len==8"));
+            EtwAttributeValue::Int(v.min(i64::MAX as u64) as i64)
+        }
+
+        // FILETIME: 8-byte count of 100-ns ticks since 1601-01-01 UTC.
+        // Convert to Unix-epoch nanoseconds so it is a usable timestamp
+        // instead of an opaque hex blob.
+        ("filetime", 8) => {
+            let ticks = i64::from_ne_bytes(data.try_into().expect("matched len==8"));
+            let unix_ns = ticks
+                .saturating_sub(FILETIME_TICKS_TO_UNIX_EPOCH)
+                .saturating_mul(100);
+            EtwAttributeValue::Int(unix_ns)
+        }
+
+        // Floating point
+        ("float", 4) => EtwAttributeValue::Double(f64::from(f32::from_ne_bytes(
+            data.try_into().expect("matched len==4"),
+        ))),
+        ("double", 8) => {
+            EtwAttributeValue::Double(f64::from_ne_bytes(data.try_into().expect("matched len==8")))
+        }
+
+        // ANSI/UTF-8 strings (null-terminated or not) and counted ANSI/UTF-8
+        // strings (TDH_INTYPE_COUNTEDANSISTRING, in_type 301).  For the
+        // counted form the u16 byte-count prefix has already been consumed by
+        // the framework's StaticLenPrefixArray, so `data` is just the content
+        // bytes in both cases.
+        ("string" | "counted_string", _) => EtwAttributeValue::Str(decode_ansi(data)),
+        // Counted UTF-16 strings (TDH_INTYPE_COUNTEDSTRING, in_type 300).
+        ("counted_wstring", _) if data.len() >= 2 => EtwAttributeValue::Str(decode_utf16le(data)),
+        ("counted_wstring", _) => EtwAttributeValue::Str(String::new()),
+        // UTF-16LE strings, trim null terminator.
+        ("wstring", _) if data.len() >= 2 => EtwAttributeValue::Str(decode_utf16le(data)),
+
+        // Opaque fixed/variable-length types that have no scalar
+        // representation: GUID, SYSTEMTIME, SID/BINARY, and the decoder's
+        // "unsupported" sentinel.  Preserved as raw bytes (hex downstream)
+        // rather than dropped.  Listed explicitly so the intent is documented
+        // and the catch-all below only ever sees truly unknown names.
+        ("guid" | "systemtime" | "binary" | "unsupported", _) => {
+            EtwAttributeValue::Bytes(data.to_vec())
+        }
+
+        // Empty payloads carry no value.
+        _ if data.is_empty() => EtwAttributeValue::Str(String::new()),
+        // Unknown type name or length mismatch: preserve the raw bytes so the
+        // encoder can surface them (as a hex string) rather than dropping them.
+        _ => EtwAttributeValue::Bytes(data.to_vec()),
+    }
+}
+
+/// Decode an ANSI/UTF-8 byte slice into a `String`, stopping at the first NUL
+/// byte and substituting U+FFFD for invalid UTF-8 sequences.
+///
+/// The NUL is trimmed from the byte slice *before* the lossy UTF-8 conversion
+/// so the invalid-input path allocates only once (`into_owned`) instead of
+/// twice (a `from_utf8_lossy` `String` followed by a `to_owned` of the trimmed
+/// slice).  The valid-ASCII path is unchanged at a single allocation.
+fn decode_ansi(data: &[u8]) -> String {
+    let trimmed = data.split(|&b| b == 0).next().unwrap_or(data);
+    String::from_utf8_lossy(trimmed).into_owned()
+}
+
+/// Decode a UTF-16LE byte slice into a `String`, stopping at the first NUL
+/// code unit and substituting U+FFFD for invalid surrogate pairs.
+///
+/// This runs on the `ProcessTrace` hot path, so it is tuned for the common
+/// case: most ETW string fields (paths, identifiers, English log lines) are
+/// pure ASCII, where every high byte is zero.  An initial scan detects that
+/// case and copies the low bytes directly, skipping the surrogate-decode
+/// state machine and pre-sizing the output to avoid reallocation.
+fn decode_utf16le(data: &[u8]) -> String {
+    // Round down to whole 16-bit code units; ignore a trailing odd byte.
+    let len = data.len() & !1;
+    let bytes = &data[..len];
+
+    // ASCII fast path: find the first NUL or first non-ASCII code unit.
+    let ascii_end = bytes
+        .chunks_exact(2)
+        .position(|c| c[0] == 0 || c[1] != 0)
+        .map(|i| i * 2)
+        .unwrap_or(len);
+
+    if ascii_end == len {
+        // Entirely ASCII up to the end (or a terminating NUL): copy the low
+        // bytes directly, no surrogate logic needed.
+        let mut out = String::with_capacity(ascii_end / 2);
+        for chunk in bytes[..ascii_end].chunks_exact(2) {
+            out.push(chunk[0] as char);
+        }
+        return out;
+    }
+
+    // Mixed / non-ASCII: full UTF-16 decode, stopping at the first NUL and
+    // substituting U+FFFD for invalid surrogate pairs.
+    let mut out = String::with_capacity(len / 2);
+    let u16_iter = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|&c| c != 0);
+    out.extend(char::decode_utf16(u16_iter).map(|r| r.unwrap_or('\u{FFFD}')));
+    out
+}
+
+/// Extract decoded fields from a TDH-decoded event.
+///
+/// For each field in the event format, this function uses the format's
+/// `try_get_field_data_closure` to correctly resolve dynamic offsets
+/// (e.g. for null-terminated strings that shift subsequent field positions),
+/// then interprets the field bytes into a typed [`EtwAttributeValue`] via
+/// [`interpret_field_value`].
+///
+/// # Safety
+///
+/// This function is called during the `ProcessTrace` callback while
+/// the `EVENT_RECORD` (and its `UserData`) is still valid.
+fn extract_decoded_fields(
+    format: &one_collect::event::EventFormat,
+    event_data: &[u8],
+) -> Vec<DecodedField> {
+    let mut fields = Vec::with_capacity(format.fields().len());
+
+    for field in format.fields() {
+        // The data closure is allocated only for the `LocationType` variants
+        // that TDH produces — `Static`, `StaticString`, `StaticUTF16String`,
+        // and `StaticLenPrefixArray` — all of which are handled without
+        // panicking.  The `todo!()` paths in `get_data_with_offset_direct`
+        // are reached only for `DynRelative`/`DynAbsolute`, which are a Linux
+        // tracefs (`__rel_loc`) concept that `intype_to_field_info` never
+        // emits for ETW.  So no panic can occur here, and no `catch_unwind`
+        // is needed in this `extern "system"` (non-unwinding) callback.
+        let data = if let Some(mut data_fn) = format.try_get_field_data_closure(&field.name) {
+            data_fn(event_data).to_vec()
+        } else {
+            Vec::new()
+        };
+
+        // Interpret the raw bytes into a typed value once, here on the
+        // decode thread, so the encoder never re-parses bytes or string-
+        // matches on a `type_name`.
+        let value = interpret_field_value(&field.type_name, &data);
+
+        fields.push(DecodedField {
+            name: field.name.clone(),
+            value,
+        });
+    }
+
+    fields
+}
+
 // ── Per-session state ────────────────────────────────────────────────────────
 
 /// State for a single ETW session keyed by `session_name`.
@@ -219,7 +581,10 @@ static SESSIONS: Mutex<Option<HashMap<String, SessionEntry>>> = Mutex::new(None)
 /// 3. Registers a **provider-wide event** (catch-all) per provider that uses
 ///    `AncillaryData` to extract header fields and round-robins the resulting
 ///    `EtwEventData` across the N senders.
-/// 4. Calls `parse_until` which blocks until the process exits.
+/// 4. Creates a shared [`TdhDecoder`] for runtime schema discovery of
+///    TraceLogging events.
+/// 5. Calls `parse_until` which blocks until the process exits.
+#[allow(unsafe_code)]
 fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> Result<(), Error> {
     // Resolve all provider GUIDs up-front so configuration errors are
     // reported synchronously (before the session thread is spawned).
@@ -266,11 +631,24 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                 Rc::new((0..txs.len()).map(|_| Cell::new(false)).collect());
             let txs: Rc<Vec<mpsc::Sender<EtwEventData>>> = Rc::new(txs);
 
+            // TDH decoder shared across all provider callbacks.
+            // All callbacks run on the single ProcessTrace thread, so
+            // Rc<RefCell<>> is safe (no cross-thread access).
+            let decoder: Rc<RefCell<TdhDecoder>> = Rc::new(RefCell::new(TdhDecoder::new()));
+
+            // Capture QPC reference point for timestamp conversion.
+            // This is done on the session thread just before parse_until
+            // enters the ProcessTrace loop.
+            let qpc_ref = QpcReference::capture();
+
             // Register a provider-wide event for each configured provider.
             // A "wide event" fires for ALL event IDs from the provider,
             // unlike `add_event` which only fires for a specific event ID.
             for (guid, level, keywords) in &resolved_providers {
                 let mut wide_event = one_collect::event::Event::new(0, "otap_wide".to_string());
+                // Mark as a wildcard event so the callback fires for ALL
+                // event IDs from this provider, not just event ID 0.
+                wide_event.set_id_wild_card_flag();
                 {
                     let ext = wide_event.extension_mut();
                     *ext.provider_mut() = *guid;
@@ -283,28 +661,77 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                 let dropped = Rc::clone(&dropped);
                 let closed_logged = Rc::clone(&closed_logged);
                 let txs = Rc::clone(&txs);
+                let decoder = Rc::clone(&decoder);
 
                 wide_event.add_callback(move |_event_data| {
                     // Read header metadata from AncillaryData (populated
                     // by one_collect before each dispatch).
                     let anc = ancillary.borrow();
 
-                    // Build EtwEventData from AncillaryData.
-                    // PID, TID, timestamp, provider, and opcode are
-                    // available directly; event_id/version/level/keywords
-                    // come from the full_data bytes passed via EventData.
+                    // Extract event descriptor fields from the raw EVENT_RECORD.
+                    // AncillaryData exposes id/opcode/version directly; for
+                    // level and keywords we read from the EVENT_RECORD pointer.
+                    let event_id = anc.id();
+                    let opcode = anc.op_code();
+                    let version = anc.version();
+
+                    // All EVENT_RECORD-derived fields are read in a single
+                    // `if let Some(record)` below; `anc.record()` returns the
+                    // same `Option<&EVENT_RECORD>` each call, so folding the
+                    // reads together avoids redundant lookups and the tuple
+                    // shuffle.  When the record is absent every field keeps its
+                    // default value declared here.
+                    let mut level = 0u8;
+                    let mut keywords = 0u64;
+                    let mut activity_id = [0u8; 16];
+                    let mut event_name = String::new();
+                    let mut decoded_fields = Vec::new();
+
+                    if let Some(record) = anc.record() {
+                        level = record.EventHeader.EventDescriptor.Level;
+                        keywords = record.EventHeader.EventDescriptor.Keyword;
+
+                        // Extract Activity ID from the EVENT_RECORD header.
+                        // The GUID is {data1: u32, data2: u16, data3: u16,
+                        // data4: [u8;8]} which we flatten to 16 bytes in
+                        // standard GUID byte order.
+                        let g = &record.EventHeader.ActivityId;
+                        activity_id[0..4].copy_from_slice(&g.data1.to_ne_bytes());
+                        activity_id[4..6].copy_from_slice(&g.data2.to_ne_bytes());
+                        activity_id[6..8].copy_from_slice(&g.data3.to_ne_bytes());
+                        activity_id[8..16].copy_from_slice(&g.data4);
+
+                        // TDH decode: attempt to decode TraceLogging event
+                        // schema.  Any failure (NotFound for manifest-based
+                        // events, or other decode errors) leaves the empty
+                        // defaults in place — future work will add manifest
+                        // decoding with a (Provider, Id, Version) cache key.
+                        if let Ok(result) = decoder.borrow_mut().decode(record) {
+                            event_name = result.event_name.unwrap_or("").to_owned();
+                            decoded_fields = extract_decoded_fields(
+                                result.event_data.format(),
+                                result.event_data.event_data(),
+                            );
+                        }
+                    }
+
+                    // Build EtwEventData with all available metadata.
+                    // Convert QPC ticks to Unix epoch nanoseconds.
+                    let qpc_ticks = anc.time();
+                    let unix_ns = qpc_ref.qpc_to_unix_ns(qpc_ticks);
                     let data = EtwEventData {
                         provider_id: anc.provider().to_bytes(),
-                        timestamp: anc.time(),
+                        timestamp: unix_ns as u64,
                         process_id: anc.pid(),
                         thread_id: anc.tid(),
-                        // TODO: populate event_id/opcode/level/keywords/version
-                        // once WindowsEventExtension exposes EVENT_DESCRIPTOR.
-                        event_id: 0,
-                        opcode: 0,
-                        version: 0,
-                        level: 0,
-                        keywords: 0,
+                        event_id,
+                        opcode,
+                        version,
+                        level,
+                        keywords,
+                        event_name,
+                        activity_id,
+                        decoded_fields,
                     };
 
                     // Drop the borrow before sending.
@@ -511,6 +938,7 @@ mod tests {
                 level: TraceLevel::default(),
                 keywords: None,
             }],
+            batching: None,
         }
     }
 
@@ -611,6 +1039,7 @@ mod tests {
                 level: TraceLevel::Verbose,
                 keywords: None,
             }],
+            batching: None,
         };
 
         let err = subscribe(&different_config, 1).unwrap_err();
@@ -655,6 +1084,163 @@ mod tests {
     fn parse_guid_invalid_length() {
         let result = parse_guid("22fb2cd6-0e7b");
         assert!(result.is_err());
+    }
+
+    // ── Field value interpretation ───────────────────
+
+    #[test]
+    fn interpret_signed_integers() {
+        assert_eq!(
+            interpret_field_value("s8", &[0xFF]),
+            EtwAttributeValue::Int(-1)
+        );
+        assert_eq!(
+            interpret_field_value("s16", &(-2i16).to_ne_bytes()),
+            EtwAttributeValue::Int(-2)
+        );
+        assert_eq!(
+            interpret_field_value("int", &(-3i32).to_ne_bytes()),
+            EtwAttributeValue::Int(-3)
+        );
+        assert_eq!(
+            interpret_field_value("long", &(-4i64).to_ne_bytes()),
+            EtwAttributeValue::Int(-4)
+        );
+    }
+
+    #[test]
+    fn interpret_unsigned_integers() {
+        assert_eq!(
+            interpret_field_value("u8", &[200]),
+            EtwAttributeValue::Int(200)
+        );
+        assert_eq!(
+            interpret_field_value("unsigned short", &40000u16.to_ne_bytes()),
+            EtwAttributeValue::Int(40000)
+        );
+        assert_eq!(
+            interpret_field_value("u32", &1234u32.to_ne_bytes()),
+            EtwAttributeValue::Int(1234)
+        );
+        // u64 above i64::MAX saturates to i64::MAX.
+        assert_eq!(
+            interpret_field_value("unsigned long", &u64::MAX.to_ne_bytes()),
+            EtwAttributeValue::Int(i64::MAX)
+        );
+    }
+
+    #[test]
+    fn interpret_boolean() {
+        assert_eq!(
+            interpret_field_value("boolean", &[0]),
+            EtwAttributeValue::Bool(false)
+        );
+        assert_eq!(
+            interpret_field_value("boolean", &[1]),
+            EtwAttributeValue::Bool(true)
+        );
+        // 4-byte Win32 BOOL form.
+        assert_eq!(
+            interpret_field_value("bool", &0u32.to_ne_bytes()),
+            EtwAttributeValue::Bool(false)
+        );
+        assert_eq!(
+            interpret_field_value("bool", &1u32.to_ne_bytes()),
+            EtwAttributeValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn interpret_floating_point() {
+        assert_eq!(
+            interpret_field_value("float", &1.5f32.to_ne_bytes()),
+            EtwAttributeValue::Double(1.5)
+        );
+        assert_eq!(
+            interpret_field_value("double", &2.5f64.to_ne_bytes()),
+            EtwAttributeValue::Double(2.5)
+        );
+    }
+
+    #[test]
+    fn interpret_strings() {
+        assert_eq!(
+            interpret_field_value("string", b"hello\0"),
+            EtwAttributeValue::Str("hello".to_string())
+        );
+        assert_eq!(
+            interpret_field_value("counted_string", b"world"),
+            EtwAttributeValue::Str("world".to_string())
+        );
+        // UTF-16LE "Hi" with NUL terminator.
+        let wide: Vec<u8> = "Hi\0".encode_utf16().flat_map(u16::to_ne_bytes).collect();
+        assert_eq!(
+            interpret_field_value("wstring", &wide),
+            EtwAttributeValue::Str("Hi".to_string())
+        );
+    }
+
+    #[test]
+    fn interpret_pointer() {
+        // 32-bit pointer.
+        assert_eq!(
+            interpret_field_value("pointer", &0x1234_5678u32.to_ne_bytes()),
+            EtwAttributeValue::Int(0x1234_5678)
+        );
+        // 64-bit pointer above i64::MAX saturates to i64::MAX.
+        assert_eq!(
+            interpret_field_value("pointer", &u64::MAX.to_ne_bytes()),
+            EtwAttributeValue::Int(i64::MAX)
+        );
+    }
+
+    #[test]
+    fn interpret_filetime_converts_to_unix_nanos() {
+        // The FILETIME epoch tick count itself maps to Unix epoch (0 ns).
+        assert_eq!(
+            interpret_field_value("filetime", &FILETIME_TICKS_TO_UNIX_EPOCH.to_ne_bytes()),
+            EtwAttributeValue::Int(0)
+        );
+        // One second (10,000,000 ticks) past the Unix epoch → 1e9 ns.
+        let one_sec_after = FILETIME_TICKS_TO_UNIX_EPOCH + 10_000_000;
+        assert_eq!(
+            interpret_field_value("filetime", &one_sec_after.to_ne_bytes()),
+            EtwAttributeValue::Int(1_000_000_000)
+        );
+    }
+
+    #[test]
+    fn interpret_opaque_types_fall_back_to_bytes() {
+        // GUID, systemtime, binary, and the decoder's "unsupported" sentinel
+        // are preserved as raw bytes (rendered as hex downstream) rather than
+        // silently dropped.
+        let data = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        for type_name in ["guid", "systemtime", "binary", "unsupported"] {
+            assert_eq!(
+                interpret_field_value(type_name, &data),
+                EtwAttributeValue::Bytes(data.clone()),
+                "type_name={type_name} should fall back to Bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn interpret_empty_payload_is_empty_string() {
+        assert_eq!(
+            interpret_field_value("u32", &[]),
+            EtwAttributeValue::Str(String::new())
+        );
+    }
+
+    #[test]
+    fn interpret_length_mismatch_falls_back_to_bytes() {
+        // A "u32" with the wrong length must not panic; it falls through to
+        // the opaque Bytes path instead of the fixed-width integer arm.
+        let data = vec![1, 2, 3];
+        assert_eq!(
+            interpret_field_value("u32", &data),
+            EtwAttributeValue::Bytes(data)
+        );
     }
 
     // ── Trace level mapping ──────────────────────────

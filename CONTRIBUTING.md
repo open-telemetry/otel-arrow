@@ -163,8 +163,9 @@ the steps to sign electronically.
 
 If you have any questions or run into issues:
 
-Join the OpenTelemetry
-[Slack](https://cloud-native.slack.com/archives/C07S4Q67LTF) Community.
+Our Slack channel is [#otel-arrow](https://cloud-native.slack.com/archives/C07S4Q67LTF)
+on CNCF Slack. If you are new to the CNCF Slack community, you can
+[create an account](https://slack.cncf.io/).
 
 ## Filing Issues
 
@@ -355,17 +356,16 @@ the ability to run them via simple `go install` and `go run` commands.  The
 `go.work` file names all the module definitions inside this repository and
 allows them all to be used at once during local development.
 
-### Upgrading OpenTelemetry Collector dependencies
+### Upgrading the collector used for testing
 
-When a new version of the OpenTelemetry collector, is available, the easiest way
-to upgrade this repository is:
-
-1. Update the `distribution::otelcol_version` field in `otelarrowcol-build.yaml`
-2. Modify any components from the core or contrib repositories to use the
-   corresponding versions (e.g., pprofextension's module version should match
-   the new collector release).
-3. Regenerate `otelarrowcol` via `make genotelarrowcol`
-4. Run `go work sync` to update the other modules with fresh dependencies.
+The OTAP components are tested using the upstream OpenTelemetry Collector
+Contrib distribution rather than a collector generated in this repository. The
+distribution version is pinned in the top-level `Dockerfile`
+(`FROM otel/opentelemetry-collector-contrib:<tag>@sha256:<digest>`) and is kept
+up to date automatically by Renovate (see
+[`.github/renovate.json5`](./.github/renovate.json5), which enables
+`docker:pinDigests`). To upgrade manually, edit the tag and digest on that
+`FROM` line. See [collector/BUILDING.md](./collector/BUILDING.md) for details.
 
 ## Project Team
 
@@ -376,6 +376,7 @@ to upgrade this repository is:
 - [Jake Dern](https://github.com/JakeDern), F5
 - [Joshua MacDonald](https://github.com/jmacd), Microsoft
 - [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
+- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
 
 For more information about the maintainer role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer).
@@ -384,8 +385,6 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
 - [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
-- [Lei Huang](https://github.com/v0y4g3r), Greptime
-- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
 
 For more information about the approver role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
@@ -393,6 +392,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 ### Emeritus Approvers
 
 - [Alex Boten](https://github.com/codeboten)
+- [Lei Huang](https://github.com/v0y4g3r)
 - [Moh Osman](https://github.com/moh-osman3)
 
 ### Triagers

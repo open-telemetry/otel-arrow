@@ -48,7 +48,7 @@ use otap_df_engine::{
 };
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
-use otap_df_otap::pdata::{Context, OtapPdata};
+use otap_df_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::{
     OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, error::Error as PDataError,
@@ -59,6 +59,7 @@ use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::net::SocketAddr;
 use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -411,6 +412,11 @@ struct BatchContext {
 struct BatchPortion {
     /// The number of these matches Signalbuffer.inbound[inkey]
     inkey: Option<SlotKey>,
+    /// Peer address observed by the receiving socket for the input that this
+    /// portion came from. Retained on every portion (whether or not the input
+    /// requested ack/nack) so that a merged output batch's `peer_addr` can be
+    /// computed even when the contributing inputs had no subscribers.
+    peer_addr: Option<SocketAddr>,
     /// Weight of this portion in the active sizer's unit.
     weight: usize,
 }
@@ -845,6 +851,12 @@ where
             return Ok(());
         }
 
+        // Capture the receiver-observed peer address before `ctx` may be
+        // moved into BatchContext below. The portion retains it so the
+        // flush path can merge peer_addr across contributing inputs even
+        // when none of them subscribed to ack/nack.
+        let peer_addr = ctx.peer_addr();
+
         // If there are subscribers, calculate an inbound slot key.
         let inkey = if ctx.has_subscribers() {
             let slot = self
@@ -883,7 +895,7 @@ where
 
         self.buffer
             .inputs
-            .accept(payload, BatchPortion::new(inkey, weight));
+            .accept(payload, BatchPortion::new(inkey, peer_addr, weight));
 
         let pending_size = self.buffer.inputs.size_by(self.fmtcfg.sizer)?;
 
@@ -1060,7 +1072,15 @@ where
 
             // If any inputs in this batch require notification, get an
             // outbound slot and subscribe.
-            if let Some(ctxs) = self.buffer.drain_context(weight, &mut input_context) {
+            let (routed_ctxs, merged_peer) = self.buffer.drain_context(weight, &mut input_context);
+            // Forward the receiver-observed peer address only when every
+            // input merged into this output batch came from the same peer
+            // (see Context::merge_peer_addr). Mixed-peer batches leave
+            // peer_addr as None to avoid misattribution.
+            if let Some(addr) = merged_peer {
+                pdata.set_peer_addr(addr);
+            }
+            if let Some(ctxs) = routed_ctxs {
                 match self.buffer.outbound.allocate_with_data(ctxs) {
                     Err(ctxs) => {
                         for bp in ctxs {
@@ -1325,8 +1345,12 @@ where
 }
 
 impl BatchPortion {
-    const fn new(inkey: Option<SlotKey>, weight: usize) -> Self {
-        Self { inkey, weight }
+    const fn new(inkey: Option<SlotKey>, peer_addr: Option<SocketAddr>, weight: usize) -> Self {
+        Self {
+            inkey,
+            peer_addr,
+            weight,
+        }
     }
 }
 
@@ -1415,7 +1439,24 @@ where
         let remaining = output_batches.pop().expect("has last");
         let last_input = from_inputs.context.last().expect("has last");
         let last_weight = sizer.batch_size(&remaining).expect("known size");
-        let new_part = BatchPortion::new(last_input.inkey, last_weight);
+        // Compute the retained portion's peer_addr from the input portions
+        // that actually contributed to this output batch. Inputs are emitted
+        // in order, so the contributing portions are the tail of
+        // `from_inputs.context` covering the last `last_weight` units.
+        // Walking from the back and folding each contributor's peer_addr
+        // through PeerAddrMerger yields the correct merge: single-peer
+        // remainders keep the address, mixed-peer or peerless remainders
+        // settle on `None`.
+        let mut peer_merger = PeerAddrMerger::new();
+        let mut covered = 0usize;
+        for bp in from_inputs.context.iter().rev() {
+            peer_merger.push(bp.peer_addr);
+            covered = covered.saturating_add(bp.weight);
+            if covered >= last_weight {
+                break;
+            }
+        }
+        let new_part = BatchPortion::new(last_input.inkey, peer_merger.finish(), last_weight);
 
         from_inputs.weight -= last_weight;
 
@@ -1433,8 +1474,13 @@ where
         &mut self,
         mut weight: usize,
         contexts: &mut MultiContext,
-    ) -> Option<Vec<BatchPortion>> {
+    ) -> (Option<Vec<BatchPortion>>, Option<SocketAddr>) {
         let mut out = Vec::new();
+        // Track every contributing portion's peer_addr, even ones that do not
+        // route ack/nack, so the merged output `peer_addr` is correct when
+        // some (or all) inputs had no subscribers. Folded incrementally to
+        // avoid allocating a `Vec` on every flush.
+        let mut peer_merger = PeerAddrMerger::new();
 
         while weight > 0 && contexts.pos < contexts.inputs.len() {
             let bp = contexts.inputs.get_mut(contexts.pos).expect("valid");
@@ -1442,6 +1488,8 @@ where
             let take = bp.weight.min(weight);
             bp.weight -= take;
             weight -= take;
+            let peer_addr = bp.peer_addr;
+            peer_merger.push(peer_addr);
 
             if bp.weight == 0 {
                 contexts.pos += 1;
@@ -1452,11 +1500,13 @@ where
             {
                 batch.outbound += 1;
 
-                out.push(BatchPortion::new(Some(inkey), take));
+                out.push(BatchPortion::new(Some(inkey), peer_addr, take));
             }
         }
 
-        (!out.is_empty()).then_some(out)
+        let merged_peer = peer_merger.finish();
+        let routed = (!out.is_empty()).then_some(out);
+        (routed, merged_peer)
     }
 
     /// Handles a response, returning an Ack or Nack conditionally when
@@ -3402,6 +3452,337 @@ mod tests {
                 }
 
                 assert_eq!(nack_count, 1);
+            })
+            .validate(|_| async {});
+    }
+
+    /// Scenario: every input merged into one output batch carries the same
+    /// `peer_addr`. Guarantee: the flushed batch's `peer_addr` equals that
+    /// common address (single-peer batches keep working as if no merge
+    /// happened).
+    #[test]
+    fn test_flush_peer_addr_preserved_when_single_peer() {
+        let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 4,
+                "max_size": 5,
+                "sizer": "items",
+            },
+            "max_batch_duration": "1s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let peer: SocketAddr = "10.0.0.1:5000".parse().unwrap();
+                let mut datagen = DataGenerator::new(1);
+
+                // Send enough inputs to size-trigger one output batch.
+                for _ in 0..2 {
+                    let rec =
+                        encode_logs_otap_batch(&datagen.generate_logs()).expect("encode logs");
+                    let pdata = OtapPdata::new_default(rec.into()).with_peer_addr(peer);
+                    ctx.process(Message::PData(pdata))
+                        .await
+                        .expect("process input");
+                }
+
+                let outputs = ctx.drain_pdata().await;
+                assert!(!outputs.is_empty(), "size flush should produce a batch");
+                for out in outputs {
+                    assert_eq!(
+                        out.peer_addr(),
+                        Some(peer),
+                        "single-peer batch must preserve peer_addr"
+                    );
+                }
+            })
+            .validate(|_| async {});
+    }
+
+    /// Scenario: inputs merged into one output batch came from distinct
+    /// peers. Guarantee: the flushed batch's `peer_addr` is `None` (no
+    /// silent misattribution to one arbitrary contributor).
+    #[test]
+    fn test_flush_peer_addr_dropped_when_mixed_peers() {
+        let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 4,
+                "max_size": 5,
+                "sizer": "items",
+            },
+            "max_batch_duration": "1s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let peer_a: SocketAddr = "10.0.0.1:5000".parse().unwrap();
+                let peer_b: SocketAddr = "10.0.0.2:5000".parse().unwrap();
+                let mut datagen = DataGenerator::new(1);
+
+                for peer in [peer_a, peer_b] {
+                    let rec =
+                        encode_logs_otap_batch(&datagen.generate_logs()).expect("encode logs");
+                    let pdata = OtapPdata::new_default(rec.into()).with_peer_addr(peer);
+                    ctx.process(Message::PData(pdata))
+                        .await
+                        .expect("process input");
+                }
+
+                let outputs = ctx.drain_pdata().await;
+                assert!(!outputs.is_empty(), "size flush should produce a batch");
+                for out in outputs {
+                    assert_eq!(
+                        out.peer_addr(),
+                        None,
+                        "mixed-peer batch must not be attributed to one peer"
+                    );
+                }
+            })
+            .validate(|_| async {});
+    }
+
+    /// Scenario: at least one input has no peer_addr (e.g. came from a
+    /// sourceless receiver). Guarantee: the flushed batch's `peer_addr`
+    /// is `None`.
+    #[test]
+    fn test_flush_peer_addr_dropped_when_any_input_peerless() {
+        let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 4,
+                "max_size": 5,
+                "sizer": "items",
+            },
+            "max_batch_duration": "1s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let peer: SocketAddr = "10.0.0.1:5000".parse().unwrap();
+                let mut datagen = DataGenerator::new(1);
+
+                // First input has a peer, second does not.
+                let rec1 = encode_logs_otap_batch(&datagen.generate_logs()).expect("encode logs");
+                ctx.process(Message::PData(
+                    OtapPdata::new_default(rec1.into()).with_peer_addr(peer),
+                ))
+                .await
+                .expect("process input");
+
+                let rec2 = encode_logs_otap_batch(&datagen.generate_logs()).expect("encode logs");
+                ctx.process(Message::PData(OtapPdata::new_default(rec2.into())))
+                    .await
+                    .expect("process input");
+
+                let outputs = ctx.drain_pdata().await;
+                assert!(!outputs.is_empty(), "size flush should produce a batch");
+                for out in outputs {
+                    assert_eq!(
+                        out.peer_addr(),
+                        None,
+                        "any peerless contributor must drop peer_addr on the merged batch"
+                    );
+                }
+            })
+            .validate(|_| async {});
+    }
+
+    /// Build a `LogsData` containing exactly `count` log records, with
+    /// unique time_unix_nano values derived from `base_id` for ordering
+    /// assertions. Used by the retained-partial tests below.
+    fn logs_with_n_records(base_id: usize, count: usize) -> LogsData {
+        let base_time = 1_000_000_000 + (base_id * 1000) as u64;
+        LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: (0..count)
+                        .map(|i| LogRecord {
+                            time_unix_nano: base_time + i as u64,
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }
+    }
+
+    /// take_remaining retained-partial path, single contributing input.
+    ///
+    /// Scenario: one 8-item input from peer A → `make_batches` splits into
+    /// `[5, 3]`. The 3-item tail is below `min_size=4` and is re-buffered
+    /// via `take_remaining`. A follow-up 2-item input from peer A then
+    /// triggers a 5-item size flush whose contents come from the retained
+    /// portion (peer A) + the new input (peer A).
+    ///
+    /// Guarantee: the second flush's batch carries `peer_addr = A` — the
+    /// retained portion correctly remembered its single contributor's peer.
+    #[test]
+    fn test_take_remaining_preserves_peer_addr_single_input() {
+        let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 4,
+                "max_size": 5,
+                "sizer": "items",
+            },
+            "max_batch_duration": "10s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let peer: SocketAddr = "10.0.0.1:5000".parse().unwrap();
+
+                // 8-item input from peer A → batches [5, 3]; the 3-item
+                // tail is retained because 3 < min_size=4.
+                let big = encode_logs_otap_batch(&logs_with_n_records(0, 8)).expect("encode logs");
+                ctx.process(Message::PData(
+                    OtapPdata::new_default(big.into()).with_peer_addr(peer),
+                ))
+                .await
+                .expect("process big input");
+
+                let first = ctx.drain_pdata().await;
+                assert_eq!(first.len(), 1, "first flush should emit one batch");
+                assert_eq!(
+                    first[0].peer_addr(),
+                    Some(peer),
+                    "single-peer first batch must preserve peer_addr"
+                );
+
+                // 2-item follow-up from peer A: retained(3, A) + new(2, A) = 5 → flush.
+                let extra =
+                    encode_logs_otap_batch(&logs_with_n_records(1, 2)).expect("encode logs");
+                ctx.process(Message::PData(
+                    OtapPdata::new_default(extra.into()).with_peer_addr(peer),
+                ))
+                .await
+                .expect("process follow-up input");
+
+                let second = ctx.drain_pdata().await;
+                assert_eq!(second.len(), 1, "second flush should emit one batch");
+                assert_eq!(
+                    second[0].peer_addr(),
+                    Some(peer),
+                    "single-input retained partial must preserve peer_addr on the next merge"
+                );
+            })
+            .validate(|_| async {});
+    }
+
+    /// take_remaining retained-partial path, multiple contributing inputs
+    /// that all share one peer.
+    ///
+    /// Scenario: three inputs of sizes [3, 3, 2] all from peer A
+    /// (total 8 items) → `make_batches` splits into `[5, 3]`. The 3-item
+    /// tail spans inputs #2 and #3 — both peer A. A follow-up 2-item input
+    /// from peer A triggers a second size flush over the retained portion.
+    ///
+    /// Guarantee: the second flush's batch carries `peer_addr = A`, even
+    /// though the retained portion spans more than one input — because all
+    /// contributors agreed.
+    #[test]
+    fn test_take_remaining_preserves_peer_addr_multi_input_same_peer() {
+        let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 4,
+                "max_size": 5,
+                "sizer": "items",
+            },
+            "max_batch_duration": "10s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let peer: SocketAddr = "10.0.0.1:5000".parse().unwrap();
+
+                for (idx, count) in [(0, 3usize), (1, 3), (2, 2)] {
+                    let rec = encode_logs_otap_batch(&logs_with_n_records(idx, count))
+                        .expect("encode logs");
+                    ctx.process(Message::PData(
+                        OtapPdata::new_default(rec.into()).with_peer_addr(peer),
+                    ))
+                    .await
+                    .expect("process input");
+                }
+
+                let first = ctx.drain_pdata().await;
+                assert_eq!(first.len(), 1, "first flush should emit one batch");
+                assert_eq!(first[0].peer_addr(), Some(peer));
+
+                let extra =
+                    encode_logs_otap_batch(&logs_with_n_records(3, 2)).expect("encode logs");
+                ctx.process(Message::PData(
+                    OtapPdata::new_default(extra.into()).with_peer_addr(peer),
+                ))
+                .await
+                .expect("process follow-up input");
+
+                let second = ctx.drain_pdata().await;
+                assert_eq!(second.len(), 1, "second flush should emit one batch");
+                assert_eq!(
+                    second[0].peer_addr(),
+                    Some(peer),
+                    "multi-input retained partial with one shared peer must preserve it"
+                );
+            })
+            .validate(|_| async {});
+    }
+
+    /// take_remaining retained-partial path, multiple contributing inputs
+    /// from distinct peers.
+    ///
+    /// Scenario: inputs of sizes [3, 3, 2] from peers [A, A, B]
+    /// (total 8 items) → `make_batches` splits into `[5, 3]`. The 3-item
+    /// tail spans inputs #2 (peer A) and #3 (peer B) — mixed peers. A
+    /// follow-up 2-item input from peer A triggers a second size flush.
+    ///
+    /// Guarantee: the second flush's batch carries `peer_addr = None` —
+    /// the retained portion correctly recorded the mixed-peer merge as
+    /// `None` rather than misattributing to one arbitrary contributor.
+    #[test]
+    fn test_take_remaining_drops_peer_addr_multi_input_different_peers() {
+        let (_telemetry_registry, _metrics_reporter, phase) = setup_test_runtime(json!({
+            "otap": {
+                "min_size": 4,
+                "max_size": 5,
+                "sizer": "items",
+            },
+            "max_batch_duration": "10s"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let peer_a: SocketAddr = "10.0.0.1:5000".parse().unwrap();
+                let peer_b: SocketAddr = "10.0.0.2:5000".parse().unwrap();
+
+                for (idx, count, peer) in [(0usize, 3usize, peer_a), (1, 3, peer_a), (2, 2, peer_b)]
+                {
+                    let rec = encode_logs_otap_batch(&logs_with_n_records(idx, count))
+                        .expect("encode logs");
+                    ctx.process(Message::PData(
+                        OtapPdata::new_default(rec.into()).with_peer_addr(peer),
+                    ))
+                    .await
+                    .expect("process input");
+                }
+
+                let _first = ctx.drain_pdata().await;
+
+                let extra =
+                    encode_logs_otap_batch(&logs_with_n_records(3, 2)).expect("encode logs");
+                ctx.process(Message::PData(
+                    OtapPdata::new_default(extra.into()).with_peer_addr(peer_a),
+                ))
+                .await
+                .expect("process follow-up input");
+
+                let second = ctx.drain_pdata().await;
+                assert_eq!(second.len(), 1, "second flush should emit one batch");
+                assert_eq!(
+                    second[0].peer_addr(),
+                    None,
+                    "retained partial spanning distinct peers must not be attributed to one"
+                );
             })
             .validate(|_| async {});
     }

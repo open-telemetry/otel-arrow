@@ -60,6 +60,8 @@ release of v0.104.0][ARROW-RELEASED].
 
 Our project is growing, new contributors are welcome.  **[Join us in
 `#otel-arrow` on the CNCF Slack!](https://cloud-native.slack.com/archives/C07S4Q67LTF)**
+If you are new to the CNCF Slack community, you can
+[create an account](https://slack.cncf.io/).
 
 ## What is Apache Arrow?
 
@@ -206,6 +208,7 @@ participate!
 - [Jake Dern](https://github.com/JakeDern), F5
 - [Joshua MacDonald](https://github.com/jmacd), Microsoft
 - [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
+- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
 
 For more information about the maintainer role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer).
@@ -214,7 +217,6 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
 - [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
-- [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
 
 For more information about the approver role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).

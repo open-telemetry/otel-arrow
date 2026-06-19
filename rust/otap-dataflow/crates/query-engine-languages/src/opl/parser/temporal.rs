@@ -183,41 +183,41 @@ mod test {
     #[test]
     fn test_parse_from_datetime_literal() {
         for (input, expected) in valid_test_cases() {
-            let expr = format!("date_time\"{input}\"");
+            let expr = format!("timestamp\"{input}\"");
             run_test_success(&expr, expected);
         }
     }
 
     #[test]
     fn test_parse_from_invalid_datetime_date_only() {
-        let err = run_test_failure("date_time\"2026-02-04\""); // not a valid datetime format
+        let err = run_test_failure("timestamp\"2026-02-04\""); // not a valid datetime format
         assert_eq!("Invalid datetime literal \"2026-02-04\"", err.to_string())
     }
 
     #[test]
     fn test_parse_from_invalid_datetime_literal() {
-        let err = run_test_failure("date_time\"halloween\""); // not a valid datetime format
+        let err = run_test_failure("timestamp\"halloween\""); // not a valid datetime format
         assert_eq!("Invalid datetime literal \"halloween\"", err.to_string())
     }
 
     #[test]
     fn test_parse_from_invalid_date_literal() {
         // Feb 30th an invalid day
-        let err = run_test_failure("date_time\"2026-02-30T05:30:00\"");
+        let err = run_test_failure("timestamp\"2026-02-30T05:30:00\"");
         assert_eq!("Invalid date 2026-02-30", err.to_string())
     }
 
     #[test]
     fn test_parse_from_invalid_time_literal() {
         // 24:00 o'clock, an invalid time
-        let err = run_test_failure("date_time\"2026-02-04T24:00:00\"");
+        let err = run_test_failure("timestamp\"2026-02-04T24:00:00\"");
         assert_eq!("Invalid time 24:00:00.0+00:00", err.to_string())
     }
 
     #[test]
     fn test_invalid_timezone() {
         // timezone 24 hours and 1 minute behind UTC = invalid
-        let err = run_test_failure("date_time\"2026-02-04T05:30:00-24:01\"");
+        let err = run_test_failure("timestamp\"2026-02-04T05:30:00-24:01\"");
         assert_eq!("Invalid offset -86460", err.to_string())
     }
 
@@ -225,11 +225,11 @@ mod test {
     #[test]
     fn test_parse_from_ordinal_and_week_datetime_literal() {
         // Ordinal date format = 74th day of 2024 = March 14, 2024
-        let err = run_test_failure("date_time\"2024074T00:00:00\"");
+        let err = run_test_failure("timestamp\"2024074T00:00:00\"");
         assert_eq!("Date format Ordinal not yet supported", err.to_string());
 
         // Week date format = 2024, week 11, Friday = March 15, 2024
-        let err = run_test_failure("date_time\"2024-W11-5T00:00:00\"");
+        let err = run_test_failure("timestamp\"2024-W11-5T00:00:00\"");
         assert_eq!("Date format Week not yet supported", err.to_string());
     }
 }

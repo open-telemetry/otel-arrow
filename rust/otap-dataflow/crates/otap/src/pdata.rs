@@ -13,6 +13,7 @@
 //! encountered issues (Nack) downstream, optionally preserving the payload for retry or logging.
 //! This functionality is exposed through various traits implemented by effect handlers.
 
+use std::net::SocketAddr;
 use std::num::NonZeroU64;
 
 use async_trait::async_trait;
@@ -32,11 +33,16 @@ use crate::transport_headers::TransportHeaders;
 
 /// Context for OTAP requests.
 ///
-/// Carries two independent concerns:
+/// Carries three independent concerns:
 /// - **Routing stack**: Ack/Nack routing frames used by the pipeline engine
 ///   for result notification. Reset at transport boundaries (topic hops).
 /// - **Transport headers**: Protocol-neutral request-scoped metadata captured
 ///   from inbound transport headers. Preserved across transport boundaries.
+/// - **Peer address**: Optional socket address observed by the receiving
+///   socket at request acceptance time. Populated by receivers that have a
+///   real socket (OTLP gRPC/HTTP, OTAP gRPC, syslog/CEF) and left `None` by
+///   sourceless receivers (file-based, journald). Preserved across transport
+///   boundaries.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Context {
     stack: Vec<Frame>,
@@ -45,6 +51,9 @@ pub struct Context {
     /// `None` when no headers have been captured (the common case, zero
     /// additional allocation).
     transport_headers: Option<TransportHeaders>,
+    /// Peer address observed by the receiving socket at request acceptance
+    /// time. `None` for receivers without a real socket.
+    peer_addr: Option<SocketAddr>,
     /// Active flow_metric accumulator (nanoseconds).
     ///
     /// `Some(ns)` when a message is inside a flow_metric range (between
@@ -64,6 +73,7 @@ impl Context {
         Self {
             stack: Vec::with_capacity(capacity),
             transport_headers: None,
+            peer_addr: None,
             flow_compute_ns: None,
         }
     }
@@ -311,6 +321,35 @@ impl Context {
         self.transport_headers = Some(headers);
     }
 
+    /// Returns the peer address observed by the receiving socket, if any.
+    #[must_use]
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        self.peer_addr
+    }
+
+    /// Set the peer address for this context.
+    pub fn set_peer_addr(&mut self, addr: SocketAddr) {
+        self.peer_addr = Some(addr);
+    }
+
+    /// Merge peer addresses from a set of contributing inputs.
+    ///
+    /// Returns `Some(addr)` only when every contributing input observed the
+    /// same peer address. Returns `None` if any input was peerless or if
+    /// distinct peers contributed — merging processors must use this to
+    /// avoid attributing a multi-peer output to one arbitrary contributor.
+    #[must_use]
+    pub fn merge_peer_addr<I>(inputs: I) -> Option<SocketAddr>
+    where
+        I: IntoIterator<Item = Option<SocketAddr>>,
+    {
+        let mut merger = PeerAddrMerger::new();
+        for next in inputs {
+            merger.push(next);
+        }
+        merger.finish()
+    }
+
     /// Get the source node for this context.
     #[must_use]
     pub fn source_node(&self) -> Option<usize> {
@@ -333,6 +372,59 @@ impl Context {
 }
 
 // Frame is defined in otap_df_engine::control (imported above).
+
+/// Incremental builder applying the same merge rule as
+/// [`Context::merge_peer_addr`] without allocating a `Vec` of intermediate
+/// peer addresses.
+///
+/// Use when contributing inputs are observed one-at-a-time as part of an
+/// existing pass over the input list (e.g. a processor's flush loop). Push
+/// each input's `peer_addr` exactly once with [`PeerAddrMerger::push`], then
+/// call [`PeerAddrMerger::finish`] to obtain the merged result.
+///
+/// Modeled as an enum so illegal states (e.g. a peer address present
+/// alongside a poisoned flag) cannot be constructed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PeerAddrMerger {
+    /// No inputs pushed yet.
+    #[default]
+    Empty,
+    /// Every input pushed so far agreed on this address.
+    Single(SocketAddr),
+    /// At least one input was peerless or distinct from a prior agreed
+    /// address. The merge stays in this state regardless of later pushes.
+    Poisoned,
+}
+
+impl PeerAddrMerger {
+    /// Create an empty merger. `finish` on an unused merger returns `None`.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self::Empty
+    }
+
+    /// Fold one contributing input's `peer_addr` into the running merge.
+    pub fn push(&mut self, peer_addr: Option<SocketAddr>) {
+        *self = match (*self, peer_addr) {
+            (Self::Empty, None) => Self::Poisoned,
+            (Self::Empty, Some(addr)) => Self::Single(addr),
+            (Self::Single(_), None) => Self::Poisoned,
+            (Self::Single(existing), Some(addr)) if existing == addr => Self::Single(existing),
+            (Self::Single(_), Some(_)) => Self::Poisoned,
+            (Self::Poisoned, _) => Self::Poisoned,
+        };
+    }
+
+    /// Return the merged peer address, or `None` if no inputs were pushed or
+    /// the merge was poisoned by a peerless or distinct contributor.
+    #[must_use]
+    pub const fn finish(self) -> Option<SocketAddr> {
+        match self {
+            Self::Single(addr) => Some(addr),
+            Self::Empty | Self::Poisoned => None,
+        }
+    }
+}
 
 impl otap_df_engine::Unwindable for OtapPdata {
     fn has_frames(&self) -> bool {
@@ -480,15 +572,16 @@ impl OtapPdata {
     /// pipelines) where in-process Ack/Nack routing state must not leak across
     /// boundaries.
     ///
-    /// Transport headers are **preserved** because they represent
-    /// request-scoped metadata (tenant ID, auth, trace context) that should
-    /// survive cross-pipeline hops.
+    /// Transport headers and peer address are **preserved** because they
+    /// represent request-scoped metadata (tenant ID, auth, trace context,
+    /// originating peer) that should survive cross-pipeline hops.
     #[must_use]
     pub fn clone_without_context(&self) -> Self {
         Self {
             context: Context {
                 stack: Vec::new(),
                 transport_headers: self.context.transport_headers.clone(),
+                peer_addr: self.context.peer_addr,
                 flow_compute_ns: None,
             },
             payload: self.payload.clone(),
@@ -620,6 +713,29 @@ impl OtapPdata {
     #[must_use]
     pub fn with_transport_headers(mut self, headers: TransportHeaders) -> Self {
         self.context.set_transport_headers(headers);
+        self
+    }
+
+    /// Returns the peer address observed by the receiving socket, if any.
+    ///
+    /// Receivers backed by a real socket (OTLP gRPC/HTTP, OTAP gRPC,
+    /// syslog/CEF) populate this at request acceptance time. Receivers
+    /// without a socket (file-based, journald) leave it `None`. Processors
+    /// and exporters that do not consult the peer address pay nothing.
+    #[must_use]
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        self.context.peer_addr()
+    }
+
+    /// Set the peer address on this pdata's context.
+    pub fn set_peer_addr(&mut self, addr: SocketAddr) {
+        self.context.set_peer_addr(addr);
+    }
+
+    /// Builder-style method to attach a peer address.
+    #[must_use]
+    pub fn with_peer_addr(mut self, addr: SocketAddr) -> Self {
+        self.context.set_peer_addr(addr);
         self
     }
 }
@@ -2296,5 +2412,100 @@ mod test {
 
         let cloned = pdata.clone_without_context();
         assert!(!cloned.has_active_flow_metric());
+    }
+
+    #[test]
+    fn peer_addr_default_is_none_and_round_trips() {
+        let pdata = create_test_pdata();
+        assert!(pdata.peer_addr().is_none());
+
+        let addr: SocketAddr = "10.0.0.1:5005".parse().unwrap();
+        let pdata = create_test_pdata().with_peer_addr(addr);
+        assert_eq!(pdata.peer_addr(), Some(addr));
+
+        let mut pdata = create_test_pdata();
+        pdata.set_peer_addr(addr);
+        assert_eq!(pdata.peer_addr(), Some(addr));
+    }
+
+    #[test]
+    fn peer_addr_survives_clone_without_context() {
+        let addr: SocketAddr = "[2001:db8::1]:9999".parse().unwrap();
+        let pdata = create_test_pdata().with_peer_addr(addr);
+
+        let cloned = pdata.clone_without_context();
+        assert_eq!(
+            cloned.peer_addr(),
+            Some(addr),
+            "peer_addr must survive transport-boundary clone"
+        );
+    }
+
+    #[test]
+    fn merge_peer_addr_rules() {
+        let a: SocketAddr = "10.0.0.1:1".parse().unwrap();
+        let b: SocketAddr = "10.0.0.2:2".parse().unwrap();
+
+        // Empty input → None.
+        assert_eq!(Context::merge_peer_addr(std::iter::empty()), None);
+
+        // Single Some → that address.
+        assert_eq!(Context::merge_peer_addr([Some(a)]), Some(a));
+
+        // All identical → that address.
+        assert_eq!(
+            Context::merge_peer_addr([Some(a), Some(a), Some(a)]),
+            Some(a)
+        );
+
+        // Any None → None.
+        assert_eq!(Context::merge_peer_addr([Some(a), None]), None);
+        assert_eq!(Context::merge_peer_addr([None, Some(a)]), None);
+        assert_eq!(Context::merge_peer_addr([None, None]), None);
+
+        // Distinct Somes → None (refuse to misattribute).
+        assert_eq!(Context::merge_peer_addr([Some(a), Some(b)]), None);
+    }
+
+    #[test]
+    fn peer_addr_merger_matches_merge_peer_addr() {
+        let a: SocketAddr = "10.0.0.1:1".parse().unwrap();
+        let b: SocketAddr = "10.0.0.2:2".parse().unwrap();
+
+        // Empty.
+        let m = PeerAddrMerger::new();
+        assert_eq!(m.finish(), None);
+
+        // Single Some.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        assert_eq!(m.finish(), Some(a));
+
+        // All identical.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(Some(a));
+        m.push(Some(a));
+        assert_eq!(m.finish(), Some(a));
+
+        // Any None poisons subsequent pushes.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(None);
+        m.push(Some(a));
+        assert_eq!(m.finish(), None);
+
+        // Distinct Somes.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(Some(b));
+        assert_eq!(m.finish(), None);
+
+        // After conflict, further identical pushes do not "heal" the result.
+        let mut m = PeerAddrMerger::new();
+        m.push(Some(a));
+        m.push(Some(b));
+        m.push(Some(a));
+        assert_eq!(m.finish(), None);
     }
 }

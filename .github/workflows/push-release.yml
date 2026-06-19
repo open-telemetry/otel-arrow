@@ -34,10 +34,17 @@ jobs:
       - name: Create GitHub App token
         if: "!inputs.dry_run"
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: otelbot-token
+        id: app-token
         with:
           app-id: ${{ vars.OTELBOT_ARROW_APP_ID }}
           private-key: ${{ secrets.OTELBOT_ARROW_PRIVATE_KEY }}
+
+      - name: Get GitHub App User ID
+        if: "!inputs.dry_run"
+        id: get-user-id
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: echo "user-id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout (release push)
         if: "!inputs.dry_run"
@@ -46,7 +53,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ github.ref }}
-          token: ${{ steps.otelbot-token.outputs.token }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Validate inputs
         run: |
@@ -138,10 +145,9 @@ jobs:
             echo ""
             echo "### Go Modules"
             echo ""
-            echo "This release includes the following Go modules:"
+            echo "This release includes the following Go module:"
             echo ""
-            echo "- github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}"
-            echo "- github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}"
+            echo "- \`github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}\`"
             echo ""
             echo "## What's Changed (Rust :crab:)"
             echo ""
@@ -153,9 +159,7 @@ jobs:
             echo ""
             echo "### Rust Workspace"
             echo ""
-            echo "The Rust workspace at \`rust/otap-dataflow/\` is tagged as"
-            echo "\`rust/otap-dataflow/v${{ inputs.version }}\`. Crates are not"
-            echo "published to crates.io yet; consume this release via git."
+            echo "The Rust workspace at \`rust/otap-dataflow/\` is tagged as \`rust/otap-dataflow/v${{ inputs.version }}\`. Crates are not published to crates.io yet; consume this release via git."
           } > /tmp/release_content.txt
 
       - name: Dry run - Show planned changes
@@ -175,7 +179,6 @@ jobs:
           ## Git Tags to Create
           - `v${{ inputs.version }}` - Main release tag
           - `go/v${{ inputs.version }}` - Go module tag
-          - `collector/cmd/otelarrowcol/v${{ inputs.version }}` - Collector module tag
           - `rust/otap-dataflow/v${{ inputs.version }}` - Rust workspace tag (git-tag only; no crates.io publish)
 
           ## GitHub Release
@@ -188,7 +191,6 @@ jobs:
           After release, the following modules will be available:
           ```bash
           go get github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}
-          go get github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}
           ```
 
           ## Release Notes Preview
@@ -211,15 +213,14 @@ jobs:
         if: "!inputs.dry_run"
         run: |
           # Configure git
-          git config user.name otelbot
-          git config user.email 197425009+otelbot@users.noreply.github.com
+          git config user.name '${{ steps.app-token.outputs.app-slug }}[bot]'
+          git config user.email '${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
 
           # Create main release tag
           git tag -a "v${{ inputs.version }}" -m "Release v${{ inputs.version }}"
 
           # Create Go module tags
           git tag -a "go/v${{ inputs.version }}" -m "Release go/v${{ inputs.version }}"
-          git tag -a "collector/cmd/otelarrowcol/v${{ inputs.version }}" -m "Release collector/cmd/otelarrowcol/v${{ inputs.version }}"
 
           # Create Rust workspace tag (git-tag only; no crates.io publish yet)
           git tag -a "rust/otap-dataflow/v${{ inputs.version }}" -m "Release rust/otap-dataflow/v${{ inputs.version }}"
@@ -234,19 +235,17 @@ jobs:
           # Push all tags for this version
           git push origin "v${{ inputs.version }}"
           git push origin "go/v${{ inputs.version }}"
-          git push origin "collector/cmd/otelarrowcol/v${{ inputs.version }}"
           git push origin "rust/otap-dataflow/v${{ inputs.version }}"
 
           echo "Pushed tags:"
           echo "- v${{ inputs.version }}"
           echo "- go/v${{ inputs.version }}"
-          echo "- collector/cmd/otelarrowcol/v${{ inputs.version }}"
           echo "- rust/otap-dataflow/v${{ inputs.version }}"
 
       - name: Create GitHub release
         if: "!inputs.dry_run"
         env:
-          GH_TOKEN: ${{ steps.otelbot-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           # Read combined changelog content into a variable
           RELEASE_CONTENT=$(cat /tmp/release_content.txt)
@@ -281,10 +280,8 @@ jobs:
             echo "Git tags created:"
             echo "- v${{ inputs.version }}"
             echo "- go/v${{ inputs.version }}"
-            echo "- collector/cmd/otelarrowcol/v${{ inputs.version }}"
             echo "- rust/otap-dataflow/v${{ inputs.version }}"
             echo ""
             echo "Go modules are now available:"
             echo "- go get github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}"
-            echo "- go get github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol@v${{ inputs.version }}"
           fi
