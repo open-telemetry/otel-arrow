@@ -1,4 +1,4 @@
-change_type: enhancement
+ change_type: bug_fix
 component: pipeline
 note: OTLP gRPC exporter now classifies gRPC status codes as retryable or permanent per the OTLP specification. The OTLP gRPC receiver maps permanent NACKs to INTERNAL and transient NACKs to UNAVAILABLE.
 issues: [1920]
