@@ -8,7 +8,7 @@ change_type: enhancement
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add internal primitives for a broadcast `all` (quorum) Ack/Nack mode for topic hops
+note: Add internal primitives for a broadcast `all` (consensus) Ack/Nack mode for topic hops
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [2252]
@@ -18,6 +18,6 @@ issues: [2252]
 # Use pipe (|) for multiline entries.
 subtext: |
   Not yet usable: this is internal-only foundation work with no behavior change. It adds the
-  `TopicBroadcastAckMode` enum, a quorum-capable publish tracker, and a reserve/commit ring split,
+  `TopicBroadcastAckMode` enum, a consensus-capable publish tracker, and a reserve/commit ring split,
   all gated behind callers that still pass `First`. The `all` mode is not wired into the broadcast
   engine and is not configurable yet — those land in follow-up PRs under #2252.

@@ -197,7 +197,7 @@ impl TrackedPublishTracker {
         TrackedPublishReceipt::new(message_id, entry)
     }
 
-    /// Register one tracked publish that resolves via `all`-mode quorum.
+    /// Register one tracked publish that resolves via `all`-mode consensus.
     ///
     /// The entry resolves as Ack only once every subscriber in `pending` has
     /// acked (via [`TrackedPublishTracker::resolve_ack_from`]); a Nack or a
@@ -212,9 +212,9 @@ impl TrackedPublishTracker {
     /// As with [`TrackedPublishTracker::register`], a closed tracker resolves the
     /// returned receipt immediately as [`TrackedPublishOutcome::TopicClosed`].
     ///
-    // TODO(#2252 PR2): this quorum API is unit-tested but has no engine caller
+    // TODO(#2252 PR2): this consensus API is unit-tested but has no engine caller
     // yet; it gets wired into broadcast publish/ack/disconnect in PR2.
-    pub fn register_quorum(
+    pub fn register_consensus(
         &self,
         message_id: u64,
         timeout: Duration,
@@ -222,7 +222,7 @@ impl TrackedPublishTracker {
         pending: HashSet<BroadcastSubscriberId>,
     ) -> TrackedPublishReceipt {
         if self.inner.closed.load(Ordering::Acquire) {
-            let entry = Arc::new(TrackedPublishEntry::new_quorum(
+            let entry = Arc::new(TrackedPublishEntry::new_consensus(
                 Instant::now(),
                 permit,
                 pending,
@@ -232,7 +232,7 @@ impl TrackedPublishTracker {
         }
 
         if pending.is_empty() {
-            let entry = Arc::new(TrackedPublishEntry::new_quorum(
+            let entry = Arc::new(TrackedPublishEntry::new_consensus(
                 Instant::now(),
                 permit,
                 pending,
@@ -242,7 +242,7 @@ impl TrackedPublishTracker {
         }
 
         self.ensure_timeout_worker();
-        let entry = Arc::new(TrackedPublishEntry::new_quorum(
+        let entry = Arc::new(TrackedPublishEntry::new_consensus(
             Instant::now() + timeout,
             permit,
             pending,
@@ -265,7 +265,7 @@ impl TrackedPublishTracker {
 
     /// Apply a single broadcast subscriber's Ack to an `all`-mode tracked publish.
     ///
-    /// Returns [`AckFromResult::Resolved`] if this Ack completed the quorum (the
+    /// Returns [`AckFromResult::Resolved`] if this Ack completed the consensus (the
     /// entry resolved as Ack and was removed), [`AckFromResult::StillPending`] if
     /// the Ack was recorded but other subscribers are still required, or
     /// [`AckFromResult::NotTracked`] if the message id is unknown or already
@@ -498,15 +498,15 @@ impl TrackedPublishReceipt {
 /// Unique identifier for a broadcast subscriber within a single topic.
 ///
 /// Allocated by the broadcast-only topic's subscriber registry and used by the
-/// tracked publish tracker to drive `all`-mode quorum aggregation.
+/// tracked publish tracker to drive `all`-mode consensus aggregation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BroadcastSubscriberId(pub u64);
 
 /// Outcome of applying a single broadcast subscriber's Ack to a tracked publish
-/// in `all` (quorum) mode.
+/// in `all` (consensus) mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AckFromResult {
-    /// This Ack completed the quorum; the entry resolved as Ack.
+    /// This Ack completed the consensus; the entry resolved as Ack.
     Resolved,
     /// The Ack was recorded but other required subscribers are still pending.
     StillPending,
@@ -519,7 +519,7 @@ enum PendingKind {
     /// The first terminal resolution wins. Used by normal tracked publishes and
     /// by `first`-mode broadcast. The tracker does not track per-subscriber acks.
     First,
-    /// Quorum aggregation: the entry resolves as Ack only once every subscriber
+    /// Consensus aggregation: the entry resolves as Ack only once every subscriber
     /// in `pending` has acked. Any Nack or required-subscriber disappearance
     /// resolves it as Nack.
     All {
@@ -552,7 +552,7 @@ impl TrackedPublishEntry {
         }
     }
 
-    pub(crate) fn new_quorum(
+    pub(crate) fn new_consensus(
         deadline: Instant,
         permit: TrackedPublishPermit,
         pending: HashSet<BroadcastSubscriberId>,
@@ -587,12 +587,12 @@ impl TrackedPublishEntry {
         true
     }
 
-    /// Apply a single subscriber's Ack to a quorum (`all`-mode) entry.
+    /// Apply a single subscriber's Ack to a consensus (`all`-mode) entry.
     ///
     /// Removes `subscriber_id` from the pending set; when the set empties the
     /// entry resolves as Ack. A `First`-kind entry resolves as Ack on the first
     /// call. Already-resolved entries are left untouched. Idempotent: a repeated
-    /// Ack from the same subscriber never falsely completes the quorum.
+    /// Ack from the same subscriber never falsely completes the consensus.
     pub(crate) fn resolve_ack_from(&self, subscriber_id: BroadcastSubscriberId) -> AckFromResult {
         let mut state = self.state.lock();
         match &mut *state {
@@ -619,7 +619,7 @@ impl TrackedPublishEntry {
         }
     }
 
-    /// Resolve a quorum (`all`-mode) entry as Nack if it still requires
+    /// Resolve a consensus (`all`-mode) entry as Nack if it still requires
     /// `subscriber_id`. Returns `true` if this call resolved the entry.
     ///
     /// Used when a required subscriber disappears (lag-disconnect or drop/close)

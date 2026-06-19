@@ -166,7 +166,7 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
     /// [`FastBroadcastRing::reserve_seq`] immediately followed by
     /// [`FastBroadcastRing::commit_slot`]. The two are split so `all`-mode
     /// broadcast publish can reserve the sequence under the subscriber-registry
-    /// lock (to snapshot the exact quorum membership for that sequence) and then
+    /// lock (to snapshot the exact consensus membership for that sequence) and then
     /// perform the heavier slot write plus waker fan-out after releasing the
     /// lock. See `reserve_seq`/`commit_slot` for the reserved-but-uncommitted
     /// window, which is read-safe (readers see `NotReady` and re-park).
@@ -270,7 +270,7 @@ impl<T: Send + Sync + 'static> TopicInner<T> {
                 TopicInner::BalancedOnly(BalancedOnlyTopic::new(name, capacity))
             }
             // TODO(#2252 PR2): honor `ack_mode` here so broadcast topics support
-            // `all` (quorum) resolution. Ignored in PR1 (always behaves as `first`).
+            // `all` (consensus) resolution. Ignored in PR1 (always behaves as `first`).
             TopicOptions::BroadcastOnly {
                 capacity,
                 on_lag,
@@ -1038,7 +1038,7 @@ pub(crate) struct BroadcastSub<T: Send + Sync + 'static> {
     on_lag: TopicBroadcastOnLagPolicy,
     ack_state: AckState,
     // TODO(#2252 PR2): in `all` mode, track this subscriber's identity so its
-    // acks count toward the quorum and its disconnect/drop nacks any messages it
+    // acks count toward the consensus and its disconnect/drop nacks any messages it
     // still owes. `first` mode is unchanged.
 }
 
