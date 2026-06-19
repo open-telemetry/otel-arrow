@@ -1043,6 +1043,11 @@ mod tests {
     /// construct serialized status details fixtures.
     ///
     /// See: <https://github.com/googleapis/googleapis/blob/master/google/rpc/error_details.proto>
+    ///
+    /// According to the OTLP Spec, this may be used in the event of a failure with code Unavailable
+    /// in which case the retry info will be supplied as details.
+    ///
+    /// See: https://opentelemetry.io/docs/specs/otlp/#failures
     #[derive(Clone, PartialEq, ::prost::Message)]
     struct RetryInfo {
         #[prost(message, optional, tag = "1")]
@@ -1932,8 +1937,6 @@ mod tests {
         );
     }
 
-    // ---- exporter permanent/retryable NACK integration tests --------------------
-
     /// A mock `LogsService` that always returns the configured gRPC error.
     struct ErrorLogsServiceMock {
         code: Code,
@@ -1967,6 +1970,7 @@ mod tests {
             }
         }
     }
+
     /// Runs an integration test that sends a logs payload to the gRPC exporter
     /// backed by a mock server returning the given status code. Returns the
     /// `NackMsg.permanent` value observed.
