@@ -283,6 +283,27 @@ impl ObservedStateStore {
         }
     }
 
+    /// Removes all observed state for a logical pipeline.
+    pub fn remove_pipeline(&self, pipeline_key: &PipelineKey) {
+        let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
+            otel_error!(
+                "state.mutex_poisoned",
+                action = "continuing with possibly inconsistent state"
+            );
+            poisoned.into_inner()
+        });
+        let _ = pipelines.remove(pipeline_key);
+
+        let mut policies = self.health_policies.lock().unwrap_or_else(|poisoned| {
+            otel_error!(
+                "state.mutex_poisoned",
+                action = "continuing with stale health policy"
+            );
+            poisoned.into_inner()
+        });
+        let _ = policies.remove(pipeline_key);
+    }
+
     /// Compacts retained observed instances for one logical pipeline to the
     /// generations currently selected for status aggregation.
     pub fn compact_pipeline_instances(&self, pipeline_key: &PipelineKey) {

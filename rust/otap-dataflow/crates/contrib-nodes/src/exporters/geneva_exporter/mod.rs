@@ -310,6 +310,7 @@ impl GenevaExporter {
             role_name: config.role_name.clone(),
             role_instance: config.role_instance.clone(),
             msi_resource,
+            obo_event_map: None,
         };
 
         // Initialize Geneva client

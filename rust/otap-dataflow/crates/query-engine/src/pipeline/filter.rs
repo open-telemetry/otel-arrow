@@ -544,6 +544,32 @@ mod test {
         test_simple_filter::<OplParser, _>(|dt| format!("timestamp\"{dt}\"")).await
     }
 
+    /// Tests the `drop` operator, which unconditionally discards all data (equivalent to
+    /// `where false`).
+    #[tokio::test]
+    async fn test_drop_operator_opl_parser() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .event_name("2")
+                .finish(),
+        ];
+
+        // `drop` should discard all records, same as `where false`
+        let result =
+            exec_logs_pipeline::<OplParser>("logs | drop", to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0);
+
+        // verify equivalence: `where false` should produce the same result
+        let result_where_false =
+            exec_logs_pipeline::<OplParser>("logs | where false", to_logs_data(log_records)).await;
+        assert_eq!(result_where_false.resource_logs.len(), 0);
+    }
+
     async fn test_simple_attrs_filter<P: Parser>() {
         let otap_batch = to_otap_logs(vec![
             LogRecord::build()
@@ -5680,6 +5706,56 @@ mod test {
                 "value_type={value_type}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attr_bytes_type() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes([
+                    KeyValue::new("attr_bytes", AnyValue::new_bytes(b"hello")),
+                    KeyValue::new("mixed_types", AnyValue::new_bytes(b"world")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes([
+                    KeyValue::new("attr_bytes", AnyValue::new_bytes(b"hello")),
+                    KeyValue::new("mixed_types", AnyValue::new_string("text")),
+                ])
+                .finish(),
+        ];
+
+        // all rows match when all have a Bytes attribute
+        let query = r#"logs | where attributes["attr_bytes"] is Bytes"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        let expected = vec![log_records[0].clone(), log_records[1].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+
+        // inverted: no rows
+        let query = r#"logs | where not(attributes["attr_bytes"] is Bytes)"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0, "expected empty result");
+
+        // Bytes attribute is not matched by String
+        let query = r#"logs | where attributes["attr_bytes"] is String"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0, "expected empty result");
+
+        // only the row whose mixed_types is Bytes is selected
+        let query = r#"logs | where attributes["mixed_types"] is Bytes"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        let expected = vec![log_records[0].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
     }
 
     #[tokio::test]

@@ -464,8 +464,28 @@ impl<
         pipeline_id: &str,
         timeout_secs: u64,
     ) -> Result<ShutdownStatus, ControlPlaneError> {
-        let plan = self.prepare_shutdown_plan(pipeline_group_id, pipeline_id, timeout_secs)?;
-        self.spawn_shutdown(plan)
+        self.request_shutdown_pipeline_for_engine_operation(
+            pipeline_group_id,
+            pipeline_id,
+            timeout_secs,
+            None,
+        )
+    }
+
+    pub(super) fn request_shutdown_pipeline_for_engine_operation(
+        self: &Arc<Self>,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        timeout_secs: u64,
+        engine_operation_id: Option<&str>,
+    ) -> Result<ShutdownStatus, ControlPlaneError> {
+        let plan = self.prepare_shutdown_plan_for_engine_operation(
+            pipeline_group_id,
+            pipeline_id,
+            timeout_secs,
+            engine_operation_id,
+        )?;
+        self.spawn_shutdown_for_engine_operation(plan, engine_operation_id)
     }
 
     /// Blocks until all active runtime instances have exited.

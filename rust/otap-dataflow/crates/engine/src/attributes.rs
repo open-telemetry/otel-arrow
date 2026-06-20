@@ -99,6 +99,79 @@ pub struct PipelineAttributeSet {
     pub deployment_generation: u64,
 }
 
+/// Host scope of an extension. Composed into [`ExtensionAttributeSet`] to
+/// disambiguate extensions across hosting scopes.
+///
+/// Fields are private; the type can only be constructed through a scope-kind
+/// constructor (e.g. [`ExtensionScopeAttributeSet::pipeline`]). This enforces
+/// the invariant that every scope value has a populated payload matching its
+/// `scope.kind` discriminator — there is no way to build a "kind-less" or
+/// inconsistent scope set in the public API.
+///
+/// When new scope kinds are introduced (e.g. `"engine"`, `"group"`),
+/// add a corresponding `#[compose]` payload field below and a matching
+/// constructor; existing constructors keep new payloads at `Default` so the
+/// descriptor stays stable across scope kinds.
+#[attribute_set(name = "extension.scope.attrs")]
+#[derive(Debug, Clone, Hash)]
+pub struct ExtensionScopeAttributeSet {
+    /// Scope kind discriminator. Always paired with the populated payload
+    /// field that matches it.
+    #[attribute(key = "scope.kind")]
+    pub(crate) kind: Cow<'static, str>,
+
+    /// Pipeline-scope payload. Populated when `kind == "pipeline"`; left at
+    /// `Default::default()` for other scope kinds.
+    #[compose]
+    pub(crate) pipeline: PipelineAttributeSet,
+}
+
+impl Default for ExtensionScopeAttributeSet {
+    /// Sentinel default used by the `#[compose]` macro to compute the cached
+    /// composed descriptor once at startup. The produced value carries an
+    /// empty `scope.kind` and is **not** a valid scope identity — production
+    /// telemetry must construct values through a scope-kind constructor
+    /// (e.g. [`ExtensionScopeAttributeSet::pipeline`]).
+    fn default() -> Self {
+        Self {
+            kind: Cow::Borrowed(""),
+            pipeline: PipelineAttributeSet::default(),
+        }
+    }
+}
+
+impl ExtensionScopeAttributeSet {
+    /// Pipeline-host scope. The full pipeline attribute set (group id,
+    /// pipeline id, engine id, generation, resource attrs, ...) is composed
+    /// into the resulting scope so two distinct `(group, pipeline)` pairs
+    /// can never collide on identity, regardless of the characters they
+    /// contain.
+    #[must_use]
+    pub fn pipeline(pipeline: PipelineAttributeSet) -> Self {
+        Self {
+            kind: Cow::Borrowed("pipeline"),
+            pipeline,
+        }
+    }
+}
+
+/// Extension attributes, including the host scope.
+#[attribute_set(name = "extension.attrs")]
+#[derive(Debug, Clone, Default, Hash)]
+pub struct ExtensionAttributeSet {
+    /// Extension unique identifier within its host scope.
+    #[attribute]
+    pub extension_id: Cow<'static, str>,
+
+    /// Host scope of the extension.
+    #[compose]
+    pub extension_scope: ExtensionScopeAttributeSet,
+
+    /// Physical variant of the extension (`"local"` or `"shared"`).
+    #[attribute(key = "extension.variant")]
+    pub extension_variant: Cow<'static, str>,
+}
+
 /// Node attributes.
 #[attribute_set(name = "node.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
@@ -214,11 +287,44 @@ impl AttributeSetHandler for CustomAttributeSet {
     }
 }
 
-/// Channel endpoint attributes (sender or receiver).
-#[attribute_set(name = "channel.attrs")]
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_telemetry::attributes::AttributeSetHandler;
+
+    /// Distinct `(group, pipeline)` pairs must not collide on attribute
+    /// values: flattening into a single `/`-separated string allows two
+    /// real scopes to register the same telemetry entity.
+    #[test]
+    fn pipeline_scope_ids_are_unambiguous_across_group_pipeline_splits() {
+        let a = ExtensionScopeAttributeSet::pipeline(PipelineAttributeSet {
+            pipeline_group_id: "a/b".into(),
+            pipeline_id: "c".into(),
+            ..PipelineAttributeSet::default()
+        });
+        let b = ExtensionScopeAttributeSet::pipeline(PipelineAttributeSet {
+            pipeline_group_id: "a".into(),
+            pipeline_id: "b/c".into(),
+            ..PipelineAttributeSet::default()
+        });
+        // `attribute_values` reuses a thread-local buffer; copy each set
+        // before invoking the next.
+        let a_values = a.attribute_values().to_vec();
+        let b_values = b.attribute_values().to_vec();
+        assert_ne!(
+            a_values, b_values,
+            "distinct (group, pipeline) pairs must not collide on attribute values; \
+             flattening `{{group}}/{{pipeline}}` into one opaque string allows \
+             two real scopes to register the same telemetry entity"
+        );
+    }
+}
+
+/// Channel endpoint attributes for a node-hosted channel.
+#[attribute_set(name = "node.channel.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
-pub struct ChannelAttributeSet {
-    /// Unique channel identifier (in scope of the pipeline).
+pub struct NodeChannelAttributeSet {
+    /// Unique channel identifier within the host scope.
     #[attribute(key = "channel.id")]
     pub channel_id: Cow<'static, str>,
 
@@ -243,6 +349,29 @@ pub struct ChannelAttributeSet {
     #[attribute(key = "channel.type")]
     pub channel_type: Cow<'static, str>,
     /// Channel implementation ("tokio", "flume", "internal").
+    #[attribute(key = "channel.impl")]
+    pub channel_impl: Cow<'static, str>,
+}
+
+/// Channel endpoint attributes for an extension-hosted channel.
+///
+/// Extensions only have a single control-channel kind (MPSC), so `channel.kind`
+/// and `channel.type` are intentionally omitted as invariants.
+#[attribute_set(name = "extension.channel.attrs")]
+#[derive(Debug, Clone, Default, Hash)]
+pub struct ExtensionChannelAttributeSet {
+    /// Unique channel identifier within the host scope.
+    #[attribute(key = "channel.id")]
+    pub channel_id: Cow<'static, str>,
+
+    /// Extension attributes.
+    #[compose]
+    pub extension_attrs: ExtensionAttributeSet,
+
+    /// Concurrency mode of the channel ("local" or "shared").
+    #[attribute(key = "channel.mode")]
+    pub channel_mode: Cow<'static, str>,
+    /// Channel implementation ("tokio", "internal").
     #[attribute(key = "channel.impl")]
     pub channel_impl: Cow<'static, str>,
 }

@@ -1,8 +1,12 @@
 # Temporal Reaggregation Processor
 
-Status: **WIP**
+<!-- markdownlint-disable MD013 -->
 
-URN: `urn:otel:processor:temporal_reaggregation`
+## Metadata
+
+- Type: `processor:temporal_reaggregation` (`urn:otel:processor:temporal_reaggregation`)
+- Feature gate: Default
+- Stability: Experimental
 
 ## Overview
 
@@ -13,6 +17,48 @@ specification][metrics-data-model].
 
 This processor is partially modeled after the [Go interval
 processor][go-interval].
+
+## Getting Started
+
+Set the aggregation period and request tracking limits:
+
+```yaml
+type: processor:temporal_reaggregation
+config:
+  period: 60s
+  inbound_request_limit: 1024
+  outbound_request_limit: 2048
+  max_stream_cardinality: 16384
+```
+
+## Configuration
+
+```yaml
+type: processor:temporal_reaggregation
+config:
+  # Interval at which aggregated metrics are emitted (default: 60s,
+  # minimum: 100ms).
+  period: 60s
+
+  # Maximum number of inbound request contexts buffered for ack/nack tracking
+  # (default: 1024).
+  inbound_request_limit: 1024
+
+  # Maximum number of outbound request contexts buffered for ack/nack tracking
+  # (default: 2048, minimum: 3).
+  #
+  # Set this higher than inbound_request_limit when batches usually contain a
+  # mix of aggregable and non-aggregable metrics.
+  #
+  # Set this closer to inbound_request_limit when batches usually contain only
+  # aggregable metrics or only non-aggregable metrics.
+  outbound_request_limit: 2048
+
+  # Maximum number of individual metric streams tracked while aggregating a
+  # single batch (default: 16383). When this limit is hit, data is flushed
+  # early.
+  max_stream_cardinality: 16384
+```
 
 [metrics-data-model]:
   https://opentelemetry.io/docs/specs/otel/metrics/data-model/#events--data-stream--timeseries
@@ -31,7 +77,31 @@ This processor only aggregates a subset of metric types. In particular:
 
 Other metric types are passed through unchanged.
 
-## Limitations
+## Telemetry
+
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
+
+### Metric Sets
+
+#### `processor.temporal_reaggregation.pdata`
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `processor.temporal_reaggregation.pdata.flushes_timer` | `{flush}` | Number of flushes triggered by the regular timer. |
+| `processor.temporal_reaggregation.pdata.flushes_overflow` | `{flush}` | Number of flushes triggered by exceeding the maximum stream count. |
+| `processor.temporal_reaggregation.pdata.batches_rejected` | `{batch}` | Number of incoming batches rejected because they individually exceed some specified limit or fail to be processed into a view. |
+
+### Events
+
+| Event | Severity | Description |
+| --- | --- | --- |
+| `temporal_reaggregation.view.creation_failed` | `warn` | A view could not be created over input data. |
+| `temporal_reaggregation.attribute.encode_failed` | `warn` | One or more attributes could not be encoded. |
+| `temporal_reaggregation.calldata.invalid` | `warn` | Returned calldata was invalid for the processor return path. |
+| `temporal_reaggregation.ack.erroneous` | `warn` | An erroneous ACK/NACK event was observed. |
+
+## Limits
 
 This processor has the following limitations:
 
@@ -42,35 +112,6 @@ This processor has the following limitations:
 - During a shutdown sequence, any in-flight metrics will be aggregated one final
   time until either a stream/id limit is reached or the shutdown message is
   received by the processor.
-
-## Configuration
-
-```yaml
-temporal-reaggregation:
-  type: urn:otel:processor:temporal_reaggregation
-  config:
-    # The interval at which aggregated metrics are emitted.
-    period: 60s
-
-    # The maximum number of inbound request contexts that this processor can
-    # buffer for ack/nack tracking.
-    inbound_request_limit: 1024
-
-    # The maximum number of outbound request contexts that this processor can
-    # buffer for ack/nack tracking.
-    #
-    # It's recommended to set this to higher than inbound_request_limit if your
-    # batches mostly contain a mix of aggregable and non-aggregable metrics.
-    #
-    # It's recommended to set this closer to inbound_request_limit if your batches contain
-    # either aggregable metrics OR non-aggregable metrics, but not both.
-    outbound_request_limit: 2048
-
-    # The maximum number of individual metric streams that this processor will
-    # track while aggregating a single batch. When this limit is hit, data will
-    # be flushed early.
-    max_stream_cardinality: 16384
-```
 
 ## Pipeline placement
 
@@ -86,3 +127,9 @@ It is recommended to place this processor:
 A typical pipeline ordering with batch, temporal_reaggregation, and retry
 processors would be:
 `receivers -> temporal_reaggregation -> batch -> retry -> exporters`
+
+## Related Docs
+
+- [Configuration model](../../../../../docs/configuration-model.md)
+- [Processor taxonomy](../../../../../docs/processors.md)
+- [Core node catalog](../../../README.md)

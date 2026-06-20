@@ -27,9 +27,11 @@ use crate::table::RecordBatchPartitionStream;
 mod apply_attrs;
 mod assign;
 mod attributes;
+mod concat;
 mod conditional;
 mod expr;
 mod filter;
+mod fork;
 mod functions;
 pub(crate) mod id_mask;
 mod planner;
@@ -64,7 +66,7 @@ pub trait PipelineStage {
         session_context: &SessionContext,
         config_options: &ConfigOptions,
         task_context: Arc<TaskContext>,
-        exec_options: &mut ExecutionState,
+        exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords>;
 
     /// Execute this stage of the pipeline on a [`RecordBatch`] containing a set of attributes.

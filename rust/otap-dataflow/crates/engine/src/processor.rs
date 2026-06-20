@@ -10,7 +10,7 @@
 use crate::Interests;
 use crate::ReceivedAtNode;
 use crate::channel_metrics::ChannelMetricsRegistry;
-use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
+use crate::channel_mode::{LocalMode, SharedMode, wrap_node_control_channel_metrics};
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::config::ProcessorConfig;
 use crate::context::PipelineContext;
@@ -377,7 +377,7 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
             } => {
                 let (control_sender, control_receiver) =
-                    wrap_control_channel_metrics::<LocalMode, NodeControlMsg<PData>>(
+                    wrap_node_control_channel_metrics::<LocalMode, NodeControlMsg<PData>>(
                         node_id.name.as_ref(),
                         pipeline_ctx,
                         channel_metrics,
@@ -413,7 +413,7 @@ impl<PData> ProcessorWrapper<PData> {
                 source_tag,
             } => {
                 let (control_sender, control_receiver) =
-                    wrap_control_channel_metrics::<SharedMode, NodeControlMsg<PData>>(
+                    wrap_node_control_channel_metrics::<SharedMode, NodeControlMsg<PData>>(
                         node_id.name.as_ref(),
                         pipeline_ctx,
                         channel_metrics,
@@ -1256,6 +1256,7 @@ mod tests {
             flow_id: "auto_measure".into(),
             start_node: "auto_measure_processor".into(),
             end_node: "auto_measure_processor".into(),
+            purpose: "".into(),
             pipeline_attrs: pipeline_ctx.pipeline_attribute_set(),
         };
         let entity_key = pipeline_ctx.metrics_registry().register_entity(attrs);

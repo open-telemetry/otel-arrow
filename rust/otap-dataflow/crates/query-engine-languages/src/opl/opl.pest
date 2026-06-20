@@ -202,6 +202,14 @@ rename_target = {
     identifier_expression ~ ("." ~ identifier_expression)*
 }
 
+fork_operator_call = {
+    "fork" ~ fork_branch+
+}
+
+fork_branch = {
+    "{" ~ pipeline_stage ~ ("|" ~ pipeline_stage)* ~ "}"
+}
+
 rename_operator_call = {
     "rename" ~ rename_target ~ rename_pair ~ ("," ~ rename_pair)*
 }
@@ -218,6 +226,10 @@ where_operator_call = {
     "where" ~ expression
 }
 
+drop_operator_call = {
+    "drop"
+}
+
 route_to_operator_call = {
     "route_to" ~ string_literal
 }
@@ -231,7 +243,9 @@ operator_call = {
   | rename_operator_call
   | remove_map_keys_operator_call
   | if_else_operator_call
+  | fork_operator_call
   | route_to_operator_call
+  | drop_operator_call
   | where_operator_call
   | apply_operator_call
 }

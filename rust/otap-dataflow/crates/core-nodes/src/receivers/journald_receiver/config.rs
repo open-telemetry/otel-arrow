@@ -6,6 +6,8 @@
 //! See [`docs/journald-receiver.md`](../../../../../../docs/journald-receiver.md)
 //! for the design document this implementation follows.
 
+use serde::Deserializer;
+use serde::de::Error as DeError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
@@ -32,6 +34,12 @@ const DEFAULT_MAX_IN_FLIGHT_BATCHES: usize = 1;
 const DEFAULT_MAX_CONSECUTIVE_FAILURES: u32 = 5;
 /// Default checkpoint root directory; the receiver appends a stable suffix.
 const DEFAULT_CHECKPOINT_DIR: &str = "${engine.state_dir}/journald";
+/// Default maximum copied bytes per journald entry.
+const DEFAULT_MAX_ENTRY_BYTES: u64 = 1024 * 1024;
+/// Default maximum copied bytes per journald field value.
+const DEFAULT_MAX_FIELD_BYTES: u64 = 256 * 1024;
+/// Default maximum copied fields per journald entry.
+const DEFAULT_MAX_FIELDS_PER_ENTRY: usize = 256;
 
 fn default_source_id() -> String {
     DEFAULT_SOURCE_ID.to_owned()
@@ -61,6 +69,15 @@ pub enum OnNack {
     Rewind,
     /// Fail the receiver source.
     Fail,
+}
+
+/// Behavior when an entry field exceeds configured extraction limits.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LargeFieldPolicy {
+    /// Drop oversized fields and count them in receiver self-telemetry.
+    #[default]
+    DropAndCount,
 }
 
 /// Shorthand for the maximum journald `PRIORITY` to accept.
@@ -204,6 +221,53 @@ impl Default for JournalConfig {
     }
 }
 
+/// Field extraction safety limits.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtractionConfig {
+    /// Maximum copied bytes per journal entry.
+    #[serde(
+        default = "ExtractionConfig::default_max_entry_bytes",
+        deserialize_with = "deserialize_byte_size"
+    )]
+    pub max_entry_bytes: u64,
+    /// Maximum copied bytes per field value.
+    #[serde(
+        default = "ExtractionConfig::default_max_field_bytes",
+        deserialize_with = "deserialize_byte_size"
+    )]
+    pub max_field_bytes: u64,
+    /// Maximum copied fields per journal entry.
+    #[serde(default = "ExtractionConfig::default_max_fields_per_entry")]
+    pub max_fields_per_entry: usize,
+    /// Policy for fields that exceed extraction limits.
+    #[serde(default)]
+    pub large_field_policy: LargeFieldPolicy,
+}
+
+impl ExtractionConfig {
+    const fn default_max_entry_bytes() -> u64 {
+        DEFAULT_MAX_ENTRY_BYTES
+    }
+    const fn default_max_field_bytes() -> u64 {
+        DEFAULT_MAX_FIELD_BYTES
+    }
+    const fn default_max_fields_per_entry() -> usize {
+        DEFAULT_MAX_FIELDS_PER_ENTRY
+    }
+}
+
+impl Default for ExtractionConfig {
+    fn default() -> Self {
+        Self {
+            max_entry_bytes: Self::default_max_entry_bytes(),
+            max_field_bytes: Self::default_max_field_bytes(),
+            max_fields_per_entry: Self::default_max_fields_per_entry(),
+            large_field_policy: LargeFieldPolicy::default(),
+        }
+    }
+}
+
 /// User-facing journald receiver configuration.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -225,7 +289,7 @@ pub struct Config {
     #[serde(default)]
     pub identifiers: Vec<String>,
 
-    /// Exact-match priority set. Defaults to all levels (0..=7) when omitted.
+    /// Exact-match priority set. When omitted, no `PRIORITY` match is added.
     #[serde(default)]
     pub priorities: Option<Vec<u8>>,
 
@@ -238,6 +302,10 @@ pub struct Config {
     /// Where to start when no checkpoint exists.
     #[serde(default)]
     pub start_at: StartAt,
+
+    /// Field extraction safety limits.
+    #[serde(default)]
+    pub extraction: ExtractionConfig,
 
     /// Batch shaping.
     #[serde(default)]
@@ -275,6 +343,7 @@ impl Default for Config {
             priorities: None,
             max_priority: None,
             start_at: StartAt::default(),
+            extraction: ExtractionConfig::default(),
             batch: BatchConfig::default(),
             checkpoint: CheckpointConfig::default(),
             wait_timeout: Self::default_wait_timeout(),
@@ -302,8 +371,12 @@ pub(crate) struct RuntimeConfig {
     pub(crate) identifiers: Vec<String>,
     /// Sorted, deduplicated set of accepted journald `PRIORITY` levels.
     pub(crate) priorities: Vec<u8>,
+    /// Whether to install a journald `PRIORITY` match group.
+    pub(crate) priority_filter_enabled: bool,
     /// Where to start when there is no committed cursor.
     pub(crate) start_at: StartAt,
+    /// Field extraction safety limits.
+    pub(crate) extraction: ExtractionConfig,
     /// Batch shaping.
     pub(crate) batch: BatchConfig,
     /// Checkpoint configuration.
@@ -326,6 +399,7 @@ impl TryFrom<Config> for RuntimeConfig {
             priorities,
             max_priority,
             start_at,
+            extraction,
             batch,
             checkpoint,
             wait_timeout,
@@ -337,10 +411,29 @@ impl TryFrom<Config> for RuntimeConfig {
         let lease_key = journal_source_lease_key(&journal);
         let units = dedup_non_empty(units, "units")?;
         let identifiers = dedup_non_empty(identifiers, "identifiers")?;
+        let priority_filter_enabled = priorities.is_some() || max_priority.is_some();
         let priorities = resolve_priorities(priorities, max_priority)?;
 
         if batch.max_records == 0 {
             return Err(invalid("batch.max_records must be greater than zero"));
+        }
+        if batch.max_records > u16::MAX as usize {
+            return Err(invalid("batch.max_records must be <= u16::MAX"));
+        }
+        if extraction.max_entry_bytes == 0 {
+            return Err(invalid(
+                "extraction.max_entry_bytes must be greater than zero",
+            ));
+        }
+        if extraction.max_field_bytes == 0 {
+            return Err(invalid(
+                "extraction.max_field_bytes must be greater than zero",
+            ));
+        }
+        if extraction.max_fields_per_entry == 0 {
+            return Err(invalid(
+                "extraction.max_fields_per_entry must be greater than zero",
+            ));
         }
         if batch.max_flush_period.is_zero() {
             return Err(invalid("batch.max_flush_period must be greater than zero"));
@@ -379,13 +472,23 @@ impl TryFrom<Config> for RuntimeConfig {
             units,
             identifiers,
             priorities,
+            priority_filter_enabled,
             start_at,
+            extraction,
             batch,
             checkpoint,
             wait_timeout,
             drain_timeout,
         })
     }
+}
+
+fn deserialize_byte_size<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    otap_df_config::byte_units::deserialize_u64(deserializer)?
+        .ok_or_else(|| DeError::custom("byte size must not be null"))
 }
 
 fn invalid(msg: &str) -> otap_df_config::error::Error {
@@ -425,6 +528,8 @@ fn validate_journal(
         .as_os_str()
         .to_str()
         .expect("journal.root_path UTF-8 checked above");
+    // Validation runs on non-Linux CI too. Accept Unix-style host-root paths
+    // such as /host even when the host platform's Path::is_absolute disagrees.
     if !journal.root_path.is_absolute() && !root_path_text.starts_with('/') {
         return Err(invalid(&format!(
             "journal.root_path must be absolute: {}",
@@ -579,8 +684,70 @@ mod tests {
             PathBuf::from(DEFAULT_JOURNAL_ROOT_PATH)
         );
         assert_eq!(runtime.priorities, (0..=7).collect::<Vec<u8>>());
+        assert!(!runtime.priority_filter_enabled);
         assert_eq!(runtime.start_at, StartAt::End);
         assert_eq!(runtime.batch.max_records, DEFAULT_BATCH_MAX_RECORDS);
+        assert_eq!(runtime.extraction.max_entry_bytes, DEFAULT_MAX_ENTRY_BYTES);
+        assert_eq!(runtime.extraction.max_field_bytes, DEFAULT_MAX_FIELD_BYTES);
+        assert_eq!(
+            runtime.extraction.max_fields_per_entry,
+            DEFAULT_MAX_FIELDS_PER_ENTRY
+        );
+        assert_eq!(
+            runtime.extraction.large_field_policy,
+            LargeFieldPolicy::DropAndCount
+        );
+    }
+
+    #[test]
+    fn accepts_extraction_limits_from_config() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "extraction": {
+                "max_entry_bytes": "1 MiB",
+                "max_field_bytes": "16 KiB",
+                "max_fields_per_entry": 32,
+                "large_field_policy": "drop_and_count"
+            }
+        }))
+        .expect("extraction config should parse");
+        let runtime = RuntimeConfig::try_from(cfg).expect("must validate");
+        assert_eq!(runtime.extraction.max_entry_bytes, 1024 * 1024);
+        assert_eq!(runtime.extraction.max_field_bytes, 16 * 1024);
+        assert_eq!(runtime.extraction.max_fields_per_entry, 32);
+        assert_eq!(
+            runtime.extraction.large_field_policy,
+            LargeFieldPolicy::DropAndCount
+        );
+    }
+
+    #[test]
+    fn rejects_zero_extraction_limits() {
+        let cfg = Config {
+            extraction: ExtractionConfig {
+                max_entry_bytes: 0,
+                ..ExtractionConfig::default()
+            },
+            ..base()
+        };
+        assert!(RuntimeConfig::try_from(cfg).is_err());
+
+        let cfg = Config {
+            extraction: ExtractionConfig {
+                max_field_bytes: 0,
+                ..ExtractionConfig::default()
+            },
+            ..base()
+        };
+        assert!(RuntimeConfig::try_from(cfg).is_err());
+
+        let cfg = Config {
+            extraction: ExtractionConfig {
+                max_fields_per_entry: 0,
+                ..ExtractionConfig::default()
+            },
+            ..base()
+        };
+        assert!(RuntimeConfig::try_from(cfg).is_err());
     }
 
     #[test]
@@ -689,6 +856,7 @@ mod tests {
         };
         let runtime = RuntimeConfig::try_from(cfg).expect("must validate");
         assert_eq!(runtime.priorities, vec![0, 1, 3]);
+        assert!(runtime.priority_filter_enabled);
     }
 
     #[test]
@@ -699,6 +867,18 @@ mod tests {
         };
         let runtime = RuntimeConfig::try_from(cfg).expect("must validate");
         assert_eq!(runtime.priorities, vec![0, 1, 2, 3, 4]);
+        assert!(runtime.priority_filter_enabled);
+    }
+
+    #[test]
+    fn explicit_full_priorities_still_enable_priority_filter() {
+        let cfg = Config {
+            priorities: Some(default_priorities()),
+            ..base()
+        };
+        let runtime = RuntimeConfig::try_from(cfg).expect("must validate");
+        assert_eq!(runtime.priorities, (0..=7).collect::<Vec<u8>>());
+        assert!(runtime.priority_filter_enabled);
     }
 
     #[test]

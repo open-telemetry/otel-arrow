@@ -3,8 +3,8 @@
 
 //! Extension wrapper and typestate builder.
 //!
-//! Extensions are PData-free — they never process pipeline data, only control
-//! messages. This module is split into:
+//! Extensions are PData-free — they never process PData, only
+//! control messages. This module is split into:
 //!
 //! | Submodule   | Contents                                                                 |
 //! |-------------|--------------------------------------------------------------------------|

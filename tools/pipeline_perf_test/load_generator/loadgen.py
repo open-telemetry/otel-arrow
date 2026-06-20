@@ -114,6 +114,111 @@ CEF_TEMPLATE = (
     'PanOSTunnelID=0 PanOSTunnelType=N/A'
 )
 
+# Pool of syslog message templates with placeholder fields for entropy.
+# Each template represents a different type of network/security event.
+# Placeholders: {src_ip}, {dst_ip}, {src_port}, {dst_port}, {session_id},
+#               {user_id}, {hash}, {count}, {severity}
+_SYSLOG_MESSAGE_TEMPLATES = [
+    'CEF:0|PaloAltoNetworks|PAN-OS|9.1.8|SSH2 Login Attempt(31914)|SSH2 Login Attempt|{severity}|act=alert app=ssh src={src_ip} dst={dst_ip} spt={src_port} dpt=22 proto=TCP cnt={count} cs1=THREAT cs2=vulnerability dvchost=FW-{user_id} deviceExternalId={session_id}',
+    'CEF:0|Fortinet|FortiGate|7.2.3|0419016384|ssl-login-fail|{severity}|src={src_ip} dst={dst_ip} spt={src_port} dpt=443 proto=TCP act=blocked user=admin session_id={session_id} reason=invalid_cert cn1={count}',
+    'CEF:0|CrowdStrike|Falcon|6.42|DetectionSummaryEvent|Malware Detected|{severity}|src={src_ip} dst={dst_ip} fname=/tmp/payload_{hash}.bin fileHash={hash} act=quarantine cs1=ML_Detection uid={user_id} cnt={count}',
+    'CEF:0|Cisco|ASA|9.16|106023|ACL Deny|{severity}|src={src_ip} spt={src_port} dst={dst_ip} dpt={dst_port} proto=TCP act=deny cs1=outside_access_in cn1={count} reason=acl-drop session={session_id}',
+    'CEF:0|Zscaler|NSS|6.1|WebFilter|URL Blocked|{severity}|src={src_ip} dst={dst_ip} dpt=443 request=https://malware.example.com/{hash} act=blocked cs1=Malware cs2=cloud_app uid={user_id} cnt={count}',
+    'NOT-CEF:0|Security|threatmanager|1.0|{count}|connection anomaly|{severity}|src={src_ip} dst={dst_ip} spt={src_port} dpt={dst_port} proto=TCP act=alert cs1Label=ThreatType cs1=Anomaly cs2Label=SessionID cs2={session_id} uid={user_id}',
+    'NOT-CEF:0|Firewall|fw-cluster|2.3|{count}|rate limit exceeded|{severity}|src={src_ip} dst={dst_ip} spt={src_port} dpt={dst_port} proto=UDP act=throttle cs1Label=RuleID cs1=RL-{hash} cs2Label=BurstCount cs2={count}',
+    'NOT-CEF:0|IDS|suricata|6.0|{count}|ET SCAN potential scan|{severity}|src={src_ip} dst={dst_ip} spt={src_port} dpt={dst_port} proto=TCP act=alert cs1Label=Signature cs1=ET-{hash} cs2Label=Category cs2=attempted-recon',
+    'NOT-CEF:0|Proxy|squid|5.7|{count}|CONNECT tunnel|{severity}|src={src_ip} dst={dst_ip} spt={src_port} dpt={dst_port} proto=TCP act=allow cs1Label=Method cs1=CONNECT cs2Label=URL cs2=api.service-{user_id}.internal:{dst_port}',
+    'NOT-CEF:0|LoadBalancer|haproxy|2.8|{count}|backend timeout|{severity}|src={src_ip} dst={dst_ip} spt={src_port} dpt={dst_port} proto=TCP act=503 cs1Label=Backend cs1=app-pool-{hash} cs2Label=Duration cs2={count}ms',
+    'NOT-CEF:0|WAF|modsecurity|3.0|{count}|SQL injection attempt|{severity}|src={src_ip} dst={dst_ip} spt={src_port} dpt=443 proto=TCP act=deny cs1Label=RuleID cs1=942100 cs2Label=Payload cs2=OR 1=1--{hash}',
+    'NOT-CEF:0|DNS|unbound|1.17|{count}|NXDOMAIN response|{severity}|src={src_ip} dst={dst_ip} spt={src_port} dpt=53 proto=UDP act=nxdomain cs1Label=Query cs1={hash}.malware-c2.net cs2Label=Type cs2=A',
+    'NOT-CEF:0|VPN|wireguard|1.0|{count}|handshake complete|{severity}|src={src_ip} dst={dst_ip} spt={src_port} dpt=51820 proto=UDP act=allow cs1Label=PeerID cs1=peer-{user_id} cs2Label=Interface cs2=wg0',
+    'NOT-CEF:0|Auth|sshd|8.9|{count}|publickey accepted|{severity}|src={src_ip} dst={dst_ip} spt={src_port} dpt=22 proto=TCP act=accept cs1Label=User cs1=deploy-{user_id} cs2Label=KeyFingerprint cs2=SHA256:{hash}',
+    'NOT-CEF:0|Mail|postfix|3.7|{count}|message delivered|{severity}|src={src_ip} dst={dst_ip} spt={src_port} dpt=25 proto=TCP act=sent cs1Label=QueueID cs1={session_id} cs2Label=Recipient cs2=user-{user_id}@corp.example.com',
+    'NOT-CEF:0|Storage|minio|2023|{count}|object uploaded|{severity}|src={src_ip} dst={dst_ip} spt={src_port} dpt=9000 proto=TCP act=PUT cs1Label=Bucket cs1=data-lake-{user_id} cs2Label=Key cs2=exports/{hash}.parquet',
+]
+
+# Hostnames to rotate across pool messages for resource-level diversity
+_HOSTNAME_POOL = [
+    'web-prod-01', 'web-prod-02', 'web-prod-03', 'api-prod-01',
+    'api-prod-02', 'db-prod-01', 'cache-prod-01', 'worker-01',
+    'worker-02', 'gateway-01', 'monitor-01', 'batch-proc-01',
+]
+
+# Severity/facility combinations (PRI values) for syslog diversity
+_PRI_POOL = [
+    '<134>',  # local0.info
+    '<131>',  # local0.err
+    '<132>',  # local0.crit
+    '<133>',  # local0.warning
+    '<142>',  # local1.info
+    '<139>',  # local1.err
+    '<150>',  # local2.info
+    '<147>',  # local2.err
+    '<86>',   # auth.info
+    '<84>',   # auth.warning
+]
+
+
+def _generate_message_pool(
+    pool_size: int,
+    header_type: str,
+    message_size: Optional[int] = None,
+) -> list[bytes]:
+    """Pre-generate a pool of diverse syslog messages with randomized fields."""
+    pool = []
+    for i in range(pool_size):
+        template = _SYSLOG_MESSAGE_TEMPLATES[i % len(_SYSLOG_MESSAGE_TEMPLATES)]
+        hostname = _HOSTNAME_POOL[i % len(_HOSTNAME_POOL)]
+        pri = _PRI_POOL[i % len(_PRI_POOL)]
+
+        # Randomize field values for each pool entry
+        msg = template.format(
+            src_ip=f"{random.randint(10,172)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}",
+            dst_ip=f"{random.randint(10,172)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}",
+            src_port=random.randint(1024, 65535),
+            dst_port=random.randint(80, 9999),
+            session_id=f"sess-{random.randint(100000, 999999):06d}",
+            user_id=f"u{random.randint(1000, 9999)}",
+            hash=f"{random.getrandbits(64):016x}",
+            count=random.randint(1, 5000),
+            severity=random.randint(1, 10),
+        )
+
+        # Build syslog header
+        tag = "loadgen"
+        if header_type == "rfc3164":
+            utc_time = dt.now(timezone.utc)
+            day = utc_time.day
+            timestamp = utc_time.strftime(f"%b {day:2d} %H:%M:%S")
+            header = f"{pri}{timestamp} {hostname} {tag}: "
+        elif header_type == "rfc5424":
+            timestamp = dt.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            header = f"{pri}1 {timestamp} {hostname} {tag} - - - "
+        elif header_type.lower() == "none":
+            header = ""
+        else:
+            raise ValueError(f"Unknown header_type: {header_type!r}")
+
+        syslog_message = f"{header}{msg}\n"
+
+        # Pad or truncate to target message_size if specified
+        if message_size is not None:
+            current_size = len(syslog_message.encode("utf-8"))
+            if current_size < message_size:
+                padding_needed = message_size - current_size
+                syslog_message = f"{header}{msg}{' ' * padding_needed}\n"
+            elif current_size > message_size:
+                header_bytes = len(header.encode("utf-8"))
+                available = message_size - header_bytes - 1
+                if available > 0:
+                    syslog_message = f"{header}{msg[:available]}\n"
+                else:
+                    syslog_message = f"{header}\n"
+
+        pool.append(syslog_message.encode("utf-8"))
+
+    return pool
+
 
 app = Flask(__name__)
 
@@ -419,22 +524,37 @@ class LoadGenerator:
 
         hostname = socket.gethostname()
 
-        # Pre-generate syslog messages batch (similar to OTLP log_batch)
-        syslog_batch = []
-        for _ in range(batch_size):
-            syslog_message = self.create_syslog_message(
-                hostname=hostname,
-                message_body=args.get("message_body"),
-                body_size=args["body_size"],
+        # Build message pool or use legacy static batch
+        message_body = args.get("message_body")
+        if message_body is not None:
+            # Legacy mode: explicit message_body sends identical messages
+            syslog_batch = []
+            for _ in range(batch_size):
+                syslog_message = self.create_syslog_message(
+                    hostname=hostname,
+                    message_body=message_body,
+                    body_size=args["body_size"],
+                    header_type=syslog_format,
+                    syslog_content_type=args.get("syslog_content_type", "random"),
+                    message_size=args.get("message_size"),
+                )
+                syslog_batch.append(syslog_message)
+            batch_buffers = [b''.join(syslog_batch)]
+        else:
+            # Pool mode: diverse messages with structured entropy
+            pool = _generate_message_pool(
+                pool_size=256,
                 header_type=syslog_format,
-                syslog_content_type=args.get("syslog_content_type", "random"),
                 message_size=args.get("message_size"),
             )
-            syslog_batch.append(syslog_message)
+            # Pre-build multiple batch buffers with different shuffles
+            num_batch_variants = 8
+            batch_buffers = []
+            for _ in range(num_batch_variants):
+                batch = [random.choice(pool) for _ in range(batch_size)]
+                batch_buffers.append(b''.join(batch))
 
-        # Combine all messages into a single buffer for efficient sending
-        batch_buffer = b''.join(syslog_batch)
-        batch_total_size = len(batch_buffer)
+        batch_idx = 0
 
         # Accumulate metrics locally between flushes to keep lock contention low
         # while still publishing during the observation window (not only on exit).
@@ -443,9 +563,11 @@ class LoadGenerator:
         next_send_time = time.perf_counter()
         while not self.stop_event.is_set():
             try:
-                sock.sendall(batch_buffer)
+                buf = batch_buffers[batch_idx]
+                sock.sendall(buf)
+                batch_idx = (batch_idx + 1) % len(batch_buffers)
                 acc.sent += args["batch_size"]
-                acc.bytes_sent += batch_total_size
+                acc.bytes_sent += len(buf)
             except Exception as e:
                 print(f"Thread {thread_id}: Failed to send syslog batch: {e}")
                 acc.failed += args["batch_size"]
@@ -518,18 +640,36 @@ class LoadGenerator:
 
         hostname = socket.gethostname()
 
-        # Pre-generate syslog messages batch
-        syslog_batch = []
-        for _ in range(batch_size):
-            syslog_message = self.create_syslog_message(
-                hostname=hostname,
-                message_body=args.get("message_body"),
-                body_size=args["body_size"],
+        # Build message pool or use legacy static batch
+        message_body = args.get("message_body")
+        if message_body is not None:
+            # Legacy mode: explicit message_body sends identical messages
+            syslog_batch = []
+            for _ in range(batch_size):
+                syslog_message = self.create_syslog_message(
+                    hostname=hostname,
+                    message_body=message_body,
+                    body_size=args["body_size"],
+                    header_type=syslog_format,
+                    syslog_content_type=args.get("syslog_content_type", "random"),
+                    message_size=args.get("message_size"),
+                )
+                syslog_batch.append(syslog_message)
+            message_batches = [syslog_batch]
+        else:
+            # Pool mode: diverse messages with structured entropy
+            pool = _generate_message_pool(
+                pool_size=256,
                 header_type=syslog_format,
-                syslog_content_type=args.get("syslog_content_type", "random"),
                 message_size=args.get("message_size"),
             )
-            syslog_batch.append(syslog_message)
+            num_batch_variants = 8
+            message_batches = []
+            for _ in range(num_batch_variants):
+                batch = [random.choice(pool) for _ in range(batch_size)]
+                message_batches.append(batch)
+
+        batch_idx = 0
 
         # Accumulate metrics locally between flushes to keep lock contention low
         # while still publishing during the observation window (not only on exit).
@@ -540,7 +680,9 @@ class LoadGenerator:
         next_send_time = time.perf_counter()
         while not self.stop_event.is_set():
             # UDP: Send individual messages instead of single batch of messages
-            for message in syslog_batch:
+            current_batch = message_batches[batch_idx]
+            batch_idx = (batch_idx + 1) % len(message_batches)
+            for message in current_batch:
                 try:
                     bytes_sent = sock.sendto(message, (syslog_server, syslog_port))
                     acc.sent += 1

@@ -112,6 +112,7 @@ otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-pdata = { workspace = true, features = ["testing"] }
 otap-df-state = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
+wiremock = { workspace = true }
 
 # Integration tests that pull `core-nodes/dev-tools` (traffic_generator)
 # and `weaver_common`. Listing them here with `required-features` lets cargo

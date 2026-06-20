@@ -7208,6 +7208,71 @@ mod test {
         test_update_attr_coalesce_function_call::<KqlParser>().await
     }
 
+    /// `coalesce` must use an outer join so spans entirely missing the first attribute
+    /// (no key present, not even an explicit null) are not dropped.
+    async fn test_update_attr_coalesce_missing_attributes<P: Parser>() {
+        let logs_data = to_logs_data(vec![
+            // log 0: has attr1 — coalesce picks attr1
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("attr1", AnyValue::new_string("X")),
+                    KeyValue::new("attr2", AnyValue::new_string("Y")),
+                ])
+                .finish(),
+            // log 1: attr1 absent entirely (no key), only attr2 — coalesce must pick attr2
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("attr2", AnyValue::new_string("Z"))])
+                .finish(),
+            // log 2: both absent — coalesce falls through to the literal "foo"
+            LogRecord::build().attributes(vec![]).finish(),
+        ]);
+
+        let query = r#"logs | extend attributes["attr3"] = coalesce(attributes["attr1"], attributes["attr2"], "foo")"#;
+        let pipeline_expr = P::parse_with_options(query, default_parser_options())
+            .unwrap()
+            .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+
+        let records = &result_logs_data.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(records.len(), 3, "no logs should be dropped");
+
+        assert_eq!(
+            records[0].attributes,
+            vec![
+                KeyValue::new("attr1", AnyValue::new_string("X")),
+                KeyValue::new("attr2", AnyValue::new_string("Y")),
+                KeyValue::new("attr3", AnyValue::new_string("X")),
+            ]
+        );
+        assert_eq!(
+            records[1].attributes,
+            vec![
+                KeyValue::new("attr2", AnyValue::new_string("Z")),
+                KeyValue::new("attr3", AnyValue::new_string("Z")),
+            ]
+        );
+        assert_eq!(
+            records[2].attributes,
+            vec![KeyValue::new("attr3", AnyValue::new_string("foo"))]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_coalesce_missing_attributes_opl_parser() {
+        test_update_attr_coalesce_missing_attributes::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_update_attr_coalesce_missing_attributes_kql_parser() {
+        test_update_attr_coalesce_missing_attributes::<KqlParser>().await
+    }
+
     async fn test_update_attr_to_lower_case_function_call<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build()

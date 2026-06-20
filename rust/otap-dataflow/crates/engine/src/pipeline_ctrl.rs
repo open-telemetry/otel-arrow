@@ -1242,6 +1242,7 @@ mod tests {
     use crate::node::{NodeId, NodeType};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
+    use otap_df_channel::error::RecvError;
     use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_state::store::ObservedStateStore;
@@ -1262,6 +1263,30 @@ mod tests {
 
     fn empty_node_metric_handles() -> Rc<RefCell<Vec<Option<NodeMetricHandles>>>> {
         Rc::new(RefCell::new(Vec::new()))
+    }
+
+    async fn yield_cycles(count: usize) {
+        for _ in 0..count {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    async fn expect_timer_tick(receiver: &mut Receiver<NodeControlMsg<()>>, node_name: &str) {
+        let result = timeout(Duration::from_secs(1), receiver.recv()).await;
+        match result {
+            Ok(Ok(NodeControlMsg::TimerTick {})) => {}
+            Ok(Ok(other)) => panic!("Expected TimerTick for {node_name}, got {other:?}"),
+            Ok(Err(e)) => panic!("Failed to receive message for {node_name}: {e:?}"),
+            Err(_) => panic!("Timed out waiting for TimerTick for {node_name}"),
+        }
+    }
+
+    fn assert_no_control_msg(receiver: &mut Receiver<NodeControlMsg<()>>, node_name: &str) {
+        match receiver.try_recv() {
+            Err(RecvError::Empty) => {}
+            Ok(msg) => panic!("Expected no control message for {node_name}, got {msg:?}"),
+            Err(e) => panic!("Unexpected receive error for {node_name}: {e:?}"),
+        }
     }
 
     fn create_test_pipeline_context()
@@ -1542,95 +1567,66 @@ mod tests {
     /// 3. Timer messages are delivered to the correct recipients
     #[tokio::test(flavor = "local")]
     async fn test_run_multiple_timers_integration() {
-        async {
-            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                setup_test_manager::<()>();
+        let clock = clock::SimClock::new();
+        let _clock_guard = clock.install();
 
-            let node1 = nodes.first().expect("ok");
-            let node2 = nodes.get(1).expect("ok");
-            let duration1 = Duration::from_millis(80);  // Shorter - should fire first
-            let duration2 = Duration::from_millis(120); // Longer - should fire second
+        let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+            setup_test_manager::<()>();
 
-            // Start the manager in the background
-            let manager_handle = tokio::task::spawn_local(async move {
-                manager.run().await
-            });
+        let node1 = nodes.first().expect("ok");
+        let node2 = nodes.get(1).expect("ok");
+        let duration1 = Duration::from_millis(80); // Shorter - should fire first
+        let duration2 = Duration::from_millis(120); // Longer - should fire second
 
-            // Schedule timers for both nodes
-            let start_msg1 = RuntimeControlMsg::StartTimer {
-                node_id: node1.index,
-                duration: duration1,
-            };
-            let start_msg2 = RuntimeControlMsg::StartTimer {
-                node_id: node2.index,
-                duration: duration2,
-            };
+        // Start the manager in the background
+        let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-            pipeline_tx.send(start_msg1).await.unwrap();
-            pipeline_tx.send(start_msg2).await.unwrap();
+        // Schedule timers for both nodes
+        let start_msg1 = RuntimeControlMsg::StartTimer {
+            node_id: node1.index,
+            duration: duration1,
+        };
+        let start_msg2 = RuntimeControlMsg::StartTimer {
+            node_id: node2.index,
+            duration: duration2,
+        };
 
-            // Extract receivers for both nodes
-            let mut receiver1 = control_receivers.remove(&node1.index).unwrap();
-            let mut receiver2 = control_receivers.remove(&node2.index).unwrap();
+        pipeline_tx.send(start_msg1).await.unwrap();
+        pipeline_tx.send(start_msg2).await.unwrap();
+        yield_cycles(2).await;
 
-            // Use select! to handle whichever timer fires first, with overall timeout
-            let mut node1_received = false;
-            let mut node2_received = false;
-            let start_time = Instant::now();
+        // Extract receivers for both nodes
+        let mut receiver1 = control_receivers.remove(&node1.index).unwrap();
+        let mut receiver2 = control_receivers.remove(&node2.index).unwrap();
 
-            // Wait for both timers to fire (within a reasonable timeout)
-            while (!node1_received || !node2_received) && start_time.elapsed() < Duration::from_millis(300) {
-                tokio::select! {
-                    // Node1 timer tick
-                    result1 = receiver1.recv(), if !node1_received => {
-                        match result1 {
-                            Ok(NodeControlMsg::TimerTick {}) => {
-                                node1_received = true;
-                                // Verify node1 fired within expected timeframe (should be ~80ms)
-                                let elapsed = start_time.elapsed();
-                                assert!(elapsed >= Duration::from_millis(60) && elapsed <= Duration::from_millis(140),
-                                       "Node1 timer should fire around 80ms, but fired after {elapsed:?}");
-                            }
-                            Ok(other) => panic!("Expected TimerTick for node1, got {other:?}"),
-                            Err(e) => panic!("Failed to receive message for node1: {e:?}"),
-                        }
-                    }
+        clock.advance(Duration::from_millis(79));
+        yield_cycles(2).await;
+        assert_no_control_msg(&mut receiver1, "node1");
+        assert_no_control_msg(&mut receiver2, "node2");
 
-                    // Node2 timer tick
-                    result2 = receiver2.recv(), if !node2_received => {
-                        match result2 {
-                            Ok(NodeControlMsg::TimerTick {}) => {
-                                node2_received = true;
-                                // Verify node2 fired within expected timeframe (should be ~120ms)
-                                let elapsed = start_time.elapsed();
-                                assert!(elapsed >= Duration::from_millis(100) && elapsed <= Duration::from_millis(180),
-                                       "Node2 timer should fire around 120ms, but fired after {elapsed:?}");
-                            }
-                            Ok(other) => panic!("Expected TimerTick for node2, got {other:?}"),
-                            Err(e) => panic!("Failed to receive message for node2: {e:?}"),
-                        }
-                    }
+        clock.advance(Duration::from_millis(1));
+        yield_cycles(2).await;
+        expect_timer_tick(&mut receiver1, "node1").await;
+        assert_no_control_msg(&mut receiver2, "node2");
 
-                    // Timeout protection
-                    _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                        // Continue the loop - this prevents infinite blocking
-                    }
-                }
-            }
+        clock.advance(Duration::from_millis(39));
+        yield_cycles(2).await;
+        assert_no_control_msg(&mut receiver2, "node2");
 
-            // Verify both timers fired
-            assert!(node1_received, "Node1 should have received TimerTick");
-            assert!(node2_received, "Node2 should have received TimerTick");
+        clock.advance(Duration::from_millis(1));
+        yield_cycles(2).await;
+        expect_timer_tick(&mut receiver2, "node2").await;
 
-            // Clean shutdown
-            pipeline_tx.send(RuntimeControlMsg::Shutdown {
-                deadline: Instant::now() + Duration::from_secs(1),
-                reason: "".to_owned()
-            }).await.unwrap();
-            drop(pipeline_tx);
-            let _ = timeout(Duration::from_millis(100), manager_handle).await;
-        }
-        .await;
+        // Clean shutdown
+        pipeline_tx
+            .send(RuntimeControlMsg::Shutdown {
+                deadline: clock.now() + Duration::from_secs(1),
+                reason: "".to_owned(),
+            })
+            .await
+            .unwrap();
+        drop(pipeline_tx);
+        let _ = timeout(Duration::from_millis(100), manager_handle).await;
     }
 
     /// Validates that starting a new timer for an existing node properly replaces
@@ -1641,61 +1637,57 @@ mod tests {
     /// 4. This tests the outdated timer detection logic in the run() method
     #[tokio::test(flavor = "local")]
     async fn test_run_timer_replacement_integration() {
-        async {
-            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                setup_test_manager::<()>();
+        let clock = clock::SimClock::new();
+        let _clock_guard = clock.install();
+        let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+            setup_test_manager::<()>();
 
-            let node = nodes.first().expect("ok");
-            let first_duration = Duration::from_millis(150); // Original (longer)
-            let second_duration = Duration::from_millis(80); // Replacement (shorter)
+        let node = nodes.first().expect("ok");
+        let first_duration = Duration::from_millis(150); // Original (longer)
+        let second_duration = Duration::from_millis(80); // Replacement (shorter)
 
-            // Start the manager in the background
-            let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+        // Start the manager in the background
+        let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-            // Schedule initial timer
-            let start_msg1 = RuntimeControlMsg::StartTimer {
-                node_id: node.index,
-                duration: first_duration,
-            };
-            pipeline_tx.send(start_msg1).await.unwrap();
+        // Schedule initial timer
+        let start_msg1 = RuntimeControlMsg::StartTimer {
+            node_id: node.index,
+            duration: first_duration,
+        };
+        pipeline_tx.send(start_msg1).await.unwrap();
+        yield_cycles(2).await;
 
-            // Wait a bit, then replace with a shorter timer
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            let start_msg2 = RuntimeControlMsg::StartTimer {
-                node_id: node.index,
-                duration: second_duration,
-            };
-            pipeline_tx.send(start_msg2).await.unwrap();
+        // Wait a bit, then replace with a shorter timer
+        clock.advance(Duration::from_millis(20));
+        yield_cycles(2).await;
+        let start_msg2 = RuntimeControlMsg::StartTimer {
+            node_id: node.index,
+            duration: second_duration,
+        };
+        pipeline_tx.send(start_msg2).await.unwrap();
+        yield_cycles(2).await;
 
-            // Measure timing to verify the replacement worked
-            let mut receiver = control_receivers.remove(&node.index).unwrap();
-            let start_time = Instant::now();
+        let mut receiver = control_receivers.remove(&node.index).unwrap();
 
-            let tick_result =
-                timeout(Duration::from_millis(200), async { receiver.recv().await }).await;
+        clock.advance(Duration::from_millis(79));
+        yield_cycles(2).await;
+        assert_no_control_msg(&mut receiver, "node");
 
-            let elapsed = start_time.elapsed();
+        // Should fire after second_duration (80ms), not first_duration (150ms).
+        clock.advance(Duration::from_millis(1));
+        yield_cycles(2).await;
+        expect_timer_tick(&mut receiver, "node").await;
 
-            assert!(tick_result.is_ok(), "Should receive TimerTick");
-            // Should fire approximately after second_duration (80ms), not first_duration (150ms)
-            // Allow some tolerance for timing variations in test environment
-            assert!(
-                elapsed >= Duration::from_millis(70) && elapsed <= Duration::from_millis(130),
-                "Timer should fire based on second duration (~80ms), but fired after {elapsed:?}"
-            );
-
-            // Clean shutdown
-            pipeline_tx
-                .send(RuntimeControlMsg::Shutdown {
-                    deadline: Instant::now() + Duration::from_secs(1),
-                    reason: "".to_owned(),
-                })
-                .await
-                .unwrap();
-            drop(pipeline_tx);
-            let _ = timeout(Duration::from_millis(100), manager_handle).await;
-        }
-        .await;
+        // Clean shutdown
+        pipeline_tx
+            .send(RuntimeControlMsg::Shutdown {
+                deadline: clock.now() + Duration::from_secs(1),
+                reason: "".to_owned(),
+            })
+            .await
+            .unwrap();
+        drop(pipeline_tx);
+        let _ = timeout(Duration::from_millis(100), manager_handle).await;
     }
 
     /// Validates that the manager responds properly to shutdown requests:
@@ -1883,133 +1875,86 @@ mod tests {
     /// 1. Timers are registered in non-chronological order
     /// 2. They fire in chronological order (shortest duration first)
     /// 3. This tests the BinaryHeap priority queue implementation
-    /// 4. Uses select! to handle timers in any order while validating proper sequencing
+    /// 4. Uses simulated time to validate proper sequencing without wall-clock sensitivity
     #[tokio::test(flavor = "local")]
     async fn test_run_timer_ordering_integration() {
-        async {
-            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                setup_test_manager::<()>();
+        let clock = clock::SimClock::new();
+        let _clock_guard = clock.install();
 
-            // Use different durations to test timer ordering
-            let node1 = nodes.first().expect("ok");
-            let node2 = nodes.get(1).expect("ok");
-            let node3 = nodes.get(2).expect("ok");
+        let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+            setup_test_manager::<()>();
 
-            // Start the manager in the background
-            let manager_handle = tokio::task::spawn_local(async move {
-                manager.run().await
-            });
+        // Use different durations to test timer ordering
+        let node1 = nodes.first().expect("ok");
+        let node2 = nodes.get(1).expect("ok");
+        let node3 = nodes.get(2).expect("ok");
 
-            // Send timers in non-chronological order to test priority queue
-            let start_msg1 = RuntimeControlMsg::StartTimer {
-                node_id: node1.index,
-                duration: Duration::from_millis(120), // Should fire third
-            };
-            let start_msg2 = RuntimeControlMsg::StartTimer {
-                node_id: node2.index,
-                duration: Duration::from_millis(60),  // Should fire first
-            };
-            let start_msg3 = RuntimeControlMsg::StartTimer {
-                node_id: node3.index,
-                duration: Duration::from_millis(90),  // Should fire second
-            };
+        // Start the manager in the background
+        let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-            pipeline_tx.send(start_msg1).await.unwrap();
-            pipeline_tx.send(start_msg2).await.unwrap();
-            pipeline_tx.send(start_msg3).await.unwrap();
+        // Send timers in non-chronological order to test priority queue
+        let start_msg1 = RuntimeControlMsg::StartTimer {
+            node_id: node1.index,
+            duration: Duration::from_millis(120), // Should fire third
+        };
+        let start_msg2 = RuntimeControlMsg::StartTimer {
+            node_id: node2.index,
+            duration: Duration::from_millis(60), // Should fire first
+        };
+        let start_msg3 = RuntimeControlMsg::StartTimer {
+            node_id: node3.index,
+            duration: Duration::from_millis(90), // Should fire second
+        };
 
-            let mut receiver1 = control_receivers.remove(&node1.index).unwrap();
-            let mut receiver2 = control_receivers.remove(&node2.index).unwrap();
-            let mut receiver3 = control_receivers.remove(&node3.index).unwrap();
+        pipeline_tx.send(start_msg1).await.unwrap();
+        pipeline_tx.send(start_msg2).await.unwrap();
+        pipeline_tx.send(start_msg3).await.unwrap();
+        yield_cycles(2).await;
 
-            // Track which timers have fired and in what order
-            let mut node1_received = false;
-            let mut node2_received = false;
-            let mut node3_received = false;
-            let mut firing_order = Vec::new();
-            let start_time = Instant::now();
+        let mut receiver1 = control_receivers.remove(&node1.index).unwrap();
+        let mut receiver2 = control_receivers.remove(&node2.index).unwrap();
+        let mut receiver3 = control_receivers.remove(&node3.index).unwrap();
 
-            // Use select! to handle whichever timer fires first, validating the order
-            while (!node1_received || !node2_received || !node3_received) && start_time.elapsed() < Duration::from_millis(400) {
-                tokio::select! {
-                    // Node1 timer tick (120ms - should be last)
-                    result1 = receiver1.recv(), if !node1_received => {
-                        match result1 {
-                            Ok(NodeControlMsg::TimerTick {}) => {
-                                node1_received = true;
-                                firing_order.push((node1.index, start_time.elapsed()));
-                                // Verify node1 fired within expected timeframe (should be ~120ms)
-                                let elapsed = start_time.elapsed();
-                                assert!(elapsed >= Duration::from_millis(100) && elapsed <= Duration::from_millis(180),
-                                       "Node1 timer should fire around 120ms, but fired after {elapsed:?}");
-                            }
-                            Ok(other) => panic!("Expected TimerTick for node1, got {other:?}"),
-                            Err(e) => panic!("Failed to receive message for node1: {e:?}"),
-                        }
-                    }
+        clock.advance(Duration::from_millis(59));
+        yield_cycles(2).await;
+        assert_no_control_msg(&mut receiver1, "node1");
+        assert_no_control_msg(&mut receiver2, "node2");
+        assert_no_control_msg(&mut receiver3, "node3");
 
-                    // Node2 timer tick (60ms - should be first)
-                    result2 = receiver2.recv(), if !node2_received => {
-                        match result2 {
-                            Ok(NodeControlMsg::TimerTick {}) => {
-                                node2_received = true;
-                                firing_order.push((node2.index, start_time.elapsed()));
-                                // Verify node2 fired within expected timeframe (should be ~60ms)
-                                let elapsed = start_time.elapsed();
-                                assert!(elapsed >= Duration::from_millis(40) && elapsed <= Duration::from_millis(100),
-                                       "Node2 timer should fire around 60ms, but fired after {elapsed:?}");
-                            }
-                            Ok(other) => panic!("Expected TimerTick for node2, got {other:?}"),
-                            Err(e) => panic!("Failed to receive message for node2: {e:?}"),
-                        }
-                    }
+        clock.advance(Duration::from_millis(1));
+        yield_cycles(2).await;
+        expect_timer_tick(&mut receiver2, "node2").await;
+        assert_no_control_msg(&mut receiver1, "node1");
+        assert_no_control_msg(&mut receiver3, "node3");
 
-                    // Node3 timer tick (90ms - should be second)
-                    result3 = receiver3.recv(), if !node3_received => {
-                        match result3 {
-                            Ok(NodeControlMsg::TimerTick {}) => {
-                                node3_received = true;
-                                firing_order.push((node3.index, start_time.elapsed()));
-                                // Verify node3 fired within expected timeframe (should be ~90ms)
-                                let elapsed = start_time.elapsed();
-                                assert!(elapsed >= Duration::from_millis(70) && elapsed <= Duration::from_millis(130),
-                                       "Node3 timer should fire around 90ms, but fired after {elapsed:?}");
-                            }
-                            Ok(other) => panic!("Expected TimerTick for node3, got {other:?}"),
-                            Err(e) => panic!("Failed to receive message for node3: {e:?}"),
-                        }
-                    }
+        clock.advance(Duration::from_millis(29));
+        yield_cycles(2).await;
+        assert_no_control_msg(&mut receiver1, "node1");
+        assert_no_control_msg(&mut receiver3, "node3");
 
-                    // Timeout protection
-                    _ = tokio::time::sleep(Duration::from_millis(30)) => {
-                        // Continue the loop - this prevents infinite blocking
-                    }
-                }
-            }
+        clock.advance(Duration::from_millis(1));
+        yield_cycles(2).await;
+        expect_timer_tick(&mut receiver3, "node3").await;
+        assert_no_control_msg(&mut receiver1, "node1");
 
-            // Verify all timers fired
-            assert!(node1_received, "Node1 should have received TimerTick");
-            assert!(node2_received, "Node2 should have received TimerTick");
-            assert!(node3_received, "Node3 should have received TimerTick");
+        clock.advance(Duration::from_millis(29));
+        yield_cycles(2).await;
+        assert_no_control_msg(&mut receiver1, "node1");
 
-            // Verify the firing order is correct (node2 first, node3 second, node1 third)
-            // Sort by elapsed time to get the actual firing order
-            firing_order.sort_by_key(|&(_, elapsed)| elapsed);
+        clock.advance(Duration::from_millis(1));
+        yield_cycles(2).await;
+        expect_timer_tick(&mut receiver1, "node1").await;
 
-            assert_eq!(firing_order.len(), 3, "Should have received exactly 3 timer events");
-            assert_eq!(firing_order[0].0, node2.index, "Node2 (60ms) should fire first");
-            assert_eq!(firing_order[1].0, node3.index, "Node3 (90ms) should fire second");
-            assert_eq!(firing_order[2].0, node1.index, "Node1 (120ms) should fire third");
-
-            // Clean shutdown
-            pipeline_tx.send(RuntimeControlMsg::Shutdown {
-                deadline: Instant::now() + Duration::from_secs(1),
-                reason: "".to_owned()
-            }).await.unwrap();
-            drop(pipeline_tx);
-            let _ = timeout(Duration::from_millis(100), manager_handle).await;
-        }
-        .await;
+        // Clean shutdown
+        pipeline_tx
+            .send(RuntimeControlMsg::Shutdown {
+                deadline: clock.now() + Duration::from_secs(1),
+                reason: "".to_owned(),
+            })
+            .await
+            .unwrap();
+        drop(pipeline_tx);
+        let _ = timeout(Duration::from_millis(100), manager_handle).await;
     }
 
     /// Validates that the RuntimeCtrlMsgManager is created with correct
@@ -3034,7 +2979,7 @@ mod tests {
 
         let registry = pipeline_context.metrics_registry();
 
-        let recv_out_key = pipeline_context.register_channel_entity(
+        let recv_out_key = pipeline_context.register_node_channel_entity(
             "recv:out".into(),
             "output".into(),
             "pdata",
@@ -3042,7 +2987,7 @@ mod tests {
             "mpsc",
             "internal",
         );
-        let proc_in_key = pipeline_context.register_channel_entity(
+        let proc_in_key = pipeline_context.register_node_channel_entity(
             "proc:in".into(),
             "input".into(),
             "pdata",
@@ -3050,7 +2995,7 @@ mod tests {
             "mpsc",
             "internal",
         );
-        let proc_out_key = pipeline_context.register_channel_entity(
+        let proc_out_key = pipeline_context.register_node_channel_entity(
             "proc:out".into(),
             "output".into(),
             "pdata",
@@ -3058,7 +3003,7 @@ mod tests {
             "mpsc",
             "internal",
         );
-        let exp_in_key = pipeline_context.register_channel_entity(
+        let exp_in_key = pipeline_context.register_node_channel_entity(
             "exp:in".into(),
             "input".into(),
             "pdata",

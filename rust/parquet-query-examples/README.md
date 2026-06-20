@@ -11,7 +11,7 @@ example, run the OTAP Dataflow pipeline using the example config:
 
 ```sh
 # run in the otap-dataflow directory
-cargo run --bin df_engine -- --pipeline configs/fake-parquet.yaml
+cargo run --bin df_engine -- --pipeline configs/trafficgen-parquet.yaml
 ```
 
 Run example:

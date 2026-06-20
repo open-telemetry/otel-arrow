@@ -1,13 +1,34 @@
 # Azure Monitor Exporter
 
-**Status:** ALPHA (Functional - supports logs only)
+## Metadata
+
+- Type: `urn:microsoft:exporter:azure_monitor`
+- Feature gate: `azure-monitor-exporter`
+- Stability: Alpha; supports logs only
+
+## Overview
 
 The Azure Monitor Exporter sends OpenTelemetry logs to Azure using the
 [Azure Logs Ingestion API][logs-api]. It transforms OTLP log data into
 the format expected by Azure Log Analytics and provides configurable schema
 mapping for custom log tables.
 
-Telemetry reference: [Telemetry.md](Telemetry.md)
+Telemetry reference: [telemetry.md](telemetry.md)
+
+## Getting Started
+
+Configure the Azure Logs Ingestion API target and authentication method:
+
+```yaml
+type: urn:microsoft:exporter:azure_monitor
+config:
+  api:
+    dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
+    stream_name: "Custom-MyLogTable_CL"
+    dcr: "dcr-abc123def456"
+  auth:
+    method: msi
+```
 
 ## Build df_engine with Azure Monitor Exporter
 
@@ -30,47 +51,50 @@ You should see `urn:microsoft:exporter:azure_monitor` in the Exporters list.
 The Azure Monitor Exporter requires Azure authentication and Data Collection Rule
 configuration:
 
-### Basic Configuration
-
 ```yaml
-nodes:
-  azure-monitor-exporter:
-    type: "urn:microsoft:exporter:azure_monitor"
-    config:
-      # API configuration (REQUIRED)
-      api:
-        dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
-        stream_name: "Custom-MyLogTable_CL"
-        dcr: "dcr-abc123def456"
-        schema:
-          # Map OTLP resource attributes to Azure fields
-          resource_mapping:
-            "service.name": "ServiceName"
-            "service.version": "ServiceVersion"
-            "host.name": "HostName"
-            "deployment.environment": "Environment"
-          # Map OTLP scope attributes to Azure fields
-          scope_mapping:
-            "otel.library.name": "InstrumentationLibrary"
-            "otel.library.version": "InstrumentationVersion"
-          # Map OTLP log record fields to Azure fields
-          log_record_mapping:
-            "body": "Message"
-            "severity_text": "SeverityText"
-            "time_unix_nano": "TimeGenerated"
-            "trace_id": "TraceId"
-            "span_id": "SpanId"
-            "attributes":
-              "message": "ParsedMessage"
+type: urn:microsoft:exporter:azure_monitor
+config:
+  # Azure Monitor API configuration (required).
+  api:
+    dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
+    stream_name: "Custom-MyLogTable_CL"
+    dcr: "dcr-abc123def456"
+    schema:
+      # Map OTLP resource attributes to Azure fields.
+      resource_mapping:
+        "service.name": "ServiceName"
+        "service.version": "ServiceVersion"
+        "host.name": "HostName"
+        "deployment.environment": "Environment"
+      # Map OTLP scope attributes to Azure fields.
+      scope_mapping:
+        "otel.library.name": "InstrumentationLibrary"
+        "otel.library.version": "InstrumentationVersion"
+      # Map OTLP log record fields to Azure fields.
+      log_record_mapping:
+        "body": "Message"
+        "severity_text": "SeverityText"
+        "time_unix_nano": "TimeGenerated"
+        "trace_id": "TraceId"
+        "span_id": "SpanId"
+        "attributes":
+          "message": "ParsedMessage"
 
-      # Authentication configuration (uses Azure SDK defaults)
-      auth:
-        method: msi # use 'dev' for local
+  # Authentication configuration. Use "msi" for managed identity or "dev" for
+  # local Azure developer credentials.
+  auth:
+    method: msi
+
+  # Optional heartbeat rows.
+  heartbeat:
+    enabled: false
+    frequency: 60s
 ```
 
 ### Authentication
 
-The exporter uses Azure SDK authentication with the following options:
+The exporter uses Azure SDK authentication. `auth.method: msi` uses managed
+identity; `auth.method: dev` uses local Azure developer credentials.
 
 ## Usage
 

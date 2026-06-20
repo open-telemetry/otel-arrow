@@ -475,6 +475,10 @@ pub(super) struct ControllerRuntimeState {
     pub(super) generation_counters: HashMap<PipelineKey, u64>,
     /// Count of runtime instances still considered active by the controller.
     pub(super) active_instances: usize,
+    /// Active engine-scoped live operation, if any.
+    pub(super) active_engine_operation: Option<String>,
+    /// Monotonic full-config reconciliation id suffix.
+    pub(super) next_reconcile_id: u64,
     /// Monotonic rollout id suffix.
     pub(super) next_rollout_id: u64,
     /// Monotonic shutdown id suffix.

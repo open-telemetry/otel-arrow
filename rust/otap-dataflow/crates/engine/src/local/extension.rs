@@ -17,14 +17,15 @@ use std::rc::Rc;
 /// See [`crate::extension::ControlChannel`] for the implementation.
 pub type ControlChannel = crate::extension::ControlChannel<LocalReceiver<ExtensionControlMsg>>;
 
-/// A trait for pipeline extensions (!Send variant).
+/// A trait for extensions (!Send variant).
 ///
-/// Extensions are long-lived components that run alongside the pipeline and
-/// expose functionality (e.g., authentication, service discovery) to other
-/// components.
+/// Extensions are long-lived components hosted alongside the data path —
+/// today at pipeline scope, and in the future at engine, pipeline-group,
+/// or node scope — that expose functionality (e.g., authentication,
+/// service discovery) to other components.
 ///
-/// Unlike receivers, processors, and exporters, extensions are NOT generic over
-/// PData — they never process pipeline data.
+/// Unlike receivers, processors, and exporters, extensions are NOT generic
+/// over PData — they never process PData.
 ///
 /// # Thread Safety
 ///

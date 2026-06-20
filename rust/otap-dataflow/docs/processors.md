@@ -27,10 +27,10 @@ or drop messages, but they do not maintain router-style multi-output state.
 
 Examples:
 
-- `attributes_processor`
+- [`attributes_processor`](../crates/core-nodes/src/processors/attributes_processor/README.md)
 - [`filter_processor`](../crates/core-nodes/src/processors/filter_processor/README.md)
 - [`log_sampling_processor`](../crates/core-nodes/src/processors/log_sampling_processor/README.md)
-- `delay_processor`
+- [`delay_processor`](../crates/core-nodes/src/processors/delay_processor/README.md)
 - [`debug_processor`](../crates/core-nodes/src/processors/debug_processor/README.md)
 
 ### Stateful Single-Route Schedulers
@@ -41,8 +41,8 @@ defer work before forwarding it.
 
 Examples:
 
-- `batch_processor`
-- `retry_processor`
+- [`batch_processor`](../crates/core-nodes/src/processors/batch_processor/README.md)
+- [`retry_processor`](../crates/core-nodes/src/processors/retry_processor/README.md)
 - [`durable_buffer_processor`](../crates/core-nodes/src/processors/durable_buffer_processor/README.md)
 - [`temporal_reaggregation_processor`](../crates/core-nodes/src/processors/temporal_reaggregation_processor/README.md)
 
@@ -75,7 +75,7 @@ execution rather than by a static exclusive route selector.
 
 Example:
 
-- `transform_processor`
+- [`transform_processor`](../crates/core-nodes/src/processors/transform_processor/README.md)
 
 ## Secondary Behavior Traits
 
@@ -108,17 +108,17 @@ routes are produced by transformation execution rather than a static router.
 <!-- markdownlint-disable MD013 -->
 | Processor | Primary class | Notable secondary traits | Notes |
 | --- | --- | --- | --- |
-| `attributes_processor` | Inline single-route | `single-route`, `inline` | Mutates OpenTelemetry attributes before forwarding. |
+| [`attributes_processor`](../crates/core-nodes/src/processors/attributes_processor/README.md) | Inline single-route | `single-route`, `inline` | Mutates OpenTelemetry attributes before forwarding. |
 | [`filter_processor`](../crates/core-nodes/src/processors/filter_processor/README.md) | Inline single-route | `single-route`, `inline`, `may-drop` | Filters signals according to configured rules. |
 | [`log_sampling_processor`](../crates/core-nodes/src/processors/log_sampling_processor/README.md) | Inline single-route | `single-route`, `inline`, `may-drop` | Samples logs to reduce volume. |
-| `delay_processor` | Inline single-route | `single-route`, `inline` | Adds artificial delay for testing and rate-shaping scenarios. |
+| [`delay_processor`](../crates/core-nodes/src/processors/delay_processor/README.md) | Inline single-route | `single-route`, `inline` | Adds artificial delay for testing and rate-shaping scenarios. |
 | [`debug_processor`](../crates/core-nodes/src/processors/debug_processor/README.md) | Inline single-route | `single-route`, `inline` | Observes or emits debug output while preserving simple forward flow. |
-| `batch_processor` | Stateful single-route scheduler | `single-route`, `stateful`, `batching`, `wakeup-driven`, `ack-aware` | Batches by size or time and tracks Ack/Nack-sensitive request state. |
-| `retry_processor` | Stateful single-route scheduler | `single-route`, `stateful`, `retrying`, `ack-aware` | Retries failed downstream delivery using exponential backoff. |
+| [`batch_processor`](../crates/core-nodes/src/processors/batch_processor/README.md) | Stateful single-route scheduler | `single-route`, `stateful`, `batching`, `wakeup-driven`, `ack-aware` | Batches by size or time and tracks Ack/Nack-sensitive request state. |
+| [`retry_processor`](../crates/core-nodes/src/processors/retry_processor/README.md) | Stateful single-route scheduler | `single-route`, `stateful`, `retrying`, `ack-aware` | Retries failed downstream delivery using exponential backoff. |
 | [`durable_buffer_processor`](../crates/core-nodes/src/processors/durable_buffer_processor/README.md) | Stateful single-route scheduler | `single-route`, `stateful`, `buffering`, `retrying`, `wakeup-driven` | Persists data before forwarding and retries from durable state. |
 | [`temporal_reaggregation_processor`](../crates/core-nodes/src/processors/temporal_reaggregation_processor/README.md) | Stateful single-route scheduler | `single-route`, `stateful`, `buffering`, `admission-gated` | Reaggregates metrics at lower frequency. |
 | [`content_router`](../crates/core-nodes/src/processors/content_router/README.md) | Exclusive router | `multi-route`, `exclusive-routing`, `wakeup-driven`, `admission-gated` | Routes by resource attribute value to one selected output. |
 | [`signal_type_router`](../crates/core-nodes/src/processors/signal_type_router/README.md) | Exclusive router | `multi-route`, `exclusive-routing`, `wakeup-driven`, `admission-gated` | Routes by signal type to one selected output. |
 | [`fanout_processor`](../crates/core-nodes/src/processors/fanout_processor/README.md) | Replicating multi-route processor | `multi-route`, `replicating`, `ack-aware`, `admission-gated` | Clones data to configured destinations and aggregates completion. |
-| `transform_processor` | Transforming routed emitter | `multi-route`, `stateful`, `ack-aware` | Runs transformation/query logic that may emit routed outputs. |
+| [`transform_processor`](../crates/core-nodes/src/processors/transform_processor/README.md) | Transforming routed emitter | `multi-route`, `stateful`, `ack-aware` | Runs transformation/query logic that may emit routed outputs. |
 <!-- markdownlint-enable MD013 -->

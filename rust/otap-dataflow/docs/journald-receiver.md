@@ -23,7 +23,7 @@ depend on the #2844 filelog assignment extension landing first.
 
 | Decision | Choice |
 | --- | --- |
-| Source API | `sd-journal` behind a small internal `JournalSource` boundary |
+| Source API | `sd-journal` through runtime-loaded `libsystemd` FFI |
 | Progress unit | Opaque journald cursor (`__CURSOR`) |
 | First implementation | Linux-only, default local system journal, single-instance source pipeline (one core) |
 | Delivery model | At-least-once from the last committed cursor |
@@ -39,12 +39,11 @@ receiver needs only a narrow `sd-journal` API surface and should keep
 native `pkg-config`/linker setup to normal builds. If `libsystemd.so.0` is not
 available when the receiver starts, startup fails with an explicit error.
 
-In v1, `SdJournalSource` is the only production `JournalSource`
-implementation. The boundary exists to keep the worker and Ack/checkpoint
-logic independent from the raw FFI wrapper and to allow deterministic
+A future `JournalSource` trait boundary can keep the worker and Ack/checkpoint
+logic independent from the raw FFI wrapper and allow deterministic
 `FakeJournalSource` tests. Its surface should stay narrow: open the source,
 seek after a cursor, read the next entry, wait for new entries, and close. It
-does not imply v1 support for `journalctl`, offline journal files, remote
+does not imply support for `journalctl`, offline journal files, remote
 journals, or multiple source backends.
 
 ## Journald vs Filelog
@@ -85,7 +84,7 @@ not copy every behavior directly. The v1 classification is:
 | `journalctl` backend | Reject | Use `sd-journal` through runtime-loaded `libsystemd`; no `journalctl` fallback |
 | `start_at` | Preserve | Keep `start_at: beginning/end`, applied only when no checkpoint exists |
 | Cursor storage | Improve | Ack-driven durable cursor envelope keyed by stable `source_id` |
-| Priority default | Improve | Go defaults to `info`; v1 includes all priorities `0..=7` unless configured |
+| Priority default | Improve | Go defaults to `info`; v1 does not install a priority filter unless configured |
 | `units` | Preserve | Keep exact unit matches |
 | `matches` | Defer | V1 exposes common filters; arbitrary field matches can be added after the first implementation |
 | `grep` | Defer | Content filtering belongs in a processor unless a receiver-side need is proven |
@@ -158,7 +157,17 @@ multicore pipeline:
 A process-local startup lease keyed by the concrete journal source selection
 (`journal.root_path` plus `journal.namespace`) prevents duplicate readers in
 the same process, even across different pipelines. Cross-process duplication is
-not prevented in v1.
+not prevented in v1. Filters such as units, syslog identifiers, and priorities
+do not define separate source ownership; two receivers with different filters
+but the same journal root/namespace still conflict in the same process.
+
+The intended v1 deployment model is one active owner per concrete host journal
+source. Running two collector processes against the same host journal may
+duplicate exported logs, and running two processes with the same checkpoint
+identity (`checkpoint.directory` plus pipeline/receiver identity plus
+`source_id`) may race cursor writes. Operators should use a single collector
+owner per host journal source unless duplicate collection is intentional.
+Cross-process file locking is a planned follow-up.
 
 Multiple journald receivers in the *same* engine are not useful in v1 because
 only the default systemd journal namespace is supported and the process-local
@@ -257,6 +266,13 @@ downstream backpressure, the async task races the blocked send against lifecycle
 control messages and the worker polls its command channel while holding a full
 handoff batch.
 
+During drain, the worker stops additional reads and attempts to let any batch
+that has already been read from journald reach a terminal Ack/Commit,
+Nack/Rewind, or configured fail outcome before the receiver reports drained. If
+the drain deadline expires first, the receiver shuts down without advancing the
+checkpoint for uncommitted work; those entries may replay on restart under the
+at-least-once delivery model.
+
 ## Ack and Checkpoint Model
 
 The receiver advances its durable cursor only after a downstream Ack and never
@@ -283,7 +299,7 @@ seek_after_committed_cursor(cursor):
   seek_cursor(cursor)
   state = next()
   if state == no_entry:
-    wait_or_return_empty()
+    return invalid_or_stale_cursor
   if test_cursor(cursor):
     return next()
   return invalid_or_stale_cursor
@@ -292,6 +308,14 @@ seek_after_committed_cursor(cursor):
 If the committed cursor is invalid, stale, or vacuumed, v1 fails closed and
 does not silently fall back to tail or head. The operator must remove the
 checkpoint or choose an explicit recovery action.
+
+Before the first successful checkpoint exists, `start_at: end` has no durable
+resume anchor. If the process crashes after entries are read from journald but
+before the first cursor commit succeeds, restart applies `start_at` again and
+may skip those uncommitted entries. While the process stays alive, a Nack before
+the first checkpoint replays the retained in-flight batch instead of reopening
+at the live tail. A production follow-up should add an initial durable anchor or
+document an operator policy for first-start loss tolerance.
 
 Each emitted batch carries:
 
@@ -318,9 +342,11 @@ Checkpoint commit ownership is split deliberately:
 - in-memory `committed_cursor` advances only after the worker confirms the
   on-disk write succeeded
 
-If there is no committed cursor yet, `on_nack: rewind` fails closed instead of
-seeking to the live tail and silently skipping the Nacked batch. Operators can
-use `on_nack: fail` for the same terminal behavior explicitly.
+If there is no committed cursor yet, `on_nack: rewind` replays the retained
+un-Acked batch instead of reopening at the live tail and silently skipping it.
+This is equivalent to rewinding from a committed cursor once one exists: the
+batch replays until downstream Acks, drain or shutdown ends the receiver, or
+operators choose `on_nack: fail` for terminal failure behavior.
 
 ## Checkpoints
 
@@ -357,11 +383,12 @@ The final segment is the configured `source_id`; it is `system` for the
 default local journal. It is not the systemd journal namespace. There is no
 `instance_id` or `core_id` segment.
 
-A single cursor file must not be written by two processes concurrently. In
-v1, cross-process duplication is prevented operationally by running one engine
-per host against the default systemd journal namespace. The process-local lease covers
-in-process duplication. A future enhancement may add a file lock alongside the
-cursor file; that addition does not change the checkpoint key shape above.
+A single cursor file must not be written by two processes concurrently. In v1,
+cross-process duplication is prevented operationally by running one engine per
+host against the default systemd journal namespace. The process-local lease
+covers in-process duplication. A future enhancement may add a file lock
+alongside the cursor file; that addition does not change the checkpoint key
+shape above.
 
 The cursor file is a small versioned envelope (cursor string + version +
 checksum). Corrupt or unknown-version envelopes fail closed; see [Failure
@@ -387,7 +414,7 @@ journal:
 
 When `journal.root_path` is unset or `/`, the receiver opens the local journal
 view. When it is set to a host-root mount such as `/host`, `SdJournalSource`
-opens that root with `sd_journal_open_directory(..., SD_JOURNAL_OS_ROOT | ...)`
+opens that root with `sd_journal_open_directory(..., SD_JOURNAL_OS_ROOT)`
 so journald resolves the usual journal locations below that root, such as
 `/host/run/log/journal` and `/host/var/log/journal`.
 
@@ -455,8 +482,11 @@ groups:
 ```
 
 `priorities` is an exact-match set. `max_priority` is shorthand expanded by the
-receiver into explicit `PRIORITY=N` matches. The default should include all
-levels `0..=7`; it should not silently drop debug entries.
+receiver into explicit `PRIORITY=N` matches. When neither field is configured,
+the receiver does not install a `PRIORITY` match, so entries without a
+`PRIORITY` field are not silently excluded. Explicit `priorities: [0, 1, 2, 3,
+4, 5, 6, 7]` remains a real filter and only matches entries that carry one of
+those `PRIORITY` values.
 
 Filter changes are not retroactive. If filters are widened after a checkpoint
 exists, the receiver resumes from the existing cursor and does not backfill
@@ -473,7 +503,7 @@ processors.
 | `body` | `MESSAGE`, unset when missing |
 | `time_unix_nano` | `sd_journal_get_realtime_usec() * 1000` |
 | `severity_number` | derived from `PRIORITY` |
-| `attributes` | native journal fields, key names preserved, with duplicate and binary rules below |
+| `attributes` | native journal fields, key names preserved |
 | internal completion state | cursor from `sd_journal_get_cursor()`, plus range and batch id; not emitted as attributes |
 
 The receiver uses `sd_journal_get_data` and field enumeration for journal
@@ -485,23 +515,38 @@ the receiver must copy the required field names and values before calling
 Attribute projection rules:
 
 - a single occurrence of a field becomes a scalar attribute
-- repeated occurrences of the same field become an array attribute in journal
-  enumeration order
 - the first `MESSAGE` value becomes the OTAP body; all `MESSAGE` values are
-  also preserved in a native journal attribute using the duplicate-field rules
-- binary values are preserved as OTAP bytes when supported; otherwise they are
-  base64 encoded with an explicit encoding marker
+  also preserved in a native journal attribute
+- binary values are preserved as OTAP bytes
 - field values must not be lossy-decoded
 
-Extraction has hard resource limits. `sd_journal_set_data_threshold` may be
-used as an optimization hint, but it is not treated as a safety boundary. The
-receiver enforces `max_field_bytes`, `max_entry_bytes`, and
-`max_fields_per_entry` while copying fields out of the journal handle. With the
-v1 `large_field_policy: drop_and_count`, any field value that exceeds the
-per-field limit, any field that would exceed the per-entry copied-byte budget,
-and any field beyond the per-entry field-count limit is omitted and counted.
+In the first implementation, duplicate field names are emitted as repeated
+same-key attributes. A follow-up PR will coalesce repeated fields into array
+attributes while preserving journald enumeration order. For example:
+
+```text
+CUSTOM=value1
+CUSTOM=value2
+```
+
+will become:
+
+```text
+CUSTOM=["value1", "value2"]
+```
+
+Extraction has hard resource limits. The receiver configures libsystemd's
+per-field data threshold from the extraction limits, with small headroom for the
+`FIELD_NAME=` prefix, so pathological journal fields are not materialized
+unboundedly before the receiver can apply its own copy limits. The receiver
+enforces `max_field_bytes`, `max_entry_bytes`, and `max_fields_per_entry` while
+copying fields out of the journal handle. With the v1
+`large_field_policy: drop_and_count`, any field value that exceeds the per-field
+limit, any field that would exceed the per-entry copied-byte budget, any field
+at the libsystemd threshold, and any field beyond the per-entry field-count
+limit is omitted and counted.
 If the first `MESSAGE` value is dropped, the body is unset; preserved
-`MESSAGE` values still follow the duplicate-field rules above.
+`MESSAGE` values are still preserved as native journal attributes.
 
 Initial severity mapping:
 
@@ -523,6 +568,7 @@ Initial severity mapping:
 | `libsystemd.so.0` load failure | startup failure; this receiver has no `journalctl` fallback |
 | `sd_journal_open` / permission failure | startup failure; not treated as an empty stream |
 | invalid `journal.root_path` / no visible journal directory | startup failure; operator must fix the mount or config |
+| partially readable journal tree | v1 may start if at least one journal file is readable; production hardening should fail closed or emit a mandatory warning/metric |
 | checkpoint missing | apply `start_at` |
 | checkpoint corrupt / unknown version | fail closed; operator must remove or migrate it |
 | cursor vacuumed / stale | fail closed; operator must remove the checkpoint or choose an explicit recovery action |
@@ -540,10 +586,10 @@ surfaces an error through the receiver/engine path.
 
 ## Receiver Self-Telemetry
 
-The first implementation emits receiver self-telemetry because journald access
-is operationally sensitive and failures can otherwise look like an idle source.
-Metric names should follow the repository's receiver metric conventions, but
-the v1 signal set includes:
+The receiver emits core self-telemetry because journald access is
+operationally sensitive and failures can otherwise look like an idle source.
+Metric names should follow the repository's receiver metric conventions. The
+broader intended signal set includes:
 
 | Signal | Type |
 | --- | --- |
@@ -556,6 +602,38 @@ the v1 signal set includes:
 | last observed entry timestamp | gauge |
 | worker restarts | counter |
 | downstream backpressure duration | histogram or counter duration |
+
+## Phased Implementation Notes
+
+The first implementation intentionally focuses on the core receiver path:
+Linux `sd-journal` ingestion, bounded worker isolation, Ack-driven checkpoint
+advancement, durable cursor persistence, basic filtering, extraction limits,
+and raw journald field projection.
+
+Some design goals are deferred to follow-up PRs once the core receiver has
+landed and the worker/checkpoint behavior is validated in production-like
+environments.
+
+Deferred follow-ups include:
+
+- coalescing duplicate journald fields into array attributes
+- introducing a `JournalSource` trait and `FakeJournalSource` test boundary
+- expanding receiver self-telemetry for stale cursors, permission warnings,
+  worker restarts, last-entry timestamp, and backpressure duration
+- failing closed or warning clearly on partially readable journal trees
+- an initial durable resume anchor for `start_at: end` before the first
+  checkpoint commit
+- configurable recovery for corrupt or unsupported checkpoint envelopes, such
+  as falling back to `start_at` and writing a fresh cursor when the operator
+  opts in
+- configurable recovery for stale or vacuumed cursors, such as accepting the
+  next available newer journal entry instead of failing closed
+- aggregate batch byte limits in addition to per-entry and per-field extraction
+  limits
+- named systemd journal namespace support
+- arbitrary journald match expressions
+- NUMA-aware placement
+- cross-process source locking
 
 ## NUMA and Placement
 
@@ -591,8 +669,9 @@ Included in the first implementation:
 - dedicated blocking worker thread with bounded handoff channels
 - Ack-driven checkpoint advancement and Nack-aware rewind/fail behavior
 - raw journald field projection without semantic-convention normalization
-- receiver self-telemetry for reads, drops, batches, checkpoints, cursor
-  failures, permission warnings, worker restarts, and backpressure
+- receiver self-telemetry for lifecycle transitions, batches, Ack/Nack
+  handling, checkpoint commits/failures, source failures, field drops, and
+  rewinds
 
 Excluded from the first implementation:
 

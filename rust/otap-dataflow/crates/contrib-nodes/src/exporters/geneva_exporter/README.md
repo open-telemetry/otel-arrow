@@ -1,11 +1,39 @@
 # Geneva Exporter
 
-**Status:** ALPHA (Functional - supports logs and traces)
+## Metadata
+
+- Type: `urn:microsoft:exporter:geneva`
+- Feature gate: `geneva-exporter`
+- Stability: Alpha; supports logs and traces
+
+## Overview
 
 The Geneva Exporter is designed for Microsoft products to send telemetry data
 to Microsoft's Geneva monitoring backend. It is not meant to be used outside
 of Microsoft products and is open sourced to demonstrate best practices and to
 be transparent about what is being collected.
+
+## Getting Started
+
+Configure the Geneva endpoint, identity, and upload concurrency:
+
+```yaml
+type: urn:microsoft:exporter:geneva
+config:
+  endpoint: "https://geneva.example.com"
+  environment: production
+  account: "my-account"
+  namespace: "my-namespace"
+  region: westus2
+  config_major_version: 1
+  tenant: "my-tenant"
+  role_name: "df-engine"
+  role_instance: "instance-001"
+  auth:
+    type: systemmanagedidentity
+    msi_resource: "https://monitor.azure.com/"
+  max_concurrent_uploads: 4
+```
 
 ## Build df_engine with Geneva Exporter
 
@@ -36,6 +64,36 @@ You should see `urn:microsoft:exporter:geneva` in the Exporters list.
 - `max_concurrent_uploads` limits how many batches the exporter will upload concurrently.
 - `max_buffer_size` is currently reserved for a future buffering/flush implementation.
   It is accepted by config parsing but does not change runtime behavior yet.
+
+## Configuration
+
+```yaml
+type: urn:microsoft:exporter:geneva
+config:
+  # Geneva endpoint and routing identity (all required).
+  endpoint: "https://geneva.example.com"
+  environment: production
+  account: "my-account"
+  namespace: "my-namespace"
+  region: westus2
+  config_major_version: 1
+  tenant: "my-tenant"
+  role_name: "df-engine"
+  role_instance: "instance-001"
+
+  # Authentication method. Other supported values are "certificate",
+  # "usermanagedidentity", "usermanagedidentitybyarmresourceid", and
+  # "workloadidentity".
+  auth:
+    type: systemmanagedidentity
+    msi_resource: "https://monitor.azure.com/"
+
+  # Reserved for future buffering/flush behavior (default: 1000).
+  max_buffer_size: 1000
+
+  # Maximum concurrent uploads (default: 4).
+  max_concurrent_uploads: 4
+```
 
 ## Test Configuration
 

@@ -1,0 +1,96 @@
+# platform: windows-only
+# ETW to Console + OTLP (with Parquet fallback)
+#
+# Pipeline topology:
+#
+#   etw receiver --> fanout --> console exporter       (always, local debug)
+#                          |
+#                          +--> otlp_grpc exporter     (primary)
+#                          |
+#                          +--> parquet exporter        (fallback if OTLP nacks)
+#
+# The fanout processor uses named output ports with primary/fallback
+# semantics.  The console always receives a copy.  OTLP is the primary
+# export target.  If OTLP nacks or times out, the same batch is written
+# to local Parquet files as a durable fallback.
+#
+# Usage (run as Administrator for ETW access):
+#   cargo run --features etw-receiver -- -c configs/etw-console-otlp.yaml
+
+version: otel_dataflow/v1
+engine: {}
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 4
+
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          etw:
+            type: receiver:etw
+            config:
+              session_name: "OtelArrowETW"
+              batching:
+                max_size: 100
+                max_duration: "50ms"
+              providers:
+                # Rustic Demo Provider (Custom)
+                - guid: "d2387720-2907-5677-8625-c1bdc4155197"
+                  level: verbose
+
+          # Fan-out with three named output ports: console, otlp, parquet.
+          # Console always fires. OTLP is primary. Parquet is fallback for OTLP.
+          fanout:
+            type: processor:fanout
+            outputs: ["console", "otlp", "parquet"]
+            config:
+              await_ack: primary
+              destinations:
+                - port: console
+                - port: otlp
+                  primary: true
+                  timeout: 5s
+                - port: parquet
+                  fallback_for: otlp
+
+          console:
+            type: exporter:console
+            config: {}
+
+          otlp_out:
+            type: exporter:otlp_grpc
+            config:
+              grpc_endpoint: "http://127.0.0.1:4317"
+              timeout: "5s"
+
+          parquet_fallback:
+            type: exporter:parquet
+            config:
+              storage:
+                file:
+                  base_uri: ./etw_output
+              partitioning_strategies:
+                - schema_metadata: ["_part_id"]
+              writer_options:
+                flush_when_older_than: 10s
+
+        connections:
+          - from: etw
+            to: fanout
+          - from: fanout["console"]
+            to: console
+          - from: fanout["otlp"]
+            to: otlp_out
+          - from: fanout["parquet"]
+            to: parquet_fallback

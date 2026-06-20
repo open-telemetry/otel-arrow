@@ -2,54 +2,83 @@
 
 # Contrib Nodes
 
-This crate contains contrib receivers, processors, and exporters.
+Contrib nodes are optional receivers, processors, and exporters that extend the
+default OTel Arrow Dataflow Engine build. Use this catalog to find the node
+`type` to put in runtime YAML and to open the node-specific documentation for
+configuration examples, telemetry, limits, and stability notes.
 
-## Folder Layout
+For help writing runtime YAML, start at
+[`docs/configuration.md`](../../docs/configuration.md). For exact runtime
+configuration semantics, see
+[`docs/configuration-model.md`](../../docs/configuration-model.md).
 
-- `src/exporters/`
-  - Contrib exporters
-- `src/receivers/`
-  - Contrib receivers
-- `src/processors/`
-  - Contrib processors
+## How To Read Node Documentation
 
-## Features
+Each node page follows the same general shape:
 
-Feature flags are grouped into aggregate categories and individual node flags.
-Aggregate flags enable all nodes in their category.
+- `Metadata`: node type, full URN, feature gate, and stability.
+- `Overview`: what the node does and where it fits in a pipeline.
+- `Configuration`: the node-level `config` payload and related node options.
+- `Examples`: small YAML snippets for common use cases.
+- `Telemetry`: node-specific metric sets and events.
+- `Limits`: important operational or compatibility limits.
+- `Related Docs`: adjacent references and examples.
 
-### Receivers
+Contrib nodes are enabled through individual feature gates or aggregate feature
+gates such as `contrib-receivers`, `contrib-processors`, and
+`contrib-exporters`. A node documented as `Experimental`, `Alpha`, or `WIP` has
+no stable compatibility guarantee yet, and its behavior or configuration can
+change between releases.
 
-| Node | URN | Module |
-| ---- | --- | ------ |
-| user_events_receiver | `urn:otel:receiver:user_events` | `src/receivers/user_events_receiver/` |
+## Node Type Syntax
 
-#### user_events_receiver
+Use the `Type` value from the tables below in a node definition:
 
-- Reads Linux `user_events` tracepoints through per-CPU perf sessions
-- Supports single-tracepoint and multi-tracepoint configuration
-- Supports tracefs structural decoding by default
-- Supports EventHeader decoding when the `user_events-eventheader` feature is
-  enabled
+```yaml
+type: receiver:user_events
+```
 
-### Exporters
+The full URN form is also accepted for OTel nodes, and some vendor-specific
+contrib nodes currently document only their full URN:
 
-- `contrib-exporters` (enables all contrib exporters)
+```yaml
+type: urn:microsoft:exporter:geneva
+```
 
-| Feature | Enables Node | Node URN | Module |
-| ------- | ------------ | -------- | ------ |
-| `geneva-exporter` | Geneva exporter | `urn:microsoft:exporter:geneva` | `src/exporters/geneva_exporter/` |
-| `azure-monitor-exporter` | Azure Monitor exporter | `urn:microsoft:exporter:azure_monitor` | `src/exporters/azure_monitor_exporter/` |
+For the canonical node URN format, see [`docs/urns.md`](../../docs/urns.md).
 
-### Processors
+## Receivers
 
-- `contrib-processors` (enables all contrib processors)
+Receivers ingest data into a pipeline.
 
-| Feature | Enables Node | Node URN | Module |
-| ------- | ------------ | -------- | ------ |
-| `condense-attributes-processor` | Condense Attributes processor | `urn:otel:processor:condense_attributes` | `src/processors/condense_attributes_processor/` |
-| `recordset-kql-processor` | RecordSet KQL processor | `urn:microsoft:processor:recordset_kql` | `src/processors/recordset_kql_processor/` |
-| `resource-validator-processor` | Resource Validator processor | `urn:otel:processor:resource_validator` | `src/processors/resource_validator_processor/` |
+| Type                                                                                | Feature                | Stability    | Description                                      |
+| ----------------------------------------------------------------------------------- | ---------------------- | ------------ | ------------------------------------------------ |
+| [`receiver:user_events`](src/receivers/user_events_receiver/README.md)              | `user_events-receiver` | Experimental | Ingests Linux `user_events` tracepoints as logs. |
+
+## Processors
+
+Processors transform or validate data already moving through a pipeline.
+
+| Type                                                                                                 | Feature                         | Stability    | Description                                                  |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------- | ------------ | ------------------------------------------------------------ |
+| [`processor:condense_attributes`](src/processors/condense_attributes_processor/README.md)            | `condense-attributes-processor` | WIP          | Condenses multiple log attributes into one string attribute. |
+| [`urn:microsoft:processor:recordset_kql`](src/processors/recordset_kql_processor/README.md)          | `recordset-kql-processor`       | Experimental | Runs KQL expressions over OTAP data in an opinionated shape. |
+| [`processor:resource_validator`](src/processors/resource_validator_processor/README.md)              | `resource-validator-processor`  | Experimental | NACKs data missing required resource attribute values.       |
+
+## Exporters
+
+Exporters send data out of a pipeline.
+
+| Type                                                                                              | Feature                  | Stability               | Description                                      |
+| ------------------------------------------------------------------------------------------------- | ------------------------ | ----------------------- | ------------------------------------------------ |
+| [`urn:microsoft:exporter:azure_monitor`](src/exporters/azure_monitor_exporter/README.md)          | `azure-monitor-exporter` | Alpha; supports logs    | Sends OpenTelemetry logs to Azure Monitor.       |
+| [`urn:microsoft:exporter:geneva`](src/exporters/geneva_exporter/README.md)                        | `geneva-exporter`        | Alpha; logs and traces  | Sends telemetry to Microsoft's Geneva backend.   |
+
+## Feature Aggregates
+
+- `contrib-receivers`: enables all contrib receivers.
+- `contrib-processors`: enables all contrib processors.
+- `contrib-exporters`: enables all contrib exporters.
 
 When these features are enabled in the top-level binary, their factories are
 registered into the OTAP pipeline factory maps.

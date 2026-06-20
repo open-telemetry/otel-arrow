@@ -136,6 +136,7 @@ The following type names are available for `is` checks:
 | `Integer` | 64-bit signed integer |
 | `Double` | Double-precision floating point |
 | `Boolean` | `true` or `false` |
+| `Bytes` | Binary data |
 | `Array` | Array of values |
 | `Map` | Key-value map |
 | `Null` | Null / empty value |
@@ -144,8 +145,6 @@ The following type names are available for `is` checks:
 currently no support for indexing into them or using their contents in
 expressions. This means you can test whether an attribute is an `Array` or
 `Map`, but you cannot access individual elements within them.
-
-A type for binary data (bytes) is not yet supported, but will be added soon.
 
 Type checks are commonly used to guard function calls that only accept
 specific types:

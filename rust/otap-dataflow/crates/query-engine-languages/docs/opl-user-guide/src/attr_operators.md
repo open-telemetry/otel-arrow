@@ -229,7 +229,15 @@ logs | apply instrumentation_scope.attributes {
 
 ### Supported operators
 
-The operators `where`, `set`, and `if` are supported inside `apply` blocks.
+The operators `where`, `drop`, `set`, and `if` are supported inside `apply`
+blocks. The `drop` operator inside `apply` clears all entries from the applied
+map:
+
+```text
+// remove all attributes
+logs | apply attributes { drop }
+```
+
 Operators like `rename` and `remove` are not supported inside `apply` -- they
 operate on the outer pipeline level by targeting specific attribute keys.
 Using an unsupported operator inside `apply` will produce an error.

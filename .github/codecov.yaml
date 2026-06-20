@@ -11,21 +11,20 @@ codecov:
     # Currently:
     #   - .github/workflows/rust-ci.yml `experimental_tests`
     #     (gated on `matrix.os == 'ubuntu-latest'`, expands across the
-    #      `folder` matrix): 2 uploads
-    #       * experimental/query_abstraction
+    #      `folder` matrix): 1 upload
     #       * experimental/query_engine
     #   - .github/workflows/rust-ci.yml `coverage`:                 1 upload
     #   - .github/workflows/go-ci.yml   `test_and_coverage`:        1 upload
     # If you add or remove a codecov upload, or change a matrix that
     # contains one, update this number.
-    after_n_builds: 4
+    after_n_builds: 3
 
 coverage:
   status:
     project: # Overall repo coverage
       default:
-        target: auto      # compare against the base commit
-        threshold: 1%     # allow a small drop without failing
+        target: auto # compare against the base commit
+        threshold: 1% # allow a small drop without failing
     patch: # Changed lines in PR
       default:
         target: 80%
@@ -42,10 +41,6 @@ component_management:
       name: "otap-dataflow"
       paths:
         - "rust/otap-dataflow/"
-    - component_id: "query_abstraction"
-      name: "query_abstraction"
-      paths:
-        - "rust/experimental/query_abstraction/"
     - component_id: "query_engine"
       name: "query_engine"
       paths:
