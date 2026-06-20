@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781830588756,
+  "lastUpdate": 1781916412068,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5260,6 +5260,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 99.41,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Tim R",
+            "username": "timr-dev",
+            "email": "68666585+timr-dev@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "678b5d63f2cf952d2418827f552d6501c2d5d188",
+          "message": "OTAP exporter: support static request headers natively (#3315)\n\nCloses #3314.\n\n## What\n\nThe native OTAP (Arrow-protocol) exporter (`urn:otel:exporter:otap`) now\nsupports static request `headers`, attaching them as the **initial\nmetadata of each Arrow log/metric/trace stream**. The previous\nconfig-load rejection (`reject_unsupported_headers`) is removed.\n\n## Approach\n\n- **Shared builder at the `GrpcClientSettings` layer** (the maintainer's\npreferred option from the #3303 review thread): added\n`build_static_metadata(&HashMap) -> Option<MetadataMap>` as a single\nsource of truth, and refactored the OTLP/gRPC exporter to delegate to it\n(removing its private duplicate).\n- **Attach once per stream (re)open**: in `stream_arrow_batches`, the\npre-built `Option<Arc<MetadataMap>>` template is cloned onto the\nstream-open `Request` via `into_streaming_request()` + `metadata_mut()`.\nThe `StreamingArrowService` trait and its impls are untouched.\n- **Hot path preserved**: `create_req_stream` (the\nper-`BatchArrowRecords` path) is unchanged; the only added cost is one\n`MetadataMap` clone per stream establishment (documented in the README\n\"Limits\").\n- **Validation reused**: header validation stays in\n`GrpcClientSettings::validate()` (ASCII, reserved gRPC metadata,\ncase-insensitive duplicates), now also invoked from `from_config` as\ndefense-in-depth, and skipped/invalid entries are logged.\n\n## Tests\n\n- Removed the 2 rejection tests; added positive config tests (accept\nvalid headers; reject reserved) plus a `from_config` rejection test.\n- End-to-end: configured headers are present as **initial stream\nmetadata on logs, metrics, AND traces**; multiple headers; empty/absent\nmap sends no metadata.\n- Deterministic unit test that headers are re-applied on **every**\nstream (re)open.\n- Builder unit tests (empty → `None`, builds map, skips invalid).\n- `cargo xtask check` passes (structure, `fmt`, `clippy -D warnings`,\nworkspace tests).\n\n## Notes\n\nComplements #3306: OTAP header **values** should later adopt the same\nopaque/secret type so credentials don't leak into telemetry.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-06-19T18:24:55Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/678b5d63f2cf952d2418827f552d6501c2d5d188"
+        },
+        "date": 1781916399719,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 112.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 99.47,
             "unit": "MB"
           }
         ]
