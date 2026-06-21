@@ -726,7 +726,7 @@ jobs:
   host-metrics-weaver-live-check:
     runs-on: ubuntu-latest
     env:
-      WEAVER_VERSION: v0.23.0
+      WEAVER_VERSION: v0.24.0
       # Semantic-conventions tag to validate against. Keep in sync with
       # the `VERSION` constant in
       # rust/otap-dataflow/crates/core-nodes/src/receivers/host_metrics_receiver/semconv.rs
@@ -748,7 +748,7 @@ jobs:
           workspaces: ./rust/otap-dataflow
           cache-bin: false
       - name: Setup Weaver
-        uses: open-telemetry/weaver/.github/actions/setup-weaver@3a3b7cc98e08f84bccda45c0f20522b51d64a88c # v0.23.0
+        uses: open-telemetry/weaver/.github/actions/setup-weaver@9b84f5cd76cb98e8aaf37bc58936b31fe0ddbab4 # v0.24.0
         with:
           version: ${{ env.WEAVER_VERSION }}
       - name: Build df_engine
