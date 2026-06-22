@@ -73,6 +73,7 @@
         "opentelemetry-stdout",
         "opentelemetry-otlp",
         "opentelemetry-prometheus",
+        "opentelemetry-proto"
       ],
     },
     {
