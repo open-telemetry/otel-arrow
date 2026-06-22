@@ -30,6 +30,13 @@ pub use builder::{
     PassiveConstructedCompleteStage, PassiveConstructedLocalStage, PassiveConstructedSharedStage,
     PassiveConstructedStage, PassiveStage, SharedDecomposed,
 };
+// TODO: reduce public visibility of the readiness types.
+// `ReadinessSignaller`, `ReadinessProbe`, and `ReadinessProbeError` have no
+// consumers outside the engine crate and should be `pub(crate)`. Blocked by
+// `ExtensionWrapper` being a `pub enum` whose variants carry
+// `lifecycle: ExtensionLifecycle<...>`, which transitively forces these types
+// public (E0446). Make `ExtensionWrapper` opaque first, then demote these and
+// `ExtensionLifecycle` to `pub(crate)`. Do this in a dedicated PR.
 pub use readiness::{
     DEFAULT_READINESS_TIMEOUT, ReadinessProbe, ReadinessProbeError, ReadinessSignaller,
 };
