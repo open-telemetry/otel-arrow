@@ -609,6 +609,7 @@ mod tests {
                             value: Some(OtlpAnyValue {
                                 value: Some(OtlpValue::IntValue(18)),
                             }),
+                            ..Default::default()
                         }],
                         dropped_attributes_count: 18,
                         entity_refs: vec![OtlpEntityRef {
@@ -628,6 +629,7 @@ mod tests {
                                     value: Some(OtlpAnyValue {
                                         value: Some(OtlpValue::IntValue(18)),
                                     }),
+                                    key_strindex: 0,
                                 }],
                                 dropped_attributes_count: 18,
                             }),
@@ -644,6 +646,7 @@ mod tests {
                                     value: Some(OtlpAnyValue {
                                         value: Some(OtlpValue::IntValue(18)),
                                     }),
+                                    ..Default::default()
                                 }],
                                 dropped_attributes_count: 18,
                                 flags: 1,
