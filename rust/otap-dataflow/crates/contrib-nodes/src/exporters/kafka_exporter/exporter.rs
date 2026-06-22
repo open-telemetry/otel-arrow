@@ -140,8 +140,10 @@ impl<'a> AckNackReporter for EffectHandlerReporter<'a> {
 ///
 /// Exports telemetry data (traces, metrics, logs) to Apache Kafka topics using the rdkafka client.
 ///
-/// Supports dynamic topic routing via transport headers and resource attributes,
-/// with a priority hierarchy: transport header > static topic.
+/// Supports dynamic topic routing via transport headers, with a priority
+/// hierarchy: transport header > static topic. The static topic is used only
+/// when the configured header is absent; a header present with an invalid
+/// topic value causes a permanent nack rather than a fallback.
 ///
 /// Error handling follows a "log and continue" policy:
 /// - Export failures are logged via the effect handler and recorded in metrics.
@@ -311,10 +313,13 @@ impl KafkaExporter {
 
     /// Exports a single PData message to Kafka with Ack/Nack support.
     ///
-    /// Uses the [`TopicRouter`] to resolve the destination topic(s):
-    /// 1. Transport header (highest priority)
-    /// 2. Resource attribute (may split the batch)
-    /// 3. Static per-signal topic (fallback)
+    /// Uses the [`TopicRouter`] to resolve the destination topic:
+    /// 1. Transport header (highest priority): used when the configured header
+    ///    key is present in the pdata context. If the key is present but its
+    ///    value is not a valid Kafka topic, the batch is permanently nacked
+    ///    (no fallback to the static topic).
+    /// 2. Static per-signal topic: fallback used only when the configured header
+    ///    key is absent (or no header routing is configured).
     ///
     /// When the exporter's [`EffectHandler`] has a propagation policy and the
     /// pdata context carries transport headers, matching headers are emitted as
@@ -616,7 +621,7 @@ pub mod test_support {
 
         let mut headers = TransportHeaders::new();
         headers.push(TransportHeader {
-            name: header_wire_name.to_lowercase().replace('-', "_"),
+            name: header_wire_name.to_ascii_lowercase(),
             wire_name: header_wire_name.to_string(),
             value_kind: ValueKind::Text,
             value: header_value.as_bytes().to_vec(),
@@ -997,7 +1002,7 @@ pub mod test_support {
                 KafkaExporterConfigBuilder::new("localhost:9092", "test-client")
                     .with_logs(
                         SignalConfig::new("test-logs".into(), MessageFormat::OtlpProto)
-                            .with_topic_from_transport_header("x_target_topic"),
+                            .with_topic_from_transport_header("x-target-topic"),
                     )
                     .try_into()
                     .expect("test config should be valid");

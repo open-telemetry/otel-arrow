@@ -17,8 +17,6 @@
 //! - Producer tuning: `required_acks`, `max_message_bytes`, `linger_ms`
 //! - Escape hatch: `producer_config` for arbitrary librdkafka settings
 //! - (Planned) resource attribute-based partitioning for stateful processing
-//!   (config knob present but not yet implemented; enabling it will currently
-//!   trigger a config error to fail fast)
 //! - Async-first using `rdkafka::FutureProducer`
 //! - Per-signal telemetry metrics
 //!
@@ -34,14 +32,14 @@
 //!       traces:
 //!         topic: "otlp_spans"
 //!         encoding: "otlp_proto"
-//!         topic_from_transport_header: "x_traces_topic"  # optional dynamic routing
+//!         topic_from_transport_header: "x-traces-topic"  # optional dynamic routing
 //!       metrics:
 //!         topic: "otlp_metrics"
 //!         encoding: "otlp_proto"
 //!       logs:
 //!         topic: "otlp_logs"
 //!         encoding: "otlp_proto"
-//!         topic_from_transport_header: "x_logs_topic"    # optional dynamic routing
+//!         topic_from_transport_header: "x-logs-topic"    # optional dynamic routing
 //!       timeout_ms: 5000
 //!       compression: "zstd"
 //!       required_acks: "one"

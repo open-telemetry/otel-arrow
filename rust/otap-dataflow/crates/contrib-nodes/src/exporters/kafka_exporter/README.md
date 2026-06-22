@@ -65,7 +65,7 @@ permanently nack it (non-retryable).
 | --- | --- | --- | --- |
 | `topic` | string | **required** | Kafka topic to produce messages to (static fallback). |
 | `encoding` | string | `"otlp_proto"` | Encoding format: `otlp_proto` or `otap_proto`. |
-| `topic_from_transport_header` | string | *none* | Transport header name for dynamic topic routing. When set and the header is present, its value overrides `topic`. See [Dynamic Topic Routing](#dynamic-topic-routing). |
+| `topic_from_transport_header` | string | *none* | Transport header name for dynamic topic routing. When set and the header is present with a valid topic, its value overrides `topic`; if the header is absent the static `topic` is used, and if present but invalid the batch is permanently nacked. See [Dynamic Topic Routing](#dynamic-topic-routing). |
 | `partition_by_transport_headers` | bool | `false` | Serialize all transport headers into a Kafka record key. See [Partitioning](#partitioning). |
 
 ### Dynamic Topic Routing
@@ -85,6 +85,12 @@ its value is used as the Kafka destination topic instead of the static
 Each signal type can use a different header key (or none at all), allowing
 independent dynamic routing per signal. If the header is not present on a
 particular message, the static `topic` is used as a fallback.
+
+The configured `topic_from_transport_header` value is lowercased during config
+validation to match how captured transport header names are normalized on
+ingress (lowercase, dashes preserved). For example, `X-Target-Topic` is
+matched as `x-target-topic`. If a capture policy stores a header under a custom
+`store_as` name, set this value to that stored name.
 
 If a transport header *is* present but supplies an invalid Kafka topic name,
 the batch is **permanently nacked** rather than silently routed to the static
@@ -257,7 +263,7 @@ config:
   traces:
     topic: "otlp_spans"
     encoding: "otlp_proto"
-    topic_from_transport_header: "x_traces_topic"
+    topic_from_transport_header: "x-traces-topic"
     partition_by_transport_headers: true
   metrics:
     topic: "otlp_metrics"
@@ -265,7 +271,7 @@ config:
   logs:
     topic: "otlp_logs"
     encoding: "otlp_proto"
-    topic_from_transport_header: "x_logs_topic"
+    topic_from_transport_header: "x-logs-topic"
 ```
 
 ### Full Configuration
@@ -279,7 +285,7 @@ config:
   traces:
     topic: "otlp_spans"
     encoding: "otlp_proto"
-    topic_from_transport_header: "x_traces_topic"
+    topic_from_transport_header: "x-traces-topic"
     partition_by_transport_headers: true
   metrics:
     topic: "otlp_metrics"
@@ -288,7 +294,7 @@ config:
   logs:
     topic: "otlp_logs"
     encoding: "otlp_proto"
-    topic_from_transport_header: "x_logs_topic"
+    topic_from_transport_header: "x-logs-topic"
     partition_by_transport_headers: true
   timeout_ms: 5000
   compression: "zstd"

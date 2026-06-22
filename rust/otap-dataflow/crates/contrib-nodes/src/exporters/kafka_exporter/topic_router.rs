@@ -7,8 +7,12 @@
 //!
 //! 1. **Transport header** (`topic_from_transport_header` on the per-signal config):
 //!    If configured for the signal type and the header is present in the pdata
-//!    context, its value becomes the topic for the batch.
-//! 2. **Static fallback**: The per-signal `topic` from config.
+//!    context, its value becomes the topic for the batch. If the header is
+//!    present but its value is an invalid Kafka topic, routing fails with
+//!    [`TopicRoutingError::InvalidHeaderTopic`] and the batch is permanently
+//!    nacked — it does **not** fall back to the static topic.
+//! 2. **Static fallback**: The per-signal `topic` from config, used only when
+//!    the configured header is absent (or no header key is configured).
 //!
 //! Each signal type can use a different transport header key (or none), allowing
 //! independent dynamic routing per signal.
@@ -102,6 +106,9 @@ impl TopicRouter {
     /// Returns the first matching header's string value, or `None` if the
     /// header key is not configured for this signal or the header is absent.
     fn resolve_from_header(signal_config: &SignalConfig, context: &Context) -> Option<String> {
+        // `topic_from_transport_header` is pre-normalized (lowercased) in
+        // `KafkaExporterConfig::try_from`, matching how transport headers store
+        // their logical names, so a plain equality check is sufficient here.
         let header_key = signal_config.topic_from_transport_header()?;
         let transport_headers = context.transport_headers()?;
 
@@ -126,7 +133,8 @@ mod tests {
 
     fn make_transport_header(wire_name: &str, value: &str) -> TransportHeader {
         TransportHeader {
-            name: wire_name.to_lowercase().replace('-', "_"),
+            // Mirror capture-time normalization: lowercase, dashes preserved.
+            name: wire_name.to_ascii_lowercase(),
             wire_name: wire_name.to_string(),
             value_kind: ValueKind::Text,
             value: value.as_bytes().to_vec(),
@@ -155,7 +163,7 @@ mod tests {
 
     #[test]
     fn test_resolve_header_present() {
-        let config = make_signal_config("fallback-logs", Some("x_target_topic"));
+        let config = make_signal_config("fallback-logs", Some("x-target-topic"));
         let ctx = context_with_headers(vec![make_transport_header(
             "X-Target-Topic",
             "tenant-a-logs",
@@ -171,7 +179,7 @@ mod tests {
 
     #[test]
     fn test_resolve_header_absent() {
-        let config = make_signal_config("fallback-logs", Some("x_target_topic"));
+        let config = make_signal_config("fallback-logs", Some("x-target-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Other-Header", "value")]);
         let mut metrics = KafkaExporterMetrics::default();
 
@@ -184,7 +192,7 @@ mod tests {
 
     #[test]
     fn test_resolve_header_no_transport_headers_on_context() {
-        let config = make_signal_config("fallback-logs", Some("x_target_topic"));
+        let config = make_signal_config("fallback-logs", Some("x-target-topic"));
         let ctx = Context::default();
         let mut metrics = KafkaExporterMetrics::default();
 
@@ -208,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_resolve_header_wins_over_static() {
-        let config = make_signal_config("static-topic", Some("x_target_topic"));
+        let config = make_signal_config("static-topic", Some("x-target-topic"));
         let ctx = context_with_headers(vec![make_transport_header(
             "X-Target-Topic",
             "header-topic",
@@ -237,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_resolve_header_path_returns_owned() {
-        let config = make_signal_config("fallback", Some("x_topic"));
+        let config = make_signal_config("fallback", Some("x-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "dynamic")]);
         let mut metrics = KafkaExporterMetrics::default();
 
@@ -251,9 +259,9 @@ mod tests {
 
     #[test]
     fn test_per_signal_header_keys() {
-        let traces_config = make_signal_config("otlp_spans", Some("x_traces_topic"));
+        let traces_config = make_signal_config("otlp_spans", Some("x-traces-topic"));
         let metrics_config = make_signal_config("otlp_metrics", None);
-        let logs_config = make_signal_config("otlp_logs", Some("x_logs_topic"));
+        let logs_config = make_signal_config("otlp_logs", Some("x-logs-topic"));
 
         let ctx = context_with_headers(vec![
             make_transport_header("X-Traces-Topic", "custom-traces"),
@@ -280,7 +288,7 @@ mod tests {
 
     #[test]
     fn test_per_signal_header_key_absent_falls_back() {
-        let config = make_signal_config("fallback-logs", Some("x_logs_topic"));
+        let config = make_signal_config("fallback-logs", Some("x-logs-topic"));
         let ctx = Context::default();
         let mut metrics = KafkaExporterMetrics::default();
 
@@ -294,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_resolve_invalid_header_topic_empty_errors() {
-        let config = make_signal_config("fallback-topic", Some("x_topic"));
+        let config = make_signal_config("fallback-topic", Some("x-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "")]);
         let mut metrics = KafkaExporterMetrics::default();
 
@@ -310,7 +318,7 @@ mod tests {
 
     #[test]
     fn test_resolve_invalid_header_topic_dot_errors() {
-        let config = make_signal_config("fallback-topic", Some("x_topic"));
+        let config = make_signal_config("fallback-topic", Some("x-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", ".")]);
         let mut metrics = KafkaExporterMetrics::default();
 
@@ -325,7 +333,7 @@ mod tests {
 
     #[test]
     fn test_resolve_invalid_header_topic_dotdot_errors() {
-        let config = make_signal_config("fallback-topic", Some("x_topic"));
+        let config = make_signal_config("fallback-topic", Some("x-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "..")]);
         let mut metrics = KafkaExporterMetrics::default();
 
@@ -339,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_resolve_invalid_header_topic_bad_chars_errors() {
-        let config = make_signal_config("fallback-topic", Some("x_topic"));
+        let config = make_signal_config("fallback-topic", Some("x-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "bad topic/name")]);
         let mut metrics = KafkaExporterMetrics::default();
 
@@ -355,7 +363,7 @@ mod tests {
     #[test]
     fn test_resolve_invalid_header_topic_too_long_errors() {
         let long_topic = "a".repeat(250);
-        let config = make_signal_config("fallback-topic", Some("x_topic"));
+        let config = make_signal_config("fallback-topic", Some("x-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", &long_topic)]);
         let mut metrics = KafkaExporterMetrics::default();
 
@@ -370,13 +378,32 @@ mod tests {
 
     #[test]
     fn test_resolve_valid_header_topic_still_works() {
-        let config = make_signal_config("fallback-topic", Some("x_topic"));
+        let config = make_signal_config("fallback-topic", Some("x-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "valid-topic-123")]);
         let mut metrics = KafkaExporterMetrics::default();
 
         let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("valid topic");
         assert_eq!(&*topic, "valid-topic-123");
         assert!(matches!(topic, Cow::Owned(_)));
+        assert_eq!(metrics.topic_from_header.get(), 1);
+        assert_eq!(metrics.topic_from_static_config.get(), 0);
+    }
+
+    #[test]
+    fn test_resolve_matches_normalized_config_key_for_mixed_case_header() {
+        // A header arriving as `X-Target-Topic` is captured (and normalized) as
+        // `x-target-topic`. The config key must be the normalized form for the
+        // router to match it -- `KafkaExporterConfig::try_from` produces this
+        // form from a natural config like `X-Target-Topic`.
+        let config = make_signal_config("fallback-logs", Some("x-target-topic"));
+        let ctx = context_with_headers(vec![make_transport_header(
+            "X-Target-Topic",
+            "tenant-a-logs",
+        )]);
+        let mut metrics = KafkaExporterMetrics::default();
+
+        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("valid topic");
+        assert_eq!(&*topic, "tenant-a-logs");
         assert_eq!(metrics.topic_from_header.get(), 1);
         assert_eq!(metrics.topic_from_static_config.get(), 0);
     }
