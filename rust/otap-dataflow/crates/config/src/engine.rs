@@ -60,6 +60,22 @@ pub struct OtelDataflowSpec {
     pub groups: HashMap<PipelineGroupId, PipelineGroupConfig>,
 }
 
+impl OtelDataflowSpec {
+    /// Returns a clone of this engine config with every node's credential
+    /// header values redacted, for safe exposure through the admin config
+    /// snapshot API (`GET /api/v1/config`). See
+    /// [`PipelineConfig::redacted_for_snapshot`]. The stored config is left
+    /// unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> OtelDataflowSpec {
+        let mut redacted = self.clone();
+        for group in redacted.groups.values_mut() {
+            *group = group.redacted_for_snapshot();
+        }
+        redacted
+    }
+}
+
 /// Top-level engine configuration section.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -364,6 +380,51 @@ groups:
             to: exporter
 "#
         )
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_node_headers_across_groups() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config:
+              endpoint: "https://backend.example"
+              headers:
+                authorization: "Bearer super-secret-token"
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+        let spec = OtelDataflowSpec::from_yaml(yaml).expect("spec should parse and validate");
+        let redacted = spec.redacted_for_snapshot();
+
+        let redacted_json = serde_json::to_string(&redacted).expect("redacted spec serializes");
+        assert!(
+            !redacted_json.contains("Bearer super-secret-token"),
+            "credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
+            "redaction placeholder should be present: {redacted_json}"
+        );
+
+        // Redaction is a copy: the original snapshot keeps the cleartext for the
+        // controller's own use (it is never the thing serialized to clients).
+        let original_json = serde_json::to_string(&spec).expect("spec serializes");
+        assert!(
+            original_json.contains("Bearer super-secret-token"),
+            "original spec must retain the cleartext credential"
+        );
     }
 
     fn write_temp_file(ext: &str, contents: &str) -> PathBuf {

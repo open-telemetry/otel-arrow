@@ -28,9 +28,13 @@ fn operation_error_response(status: StatusCode, error: crate::ControlPlaneError)
 }
 
 /// Returns the full controller-owned engine configuration.
+///
+/// Credential header values are redacted from the response (see
+/// [`OtelDataflowSpec::redacted_for_snapshot`]) so secrets configured in node
+/// `headers` are not exposed in cleartext through this endpoint.
 pub async fn show_config(State(state): State<AppState>) -> impl IntoResponse {
     match state.controller.engine_config_snapshot() {
-        Ok(config) => (StatusCode::OK, Json(config)).into_response(),
+        Ok(config) => (StatusCode::OK, Json(config.redacted_for_snapshot())).into_response(),
         Err(error) => operation_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
@@ -244,6 +248,54 @@ mod tests {
         let decoded: OtelDataflowSpec =
             serde_json::from_slice(&body).expect("config body should deserialize");
         assert_eq!(decoded, config);
+    }
+
+    /// Scenario: a node config contains credential header values.
+    /// Guarantees: `show_config` redacts them so the raw credential never
+    /// appears in the response body.
+    #[tokio::test]
+    async fn show_config_redacts_credential_header_values() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config:
+              headers:
+                authorization: "Bearer super-secret-token"
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("spec should parse and validate");
+        let response = show_config(State(test_app_state(stub(
+            Ok(config),
+            Ok(reconcile_status(EngineConfigReconcileState::Succeeded)),
+        ))))
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let text = String::from_utf8(body.to_vec()).expect("config body is utf-8");
+        assert!(
+            !text.contains("Bearer super-secret-token"),
+            "raw credential must not appear in the config response: {text}"
+        );
+        assert!(
+            text.contains("[REDACTED]"),
+            "redacted placeholder should appear in the config response: {text}"
+        );
     }
 
     /// Scenario: the active control plane does not support full config

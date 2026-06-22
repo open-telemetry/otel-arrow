@@ -629,6 +629,24 @@ impl PipelineConfig {
         &self.nodes
     }
 
+    /// Returns a clone of this pipeline config with every node's and
+    /// extension's credential header values redacted, for safe exposure through
+    /// the admin/config snapshot APIs. See
+    /// [`NodeUserConfig::redacted_for_snapshot`] and
+    /// [`ExtensionUserConfig::redacted_for_snapshot`]. The stored config is left
+    /// unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> PipelineConfig {
+        let mut redacted = self.clone();
+        for node in redacted.nodes.0.values_mut() {
+            *node = Arc::new(node.redacted_for_snapshot());
+        }
+        for extension in redacted.extensions.0.values_mut() {
+            *extension = Arc::new(extension.redacted_for_snapshot());
+        }
+        redacted
+    }
+
     /// Returns a reference to the pipeline extensions.
     #[must_use]
     pub const fn extensions(&self) -> &PipelineExtensions {
@@ -3241,6 +3259,74 @@ extensions:
         assert!(
             msg.contains("duplicate extension key"),
             "error should mention duplicate extension key: {msg}"
+        );
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_exporter_headers() {
+        let yaml = r#"
+            nodes:
+              receiver:
+                type: "urn:otel:receiver:otlp"
+                config: {}
+              exporter:
+                type: "urn:otel:exporter:otlp_http"
+                config:
+                  endpoint: "https://backend.example"
+                  http:
+                    headers:
+                      authorization: "Bearer super-secret-token"
+            connections:
+              - from: receiver
+                to: exporter
+        "#;
+        let config = super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml)
+            .expect("pipeline should parse and validate");
+        let redacted = config.redacted_for_snapshot();
+
+        let redacted_json = serde_json::to_string(&redacted).expect("redacted serializes");
+        assert!(
+            !redacted_json.contains("Bearer super-secret-token"),
+            "credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
+            "redaction placeholder should be present"
+        );
+        // The stored pipeline config keeps the cleartext for runtime use.
+        let original_json = serde_json::to_string(&config).expect("config serializes");
+        assert!(original_json.contains("Bearer super-secret-token"));
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_extension_headers() {
+        // Extensions carry the same raw `config` Value as nodes; an extension
+        // that holds static `headers` must be redacted too. Deserialize
+        // directly (no validation) so the test stays focused on redaction.
+        let yaml = r#"
+            nodes:
+              receiver:
+                type: "urn:otel:receiver:otlp"
+                config: {}
+            extensions:
+              auth:
+                type: "urn:otap:extension:headers_setter"
+                config:
+                  headers:
+                    authorization: "Bearer ext-super-secret"
+        "#;
+        let config: super::PipelineConfig =
+            serde_yaml::from_str(yaml).expect("pipeline should deserialize");
+        let redacted = config.redacted_for_snapshot();
+
+        let redacted_json = serde_json::to_string(&redacted).expect("redacted serializes");
+        assert!(
+            !redacted_json.contains("Bearer ext-super-secret"),
+            "extension credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
+            "redaction placeholder should be present"
         );
     }
 }

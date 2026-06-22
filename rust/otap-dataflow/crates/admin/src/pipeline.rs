@@ -127,6 +127,10 @@ fn shutdown_is_success(state: &str) -> bool {
 }
 
 /// Returns committed configuration details for one logical pipeline.
+///
+/// Credential header values are redacted from the response (see
+/// [`otap_df_config::pipeline::PipelineConfig::redacted_for_snapshot`]) so
+/// secrets configured in node `headers` are not exposed in cleartext.
 pub async fn show_pipeline(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
     State(state): State<AppState>,
@@ -135,7 +139,10 @@ pub async fn show_pipeline(
         .controller
         .pipeline_details(&pipeline_group_id, &pipeline_id)
     {
-        Ok(Some(details)) => Ok(Json(details)),
+        Ok(Some(mut details)) => {
+            details.pipeline = details.pipeline.redacted_for_snapshot();
+            Ok(Json(details))
+        }
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(
             crate::ControlPlaneError::PipelineNotFound | crate::ControlPlaneError::GroupNotFound,
@@ -626,6 +633,102 @@ mod tests {
             shutdown: None,
             failure_reason: (state != "succeeded").then(|| "delete failed".to_string()),
         }
+    }
+
+    /// Minimal control plane that serves a configured `pipeline_details`, used
+    /// to exercise the `show_pipeline` redaction path end-to-end.
+    struct PipelineDetailsStub {
+        details: Result<Option<PipelineDetails>, ControlPlaneError>,
+    }
+
+    impl ControlPlane for PipelineDetailsStub {
+        fn shutdown_all(&self, _timeout_secs: u64) -> Result<(), ControlPlaneError> {
+            Ok(())
+        }
+        fn shutdown_pipeline(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _timeout_secs: u64,
+        ) -> Result<ShutdownStatus, ControlPlaneError> {
+            Err(ControlPlaneError::PipelineNotFound)
+        }
+        fn reconfigure_pipeline(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _request: crate::ReconfigureRequest,
+        ) -> Result<RolloutStatus, ControlPlaneError> {
+            Err(ControlPlaneError::PipelineNotFound)
+        }
+        fn pipeline_details(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+        ) -> Result<Option<PipelineDetails>, ControlPlaneError> {
+            self.details.clone()
+        }
+        fn rollout_status(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _rollout_id: &str,
+        ) -> Result<Option<RolloutStatus>, ControlPlaneError> {
+            Ok(None)
+        }
+        fn shutdown_status(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _shutdown_id: &str,
+        ) -> Result<Option<ShutdownStatus>, ControlPlaneError> {
+            Ok(None)
+        }
+    }
+
+    /// Scenario: a pipeline's node config contains credential header values.
+    /// Guarantees: `show_pipeline` redacts them so the raw credential never
+    /// appears in the response body.
+    #[tokio::test]
+    async fn show_pipeline_redacts_credential_header_values() {
+        let details: PipelineDetails = serde_json::from_value(json!({
+            "pipelineGroupId": "default",
+            "pipelineId": "main",
+            "pipeline": {
+                "nodes": {
+                    "exporter": {
+                        "type": "urn:test:exporter:example",
+                        "config": {
+                            "headers": { "authorization": "Bearer super-secret-token" }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("pipeline details fixture should deserialize");
+
+        let response = show_pipeline(
+            Path(("default".to_string(), "main".to_string())),
+            State(test_app_state(Arc::new(PipelineDetailsStub {
+                details: Ok(Some(details)),
+            }))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let text = String::from_utf8(body.to_vec()).expect("pipeline body is utf-8");
+        assert!(
+            !text.contains("Bearer super-secret-token"),
+            "raw credential must not appear in the pipeline response: {text}"
+        );
+        assert!(
+            text.contains("[REDACTED]"),
+            "redacted placeholder should appear in the pipeline response: {text}"
+        );
     }
 
     /// Scenario: the control plane rejects a pipeline reconfigure request

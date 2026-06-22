@@ -41,6 +41,20 @@ impl PipelineGroupConfig {
         }
     }
 
+    /// Returns a clone of this pipeline group with every node's credential
+    /// header values redacted, for safe exposure through the admin/config
+    /// snapshot APIs. See
+    /// [`PipelineConfig::redacted_for_snapshot`](crate::pipeline::PipelineConfig::redacted_for_snapshot).
+    /// The stored config is left unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> PipelineGroupConfig {
+        let mut redacted = self.clone();
+        for pipeline in redacted.pipelines.values_mut() {
+            *pipeline = pipeline.redacted_for_snapshot();
+        }
+        redacted
+    }
+
     /// Adds a pipeline to the pipeline group.
     pub fn add_pipeline(
         &mut self,
