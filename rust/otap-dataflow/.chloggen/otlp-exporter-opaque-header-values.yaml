@@ -9,12 +9,13 @@ component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
 note: >-
-  Static exporter `headers` values are now wrapped in `secrecy::SecretString`,
-  so a header credential (e.g. an `Authorization` token or tenant API key) can
-  no longer leak through `Debug`/telemetry output of `HttpClientSettings` or
-  `GrpcClientSettings`. The cleartext is only read via an explicit
-  `expose_secret()` accessor at the request-construction site; behavior is
-  otherwise unchanged.
+  Static exporter `headers` values are now wrapped in `secrecy::SecretString`
+  and marked sensitive on the wire, so a header credential (e.g. an
+  `Authorization` token or tenant API key) is redacted in the `Debug`/telemetry
+  output of the typed `HttpClientSettings` / `GrpcClientSettings` and excluded
+  from HTTP/2 HPACK indexing. The cleartext is read only via an explicit
+  `expose_secret()` accessor (during validation and when building the request);
+  behavior is otherwise unchanged.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3306]
@@ -23,11 +24,8 @@ issues: [3306]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: >-
-  `user_agent` is intentionally left as a plain `String`: it is a
-  non-credential client identifier, mirroring the Go Collector's use of
-  `configopaque` for auth/credential headers rather than the User-Agent.
-  `secrecy` (and its `zeroize` transitive dependency) was already present in
-  the build graph, so this adds no new crate; it was preferred over the
-  Microsoft Oxidizer `data_privacy` crate, which would have pulled in four
-  pre-1.0 crates plus taxonomy/redaction-engine boilerplate for a need that is
-  just type-level redaction.
+  Scope: this protects the typed settings and the values placed on the wire. It
+  does not redact the raw configuration snapshot returned by the admin config
+  endpoints (e.g. `GET /api/v1/config`), which still serialize the original
+  config value; that broader redaction is tracked in #3328. `user_agent` is
+  intentionally left a plain `String` as a non-credential client identifier.

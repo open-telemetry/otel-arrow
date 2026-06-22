@@ -735,17 +735,25 @@ struct HttpClientPool {
 }
 
 impl HttpClientPool {
-    async fn try_new(
+    /// Builds the user-configured static request headers, marking every value
+    /// sensitive so it is redacted in any `HeaderMap` `Debug` output and
+    /// excluded from HTTP/2 HPACK indexing. This mirrors the OTLP/gRPC
+    /// `GrpcClientSettings::build_static_metadata` path, which marks its
+    /// metadata values sensitive for the same reasons.
+    ///
+    /// `reserve_extra` pre-sizes the returned map for additional headers the
+    /// caller will insert afterwards (e.g. the protocol `Content-Type` /
+    /// `Accept` headers), so construction stays single-allocation.
+    ///
+    /// Header names/values are validated up front by
+    /// [`HttpClientSettings::validate`], so for a validated config the per-entry
+    /// parse below cannot fail; the fallible path defends against a programmatic
+    /// caller that bypassed validation.
+    fn build_static_headers(
         client_settings: &HttpClientSettings,
-        pool_size: NonZeroUsize,
-    ) -> Result<Self, HttpClientError> {
-        // Pre-size for the configured static headers plus the two protocol
-        // headers (Content-Type, Accept) inserted below, so the map is built
-        // with a single allocation and never resizes during construction.
-        let mut default_headers = HeaderMap::with_capacity(client_settings.headers.len() + 2);
-
-        // User-configured static headers are inserted first so the protocol
-        // headers below always win on any (already validated against) collision.
+        reserve_extra: usize,
+    ) -> Result<HeaderMap, HttpClientError> {
+        let mut headers = HeaderMap::with_capacity(client_settings.headers.len() + reserve_extra);
         for (name, value) in &client_settings.headers {
             let header_name = http::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
                 HttpClientError::InvalidConfig(format!("invalid header name \"{name}\": {e}"))
@@ -756,8 +764,19 @@ impl HttpClientPool {
             // Mark the value sensitive so it is redacted in any `HeaderMap`
             // `Debug` output and excluded from HTTP/2 HPACK indexing.
             header_value.set_sensitive(true);
-            _ = default_headers.insert(header_name, header_value);
+            _ = headers.insert(header_name, header_value);
         }
+        Ok(headers)
+    }
+
+    async fn try_new(
+        client_settings: &HttpClientSettings,
+        pool_size: NonZeroUsize,
+    ) -> Result<Self, HttpClientError> {
+        // Build the user-configured static headers first (pre-sized for the two
+        // protocol headers added below) so the protocol headers always win on
+        // any (already validated against) collision.
+        let mut default_headers = Self::build_static_headers(client_settings, 2)?;
 
         // TODO eventually this header value should be dynamic once we support JSON OTLP payloads
         _ = default_headers.insert(
@@ -1138,6 +1157,44 @@ mod test {
                 .to_str()
                 .unwrap(),
             PROTOBUF_CONTENT_TYPE
+        );
+    }
+
+    #[test]
+    fn build_static_headers_marks_values_sensitive() {
+        // Symmetric with the OTLP/gRPC `build_static_metadata_builds_map` test:
+        // every static header value the exporter puts on the wire must be marked
+        // sensitive so it is excluded from HTTP/2 HPACK indexing and redacted in
+        // any `HeaderMap` `Debug` output. (The wire-capture test above cannot
+        // assert this: the sensitive flag is a client-side `HeaderValue`
+        // property that is not transmitted to the server.)
+        let mut headers = HashMap::new();
+        _ = headers.insert("authorization".to_string(), "Basic abc123".into());
+        _ = headers.insert("x-scope-orgid".to_string(), "tenant-1".into());
+        let settings = HttpClientSettings {
+            headers,
+            ..Default::default()
+        };
+
+        let built =
+            HttpClientPool::build_static_headers(&settings, 0).expect("should build headers");
+        assert_eq!(built.len(), 2);
+        assert_eq!(
+            built.get("authorization").unwrap().to_str().unwrap(),
+            "Basic abc123"
+        );
+        assert_eq!(
+            built.get("x-scope-orgid").unwrap().to_str().unwrap(),
+            "tenant-1"
+        );
+        assert!(
+            built.get("authorization").unwrap().is_sensitive(),
+            "static header values must be marked sensitive so they are excluded from HPACK \
+             indexing and redacted in HeaderMap Debug output"
+        );
+        assert!(
+            built.get("x-scope-orgid").unwrap().is_sensitive(),
+            "every static header value must be marked sensitive, not just the first"
         );
     }
 
