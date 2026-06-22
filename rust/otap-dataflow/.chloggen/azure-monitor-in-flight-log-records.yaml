@@ -19,5 +19,4 @@ issues: [3304]
 subtext: |
   The gauge reports the number of log records currently in-flight at the
   exporter (enqueued export requests awaiting completion, including records
-  being retried). A sustained non-zero value indicates the destination is
-  unreachable or slow and data is backing up at the exporter.
+  being retried).
