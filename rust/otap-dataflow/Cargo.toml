@@ -109,8 +109,8 @@ humantime-serde = "1.1.1"
 iso8601 = "0.6.3"
 itoa = "1"
 itertools = "0.14.0"
-k8s-openapi = { version = "0.27.0", features = ["latest"] }
-kube = {version = "3.0.1", features = ["derive"] }
+k8s-openapi = { version = "0.28.0", features = ["latest"] }
+kube = {version = "4.0.0", features = ["derive"] }
 linkme = "0.3.35"
 local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
@@ -207,11 +207,11 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0" }
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "5b88e68483ea1fac176e38f69e4fa2ccfe7404c0"}
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "9b84f5cd76cb98e8aaf37bc58936b31fe0ddbab4" } # v0.24.0
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "9b84f5cd76cb98e8aaf37bc58936b31fe0ddbab4" } # v0.24.0
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "9b84f5cd76cb98e8aaf37bc58936b31fe0ddbab4" } # v0.24.0
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "9b84f5cd76cb98e8aaf37bc58936b31fe0ddbab4" } # v0.24.0
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "9b84f5cd76cb98e8aaf37bc58936b31fe0ddbab4" } # v0.24.0
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
@@ -219,7 +219,7 @@ zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
 
-one_collect = { git = "https://github.com/microsoft/one-collect.git", rev = "a242d3db8deadc216a4ca28adbd7a3f866169b58" }
+one_collect = "0.1.34532"
 
 azure_core = {version = "1.0.0", default-features = false }
 azure_identity = {version = "1.0.0", default-features = false }

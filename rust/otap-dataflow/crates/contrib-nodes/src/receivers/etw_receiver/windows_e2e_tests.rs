@@ -249,14 +249,14 @@ fn emit_dynamic_event(provider: &Pin<Box<tld::Provider>>) {
         .add_i32("MyDelta", -7i32, tld::OutType::Default, 0)
         // Floating point.
         .add_f64("MyPi", core::f64::consts::PI, tld::OutType::Default, 0)
-        // Boolean as `u8` + `OutType::Boolean`: `tracelogging_dynamic`
-        // exposes only `add_bool32`, but the current one_collect TDH
-        // decoder mis-decodes Bool32 fields (microsoft/one-collect#286),
-        // surfacing them as raw bytes rendered as a hex string instead
-        // of an integer.  `INTYPE_UINT8` decodes as `"u8"` → `Int(0/1)`
-        // — semantically the same boolean, on a code path that works
-        // today.
-        .add_u8("MyFlag", 1u8, tld::OutType::Boolean, 0)
+        // Two distinct boolean encodings, exercised side by side so we lock
+        // in both decoder mappings:
+        //   * 4-byte Win32 `BOOL` / TraceLogging `Bool32` (`TDH_INTYPE_BOOLEAN`)
+        //     → one_collect maps it to `"u32"` → `Int(1)`.
+        //   * 1-byte boolean (`TDH_INTYPE_UINT8` + `OutType::Boolean`)
+        //     → one_collect maps it to `"u8"` → `Int(1)`.
+        .add_bool32("MyBool32Flag", 1, tld::OutType::Boolean, 0)
+        .add_u8("MyU8Flag", 1u8, tld::OutType::Boolean, 0)
         // UTF-8 and UTF-16 string fields.
         .add_str8("MyMessage", b"hello-from-test", tld::OutType::Default, 0)
         .add_str16(
@@ -308,6 +308,7 @@ fn emit_dynamic_event(provider: &Pin<Box<tld::Provider>>) {
 fn emit_static_event() {
     let answer: u32 = 123;
     let flag: bool = true;
+    let flag32: i32 = 1;
     let nested_answer: u32 = 456;
     let r = tracelogging::write_event!(
         STATIC_PROVIDER,
@@ -316,7 +317,11 @@ fn emit_static_event() {
         keyword(0x1),
         u32("StaticAnswer", &answer),
         str8("StaticMessage", "hello-from-static".as_bytes()),
+        // Two boolean encodings, mirroring the dynamic event:
+        //   * `bool8` is a 1-byte boolean (`U8` + `Boolean`) → decoded as "u8".
+        //   * `bool32` is a 4-byte Win32 `BOOL` (`Bool32`) → decoded as "u32".
         bool8("StaticFlag", &flag),
+        bool32("StaticFlag32", &flag32),
         // Nested struct via the `struct("Name", { ... })` DSL.  The
         // decoder flattens these to `"StaticNested.NestedAnswer"` etc.
         struct("StaticNested", {
@@ -462,7 +467,9 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
     );
 
     // severity: producer wrote `Informational` (== ETW level 4), which
-    // the encoder maps to OTel INFO (severity_number 9, text "INFO").
+    // the encoder maps to OTel INFO (severity_number 9). `SeverityText`
+    // carries the original ETW level name ("INFO") as known at the
+    // source, per the OpenTelemetry logs data model ETW mapping.
     let severity_number = i32_column(logs_rb, consts::SEVERITY_NUMBER);
     assert_eq!(
         severity_number[row],
@@ -587,11 +594,14 @@ fn assert_dynamic_user_attrs(records: &OtapArrowRecords, row: usize) {
     assert_attr_int(&attrs, "MyBigCount", 1_000_000_000_001);
     assert_attr_int(&attrs, "MyDelta", -7);
     assert_attr_double(&attrs, "MyPi", core::f64::consts::PI);
-    // Boolean via `add_u8(..., OutType::Boolean, ..)`.  Decoded as
-    // `"u8"` → `Int(0/1)` because the live one_collect TDH decoder
-    // mis-handles `Bool32` (microsoft/one-collect#286) and folds
-    // `BOOLEAN` → `"u8"`.  See `session.rs::interpret_field_value`.
-    assert_attr_int(&attrs, "MyFlag", 1);
+    // Two boolean encodings, both surfacing as `Int(1)` but via distinct
+    // decoder paths (see `session.rs::interpret_field_value`):
+    //   * `MyBool32Flag` — Win32 `BOOL` / TraceLogging `Bool32`
+    //     (`TDH_INTYPE_BOOLEAN`) → mapped to a 4-byte `"u32"`.
+    //   * `MyU8Flag` — 1-byte boolean (`TDH_INTYPE_UINT8` + `OutType::Boolean`)
+    //     → mapped to `"u8"`.
+    assert_attr_int(&attrs, "MyBool32Flag", 1);
+    assert_attr_int(&attrs, "MyU8Flag", 1);
     assert_attr_str(&attrs, "MyMessage", "hello-from-test");
     assert_attr_str(&attrs, "MyWideMessage", "wide\u{2603}");
     // FILETIME 2024-01-01 00:00:00 UTC → Unix-epoch ns.
@@ -619,9 +629,13 @@ fn assert_static_user_attrs(records: &OtapArrowRecords, row: usize) {
 
     assert_attr_int(&attrs, "StaticAnswer", 123);
     assert_attr_str(&attrs, "StaticMessage", "hello-from-static");
-    // `bool8` in the static crate is `U8 + Boolean` — same decode path
-    // as the dynamic `add_u8(..., OutType::Boolean, ..)` workaround.
+    // Two boolean encodings, mirroring the dynamic event:
+    //   * `StaticFlag` (`bool8`) is a 1-byte boolean (`TDH_INTYPE_UINT8`
+    //     + `OutType::Boolean`), which one_collect maps to `"u8"` → `Int(1)`.
+    //   * `StaticFlag32` (`bool32`) is a 4-byte Win32 `BOOL` / `Bool32`
+    //     (`TDH_INTYPE_BOOLEAN`), which one_collect maps to `"u32"` → `Int(1)`.
     assert_attr_int(&attrs, "StaticFlag", 1);
+    assert_attr_int(&attrs, "StaticFlag32", 1);
     // Nested-struct children: same flattening as for the dynamic event.
     assert_attr_int(&attrs, "StaticNested.NestedAnswer", 456);
     assert_attr_str(&attrs, "StaticNested.NestedMessage", "nested-from-static");

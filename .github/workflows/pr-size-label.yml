@@ -47,9 +47,10 @@ jobs:
             [CONTRIBUTING.md](https://github.com/open-telemetry/otel-arrow/blob/main/CONTRIBUTING.md#keep-pull-requests-small-and-incremental)
             for guidelines on keeping PRs small.
           files_to_ignore: |
-            "go.sum"
+            "*.sum"
             "Cargo.lock"
             "*.lock"
+            "*.lock.txt"
             "*.pb.go"
             "*.pb.gw.go"
             "**/testdata/**"
