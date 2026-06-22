@@ -504,6 +504,16 @@ pub struct DurableBuffer {
     /// Prevents warning spam when `bundle_metadata` repeatedly fails for the
     /// same segment across telemetry ticks.
     metadata_load_warned_segments: HashSet<u64>,
+
+    /// Cumulative logged items dropped via DropOldest policy.
+    total_dropped_logs: u64,
+    total_dropped_metrics: u64,
+    total_dropped_spans: u64,
+
+    /// Cumulative logged items dropped via MaxAge policy.
+    total_expired_logs: u64,
+    total_expired_metrics: u64,
+    total_expired_spans: u64,
 }
 
 impl DurableBuffer {
@@ -569,6 +579,12 @@ impl DurableBuffer {
             segment_cache: HashMap::new(),
             segment_cache_generation: 0,
             metadata_load_warned_segments: HashSet::new(),
+            total_dropped_logs: 0,
+            total_dropped_metrics: 0,
+            total_dropped_spans: 0,
+            total_expired_logs: 0,
+            total_expired_metrics: 0,
+            total_expired_spans: 0,
         })
     }
 
@@ -973,42 +989,38 @@ impl DurableBuffer {
             .observe(engine.expired_bundles());
         self.metrics.expired_items.observe(engine.expired_items());
 
-        // Update dropped and expired metrics by iterating the engine's per-slot snapshots
+        // Update dropped and expired metrics by draining the engine's pending bundles
         // and aggregating by signal type via signal_type_from_slot_id(). This handles all
         // slot ranges (Arrow 10-45 and OTLP 60-62) without hardcoding any slot IDs here.
-        let mut dropped_logs = 0u64;
-        let mut dropped_metrics = 0u64;
-        let mut dropped_spans = 0u64;
-        for (slot, count) in engine.force_dropped_items_per_slot_snapshot() {
-            match signal_type_from_slot_id(slot) {
-                Some(SignalType::Logs) => dropped_logs += count,
-                Some(SignalType::Metrics) => dropped_metrics += count,
-                Some(SignalType::Traces) => dropped_spans += count,
+        for (slot_ids, count) in engine.drain_dropped_bundles_pending() {
+            let sig = slot_ids.iter().copied().find_map(signal_type_from_slot_id);
+            match sig {
+                Some(SignalType::Logs) => self.total_dropped_logs += count,
+                Some(SignalType::Metrics) => self.total_dropped_metrics += count,
+                Some(SignalType::Traces) => self.total_dropped_spans += count,
                 None => {}
             }
         }
-        self.metrics.dropped_log_records.observe(dropped_logs);
+        self.metrics.dropped_log_records.observe(self.total_dropped_logs);
         self.metrics
             .dropped_metric_datapoints
-            .observe(dropped_metrics);
-        self.metrics.dropped_spans.observe(dropped_spans);
+            .observe(self.total_dropped_metrics);
+        self.metrics.dropped_spans.observe(self.total_dropped_spans);
 
-        let mut expired_logs = 0u64;
-        let mut expired_metrics = 0u64;
-        let mut expired_spans = 0u64;
-        for (slot, count) in engine.expired_items_per_slot_snapshot() {
-            match signal_type_from_slot_id(slot) {
-                Some(SignalType::Logs) => expired_logs += count,
-                Some(SignalType::Metrics) => expired_metrics += count,
-                Some(SignalType::Traces) => expired_spans += count,
+        for (slot_ids, count) in engine.drain_expired_bundles_pending() {
+            let sig = slot_ids.iter().copied().find_map(signal_type_from_slot_id);
+            match sig {
+                Some(SignalType::Logs) => self.total_expired_logs += count,
+                Some(SignalType::Metrics) => self.total_expired_metrics += count,
+                Some(SignalType::Traces) => self.total_expired_spans += count,
                 None => {}
             }
         }
-        self.metrics.expired_log_records.observe(expired_logs);
+        self.metrics.expired_log_records.observe(self.total_expired_logs);
         self.metrics
             .expired_metric_datapoints
-            .observe(expired_metrics);
-        self.metrics.expired_spans.observe(expired_spans);
+            .observe(self.total_expired_metrics);
+        self.metrics.expired_spans.observe(self.total_expired_spans);
 
         self.metadata_load_warned_segments
             .retain(|seq| progress_snapshot.contains_key(&SegmentSeq::new(*seq)));

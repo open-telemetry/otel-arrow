@@ -366,20 +366,6 @@ const IDX_QUEUED_METRIC_POINTS: usize = 28;
 const IDX_QUEUED_SPANS: usize = 29;
 const IDX_FLUSH_FAILURES: usize = 30;
 // ─── Appended metrics (Do not shift index above) ─────────────────────────────
-#[allow(dead_code)]
-const IDX_STORAGE_UTILIZATION: usize = 31;
-#[allow(dead_code)]
-const IDX_DROPPED_LOG_RECORDS: usize = 32;
-#[allow(dead_code)]
-const IDX_DROPPED_SPANS: usize = 33;
-#[allow(dead_code)]
-const IDX_DROPPED_METRIC_DATAPOINTS: usize = 34;
-#[allow(dead_code)]
-const IDX_EXPIRED_LOG_RECORDS: usize = 35;
-#[allow(dead_code)]
-const IDX_EXPIRED_SPANS: usize = 36;
-#[allow(dead_code)]
-const IDX_EXPIRED_METRIC_DATAPOINTS: usize = 37;
 
 const DURABLE_BUFFER_METRIC_COUNT: usize = 38;
 
