@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782002947157,
+  "lastUpdate": 1782089416010,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5324,6 +5324,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 99.47,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cijo Thomas",
+            "username": "cijothomas",
+            "email": "cijo.thomas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1ffc9f7dbd42043e9392173e273deb995f2d59b0",
+          "message": "ci: bump weaver to v0.24.0 (#3324)\n\nMove the df-engine internal-observability workflow from weaver v0.23.0\n(binary) + unreleased composite-action SHA-pin (weaver#1448) to the\npublished v0.24.0 release.\n\nv0.24.0 is the first tag to ship the `weaver-live-check-start` /\n`weaver-live-check-stop` composite actions, so this replaces the\nprevious \"pinned to a merge commit on main\" workaround with a real tag\n(SHA-pinned to `9b84f5c`). The `WEAVER_VERSION` binary moves to v0.24.0\nin lockstep.\n\nAlso bumps `host-metrics-weaver-live-check` in `rust-ci.yml` to v0.24.0\nso both weaver-driven CI jobs stay on the same release. The Python\nsummary script in that job reads `signal_type` / `signal_name` from\n`all_advice[]` (PolicyFinding fields), unchanged in v0.24.0.\n\nv0.24.0 has breaking renames in the `--emit-otlp-logs` schema, but\nneither workflow consumes that surface — they parse the JSON report\n(`samples[].log.event_name`, `live_check_result.highest_advice_level`,\n`all_advice[].signal_type/signal_name`), all of which are unchanged.",
+          "timestamp": "2026-06-21T21:07:31Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1ffc9f7dbd42043e9392173e273deb995f2d59b0"
+        },
+        "date": 1782089403453,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 112.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 99.53,
             "unit": "MB"
           }
         ]
