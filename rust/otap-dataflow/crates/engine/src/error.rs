@@ -460,6 +460,16 @@ pub enum Error {
         variant: String,
     },
 
+    /// An extension requested a readiness-probe timeout of zero.
+    #[error(
+        "Extension `{extension}` requested a readiness-probe timeout of zero; the timeout must \
+         be greater than zero (use with_readiness_probe() for the 5s default)"
+    )]
+    ExtensionReadinessZeroTimeout {
+        /// Id of the extension.
+        extension: String,
+    },
+
     /// An internal error that occurred in the pipeline engine.
     #[error("Internal error: {message}")]
     InternalError {
@@ -603,6 +613,7 @@ impl Error {
             Error::ExtensionReadinessSignallerDropped { .. } => {
                 "ExtensionReadinessSignallerDropped"
             }
+            Error::ExtensionReadinessZeroTimeout { .. } => "ExtensionReadinessZeroTimeout",
             Error::NoDefaultOutputPort { .. } => "NoDefaultOutputPort",
             Error::NodeControlMsgSendError { .. } => "NodeControlMsgSendError",
             Error::PDataError { .. } => "PDataError",

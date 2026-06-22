@@ -278,6 +278,11 @@ impl ExtensionLifecycle {
     /// named-laggard error
     /// ([`Error::ExtensionReadinessSignallerDropped`] or
     /// [`Error::ExtensionReadinessTimeout`]).
+    ///
+    /// While probes are pending, extension task completions are watched too:
+    /// an extension that exits or fails during the readiness window is
+    /// surfaced as an error rather than letting the gate pass, mirroring
+    /// the task-failure handling in [`wait_all_spawned`](Self::wait_all_spawned).
     pub async fn wait_all_ready(&mut self) -> Result<(), Error> {
         let probes = std::mem::take(&mut self.extension_readiness_probes);
         if probes.is_empty() {
@@ -293,21 +298,52 @@ impl ExtensionLifecycle {
             });
         }
 
-        while let Some((key, timeout, outcome)) = waiters.next().await {
-            match outcome {
-                Ok(Ok(())) => continue,
-                Ok(Err(crate::extension::ReadinessProbeError::SignallerDropped)) => {
-                    return Err(Error::ExtensionReadinessSignallerDropped {
-                        extension: key.id.to_string(),
-                        variant: key.variant.as_str().to_owned(),
-                    });
+        while !waiters.is_empty() {
+            let Self {
+                futures,
+                task_id_to_key,
+                shutdown_channels,
+                monitor,
+                ..
+            } = self;
+
+            tokio::select! {
+                biased;
+                // A task completing before the gate is satisfied means an
+                // extension died during startup; surface it instead of
+                // starting data-path nodes against a lost extension.
+                Some(joined) = futures.next(), if !futures.is_empty() => {
+                    match Self::route_joined(monitor, task_id_to_key, shutdown_channels, false, joined) {
+                        Ok(Ok(())) => unreachable!(
+                            "route_joined(shutdown_initiated=false) must upgrade Ok(()) to ExtensionExitedBeforeShutdown",
+                        ),
+                        Ok(Err(e)) => return Err(e),
+                        Err(e) => {
+                            return Err(Error::JoinTaskError {
+                                is_canceled: e.is_cancelled(),
+                                is_panic: e.is_panic(),
+                                error: e.to_string(),
+                            });
+                        }
+                    }
                 }
-                Err(_elapsed) => {
-                    return Err(Error::ExtensionReadinessTimeout {
-                        extension: key.id.to_string(),
-                        variant: key.variant.as_str().to_owned(),
-                        timeout,
-                    });
+                Some((key, timeout, outcome)) = waiters.next() => {
+                    match outcome {
+                        Ok(Ok(())) => {}
+                        Ok(Err(crate::extension::ReadinessProbeError::SignallerDropped)) => {
+                            return Err(Error::ExtensionReadinessSignallerDropped {
+                                extension: key.id.to_string(),
+                                variant: key.variant.as_str().to_owned(),
+                            });
+                        }
+                        Err(_elapsed) => {
+                            return Err(Error::ExtensionReadinessTimeout {
+                                extension: key.id.to_string(),
+                                variant: key.variant.as_str().to_owned(),
+                                timeout,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -1483,6 +1519,160 @@ mod tests {
                     assert_eq!(timeout, probe_timeout);
                 }
                 other => panic!("expected ExtensionReadinessTimeout; got {other:?}"),
+            }
+        }));
+    }
+
+    #[test]
+    fn wait_all_ready_max_wait_is_bounded_by_longest_timeout_not_sum() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            // Virtual time: the gate's wait is exact, so the assertion can use
+            // a tight margin regardless of how far the serial sum exceeds the
+            // longest timeout.
+            tokio::time::pause();
+
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+            let mut lifecycle = empty_lifecycle(ext_ctx);
+
+            // Three fast extensions that signal immediately, plus a laggard
+            // with the longest timeout that never signals. The gate must wait
+            // for the laggard, so the worst-case wait is the longest timeout —
+            // and, because probes are awaited in parallel, never the sum.
+            let fast = Duration::from_millis(500);
+            let longest = Duration::from_secs(1);
+            let serial_sum = fast * 3 + longest;
+
+            for key in ["fast-a", "fast-b", "fast-c"] {
+                let (sig, probe) = crate::extension::ReadinessSignaller::pair(fast);
+                lifecycle.extension_readiness_probes.push((
+                    ExtensionKey::new(key.into(), ExtensionVariant::Local),
+                    probe,
+                ));
+                drop(task::spawn_local(async move {
+                    task::yield_now().await;
+                    sig.ready();
+                }));
+            }
+
+            let (laggard_sig, laggard_probe) = crate::extension::ReadinessSignaller::pair(longest);
+            lifecycle.extension_readiness_probes.push((
+                ExtensionKey::new("laggard".into(), ExtensionVariant::Shared),
+                laggard_probe,
+            ));
+
+            let started = TokioInstant::now();
+            let outcome = lifecycle.wait_all_ready().await;
+            let elapsed = started.elapsed();
+            drop(laggard_sig);
+
+            match outcome {
+                Err(Error::ExtensionReadinessTimeout {
+                    extension, timeout, ..
+                }) => {
+                    assert_eq!(extension, "laggard");
+                    assert_eq!(timeout, longest);
+                }
+                other => panic!("expected laggard timeout; got {other:?}"),
+            }
+
+            let bound = longest + Duration::from_millis(100);
+            assert!(
+                elapsed < bound,
+                "gate waited {elapsed:?}, exceeding longest timeout + margin {bound:?} \
+                 (serial sum would be {serial_sum:?})",
+            );
+        }));
+    }
+
+    #[test]
+    fn wait_all_ready_fails_fast_at_shortest_timeout_not_longest() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            // Virtual time: the fail-fast instant is exact, so the assertion
+            // can use a tight margin even with a far longer probe present.
+            tokio::time::pause();
+
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+            let mut lifecycle = empty_lifecycle(ext_ctx);
+
+            // One extension times out quickly; another has a much longer
+            // timeout. Neither signals. The gate must fail as soon as the
+            // shortest timeout elapses, never waiting for the longest.
+            let shortest = Duration::from_millis(100);
+            let longest = Duration::from_secs(2);
+
+            // Register the long-timeout probe FIRST: a buggy sequential
+            // awaiter would block on it for 2s, so failing fast (and naming
+            // "short") genuinely proves the probes are awaited concurrently.
+            let (long_sig, long_probe) = crate::extension::ReadinessSignaller::pair(longest);
+            lifecycle.extension_readiness_probes.push((
+                ExtensionKey::new("long".into(), ExtensionVariant::Shared),
+                long_probe,
+            ));
+            let (short_sig, short_probe) = crate::extension::ReadinessSignaller::pair(shortest);
+            lifecycle.extension_readiness_probes.push((
+                ExtensionKey::new("short".into(), ExtensionVariant::Local),
+                short_probe,
+            ));
+
+            let started = TokioInstant::now();
+            let outcome = lifecycle.wait_all_ready().await;
+            let elapsed = started.elapsed();
+            drop(short_sig);
+            drop(long_sig);
+
+            match outcome {
+                Err(Error::ExtensionReadinessTimeout {
+                    extension, timeout, ..
+                }) => {
+                    assert_eq!(extension, "short");
+                    assert_eq!(timeout, shortest);
+                }
+                other => panic!("expected shortest-timeout failure; got {other:?}"),
+            }
+
+            let bound = shortest + Duration::from_millis(50);
+            assert!(
+                elapsed < bound,
+                "gate took {elapsed:?} to fail, exceeding shortest timeout + margin {bound:?} \
+                 (longest timeout was {longest:?})",
+            );
+        }));
+    }
+
+    #[test]
+    fn wait_all_ready_surfaces_extension_task_failure_while_probe_pending() {
+        let (rt, local_tasks) = crate::testing::setup_test_runtime();
+        rt.block_on(local_tasks.run_until(async {
+            let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
+            let mut lifecycle = empty_lifecycle(ext_ctx);
+
+            let (sig, probe) = crate::extension::ReadinessSignaller::pair(Duration::from_secs(60));
+            lifecycle.extension_readiness_probes.push((
+                ExtensionKey::new("pending-ext".into(), ExtensionVariant::Local),
+                probe,
+            ));
+
+            let dead_key = ExtensionKey::new("dead-ext".into(), ExtensionVariant::Shared);
+            lifecycle.futures.push(task::spawn_local(async move {
+                (
+                    dead_key,
+                    Err(Error::InternalError {
+                        message: "extension died during startup".into(),
+                    }),
+                )
+            }));
+
+            let outcome =
+                tokio::time::timeout(Duration::from_secs(1), lifecycle.wait_all_ready()).await;
+            drop(sig);
+
+            match outcome {
+                Ok(Err(Error::InternalError { message })) => {
+                    assert_eq!(message, "extension died during startup");
+                }
+                other => panic!("expected task failure surfaced by the gate; got {other:?}"),
             }
         }));
     }

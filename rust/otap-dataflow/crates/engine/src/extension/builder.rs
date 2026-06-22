@@ -129,7 +129,7 @@ pub struct LocalDecomposed {
 /// (shared / local) before `.build()`. Instance policy is Cloned.
 ///
 /// Opt in to the readiness gate via [`with_readiness_probe`](Self::with_readiness_probe)
-/// or [`with_extended_readiness_probe_timeout`](Self::with_extended_readiness_probe_timeout)
+/// or [`with_readiness_probe_timeout_override`](Self::with_readiness_probe_timeout_override)
 /// before registering variants.
 #[doc(hidden)]
 pub struct ActiveStage {
@@ -147,24 +147,14 @@ impl ActiveStage {
         self
     }
 
-    /// Opt in with a timeout `>= DEFAULT_READINESS_TIMEOUT`.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `timeout < DEFAULT_READINESS_TIMEOUT`.
+    /// Opt in with a custom timeout, overriding the 5 s default. May go
+    /// below the default to fail fast or above it for slow initialization.
+    /// A timeout of zero is rejected at [`build()`](ActiveSharedStage::build)
+    /// time with [`Error::ExtensionReadinessZeroTimeout`].
     #[must_use]
-    pub fn with_extended_readiness_probe_timeout(mut self, timeout: Duration) -> Self {
+    pub fn with_readiness_probe_timeout_override(mut self, timeout: Duration) -> Self {
         let default = super::readiness::DEFAULT_READINESS_TIMEOUT;
-        assert!(
-            timeout >= default,
-            "with_extended_readiness_probe_timeout: timeout {:?} is below the readiness-probe default of {:?} (extension: {}). \
-             Use with_readiness_probe() for the default; pass >= {:?} to override.",
-            timeout,
-            default,
-            self.parent.name.as_ref(),
-            default,
-        );
-        if timeout > default {
+        if timeout != default {
             otel_info!(
                 "extension.readiness.timeout_override",
                 extension = self.parent.name.as_ref(),
@@ -605,19 +595,10 @@ impl BackgroundEmptyStage {
         self
     }
 
-    /// See [`ActiveStage::with_extended_readiness_probe_timeout`].
+    /// See [`ActiveStage::with_readiness_probe_timeout_override`].
     #[must_use]
-    pub fn with_extended_readiness_probe_timeout(mut self, timeout: Duration) -> Self {
+    pub fn with_readiness_probe_timeout_override(mut self, timeout: Duration) -> Self {
         let default = super::readiness::DEFAULT_READINESS_TIMEOUT;
-        assert!(
-            timeout >= default,
-            "with_extended_readiness_probe_timeout: timeout {:?} is below the readiness-probe default of {:?} (extension: {}). \
-             Use with_readiness_probe() for the default; pass >= {:?} to override.",
-            timeout,
-            default,
-            self.parent.name.as_ref(),
-            default,
-        );
         if timeout > default {
             otel_info!(
                 "extension.readiness.timeout_override",
@@ -807,7 +788,7 @@ impl ExtensionBundleBuilder {
     }
 
     fn set_shared_readiness(&mut self, probe: ReadinessProbe, signaller: ReadinessSignaller) {
-        assert!(
+        debug_assert!(
             self.shared_probe.is_none() && self.shared_signaller.is_none(),
             "readiness probe already registered for the shared variant of extension '{}'",
             self.name.as_ref()
@@ -817,7 +798,7 @@ impl ExtensionBundleBuilder {
     }
 
     fn set_local_readiness(&mut self, probe: ReadinessProbe, signaller: ReadinessSignaller) {
-        assert!(
+        debug_assert!(
             self.local_probe.is_none() && self.local_signaller.is_none(),
             "readiness probe already registered for the local variant of extension '{}'",
             self.name.as_ref()
@@ -908,6 +889,14 @@ impl ExtensionBundleBuilder {
             shared_signaller,
             local_signaller,
         } = self;
+
+        if let Some(probe) = local_probe.as_ref().or(shared_probe.as_ref()) {
+            if probe.timeout().is_zero() {
+                return Err(Error::ExtensionReadinessZeroTimeout {
+                    extension: name.as_ref().to_owned(),
+                });
+            }
+        }
 
         debug_assert!(
             !(local_probe.is_some()

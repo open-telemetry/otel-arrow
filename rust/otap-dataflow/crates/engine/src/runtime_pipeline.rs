@@ -305,7 +305,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         //
         // Extensions that need to gate node startup on runtime readiness
         // opt in via `builder.active().with_readiness_probe()` (or
-        // `.with_extended_readiness_probe_timeout(t)`) and fire it
+        // `.with_readiness_probe_timeout_override(t)`) and fire it
         // from `start()` via `EffectHandler::signal_ready()`. The engine
         // awaits the registered probes via `wait_all_ready` before
         // spawning data-path tasks.

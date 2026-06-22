@@ -20,15 +20,15 @@ subtext: |
   Active and background extensions can now opt in to startup gating via
   `active().with_readiness_probe().shared(...).local(...)` (or the
   background twin), which applies the default 5-second readiness
-  timeout. A longer timeout can be requested with
-  `with_extended_readiness_probe_timeout(t)` — the method panics for
-  `t < 5s` to surface unit errors at the faulty call site and emits an
-  `INFO` event (`extension.readiness.timeout_override`) when an
-  override is configured. The engine threads a `ReadinessSignaller`
-  into each variant's `EffectHandler`; the extension fires it via
-  `EffectHandler::signal_ready()` once it is ready to serve. The
-  controller awaits all opted-in probes (in parallel) after the spawn
-  barrier and before tipping nodes into their runtime, failing fast
-  with a named laggard on timeout or dropped signaller. Extensions
-  that do not opt in pay zero cost: `signal_ready()` is a silent no-op
-  when no probe is registered.
+  timeout. The timeout can be overridden (shorter or longer) with
+  `with_readiness_probe_timeout_override(t)`, which emits an `INFO`
+  event (`extension.readiness.timeout_override`) when set; a zero
+  timeout is rejected at build time. The engine threads a
+  `ReadinessSignaller` into each variant's `EffectHandler`; the
+  extension fires it via `EffectHandler::signal_ready()` once it is
+  ready to serve. The controller awaits all opted-in probes (in
+  parallel) after the spawn barrier and before tipping nodes into their
+  runtime, failing fast with a named laggard on timeout, dropped
+  signaller, or an extension that exits during the readiness window.
+  Extensions that do not opt in pay zero cost: `signal_ready()` is a
+  silent no-op when no probe is registered.

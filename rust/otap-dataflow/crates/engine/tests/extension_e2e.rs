@@ -4117,7 +4117,7 @@ fn ready_gate_extension_create(
 
     let builder = ExtensionWrapper::builder(name, user_config, extension_config).active();
     let builder = match readiness_timeout {
-        Some(t) => builder.with_extended_readiness_probe_timeout(t),
+        Some(t) => builder.with_readiness_probe_timeout_override(t),
         None => builder,
     };
     let bundle = builder
@@ -4168,7 +4168,7 @@ fn ready_gate_bg_extension_create(
 
     let builder = ExtensionWrapper::builder(name, user_config, extension_config).background();
     let builder = match readiness_timeout {
-        Some(t) => builder.with_extended_readiness_probe_timeout(t),
+        Some(t) => builder.with_readiness_probe_timeout_override(t),
         None => builder,
     };
     let bundle = builder
@@ -4302,7 +4302,7 @@ fn test_extension_readiness_gate_times_out_with_named_extension() {
     let _recv_probe = make_probe(receiver_key, CallSequence::Local);
     let _ext_probe = make_ready_gate_probe(ext_key, None, false);
 
-    let timeout_ms: u64 = 5_000;
+    let timeout_ms: u64 = 200;
     let yaml = format!(
         r#"
 nodes:
@@ -4481,8 +4481,8 @@ fn test_extension_readiness_gate_honors_per_extension_timeouts() {
     let _ext_fast_probe = make_ready_gate_probe(ext_keys[0], None, false);
     let _ext_slow_probe = make_ready_gate_probe(ext_keys[1], None, false);
 
-    let fast_timeout_ms: u64 = 5_000;
-    let slow_timeout_ms: u64 = 30_000;
+    let fast_timeout_ms: u64 = 200;
+    let slow_timeout_ms: u64 = 2_000;
 
     let yaml = format!(
         r#"
@@ -4549,7 +4549,7 @@ connections:
 }
 
 #[test]
-fn test_extension_readiness_gate_surfaces_signaller_dropped() {
+fn test_extension_readiness_gate_surfaces_extension_failure_before_ready() {
     let receiver_key = "ready-drop-recv";
     let ext_key = "ready-drop-ext";
 
@@ -4596,12 +4596,13 @@ connections:
     assert!(result.is_err());
     assert!(elapsed < Duration::from_secs(5), "elapsed={elapsed:?}");
 
+    // The extension fails before signalling readiness. The gate watches task
+    // completions while probes are pending, so it surfaces the extension's
+    // own failure rather than waiting out the 30s probe timeout.
     let err = result.err().unwrap();
     let msg = format!("{err}");
-    assert!(msg.contains(ext_key), "{msg}");
-    let lower = msg.to_lowercase();
     assert!(
-        lower.contains("signaller") || lower.contains("dropped") || lower.contains("readiness"),
+        msg.contains("synthetic failure before readiness signal"),
         "{msg}"
     );
 }
@@ -4671,7 +4672,7 @@ fn test_extension_readiness_gate_times_out_for_background_extension() {
     let _recv_probe = make_probe(receiver_key, CallSequence::Local);
     let _bg_probe = make_ready_gate_probe(bg_ext_key, None, false);
 
-    let timeout_ms: u64 = 5_000;
+    let timeout_ms: u64 = 200;
     let yaml = format!(
         r#"
 nodes:

@@ -1851,7 +1851,7 @@ fn active_with_readiness_probe_shared_only_plumbs_probe_and_signaller() {
     let (n, u, c) = ext_config("active_probe_shared_only");
     let mut bundle = ExtensionWrapper::builder(n, u, &c)
         .active()
-        .with_extended_readiness_probe_timeout(PROBE_TIMEOUT)
+        .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
         .shared(TestSharedExt::new(CtrlMsgCounters::new()))
         .build()
         .unwrap();
@@ -1868,7 +1868,7 @@ fn active_with_readiness_probe_local_only_plumbs_probe_and_signaller() {
     let (n, u, c) = ext_config("active_probe_local_only");
     let mut bundle = ExtensionWrapper::builder(n, u, &c)
         .active()
-        .with_extended_readiness_probe_timeout(PROBE_TIMEOUT)
+        .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
         .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
         .build()
         .unwrap();
@@ -1885,7 +1885,7 @@ fn active_with_readiness_probe_shared_then_local_plumbs_two_pairs() {
     let (n, u, c) = ext_config("active_probe_shared_then_local");
     let mut bundle = ExtensionWrapper::builder(n, u, &c)
         .active()
-        .with_extended_readiness_probe_timeout(PROBE_TIMEOUT)
+        .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
         .shared(TestSharedExt::new(CtrlMsgCounters::new()))
         .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
         .build()
@@ -1911,7 +1911,7 @@ fn active_with_readiness_probe_local_then_shared_plumbs_two_pairs() {
     let (n, u, c) = ext_config("active_probe_local_then_shared");
     let mut bundle = ExtensionWrapper::builder(n, u, &c)
         .active()
-        .with_extended_readiness_probe_timeout(PROBE_TIMEOUT)
+        .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
         .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
         .shared(TestSharedExt::new(CtrlMsgCounters::new()))
         .build()
@@ -1933,7 +1933,7 @@ fn active_dual_variant_probes_are_independent() {
         let (n, u, c) = ext_config("active_probe_independent");
         let mut bundle = ExtensionWrapper::builder(n, u, &c)
             .active()
-            .with_extended_readiness_probe_timeout(PROBE_TIMEOUT)
+            .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
             .shared(TestSharedExt::new(CtrlMsgCounters::new()))
             .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
             .build()
@@ -2000,7 +2000,7 @@ fn background_with_readiness_probe_shared_plumbs_probe_and_signaller() {
     let (n, u, c) = ext_config("bg_probe_shared");
     let mut bundle = ExtensionWrapper::builder(n, u, &c)
         .background()
-        .with_extended_readiness_probe_timeout(PROBE_TIMEOUT)
+        .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
         .shared(TestSharedExt::new(CtrlMsgCounters::new()))
         .build()
         .unwrap();
@@ -2015,7 +2015,7 @@ fn background_with_readiness_probe_local_plumbs_probe_and_signaller() {
     let (n, u, c) = ext_config("bg_probe_local");
     let mut bundle = ExtensionWrapper::builder(n, u, &c)
         .background()
-        .with_extended_readiness_probe_timeout(PROBE_TIMEOUT)
+        .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
         .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
         .build()
         .unwrap();
@@ -2031,7 +2031,7 @@ fn with_readiness_probe_timeout_propagates_to_probe_unchanged() {
     let (n, u, c) = ext_config("probe_timeout_propagates");
     let mut bundle = ExtensionWrapper::builder(n, u, &c)
         .active()
-        .with_extended_readiness_probe_timeout(custom)
+        .with_readiness_probe_timeout_override(custom)
         .shared(TestSharedExt::new(CtrlMsgCounters::new()))
         .build()
         .unwrap();
@@ -2048,7 +2048,7 @@ fn take_readiness_probe_is_single_use() {
     let (n, u, c) = ext_config("probe_single_use");
     let mut w = ExtensionWrapper::builder(n, u, &c)
         .active()
-        .with_extended_readiness_probe_timeout(PROBE_TIMEOUT)
+        .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
         .shared(TestSharedExt::new(CtrlMsgCounters::new()))
         .build()
         .unwrap()
@@ -2078,11 +2078,11 @@ fn active_with_readiness_probe_uses_default_timeout() {
 }
 
 #[test]
-fn active_with_extended_readiness_probe_timeout_at_default_is_accepted() {
+fn active_with_readiness_probe_timeout_at_default_is_accepted() {
     let (n, u, c) = ext_config("active_extended_at_default_shared");
     let mut bundle = ExtensionWrapper::builder(n, u, &c)
         .active()
-        .with_extended_readiness_probe_timeout(DEFAULT_READINESS_TIMEOUT)
+        .with_readiness_probe_timeout_override(DEFAULT_READINESS_TIMEOUT)
         .shared(TestSharedExt::new(CtrlMsgCounters::new()))
         .build()
         .unwrap();
@@ -2095,12 +2095,12 @@ fn active_with_extended_readiness_probe_timeout_at_default_is_accepted() {
 }
 
 #[test]
-fn active_with_extended_readiness_probe_timeout_above_default_carries_override() {
+fn active_with_readiness_probe_timeout_above_default_carries_override() {
     let extended = DEFAULT_READINESS_TIMEOUT + std::time::Duration::from_secs(7);
     let (n, u, c) = ext_config("active_extended_above_default_shared");
     let mut bundle = ExtensionWrapper::builder(n, u, &c)
         .active()
-        .with_extended_readiness_probe_timeout(extended)
+        .with_readiness_probe_timeout_override(extended)
         .shared(TestSharedExt::new(CtrlMsgCounters::new()))
         .build()
         .unwrap();
@@ -2113,15 +2113,35 @@ fn active_with_extended_readiness_probe_timeout_above_default_carries_override()
 }
 
 #[test]
-#[should_panic(expected = "below the readiness-probe default")]
-fn active_with_extended_readiness_probe_timeout_below_default_panics() {
+fn active_with_readiness_probe_timeout_below_default_is_accepted() {
+    let short = std::time::Duration::from_millis(200);
     let (n, u, c) = ext_config("active_extended_below_default_shared");
-    let too_short = DEFAULT_READINESS_TIMEOUT - std::time::Duration::from_millis(1);
-    let _ = ExtensionWrapper::builder(n, u, &c)
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
         .active()
-        .with_extended_readiness_probe_timeout(too_short)
+        .with_readiness_probe_timeout_override(short)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let probe = bundle
+        .take_shared()
+        .unwrap()
+        .take_readiness_probe()
+        .unwrap();
+    assert_eq!(probe.timeout(), short);
+}
+
+#[test]
+fn active_with_readiness_probe_timeout_zero_errors() {
+    let (n, u, c) = ext_config("active_extended_zero_shared");
+    let result = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .with_readiness_probe_timeout_override(std::time::Duration::ZERO)
         .shared(TestSharedExt::new(CtrlMsgCounters::new()))
         .build();
+    assert!(matches!(
+        result,
+        Err(Error::ExtensionReadinessZeroTimeout { .. })
+    ));
 }
 
 #[test]
@@ -2142,11 +2162,11 @@ fn background_with_readiness_probe_uses_default_timeout() {
 }
 
 #[test]
-fn background_with_extended_readiness_probe_timeout_at_default_is_accepted() {
+fn background_with_readiness_probe_timeout_at_default_is_accepted() {
     let (n, u, c) = ext_config("bg_extended_at_default_shared");
     let mut bundle = ExtensionWrapper::builder(n, u, &c)
         .background()
-        .with_extended_readiness_probe_timeout(DEFAULT_READINESS_TIMEOUT)
+        .with_readiness_probe_timeout_override(DEFAULT_READINESS_TIMEOUT)
         .shared(TestSharedExt::new(CtrlMsgCounters::new()))
         .build()
         .unwrap();
@@ -2159,12 +2179,12 @@ fn background_with_extended_readiness_probe_timeout_at_default_is_accepted() {
 }
 
 #[test]
-fn background_with_extended_readiness_probe_timeout_above_default_carries_override() {
+fn background_with_readiness_probe_timeout_above_default_carries_override() {
     let extended = DEFAULT_READINESS_TIMEOUT + std::time::Duration::from_secs(11);
     let (n, u, c) = ext_config("bg_extended_above_default_shared");
     let mut bundle = ExtensionWrapper::builder(n, u, &c)
         .background()
-        .with_extended_readiness_probe_timeout(extended)
+        .with_readiness_probe_timeout_override(extended)
         .shared(TestSharedExt::new(CtrlMsgCounters::new()))
         .build()
         .unwrap();
@@ -2177,15 +2197,35 @@ fn background_with_extended_readiness_probe_timeout_above_default_carries_overri
 }
 
 #[test]
-#[should_panic(expected = "below the readiness-probe default")]
-fn background_with_extended_readiness_probe_timeout_below_default_panics() {
+fn background_with_readiness_probe_timeout_below_default_is_accepted() {
+    let short = std::time::Duration::from_millis(200);
     let (n, u, c) = ext_config("bg_extended_below_default_shared");
-    let too_short = DEFAULT_READINESS_TIMEOUT - std::time::Duration::from_millis(1);
-    let _ = ExtensionWrapper::builder(n, u, &c)
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
         .background()
-        .with_extended_readiness_probe_timeout(too_short)
+        .with_readiness_probe_timeout_override(short)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let probe = bundle
+        .take_shared()
+        .unwrap()
+        .take_readiness_probe()
+        .unwrap();
+    assert_eq!(probe.timeout(), short);
+}
+
+#[test]
+fn background_with_readiness_probe_timeout_zero_errors() {
+    let (n, u, c) = ext_config("bg_extended_zero_shared");
+    let result = ExtensionWrapper::builder(n, u, &c)
+        .background()
+        .with_readiness_probe_timeout_override(std::time::Duration::ZERO)
         .shared(TestSharedExt::new(CtrlMsgCounters::new()))
         .build();
+    assert!(matches!(
+        result,
+        Err(Error::ExtensionReadinessZeroTimeout { .. })
+    ));
 }
 
 #[test]
@@ -2294,7 +2334,7 @@ fn shared_active_start_fires_engine_probe_via_eh_signal_ready() {
         let (n, u, c) = ext_config("shared_start_ready");
         let mut w = ExtensionWrapper::builder(n, u, &c)
             .active()
-            .with_extended_readiness_probe_timeout(PROBE_TIMEOUT)
+            .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
             .shared(ReadyOnStartSharedExt)
             .build()
             .unwrap()
@@ -2327,7 +2367,7 @@ fn local_active_start_fires_engine_probe_via_eh_signal_ready() {
         let (n, u, c) = ext_config("local_start_ready");
         let mut w = ExtensionWrapper::builder(n, u, &c)
             .active()
-            .with_extended_readiness_probe_timeout(PROBE_TIMEOUT)
+            .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
             .local(std::rc::Rc::new(ReadyOnStartLocalExt))
             .build()
             .unwrap()
@@ -2360,7 +2400,7 @@ fn shared_active_start_without_ready_resolves_probe_with_signaller_dropped() {
         let (n, u, c) = ext_config("shared_start_no_ready");
         let mut w = ExtensionWrapper::builder(n, u, &c)
             .active()
-            .with_extended_readiness_probe_timeout(std::time::Duration::from_secs(60))
+            .with_readiness_probe_timeout_override(std::time::Duration::from_secs(60))
             .shared(TestSharedExt::new(CtrlMsgCounters::new()))
             .build()
             .unwrap()

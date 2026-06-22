@@ -7,7 +7,7 @@
 //! An extension's Active or Background lifecycle opts in via
 //! [`with_readiness_probe`](super::builder::ActiveStage::with_readiness_probe)
 //! (default 5 s) or
-//! [`with_extended_readiness_probe_timeout`](super::builder::ActiveStage::with_extended_readiness_probe_timeout)
+//! [`with_readiness_probe_timeout_override`](super::builder::ActiveStage::with_readiness_probe_timeout_override)
 //! (longer timeout). Each registered variant gets a fresh
 //! ([`ReadinessSignaller`], [`ReadinessProbe`]) pair; the extension
 //! fires via [`EffectHandler::signal_ready`](super::wrapper::EffectHandler::signal_ready).
@@ -38,21 +38,18 @@
 //!
 //! ExtensionWrapper::builder(name, user_cfg, runtime_cfg)
 //!     .active()
-//!     .with_extended_readiness_probe_timeout(Duration::from_secs(15))
+//!     .with_readiness_probe_timeout_override(Duration::from_secs(15))
 //!     .shared(ext)
 //!     .build()?;
 //! ```
 
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::oneshot;
 
 /// Default timeout used by
-/// [`with_readiness_probe`](super::builder::ActiveStage::with_readiness_probe)
-/// and the floor enforced by
-/// [`with_extended_readiness_probe_timeout`](super::builder::ActiveStage::with_extended_readiness_probe_timeout).
+/// [`with_readiness_probe`](super::builder::ActiveStage::with_readiness_probe).
 pub const DEFAULT_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Send-side handle for a variant's readiness signal. Cloneable;
@@ -62,7 +59,6 @@ pub struct ReadinessSignaller {
 }
 
 struct ReadinessInner {
-    fired: AtomicBool,
     tx_slot: Mutex<Option<oneshot::Sender<()>>>,
 }
 
@@ -72,7 +68,6 @@ impl ReadinessSignaller {
         let (tx, rx) = oneshot::channel();
         let sig = Self {
             inner: Arc::new(ReadinessInner {
-                fired: AtomicBool::new(false),
                 tx_slot: Mutex::new(Some(tx)),
             }),
         };
@@ -82,28 +77,25 @@ impl ReadinessSignaller {
 
     /// Signal that this variant is ready. Idempotent across clones.
     pub fn ready(&self) {
-        if self
+        if let Some(tx) = self
             .inner
-            .fired
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+            .tx_slot
+            .lock()
+            .expect("ReadinessSignaller tx_slot mutex poisoned")
+            .take()
         {
-            if let Some(tx) = self
-                .inner
-                .tx_slot
-                .lock()
-                .expect("ReadinessSignaller tx_slot mutex poisoned")
-                .take()
-            {
-                let _ = tx.send(());
-            }
+            let _ = tx.send(());
         }
     }
 
     /// Returns `true` once any clone has fired.
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        self.inner.fired.load(Ordering::Acquire)
+        self.inner
+            .tx_slot
+            .lock()
+            .expect("ReadinessSignaller tx_slot mutex poisoned")
+            .is_none()
     }
 }
 
