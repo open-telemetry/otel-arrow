@@ -53,7 +53,7 @@ pub struct Config {
     pub username: String,
     /// Clickhouse password
     pub password: String,
-    /// Use anync insert
+    /// Use async insert
     pub async_insert: bool,
     pub table_defaults: DefaultTableConfig,
     pub tables: TablesConfig,

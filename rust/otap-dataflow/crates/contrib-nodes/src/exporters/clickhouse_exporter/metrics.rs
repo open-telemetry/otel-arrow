@@ -12,11 +12,11 @@ use otap_df_telemetry_macros::metric_set;
 #[metric_set(name = "otap.exporter.clickhouse")]
 #[derive(Debug, Default, Clone)]
 pub struct ClickhouseExporterMetrics {
-    /// Total number of log rows written into clickhouse
+    /// Total number of log rows written successfully into clickhouse
     #[metric(unit = "{row}")]
     pub log_rows_written: Counter<u64>,
 
-    /// Total number of trace rows written into clickhouse
+    /// Total number of trace rows written successfully into clickhouse
     #[metric(unit = "{row}")]
     pub trace_rows_written: Counter<u64>,
 }
