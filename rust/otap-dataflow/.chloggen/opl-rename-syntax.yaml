@@ -1,4 +1,0 @@
-change_type: breaking
-component: query-engine
-note: "OPL `rename` syntax changed from `rename attributes[\"new\"] = attributes[\"old\"]` to `rename attributes \"old\" as \"new\"`. The `project-rename` alias has been removed from OPL."
-issues: [3224]

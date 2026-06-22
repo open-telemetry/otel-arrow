@@ -167,6 +167,10 @@ wiremock.workspace = true
 eventheader_dynamic.workspace = true
 tracepoint.workspace = true
 
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+tracelogging.workspace = true
+tracelogging_dynamic.workspace = true
+
 [[bench]]
 name = "azure_monitor_transformer"
 path = "benches/exporters/azure_monitor_exporter/transformer.rs"

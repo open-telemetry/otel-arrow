@@ -790,3 +790,8 @@ mod tests {
         assert_eq!(cfg.max_duration, DEFAULT_BATCH_MAX_DURATION);
     }
 }
+
+/// End-to-end Windows integration tests for the ETW receiver. See
+/// [`windows_e2e_tests`] for details.
+#[cfg(test)]
+mod windows_e2e_tests;
