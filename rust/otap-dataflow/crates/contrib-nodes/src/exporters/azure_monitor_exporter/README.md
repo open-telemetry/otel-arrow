@@ -93,8 +93,36 @@ config:
 
 ### Authentication
 
-The exporter uses Azure SDK authentication. `auth.method: msi` uses managed
-identity; `auth.method: dev` uses local Azure developer credentials.
+The exporter uses Azure SDK authentication. The following `auth.method` values
+are supported:
+
+- `msi` (aliases: `managedidentity`, `managed_identity`) — managed identity.
+  Set `client_id` to use a user-assigned identity; omit it to use the
+  system-assigned identity.
+- `dev` (aliases: `developer`, `cli`) — local Azure developer credentials
+  (Azure CLI / Azure Developer CLI).
+- `workload_identity` (alias: `wif`) — Workload Identity Federation. Reads a
+  projected federated ServiceAccount token and exchanges it with Entra ID for
+  an access token. Useful for Kubernetes workloads without a managed identity
+  (e.g. self-hosted or non-AKS clusters).
+
+For `workload_identity`, the following fields are used (each falls back to the
+corresponding environment variable injected by the Azure Workload Identity
+webhook when omitted):
+
+- `client_id` — application (client) ID; defaults to `AZURE_CLIENT_ID`.
+- `tenant_id` — Entra tenant ID; defaults to `AZURE_TENANT_ID`.
+- `token_file_path` — path to the federated token file; defaults to
+  `AZURE_FEDERATED_TOKEN_FILE`.
+
+```yaml
+auth:
+  method: workload_identity
+  # All fields optional; fall back to the standard AZURE_* environment variables.
+  client_id: "00000000-0000-0000-0000-000000000000"
+  tenant_id: "11111111-1111-1111-1111-111111111111"
+  token_file_path: "/var/run/secrets/azure/tokens/azure-identity-token"
+```
 
 ## Usage
 
