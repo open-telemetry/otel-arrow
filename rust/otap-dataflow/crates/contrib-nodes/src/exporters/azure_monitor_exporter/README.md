@@ -96,15 +96,15 @@ config:
 The exporter uses Azure SDK authentication. The following `auth.method` values
 are supported:
 
-- `msi` (aliases: `managedidentity`, `managed_identity`) — managed identity.
+- `managedidentity` (aliases: `msi`, `managed_identity`) — managed identity.
   Set `client_id` to use a user-assigned identity; omit it to use the
   system-assigned identity.
-- `dev` (aliases: `developer`, `cli`) — local Azure developer credentials
-  (Azure CLI / Azure Developer CLI).
-- `workload_identity` (alias: `wif`) — Workload Identity Federation. Reads a
-  projected federated ServiceAccount token and exchanges it with Entra ID for
-  an access token. Useful for Kubernetes workloads without a managed identity
-  (e.g. self-hosted or non-AKS clusters).
+- `development` (aliases: `dev`, `developer`, `cli`) — local Azure developer
+  credentials (Azure CLI / Azure Developer CLI).
+- `workloadidentity` (aliases: `wif`, `workload_identity`) — Workload Identity
+  Federation. Reads a projected federated ServiceAccount token and exchanges it
+  with Entra ID for an access token. Useful for Kubernetes workloads without a
+  managed identity (e.g. self-hosted or non-AKS clusters).
 
 For `workload_identity`, the following fields are used (each falls back to the
 corresponding environment variable injected by the Azure Workload Identity
