@@ -156,6 +156,12 @@ impl ActiveStage {
     /// Opt in with the default timeout
     /// ([`DEFAULT_READINESS_TIMEOUT`](super::readiness::DEFAULT_READINESS_TIMEOUT), 5 s).
     /// Must precede [`shared()`](Self::shared) / [`local()`](Self::local).
+    ///
+    /// Opting in applies to the whole bundle: when both a `shared` and a
+    /// `local` variant are registered, each variant gets its own probe and
+    /// the gate waits for **both**. Every registered variant's `start()`
+    /// must therefore call [`EffectHandler::signal_ready`](super::wrapper::EffectHandler::signal_ready),
+    /// or the gate fails on the variant that never signalled.
     #[must_use]
     pub fn with_readiness_probe(mut self) -> Self {
         self.readiness_timeout = Some(super::readiness::DEFAULT_READINESS_TIMEOUT);

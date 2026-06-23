@@ -325,6 +325,13 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             return Err(barrier_err);
         }
 
+        // TODO: make the readiness gate interruptible by an operator stop.
+        // `wait_all_ready` blocks here (bounded by each probe's timeout) before
+        // the runtime control-message manager is spawned, so a shutdown request
+        // that arrives during startup is only handled once the gate resolves or
+        // times out. With a long timeout override this can delay an operator
+        // stop. Plumbing the runtime control receiver into this wait is a
+        // follow-up; today the per-probe timeout bounds the worst-case wait.
         if let Err(readiness_err) =
             rt.block_on(local_tasks.run_until(extension_lifecycle.wait_all_ready()))
         {
