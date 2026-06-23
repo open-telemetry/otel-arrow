@@ -59,8 +59,8 @@ use otap_df_config::policy::{
     ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, TelemetryPolicy,
 };
 use otap_df_config::topic::{
-    TopicAckPropagationMode, TopicBackendKind, TopicBroadcastOnLagPolicy, TopicImplSelectionPolicy,
-    TopicSpec,
+    TopicAckPropagationMode, TopicBackendKind, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy,
+    TopicImplSelectionPolicy, TopicSpec,
 };
 use otap_df_config::transport_headers_policy::TransportHeadersPolicy;
 use otap_df_config::{
@@ -611,11 +611,14 @@ impl<
         let balanced_capacity = spec.policies.balanced.queue_capacity.max(1);
         let broadcast_capacity = spec.policies.broadcast.queue_capacity.max(1);
         let broadcast_on_lag = spec.policies.broadcast.on_lag;
+        // TODO(#2252 PR3): pass the configured `ack_mode` through instead of
+        // hardcoding `first`, and reject `all` on non-broadcast-only topics.
         match inferred_mode {
             InferredTopicMode::Mixed => TopicOptions::Mixed {
                 balanced_capacity,
                 broadcast_capacity,
                 on_lag: broadcast_on_lag,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InferredTopicMode::BalancedOnly => TopicOptions::BalancedOnly {
                 capacity: balanced_capacity,
@@ -623,6 +626,7 @@ impl<
             InferredTopicMode::BroadcastOnly => TopicOptions::BroadcastOnly {
                 capacity: broadcast_capacity,
                 on_lag: broadcast_on_lag,
+                ack_mode: TopicBroadcastAckMode::First,
             },
         }
     }
