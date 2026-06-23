@@ -84,6 +84,21 @@ use std::any::{Any, TypeId};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Emits the `extension.readiness.timeout_override` INFO event whenever a
+/// non-default readiness timeout is configured. Shared by the active and
+/// background opt-in entry points so their behavior can't drift.
+fn emit_readiness_timeout_override(extension: &str, timeout: Duration) {
+    let default = super::readiness::DEFAULT_READINESS_TIMEOUT;
+    if timeout != default {
+        otel_info!(
+            "extension.readiness.timeout_override",
+            extension = extension,
+            timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+            default_ms = u64::try_from(default.as_millis()).unwrap_or(u64::MAX),
+        );
+    }
+}
+
 // ── Decomposed (type-erased) provider outputs ────────────────────────────────
 
 /// Decomposed result of a shared extension provider.
@@ -153,15 +168,7 @@ impl ActiveStage {
     /// time with [`Error::ExtensionReadinessZeroTimeout`].
     #[must_use]
     pub fn with_readiness_probe_timeout_override(mut self, timeout: Duration) -> Self {
-        let default = super::readiness::DEFAULT_READINESS_TIMEOUT;
-        if timeout != default {
-            otel_info!(
-                "extension.readiness.timeout_override",
-                extension = self.parent.name.as_ref(),
-                timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
-                default_ms = u64::try_from(default.as_millis()).unwrap_or(u64::MAX),
-            );
-        }
+        emit_readiness_timeout_override(self.parent.name.as_ref(), timeout);
         self.readiness_timeout = Some(timeout);
         self
     }
@@ -598,15 +605,7 @@ impl BackgroundEmptyStage {
     /// See [`ActiveStage::with_readiness_probe_timeout_override`].
     #[must_use]
     pub fn with_readiness_probe_timeout_override(mut self, timeout: Duration) -> Self {
-        let default = super::readiness::DEFAULT_READINESS_TIMEOUT;
-        if timeout > default {
-            otel_info!(
-                "extension.readiness.timeout_override",
-                extension = self.parent.name.as_ref(),
-                timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
-                default_ms = u64::try_from(default.as_millis()).unwrap_or(u64::MAX),
-            );
-        }
+        emit_readiness_timeout_override(self.parent.name.as_ref(), timeout);
         self.readiness_timeout = Some(timeout);
         self
     }
