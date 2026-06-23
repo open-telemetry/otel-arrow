@@ -38,7 +38,7 @@
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::body::Bytes;
@@ -254,7 +254,11 @@ fn decompress_and_count(body: &[u8], headers: &HeaderMap) -> Result<DecompressRe
         serde_json::from_slice(&json_bytes).map_err(|e| format!("JSON parse error: {e}"))?;
 
     let entry_count = match value.as_array() {
-        Some(arr) => arr.len() as u64,
+        Some(arr) => {
+            // Check for probe entries and compute E2E latency.
+            detect_and_report_probes(arr);
+            arr.len() as u64
+        }
         None => 1, // Single object counts as 1 entry.
     };
 
@@ -262,6 +266,48 @@ fn decompress_and_count(body: &[u8], headers: &HeaderMap) -> Result<DecompressRe
         entry_count,
         decompressed_size,
     })
+}
+
+/// Detect probe entries in the ingested JSON array and print E2E latency.
+///
+/// A probe is identified by the presence of a `ProbeOriginTimestampNanos` field
+/// (or `_otap_internal.probe.emitted_at_unix_nanos` for raw attribute passthrough).
+/// The latency is computed as `now() - origin_timestamp`.
+fn detect_and_report_probes(entries: &[serde_json::Value]) {
+    let now_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0);
+
+    for entry in entries {
+        // Try mapped field name first, then raw attribute name.
+        let origin_nanos = entry
+            .get("ProbeOriginTimestampNanos")
+            .or_else(|| entry.get("_otap_internal.probe.emitted_at_unix_nanos"))
+            .and_then(|v| v.as_i64());
+
+        if let Some(origin) = origin_nanos {
+            let latency_ns = (now_nanos - origin).max(0);
+            let latency_ms = latency_ns as f64 / 1_000_000.0;
+
+            let probe_id = entry
+                .get("ProbeId")
+                .or_else(|| entry.get("_otap_internal.probe.id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+
+            let source = entry
+                .get("ProbeSource")
+                .or_else(|| entry.get("_otap_internal.probe.source"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+
+            println!(
+                "[mock-la] 🏓 PROBE E2E latency: {latency_ms:.1}ms | \
+                 source={source} | id={probe_id}"
+            );
+        }
+    }
 }
 
 /// Format a byte count as a human-readable string.
