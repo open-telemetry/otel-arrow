@@ -64,6 +64,19 @@
       ],
     },
     {
+      // group these dependencies that are tagged and released together
+      "groupName": "opentelemetry crates",
+      "matchManagers": ["cargo"],
+      "matchDepNames": [
+        "opentelemetry",
+        "opentelemetry_sdk",
+        "opentelemetry-stdout",
+        "opentelemetry-otlp",
+        "opentelemetry-prometheus",
+        "opentelemetry-proto"
+      ],
+    },
+    {
       // group together all github action workflow changes
       // it is very rare to have issues with these upgrades
       // fine to take them together
