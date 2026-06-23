@@ -2146,6 +2146,7 @@ fn semconv_host_metric_shapes(registry: &ResolvedRegistry) -> BTreeMap<String, M
                     group
                         .entity_associations
                         .iter()
+                        .flat_map(|assoc| assoc.referenced_entities())
                         .filter_map(|entity| entity_attributes.get(entity))
                         .flatten()
                         .map(|attr| attr.name.clone()),
@@ -2162,6 +2163,7 @@ fn semconv_host_metric_shapes(registry: &ResolvedRegistry) -> BTreeMap<String, M
                     group
                         .entity_associations
                         .iter()
+                        .flat_map(|assoc| assoc.referenced_entities())
                         .filter_map(|entity| entity_attributes.get(entity))
                         .flatten(),
                 )
@@ -2183,6 +2185,7 @@ fn semconv_host_metric_shapes(registry: &ResolvedRegistry) -> BTreeMap<String, M
                     group
                         .entity_associations
                         .iter()
+                        .flat_map(|assoc| assoc.referenced_entities())
                         .filter_map(|entity| entity_attributes.get(entity))
                         .flatten(),
                 )

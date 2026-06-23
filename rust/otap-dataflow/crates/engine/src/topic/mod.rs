@@ -21,13 +21,14 @@ pub use binding::PipelineTopicBinding;
 pub use broker::TopicBroker;
 pub use handle::{TopicHandle, TrackedTopicPublisher};
 pub use otap_df_config::topic::{
-    TopicAckPropagationMode, TopicBroadcastOnLagPolicy, TopicQueueOnFullPolicy,
+    TopicAckPropagationMode, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy,
+    TopicQueueOnFullPolicy,
 };
 pub use otap_df_config::{SubscriptionGroupName, TopicName};
 pub use subscription::{Delivery, RecvDelivery, Subscription};
 pub use topic_set::TopicSet;
 pub use types::{
-    Envelope, PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode, TopicOptions,
-    TopicPublishOutcomeConfig, TrackedPublishOutcome, TrackedPublishPermit, TrackedPublishReceipt,
-    TrackedPublishTracker, TrackedTryPublishOutcome,
+    AckFromResult, BroadcastSubscriberId, Envelope, PublishOutcome, RecvItem, SubscriberOptions,
+    SubscriptionMode, TopicOptions, TopicPublishOutcomeConfig, TrackedPublishOutcome,
+    TrackedPublishPermit, TrackedPublishReceipt, TrackedPublishTracker, TrackedTryPublishOutcome,
 };
