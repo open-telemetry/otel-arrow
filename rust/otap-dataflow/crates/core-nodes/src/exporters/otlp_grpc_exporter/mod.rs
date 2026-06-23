@@ -1323,7 +1323,7 @@ mod tests {
         let mut headers = HashMap::new();
         _ = headers.insert(
             "authorization".to_string(),
-            "Bearer secret-token-123".to_string(),
+            "Bearer secret-token-123".into(),
         );
 
         let exporter = ExporterWrapper::local(
@@ -1936,7 +1936,7 @@ mod tests {
         let context = context_without_headers();
 
         let mut headers = HashMap::new();
-        _ = headers.insert("authorization".to_string(), "Basic abc123".to_string());
+        _ = headers.insert("authorization".to_string(), "Basic abc123".into());
         let static_metadata = GrpcClientSettings {
             headers,
             ..Default::default()
@@ -1966,7 +1966,7 @@ mod tests {
         let context = context_with_headers(transport);
 
         let mut static_headers = HashMap::new();
-        _ = static_headers.insert("authorization".to_string(), "Basic abc123".to_string());
+        _ = static_headers.insert("authorization".to_string(), "Basic abc123".into());
         let static_metadata = GrpcClientSettings {
             headers: static_headers,
             ..Default::default()
@@ -2004,7 +2004,7 @@ mod tests {
         let context = context_with_headers(transport);
 
         let mut static_headers = HashMap::new();
-        _ = static_headers.insert("authorization".to_string(), "Basic static".to_string());
+        _ = static_headers.insert("authorization".to_string(), "Basic static".into());
         let static_metadata = GrpcClientSettings {
             headers: static_headers,
             ..Default::default()
