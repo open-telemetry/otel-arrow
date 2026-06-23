@@ -66,7 +66,7 @@ The effective instrument name is `otap.processor.durable_buffer.<field_name>`.
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.flush_failures` | `{error}` | Counter | Cumulative segment finalization (flush) failures. Non-zero values indicate data at risk — check logs for root cause. Data may still be recoverable via WAL replay on restart. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.flush_failures` | `{error}` | Counter | Cumulative segment finalization (flush) failures. Non-zero values indicate data at risk - check logs for root cause. Data may still be recoverable via WAL replay on restart. | `crates/otap/src/durable_buffer_processor/mod.rs` |
 
 ### Storage Utilization
 
@@ -80,7 +80,7 @@ The effective instrument name is `otap.processor.durable_buffer.<field_name>`.
 | --- | --- | --- | --- | --- |
 | `otap.processor.durable_buffer.dropped_log_records` | `{log_record}` | ObserveCounter | Cumulative log records lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP log slots. | `crates/otap/src/durable_buffer_processor/mod.rs` |
 | `otap.processor.durable_buffer.dropped_spans` | `{span}` | ObserveCounter | Cumulative spans lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP trace slots. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.dropped_metric_datapoints` | `{data_point}` | ObserveCounter | Cumulative metric data points lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP metric slots (slots 11–14 for Arrow, slot 62 for OTLP). | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.dropped_metric_datapoints` | `{data_point}` | ObserveCounter | Cumulative metric data points lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP metric slots (slots 11-14 for Arrow, slot 62 for OTLP). | `crates/otap/src/durable_buffer_processor/mod.rs` |
 
 ### Per-Signal Expired Items (max_age policy)
 
@@ -89,7 +89,6 @@ The effective instrument name is `otap.processor.durable_buffer.<field_name>`.
 | `otap.processor.durable_buffer.expired_log_records` | `{log_record}` | ObserveCounter | Cumulative log records lost due to `max_age` segment expiry. Aggregated across all Arrow and OTLP log slots. | `crates/otap/src/durable_buffer_processor/mod.rs` |
 | `otap.processor.durable_buffer.expired_spans` | `{span}` | ObserveCounter | Cumulative spans lost due to `max_age` segment expiry. Aggregated across all Arrow and OTLP trace slots. | `crates/otap/src/durable_buffer_processor/mod.rs` |
 | `otap.processor.durable_buffer.expired_metric_datapoints` | `{data_point}` | ObserveCounter | Cumulative metric data points lost due to `max_age` segment expiry. Aggregated across all Arrow and OTLP metric slots. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-
 
 ### In-flight and Retry
 
