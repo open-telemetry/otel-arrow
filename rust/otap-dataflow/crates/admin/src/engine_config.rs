@@ -31,7 +31,7 @@ fn operation_error_response(status: StatusCode, error: crate::ControlPlaneError)
 ///
 /// Credential header values are redacted from the response (see
 /// [`OtelDataflowSpec::redacted_for_snapshot`]) so secrets configured in node
-/// `headers` are not exposed in cleartext through this endpoint.
+/// and extension `headers` are not exposed in cleartext through this endpoint.
 pub async fn show_config(State(state): State<AppState>) -> impl IntoResponse {
     match state.controller.engine_config_snapshot() {
         Ok(config) => (StatusCode::OK, Json(config.redacted_for_snapshot())).into_response(),

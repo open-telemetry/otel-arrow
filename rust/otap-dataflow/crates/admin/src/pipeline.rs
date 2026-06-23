@@ -130,7 +130,8 @@ fn shutdown_is_success(state: &str) -> bool {
 ///
 /// Credential header values are redacted from the response (see
 /// [`otap_df_config::pipeline::PipelineConfig::redacted_for_snapshot`]) so
-/// secrets configured in node `headers` are not exposed in cleartext.
+/// secrets configured in node and extension `headers` are not exposed in
+/// cleartext.
 pub async fn show_pipeline(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
     State(state): State<AppState>,

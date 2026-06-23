@@ -71,7 +71,7 @@ fn operation_error_response(status: StatusCode, error: crate::ControlPlaneError)
 ///
 /// Credential header values are redacted from the response (see
 /// [`PipelineGroupConfig::redacted_for_snapshot`]) so secrets configured in
-/// node `headers` are not exposed in cleartext.
+/// node and extension `headers` are not exposed in cleartext.
 pub async fn show_group(
     Path(pipeline_group_id): Path<String>,
     State(state): State<AppState>,

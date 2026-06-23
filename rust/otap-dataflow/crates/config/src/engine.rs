@@ -61,9 +61,9 @@ pub struct OtelDataflowSpec {
 }
 
 impl OtelDataflowSpec {
-    /// Returns a clone of this engine config with every node's credential
-    /// header values redacted, for safe exposure through the admin config
-    /// snapshot API (`GET /api/v1/config`). See
+    /// Returns a clone of this engine config with every node's and
+    /// extension's credential header values redacted, for safe exposure
+    /// through the admin config snapshot API (`GET /api/v1/config`). See
     /// [`PipelineConfig::redacted_for_snapshot`]. The stored config is left
     /// unchanged.
     #[must_use]

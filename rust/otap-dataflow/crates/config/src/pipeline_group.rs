@@ -41,9 +41,9 @@ impl PipelineGroupConfig {
         }
     }
 
-    /// Returns a clone of this pipeline group with every node's credential
-    /// header values redacted, for safe exposure through the admin/config
-    /// snapshot APIs. See
+    /// Returns a clone of this pipeline group with every node's and
+    /// extension's credential header values redacted, for safe exposure
+    /// through the admin/config snapshot APIs. See
     /// [`PipelineConfig::redacted_for_snapshot`](crate::pipeline::PipelineConfig::redacted_for_snapshot).
     /// The stored config is left unchanged.
     #[must_use]
