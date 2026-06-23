@@ -378,6 +378,19 @@ impl PipelineNodes {
         self.0.contains_key(id)
     }
 
+    /// Returns a clone of this node set with every node's credential header
+    /// values redacted, for safe exposure through the admin/config snapshot
+    /// APIs. See [`NodeUserConfig::redacted_for_snapshot`]. The stored config is
+    /// left unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> PipelineNodes {
+        let mut redacted = self.clone();
+        for node in redacted.0.values_mut() {
+            *node = Arc::new(node.redacted_for_snapshot());
+        }
+        redacted
+    }
+
     /// Returns an iterator visiting all nodes.
     pub fn iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
         self.0.iter()

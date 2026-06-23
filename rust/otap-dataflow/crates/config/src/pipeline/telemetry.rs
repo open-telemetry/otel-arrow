@@ -43,6 +43,36 @@ impl TelemetryConfig {
         }
         self.metrics.validate()
     }
+
+    /// Returns a clone of this telemetry config with credential header values
+    /// redacted from every metrics reader's opaque exporter `config`, for safe
+    /// exposure through the admin/config snapshot APIs.
+    ///
+    /// Each reader's exporter `config` is a raw [`serde_json::Value`] (the same
+    /// opaque mechanism as a node's [`config`](crate::node::NodeUserConfig::config))
+    /// that is retained verbatim and re-serialized. The periodic OTLP exporter
+    /// schema (`OtlpExporterConfig`) does not reject unknown fields, so an
+    /// operator who sets a static `headers` map (e.g. an `authorization` token
+    /// for an OTLP telemetry backend) would otherwise have those values served
+    /// in cleartext. Both reader arms are masked here for defensive consistency
+    /// with pipeline nodes/extensions — even the pull/Prometheus schema, which
+    /// rejects unknown fields today, since the stored value is still opaque. The
+    /// stored config is left unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> TelemetryConfig {
+        let mut redacted = self.clone();
+        for reader in &mut redacted.metrics.readers {
+            match reader {
+                metrics::readers::MetricsReaderConfig::Periodic(periodic) => {
+                    crate::node::redact_secret_headers(&mut periodic.exporter.config);
+                }
+                metrics::readers::MetricsReaderConfig::Pull(pull) => {
+                    crate::node::redact_secret_headers(&mut pull.exporter.config);
+                }
+            }
+        }
+        redacted
+    }
 }
 
 impl Default for TelemetryConfig {
@@ -412,6 +442,61 @@ mod tests {
             panic!("Expected service.version to be a String attribute value");
         }
         assert_eq!(config.metrics.readers.len(), 1);
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_metrics_exporter_headers() {
+        // Each metrics reader's exporter `config` is a raw JSON value that
+        // retains unknown fields (the exporter schemas ignore them), so static
+        // credential `headers` set there would otherwise be served in cleartext
+        // by the admin/config snapshot API. `redacted_for_snapshot` must mask
+        // them on both the periodic and pull reader variants.
+        let yaml_str = r#"
+            metrics:
+                readers:
+                    - periodic:
+                        exporter:
+                            type: otlp
+                            config:
+                                endpoint: "http://backend.example:4318/v1/metrics"
+                                protocol: "http/protobuf"
+                                headers:
+                                    authorization: "Bearer periodic-super-secret"
+                        interval: "10s"
+                    - pull:
+                        exporter:
+                            type: prometheus
+                            config:
+                                host: "0.0.0.0"
+                                port: 9090
+                                headers:
+                                    authorization: "Bearer pull-super-secret"
+            "#;
+        let config: TelemetryConfig =
+            serde_yaml::from_str(yaml_str).expect("telemetry config deserializes");
+        let redacted = config.redacted_for_snapshot();
+
+        let redacted_json = serde_json::to_string(&redacted).expect("redacted serializes");
+        assert!(
+            !redacted_json.contains("periodic-super-secret"),
+            "periodic exporter credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            !redacted_json.contains("pull-super-secret"),
+            "pull exporter credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
+            "redaction placeholder should be present: {redacted_json}"
+        );
+
+        // Redaction is a copy: the stored config keeps the cleartext.
+        let original_json = serde_json::to_string(&config).expect("config serializes");
+        assert!(
+            original_json.contains("periodic-super-secret")
+                && original_json.contains("pull-super-secret"),
+            "original telemetry config must retain the cleartext credentials: {original_json}"
+        );
     }
 
     #[test]

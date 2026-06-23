@@ -63,12 +63,16 @@ pub struct OtelDataflowSpec {
 impl OtelDataflowSpec {
     /// Returns a clone of this engine config with every node's and
     /// extension's credential header values redacted, for safe exposure
-    /// through the admin config snapshot API (`GET /api/v1/config`). See
-    /// [`PipelineConfig::redacted_for_snapshot`]. The stored config is left
+    /// through the admin config snapshot API (`GET /api/v1/config`). This
+    /// covers both pipeline groups and engine-scoped config. See
+    /// [`PipelineConfig::redacted_for_snapshot`] and
+    /// [`EngineConfig::redacted_for_snapshot`] (the latter enumerates the
+    /// engine subtrees). The stored config is left
     /// unchanged.
     #[must_use]
     pub fn redacted_for_snapshot(&self) -> OtelDataflowSpec {
         let mut redacted = self.clone();
+        redacted.engine = redacted.engine.redacted_for_snapshot();
         for group in redacted.groups.values_mut() {
             *group = group.redacted_for_snapshot();
         }
@@ -111,6 +115,38 @@ pub struct EngineConfig {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[schemars(extend("x-kubernetes-preserve-unknown-fields" = true))]
     pub custom: HashMap<String, Value>,
+}
+
+impl EngineConfig {
+    /// Returns a clone of this engine config with credential header values
+    /// redacted from the engine-scoped config that the admin/config snapshot
+    /// API (`GET /api/v1/config`) exposes. Three engine subtrees carry raw,
+    /// header-bearing config and are redacted with the same policy as pipeline
+    /// nodes/extensions:
+    ///
+    /// - `controller.extensions` — controller-owned extensions whose `config`
+    ///   is the same opaque [`Value`] as a node's. See
+    ///   [`ControllerExtensions::redacted_for_snapshot`].
+    /// - `observability.pipeline.nodes` — the engine observability pipeline's
+    ///   node set. See [`PipelineNodes::redacted_for_snapshot`].
+    /// - `telemetry.metrics.readers[].exporter.config` — each metrics reader's
+    ///   opaque exporter `config` [`Value`]. See
+    ///   [`TelemetryConfig::redacted_for_snapshot`].
+    ///
+    /// The remaining strongly-typed engine settings (`observed_state`,
+    /// `topics`) have no opaque `headers`-bearing config, and `custom` is
+    /// opaque application metadata the engine never interprets as credentials,
+    /// so none are touched. The stored config is left unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> EngineConfig {
+        let mut redacted = self.clone();
+        redacted.telemetry = redacted.telemetry.redacted_for_snapshot();
+        redacted.controller.extensions = redacted.controller.extensions.redacted_for_snapshot();
+        if let Some(pipeline) = redacted.observability.pipeline.as_mut() {
+            pipeline.nodes = pipeline.nodes.redacted_for_snapshot();
+        }
+        redacted
+    }
 }
 
 /// Controller-specific configuration.
@@ -224,6 +260,20 @@ impl ControllerExtensions {
     /// Returns an iterator over extension IDs.
     pub fn keys(&self) -> impl Iterator<Item = &ExtensionId> {
         self.0.keys()
+    }
+
+    /// Returns a clone of these controller extensions with every extension's
+    /// credential header values redacted, for safe exposure through the
+    /// admin/config snapshot APIs. See
+    /// [`ExtensionUserConfig::redacted_for_snapshot`]. The stored config is left
+    /// unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> ControllerExtensions {
+        let mut redacted = self.clone();
+        for extension in redacted.0.values_mut() {
+            *extension = Arc::new(extension.redacted_for_snapshot());
+        }
+        redacted
     }
 }
 
@@ -424,6 +474,77 @@ groups:
         assert!(
             original_json.contains("Bearer super-secret-token"),
             "original spec must retain the cleartext credential"
+        );
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_engine_scoped_headers() {
+        // `/api/v1/config` serializes the whole spec, including engine-scoped
+        // config. Controller extensions, the engine observability pipeline's
+        // nodes, and each telemetry metrics reader's opaque exporter `config`
+        // all carry raw header-bearing config, so redaction must reach them too
+        // — not just `groups`. Deserialize directly (no validation) to keep the
+        // test focused on redaction.
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  controller:
+    extensions:
+      ctrl_auth:
+        type: "urn:otap:extension:headers_setter"
+        config:
+          headers:
+            authorization: "Bearer controller-super-secret"
+  observability:
+    pipeline:
+      nodes:
+        obs_exporter:
+          type: "urn:otel:exporter:otlp"
+          config:
+            headers:
+              authorization: "Bearer observability-super-secret"
+  telemetry:
+    metrics:
+      readers:
+        - periodic:
+            exporter:
+              type: otlp
+              config:
+                endpoint: "http://backend.example:4318/v1/metrics"
+                protocol: "http/protobuf"
+                headers:
+                  authorization: "Bearer telemetry-super-secret"
+            interval: "10s"
+"#;
+        let spec: OtelDataflowSpec = serde_yaml::from_str(yaml).expect("spec should deserialize");
+        let redacted = spec.redacted_for_snapshot();
+
+        let redacted_json = serde_json::to_string(&redacted).expect("redacted spec serializes");
+        assert!(
+            !redacted_json.contains("controller-super-secret"),
+            "controller extension credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            !redacted_json.contains("observability-super-secret"),
+            "observability node credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            !redacted_json.contains("telemetry-super-secret"),
+            "telemetry exporter credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
+            "redaction placeholder should be present: {redacted_json}"
+        );
+
+        // Redaction is a copy: the stored spec keeps the cleartext for the
+        // controller's own use (it is never the thing serialized to clients).
+        let original_json = serde_json::to_string(&spec).expect("spec serializes");
+        assert!(
+            original_json.contains("controller-super-secret")
+                && original_json.contains("observability-super-secret")
+                && original_json.contains("telemetry-super-secret"),
+            "original spec must retain the cleartext credentials: {original_json}"
         );
     }
 
