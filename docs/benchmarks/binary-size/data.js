@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782089416010,
+  "lastUpdate": 1782175684402,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5356,6 +5356,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 99.53,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "42083ad132c2dce8958a0c6f39ede8431311dcd6",
+          "message": "feat(engine/topic): foundation & primitives for broadcast all ack mode (PR 1/3) (#3323)\n\n> Copy of #3250, recreated after a bad rebase\n\n# Change Summary\n\nPart of #2252. First of three independently shippable PRs adding a\nbroadcast `all` ack mode for topic hops.\n\n## Why\n\nToday a broadcast topic acks upstream as soon as the **first**\nsubscriber acks. The target use case needs strict fan-out: ack upstream\nonly once **every** downstream pipeline acks. So we're adding an opt-in\n`ack_mode: all`. The modes differ fundamentally: `first` asks \"has\n*anyone* acked?\", while `all` asks \"have *all required* subscribers\nacked?\" — which means `all` must know the exact required set per\nmessage.\n\n## Scope: groundwork only, no behavior change\n\nLands the types and primitives (unit-tested) but **nothing honors `all`\nyet** — every caller passes `First` and the engine ignores it, so\nbehavior is identical to today. PR 2 wires the engine; PR 3 adds the\nconfig knob, validation, and docs.\n\n## What's included\n\n- **Mode enum** (`config/src/topic.rs`): `TopicBroadcastAckMode { First,\nAll }`, default `First`. The config field using it lands in PR 3.\n- **Consensus-aware tracker** (`engine/src/topic/types.rs`): the publish\ntracker can now hold the *set of subscribers still owing an ack* for a\nmessage, resolving Ack when it empties or Nack when any required\nsubscriber nacks/disappears. Tested, not yet called.\n- **Ring split** (`engine/src/topic/topic.rs`): `publish()` is now a\nwrapper over `reserve_seq()` (claim the sequence) + `commit_slot()`\n(write + wake). Called back-to-back, so behavior is unchanged; PR 2\nneeds them separate (below).\n- **Options field**: `ack_mode` threaded through all topic construction\nsites as `First`; the engine ignores it.\n\n## Why the ring is split\n\n`all` mode must record, at publish time, the required ack set for a\nmessage — and it must match who actually *receives* it (a subscriber\ngets message N only if it joined at/before N). If a publish and a new\nsubscription interleave wrong, a message can either hang forever waiting\non a subscriber that never got it (liveness bug) or silently drop one\nthat did (correctness bug). PR 2 fixes this by claiming the sequence and\nsnapshotting subscribers together under one short lock — with only the\ncheap `reserve_seq` inside it and the expensive `commit_slot` (slot\nwrite + wake) after release. **This PR just creates that seam**; no lock\nor caller yet. The reserved-but-uncommitted window is already\nreader-safe (readers see \"not ready\" and re-park until the commit wakes\nthem). `first` mode builds no required set, so it stays lock-free.\n\n## How the consensus resolves\n\nA message registered with required subscribers `{A, B, C}`:\n\n- stays **pending** as acks arrive, until the set empties -> **Ack**;\n- **Nack** the moment any required subscriber nacks or disappears\n(lag-disconnect/drop) before acking;\n- **Ack** immediately if there are zero eligible subscribers at publish\ntime;\n- ignores duplicate/late acks once resolved (first outcome wins; permit\nreleased exactly once).\n\nTopic close still resolves as `TopicClosed`, not Nack. The\n`first`/untracked/timeout paths are untouched.\n\n## Relationship to `fanout_processor`\n\nBroadcast `all` is the cross-pipeline cousin of `fanout`'s `await_ack:\nall` — same *\"all must Ack, any Nack -> fail-fast\"* contract, different\nsubstrate:\n\n| | `fanout_processor` (`await_ack: all`) | Topic broadcast `ack_mode:\nall` |\n| --- | --- | --- |\n| Scope | Within one pipeline | Across pipelines (topic hop) |\n| Who must ack | Fixed config ports | Snapshotted per-message from live\nsubscribers |\n| Failure handling | Rich fallback routing | No fallback;\nnack/disappearance -> Nack |\n\n`fanout`'s \"late ack after timeout is ignored\" is the same\nfirst-outcome-wins rule the tracker uses.\n\n## Not in this PR\n\n- **PR 2:** subscriber registry + publish/ack/disconnect wiring that\nhonors `all`.\n- **PR 3:** `broadcast.ack_mode` config field, validation, controller\nmapping, docs, example, changelog.\n\n## What issue does this PR close?\n\n* Part of #2252 \n\n## How are these changes tested?\n\nUnit tests\n\n## Are there any user-facing changes?\n\nNo\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry, OR this PR is a `chore`\n(indicated in title).",
+          "timestamp": "2026-06-22T21:59:01Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/42083ad132c2dce8958a0c6f39ede8431311dcd6"
+        },
+        "date": 1782175671849,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 112.19,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 99.6,
             "unit": "MB"
           }
         ]
