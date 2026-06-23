@@ -2145,6 +2145,24 @@ fn active_with_readiness_probe_timeout_zero_errors() {
 }
 
 #[test]
+fn active_with_readiness_probe_timeout_smallest_positive_is_accepted() {
+    let smallest = std::time::Duration::from_nanos(1);
+    let (n, u, c) = ext_config("active_extended_smallest_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .with_readiness_probe_timeout_override(smallest)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let probe = bundle
+        .take_shared()
+        .unwrap()
+        .take_readiness_probe()
+        .unwrap();
+    assert_eq!(probe.timeout(), smallest);
+}
+
+#[test]
 fn background_with_readiness_probe_uses_default_timeout() {
     let (n, u, c) = ext_config("bg_default_timeout_shared");
     let mut bundle = ExtensionWrapper::builder(n, u, &c)
@@ -2226,6 +2244,24 @@ fn background_with_readiness_probe_timeout_zero_errors() {
         result,
         Err(Error::ExtensionReadinessZeroTimeout { .. })
     ));
+}
+
+#[test]
+fn background_with_readiness_probe_timeout_smallest_positive_is_accepted() {
+    let smallest = std::time::Duration::from_nanos(1);
+    let (n, u, c) = ext_config("bg_extended_smallest_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .background()
+        .with_readiness_probe_timeout_override(smallest)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let probe = bundle
+        .take_shared()
+        .unwrap()
+        .take_readiness_probe()
+        .unwrap();
+    assert_eq!(probe.timeout(), smallest);
 }
 
 #[test]
