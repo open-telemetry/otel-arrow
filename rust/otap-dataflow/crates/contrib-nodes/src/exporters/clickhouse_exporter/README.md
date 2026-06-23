@@ -100,7 +100,7 @@ Top-level config fields:
 - `endpoint`
 - `database`
 - `username`
-- `password`
+- `password` (supports `${env:VAR}` / `${env:VAR:-default}` substitution, e.g. `"${env:CLICKHOUSE_PASSWORD}"`)
 - `async_insert`
 - `table_defaults`
 - `tables`

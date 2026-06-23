@@ -45,7 +45,7 @@ pub(crate) enum RowRun {
     /// Contiguous `start..end` range of row indices (sorted/grouped fast path).
     Range(std::ops::Range<usize>),
     /// Explicit list of row indices (unsorted fallback).
-    Indices(Vec<u16>),
+    Indices(Vec<u32>),
 }
 
 impl RowRun {
@@ -59,7 +59,7 @@ impl RowRun {
 
 pub(crate) enum RowRunIter<'a> {
     Range(std::ops::Range<usize>),
-    Indices(std::slice::Iter<'a, u16>),
+    Indices(std::slice::Iter<'a, u32>),
 }
 
 impl Iterator for RowRunIter<'_> {
@@ -79,7 +79,7 @@ impl Iterator for RowRunIter<'_> {
 /// fast path is a single linear pass that emits `(id, start..end)` runs, no hashing and no
 /// per-group `Vec` allocations, with deterministic ordering. If the "sorted & contiguous" invariant
 /// is violated (a previously-seen id reappears, or ids are out of order, e.g. when nulls split a
-/// group), it falls back to the order-independent `HashMap` grouping.
+/// group), it falls back to [`group_rows_by_id_unsorted`], which is also id-ordered.
 pub(crate) fn group_rows_by_id(ids: &UInt16Array) -> Vec<(u16, RowRun)> {
     let len = ids.len();
     let mut runs: Vec<(u16, RowRun)> = Vec::new();
@@ -126,22 +126,25 @@ pub(crate) fn group_rows_by_id(ids: &UInt16Array) -> Vec<(u16, RowRun)> {
     runs
 }
 
-/// Order-independent fallback grouping for the rare case where parent ids are not sorted/contiguous.
+/// Fallback grouping for the rare case where parent ids are not sorted/contiguous.
+///
+/// Groups are emitted in ascending id order so downstream output ordering stays deterministic.
 fn group_rows_by_id_unsorted(ids: &UInt16Array) -> Vec<(u16, RowRun)> {
-    let mut groups: HashMap<u16, Vec<u16>> = HashMap::with_capacity(ids.len() / 4);
+    let mut groups: HashMap<u16, Vec<u32>> = HashMap::with_capacity(ids.len() / 4);
 
     for i in 0..ids.len() {
         if ids.is_null(i) {
             continue;
         }
-        let id = ids.value(i);
-        groups.entry(id).or_default().push(i as u16);
+        groups.entry(ids.value(i)).or_default().push(i as u32);
     }
 
-    groups
+    let mut runs: Vec<(u16, RowRun)> = groups
         .into_iter()
         .map(|(id, rows)| (id, RowRun::Indices(rows)))
-        .collect()
+        .collect();
+    runs.sort_unstable_by_key(|(id, _)| *id);
+    runs
 }
 
 fn parent_ids_as_u16(batch: &RecordBatch) -> Result<Option<UInt16Array>, ClickhouseExporterError> {
@@ -206,9 +209,12 @@ pub(crate) fn group_attributes_to_map_str(
         None => None,
     };
 
-    let keys_builder = StringBuilder::new();
-    let values_builder = StringBuilder::new();
-    let mut map_builder = MapBuilder::new(None, keys_builder, values_builder);
+    let mut map_builder = MapBuilder::with_capacity(
+        None,
+        StringBuilder::new(),
+        StringBuilder::new(),
+        groups.len(),
+    );
     let mut id_builder = UInt32Builder::with_capacity(groups.len());
 
     for (id, rows) in groups {

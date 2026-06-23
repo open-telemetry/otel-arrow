@@ -26,7 +26,8 @@ groups:
               endpoint: "http://127.0.0.1:8123"
               database: "otap"
               username: "default"
-              password: "test"
+              # Read the password from $CLICKHOUSE_PASSWORD, falling back to "test" if unset.
+              password: "${env:CLICKHOUSE_PASSWORD:-test}"
 
         connections:
           - from: receiver

@@ -1,41 +1,13 @@
 //! RecordBatch transformation runner for OTAP → ClickHouse shaping.
 //!
-//! This module executes transformation plans that convert OTAP Arrow `RecordBatch`es into
-//! ClickHouse-ready batches. It supports both multi-column operations (that need to look at or
-//! restructure multiple columns together) and per-column operations (rename/cast/drop/inline, etc.)
-//! while coordinating cross-payload dependencies such as attribute-table ID remapping.
+//! [`BatchTransformer`] runs a per-payload [`TransformationPlan`] in two stages:
 //!
-//! Key components:
-//!
-//! - [`BatchTransformer`]: the main orchestrator. It holds per-payload [`TransformationPlan`]s.
-//!
-//! - [`MultiColumnOpResult`]: the intermediate representation produced by the multi-column stage,
-//!   containing the current column map plus an optional `old_id -> new_id` remap table used later to
-//!   reindex foreign keys in parent payloads.
-//!
-//! Execution model:
-//!
-//! - **Multi-column stage** (`run_multi_column_stage`): runs `MultiColumnTransformOp`s that may:
-//!   - drop all columns,
-//!   - extract/group fields by an ID into list-typed columns (`build_list_arrays`),
-//!   - normalize/dedupe OTLP attributes into a string map while
-//!     producing an ID remap for downstream joins.
-//!
-//! - **Single-column stage** (`apply_column_ops`): applies `ColumnTransformOp`s to each original
-//!   column name using [`apply_one_op`], allowing operations to rewrite, drop, or replace columns
-//!   and to reference other payload results via the shared multi-column result map.
-//!   Optionally recreates a new `RecordBatch` with a deterministic column order.
-//!
-//! Supporting helpers include:
-//!
-//! - `append_list_value`: type-aware appending into list/map builders when constructing grouped list
-//!   arrays.
-//! - `dictionary_to_key_value_columns`: utility for exposing dictionary-encoded values alongside
-//!   their integer keys when producing normalized attribute tables.
-//!
-//! Together, these utilities implement the “shape the data to match the chosen ClickHouse schema”
-//! step, including attribute normalization, ID remapping, and column-level coercions needed by the
-//! exporter’s table layouts.
+//! - Multi-column stage (`run_multi_column_stage`): reshapes whole column sets — extract/group
+//!   fields into list columns (`build_list_arrays`), or normalize OTLP attributes into a string map
+//!   — producing a [`MultiColumnOpResult`] (the column map plus an optional `old_id -> new_id` remap
+//!   used to reindex foreign keys in parent payloads).
+//! - Single-column stage (`apply_column_ops`): applies per-column [`ColumnTransformOp`]s via
+//!   [`apply_one_op`], optionally rebuilding a `RecordBatch` with a deterministic column order.
 use std::ops::ControlFlow;
 use std::{
     collections::{HashMap, HashSet},
@@ -97,67 +69,12 @@ impl BatchTransformer {
         }
     }
 
-    /// This method is the orchestration layer for the transformation engine.
-    /// For each allowed `ArrowPayloadType`, it executes:
+    /// Run both transformation stages for every payload and return the batches ready for export.
     ///
-    /// 1. **Multi-column transformation stage**
-    /// 2. **Single-column transformation stage**
-    /// 3. **Optional RecordBatch reconstruction**
-    ///
-    /// The result is a map of transformed `RecordBatch`es ready for export.
-    ///
-    /// ---
-    ///
-    /// # Stage 1: Multi-Column Transformations
-    ///
-    /// For each allowed payload type:
-    ///
-    /// - Retrieves the input `RecordBatch`
-    /// - Looks up its static transformation plan
-    /// - Executes `run_multi_column_stage`
-    ///
-    /// This stage may:
-    ///
-    /// - Restructure entire column sets
-    /// - Aggregate or reshape rows
-    /// - Produce ID remapping (`old_id -> new_id`)
-    /// - Replace or clear columns entirely
-    ///
-    /// Results are stored in `multi_col_results`.
-    ///
-    /// ---
-    ///
-    /// # Stage 2: Single-Column Transformations
-    ///
-    /// For each payload type:
-    ///
-    /// - `apply_column_ops` is executed against the corresponding
-    ///   `MultiColumnOpResult`.
-    ///
-    /// This stage performs:
-    ///
-    /// - Per-column transformations
-    /// - Renames, drops, or rewrites
-    /// - Deterministic batch reconstruction (if configured)
-    ///
-    /// If `plan.recreate_batch == true` and columns remain,
-    /// a new `RecordBatch` is produced and inserted into
-    /// `writable_batches`.
-    ///
-    /// # Returns
-    ///
-    /// Returns a `HashMap<ArrowPayloadType, RecordBatch>` containing
-    /// only payloads that:
-    ///
-    /// - Had an input batch
-    /// - Had a transformation plan
-    /// - Still contain columns after transformation
-    /// - Requested batch reconstruction
-    ///
-    /// Returns `Err(ClickhouseExporterError)` if:
-    ///
-    /// - Any multi-column stage fails
-    /// - Any single-column stage fails
+    /// For each allowed payload: stage 1 (`run_multi_column_stage`) reshapes column sets and
+    /// produces any `old_id -> new_id` remap; stage 2 (`apply_column_ops`) applies per-column ops
+    /// and, when `plan.recreate_batch` is set, rebuilds a `RecordBatch`. Only payloads that had an
+    /// input batch, a plan, surviving columns, and requested reconstruction appear in the result.
     pub fn apply_plan(
         &mut self,
         arrow_records: OtapArrowRecords,
@@ -351,123 +268,67 @@ fn build_list_arrays(
     id_col: &PrimitiveArray<UInt16Type>,
     targets: &HashMap<String, ArrayRef>,
 ) -> Result<(HashMap<u32, u32>, HashMap<String, ArrayRef>), ClickhouseExporterError> {
-    // Trace/span id columns arrive as FixedSizeBinary (possibly dictionary-encoded). Hex-encode
-    // them to Utf8 up front so the grouped list becomes `Array(String)` of hex — matching the
-    // top-level TraceId/SpanId rather than `Array(FixedSizeBinary)`, which ClickHouse would
-    // otherwise coerce to `Array(String)` as raw bytes.
-    let targets: HashMap<String, ArrayRef> = targets
-        .iter()
-        .map(|(name, array)| {
-            let needs_hex = matches!(array.data_type(), DataType::FixedSizeBinary(_))
-                || matches!(
-                    array.data_type(),
-                    DataType::Dictionary(_, v) if matches!(**v, DataType::FixedSizeBinary(_))
-                );
-            let array = if needs_hex {
-                fixed_binary_to_hex_string(array)?
-            } else {
-                array.clone()
-            };
-            Ok((name.clone(), array))
-        })
-        .collect::<Result<HashMap<_, _>, ClickhouseExporterError>>()?;
-    let targets = &targets;
-
     let groups = group_rows_by_id(id_col);
+    let num_groups = groups.len();
 
-    let mut old_to_new_map: HashMap<u32, u32> = HashMap::with_capacity(groups.len());
+    // Normalize each target to a plain element array and create its list builder in one pass.
+    // Trace/span id columns arrive as FixedSizeBinary (possibly dictionary-encoded), hex-encode
+    // them to Utf8 so the grouped list becomes `Array(String)` of hex matching the top-level
+    // TraceId/SpanId rather than `Array(FixedSizeBinary)` (which ClickHouse would read as raw
+    // bytes). Dictionary(Utf8) targets are unpacked to Utf8 here so the cast runs once rather than
+    // once per element inside `append_list_value`.
+    let mut names: Vec<String> = Vec::with_capacity(targets.len());
+    let mut normalized: Vec<ArrayRef> = Vec::with_capacity(targets.len());
+    let mut builders: Vec<ListBuilder<Box<dyn ArrayBuilder>>> = Vec::with_capacity(targets.len());
+    for (name, array) in targets {
+        let array: ArrayRef = match array.data_type() {
+            DataType::FixedSizeBinary(_) => fixed_binary_to_hex_string(array)?,
+            DataType::Dictionary(_, v) if matches!(**v, DataType::FixedSizeBinary(_)) => {
+                fixed_binary_to_hex_string(array)?
+            }
+            DataType::Dictionary(_, v) if **v == DataType::Utf8 => {
+                arrow::compute::cast(array, &DataType::Utf8)?
+            }
+            _ => array.clone(),
+        };
+        let values_builder = make_builder(array.data_type(), id_col.len());
+        builders.push(ListBuilder::with_capacity(values_builder, num_groups));
+        normalized.push(array);
+        names.push(name.clone());
+    }
 
-    // Create a ListBuilder per target column
-    let mut builders: HashMap<String, ListBuilder<Box<dyn ArrayBuilder>>> = targets
-        .iter()
-        .map(|(name, array)| {
-            let value_type = match array.data_type() {
-                DataType::Dictionary(_, value_type) if **value_type == DataType::Utf8 => {
-                    DataType::Utf8
-                }
-                DataType::Dictionary(_, value_type)
-                    if matches!(**value_type, DataType::FixedSizeBinary(_)) =>
-                {
-                    (**value_type).clone()
-                }
-                _ => array.data_type().clone(),
-            };
-            let builder = ListBuilder::new(make_builder(&value_type, 0));
-            (name.clone(), builder)
-        })
-        .collect();
-
-    // TODO(optimization): when the target arrays are already in list-array order, these could be
-    // constructed significantly faster.
-    //
-    // The precondition for that optimization is now met: `group_rows_by_id` emits contiguous
-    // `(id, start..end)` runs on the sorted fast path, so each group's elements are the slice
-    // `values[start..end]` and could be built with `arrow::compute` `take`/slice instead of
-    // `append_list_value` per element. It is still avoided here because a byte-identical rewrite
-    // must replicate that helper's full per-type matrix (Utf8, Dict<Utf8>/Dict<FSB>, Timestamp,
-    // FixedSizeBinary, UInt32, and the nested `Map<Utf8,Utf8>` for `Array(Map)`) with
-    // element-level null preservation.
+    // TODO(optimization): each group's rows are a contiguous `values[start..end]` slice on the
+    // sorted fast path (see `group_rows_by_id`), so these lists could be built with `arrow::compute`
+    // `take`/slice instead of `append_list_value` per element. Avoided for now because a
+    // byte-identical rewrite must replicate that helper's full per-type matrix (Utf8, Timestamp,
+    // FixedSizeBinary, UInt32, and the nested `Map<Utf8,Utf8>` for `Array(Map)`) with element-level
+    // null preservation.
+    let mut old_to_new_map: HashMap<u32, u32> = HashMap::with_capacity(num_groups);
     for (i, (id, rows)) in groups.into_iter().enumerate() {
         for row in rows.iter() {
-            // Append values for each column
-            for (name, target) in targets {
-                let builder = builders.get_mut(name).expect("builder must exist");
-
+            for (target, builder) in normalized.iter().zip(builders.iter_mut()) {
                 append_list_value(builder.values(), target, row)?;
             }
         }
-        // New group - close previous list on all builders
-        for builder in builders.values_mut() {
+        // New group — close the current list on every builder.
+        for builder in builders.iter_mut() {
             builder.append(true);
         }
         _ = old_to_new_map.insert(id as u32, i as u32);
     }
 
-    // Finish builders into ArrayRefs
-    let result = builders
+    let result = names
         .into_iter()
+        .zip(builders)
         .map(|(name, mut builder)| (name, Arc::new(builder.finish()) as ArrayRef))
         .collect();
 
     Ok((old_to_new_map, result))
 }
 
-/// Executes a sequence of multi-column transformation operations over an
-/// input `RecordBatch`, producing a new column set and optional ID remapping.
-///
-/// This function initializes a mutable `HashMap<String, ArrayRef>` from the
-/// input `RecordBatch`, then applies each `MultiColumnTransformOp` in order.
-/// Each operation may:
-///
-/// - Mutate or completely replace the current column set.
-/// - Derive new columns from existing ones.
-/// - Clear all columns.
-/// - Produce an ID remapping (`old_id -> new_id`) used to preserve
-///   referential integrity after reshaping.
-///
-/// The operations are applied sequentially and are order-dependent.
-///
-/// # ID Remapping
-///
-/// Some operations restructure or deduplicate rows, requiring parent ID
-/// remapping. When produced:
-///
-/// - `remapped_ids` stores a `HashMap<u32, u32>` mapping old IDs to new IDs.
-/// - If multiple operations produce remappings, the *last one wins*.
-/// - If no operation produces remapping, this field remains `None`.
-///
-/// # Returns
-///
-/// Returns a `MultiColumnOpResult` containing:
-///
-/// - `columns`: the final column set after all transformations.
-/// - `remapped_ids`: optional ID remapping if produced by any operation.
-///
-/// Returns `Err(ClickhouseExporterError)` if:
-///
-/// - A required column is missing.
-/// - Any helper transformation fails.
-/// - Any internal array-building operation fails.
+/// Apply each `MultiColumnTransformOp` in order, returning the reshaped column set and any
+/// `old_id -> new_id` remap (last op to produce one wins). With no ops, the batch's columns pass
+/// through unchanged.
 fn run_multi_column_stage(
     batch: &RecordBatch,
     ops: &[MultiColumnTransformOp],
@@ -541,58 +402,16 @@ fn run_multi_column_stage(
     })
 }
 
-/// Applies configured column transformation operations to all columns
-/// belonging to a given `payload_type`.
+/// Apply the per-column ops for `payload_type` and, if `recreate_batch`, rebuild its `RecordBatch`.
 ///
-/// This function:
+/// Columns are visited over a snapshot of the starting names (so renames/drops don't perturb
+/// traversal); a column with no configured ops defaults to [`ColumnTransformOp::Drop`], and
+/// `ControlFlow::Break` stops further ops on that column. A second pass then runs ops for columns
+/// created during the first pass (flattened struct fields, inlined attributes, etc.). On
+/// reconstruction the surviving columns are sorted by name for a deterministic schema.
 ///
-/// 1. Removes the `MultiColumnOpResult` for `payload_type` from
-///    `multi_col_op_results`.
-/// 2. Iterates over a snapshot of the original column names.
-/// 3. Applies the configured `ColumnTransformOp`s for each column
-///    in declaration order.
-/// 4. Optionally rebuilds and returns a new `RecordBatch` from the
-///    transformed columns.
-/// 5. Reinserts the (possibly modified) result back into
-///    `multi_col_op_results`.
-///
-/// # Operation Semantics
-///
-/// - The iteration order is based on a snapshot of the original column names.
-///   This ensures deterministic traversal even if operations rename or drop
-///   columns.
-/// - If a column has no explicitly configured operations in `ops.column_ops`,
-///   it defaults to a single [`ColumnTransformOp::Drop`] operation.
-/// - If an operation returns `ControlFlow::Break`, no further operations are
-///   applied to that column.
-/// - Columns removed by earlier operations are skipped if encountered later
-///   in the snapshot iteration.
-/// - The `ColumnOpCtx` provides access to:
-///     - Mutable access to the current column set.
-///     - Immutable access to other payload types' column results.
-/// - The borrow of the context ends before batch reconstruction to satisfy
-///   Rust's borrowing rules.
-///
-/// # RecordBatch Reconstruction
-///
-/// If `recreate_batch == true`:
-///
-/// - Remaining columns are sorted lexicographically by name to ensure
-///   deterministic schema ordering.
-/// - A new `Schema` is constructed from the columns' data types.
-/// - A new `RecordBatch` is created and returned as `Ok(Some(batch))`.
-///
-/// If `recreate_batch == false`, the function only mutates internal state
-/// and returns `Ok(None)`.
-///
-/// # Returns
-///
-/// - `Ok(Some(RecordBatch))` if `recreate_batch` is `true` and columns remain.
-/// - `Ok(None)` if:
-///     - No entry existed for `payload_type`, or
-///     - All columns were dropped, or
-///     - `recreate_batch` is `false`.
-/// - `Err(ClickhouseExporterError)` if any operation or batch construction fails.
+/// Returns `Ok(None)` when the payload has no entry, all columns were dropped, or `recreate_batch`
+/// is false; otherwise `Ok(Some(batch))`.
 fn apply_column_ops(
     multi_col_op_results: &mut HashMap<ArrowPayloadType, MultiColumnOpResult>,
     payload_type: ArrowPayloadType,

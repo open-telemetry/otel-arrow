@@ -22,6 +22,7 @@
 //!       endpoint: "http://clickhouse.example.db:8123"
 //!       database: "otap"
 //!       username: "default"
+//!       # Secrets can be sourced from the environment, e.g. "${env:CLICKHOUSE_PASSWORD}".
 //!       password: ""
 //!       # ... additional config
 //! ```

@@ -1,62 +1,9 @@
-//! # Transformation Plan Module
+//! Static transformation plans per OTAP payload type.
 //!
-//! This module defines the `TransformationPlan` and its supporting structures and
-//! abstractions to manage column-based and multi-column transformations for structured
-//! datasets (e.g., Arrow tables). It provides a flexible and reusable framework for
-//! defining and applying transformations by encapsulating operations in a clear, modular manner.
-//!
-//! ## Key Components
-//!
-//! ### Structs
-//!
-//! - **[`TransformationPlan`]:**
-//!   Represents a full transformation plan, containing both column-level and multi-column-level operations.
-//!   It acts as the primary interface for specifying transformations. Internally, it uses a `ColumnOperations`
-//!   struct to manage single-column transformations and a `Vec` to manage multi-column transformations.
-//!
-//! - **[`ColumnOperations`]:**
-//!   Encapsulates and manages single-column transformations. Each column can have a list of operations
-//!   (e.g., renaming, type casting). This abstraction keeps the single-column logic separate and flexible.
-//!
-//! ### Enums
-//!
-//! - **[`ColumnTransformOp`]:**
-//!   Represents individual transformations that can be applied to a single column (e.g., renaming, adding offsets, re-indexing).
-//!
-//! - **[`MultiColumnTransformOp`]:**
-//!   Represents transformations that span multiple columns, such as flattening nested structures or converting attributes into different formats.
-//!
-//! ### Core Methods in `TransformationPlan`
-//!
-//! - **`from_config`**: Constructs a `TransformationPlan` based on a given `ArrowPayloadType`.
-//!   Handles both column-level and multi-column transformations depending on the data type.
-//!
-//! - **`merge_from`**: Merges another `TransformationPlan` into the current one, combining column-level and multi-column-level transformations.
-//!
-//! - **`merged`**: Returns a new `TransformationPlan` that combines the transformations of two plans without modifying either.
-//!
-//! ### Core Methods in `ColumnOperations`
-//!
-//! - **`add_op`**: Adds a specific operation to a given column’s transformation list.
-//! - **`clear`**: Clears all operations in the `ColumnOperations` map.
-//! - **`rename_column`**: Schedules a column to be renamed.
-//! - **`cast_column`**: Schedules a cast operation for a specific column.
-//! - **`noop_column`**: Marks a column as a no-op, leaving it unchanged during the transformation.
-//! - **`get_ops`**: Retrieves the list of operations associated with a given column (if any).
-//!
-//! ### Usage
-//!
-//! The `TransformationPlan` is designed to flexibly handle a variety of transformation scenarios,
-//! from simple renaming or casting of columns to complex restructuring of nested data. By combining
-//! column-level and multi-column-level transformations, it can be adapted to meet diverse requirements.
-//!
-//! ### Extensibility
-//!
-//! - To add new column-level transformations, extend the `ColumnTransformOp` enum and add any necessary
-//!   business logic in the respective handling functions.
-//! - To add new multi-column transformations, extend the `MultiColumnTransformOp` enum and define the application logic.
-//! - New payload types can be added by extending the logic in `from_config`.
-//!
+//! A [`TransformationPlan`] pairs multi-column ops ([`MultiColumnTransformOp`], applied to the whole
+//! column set) with per-column ops ([`ColumnTransformOp`] in [`ColumnOperations`]). Plans are built
+//! by [`TransformationPlan::from_config`] for each [`ArrowPayloadType`]; add a payload type or op by
+//! extending that function and the relevant enum.
 use std::collections::HashMap;
 
 use arrow::datatypes::DataType;

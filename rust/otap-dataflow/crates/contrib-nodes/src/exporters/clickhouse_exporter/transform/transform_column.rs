@@ -1,43 +1,15 @@
-//! Column-level Arrow transformations used to produce ClickHouse-ready batches.
+//! Per-column Arrow transformations that shape OTAP columns into the ClickHouse schema.
 //!
-//! This module implements the execution of per-column transformation operations over Arrow arrays
-//! during the OTAP → ClickHouse export pipeline. It operates on a mutable map of output columns and
-//! can reference results from “child” payload transformations (e.g., attribute payloads) to rewrite
-//! IDs and/or inline child data into parent signal batches.
+//! [`apply_one_op`] dispatches each [`ColumnTransformOp`] against [`ColumnOpCtx`] — the mutable
+//! output-column set plus the other payloads' multi-column results (used to join/remap between
+//! parent and child payloads). The notable helpers:
 //!
-//! Key pieces:
-//!
-//! - [`ColumnOpCtx`]: an operation context containing the current column set being built and a map
-//!   of multi-payload transformation outputs (used for joins/remaps between parent and child
-//!   payloads).
-//!
-//! - `apply_one_op`: dispatcher for [`ColumnTransformOp`] that applies a single transformation to
-//!   the “current” column, supporting operations such as renaming, casting, adding offsets,
-//!   dropping columns, flattening struct fields, adding synthetic columns (partition UUID bytes and
-//!   insert timestamp), coercing complex body values into strings, reindexing lookup IDs, and
-//!   inlining child payload data.
-//!
-//! - Struct and value coercions:
-//!   - `flatten_struct` lifts selected `StructArray` fields into top-level columns.
-//!   - `coerce_body_to_string` / `struct_column_to_string` converts OTLP/OTAP “AnyValue”-style
-//!     structs into a single string column, including base64 encoding for bytes and CBOR→JSON
-//!     transcoding for map/slice variants.
-//!
-//! - Parent/child inlining and remapping:
-//!   - `reindex_attribute` rewrites parent-side foreign keys using a child payload’s remap table.
-//!   - `inline_attribute` inlines attributes into the parent batch as a
-//!     `Map(LowCardinality(String), String)` column.
-//!   - `inline_child_lists` and `build_child_attr_list` expand compact child arrays (indexed by ID) into
-//!     parent-sized arrays, driven by parent IDs and a remap table.
-//!
-//! - Array expansion helpers:
-//!   - `expand_list_array_to_parent_size` expands a compact `ListArray` into parent row cardinality,
-//!     with null propagation and safe bounds handling.
-//!   - `remap_array_column` and `remap_dict_keys` rebuild map/dictionary keys to align with remapped
-//!     IDs (including handling of null IDs by appending a synthetic null/default entry).
-//!
-//! The output of these operations is a set of Arrow columns shaped and typed to match the
-//! ClickHouse schema.
+//! - `flatten_struct` lifts struct fields (resource/scope) into top-level columns.
+//!   `coerce_body_to_string` / `struct_column_to_string` collapse an "AnyValue" struct into one
+//!   string column (base64 for bytes, CBOR→JSON for map/slice).
+//! - `inline_attribute` inlines a child attribute payload into the parent as a
+//!   `Map(LowCardinality(String), String)`; `inline_child_lists` / `build_child_attr_list` expand
+//!   compact, id-indexed child arrays back to parent row order via the child's remap table.
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -112,69 +84,11 @@ impl<'a> ColumnOpCtx<'a> {
     }
 }
 
-/// Applies a single [`ColumnTransformOp`] to the column currently being processed
-/// from the input [`RecordBatch`].
+/// Apply a single [`ColumnTransformOp`] to the column named `current_name` in `ctx`.
 ///
-/// ## When This Is Called
-///
-/// This function is invoked during iteration over the *existing* columns of the
-/// original input batch. As a result:
-///
-/// - Only columns physically present in the batch are processed.
-/// - If a column has configured operations but is not present in the batch,
-///   this function will never be called for it.
-/// - Multi-column or synthetic operations must have been handled earlier in the
-///   pipeline.
-///
-/// ## Context (`ctx`)
-///
-/// `ctx` represents the mutable working set of columns for the in-flight output
-/// batch. It contains:
-///
-/// - The current state of all columns after previously applied transforms
-/// - Results of any prior multi-column operations
-/// - Temporary or derived columns inserted earlier in the pipeline
-///
-/// Most operations follow the pattern:
-///
-/// 1. `take(current_name)` — remove the column from the working set
-/// 2. transform the underlying array
-/// 3. `put(name, array)` — reinsert the transformed column
-///
-/// This ensures there is never more than one active version of a column in the
-/// working set at a time.
-///
-/// ## `current_name`
-///
-/// `current_name` tracks the logical name of the column as it evolves through
-/// transforms (e.g., after a rename). It must be kept in sync with the working
-/// set to ensure subsequent operations reference the correct column.
-///
-/// ## Control Flow
-///
-/// The return type is `ControlFlow<()>`:
-///
-/// - `Continue(())` → continue applying additional operations to this column
-/// - `Break(())` → stop applying further operations to this column
-///
-/// `Break` is typically returned by destructive operations such as `Drop`,
-/// since no further transforms can be meaningfully applied.
-///
-/// ## Error Handling
-///
-/// Any failure in array extraction, casting, arithmetic, or derived column
-/// creation results in a `ClickhouseExporterError` and aborts processing of the
-/// current batch.
-///
-/// ## Invariants
-///
-/// - A column must exist in `ctx` before being transformed.
-/// - After a successful non-`Drop` operation, the column must be present in `ctx`.
-/// - `current_name` must always reflect the column’s latest name.
-/// - No operation should leave the working set in a partially updated state.
-///
-/// This function forms the core primitive for per-column transformation in the
-/// export pipeline and is intentionally side-effectful on `ctx`.
+/// Most ops follow take -> transform -> put, so a column has only one active version at a time;
+/// `current_name` is updated to track renames. Returns `ControlFlow::Break` for terminal ops (e.g.
+/// `Drop`) to stop further ops on that column, otherwise `Continue`.
 pub(crate) fn apply_one_op(
     ctx: &mut ColumnOpCtx<'_>,
     current_name: &mut String,
@@ -311,22 +225,25 @@ pub(crate) fn fixed_binary_to_hex_string(
             error: "Failed to downcast to FixedSizeBinaryArray".into(),
         })?;
 
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
     let byte_width = fsb.value_length() as usize;
     // Each byte becomes 2 hex chars.
     let mut builder = StringBuilder::with_capacity(fsb.len(), fsb.len() * byte_width * 2);
+    // Scratch buffer reused across rows to avoid a per-row allocation.
+    let mut hex = String::with_capacity(byte_width * 2);
 
     for i in 0..fsb.len() {
         if fsb.is_null(i) {
             builder.append_null();
-        } else {
-            let bytes = fsb.value(i);
-            let mut hex = String::with_capacity(byte_width * 2);
-            for b in bytes {
-                use std::fmt::Write;
-                write!(hex, "{:02x}", b).expect("writing to String cannot fail");
-            }
-            builder.append_value(&hex);
+            continue;
         }
+        hex.clear();
+        for &b in fsb.value(i) {
+            hex.push(HEX[(b >> 4) as usize] as char);
+            hex.push(HEX[(b & 0x0f) as usize] as char);
+        }
+        builder.append_value(&hex);
     }
 
     Ok(Arc::new(builder.finish()))
@@ -603,11 +520,10 @@ fn build_child_attr_list(
             error: format!("expected ListArray of child ids for {current_name}"),
         })?;
 
-    let mut out = ListBuilder::new(MapBuilder::new(
-        None,
-        StringBuilder::new(),
-        StringBuilder::new(),
-    ));
+    let mut out = ListBuilder::with_capacity(
+        MapBuilder::new(None, StringBuilder::new(), StringBuilder::new()),
+        id_lists.len(),
+    );
 
     for i in 0..id_lists.len() {
         if id_lists.is_null(i) {
@@ -789,9 +705,10 @@ pub(crate) fn remap_list_array_to_parent_order(
     old_to_new: &HashMap<u32, u32>,
     compact: &ListArray,
 ) -> Result<ArrayRef, ClickhouseExporterError> {
-    // output list builder has same element type as compact.values()
+    // output list builder has same element type as compact.values(), one list row per parent
     let values_builder: Box<dyn ArrayBuilder> = make_builder(compact.values().data_type(), 0);
-    let mut out: ListBuilder<Box<dyn ArrayBuilder>> = ListBuilder::new(values_builder);
+    let mut out: ListBuilder<Box<dyn ArrayBuilder>> =
+        ListBuilder::with_capacity(values_builder, parent_ids.len());
 
     let offsets = compact.value_offsets(); // &[i32] for ListArray
 
@@ -889,9 +806,12 @@ fn remap_map_array_to_parent_order(
     // The offsets buffer for the original MapArray
     let offsets = compact.offsets();
 
-    let keys_builder = StringBuilder::new();
-    let values_builder = StringBuilder::new();
-    let mut map_builder = MapBuilder::new(None, keys_builder, values_builder);
+    let mut map_builder = MapBuilder::with_capacity(
+        None,
+        StringBuilder::new(),
+        StringBuilder::new(),
+        parent_ids.len(),
+    );
 
     for i in 0..parent_ids.len() {
         if !parent_ids.is_valid(i) {
@@ -1036,7 +956,7 @@ pub fn struct_column_to_string(
             t if t == AttributeValueType::Map as u8 || t == AttributeValueType::Slice as u8 => {
                 if let Some(ser_accessor) = &ser_accessor {
                     if let Some(v) = ser_accessor.slice_at(i) {
-                        let mut buf = vec![];
+                        let mut buf = Vec::with_capacity(v.len() * 2);
                         if append_cbor_as_json(&mut buf, v).is_err() {
                             builder.append_null();
                         } else {
