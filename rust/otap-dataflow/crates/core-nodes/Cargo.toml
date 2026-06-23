@@ -56,6 +56,7 @@ tokio-util.workspace = true
 reqwest.workspace = true
 parking_lot.workspace = true
 http.workspace = true
+secrecy.workspace = true
 async-stream.workspace = true
 arrow-ipc.workspace = true
 uuid.workspace = true
