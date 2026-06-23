@@ -146,6 +146,8 @@ mod tests {
 
     #[test]
     fn test_meter_provider_configure_with_non_runtime_readers() -> Result<(), Error> {
+        crate::ensure_test_crypto_provider();
+
         let resource = Resource::builder().build();
         let metric_readers = vec![
             MetricsReaderConfig::Periodic(MetricsReaderPeriodicConfig {
