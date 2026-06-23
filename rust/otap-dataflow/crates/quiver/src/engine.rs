@@ -18,6 +18,7 @@
 //! 4. **WAL Consumer Cursor**: After segment finalization, the WAL cursor is
 //!    advanced to allow cleanup of consumed entries.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -108,14 +109,16 @@ pub struct QuiverEngine {
     force_dropped_bundles: AtomicU64,
     /// Count of individual data items lost due to force-dropped segments.
     force_dropped_items: AtomicU64,
-    /// Pending bundles from force-dropped segments, for per-signal tracking.
-    dropped_bundles_pending: RwLock<Vec<(Vec<crate::record_bundle::SlotId>, u64)>>,
+    /// Pending dropped bundles grouped by slot shape, for per-signal tracking.
+    /// Keyed by sorted slot_ids to bound memory by unique bundle shapes.
+    dropped_items_by_shape: RwLock<HashMap<Vec<crate::record_bundle::SlotId>, u64>>,
     /// Count of bundles lost due to expired segments (max_age retention).
     expired_bundles: AtomicU64,
     /// Count of individual data items lost due to expired segments.
     expired_items: AtomicU64,
-    /// Pending bundles from expired segments, for per-signal tracking.
-    expired_bundles_pending: RwLock<Vec<(Vec<crate::record_bundle::SlotId>, u64)>>,
+    /// Pending expired bundles grouped by slot shape, for per-signal tracking.
+    /// Keyed by sorted slot_ids to bound memory by unique bundle shapes.
+    expired_items_by_shape: RwLock<HashMap<Vec<crate::record_bundle::SlotId>, u64>>,
     /// Segment store for finalized segment files.
     segment_store: Arc<SegmentStore>,
     /// Subscriber registry for tracking consumption progress.
@@ -403,10 +406,10 @@ impl QuiverEngine {
             force_dropped_segments: AtomicU64::new(0),
             force_dropped_bundles: AtomicU64::new(0),
             force_dropped_items: AtomicU64::new(0),
-            dropped_bundles_pending: RwLock::new(Vec::new()),
+            dropped_items_by_shape: RwLock::new(HashMap::new()),
             expired_bundles: AtomicU64::new(0),
             expired_items: AtomicU64::new(0),
-            expired_bundles_pending: RwLock::new(Vec::new()),
+            expired_items_by_shape: RwLock::new(HashMap::new()),
             segment_store,
             registry: registry.clone(),
             budget: budget.clone(),
@@ -504,10 +507,10 @@ impl QuiverEngine {
         self.force_dropped_items.load(Ordering::Relaxed)
     }
 
-    /// Drains and returns pending bundles from force-dropped segments.
+    /// Drains and returns pending dropped bundles (grouped by slot shape) for per-signal classification.
     pub fn drain_dropped_bundles_pending(&self) -> Vec<(Vec<crate::record_bundle::SlotId>, u64)> {
-        let mut pending = self.dropped_bundles_pending.write();
-        std::mem::take(&mut *pending)
+        let map = std::mem::take(&mut *self.dropped_items_by_shape.write());
+        map.into_iter().collect()
     }
 
     /// Returns the total number of bundles lost due to expired segments.
@@ -530,10 +533,10 @@ impl QuiverEngine {
         self.expired_items.load(Ordering::Relaxed)
     }
 
-    /// Drains and returns pending bundles from expired segments.
+    /// Drains and returns pending expired bundles (grouped by slot shape) for per-signal classification.
     pub fn drain_expired_bundles_pending(&self) -> Vec<(Vec<crate::record_bundle::SlotId>, u64)> {
-        let mut pending = self.expired_bundles_pending.write();
-        std::mem::take(&mut *pending)
+        let map = std::mem::take(&mut *self.expired_items_by_shape.write());
+        map.into_iter().collect()
     }
 
     /// Returns a snapshot of the open segment's bundle summaries.
@@ -1367,9 +1370,11 @@ impl QuiverEngine {
                 items_dropped += items;
             }
             if let Ok(metadata) = self.segment_store.bundle_metadata(*seq) {
-                let mut pending = self.dropped_bundles_pending.write();
+                let mut map = self.dropped_items_by_shape.write();
                 for bundle in metadata {
-                    pending.push((bundle.slot_ids, bundle.item_count));
+                    let mut key = bundle.slot_ids;
+                    key.sort_unstable();
+                    *map.entry(key).or_insert(0) += bundle.item_count;
                 }
             }
             if let Err(e) = self.segment_store.delete_segment(*seq) {
@@ -1442,9 +1447,11 @@ impl QuiverEngine {
                 items_expired += items;
             }
             if let Ok(metadata) = self.segment_store.bundle_metadata(*seq) {
-                let mut pending = self.expired_bundles_pending.write();
+                let mut map = self.expired_items_by_shape.write();
                 for bundle in metadata {
-                    pending.push((bundle.slot_ids, bundle.item_count));
+                    let mut key = bundle.slot_ids;
+                    key.sort_unstable();
+                    *map.entry(key).or_insert(0) += bundle.item_count;
                 }
             }
 

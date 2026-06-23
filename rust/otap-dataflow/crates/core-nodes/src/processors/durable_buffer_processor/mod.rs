@@ -2079,7 +2079,7 @@ mod tests {
         descriptor: BundleDescriptor,
         batch: RecordBatch,
         fingerprint: SchemaFingerprint,
-        slot_id: SlotId,
+        primary_slot: SlotId,
         item_count: u64,
     }
 
@@ -2093,7 +2093,7 @@ mod tests {
         }
 
         fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
-            if slot == self.slot_id {
+            if slot == self.primary_slot {
                 Some(PayloadRef {
                     schema_fingerprint: self.fingerprint,
                     batch: &self.batch,
@@ -2141,7 +2141,7 @@ mod tests {
         (processor, engine, subscriber_id, temp_dir)
     }
 
-    fn make_simple_bundle(slot_id: SlotId, item_count: u64) -> SimpleBundle {
+    fn make_simple_bundle(primary_slot: SlotId, item_count: u64) -> SimpleBundle {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
@@ -2149,11 +2149,19 @@ mod tests {
         )
         .expect("valid batch");
 
+        // Include shared slots (ResourceAttrs=1, ScopeAttrs=2) alongside the
+        // primary signal slot, mirroring real OTAP bundles. This ensures
+        // find_map(signal_type_from_slot_id) skips shared slots and correctly
+        // classifies by the signal-specific slot.
         SimpleBundle {
-            descriptor: BundleDescriptor::new(vec![SlotDescriptor::new(slot_id, "test")]),
+            descriptor: BundleDescriptor::new(vec![
+                SlotDescriptor::new(SlotId::new(1), "resource_attrs"),
+                SlotDescriptor::new(SlotId::new(2), "scope_attrs"),
+                SlotDescriptor::new(primary_slot, "test"),
+            ]),
             batch,
             fingerprint: [0x11u8; 32],
-            slot_id,
+            primary_slot,
             item_count,
         }
     }
