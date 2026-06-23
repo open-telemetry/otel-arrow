@@ -629,7 +629,7 @@ mod tests {
                                     value: Some(OtlpAnyValue {
                                         value: Some(OtlpValue::IntValue(18)),
                                     }),
-                                    key_strindex: 0,
+                                    ..Default::default()
                                 }],
                                 dropped_attributes_count: 18,
                             }),
