@@ -7,110 +7,112 @@ events emitted via `otel_*` log macros.
 
 ## Metrics
 
-All metrics are emitted under the metric-set name `otap.processor.durable_buffer`.
+All metrics are emitted under the metric-set name
+`otap.processor.durable_buffer`.
 The effective instrument name is `otap.processor.durable_buffer.<field_name>`.
 
 ### ACK / NACK Tracking
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.bundles_acked` | `{bundle}` | Counter | Number of bundles acknowledged by downstream. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.bundles_nacked_deferred` | `{bundle}` | Counter | Number of bundles deferred for retry after a transient downstream failure. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.bundles_nacked_permanent` | `{bundle}` | Counter | Number of bundles permanently rejected by downstream (not retried). Non-zero values may indicate malformed data. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.bundles_acked` | `{bundle}` | Counter | Number of bundles acknowledged by downstream. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.bundles_nacked_deferred` | `{bundle}` | Counter | Number of bundles deferred for retry after a transient downstream failure. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.bundles_nacked_permanent` | `{bundle}` | Counter | Number of bundles permanently rejected by downstream (not retried). Non-zero values may indicate malformed data. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ### Rejected Item Counts (per signal type)
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.rejected_log_records` | `{log_record}` | Counter | Number of log records in permanently rejected bundles. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.rejected_metric_points` | `{data_point}` | Counter | Number of metric data points in permanently rejected bundles. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.rejected_spans` | `{span}` | Counter | Number of spans in permanently rejected bundles. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.rejected_log_records` | `{log_record}` | Counter | Number of log records in permanently rejected bundles. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.rejected_metric_points` | `{data_point}` | Counter | Number of metric data points in permanently rejected bundles. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.rejected_spans` | `{span}` | Counter | Number of spans in permanently rejected bundles. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ### Consumed Item Counts (per signal type)
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.consumed_log_records` | `{log_record}` | Counter | Number of log records ingested to durable storage. For OTLP bytes, counted via a protobuf wire-format scan without full deserialization. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.consumed_metric_points` | `{data_point}` | Counter | Number of metric data points ingested to durable storage. Same counting method as above. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.consumed_spans` | `{span}` | Counter | Number of spans ingested to durable storage. Same counting method as above. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.consumed_log_records` | `{log_record}` | Counter | Number of log records ingested to durable storage. For OTLP bytes, counted via a protobuf wire-format scan without full deserialization. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.consumed_metric_points` | `{data_point}` | Counter | Number of metric data points ingested to durable storage. Same counting method as above. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.consumed_spans` | `{span}` | Counter | Number of spans ingested to durable storage. Same counting method as above. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ### Produced Item Counts (per signal type)
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.produced_log_records` | `{log_record}` | Counter | Number of log records sent downstream. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.produced_metric_points` | `{data_point}` | Counter | Number of metric data points sent downstream. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.produced_spans` | `{span}` | Counter | Number of spans sent downstream. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.produced_log_records` | `{log_record}` | Counter | Number of log records sent downstream. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.produced_metric_points` | `{data_point}` | Counter | Number of metric data points sent downstream. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.produced_spans` | `{span}` | Counter | Number of spans sent downstream. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ### Error and Backpressure
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.ingest_errors` | `{error}` | Counter | Number of ingest errors (excludes storage-backpressure rejections). | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.ingest_backpressure` | `{rejection}` | Counter | Number of ingest rejections because the storage soft cap was exceeded. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.read_errors` | `{error}` | Counter | Number of read errors (poll or bundle-conversion failures). | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.ingest_errors` | `{error}` | Counter | Number of ingest errors (excludes storage-backpressure rejections). | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.ingest_backpressure` | `{rejection}` | Counter | Number of ingest rejections because the storage soft cap was exceeded. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.read_errors` | `{error}` | Counter | Number of read errors (poll or bundle-conversion failures). | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ### Storage
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.storage_bytes_used` | `By` | Gauge | Current bytes used by persistent storage (durable storage + segments). Updated on each `CollectTelemetry` tick. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.storage_bytes_cap` | `By` | Gauge | Configured per-core storage capacity cap. Updated on each `CollectTelemetry` tick. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.dropped_segments` | `{segment}` | ObserveCounter | Cumulative segments force-dropped due to `DropOldest` retention policy. Non-zero values indicate data loss. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.dropped_bundles` | `{bundle}` | ObserveCounter | Cumulative bundles lost due to force-dropped segments. Non-zero values indicate data loss. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.dropped_items` | `{item}` | ObserveCounter | Cumulative individual items (log records, data points, spans) lost due to force-dropped segments. Non-zero values indicate data loss. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.expired_bundles` | `{bundle}` | ObserveCounter | Cumulative bundles lost due to `max_age` segment expiry. Non-zero values indicate data aged out before delivery. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.expired_items` | `{item}` | ObserveCounter | Cumulative individual items lost due to `max_age` segment expiry. Non-zero values indicate data aged out before delivery. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.storage_bytes_used` | `By` | Gauge | Current bytes used by persistent storage (durable storage + segments). Updated on each `CollectTelemetry` tick. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.storage_bytes_cap` | `By` | Gauge | Configured per-core storage capacity cap. Updated on each `CollectTelemetry` tick. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.dropped_segments` | `{segment}` | ObserveCounter | Cumulative segments force-dropped due to `DropOldest` retention policy. Non-zero values indicate data loss. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.dropped_bundles` | `{bundle}` | ObserveCounter | Cumulative bundles lost due to force-dropped segments. Non-zero values indicate data loss. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.dropped_items` | `{item}` | ObserveCounter | Cumulative individual items (log records, data points, spans) lost due to force-dropped segments. Non-zero values indicate data loss. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.expired_bundles` | `{bundle}` | ObserveCounter | Cumulative bundles lost due to `max_age` segment expiry. Non-zero values indicate data aged out before delivery. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.expired_items` | `{item}` | ObserveCounter | Cumulative individual items lost due to `max_age` segment expiry. Non-zero values indicate data aged out before delivery. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ### Flush Failures
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.flush_failures` | `{error}` | Counter | Cumulative segment finalization (flush) failures. Non-zero values indicate data at risk - check logs for root cause. Data may still be recoverable via WAL replay on restart. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.flush_failures` | `{error}` | Counter | Cumulative segment finalization (flush) failures. Non-zero values indicate data at risk - check logs for root cause. Data may still be recoverable via WAL replay on restart. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ### Storage Utilization
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.storage_utilization` | `{1}` | Gauge | Current storage utilization ratio (`storage_bytes_used / storage_bytes_cap`), in the range `[0.0, 1.0]`. Updated on each `CollectTelemetry` tick. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.storage_utilization` | `{1}` | Gauge | Current storage utilization ratio (`storage_bytes_used / storage_bytes_cap`), in the range `[0.0, 1.0]`. Updated on each `CollectTelemetry` tick. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ### Per-Signal Dropped Items (DropOldest policy)
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.dropped_log_records` | `{log_record}` | ObserveCounter | Cumulative log records lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP log slots. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.dropped_spans` | `{span}` | ObserveCounter | Cumulative spans lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP trace slots. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.dropped_metric_datapoints` | `{data_point}` | ObserveCounter | Cumulative metric data points lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP metric slots (slots 11-14 for Arrow, slot 62 for OTLP). | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.dropped_log_records` | `{log_record}` | ObserveCounter | Cumulative log records lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP log slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.dropped_spans` | `{span}` | ObserveCounter | Cumulative spans lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP trace slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.dropped_metric_datapoints` | `{data_point}` | ObserveCounter | Cumulative metric data points lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP metric slots (slots 11-14 for Arrow, slot 62 for OTLP). | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ### Per-Signal Expired Items (max_age policy)
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.expired_log_records` | `{log_record}` | ObserveCounter | Cumulative log records lost due to `max_age` segment expiry. Aggregated across all Arrow and OTLP log slots. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.expired_spans` | `{span}` | ObserveCounter | Cumulative spans lost due to `max_age` segment expiry. Aggregated across all Arrow and OTLP trace slots. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.expired_metric_datapoints` | `{data_point}` | ObserveCounter | Cumulative metric data points lost due to `max_age` segment expiry. Aggregated across all Arrow and OTLP metric slots. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.expired_log_records` | `{log_record}` | ObserveCounter | Cumulative log records lost due to `max_age` segment expiry. Aggregated across all Arrow and OTLP log slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.expired_spans` | `{span}` | ObserveCounter | Cumulative spans lost due to `max_age` segment expiry. Aggregated across all Arrow and OTLP trace slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.expired_metric_datapoints` | `{data_point}` | ObserveCounter | Cumulative metric data points lost due to `max_age` segment expiry. Aggregated across all Arrow and OTLP metric slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ### In-flight and Retry
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.in_flight` | `{bundle}` | Gauge | Current number of bundles sent downstream but not yet ACKed/NACKed. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.retries_scheduled` | `{retry}` | Counter | Cumulative number of retry attempts scheduled after a transient NACK. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.requeued_log_records` | `{log_record}` | Counter | Cumulative log records in bundles requeued for retry after NACK. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.requeued_metric_points` | `{data_point}` | Counter | Cumulative metric data points in bundles requeued for retry after NACK. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.requeued_spans` | `{span}` | Counter | Cumulative spans in bundles requeued for retry after NACK. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.in_flight` | `{bundle}` | Gauge | Current number of bundles sent downstream but not yet ACKed/NACKed. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.retries_scheduled` | `{retry}` | Counter | Cumulative number of retry attempts scheduled after a transient NACK. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.requeued_log_records` | `{log_record}` | Counter | Cumulative log records in bundles requeued for retry after NACK. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.requeued_metric_points` | `{data_point}` | Counter | Cumulative metric data points in bundles requeued for retry after NACK. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.requeued_spans` | `{span}` | Counter | Cumulative spans in bundles requeued for retry after NACK. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ### Queued Item Gauges (ingested but not yet ACKed)
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.queued_log_records` | `{log_record}` | Gauge | Current log records queued in durable storage/segments awaiting downstream ACK. Seeded from existing segments on restart. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.queued_metric_points` | `{data_point}` | Gauge | Current metric data points queued in durable storage/segments awaiting downstream ACK. Seeded from existing segments on restart. | `crates/otap/src/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.queued_spans` | `{span}` | Gauge | Current spans queued in durable storage/segments awaiting downstream ACK. Seeded from existing segments on restart. | `crates/otap/src/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.queued_log_records` | `{log_record}` | Gauge | Current log records queued in durable storage/segments awaiting downstream ACK. Seeded from existing segments on restart. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.queued_metric_points` | `{data_point}` | Gauge | Current metric data points queued in durable storage/segments awaiting downstream ACK. Seeded from existing segments on restart. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.queued_spans` | `{span}` | Gauge | Current spans queued in durable storage/segments awaiting downstream ACK. Seeded from existing segments on restart. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ## Logs
 
-All events are emitted from `crates/otap/src/durable_buffer_processor/mod.rs`.
+All events are emitted from
+`crates/core-nodes/src/processors/durable_buffer_processor/mod.rs`.
 
 ### Engine Lifecycle
 
@@ -205,24 +207,24 @@ When adding or changing telemetry in this module:
 
 1. **Metrics**
      - If you add a field to `DurableBufferMetrics` in
-         `crates/otap/src/durable_buffer_processor/mod.rs`, add/update the
-         corresponding row in the **Metrics** table.
+       `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs`,
+       add/update the corresponding row in the **Metrics** table.
      - The effective emitted name is
-         `otap.processor.durable_buffer.<field_name>` (or the `name` override
-         in the `#[metric(...)]` attribute if present).
+       `otap.processor.durable_buffer.<field_name>` (or the `name` override
+       in the `#[metric(...)]` attribute if present).
      - Note the instrument type (`Counter`, `Gauge`, or `ObserveCounter`) in
-         the **Instrument** column.
+       the **Instrument** column.
 
 2. **Logs**
-     - If you add `otel_info!`, `otel_warn!`, `otel_error!`, `otel_debug!`, or
-         `otel_trace!` calls in this module, add/update a row in the appropriate
-         subsection of the **Logs** table.
+     - If you add `otel_info!`, `otel_warn!`, `otel_error!`, `otel_debug!`,
+       or `otel_trace!` calls in this module, add/update a row in the
+       appropriate subsection of the **Logs** table.
      - Keep event names exact (first macro argument), include the log level,
-         and describe the condition that triggers the event.
+       and describe the condition that triggers the event.
 
 3. **Review checklist (quick)**
      - Search for new metric fields: `#[metric(` in
-         `crates/otap/src/durable_buffer_processor/mod.rs`.
+       `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs`.
      - Search for new log events: `otel_(trace|debug|info|warn|error)!(` in
-         `crates/otap/src/durable_buffer_processor/**`.
+       `crates/otap/src/durable_buffer_processor/**`.
      - Confirm this document still matches current source files.

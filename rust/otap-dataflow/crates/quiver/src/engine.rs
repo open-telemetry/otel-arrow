@@ -1369,12 +1369,23 @@ impl QuiverEngine {
                 bundles_dropped += bundles as u64;
                 items_dropped += items;
             }
-            if let Ok(metadata) = self.segment_store.bundle_metadata(*seq) {
-                let mut map = self.dropped_items_by_shape.write();
-                for bundle in metadata {
-                    let mut key = bundle.slot_ids;
-                    key.sort_unstable();
-                    *map.entry(key).or_insert(0) += bundle.item_count;
+            match self.segment_store.bundle_metadata(*seq) {
+                Ok(metadata) => {
+                    let mut map = self.dropped_items_by_shape.write();
+                    for bundle in metadata {
+                        let mut key = bundle.slot_ids;
+                        key.sort_unstable();
+                        *map.entry(key).or_insert(0) += bundle.item_count;
+                    }
+                }
+                Err(e) => {
+                    otel_warn!(
+                        "quiver.segment.drop_metadata_failed",
+                        segment = seq.raw(),
+                        error = %e,
+                        error_type = "io",
+                        reason = "force_drop"
+                    );
                 }
             }
             if let Err(e) = self.segment_store.delete_segment(*seq) {
@@ -1446,12 +1457,23 @@ impl QuiverEngine {
                 bundles_expired += bundles as u64;
                 items_expired += items;
             }
-            if let Ok(metadata) = self.segment_store.bundle_metadata(*seq) {
-                let mut map = self.expired_items_by_shape.write();
-                for bundle in metadata {
-                    let mut key = bundle.slot_ids;
-                    key.sort_unstable();
-                    *map.entry(key).or_insert(0) += bundle.item_count;
+            match self.segment_store.bundle_metadata(*seq) {
+                Ok(metadata) => {
+                    let mut map = self.expired_items_by_shape.write();
+                    for bundle in metadata {
+                        let mut key = bundle.slot_ids;
+                        key.sort_unstable();
+                        *map.entry(key).or_insert(0) += bundle.item_count;
+                    }
+                }
+                Err(e) => {
+                    otel_warn!(
+                        "quiver.segment.drop_metadata_failed",
+                        segment = seq.raw(),
+                        error = %e,
+                        error_type = "io",
+                        reason = "expired"
+                    );
                 }
             }
 

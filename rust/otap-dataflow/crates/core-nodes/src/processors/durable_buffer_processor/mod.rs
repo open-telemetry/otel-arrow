@@ -1001,7 +1001,9 @@ impl DurableBuffer {
                 None => {}
             }
         }
-        self.metrics.dropped_log_records.observe(self.total_dropped_logs);
+        self.metrics
+            .dropped_log_records
+            .observe(self.total_dropped_logs);
         self.metrics
             .dropped_metric_datapoints
             .observe(self.total_dropped_metrics);
@@ -1016,7 +1018,9 @@ impl DurableBuffer {
                 None => {}
             }
         }
-        self.metrics.expired_log_records.observe(self.total_expired_logs);
+        self.metrics
+            .expired_log_records
+            .observe(self.total_expired_logs);
         self.metrics
             .expired_metric_datapoints
             .observe(self.total_expired_metrics);
@@ -1974,7 +1978,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                         self.metrics.storage_bytes_cap.set(cap);
 
                         let utilization = if cap > 0 {
-                            used as f64 / cap as f64
+                            (used.min(cap) as f64) / (cap as f64)
                         } else {
                             0.0
                         };
