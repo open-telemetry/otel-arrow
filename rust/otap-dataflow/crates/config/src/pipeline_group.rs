@@ -119,3 +119,55 @@ impl Default for PipelineGroupConfig {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacted_for_snapshot_masks_node_and_extension_headers() {
+        // A pipeline group whose pipeline carries credential headers on BOTH a
+        // node and an extension. `redacted_for_snapshot()` must scrub both
+        // before the config is exposed through the admin/config snapshot APIs.
+        // Deserialize directly (no validation) to keep the test focused on
+        // redaction.
+        let yaml = r#"
+            pipelines:
+              main:
+                nodes:
+                  exporter:
+                    type: "urn:otel:exporter:otlp"
+                    config:
+                      headers:
+                        authorization: "Bearer node-super-secret"
+                extensions:
+                  auth:
+                    type: "urn:otap:extension:headers_setter"
+                    config:
+                      headers:
+                        authorization: "Bearer ext-super-secret"
+        "#;
+        let group: PipelineGroupConfig =
+            serde_yaml::from_str(yaml).expect("pipeline group should deserialize");
+        let redacted = group.redacted_for_snapshot();
+
+        let redacted_json = serde_json::to_string(&redacted).expect("redacted serializes");
+        assert!(
+            !redacted_json.contains("node-super-secret"),
+            "node credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            !redacted_json.contains("ext-super-secret"),
+            "extension credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
+            "redaction placeholder should be present: {redacted_json}"
+        );
+
+        // Redaction returns a copy; the original group keeps the cleartext.
+        let original_json = serde_json::to_string(&group).expect("original serializes");
+        assert!(original_json.contains("node-super-secret"));
+        assert!(original_json.contains("ext-super-secret"));
+    }
+}
