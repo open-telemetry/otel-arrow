@@ -18,8 +18,8 @@ use crate::control::{
 use crate::entity_context::{NodeTaskContext, NodeTelemetryHandle, instrument_with_node_context};
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
-    FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
-    build_flow_metric_state,
+    FlowDurationMetrics, FlowSignalsDroppedMetrics, FlowSignalsIncomingMetrics,
+    FlowSignalsOutgoingMetrics, build_flow_metric_state,
 };
 use crate::memory_limiter::MemoryPressureChanged;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
@@ -298,32 +298,17 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             }
         };
 
-        // Lifecycle invariant: "extensions start first, shut down last".
-        // Concretely, `start()` is invoked on every active extension before
-        // any data-path node task is spawned, and `Shutdown` is delivered
+        // Lifecycle invariant: extensions start first, shut down last.
+        // `start()` is invoked on every active extension before any
+        // data-path node task is spawned, and `Shutdown` is delivered
         // to extensions only after the data path has fully drained.
         //
-        // NOTE: this orders *lifecycle calls*, not init completion.
-        // `start()` is async, so invoking it merely enqueues a future onto
-        // the LocalSet; the extension's init body runs concurrently with
-        // the data path once polling begins. Capability *construction*
-        // happens at build time (before any spawn), so structural wiring
-        // is always in place — but if an extension performs deferred async
-        // init in `start()` (opening a connection, loading config, warming
-        // a cache), capability consumers may observe the pre-init state
-        // until that work completes.
-        //
-        // Today, extensions handle this themselves (e.g., produce final
-        // state at capability construction time, or have the capability
-        // surface a not-ready error/default until init progresses).
-        //
-        // TODO: Revisit when an extension actually needs an init-complete
-        // guarantee. Likely shape: opt-in readiness probe registered at
-        // build time (e.g. `builder.with_readiness_probe()` returns a
-        // handle the extension fires from `start()`); the engine awaits
-        // only the registered probes via `try_join_all` before spawning
-        // data-path tasks. Extensions that don't opt in keep today's
-        // behavior with zero overhead.
+        // Extensions that need to gate node startup on runtime readiness
+        // opt in via `builder.active().with_readiness_probe()` (or
+        // `.with_readiness_probe_timeout_override(t)`) and fire it
+        // from `start()` via `EffectHandler::signal_ready()`. The engine
+        // awaits the registered probes via `wait_all_ready` before
+        // spawning data-path tasks.
         let mut extension_lifecycle = crate::extension_lifecycle::ExtensionLifecycle::spawn(
             extensions,
             &local_tasks,
@@ -338,6 +323,21 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             extension_lifecycle.initiate_shutdown(Some("spawn barrier failed"));
             rt.block_on(local_tasks.run_until(extension_lifecycle.drain_until_deadline()));
             return Err(barrier_err);
+        }
+
+        // TODO: make the readiness gate interruptible by an operator stop.
+        // `wait_all_ready` blocks here (bounded by each probe's timeout) before
+        // the runtime control-message manager is spawned, so a shutdown request
+        // that arrives during startup is only handled once the gate resolves or
+        // times out. With a long timeout override this can delay an operator
+        // stop. Plumbing the runtime control receiver into this wait is a
+        // follow-up; today the per-probe timeout bounds the worst-case wait.
+        if let Err(readiness_err) =
+            rt.block_on(local_tasks.run_until(extension_lifecycle.wait_all_ready()))
+        {
+            extension_lifecycle.initiate_shutdown(Some("extension readiness gate failed"));
+            rt.block_on(local_tasks.run_until(extension_lifecycle.drain_until_deadline()));
+            return Err(readiness_err);
         }
 
         let mut control_senders = ControlSenders::default();
@@ -474,7 +474,26 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     .end_nodes
                     .get(&node_id.index)
                     .and_then(|&id| flow_metric_state.signals_outgoing_metrics[id].clone());
+            // Register per-node drop decision metric set when this
+            // processor declares the drop capability and lies within a
+            // flow that enables dropped. Each decision node gets its own
+            // entity tagged with `flow.node.decision` = this node's name.
+            let mut flow_signals_dropped_metric: Option<MetricSet<FlowSignalsDroppedMetrics>> =
+                None;
+            if processor.runtime_requirements().makes_drop_decisions
+                && let Some(candidate) = flow_metric_state.decision_candidates.get(&node_id.index)
+            {
+                let mut attrs = candidate.attrs.clone();
+                attrs.decision = std::borrow::Cow::Owned(node_id.name.to_string());
+                let entity_key = pipeline_context.metrics_registry().register_entity(attrs);
+                flow_signals_dropped_metric = Some(
+                    pipeline_context
+                        .metrics_registry()
+                        .register_metric_set_for_entity::<FlowSignalsDroppedMetrics>(entity_key),
+                );
+            }
             let flow_active = flow_metric_state.is_active();
+            let flow_needs_timing = flow_metric_state.needs_timing();
             let fut = async move {
                 let result = processor
                     .start_with_completion_metrics(
@@ -488,7 +507,9 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         flow_signals_incoming_metric,
                         flow_duration_metric,
                         flow_signals_outgoing_metric,
+                        flow_signals_dropped_metric,
                         flow_active,
+                        flow_needs_timing,
                     )
                     .await;
                 drop(telemetry_guard);

@@ -40,8 +40,9 @@ use crate::effect_handler::{
 };
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
-    EndFlowMetrics, FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
-    IncomingFlowMetrics, SharedFlowMetricState, nanos_u64,
+    DecisionFlowMetrics, EndFlowMetrics, FlowDurationMetrics, FlowSignalsDroppedMetrics,
+    FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics, IncomingFlowMetrics,
+    SharedFlowMetricState, nanos_u64,
 };
 use crate::message::Message;
 use crate::node::NodeId;
@@ -202,11 +203,15 @@ impl<PData> EffectHandler<PData> {
         signals_incoming_metric: Option<MetricSet<FlowSignalsIncomingMetrics>>,
         duration_metric: Option<MetricSet<FlowDurationMetrics>>,
         signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>>,
+        signals_dropped_metric: Option<MetricSet<FlowSignalsDroppedMetrics>>,
         flow_metrics_active: bool,
+        flow_needs_timing: bool,
     ) {
         self.flow.is_start = is_start;
         self.flow.is_end = is_end;
+        self.flow.is_decision = signals_dropped_metric.is_some();
         self.flow.active = flow_metrics_active;
+        self.flow.needs_timing = flow_needs_timing;
         self.flow.incoming = IncomingFlowMetrics {
             signals_incoming: signals_incoming_metric
                 .map(|metrics| (metrics, Arc::new(Mutex::new(Mmsc::default())))),
@@ -215,6 +220,10 @@ impl<PData> EffectHandler<PData> {
             duration: duration_metric
                 .map(|metrics| (metrics, Arc::new(Mutex::new(Mmsc::default())))),
             signals_outgoing: signals_outgoing_metric
+                .map(|metrics| (metrics, Arc::new(Mutex::new(Mmsc::default())))),
+        };
+        self.flow.decision = DecisionFlowMetrics {
+            signals_dropped: signals_dropped_metric
                 .map(|metrics| (metrics, Arc::new(Mutex::new(Mmsc::default())))),
         };
     }
@@ -231,6 +240,12 @@ impl<PData> EffectHandler<PData> {
         self.flow.is_end
     }
 
+    /// Returns whether this node is a decision node for some flow.
+    #[must_use]
+    pub fn is_flow_decision(&self) -> bool {
+        self.flow.is_decision
+    }
+
     /// Returns whether any flow_metric is configured in this pipeline.
     #[must_use]
     pub fn flow_metrics_active(&self) -> bool {
@@ -242,9 +257,11 @@ impl<PData> EffectHandler<PData> {
     /// Sets the send-marker to "now" so that the first
     /// [`take_elapsed_since_send_marker_ns`] call (typically from the send
     /// hook) measures elapsed time from the start of `process()`.
-    /// No-op when no flow_metrics are configured.
+    /// No-op unless some flow in this pipeline tracks `compute.duration`
+    /// (`needs_timing`); a count-only flow such as `signals.dropped` pays no
+    /// per-message `Instant::now()` cost.
     pub(crate) fn begin_process_timing(&self) {
-        if self.flow.active {
+        if self.flow.needs_timing {
             *self
                 .flow
                 .last_send_marker
@@ -305,6 +322,20 @@ impl<PData> EffectHandler<PData> {
         acc.record(signals as f64);
     }
 
+    /// Record the count of signal items this decision node chose to drop.
+    ///
+    /// No-op unless this node is wired as a decision node for a flow
+    /// that enables `signals.dropped`.
+    pub fn record_flow_signals_dropped(&self, signals: u64) {
+        let Some((_, acc_mutex)) = self.flow.decision.signals_dropped.as_ref() else {
+            return;
+        };
+        let mut acc = acc_mutex
+            .lock()
+            .expect("flow signals_dropped accumulator poisoned");
+        acc.record(signals as f64);
+    }
+
     /// Drain accumulated flow_metric observations into the MetricSet and report.
     pub(crate) fn report_flow_metrics(&mut self) {
         if let Some((metrics, acc_mutex)) = self.flow.incoming.signals_incoming.as_mut() {
@@ -335,6 +366,16 @@ impl<PData> EffectHandler<PData> {
                 std::mem::take(&mut *guard)
             };
             metrics.signals_outgoing.merge(drained);
+            let _ = self.core.metrics_reporter.report(metrics);
+        }
+        if let Some((metrics, acc_mutex)) = self.flow.decision.signals_dropped.as_mut() {
+            let drained = {
+                let mut guard = acc_mutex
+                    .lock()
+                    .expect("flow signals_dropped accumulator poisoned");
+                std::mem::take(&mut *guard)
+            };
+            metrics.signals_dropped.merge(drained);
             let _ = self.core.metrics_reporter.report(metrics);
         }
     }
@@ -688,9 +729,10 @@ mod tests {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
-        eh.set_flow_roles(true, false, None, None, None, true);
+        eh.set_flow_roles(true, false, None, None, None, None, true, true);
         assert!(eh.is_flow_start());
         assert!(eh.flow.active);
+        assert!(eh.flow.needs_timing);
 
         eh.begin_process_timing();
 
@@ -704,6 +746,34 @@ mod tests {
         assert!(
             ns > 0,
             "take_elapsed_since_send_marker_ns should be non-zero after begin_process_timing, got {ns}"
+        );
+    }
+
+    /// A flow that is active but does not track `compute.duration` (e.g. a
+    /// `signals.dropped`-only flow) must not arm the send marker, so messages
+    /// pay no per-message `Instant::now()` timing cost.
+    #[test]
+    fn flow_metric_marker_not_armed_when_timing_disabled_shared() {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh =
+            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        // active = true, needs_timing = false.
+        eh.set_flow_roles(true, false, None, None, None, None, true, false);
+        assert!(eh.flow.active);
+        assert!(!eh.flow.needs_timing);
+
+        eh.begin_process_timing();
+
+        let mut value = 0u64;
+        for i in 0..10_000 {
+            value = value.wrapping_add(std::hint::black_box(i));
+        }
+        let _ = std::hint::black_box(value);
+
+        assert_eq!(
+            eh.take_elapsed_since_send_marker_ns(),
+            0,
+            "send marker must stay unarmed when timing is disabled"
         );
     }
 
@@ -732,6 +802,8 @@ mod tests {
             Some(start_metric_set),
             Some(duration_metric_set),
             Some(outgoing_metric_set),
+            None,
+            true,
             true,
         );
         assert!(eh.is_flow_start());

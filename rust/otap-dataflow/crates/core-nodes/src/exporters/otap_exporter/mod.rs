@@ -1132,6 +1132,7 @@ mod tests {
         ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock, create_otap_batch,
     };
     use otap_df_otap::pdata::OtapPdata;
+    use secrecy::ExposeSecret;
 
     use otap_df_config::SignalType;
     use otap_df_config::node::NodeUserConfig;
@@ -1506,7 +1507,7 @@ mod tests {
                 .grpc
                 .headers
                 .get("authorization")
-                .map(String::as_str),
+                .map(|v| v.expose_secret()),
             Some("Basic dXNlcjpwYXNz")
         );
         assert_eq!(
@@ -1515,7 +1516,7 @@ mod tests {
                 .grpc
                 .headers
                 .get("x-scope-orgid")
-                .map(String::as_str),
+                .map(|v| v.expose_secret()),
             Some("tenant-1")
         );
     }
@@ -2942,7 +2943,7 @@ mod tests {
         drop(batches_tx);
 
         let mut headers = std::collections::HashMap::new();
-        let _ = headers.insert(HDR_AUTH.to_string(), HDR_AUTH_VAL.to_string());
+        let _ = headers.insert(HDR_AUTH.to_string(), HDR_AUTH_VAL.into());
         let settings = otap_df_otap::otap_grpc::client_settings::GrpcClientSettings {
             headers,
             ..Default::default()
