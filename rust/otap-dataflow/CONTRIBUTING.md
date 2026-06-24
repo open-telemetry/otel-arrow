@@ -28,6 +28,19 @@ the full check path, likely because many of the longest tests are concentrated
 in a few large integration-style binaries, so the extra runner orchestration did
 not offset the limited parallelism gains.
 
+## Test and example server bind addresses
+
+When a test or example starts a listening server, bind it to the loopback
+interface (`127.0.0.1`), not `0.0.0.0` (all interfaces). Prefer an ephemeral
+port (`127.0.0.1:0`) and read the assigned port back from the listener.
+
+Windows Defender Firewall exempts loopback binds from its allow/deny prompt, so
+a loopback bind avoids the repeated firewall prompts that an all-interfaces bind
+triggers on every `cargo test` / `cargo xtask check` rebuild (test binaries are
+named by content hash, so a granted exception does not persist across rebuilds).
+Production defaults that intentionally serve external traffic may still bind
+`0.0.0.0`.
+
 ## Changelog entries
 
 User-facing Rust changes are recorded in
