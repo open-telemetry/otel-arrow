@@ -221,7 +221,7 @@ mod tests {
                 exporter: MetricsPullExporterConfig {
                     exporter_type: MetricsPullExporterType::Prometheus,
                     config: serde_json::json!({
-                        "host": "0.0.0.0",
+                        "host": "127.0.0.1",
                         "port": 9090,
                         "path": "/metrics"
                     }),
