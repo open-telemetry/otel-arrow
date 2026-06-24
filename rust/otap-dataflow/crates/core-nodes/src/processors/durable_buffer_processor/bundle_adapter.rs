@@ -82,7 +82,7 @@ const fn to_slot_id(_signal_type: SignalType, payload_type: ArrowPayloadType) ->
 }
 
 /// Convert signal type to OTLP slot ID (for opaque binary storage)
-const fn to_otlp_slot_id(signal_type: SignalType) -> SlotId {
+pub(crate) const fn to_otlp_slot_id(signal_type: SignalType) -> SlotId {
     SlotId::new(match signal_type {
         SignalType::Logs => otlp_slots::OTLP_LOGS,
         SignalType::Traces => otlp_slots::OTLP_TRACES,
@@ -1007,7 +1007,7 @@ mod tests {
         // HashMap iteration order is not guaranteed, but all slots should be from same signal
         #[rustfmt::skip]
         let records = OtapArrowRecords::Traces(traces!(
-            (Spans, 
+            (Spans,
                 ("id", UInt16, vec![0u16, 1])),
             (SpanEvents,
                 ("id", UInt32, vec![0u32, 1]),

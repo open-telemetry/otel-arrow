@@ -10,6 +10,7 @@ use http::header::HeaderValue;
 use hyper_util::rt::TokioIo;
 use otap_df_config::byte_units;
 use otap_df_config::tls::TlsClientConfig;
+use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -163,12 +164,17 @@ pub struct GrpcClientSettings {
     /// [`GrpcClientSettings::validate`]. These coexist with any header
     /// propagation policy configured on the exporter.
     ///
+    /// Values are wrapped in [`SecretString`] so a metadata credential is not
+    /// accidentally leaked through `Debug`/telemetry; the cleartext is reached
+    /// only through an explicit [`ExposeSecret::expose_secret`] call — during
+    /// [`GrpcClientSettings::validate`] and at the metadata-construction site.
+    ///
     /// `GrpcClientSettings` is shared by the OTLP/gRPC exporter and the OTAP
     /// (Arrow) exporter. The OTLP/gRPC exporter applies them as per-request
     /// metadata; the OTAP exporter applies them once as the initial metadata of
     /// each Arrow stream (see [`build_static_metadata`]).
     #[serde(default)]
-    pub headers: HashMap<String, String>,
+    pub headers: HashMap<String, SecretString>,
 }
 
 /// Error returned when building a gRPC [`Endpoint`] (including TLS/mTLS setup).
@@ -275,7 +281,7 @@ impl GrpcClientSettings {
                 );
                 continue;
             };
-            let Ok(val) = MetadataValue::try_from(value.as_str()) else {
+            let Ok(mut val) = MetadataValue::try_from(value.expose_secret()) else {
                 otap_df_telemetry::otel_debug!(
                     "grpc.client.static_header_skip",
                     reason = "invalid ascii metadata value",
@@ -283,6 +289,9 @@ impl GrpcClientSettings {
                 );
                 continue;
             };
+            // Mark the value sensitive so it is redacted in any `MetadataMap`
+            // `Debug` output and excluded from HTTP/2 HPACK indexing.
+            val.set_sensitive(true);
             // `insert` returns the prior value when this lowercased key already
             // existed (e.g. `X-Tenant` and `x-tenant` from an unvalidated config).
             // For a validated config this never happens; log if it ever does so
@@ -354,7 +363,7 @@ impl GrpcClientSettings {
                      `headers`; it is managed by the exporter"
                 )));
             }
-            if MetadataValue::try_from(value.as_str()).is_err() {
+            if MetadataValue::try_from(value.expose_secret()).is_err() {
                 return Err(GrpcEndpointError::InvalidConfig(format!(
                     "header \"{name}\" has a value that cannot be represented as ASCII gRPC \
                      metadata (must be visible ASCII)"
@@ -817,7 +826,7 @@ mod tests {
     #[test]
     fn validate_rejects_invalid_header_name() {
         let mut headers = HashMap::new();
-        let _ = headers.insert("bad header".to_string(), "value".to_string());
+        let _ = headers.insert("bad header".to_string(), "value".into());
         let settings = GrpcClientSettings {
             headers,
             ..GrpcClientSettings::default()
@@ -832,7 +841,7 @@ mod tests {
     #[test]
     fn validate_rejects_invalid_header_value() {
         let mut headers = HashMap::new();
-        let _ = headers.insert("x-test".to_string(), "bad\nvalue".to_string());
+        let _ = headers.insert("x-test".to_string(), "bad\nvalue".into());
         let settings = GrpcClientSettings {
             headers,
             ..GrpcClientSettings::default()
@@ -847,8 +856,8 @@ mod tests {
     #[test]
     fn validate_accepts_valid_headers() {
         let mut headers = HashMap::new();
-        let _ = headers.insert("authorization".to_string(), "Basic abc123".to_string());
-        let _ = headers.insert("x-scope-orgid".to_string(), "tenant-1".to_string());
+        let _ = headers.insert("authorization".to_string(), "Basic abc123".into());
+        let _ = headers.insert("x-scope-orgid".to_string(), "tenant-1".into());
         let settings = GrpcClientSettings {
             headers,
             ..GrpcClientSettings::default()
@@ -869,8 +878,8 @@ mod tests {
     #[test]
     fn build_static_metadata_builds_map() {
         let mut headers = HashMap::new();
-        let _ = headers.insert("authorization".to_string(), "Basic abc123".to_string());
-        let _ = headers.insert("x-scope-orgid".to_string(), "tenant-1".to_string());
+        let _ = headers.insert("authorization".to_string(), "Basic abc123".into());
+        let _ = headers.insert("x-scope-orgid".to_string(), "tenant-1".into());
         let settings = GrpcClientSettings {
             headers,
             ..GrpcClientSettings::default()
@@ -888,6 +897,41 @@ mod tests {
             metadata.get("x-scope-orgid").unwrap().to_str().unwrap(),
             "tenant-1"
         );
+        assert!(
+            metadata.get("authorization").unwrap().is_sensitive(),
+            "static metadata values must be marked sensitive so they are excluded from HPACK \
+             indexing and redacted in MetadataMap Debug output"
+        );
+    }
+
+    #[test]
+    fn debug_redacts_metadata_secret_values() {
+        let mut headers = HashMap::new();
+        let _ = headers.insert(
+            "authorization".to_string(),
+            "Basic super-secret-token".into(),
+        );
+        let settings = GrpcClientSettings {
+            headers,
+            ..GrpcClientSettings::default()
+        };
+        let dbg = format!("{settings:?}");
+        assert!(
+            !dbg.contains("super-secret-token"),
+            "Debug output must not contain the plaintext metadata value: {dbg}"
+        );
+        assert!(
+            dbg.contains("REDACTED"),
+            "Debug output should mark the metadata value as redacted: {dbg}"
+        );
+        assert_eq!(
+            settings
+                .headers
+                .get("authorization")
+                .map(|v| v.expose_secret()),
+            Some("Basic super-secret-token"),
+            "the cleartext must remain reachable via the explicit accessor"
+        );
     }
 
     #[test]
@@ -898,9 +942,9 @@ mod tests {
         // normally rejects these at config load, so this path is unreachable for
         // a validated config.
         let mut headers = HashMap::new();
-        let _ = headers.insert("x-valid".to_string(), "ok".to_string());
-        let _ = headers.insert("bad key".to_string(), "v".to_string()); // space => invalid key
-        let _ = headers.insert("x-bad".to_string(), "bad\nvalue".to_string()); // newline => invalid value
+        let _ = headers.insert("x-valid".to_string(), "ok".into());
+        let _ = headers.insert("bad key".to_string(), "v".into()); // space => invalid key
+        let _ = headers.insert("x-bad".to_string(), "bad\nvalue".into()); // newline => invalid value
         let settings = GrpcClientSettings {
             headers,
             ..GrpcClientSettings::default()
@@ -916,8 +960,8 @@ mod tests {
     #[test]
     fn validate_rejects_case_insensitive_duplicate_headers() {
         let mut headers = HashMap::new();
-        let _ = headers.insert("X-Tenant".to_string(), "a".to_string());
-        let _ = headers.insert("x-tenant".to_string(), "b".to_string());
+        let _ = headers.insert("X-Tenant".to_string(), "a".into());
+        let _ = headers.insert("x-tenant".to_string(), "b".into());
         let settings = GrpcClientSettings {
             headers,
             ..GrpcClientSettings::default()
@@ -940,7 +984,7 @@ mod tests {
             "grpc-accept-encoding",
         ] {
             let mut headers = HashMap::new();
-            let _ = headers.insert(reserved.to_string(), "x".to_string());
+            let _ = headers.insert(reserved.to_string(), "x".into());
             let settings = GrpcClientSettings {
                 headers,
                 ..GrpcClientSettings::default()
@@ -964,11 +1008,17 @@ mod tests {
         .unwrap();
         assert_eq!(settings.headers.len(), 2);
         assert_eq!(
-            settings.headers.get("authorization").map(String::as_str),
+            settings
+                .headers
+                .get("authorization")
+                .map(|v| v.expose_secret()),
             Some("Basic abc123")
         );
         assert_eq!(
-            settings.headers.get("x-scope-orgid").map(String::as_str),
+            settings
+                .headers
+                .get("x-scope-orgid")
+                .map(|v| v.expose_secret()),
             Some("tenant-1")
         );
 
