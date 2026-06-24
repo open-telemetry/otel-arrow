@@ -27,9 +27,9 @@ use crate::error::Error;
 use crate::topic::backend::{InMemoryBackend, SubscriptionBackend};
 use crate::topic::subscription::{DeliveryBackend, DeliveryStorageKind};
 use crate::topic::types::{
-    AckFromResult, BroadcastSubscriberId, Envelope, PublishOutcome, RecvItem, SubscriberOptions,
-    SubscriptionMode, TopicOptions, TopicPublishOutcomeConfig, TrackedPublishOutcome,
-    TrackedPublishPermit, TrackedPublishTracker, TrackedTryPublishOutcome,
+    AckFromResult, BroadcastSubscriberId, Envelope, NackFromResult, PublishOutcome, RecvItem,
+    SubscriberOptions, SubscriptionMode, TopicOptions, TopicPublishOutcomeConfig,
+    TrackedPublishOutcome, TrackedPublishPermit, TrackedPublishTracker, TrackedTryPublishOutcome,
 };
 use crate::topic::{Delivery, RecvDelivery, Subscription, TopicBroker, TopicSet};
 use otap_df_config::topic::{TopicBroadcastAckMode, TopicBroadcastOnLagPolicy};
@@ -2226,6 +2226,43 @@ async fn broadcast_all_mode_disconnect_then_ack_keeps_nack() {
     ));
 }
 
+// A subscriber that has already acked cannot retract its contribution with a
+// later (e.g. duplicated) Nack: once it has left the pending set, the Nack is a
+// no-op and the remaining subscriber's ack still drives the consensus to Ack.
+#[tokio::test]
+async fn broadcast_all_mode_ack_then_nack_is_ignored() {
+    let broker = TopicBroker::<u64>::new();
+    let topic = all_mode_topic(
+        &broker,
+        "all-ack-then-nack",
+        1024,
+        TopicBroadcastOnLagPolicy::DropOldest,
+    );
+    let handle = topic.tracked_publisher();
+
+    let mut sub1 = topic
+        .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
+        .unwrap();
+    let mut sub2 = topic
+        .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
+        .unwrap();
+
+    let receipt = handle.publish(Arc::new(1)).await.unwrap();
+
+    let id1 = recv_message_id(sub1.recv().await);
+    let id2 = recv_message_id(sub2.recv().await);
+
+    // sub1 acks (leaving the pending set), then nacks the same message. The Nack
+    // must not override the already-counted ack.
+    sub1.ack(id1).unwrap();
+    sub1.nack(id1, Arc::from("late retraction")).unwrap();
+
+    // sub2 completes the consensus -> Ack despite sub1's stray Nack.
+    sub2.ack(id2).unwrap();
+
+    assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
+}
+
 // Topic close resolves outstanding `all`-mode entries as `TopicClosed`, not
 // Nack (close is a lifecycle event, not a subscriber disappearance).
 #[tokio::test]
@@ -2741,6 +2778,49 @@ async fn consensus_duplicate_ack_does_not_complete() {
     assert_eq!(
         tracker.resolve_ack_from(1, BroadcastSubscriberId(2)),
         AckFromResult::Resolved
+    );
+}
+
+// A Nack from a subscriber that still requires the message resolves the entry as
+// Nack; a Nack from one that has already acked (left the pending set) is a no-op
+// and reported as `NotRequired`, and an unknown message id is `NotTracked`.
+#[tokio::test]
+async fn consensus_nack_from_respects_pending_membership() {
+    let tracker = TrackedPublishTracker::new();
+    let _receipt = tracker.register_consensus(
+        1,
+        Duration::from_secs(30),
+        consensus_permit(),
+        subscriber_set([1, 2]),
+        1,
+    );
+
+    // Subscriber 1 acks, leaving the pending set {2}.
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
+        AckFromResult::StillPending
+    );
+
+    // Subscriber 1's later Nack is ignored: it no longer requires the message.
+    assert_eq!(
+        tracker.resolve_nack_from(1, BroadcastSubscriberId(1), Arc::from("retraction")),
+        NackFromResult::NotRequired
+    );
+
+    // Subscriber 2 still requires the message: its Nack resolves the entry.
+    assert_eq!(
+        tracker.resolve_nack_from(1, BroadcastSubscriberId(2), Arc::from("rejected")),
+        NackFromResult::Resolved
+    );
+
+    // Once resolved (and removed) the message id is no longer tracked.
+    assert_eq!(
+        tracker.resolve_nack_from(1, BroadcastSubscriberId(2), Arc::from("again")),
+        NackFromResult::NotTracked
+    );
+    assert_eq!(
+        tracker.resolve_nack_from(999, BroadcastSubscriberId(1), Arc::from("unknown")),
+        NackFromResult::NotTracked
     );
 }
 

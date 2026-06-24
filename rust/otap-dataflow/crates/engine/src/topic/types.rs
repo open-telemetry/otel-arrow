@@ -297,6 +297,46 @@ impl TrackedPublishTracker {
         result
     }
 
+    /// Apply a single broadcast subscriber's Nack to a consensus (`all`-mode)
+    /// entry, resolving the publish as Nack **only if** the subscriber is still
+    /// required (present in the pending set).
+    ///
+    /// Returns [`NackFromResult::Resolved`] if the Nack resolved the entry (and
+    /// it was removed), [`NackFromResult::NotRequired`] if the message is tracked
+    /// but the subscriber no longer requires it (it already acked or was never
+    /// eligible), or [`NackFromResult::NotTracked`] if the message id is unknown,
+    /// already resolved, or not a consensus (`all`-mode) entry. First-wins
+    /// (`First`-kind) publishes must be resolved via
+    /// [`TrackedPublishTracker::resolve`] instead.
+    ///
+    /// This guard keeps per-subscriber signalling idempotent and order
+    /// insensitive: a subscriber that has already acked cannot retract its
+    /// contribution with a later (e.g. duplicated) Nack. It mirrors the
+    /// disappearance handling in [`TrackedPublishTracker::nack_pending_for_subscriber`],
+    /// which also only nacks entries that still require the subscriber.
+    ///
+    /// Lock order is map -> entry (matching the timeout worker).
+    #[must_use]
+    pub fn resolve_nack_from(
+        &self,
+        message_id: u64,
+        subscriber_id: BroadcastSubscriberId,
+        reason: Arc<str>,
+    ) -> NackFromResult {
+        let mut entries = self.inner.entries.lock();
+        let Some(entry) = entries.get(&message_id).cloned() else {
+            return NackFromResult::NotTracked;
+        };
+        if entry.nack_if_requires(subscriber_id, reason) {
+            let _ = entries.remove(&message_id);
+            drop(entries);
+            self.inner.wakeups.notify_one();
+            NackFromResult::Resolved
+        } else {
+            NackFromResult::NotRequired
+        }
+    }
+
     /// Resolve every pending `all`-mode entry that still requires
     /// `subscriber_id` as Nack with `reason`.
     ///
@@ -546,6 +586,19 @@ pub enum AckFromResult {
     Resolved,
     /// The Ack was recorded but other required subscribers are still pending.
     StillPending,
+    /// The message was not tracked (already resolved, timed out, or unknown id).
+    NotTracked,
+}
+
+/// Outcome of applying a single broadcast subscriber's Nack to a tracked publish
+/// in `all` (consensus) mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NackFromResult {
+    /// The subscriber still required the message; the entry resolved as Nack.
+    Resolved,
+    /// The message is tracked but the subscriber no longer requires it (it has
+    /// already acked, or was never in the eligible set), so the Nack is a no-op.
+    NotRequired,
     /// The message was not tracked (already resolved, timed out, or unknown id).
     NotTracked,
 }

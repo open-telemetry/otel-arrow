@@ -17,9 +17,9 @@ use crate::error::Error::{
 use crate::topic::backend::{PublishFuture, PublishTrackedFuture, SubscriptionBackend, TopicState};
 use crate::topic::subscription::{Delivery, RecvDelivery};
 use crate::topic::types::{
-    AckFromResult, BroadcastSubscriberId, Envelope, PublishOutcome, SubscriberOptions,
-    TopicOptions, TrackedPublishOutcome, TrackedPublishPermit, TrackedPublishReceipt,
-    TrackedPublishTracker, TrackedTryPublishOutcome,
+    AckFromResult, BroadcastSubscriberId, Envelope, NackFromResult, PublishOutcome,
+    SubscriberOptions, TopicOptions, TrackedPublishOutcome, TrackedPublishPermit,
+    TrackedPublishReceipt, TrackedPublishTracker, TrackedTryPublishOutcome,
 };
 use futures_core::Stream;
 use otap_df_config::topic::{TopicBroadcastAckMode, TopicBroadcastOnLagPolicy};
@@ -1479,12 +1479,28 @@ impl AckState {
         message_id: u64,
         reason: impl Into<Arc<str>>,
     ) -> Result<(), Error> {
-        if self.outcomes.resolve(
-            message_id,
-            TrackedPublishOutcome::Nack {
-                reason: reason.into(),
-            },
-        ) {
+        let reason = reason.into();
+
+        // `all`-mode broadcast: only a subscriber that still requires the message
+        // may fail the consensus. A Nack from a subscriber that has already acked
+        // (or was never eligible) is a no-op, mirroring the disappearance handling
+        // and keeping outcomes insensitive to accidental double-signalling.
+        if let (TopicBroadcastAckMode::All, Some(subscriber_id)) =
+            (self.ack_mode, self.subscriber_id)
+        {
+            return match self
+                .outcomes
+                .resolve_nack_from(message_id, subscriber_id, reason)
+            {
+                NackFromResult::Resolved | NackFromResult::NotRequired => Ok(()),
+                NackFromResult::NotTracked => Err(MessageNotTracked),
+            };
+        }
+
+        if self
+            .outcomes
+            .resolve(message_id, TrackedPublishOutcome::Nack { reason })
+        {
             Ok(())
         } else {
             Err(MessageNotTracked)
