@@ -603,8 +603,8 @@ mod tests {
     use otap_df_engine::testing::exporter::create_test_pipeline_context;
     use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
     use otap_df_engine::topic::{
-        PipelineTopicBinding, SubscriberOptions, SubscriptionMode, TopicBroadcastOnLagPolicy,
-        TopicBroker, TopicOptions, TopicSet,
+        PipelineTopicBinding, SubscriberOptions, SubscriptionMode, TopicBroadcastAckMode,
+        TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet,
     };
     use otap_df_otap::pdata::OtapPdata;
     use otap_df_otap::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
@@ -662,6 +662,7 @@ mod tests {
                         balanced_capacity: 16,
                         broadcast_capacity: 16,
                         on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                        ack_mode: TopicBroadcastAckMode::First,
                     },
                 )
                 .expect("topic should be created");
@@ -803,6 +804,7 @@ mod tests {
                         balanced_capacity: 1,
                         broadcast_capacity: 1,
                         on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                        ack_mode: TopicBroadcastAckMode::First,
                     },
                 )
                 .expect("topic should be created");
@@ -969,6 +971,7 @@ mod tests {
                         balanced_capacity: 1,
                         broadcast_capacity: 1,
                         on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                        ack_mode: TopicBroadcastAckMode::First,
                     },
                 )
                 .expect("topic should be created");
@@ -1149,6 +1152,7 @@ mod tests {
                         balanced_capacity: 1,
                         broadcast_capacity: 1,
                         on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                        ack_mode: TopicBroadcastAckMode::First,
                     },
                 )
                 .expect("topic should be created");
