@@ -120,7 +120,7 @@ pub struct EngineConfig {
 impl EngineConfig {
     /// Returns a clone of this engine config with credential header values
     /// redacted from the engine-scoped config that the admin/config snapshot
-    /// API (`GET /api/v1/config`) exposes. Three engine subtrees carry raw,
+    /// API (`GET /api/v1/config`) exposes. Four engine subtrees carry raw,
     /// header-bearing config and are redacted with the same policy as pipeline
     /// nodes/extensions:
     ///
@@ -132,11 +132,22 @@ impl EngineConfig {
     /// - `telemetry.metrics.readers[].exporter.config` — each metrics reader's
     ///   opaque exporter `config` [`Value`]. See
     ///   [`TelemetryConfig::redacted_for_snapshot`].
+    /// - `custom` — opaque, freeform metadata the engine never interprets, but
+    ///   the most likely place an embedder stashes arbitrary config (including
+    ///   auth `headers`). The whole map is walked with the same
+    ///   [`redact_secret_headers`](crate::node::redact_secret_headers) helper
+    ///   used by the structured arms, so any value under a `headers` key — map
+    ///   or `[{key, value}]` list form, at any depth, including a top-level
+    ///   `custom.headers` — is masked. Matching is on the conventional
+    ///   lowercase `headers` key only.
     ///
     /// The remaining strongly-typed engine settings (`observed_state`,
-    /// `topics`) have no opaque `headers`-bearing config, and `custom` is
-    /// opaque application metadata the engine never interprets as credentials,
-    /// so none are touched. The stored config is left unchanged.
+    /// `topics`) have no opaque `headers`-bearing config, so none are touched.
+    /// This masks credential *header* values only; other secret classes that can
+    /// appear in raw config (inline TLS keys, proxy URLs with embedded
+    /// passwords, component-specific secrets, and credentials hidden under
+    /// non-`headers` or case-variant keys) are out of scope here and tracked in
+    /// #3347. The stored config is left unchanged.
     #[must_use]
     pub fn redacted_for_snapshot(&self) -> EngineConfig {
         let mut redacted = self.clone();
@@ -144,6 +155,17 @@ impl EngineConfig {
         redacted.controller.extensions = redacted.controller.extensions.redacted_for_snapshot();
         if let Some(pipeline) = redacted.observability.pipeline.as_mut() {
             pipeline.nodes = pipeline.nodes.redacted_for_snapshot();
+        }
+        // Redact `headers` anywhere in the freeform `custom` metadata. Wrap the
+        // whole map into one `Value::Object` so a top-level key literally named
+        // `headers` is matched the same way it is in the structured arms: the
+        // helper only masks a `headers` key found as a *child* of the object it
+        // is handed, so walking each value individually would drop that
+        // top-level key layer and leak `custom.headers.*`.
+        let mut custom = Value::Object(std::mem::take(&mut redacted.custom).into_iter().collect());
+        crate::node::redact_secret_headers(&mut custom);
+        if let Value::Object(map) = custom {
+            redacted.custom = map.into_iter().collect();
         }
         redacted
     }
@@ -546,6 +568,72 @@ engine:
                 && original_json.contains("telemetry-super-secret"),
             "original spec must retain the cleartext credentials: {original_json}"
         );
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_headers_under_engine_custom() {
+        // `engine.custom` is freeform metadata the engine never interprets, but
+        // `/api/v1/config` still serializes it — so auth `headers` an embedder
+        // stashes there must be masked too, matching the policy applied to the
+        // structured engine arms. The whole map is treated as one object so a
+        // *top-level* `custom.headers` is caught just like a nested one, and the
+        // list form (`[{key, value}]`) and non-object scalars are handled.
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  custom:
+    headers:
+      authorization: "Bearer toplevel-super-secret"
+    fleet_management:
+      endpoint: "https://fleet.example/api"
+      headers:
+        authorization: "Bearer nested-super-secret"
+    setter:
+      headers:
+        - key: Authorization
+          value: "Bearer list-super-secret"
+    schema_version: 3
+"#;
+        let spec: OtelDataflowSpec = serde_yaml::from_str(yaml).expect("spec should deserialize");
+        let redacted = spec.redacted_for_snapshot();
+
+        let redacted_json = serde_json::to_string(&redacted).expect("redacted spec serializes");
+        // Top-level (map form), nested, and list-form `headers` under `custom`
+        // must all be masked.
+        for secret in [
+            "toplevel-super-secret",
+            "nested-super-secret",
+            "list-super-secret",
+        ] {
+            assert!(
+                !redacted_json.contains(secret),
+                "custom header credential `{secret}` must not survive redaction: {redacted_json}"
+            );
+        }
+        assert!(
+            redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
+            "redaction placeholder should be present: {redacted_json}"
+        );
+        // Non-header values under `custom`, including non-object scalars, are
+        // preserved.
+        assert!(
+            redacted_json.contains("https://fleet.example/api")
+                && redacted_json.contains("schema_version"),
+            "non-header custom values must be preserved: {redacted_json}"
+        );
+
+        // Redaction is a copy: the stored spec keeps the cleartext.
+        let original_json = serde_json::to_string(&spec).expect("spec serializes");
+        for secret in [
+            "toplevel-super-secret",
+            "nested-super-secret",
+            "list-super-secret",
+        ] {
+            assert!(
+                original_json.contains(secret),
+                "original spec must retain cleartext `{secret}`: {original_json}"
+            );
+        }
     }
 
     fn write_temp_file(ext: &str, contents: &str) -> PathBuf {
