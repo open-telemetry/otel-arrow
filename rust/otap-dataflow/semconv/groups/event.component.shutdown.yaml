@@ -1,5 +1,5 @@
 groups:
-  # TODO: `df_engine` prefix is provisional — the product name is not yet
+  # TODO: `df_engine` prefix is provisional -- the product name is not yet
   # settled. Rename the event (and its registry group ID) once it is.
   - id: event.otap_dataflow.df_engine.component.shutdown
     type: event

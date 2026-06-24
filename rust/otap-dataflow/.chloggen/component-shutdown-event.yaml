@@ -1,0 +1,9 @@
+change_type: enhancement
+
+component: pipeline
+
+note: Emit `df_engine.component.shutdown` event from OTLP gRPC and HTTP exporters with result and duration attributes.
+
+issues: [3349]
+
+subtext:
