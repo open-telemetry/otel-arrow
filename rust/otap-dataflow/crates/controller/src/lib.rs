@@ -95,7 +95,7 @@ use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
     InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup, otel_error, otel_info,
-    otel_info_span, otel_warn, self_tracing::LogContext,
+    otel_info_span, otel_warn, raw_error, self_tracing::LogContext,
 };
 use smallvec::smallvec;
 use std::collections::{HashMap, HashSet};
@@ -1742,6 +1742,7 @@ impl<
             }
         };
 
+        let signal_control_plane = Arc::clone(&control_plane);
         let admin_control_plane = Arc::clone(&control_plane);
         let admin_server_handle = spawn_thread_local_task(
             "http-admin",
@@ -1764,9 +1765,14 @@ impl<
             runtime.wait_until_all_instances_exit();
         }
 
-        // In standard engine mode we keep the main thread parked after startup.
+        // In standard engine mode we keep the main thread blocked until pipelines
+        // exit (driven either by an external admin shutdown or by an OS signal).
         if run_mode == RunMode::ParkMainThread {
-            thread::park();
+            // Listen for SIGINT/SIGTERM and trigger graceful shutdown via the
+            // control plane. This unblocks `wait_until_all_instances_exit` once
+            // all pipelines drain.
+            Self::spawn_shutdown_signal_listener(signal_control_plane);
+            runtime.wait_until_all_instances_exit();
         }
 
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
@@ -1970,6 +1976,139 @@ impl<
                     hard_limit_bytes = tick.hard_limit_bytes
                 );
             }
+        }
+    }
+
+    /// Spawns a dedicated background thread that listens for OS termination
+    /// signals (SIGINT / SIGTERM on Unix, Ctrl-C on all platforms) and
+    /// initiates a graceful pipeline shutdown via the control plane.
+    ///
+    /// Follows the same double-signal convention used by the OpenTelemetry
+    /// Collector (Go):
+    /// - **First signal** → initiates graceful shutdown (drain pipelines).
+    /// - **Second signal** → forces immediate process exit (`std::process::exit(1)`).
+    ///
+    /// This allows Kubernetes (or any process manager that sends SIGTERM) to
+    /// trigger an orderly drain of in-flight telemetry data before the pod is
+    /// killed. If the graceful drain hangs, a second signal provides an escape
+    /// hatch.
+    ///
+    /// The spawned thread's `JoinHandle` is intentionally dropped — the thread
+    /// will terminate either via `process::exit(1)` on a second signal, or when
+    /// the process exits normally after all pipelines have drained.
+    fn spawn_shutdown_signal_listener(control_plane: Arc<dyn ControlPlane>) {
+        // The JoinHandle is intentionally dropped — the thread terminates when
+        // the process exits (after pipelines drain) or on force-exit.
+        drop(
+            thread::Builder::new()
+                .name("os-signal-handler".into())
+                .spawn(move || {
+                    // Build a lightweight single-threaded runtime for signal handling.
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("failed to create signal-handler runtime");
+
+                    rt.block_on(async {
+                        // ── First signal: graceful shutdown ─────────────────
+                        let signal_name = Self::recv_termination_signal().await;
+
+                        otel_info!(
+                            "shutdown.signal_received",
+                            signal = signal_name,
+                            message = "OS termination signal received, initiating graceful shutdown. Send the signal again to force immediate exit."
+                        );
+
+                        // Give pipelines a generous deadline to drain (60 s by default —
+                        // matches the default Kubernetes terminationGracePeriodSeconds).
+                        // TODO: make this configurable via engine config.
+                        const SHUTDOWN_TIMEOUT_SECS: u64 = 60;
+
+                        // Retry a few times if the control channel is full under
+                        // backpressure — avoids silently dropping the shutdown request.
+                        const MAX_RETRIES: u32 = 3;
+                        const RETRY_INTERVAL: Duration = Duration::from_millis(500);
+
+                        let mut last_err = None;
+                        for attempt in 0..MAX_RETRIES {
+                            match control_plane.shutdown_all(SHUTDOWN_TIMEOUT_SECS) {
+                                Ok(()) => {
+                                    otel_info!(
+                                        "shutdown.signal_dispatched",
+                                        message = "Shutdown requested for all pipelines"
+                                    );
+                                    last_err = None;
+                                    break;
+                                }
+                                Err(e) => {
+                                    last_err = Some(e);
+                                    if attempt + 1 < MAX_RETRIES {
+                                        tokio::time::sleep(RETRY_INTERVAL).await;
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(e) = last_err {
+                            otel_error!(
+                                "shutdown.signal_dispatch_failed",
+                                error = ?e,
+                                message = "Failed to request shutdown via control plane after retries"
+                            );
+                        }
+
+                        // ── Second signal: force exit ───────────────────────
+                        let signal_name = Self::recv_termination_signal().await;
+                        raw_error!(
+                            "shutdown.force_exit",
+                            signal = signal_name,
+                            message = "Second termination signal received, forcing immediate exit"
+                        );
+                        std::process::exit(1);
+                    });
+                })
+                .expect("failed to spawn signal-handler thread"),
+        );
+    }
+
+    /// Awaits the first OS termination signal and returns its name.
+    ///
+    /// On Unix this listens for both SIGINT and SIGTERM.
+    /// On other platforms only Ctrl-C (SIGINT equivalent) is supported.
+    async fn recv_termination_signal() -> &'static str {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+            let mut sigint =
+                signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
+
+            tokio::select! {
+                _ = sigterm.recv() => "SIGTERM",
+                _ = sigint.recv() => "SIGINT",
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            use tokio::signal::windows::{ctrl_break, ctrl_c};
+
+            let mut sigint = ctrl_c().expect("failed to register Ctrl-C handler");
+            let mut sigterm = ctrl_break().expect("failed to register Ctrl-Break handler");
+
+            tokio::select! {
+                _ = sigterm.recv() => "CTRL_BREAK",
+                _ = sigint.recv() => "CTRL_C",
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to listen for Ctrl-C");
+            "Ctrl-C"
         }
     }
 
