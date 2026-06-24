@@ -3,7 +3,8 @@
 
 // ToDo: update tests to start broker in memory
 // ToDo: Possible optimization to improve how we determine signal type from a message
-//.      check every message against list of topics + excluded topics to get signal type
+// check every message against list of topics + excluded topics to get signal type
+// ToDo: Offload heavier decode operations to avoid stalling the receiver
 
 use super::config::{HeaderExtraction, KafkaReceiverConfig};
 use super::errors::DecodeError;

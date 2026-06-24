@@ -148,7 +148,7 @@ The `commit` block controls offset management:
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `mode` | string | `manual` | `manual` (at-least-once) or `auto` (at-most-once). |
+| `mode` | string | `manual` | `manual` (at-least-once, up to a terminal nack -- see [Failure Handling and Retries](#failure-handling-and-retries)) or `auto` (at-most-once). |
 | `interval_ms` | integer | *none* | Commit interval in milliseconds. Optional; see mode-specific behavior below. |
 
 #### Offset Management
@@ -167,6 +167,30 @@ config:
     mode: manual
     interval_ms: 1000
 ```
+
+#### Failure Handling and Retries
+
+In manual mode the committable offset advances on **both acks and nacks**. A
+nack reaching the receiver is treated as a **terminal** outcome: the receiver
+advances past the message and commits its offset, so the message is **not**
+redelivered.
+
+Retrying transient downstream failures is a separate pipeline concern handled
+by the [retry processor](../../../../core-nodes/src/processors/retry_processor/README.md)
+(`processor:retry`). To get at-least-once delivery, place a retry
+processor in the pipeline between the Kafka receiver and a failure-prone
+exporter:
+
+- The retry processor retries **transient** nacks with exponential backoff and
+  only forwards a nack to the receiver once retries are exhausted (a "final
+  retry") or when the failure is marked permanent.
+- While retries are in progress the message's offset stays in-flight at the
+  receiver, so it is **not** committed and remains eligible for redelivery on
+  restart.
+- Only genuinely terminal failures reach the receiver and advance the offset.
+
+See [At-Least-Once with the Retry Processor](#at-least-once-with-the-retry-processor)
+for a complete pipeline example.
 
 #### Auto Mode (`commit.mode: auto`)
 
@@ -616,6 +640,56 @@ pipelines:
 
 In this example, the Kafka receiver captures `X-Tenant-Id` and `X-Request-Id` headers from each Kafka message and attaches them to the pipeline context. The OTLP gRPC exporter then propagates all captured headers onto outbound gRPC requests.
 
+### At-Least-Once with the Retry Processor
+
+To protect against transient downstream failures, place a
+[retry processor](../../../../core-nodes/src/processors/retry_processor/README.md)
+(`processor:retry`) between the Kafka receiver (in `manual` commit mode) and the
+exporter. The retry processor retries transient nacks with exponential backoff;
+only a terminal failure (retries exhausted or a permanent error) reaches the
+receiver and advances the committed offset. While retries are in progress the
+offset stays in-flight and is not committed, so it remains eligible for
+redelivery if the process restarts.
+
+```yaml
+version: otel_dataflow/v1
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          kafka/ingest:
+            type: receiver:kafka
+            config:
+              brokers: "broker-1:9092"
+              group_id: "telemetry-consumers"
+              client_id: "gateway-instance-1"
+              traces:
+                topics:
+                  - "otel-traces"
+              commit:
+                mode: manual
+
+          retry:
+            type: processor:retry
+            config:
+              initial_interval: 1s
+              max_interval: 30s
+              max_elapsed_time: 5m
+              multiplier: 2.0
+
+          otlp/export:
+            type: exporter:otlp_grpc
+            config:
+              grpc_endpoint: "http://collector:4317"
+
+        connections:
+          - from: kafka/ingest
+            to: retry
+          - from: retry
+            to: otlp/export
+```
+
 ## Telemetry
 
 These tables list telemetry emitted directly by this node. Common engine
@@ -677,3 +751,4 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 - [Configuration model](../../../../../docs/configuration-model.md)
 - [Transport headers](../../../../../docs/transport-headers.md)
 - [Contrib node catalog](../../../README.md)
+- [Retry processor](../../../../core-nodes/src/processors/retry_processor/README.md)
